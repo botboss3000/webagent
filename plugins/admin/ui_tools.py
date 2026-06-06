@@ -2,7 +2,7 @@
 UI Admin tools — file editing confined to the front-end (ui/, .css/.html).
 
 Wires the existing rich source tools (read / write / edit / patch / delete /
-search / list directory) behind `app/admin/ui_guardrails.py` so a "UI Admin"
+search / list directory) behind `plugins/admin/ui_guardrails.py` so a "UI Admin"
 agent can alter visual details only — never backend code, and never the shell,
 Python, git, or server restart.
 
@@ -13,7 +13,7 @@ security boundary (project-root → ui/ → extension allow-list); the wrapper j
 adds a sensible default of `ui/` for the search/list tools.
 
 Gated by the `ui_admin` ability (see app/tools/loader.py). Delete this file (or
-app/admin/ui_guardrails.py) to remove the capability.
+plugins/admin/ui_guardrails.py) to remove the capability.
 """
 
 import logging
@@ -23,7 +23,7 @@ from app.tools.loader import ToolInfo
 
 logger = logging.getLogger(__name__)
 
-# Project root — resolved relative to this file (app/admin/../../)
+# Project root — resolved relative to this file (plugins/admin/../../)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # File tools re-exposed for UI admin (everything except run_command, run_python,
@@ -52,8 +52,8 @@ def _resolve(path: str) -> str:
 def inject_ui_tools(tools: dict, user_id: str) -> None:
     """Inject UI-confined filesystem tools into the tools dict."""
     try:
-        from app.admin.source_tools import inject_source_tools
-        from app.admin import ui_guardrails
+        from plugins.admin.source_tools import inject_source_tools
+        from plugins.admin import ui_guardrails
     except Exception as e:  # pragma: no cover — source tools / guardrails absent
         logger.warning("UI admin tools unavailable: %s", e)
         return

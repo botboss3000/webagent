@@ -3,6 +3,11 @@
 Mirrors the `app/admin/` "self-contained, deletable" pattern: drop a tool's
 file (or just remove its entry from TOOLS) and the agent loses that capability.
 
+DROP-IN — add an integration by copying `app/integrations/_TEMPLATE.py` to a new
+file here (TOOLS list + a FEATURE header). It is auto-discovered; do NOT wire it
+into app/tools/loader.py or any core file. See CLAUDE.md ("Core vs. plugins")
+and docs/claude/production-editions.md.
+
 Layout
 ------
     app/integrations/
@@ -204,11 +209,26 @@ def inject_integration_tools(
             requires_confirmation=True,
         )
 
+    # Edition gate: in a non-`full` build, skip integration modules whose
+    # maturity the active edition excludes (no-op for `full`).
+    try:
+        from app.features.gating import module_enabled as _module_enabled
+    except Exception:
+        _module_enabled = None
+    _gate_cache: dict = {}
+
     for spec in _discover_tool_specs():
         provider = spec.get("provider", "")
         # Tools that declare no provider are always-on (none today, but reserved).
         if provider and provider not in enabled_providers:
             continue
+
+        if _module_enabled is not None:
+            _mod = spec.get("_module", "")
+            if _mod not in _gate_cache:
+                _gate_cache[_mod] = _module_enabled(f"app.integrations.{_mod}", default_id=_mod)
+            if not _gate_cache[_mod]:
+                continue
 
         name = spec["name"]
         base_handler = spec["handler"]

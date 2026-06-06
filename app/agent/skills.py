@@ -103,9 +103,13 @@ def format_skills_section(
     ]
 
     for s in enabled:
-        name = s["name"]
+        # `token` is what load_skill / active-tracking key on: the handle for an
+        # ability skill, otherwise the name. `display` is the human heading.
+        token = s.get("handle") or s["name"]
+        display = s.get("display_name") or s["name"]
         desc = (s.get("description") or "").strip()
-        lines.append(f"\n## {name}")
+        suffix = "  _(ability skill)_" if s.get("_ability") else ""
+        lines.append(f"\n## {display}{suffix}")
         if desc:
             lines.append(desc)
 
@@ -113,12 +117,12 @@ def format_skills_section(
             body = (s.get("body") or "").strip()
             if body:
                 lines.append(body)
-        elif name in active:
+        elif token in active:
             lines.append("_(Loaded — the full instructions are in the conversation above.)_")
         else:
             lines.append(
                 f'_(Load on demand — this skill’s full instructions are only '
-                f'visible after you call load_skill("{name}").)_'
+                f'visible after you call load_skill("{token}").)_'
             )
 
     return "\n".join(lines).strip()

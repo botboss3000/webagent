@@ -55,6 +55,13 @@ let _currentProvider = 'openrouter';
 let _parallelProviders = [];
 let _parallelUidCounter = 0;
 let _modelFetchDebounce = null;
+let _autosaveDebounce = null;
+// Capabilities of the currently-configured model, detected from the model
+// catalog (models.dev / OpenRouter). Drives the read-only badges on the Model
+// row and what gets persisted on auto-save / Add — no hand-entered checkboxes.
+let _selCaps = { text: true, image: false, imageOut: false };
+// Per-model token/cost metadata cache for the Saved Models expand detail.
+const _modelMetaCache = {};
 
 // Integration Admin chat state
 let _intAdminSessionId = null;
@@ -316,8 +323,15 @@ function _initLLM() {
     if (_modelFetchDebounce) clearTimeout(_modelFetchDebounce);
     _modelFetchDebounce = setTimeout(() => { _fetchModels(); }, 500);
   };
-  apiKeyEl?.addEventListener('input', scheduleFetch);
-  baseUrlEl?.addEventListener('input', scheduleFetch);
+  // Each field persists to the DB on its own (no Save button); the matching
+  // green check flashes once the backend confirms — same pattern as the agent
+  // abilities table.
+  const scheduleAutosave = (checkId) => {
+    if (_autosaveDebounce) clearTimeout(_autosaveDebounce);
+    _autosaveDebounce = setTimeout(() => { _autosaveLLM(_qs(checkId)); }, 700);
+  };
+  apiKeyEl?.addEventListener('input', () => { scheduleFetch(); scheduleAutosave('ac-cfg-check-key'); });
+  baseUrlEl?.addEventListener('input', () => { scheduleFetch(); scheduleAutosave('ac-cfg-check-url'); });
 
   provEl?.addEventListener('change', () => {
     _saveCurrentProviderToMap(_currentProvider);
@@ -338,10 +352,12 @@ function _initLLM() {
       modelStatus.textContent = _selectedModel ? `Selected: ${_selectedModel}` : '';
       modelStatus.style.color = _selectedModel ? '#9ece6a' : '#565f89';
     }
+    _renderDetectedCaps(null);
     _allModels = [];
     const dd = _qs('ac-settings-model-dropdown');
     if (dd) dd.style.display = 'none';
     _fetchModels();
+    _autosaveLLM(_qs('ac-cfg-check-provider'));
   });
 
   modelSrch?.addEventListener('focus', () => _renderModelDropdown(modelSrch.value.toLowerCase()));
@@ -397,12 +413,14 @@ async function _loadLLM() {
         modelStatus.textContent = '';
       }
     }
-    const _capText = _qs('ac-settings-cap-text');
-    const _capImage = _qs('ac-settings-cap-image');
-    const _capImageOut = _qs('ac-settings-cap-image-out');
-    if (_capText)  _capText.checked  = data.text_capable !== false;
-    if (_capImage) _capImage.checked = !!data.image_capable;
-    if (_capImageOut) _capImageOut.checked = !!data.image_out_capable;
+    _selCaps = {
+      text:    data.text_capable !== false,
+      image:   !!data.image_capable,
+      imageOut: !!data.image_out_capable,
+    };
+    _renderDetectedCaps(_selectedModel ? {
+      text_capable: _selCaps.text, image_capable: _selCaps.image, image_out_capable: _selCaps.imageOut,
+    } : null);
     _fetchModels();
   } catch (e) {
     console.warn('ac: failed to load LLM settings', e);
@@ -480,6 +498,21 @@ async function _fetchModels() {
         : 'No models available.';
       statusEl.style.color = '#565f89';
     }
+    // Refresh the detected-capability badges for the already-selected model
+    // from the freshly-fetched list (the catalog has the authoritative signal).
+    if (_selectedModel) {
+      const sel = _allModels.find(m => m.id === _selectedModel);
+      if (sel) {
+        _selCaps = {
+          text: sel.text_capable !== false,
+          image: !!sel.image_capable,
+          imageOut: !!sel.image_out_capable,
+        };
+      }
+      _renderDetectedCaps(sel || {
+        text_capable: _selCaps.text, image_capable: _selCaps.image, image_out_capable: _selCaps.imageOut,
+      });
+    }
   } catch (e) {
     if (statusEl) { statusEl.textContent = `Failed to load models: ${e.message}`; statusEl.style.color = '#f7768e'; }
     _allModels = [];
@@ -500,7 +533,13 @@ function _renderModelDropdown(filter) {
     const item = document.createElement('div');
     item.className = 'ac-model-item';
     if (m.id === _selectedModel) item.style.background = 'rgba(125,207,255,0.12)';
-    item.innerHTML = `<span style="font-weight:500;">${_esc(m.id)}</span> <span style="color:#565f89;font-size:11px;margin-left:6px;">${_esc(m.name)}</span>`;
+    const ctx = _fmtContext(m.context);
+    const price = _fmtPrice(m.cost_input, m.cost_output);
+    const badges = [ctx, price].filter(Boolean)
+      .map(t => `<span class="ac-model-badge">${_esc(t)}</span>`).join('');
+    item.innerHTML = `<div class="ac-model-item-row"><span style="font-weight:500;">${_esc(m.id)}</span>`
+      + `<span style="color:var(--fg-3,#565f89);font-size:11px;margin-left:6px;">${_esc(m.name)}</span></div>`
+      + (badges ? `<div class="ac-model-item-badges">${badges}</div>` : '');
     item.addEventListener('click', () => {
       _selectedModel = m.id;
       const srch = _qs('ac-settings-model-search');
@@ -508,15 +547,107 @@ function _renderModelDropdown(filter) {
       dd.style.display = 'none';
       const statusEl = _qs('ac-settings-model-status');
       if (statusEl) { statusEl.textContent = `Selected: ${m.id}`; statusEl.style.color = '#9ece6a'; }
-      const capText = _qs('ac-settings-cap-text');
-      const capImage = _qs('ac-settings-cap-image');
-      const capImageOut = _qs('ac-settings-cap-image-out');
-      if (capText)  capText.checked  = m.text_capable !== false;
-      if (capImage) capImage.checked = !!m.image_capable;
-      if (capImageOut) capImageOut.checked = !!m.image_out_capable;
+      _selCaps = {
+        text: m.text_capable !== false,
+        image: !!m.image_capable,
+        imageOut: !!m.image_out_capable,
+      };
+      _renderDetectedCaps(m);
+      _autosaveLLM(_qs('ac-cfg-check-model'));
     });
     dd.appendChild(item);
   });
+}
+
+// ── Model metadata formatting (context / cost / description) ─────────────────
+
+function _fmtContext(ctx) {
+  if (!ctx || typeof ctx !== 'number') return '';
+  if (ctx >= 1_000_000) return `${(ctx / 1_000_000).toFixed(ctx % 1_000_000 ? 1 : 0)}M ctx`;
+  if (ctx >= 1000) return `${Math.round(ctx / 1000)}K ctx`;
+  return `${ctx} ctx`;
+}
+
+function _fmtPrice(inCost, outCost) {
+  // Costs are USD per 1M tokens. Show "in / out" when known.
+  const f = (v) => (v === 0 ? 'free' : (typeof v === 'number' ? `$${v}` : null));
+  const a = f(inCost), b = f(outCost);
+  if (a === 'free' && b === 'free') return 'free';
+  if (a && b) return `${a}/${b} per 1M`;
+  if (a) return `${a} in /1M`;
+  if (b) return `${b} out /1M`;
+  return '';
+}
+
+// Read-only capability badges for the configured model, detected from the
+// catalog — NOT user-entered checkboxes. Shows all three states (on = capable).
+function _renderDetectedCaps(m) {
+  const el = _qs('ac-settings-detected-caps');
+  if (!el) return;
+  if (!m) { el.innerHTML = ''; return; }
+  const caps = [
+    ['Text',      m.text_capable !== false],
+    ['Image-in',  !!m.image_capable],
+    ['Image-out', !!m.image_out_capable],
+  ];
+  el.innerHTML = caps
+    .map(([label, on]) => `<span class="ac-cap-badge ${on ? 'on' : 'off'}">${label}</span>`)
+    .join('');
+}
+
+// ── Per-field auto-save indicator (mirrors agents.js _flashSaved) ────────────
+function _markCheckSaving(el) {
+  if (!el) return;
+  clearTimeout(el._fadeT);
+  el.classList.remove('saved', 'error');
+  el.innerHTML = '<span class="agents-spinner"></span>';
+}
+function _flashCheck(el, ok, errMsg = '') {
+  if (!el) return;
+  clearTimeout(el._fadeT);
+  el.classList.remove('saved', 'error');
+  el.innerHTML = '';
+  if (ok) {
+    el.classList.add('saved');
+    el.textContent = '✓';
+    el.title = 'Saved';
+    el._fadeT = setTimeout(() => { el.classList.remove('saved'); el.textContent = ''; }, 2200);
+  } else {
+    el.classList.add('error');
+    el.textContent = '!';
+    el.title = errMsg || 'Save failed';
+    el._fadeT = setTimeout(() => { el.classList.remove('error'); el.textContent = ''; }, 4000);
+  }
+}
+
+// Persist the current provider/url/key/model to the DB (the default-provider
+// config) without the Add button. Skips quietly until an API key is present,
+// since the config can't be saved without one. Flashes `checkEl` on success.
+async function _autosaveLLM(checkEl) {
+  if (!isAdmin()) return;
+  const provider = _currentProvider === '_custom' ? 'custom' : _currentProvider;
+  const baseUrl  = _qs('ac-settings-base-url')?.value?.trim() || '';
+  const apiKey   = _qs('ac-settings-api-key')?.value?.trim() || '';
+  if (!apiKey) return;                       // nothing persistable yet
+  _saveCurrentProviderToMap(_currentProvider);
+  const payload = {
+    provider, base_url: baseUrl, api_key: apiKey, model: _selectedModel || '',
+    providers: _providerConfigs,
+    text_capable: _selCaps.text, image_capable: _selCaps.image,
+    image_out_capable: _selCaps.imageOut, use_for_image_out: _selCaps.imageOut,
+  };
+  _markCheckSaving(checkEl);
+  try {
+    const res = await _fetch(apiPath('/admin/settings/provider'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _flashCheck(checkEl, true);
+  } catch (e) {
+    _flashCheck(checkEl, false, e.message);
+  }
 }
 
 async function _saveLLM() {
@@ -529,9 +660,10 @@ async function _saveLLM() {
   if (!apiKey)     return _showLLMStatus('Please enter an API Key', 'error');
   if (!_selectedModel) return _showLLMStatus('Please select a model', 'error');
 
-  const capText  = _qs('ac-settings-cap-text')?.checked !== false;
-  const capImage = !!_qs('ac-settings-cap-image')?.checked;
-  const capImageOut = !!_qs('ac-settings-cap-image-out')?.checked;
+  // Capabilities come from catalog detection (_selCaps), not hand-entered boxes.
+  const capText  = _selCaps.text !== false;
+  const capImage = !!_selCaps.image;
+  const capImageOut = !!_selCaps.imageOut;
   const payload = { provider, base_url: baseUrl, api_key: apiKey, model: _selectedModel, providers: _providerConfigs, text_capable: capText, image_capable: capImage, image_out_capable: capImageOut, use_for_image_out: capImageOut };
   try {
     const res = await _fetch(apiPath('/admin/settings/provider'), {
@@ -568,6 +700,8 @@ async function _saveLLM() {
     _showLLMStatus(data.message || 'Saved', 'success');
     await _loadLLM();
     _renderParallelRows();
+    // Refresh the chat footer's context/max indicator for the new model.
+    app.refreshModelContext?.();
   } catch (e) {
     _showLLMStatus(`Error: ${e.message}`, 'error');
   }
@@ -649,12 +783,13 @@ async function _saveParallelProviders() {
   } catch (e) { console.warn('ac: failed to save parallel providers', e); }
 }
 
-// One capability cell: a checkbox when the model has the capability, else a
-// faint placeholder dot so the columns stay aligned ("some rows may not even
-// have an image checkbox available").
+// One capability column cell: a checkbox when the model has the capability,
+// else a faint placeholder dot so the columns stay aligned. Clicks are kept off
+// the row so toggling a use-mode never expands/collapses the row.
 function _capCell(capable, checked, title, onChange) {
   const cell = document.createElement('span');
-  cell.className = 'ac-prov-cell';
+  cell.className = 'ac-saved-cap';
+  cell.addEventListener('click', e => e.stopPropagation());
   if (!capable) {
     const dot = document.createElement('span');
     dot.className = 'ac-cap-dot';
@@ -672,6 +807,39 @@ function _capCell(capable, checked, title, onChange) {
   return cell;
 }
 
+// Fill a saved-model row's expanded body with token usage + cost (lazy, cached).
+async function _loadSavedModelDetail(p, body) {
+  if (body.dataset.loaded === '1') return;
+  const cacheKey = `${p.provider || ''}|${p.model || ''}`;
+  let meta = _modelMetaCache[cacheKey];
+  if (!meta) {
+    try {
+      const params = new URLSearchParams({ model: p.model || '' });
+      const res = await _fetch(apiPath(`/admin/settings/model-info?${params.toString()}`));
+      const data = res.ok ? await res.json() : null;
+      meta = (data && data.info) || {};
+    } catch (e) { meta = {}; }
+    _modelMetaCache[cacheKey] = meta;
+  }
+  body.dataset.loaded = '1';
+  const ctx = _fmtContext(meta.context);
+  const out = (typeof meta.max_output === 'number')
+    ? `${_fmtContext(meta.max_output).replace(' ctx', '')} out` : '';
+  const price = _fmtPrice(meta.cost_input, meta.cost_output);
+  const chips = [ctx, out, price].filter(Boolean)
+    .map(t => `<span class="ac-model-badge">${_esc(t)}</span>`).join('');
+  const caps = `<div class="ac-model-caps" style="margin-top:8px;">`
+    + `<span class="ac-cap-badge ${p.text_capable !== false ? 'on' : 'off'}">Text</span>`
+    + `<span class="ac-cap-badge ${p.image_capable ? 'on' : 'off'}">Image-in</span>`
+    + `<span class="ac-cap-badge ${p.image_out_capable ? 'on' : 'off'}">Image-out</span></div>`;
+  const desc = meta.description
+    ? `<div class="ac-model-meta-desc" style="margin-top:8px;">${_esc(meta.description)}</div>` : '';
+  body.innerHTML = (chips ? `<div class="ac-model-meta-chips">${chips}</div>` : '')
+    + caps
+    + desc
+    + (chips ? '' : '<div class="ac-hint" style="margin:8px 0 0;">No token or cost data available for this model.</div>');
+}
+
 function _renderParallelRows() {
   const wrap = _qs('ac-settings-saved-wrap');
   const list = _qs('ac-settings-saved-list');
@@ -686,36 +854,43 @@ function _renderParallelRows() {
 
   list.innerHTML = '';
 
-  // ── 45°-angled column header: Text / In / Out ──
+  // ── Column header: Model · Text / In / Out ──
   const head = document.createElement('div');
-  head.className = 'ac-prov-head';
-  head.appendChild(document.createElement('span'));  // spacer over the model name
+  head.className = 'ac-ability-row ac-saved-head';
+  const headName = document.createElement('span');
+  headName.className = 'ac-ability-label';
+  headName.innerHTML = '<span class="ac-saved-th">Model</span>';
+  head.appendChild(headName);
   [
     ['Text', 'Use for text answers (joins the parallel race)'],
     ['In',   'Use to read attached images (vision)'],
     ['Out',  'Use to generate images'],
   ].forEach(([label, tip]) => {
     const cell = document.createElement('span');
-    cell.className = 'ac-prov-cell';
+    cell.className = 'ac-saved-cap';
     const th = document.createElement('span');
-    th.className = 'ac-prov-th';
+    th.className = 'ac-saved-th';
     th.textContent = label;
     th.title = tip;
     cell.appendChild(th);
     head.appendChild(cell);
   });
-  head.appendChild(document.createElement('span'));  // spacer over the delete button
+  const delSpacer = document.createElement('span'); delSpacer.className = 'ac-saved-del-spacer'; head.appendChild(delSpacer);
+  const chevSpacer = document.createElement('span'); chevSpacer.className = 'ac-saved-chev-spacer'; head.appendChild(chevSpacer);
   list.appendChild(head);
 
   _parallelProviders.forEach(p => {
-    const row = document.createElement('div');
-    row.className = 'ac-provider-row';
+    const rowWrap = document.createElement('div');
+    rowWrap.className = 'ac-row';
 
-    const modelSpan = document.createElement('span');
-    modelSpan.textContent = p.model || '—';
-    modelSpan.title = p.model || '';
-    modelSpan.style.cssText = 'min-width:0;font-size:12px;color:var(--fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;';
-    row.appendChild(modelSpan);
+    const row = document.createElement('div');
+    row.className = 'ac-ability-row';
+
+    const label = document.createElement('span');
+    label.className = 'ac-ability-label';
+    label.innerHTML = `<span class="ac-ability-name ac-saved-model-name">${_esc(p.model || '—')}</span>`
+      + `<span class="ac-ability-desc">${_esc(_providerPresets[p.provider]?.name || p.provider || 'custom')}</span>`;
+    row.appendChild(label);
 
     // Text → enabled (every chat model is text-capable)
     row.appendChild(_capCell(
@@ -740,13 +915,31 @@ function _renderParallelRows() {
     removeBtn.textContent = '×';
     removeBtn.title = 'Remove this model';
     removeBtn.className = 'ac-prov-del';
-    removeBtn.addEventListener('click', () => {
+    removeBtn.addEventListener('click', e => {
+      e.stopPropagation();
       _parallelProviders = _parallelProviders.filter(x => x._uid !== p._uid);
       _saveParallelProviders().then(_renderParallelRows);
     });
     row.appendChild(removeBtn);
 
-    list.appendChild(row);
+    const chev = document.createElement('span');
+    chev.className = 'ac-row-chevron';
+    chev.innerHTML = '<i data-lucide="chevron-right" style="width:15px;height:15px;"></i>';
+    row.appendChild(chev);
+
+    // Expanded body — token usage + cost, lazily loaded on first open.
+    const body = document.createElement('div');
+    body.className = 'ac-ability-body';
+    body.innerHTML = '<div class="ac-hint" style="margin:0;">Loading details…</div>';
+
+    row.addEventListener('click', () => {
+      const open = rowWrap.classList.toggle('expanded');
+      if (open) _loadSavedModelDetail(p, body);
+    });
+
+    rowWrap.appendChild(row);
+    rowWrap.appendChild(body);
+    list.appendChild(rowWrap);
   });
 
   const enabledCount = _parallelProviders.filter(p => p.enabled).length;
@@ -1014,7 +1207,13 @@ function _getSelectedScopes(provider) {
 // and expand to reveal the config panel. The toggle only activates once
 // all required fields are filled.
 
-const _ABILITY_META = {
+// ── Ability render data — FALLBACK ONLY ────────────────────────────────────
+// These three objects + _CREDENTIAL_MEMBERS are OVERWRITTEN at runtime by the
+// fetched ability catalog (GET /api/v1/abilities/catalog → _ensureAbilityCatalog).
+// Do NOT add a new ability here — drop a file in plugins/abilities/ and it
+// appears automatically. The literals below are only used if that fetch fails
+// (offline / endpoint error). See app/abilities/__init__.py.
+let _ABILITY_META = {
   codebase_admin:   { icon: 'folder-cog',   color: '#bb9af7', simple: true,  desc: 'Lets the agent read, write, edit, delete files, and run shell commands on the host. No credentials.' },
   git_control:      { icon: 'git-branch',   color: '#9ece6a', simple: true,  desc: 'Version control only — status, diff, commit, push, branch, pull — without shell access. On by default.' },
   ui_admin:         { icon: 'paintbrush',   color: '#7dcfff', simple: true,  desc: 'Edits only front-end files (ui/ — CSS & HTML); never backend code or the shell. On by default.' },
@@ -1033,7 +1232,8 @@ const _ABILITY_META = {
 };
 
 // Human labels for every ability key (shared by the row builder and search).
-const _ABILITY_NAMES = {
+// Fallback only — overwritten by the fetched ability catalog (see above).
+let _ABILITY_NAMES = {
   codebase_admin: 'Codebase Admin',
   git_control: 'Git Control',
   ui_admin: 'UI Admin',
@@ -1077,8 +1277,8 @@ const _ABILITY_NAMES = {
 // and are NOT part of a group's On/Off math (they can't be "on" without
 // credentials); they're managed by their own row. Members are alphabetical by
 // display name; groups are alphabetical (Administrator, Basic, Web).
-const _CREDENTIAL_MEMBERS = new Set(['scraper', 'browser_session']);
-const _ABILITY_GROUPS = [
+let _CREDENTIAL_MEMBERS = new Set(['scraper', 'browser_session']);  // fallback; overwritten by catalog
+let _ABILITY_GROUPS = [
   {
     id: 'administrator', name: 'Administrator', icon: 'shield-alert', color: '#f7768e',
     desc: 'Full host control — files & shell, version control, terminals, and diagnostics. Grant with care.',
@@ -1087,7 +1287,12 @@ const _ABILITY_GROUPS = [
   {
     id: 'basic', name: 'Core', icon: 'wrench', color: '#7dcfff',
     desc: 'Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, and app view control.',
-    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer', 'wiki_control'],
+    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer'],
+  },
+  {
+    id: 'productivity', name: 'Productivity', icon: 'briefcase', color: '#4285F4',
+    desc: 'Read, search, create, edit, and delete entries in the company-wide Wiki.',
+    members: ['wiki_control'],
   },
   {
     id: 'web', name: 'Web', icon: 'globe', color: '#7aa2f7',
@@ -1095,6 +1300,38 @@ const _ABILITY_GROUPS = [
     members: ['browser_control', 'browser_session', 'web_access', 'scraper'],
   },
 ];
+
+// Fetch the server-built ability catalog ONCE and overwrite the fallback render
+// data above. This is what makes abilities drop-in: a file added to
+// plugins/abilities/ shows up here with no JS edit. Resolves quietly (keeps the
+// fallback) on any error. Must be awaited before the ability panel renders.
+let _abilityCatalogPromise = null;
+function _ensureAbilityCatalog() {
+  if (_abilityCatalogPromise) return _abilityCatalogPromise;
+  _abilityCatalogPromise = (async () => {
+    try {
+      const res = await fetch('/api/v1/abilities/catalog');
+      if (!res.ok) return;
+      const cat = await res.json();
+      if (!cat || !Array.isArray(cat.groups) || !cat.groups.length) return; // keep fallback
+      const meta = {}, names = {};
+      for (const [id, a] of Object.entries(cat.abilities || {})) {
+        meta[id] = { icon: a.icon, color: a.color, simple: !!a.simple, desc: a.description || '' };
+        names[id] = a.display_name || id;
+      }
+      _ABILITY_META = meta;
+      _ABILITY_NAMES = names;
+      _ABILITY_GROUPS = cat.groups.map(g => ({
+        id: g.id, name: g.name, icon: g.icon, color: g.color, desc: g.desc,
+        members: (g.members || []).slice(),
+      }));
+      _CREDENTIAL_MEMBERS = new Set(cat.credential_members || []);
+    } catch (e) {
+      console.warn('Ability catalog fetch failed; using built-in fallback', e);
+    }
+  })();
+  return _abilityCatalogPromise;
+}
 
 let _abilityStates = {}; // { [ability]: boolean }
 
@@ -1895,7 +2132,10 @@ function _syncAllRowToggles() {
   }
 }
 
-function _initIntegrations() {
+async function _initIntegrations() {
+  // Load the drop-in ability catalog before any ability UI is built so the
+  // panel reflects whatever lives in plugins/abilities/ (not the JS fallback).
+  await _ensureAbilityCatalog();
   const providers = ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon'];
   for (const p of providers) {
     _initCollapsible(p);
@@ -1934,7 +2174,7 @@ function _initIntegrations() {
   // and render the card-less coming-soon integrations as greyed rows.
   _compactifyAllIntegrations();
 
-  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management', 'app_control', 'wiki_control']);
+  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, ...Object.keys(_ABILITY_META)]);
   _initIntegrationAdminChat();
 }
 

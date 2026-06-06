@@ -19,6 +19,14 @@ from typing import Any, Callable, List, Optional
 
 from app.connectors.base import Connector, GeneratedTool
 
+FEATURE = {
+    "id": "web_search_domain",
+    "display_name": "Domain-restricted web search",
+    "category": "connector",
+    "status": "beta",
+    "summary": "Search forced through site:<domain> so the agent can't escape to the wider web.",
+}
+
 logger = logging.getLogger(__name__)
 
 

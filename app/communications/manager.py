@@ -2,6 +2,12 @@
 Plugin manager -- discovers, enables/disables communication plugins.
 
 Reads registry.json for config. Provides tools to the agent loop.
+
+DROP-IN — to add a channel, drop ONE file in app/communications/plugins/ that
+exposes ``plugin_cls`` (a ``CommunicationPlugin`` subclass) and a ``FEATURE``
+header (id/display_name/status). It is auto-discovered here; you register
+nothing, and you do NOT edit the core. Delete the file to remove it. See
+CLAUDE.md ("Core vs. plugins") and docs/claude/production-editions.md.
 """
 
 import importlib
@@ -81,6 +87,11 @@ class PluginManager:
                     continue
 
                 plugin = plugin_cls(registry=self._registry)
+                # Stash the module's FEATURE header so edition gating can read it.
+                try:
+                    plugin._feature = getattr(mod, "FEATURE", None)
+                except Exception:
+                    plugin._feature = None
                 self._plugins[plugin.name] = plugin
                 logger.info("Discovered plugin: %s", plugin.name)
             except Exception as e:
@@ -90,8 +101,19 @@ class PluginManager:
         return self._plugins.get(name)
 
     def get_enabled_plugins(self) -> list[CommunicationPlugin]:
-        """Return only enabled plugins."""
-        return [p for p in self._plugins.values() if p.enabled]
+        """Return only enabled plugins the active edition includes."""
+        try:
+            from app.features.gating import feature_enabled
+        except Exception:
+            feature_enabled = None
+        out = []
+        for p in self._plugins.values():
+            if not p.enabled:
+                continue
+            if feature_enabled is not None and not feature_enabled(getattr(p, "_feature", None), p.name):
+                continue
+            out.append(p)
+        return out
 
     def get_all_plugins(self) -> list[CommunicationPlugin]:
         return list(self._plugins.values())

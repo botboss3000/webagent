@@ -1,6 +1,6 @@
 """File + search tools (the Codebase Admin file suite), self-contained.
 
-Vendored lean equivalents of the web app's ``app/admin/source_tools.py`` so the
+Vendored lean equivalents of the web app's ``plugins/admin/source_tools.py`` so the
 TUI ``.exe`` carries no dependency on the server package. Path-scoped to the
 target project; mutating ops auto-backup to ``.source-backups/``.
 """

@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS wiki_articles (
     body        TEXT NOT NULL DEFAULT '',
     tags        TEXT NOT NULL DEFAULT '[]',   -- JSON array of strings
     category    TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'draft',  -- 'draft' = internal (members only) | 'published' = public
     created_by  TEXT NOT NULL DEFAULT '',      -- user_id (attribution only)
     updated_by  TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -98,6 +99,9 @@ CREATE TABLE IF NOT EXISTS wiki_articles (
 
 CREATE INDEX IF NOT EXISTS idx_wiki_articles_updated ON wiki_articles(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_wiki_articles_category ON wiki_articles(category);
+-- NOTE: the index on `status` is created in _migrate(), AFTER the column is
+-- ensured — older wiki.db files predate the column, so indexing it here (before
+-- the ALTER) would fail with "no such column: status".
 
 CREATE VIRTUAL TABLE IF NOT EXISTS wiki_articles_fts USING fts5(
     slug UNINDEXED,
@@ -141,6 +145,24 @@ CREATE TABLE IF NOT EXISTS wiki_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_wiki_chunks_article ON wiki_chunks(article_id);
+
+-- Point-in-time snapshots of an article. One row is written for the PRIOR
+-- version every time an article is updated (and one for the initial create), so
+-- the full edit history is preserved and any version can be restored.
+CREATE TABLE IF NOT EXISTS wiki_revisions (
+    id          TEXT PRIMARY KEY,
+    article_id  TEXT NOT NULL,         -- not a FK: history outlives deletes
+    slug        TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL DEFAULT '',
+    tags        TEXT NOT NULL DEFAULT '[]',
+    category    TEXT NOT NULL DEFAULT '',
+    edited_by   TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_wiki_revisions_article ON wiki_revisions(article_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wiki_revisions_slug ON wiki_revisions(slug);
 """
 
 
@@ -178,8 +200,25 @@ class WikiStore:
         try:
             conn.executescript(_SCHEMA)
             conn.commit()
+            self._migrate(conn)
+            conn.commit()
         finally:
             conn.close()
+
+    def _migrate(self, conn) -> None:
+        """Add columns that older wiki.db files predate. Safe to run every boot."""
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(wiki_articles)").fetchall()}
+        if "status" not in cols:
+            # Backfill pre-existing articles as 'published' so they stay visible
+            # exactly as before this feature; new articles default to 'draft'.
+            conn.execute(
+                "ALTER TABLE wiki_articles ADD COLUMN status TEXT NOT NULL DEFAULT 'published'"
+            )
+        # Index on status — created here (not in _SCHEMA) so it runs after the
+        # column is guaranteed to exist on older databases.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wiki_articles_status ON wiki_articles(status)"
+        )
 
     # ── Row helpers ──────────────────────────────────────────────────────────
     @staticmethod
@@ -216,25 +255,34 @@ class WikiStore:
         return chunks
 
     # ── Reads ────────────────────────────────────────────────────────────────
-    async def list(self) -> List[dict]:
+    # ``include_drafts`` is the visibility gate: True for signed-in members (and
+    # agents acting for them) — they see drafts + published; False for anonymous
+    # / public callers — they see only published articles.
+    async def list(self, include_drafts: bool = True) -> List[dict]:
+        where = "" if include_drafts else "WHERE status = 'published'"
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT id, slug, title, tags, category, created_by, updated_by, "
+                "SELECT id, slug, title, tags, category, status, created_by, updated_by, "
                 "created_at, updated_at, substr(body, 1, 240) AS snippet "
-                "FROM wiki_articles ORDER BY updated_at DESC",
+                f"FROM wiki_articles {where} ORDER BY updated_at DESC",
             ).fetchall()
             return [self._row(r) for r in rows]
         finally:
             conn.close()
 
-    async def get(self, slug: str) -> Optional[dict]:
+    async def get(self, slug: str, include_drafts: bool = True) -> Optional[dict]:
         conn = self._connect()
         try:
             row = conn.execute(
                 "SELECT * FROM wiki_articles WHERE slug = ?", (slug,),
             ).fetchone()
-            return self._row(row) if row else None
+            if not row:
+                return None
+            # Hide a draft's very existence from public callers.
+            if not include_drafts and (row["status"] or "draft") != "published":
+                return None
+            return self._row(row)
         finally:
             conn.close()
 
@@ -247,38 +295,76 @@ class WikiStore:
         tags: Optional[list] = None,
         category: str = "",
         user_id: str = "",
+        status: Optional[str] = None,
     ) -> dict:
         """Create or update an article (keyed by slug), then re-chunk + re-embed
-        its body. The FTS row is kept in sync by triggers."""
+        its body. The FTS row is kept in sync by triggers.
+
+        ``status`` ('draft' | 'published'): on create, defaults to 'draft'
+        (internal). On update, ``None`` keeps the current status unchanged."""
         tags_json = json.dumps(tags or [])
         async with self._write_lock:
             conn = self._connect()
             try:
                 now = _now_iso()
                 existing = conn.execute(
-                    "SELECT id FROM wiki_articles WHERE slug = ?", (slug,),
+                    "SELECT * FROM wiki_articles WHERE slug = ?", (slug,),
                 ).fetchone()
                 if existing:
                     article_id = existing["id"]
+                    new_status = status if status is not None else (existing["status"] or "draft")
+                    # Snapshot the PRIOR version into history before overwriting.
+                    conn.execute(
+                        "INSERT INTO wiki_revisions (id, article_id, slug, title, "
+                        "body, tags, category, edited_by, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (_uuid(), article_id, existing["slug"], existing["title"],
+                         existing["body"], existing["tags"], existing["category"],
+                         existing["updated_by"] or existing["created_by"],
+                         existing["updated_at"]),
+                    )
                     conn.execute(
                         "UPDATE wiki_articles SET title = ?, body = ?, tags = ?, "
-                        "category = ?, updated_by = ?, updated_at = ? WHERE id = ?",
-                        (title, body, tags_json, category, user_id, now, article_id),
+                        "category = ?, status = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+                        (title, body, tags_json, category, new_status, user_id, now, article_id),
                     )
                 else:
                     article_id = _uuid()
+                    new_status = status if status is not None else "draft"
                     conn.execute(
                         "INSERT INTO wiki_articles (id, slug, title, body, tags, "
-                        "category, created_by, updated_by, created_at, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "category, status, created_by, updated_by, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (article_id, slug, title, body, tags_json, category,
-                         user_id, user_id, now, now),
+                         new_status, user_id, user_id, now, now),
                     )
                 conn.commit()
                 await self._embed_and_store_chunks(conn, article_id, body)
                 conn.commit()
                 return self._row(conn.execute(
                     "SELECT * FROM wiki_articles WHERE id = ?", (article_id,),
+                ).fetchone())
+            finally:
+                conn.close()
+
+    async def set_status(self, slug: str, status: str, user_id: str = "") -> Optional[dict]:
+        """Flip an article between 'draft' and 'published' without touching its
+        body/history (no revision snapshot, no re-embed). Returns the updated
+        article, or None if the slug doesn't exist."""
+        status = "published" if status == "published" else "draft"
+        async with self._write_lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    "UPDATE wiki_articles SET status = ?, updated_by = ?, updated_at = ? "
+                    "WHERE slug = ?",
+                    (status, user_id, _now_iso(), slug),
+                )
+                conn.commit()
+                if cur.rowcount == 0:
+                    return None
+                return self._row(conn.execute(
+                    "SELECT * FROM wiki_articles WHERE slug = ?", (slug,),
                 ).fetchone())
             finally:
                 conn.close()
@@ -314,12 +400,12 @@ class WikiStore:
             )
 
     # ── Search (hybrid FTS + vector, RRF-merged) ─────────────────────────────
-    async def search(self, query: str, limit: int = 10) -> List[dict]:
+    async def search(self, query: str, limit: int = 10, include_drafts: bool = True) -> List[dict]:
         query = (query or "").strip()
         if not query:
             return []
-        fts_task = asyncio.create_task(self._fts5_search(query, limit * 3))
-        vec_task = asyncio.create_task(self._vector_search(query, limit * 3))
+        fts_task = asyncio.create_task(self._fts5_search(query, limit * 3, include_drafts))
+        vec_task = asyncio.create_task(self._vector_search(query, limit * 3, include_drafts))
         fts_results, vec_results = await asyncio.gather(
             fts_task, vec_task, return_exceptions=True
         )
@@ -356,33 +442,35 @@ class WikiStore:
                 merged.append(entry)
         return merged[:limit]
 
-    async def _fts5_search(self, query: str, limit: int = 10) -> List[dict]:
+    async def _fts5_search(self, query: str, limit: int = 10, include_drafts: bool = True) -> List[dict]:
         match_expr = _fts5_safe_match_query(query)
         if not match_expr:
             return []
+        status_clause = "" if include_drafts else "AND w.status = 'published' "
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT w.id, w.slug, w.title, w.tags, w.category, w.updated_at, "
+                "SELECT w.id, w.slug, w.title, w.tags, w.category, w.status, w.updated_at, "
                 "substr(w.body, 1, 240) AS snippet, rank "
                 "FROM wiki_articles_fts fts "
                 "JOIN wiki_articles w ON w.rowid = fts.rowid "
-                "WHERE wiki_articles_fts MATCH ? ORDER BY rank LIMIT ?",
+                f"WHERE wiki_articles_fts MATCH ? {status_clause}ORDER BY rank LIMIT ?",
                 (match_expr, limit),
             ).fetchall()
             return [self._row(r) for r in rows]
         finally:
             conn.close()
 
-    async def _vector_search(self, query_text: str, limit: int = 10) -> List[dict]:
+    async def _vector_search(self, query_text: str, limit: int = 10, include_drafts: bool = True) -> List[dict]:
         np = _ensure_np()
+        status_clause = "" if include_drafts else "AND w.status = 'published' "
         conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT wc.article_id, wc.embedding, w.slug, w.title, w.tags, "
-                "w.category, w.updated_at, substr(w.body, 1, 240) AS snippet "
+                "w.category, w.status, w.updated_at, substr(w.body, 1, 240) AS snippet "
                 "FROM wiki_chunks wc JOIN wiki_articles w ON w.id = wc.article_id "
-                "WHERE wc.embedding IS NOT NULL",
+                f"WHERE wc.embedding IS NOT NULL {status_clause}",
             ).fetchall()
             if not rows:
                 return []
@@ -433,6 +521,80 @@ class WikiStore:
                 if len(result) >= limit:
                     break
         return result
+
+    # ── Revision history ─────────────────────────────────────────────────────
+    async def list_revisions(self, slug: str) -> List[dict]:
+        """Prior versions of an article, newest first (metadata + snippet)."""
+        conn = self._connect()
+        try:
+            art = conn.execute(
+                "SELECT id FROM wiki_articles WHERE slug = ?", (slug,),
+            ).fetchone()
+            if not art:
+                return []
+            rows = conn.execute(
+                "SELECT id, slug, title, category, edited_by, created_at, "
+                "substr(body, 1, 240) AS snippet "
+                "FROM wiki_revisions WHERE article_id = ? ORDER BY created_at DESC",
+                (art["id"],),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def get_revision(self, rev_id: str) -> Optional[dict]:
+        """One full historical revision by its id."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM wiki_revisions WHERE id = ?", (rev_id,),
+            ).fetchone()
+            return self._row(row) if row else None
+        finally:
+            conn.close()
+
+    async def restore_revision(self, slug: str, rev_id: str, user_id: str = "") -> Optional[dict]:
+        """Restore an article to a past revision. The current version is first
+        snapshotted into history (via the normal upsert path), so a restore is
+        itself reversible. Returns the restored article, or None if not found."""
+        rev = await self.get_revision(rev_id)
+        if rev is None:
+            return None
+        # The revision belongs to the current article (slug is immutable).
+        target = rev.get("slug") or slug
+        return await self.upsert(
+            slug=target,
+            title=rev["title"],
+            body=rev.get("body", ""),
+            tags=rev.get("tags", []),
+            category=rev.get("category", ""),
+            user_id=user_id,
+        )
+
+    # ── Backlinks ────────────────────────────────────────────────────────────
+    async def backlinks(self, slug: str, include_drafts: bool = True) -> List[dict]:
+        """Articles whose body links to this one via [[slug]] or [[Title]].
+        Public callers only see published articles among the backlinks."""
+        status_clause = "" if include_drafts else "AND status = 'published' "
+        conn = self._connect()
+        try:
+            art = conn.execute(
+                "SELECT title FROM wiki_articles WHERE slug = ?", (slug,),
+            ).fetchone()
+            if not art:
+                return []
+            title = art["title"]
+            rows = conn.execute(
+                "SELECT slug, title FROM wiki_articles "
+                "WHERE slug != ? "
+                f"{status_clause}AND ("
+                "  instr(lower(body), lower(?)) > 0 OR instr(lower(body), lower(?)) > 0"
+                ") ORDER BY title COLLATE NOCASE",
+                (slug, f"[[{slug}]]", f"[[{title}]]"),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
 
     def path(self) -> str:
         return self._path

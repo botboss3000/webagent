@@ -5,25 +5,48 @@
 // One shared collection of articles (NOT per-user). People search/browse/edit
 // here; agents manage the same data through the wiki_control ability. Lifecycle
 // (startWiki/stopWiki) is driven by ui/js/tabs.js.
+//
+// Layout is a persistent encyclopedia shell: a banner on top, a TREE SIDEBAR on
+// the left (articles grouped by category, collapsible), and the ARTICLE on the
+// right. Searching or applying a tag/category filter re-shapes the sidebar; the
+// article surface on the right stays put.
 
 import { app } from './state.js';
 import { apiPath } from './config.js';
+import { authHeaders } from './left-login.js';
+
+// A signed-in member (not an anonymous visitor) — gates the write controls and
+// whether drafts are even returned by the API. Anonymous users get an 'anon_…'
+// id; members get a real one (email / 'admin_default').
+function _isMember() {
+  const uid = String(app.currentUserId || '');
+  return !!uid && !uid.startsWith('anon_');
+}
 
 let _active = false;
 let _inited = false;
 
-// View state for the article pane.
-let _current = null;   // the article being viewed, or null for a new draft
+// View state for the article surface.
+let _current = null;   // the article being viewed, or null when nothing is open
 let _editing = false;
 
 let _searchTimer = null;
 let _toastTimer = null;
 
+// Browse + linking state.
+let _allArticles = [];            // full (unfiltered) browse list
+let _index = new Map();           // lowercased title/slug -> {slug, title}
+let _activeFilter = null;         // { type:'category'|'tag', value } or null
+let _viewingRevisionId = null;    // set while reading an old revision (read-only)
+let _searchResults = null;        // ranked results while a search is active, else null
+let _collapsed = new Set();       // category names currently collapsed in the tree
+
+const UNCATEGORIZED = 'General';  // tree group label for articles with no category
+
 // ── Small DOM helpers ────────────────────────────────────────────────────────
 
 function _root() { return document.getElementById('tab-wiki'); }
 function _q(sel) { const r = _root(); return r ? r.querySelector(sel) : null; }
-function _qa(sel) { const r = _root(); return r ? Array.from(r.querySelectorAll(sel)) : []; }
 
 function _esc(s) {
   return String(s == null ? '' : s)
@@ -42,6 +65,10 @@ function _toast(msg, isError) {
 }
 
 async function _api(path, opts) {
+  // Always send the auth token so the backend knows whether the caller is a
+  // member (sees drafts, may edit) or an anonymous visitor (published only).
+  opts = opts || {};
+  opts.headers = { ...(opts.headers || {}), ...authHeaders() };
   const res = await fetch(apiPath(path), opts);
   let data = null;
   try { data = await res.json(); } catch (_) {}
@@ -57,9 +84,21 @@ async function _api(path, opts) {
 export function startWiki() {
   _active = true;
   _init();
-  // Always return to the list view when (re)entering the tab.
-  _showList();
+  _applyRoleVisibility();
   _refresh();
+}
+
+// Hide the editing controls (New, and the per-article actions) from anonymous
+// visitors. The backend enforces this too; this just keeps the UI honest —
+// anon users get a read-only, published-only wiki.
+function _applyRoleVisibility() {
+  const member = _isMember();
+  const root = _root();
+  if (!root) return;
+  const newBtn = root.querySelector('.wiki-new-btn');
+  if (newBtn) newBtn.hidden = !member;
+  const welcomeNew = root.querySelector('.wiki-welcome [data-act="new"]');
+  if (welcomeNew) welcomeNew.style.display = member ? '' : 'none';
 }
 
 export function stopWiki() {
@@ -79,135 +118,325 @@ function _init() {
   if (search) {
     search.addEventListener('input', () => {
       if (clear) clear.hidden = !search.value;
+      if (search.value.trim()) _activeFilter = null;   // searching overrides a chip filter
       clearTimeout(_searchTimer);
-      _searchTimer = setTimeout(() => _refresh(), 220);
+      _searchTimer = setTimeout(() => _runSearch(), 220);
     });
   }
   if (clear && search) {
     clear.addEventListener('click', () => {
       search.value = '';
       clear.hidden = true;
-      _refresh();
+      _searchResults = null;
+      _renderSidebar();
       search.focus();
     });
   }
 
-  // Toolbar actions (both views) via delegation.
+  // Delegated clicks for the whole tab.
   root.addEventListener('click', (e) => {
+    // 1) A clickable [[wiki-link]] or backlink inside the reader.
+    const link = e.target.closest('.wiki-link, .wiki-backlink');
+    if (link && root.contains(link)) {
+      e.preventDefault();
+      if (link.dataset.slug) _openArticle(link.dataset.slug);
+      else if (link.dataset.newtitle) _openNew(link.dataset.newtitle);
+      return;
+    }
+    // 2) A tree category header → collapse / expand.
+    const cat = e.target.closest('.wiki-tree-cat');
+    if (cat && root.contains(cat)) {
+      e.preventDefault();
+      _toggleCategory(cat.dataset.cat);
+      return;
+    }
+    // 3) A tree article link (sidebar) → open it.
+    const item = e.target.closest('.wiki-tree-item');
+    if (item && item.dataset.slug) {
+      e.preventDefault();
+      _openArticle(item.dataset.slug);
+      return;
+    }
+    // 4) A category/tag filter chip (on a row/reader) → filter the sidebar.
+    const fchip = e.target.closest('[data-filter-type]');
+    if (fchip && root.contains(fchip)) {
+      e.preventDefault();
+      e.stopPropagation();
+      _applyFilter(fchip.dataset.filterType, fchip.dataset.filterValue);
+      return;
+    }
+    // 5) A revision row's actions.
+    const revAct = e.target.closest('[data-rev-act]');
+    if (revAct && root.contains(revAct)) {
+      e.preventDefault();
+      const id = revAct.dataset.revId;
+      if (revAct.dataset.revAct === 'view') _viewRevision(id);
+      else if (revAct.dataset.revAct === 'restore') _restoreRevision(id);
+      return;
+    }
+    // 6) Toolbar / banner / welcome actions.
     const btn = e.target.closest('[data-act]');
-    if (!btn || !root.contains(btn)) return;
-    const act = btn.dataset.act;
-    if (act === 'new') _openNew();
-    else if (act === 'back') { _showList(); _refresh(); }
-    else if (act === 'edit') _enterEdit();
-    else if (act === 'cancel') _cancelEdit();
-    else if (act === 'save') _save();
-    else if (act === 'delete') _delete();
+    if (btn && root.contains(btn)) {
+      const act = btn.dataset.act;
+      if (act === 'new') _openNew();
+      else if (act === 'edit') _enterEdit();
+      else if (act === 'cancel') _cancelEdit();
+      else if (act === 'save') _save();
+      else if (act === 'delete') _delete();
+      else if (act === 'toggle-status') _toggleStatus();
+      else if (act === 'history') _toggleHistory();
+      else if (act === 'clear-filter') { _activeFilter = null; _renderSidebar(); }
+      else if (act === 'restore-this' && _viewingRevisionId) _restoreRevision(_viewingRevisionId);
+      else if (act === 'exit-revision') _exitRevisionView();
+      return;
+    }
   });
+}
 
-  // Click an article row to open it.
-  const list = _q('.wiki-list');
-  if (list) {
-    list.addEventListener('click', (e) => {
-      const row = e.target.closest('.wiki-row');
-      if (row && row.dataset.slug) _openArticle(row.dataset.slug);
-    });
+// ── Link index (for resolving [[Title]] → slug) ───────────────────────────────
+
+function _buildIndex(articles) {
+  _index = new Map();
+  for (const a of articles) {
+    if (!a || !a.slug) continue;
+    const ref = { slug: a.slug, title: a.title };
+    _index.set(a.slug.toLowerCase(), ref);
+    if (a.title) _index.set(a.title.toLowerCase(), ref);
   }
 }
 
-// ── List + search ────────────────────────────────────────────────────────────
+// ── Load articles + render the sidebar ────────────────────────────────────────
 
 async function _refresh() {
-  const search = _q('.wiki-search-input');
-  const query = search ? search.value.trim() : '';
-  const list = _q('.wiki-list');
-  const empty = _q('.wiki-empty');
-  const count = _q('.wiki-count');
-  if (!list) return;
-
-  list.innerHTML = '<li class="wiki-loading">Loading&hellip;</li>';
-  if (empty) empty.classList.remove('show');
-  if (count) count.hidden = true;
-
+  const tree = _q('.wiki-tree');
+  if (tree) tree.innerHTML = '<div class="wiki-loading">Loading&hellip;</div>';
   try {
-    let articles;
-    if (query) {
-      const data = await _api(`/api/v1/wiki/search?q=${encodeURIComponent(query)}`);
-      articles = (data && data.results) || [];
-    } else {
-      const data = await _api('/api/v1/wiki');
-      articles = (data && data.articles) || [];
-    }
+    const data = await _api('/api/v1/wiki');
     if (!_active) return;
-    _renderList(articles, query);
+    _allArticles = (data && data.articles) || [];
+    _buildIndex(_allArticles);
+    _renderSidebar();
   } catch (e) {
     if (!_active) return;
-    list.innerHTML = `<li class="wiki-loading">Couldn't load the wiki: ${_esc(e.message)}</li>`;
+    if (tree) tree.innerHTML = `<div class="wiki-loading">Couldn't load the wiki: ${_esc(e.message)}</div>`;
   }
 }
 
-function _renderList(articles, query) {
-  const list = _q('.wiki-list');
-  const empty = _q('.wiki-empty');
-  const count = _q('.wiki-count');
-  if (!list) return;
+async function _runSearch() {
+  const search = _q('.wiki-search-input');
+  const query = search ? search.value.trim() : '';
+  if (!query) { _searchResults = null; _renderSidebar(); return; }
+  const tree = _q('.wiki-tree');
+  if (tree) tree.innerHTML = '<div class="wiki-loading">Searching&hellip;</div>';
+  try {
+    const data = await _api(`/api/v1/wiki/search?q=${encodeURIComponent(query)}`);
+    if (!_active) return;
+    _searchResults = (data && data.results) || [];
+    _renderSidebar();
+  } catch (e) {
+    if (!_active) return;
+    if (tree) tree.innerHTML = `<div class="wiki-loading">Search failed: ${_esc(e.message)}</div>`;
+  }
+}
 
-  if (!articles.length) {
-    list.innerHTML = '';
-    if (empty) {
-      empty.classList.add('show');
-      const title = empty.querySelector('.wiki-empty-title');
-      const text = empty.querySelector('.wiki-empty-text');
-      if (query) {
-        if (title) title.textContent = 'No matching articles';
-        if (text) text.textContent = `Nothing in the wiki matches "${query}". Try different words, or add a new article.`;
-      } else {
-        if (title) title.textContent = 'The wiki is empty';
-        if (text) text.textContent = 'Add your first article — company info, a policy, contacts, anything worth keeping. You can also ask an agent (with the Wiki ability) to fill it in for you.';
-      }
+// Decide what the sidebar shows: search results > active filter > full tree.
+function _renderSidebar() {
+  const tree = _q('.wiki-tree');
+  const countEl = _q('.wiki-sidebar-count');
+  const filterBar = _q('.wiki-filter-active');
+  if (!tree) return;
+
+  // Active tag/category filter banner.
+  if (_activeFilter && !_searchResults) {
+    if (filterBar) {
+      filterBar.hidden = false;
+      const txt = filterBar.querySelector('.wiki-filter-active-text');
+      if (txt) txt.innerHTML = `Filtered by ${_activeFilter.type === 'tag' ? '#' : ''}${_esc(_activeFilter.value)}`;
     }
+  } else if (filterBar) {
+    filterBar.hidden = true;
+  }
+
+  // Search results: a flat, ranked list.
+  if (_searchResults) {
+    const results = _searchResults;
+    if (countEl) { countEl.hidden = false; countEl.textContent = `${results.length} result${results.length === 1 ? '' : 's'}`; }
+    if (!results.length) {
+      tree.innerHTML = '<div class="wiki-tree-empty">No matching articles.</div>';
+      return;
+    }
+    tree.innerHTML = '<ul class="wiki-tree-items wiki-tree-flat">'
+      + results.map(a => _itemHtml(a, true)).join('') + '</ul>';
+    _markActiveInTree();
     return;
   }
-  if (empty) empty.classList.remove('show');
-  if (count) {
-    count.hidden = false;
-    count.textContent = query
-      ? `${articles.length} result${articles.length === 1 ? '' : 's'} for "${query}"`
-      : `${articles.length} article${articles.length === 1 ? '' : 's'}`;
+
+  // Tag/category filter: a flat list of matches.
+  if (_activeFilter) {
+    const matches = _allArticles.filter(a => _matchesFilter(a, _activeFilter));
+    if (countEl) { countEl.hidden = false; countEl.textContent = `${matches.length} article${matches.length === 1 ? '' : 's'}`; }
+    if (!matches.length) {
+      tree.innerHTML = '<div class="wiki-tree-empty">Nothing matches this filter.</div>';
+      return;
+    }
+    tree.innerHTML = '<ul class="wiki-tree-items wiki-tree-flat">'
+      + matches.map(a => _itemHtml(a)).join('') + '</ul>';
+    _markActiveInTree();
+    return;
   }
 
-  list.innerHTML = articles.map(_rowHtml).join('');
+  // Default: the full category tree.
+  if (countEl) {
+    countEl.hidden = false;
+    countEl.textContent = `${_allArticles.length} article${_allArticles.length === 1 ? '' : 's'}`;
+  }
+  if (!_allArticles.length) {
+    tree.innerHTML = '<div class="wiki-tree-empty">No articles yet.<br>Use <b>New</b> above to start one.</div>';
+    return;
+  }
+  tree.innerHTML = _treeHtml(_allArticles);
+  _markActiveInTree();
 }
 
-function _rowHtml(a) {
-  const tags = Array.isArray(a.tags) ? a.tags : [];
-  const chips = [];
-  if (a.category) chips.push(`<span class="wiki-chip wiki-chip-category">${_esc(a.category)}</span>`);
-  for (const t of tags.slice(0, 5)) chips.push(`<span class="wiki-chip">${_esc(t)}</span>`);
-  const snippet = a.snippet ? `<p class="wiki-row-snippet">${_esc(a.snippet)}</p>` : '';
-  const meta = chips.length ? `<div class="wiki-row-meta">${chips.join('')}</div>` : '';
-  return `<li class="wiki-row" data-slug="${_esc(a.slug)}">
-    <div class="wiki-row-title">${_esc(a.title)}</div>
-    ${snippet}${meta}
-  </li>`;
+// Group articles by category and render collapsible groups.
+function _treeHtml(articles) {
+  const groups = new Map();
+  for (const a of articles) {
+    const key = a.category && a.category.trim() ? a.category.trim() : UNCATEGORIZED;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(a);
+  }
+  // Sort categories alphabetically, but keep "General" (uncategorized) last.
+  const cats = [...groups.keys()].sort((x, y) => {
+    if (x === UNCATEGORIZED) return 1;
+    if (y === UNCATEGORIZED) return -1;
+    return x.localeCompare(y);
+  });
+  return cats.map((cat) => {
+    const items = groups.get(cat).sort((x, y) => (x.title || '').localeCompare(y.title || ''));
+    const collapsed = _collapsed.has(cat);
+    return `<div class="wiki-tree-group${collapsed ? ' collapsed' : ''}">
+      <button class="wiki-tree-cat" data-cat="${_esc(cat)}" aria-expanded="${collapsed ? 'false' : 'true'}">
+        <span class="wiki-tree-caret">&#9656;</span>
+        <span class="wiki-tree-cat-name">${_esc(cat)}</span>
+        <span class="wiki-tree-cat-count">${items.length}</span>
+      </button>
+      <ul class="wiki-tree-items">${items.map(a => _itemHtml(a)).join('')}</ul>
+    </div>`;
+  }).join('');
 }
 
-// ── View switching ───────────────────────────────────────────────────────────
+function _itemHtml(a, withSnippet) {
+  const snip = withSnippet && a.snippet
+    ? `<span class="wiki-tree-snippet">${_esc(a.snippet)}</span>` : '';
+  // Drafts (internal) get a small dot so members can tell them apart at a glance.
+  const isDraft = (a.status || 'draft') !== 'published';
+  const draftDot = isDraft ? '<span class="wiki-tree-draft-dot" title="Draft (internal)"></span>' : '';
+  const cls = 'wiki-tree-item' + (isDraft ? ' is-draft' : '');
+  return `<li><a class="${cls}" data-slug="${_esc(a.slug)}" title="${_esc(a.title)}">`
+    + `<span class="wiki-tree-item-title">${draftDot}${_esc(a.title)}</span>${snip}</a></li>`;
+}
 
-function _showList() {
+function _toggleCategory(cat) {
+  if (!cat) return;
+  if (_collapsed.has(cat)) _collapsed.delete(cat);
+  else _collapsed.add(cat);
+  _renderSidebar();
+}
+
+// Highlight the open article's row in the sidebar.
+function _markActiveInTree() {
+  const tree = _q('.wiki-tree');
+  if (!tree) return;
+  tree.querySelectorAll('.wiki-tree-item.active').forEach(el => el.classList.remove('active'));
+  if (!_current || !_current.slug) return;
+  const el = tree.querySelector(`.wiki-tree-item[data-slug="${CSS.escape(_current.slug)}"]`);
+  if (el) el.classList.add('active');
+}
+
+function _matchesFilter(a, f) {
+  if (!f) return true;
+  if (f.type === 'category') return (a.category || '') === f.value;
+  if (f.type === 'tag') return Array.isArray(a.tags) && a.tags.includes(f.value);
+  return true;
+}
+
+function _applyFilter(type, value) {
+  // Clicking the active chip again clears the filter.
+  if (_activeFilter && _activeFilter.type === type && _activeFilter.value === value) {
+    _activeFilter = null;
+  } else {
+    _activeFilter = { type, value };
+  }
+  // Clear any search so the filter is what drives the sidebar.
+  const search = _q('.wiki-search-input');
+  if (search && search.value) { search.value = ''; const c = _q('.wiki-search-clear'); if (c) c.hidden = true; }
+  _searchResults = null;
+  _renderSidebar();
+}
+
+// ── Markdown rendering + [[wiki-links]] ───────────────────────────────────────
+
+function _mdReady() {
+  return !!(window.marked && typeof window.marked.parse === 'function'
+         && window.DOMPurify && typeof window.DOMPurify.sanitize === 'function');
+}
+
+// Convert an article body (Markdown + [[links]]) into safe HTML, or null when
+// the libs are missing (caller falls back to plain text). [[Title]] / [[Title|label]]
+// become links to a #wiki/<target> sentinel that _wireReaderLinks() resolves.
+function _mdToHtml(body) {
+  if (!body || !_mdReady()) return null;
+  const pre = body.replace(/\[\[([^\]]+)\]\]/g, (m, inner) => {
+    const bar = inner.indexOf('|');
+    const target = (bar >= 0 ? inner.slice(0, bar) : inner).trim();
+    const label = (bar >= 0 ? inner.slice(bar + 1) : inner).trim();
+    if (!target) return m;
+    return `[${label}](#wiki/${encodeURIComponent(target)})`;
+  });
+  let html;
+  try { html = window.marked.parse(pre, { gfm: true, breaks: true }); }
+  catch (_) { return null; }
+  return window.DOMPurify.sanitize(html, { FORBID_ATTR: ['style'] });
+}
+
+// Turn #wiki/<target> sentinel links into resolved/missing wiki-links, and make
+// every other link open safely in a new tab.
+function _wireReaderLinks(rootEl) {
+  rootEl.querySelectorAll('a[href]').forEach((a) => {
+    const href = a.getAttribute('href') || '';
+    if (href.startsWith('#wiki/')) {
+      const target = decodeURIComponent(href.slice('#wiki/'.length));
+      const hit = _index.get(target.toLowerCase());
+      a.classList.add('wiki-link');
+      a.removeAttribute('href');
+      if (hit) { a.dataset.slug = hit.slug; a.title = hit.title; }
+      else { a.classList.add('wiki-link-missing'); a.dataset.newtitle = target; a.title = `Create "${target}"`; }
+    } else {
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+    }
+  });
+}
+
+// ── Surface switching (welcome ↔ article) ─────────────────────────────────────
+
+function _showWelcome() {
   _current = null;
   _editing = false;
-  const lv = _q('.wiki-list-view');
-  const av = _q('.wiki-article-view');
-  if (lv) lv.hidden = false;
-  if (av) av.hidden = true;
+  _viewingRevisionId = null;
+  const w = _q('.wiki-welcome');
+  const art = _q('.wiki-article');
+  if (w) w.hidden = false;
+  if (art) art.hidden = true;
+  _markActiveInTree();
 }
 
-function _showArticle() {
-  const lv = _q('.wiki-list-view');
-  const av = _q('.wiki-article-view');
-  if (lv) lv.hidden = true;
-  if (av) av.hidden = false;
+function _showArticleSurface() {
+  const w = _q('.wiki-welcome');
+  const art = _q('.wiki-article');
+  if (w) w.hidden = true;
+  if (art) art.hidden = false;
 }
 
 // ── Open / read an article ───────────────────────────────────────────────────
@@ -217,53 +446,187 @@ async function _openArticle(slug) {
     const data = await _api(`/api/v1/wiki/${encodeURIComponent(slug)}`);
     _current = data.article;
     _editing = false;
-    _showArticle();
+    _viewingRevisionId = null;
+    _showArticleSurface();
     _renderReader();
+    _loadBacklinks(slug);
+    _markActiveInTree();
   } catch (e) {
     _toast(`Couldn't open article: ${e.message}`, true);
   }
 }
 
-function _renderReader() {
-  const a = _current || {};
+// Render the reader from an article-like object {title, body, tags, category}.
+function _renderReader(source) {
+  const a = source || _current || {};
   _q('.wiki-reader').hidden = false;
   _q('.wiki-editor').hidden = true;
+  _q('.wiki-revisions').hidden = true;
   _q('.wiki-reader-title').textContent = a.title || 'Untitled';
+
+  // Draft/published badge — only the "Draft" state is called out (published is
+  // the unremarkable default). Hidden while viewing an old revision.
+  const statusEl = _q('.wiki-reader-status');
+  if (statusEl) {
+    const isDraft = (a.status || 'draft') !== 'published';
+    if (isDraft && !_viewingRevisionId) {
+      statusEl.hidden = false;
+      statusEl.textContent = 'Draft · internal';
+      statusEl.className = 'wiki-reader-status wiki-status-draft';
+    } else {
+      statusEl.hidden = true;
+    }
+  }
 
   const cat = _q('.wiki-reader-category');
   if (cat) {
-    if (a.category) { cat.hidden = false; cat.textContent = a.category; cat.className = 'wiki-chip wiki-chip-category wiki-reader-category'; }
-    else cat.hidden = true;
+    if (a.category) {
+      cat.hidden = false; cat.textContent = a.category;
+      cat.className = 'wiki-chip wiki-chip-category wiki-reader-category';
+      cat.dataset.filterType = 'category'; cat.dataset.filterValue = a.category;
+    } else { cat.hidden = true; }
   }
   const tagsEl = _q('.wiki-reader-tags');
   if (tagsEl) {
     const tags = Array.isArray(a.tags) ? a.tags : [];
-    tagsEl.innerHTML = tags.map(t => `<span class="wiki-chip">${_esc(t)}</span>`).join('');
+    tagsEl.innerHTML = tags.map(t =>
+      `<span class="wiki-chip" data-filter-type="tag" data-filter-value="${_esc(t)}">${_esc(t)}</span>`).join('');
   }
   const body = _q('.wiki-reader-body');
-  if (body) body.textContent = a.body || '';
-
+  if (body) {
+    const html = _mdToHtml(a.body || '');
+    if (html != null) {
+      body.classList.add('md-body');
+      body.innerHTML = html;
+      _wireReaderLinks(body);
+      try { if (window.Prism) window.Prism.highlightAllUnder(body); } catch (_) {}
+    } else {
+      body.classList.remove('md-body');
+      body.textContent = a.body || '';
+    }
+  }
   _setToolbarMode('reading');
+}
+
+async function _loadBacklinks(slug) {
+  const box = _q('.wiki-backlinks');
+  const listEl = _q('.wiki-backlinks-list');
+  if (!box || !listEl) return;
+  box.hidden = true; listEl.innerHTML = '';
+  try {
+    const data = await _api(`/api/v1/wiki/${encodeURIComponent(slug)}/backlinks`);
+    const links = (data && data.backlinks) || [];
+    if (!links.length || _viewingRevisionId) return;          // hide when empty / viewing old rev
+    listEl.innerHTML = links.map(l =>
+      `<a class="wiki-backlink" data-slug="${_esc(l.slug)}">${_esc(l.title)}</a>`).join('');
+    box.hidden = false;
+  } catch (_) { /* backlinks are best-effort */ }
+}
+
+// ── Revision history ──────────────────────────────────────────────────────────
+
+async function _toggleHistory() {
+  const panel = _q('.wiki-revisions');
+  if (!panel || !_current) return;
+  if (!panel.hidden) { panel.hidden = true; return; }
+  const listEl = _q('.wiki-revisions-list');
+  listEl.innerHTML = '<div class="wiki-loading">Loading history&hellip;</div>';
+  panel.hidden = false;
+  try {
+    const data = await _api(`/api/v1/wiki/${encodeURIComponent(_current.slug)}/revisions`);
+    const revs = (data && data.revisions) || [];
+    if (!revs.length) {
+      listEl.innerHTML = '<div class="wiki-revisions-empty">No earlier versions yet — history starts the first time this article is edited.</div>';
+      return;
+    }
+    listEl.innerHTML = revs.map(r => {
+      const when = _fmtDate(r.created_at);
+      const who = r.edited_by ? ` · ${_esc(r.edited_by)}` : '';
+      return `<div class="wiki-revision-row">
+        <div class="wiki-revision-meta"><span class="wiki-revision-when">${when}</span><span class="wiki-revision-who">${who}</span></div>
+        <div class="wiki-revision-snippet">${_esc(r.snippet || '')}</div>
+        <div class="wiki-revision-actions">
+          <button class="wiki-btn wiki-btn-sm" data-rev-act="view" data-rev-id="${_esc(r.id)}">View</button>
+          <button class="wiki-btn wiki-btn-sm" data-rev-act="restore" data-rev-id="${_esc(r.id)}">Restore</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    listEl.innerHTML = `<div class="wiki-loading">Couldn't load history: ${_esc(e.message)}</div>`;
+  }
+}
+
+async function _viewRevision(revId) {
+  try {
+    const data = await _api(`/api/v1/wiki/revisions/${encodeURIComponent(revId)}`);
+    const rev = data && data.revision;
+    if (!rev) return;
+    _viewingRevisionId = revId;
+    _renderReader(rev);                       // render the OLD content read-only
+    const banner = _q('.wiki-revision-banner');
+    const txt = _q('.wiki-revision-banner-text');
+    if (txt) txt.textContent = `Viewing an old version from ${_fmtDate(rev.created_at)} — this is read-only.`;
+    if (banner) banner.hidden = false;
+    _q('.wiki-backlinks').hidden = true;
+    _setToolbarMode('revision');
+  } catch (e) {
+    _toast(`Couldn't load revision: ${e.message}`, true);
+  }
+}
+
+function _exitRevisionView() {
+  _viewingRevisionId = null;
+  const banner = _q('.wiki-revision-banner');
+  if (banner) banner.hidden = true;
+  if (_current) { _renderReader(); _loadBacklinks(_current.slug); }
+}
+
+async function _restoreRevision(revId) {
+  if (!_current) return;
+  if (!window.confirm('Restore this version? The current version is saved to history first, so you can undo this.')) return;
+  try {
+    const data = await _api(`/api/v1/wiki/${encodeURIComponent(_current.slug)}/restore/${encodeURIComponent(revId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: app.currentUserId || '' }),
+    });
+    _current = data.article;
+    _viewingRevisionId = null;
+    const banner = _q('.wiki-revision-banner');
+    if (banner) banner.hidden = true;
+    _renderReader();
+    _loadBacklinks(_current.slug);
+    _toast('Restored.');
+  } catch (e) {
+    _toast(`Couldn't restore: ${e.message}`, true);
+  }
+}
+
+function _fmtDate(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return _esc(iso);
+    return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  } catch (_) { return _esc(iso); }
 }
 
 // ── Edit / new ───────────────────────────────────────────────────────────────
 
-function _openNew() {
-  // Reset any active search so the new article isn't hidden by a stale filter
-  // when the user returns to the list after saving.
-  const search = _q('.wiki-search-input');
-  if (search && search.value) {
-    search.value = '';
-    const clear = _q('.wiki-search-clear');
-    if (clear) clear.hidden = true;
-  }
+function _openNew(prefillTitle) {
   _current = null;            // null slug = create on save
   _editing = true;
-  _showArticle();
-  _fillEditor({ title: '', body: '', tags: [], category: '' });
+  _viewingRevisionId = null;
+  const banner = _q('.wiki-revision-banner');
+  if (banner) banner.hidden = true;
+  _showArticleSurface();
+  _fillEditor({ title: typeof prefillTitle === 'string' ? prefillTitle : '', body: '', tags: [], category: '' });
   _q('.wiki-reader').hidden = true;
+  _q('.wiki-revisions').hidden = true;
+  _q('.wiki-backlinks').hidden = true;
   _q('.wiki-editor').hidden = false;
   _setToolbarMode('editing');
+  _markActiveInTree();
   const t = _q('.wiki-editor-title');
   if (t) t.focus();
 }
@@ -273,6 +636,8 @@ function _enterEdit() {
   _editing = true;
   _fillEditor(_current);
   _q('.wiki-reader').hidden = true;
+  _q('.wiki-revisions').hidden = true;
+  _q('.wiki-backlinks').hidden = true;
   _q('.wiki-editor').hidden = false;
   _setToolbarMode('editing');
 }
@@ -281,9 +646,9 @@ function _cancelEdit() {
   _editing = false;
   if (_current) {
     _renderReader();
+    _loadBacklinks(_current.slug);
   } else {
-    _showList();
-    _refresh();
+    _showWelcome();
   }
 }
 
@@ -293,6 +658,8 @@ function _fillEditor(a) {
   _q('.wiki-editor-category').value = a.category || '';
   _q('.wiki-editor-tags').value = tags.join(', ');
   _q('.wiki-editor-body').value = a.body || '';
+  const statusSel = _q('.wiki-editor-status');
+  if (statusSel) statusSel.value = (a.status === 'published') ? 'published' : 'draft';
 }
 
 async function _save() {
@@ -302,6 +669,8 @@ async function _save() {
   const category = _q('.wiki-editor-category').value.trim();
   const tags = _q('.wiki-editor-tags').value
     .split(',').map(s => s.trim()).filter(Boolean);
+  const statusSel = _q('.wiki-editor-status');
+  const status = statusSel && statusSel.value === 'published' ? 'published' : 'draft';
   const userId = app.currentUserId || '';
 
   const saveBtn = _q('[data-act="save"]');
@@ -312,19 +681,22 @@ async function _save() {
       data = await _api(`/api/v1/wiki/${encodeURIComponent(_current.slug)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, body, tags, category, user_id: userId }),
+        body: JSON.stringify({ title, body, tags, category, status, user_id: userId }),
       });
     } else {
       data = await _api('/api/v1/wiki', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, body, tags, category, user_id: userId }),
+        body: JSON.stringify({ title, body, tags, category, status, user_id: userId }),
       });
     }
     _current = data.article;
     _editing = false;
     _renderReader();
+    _loadBacklinks(_current.slug);
     _toast('Saved.');
+    await _refresh();          // article set changed → rebuild tree + link index
+    _markActiveInTree();
   } catch (e) {
     _toast(`Couldn't save: ${e.message}`, true);
   } finally {
@@ -333,24 +705,65 @@ async function _save() {
 }
 
 async function _delete() {
-  if (!_current || !_current.slug) { _showList(); return; }
+  if (!_current || !_current.slug) { _showWelcome(); return; }
   if (!window.confirm(`Delete "${_current.title}"? This removes it for everyone and can't be undone.`)) return;
   try {
     await _api(`/api/v1/wiki/${encodeURIComponent(_current.slug)}`, { method: 'DELETE' });
     _toast('Deleted.');
-    _showList();
-    _refresh();
+    _showWelcome();
+    await _refresh();
   } catch (e) {
     _toast(`Couldn't delete: ${e.message}`, true);
   }
 }
 
-// Toggle which toolbar buttons show for reading vs editing.
+// Toggle which toolbar buttons + panels show per mode: reading | editing | revision.
+// Editing controls are members-only (anonymous visitors get a read-only view).
 function _setToolbarMode(mode) {
-  const editing = mode === 'editing';
   const show = (sel, on) => { const el = _q(sel); if (el) el.hidden = !on; };
-  show('[data-act="edit"]', !editing);
-  show('[data-act="delete"]', !editing);
-  show('[data-act="save"]', editing);
+  const member = _isMember();
+  const reading = mode === 'reading';
+  const editing = mode === 'editing';
+  const revision = mode === 'revision';
+  show('[data-act="history"]', reading && member);
+  show('[data-act="edit"]', reading && member);
+  show('[data-act="delete"]', reading && member);
+  show('[data-act="save"]', editing && member);
   show('[data-act="cancel"]', editing);
+
+  // Publish / unpublish button: only while reading the live article, member only.
+  const pub = _q('.wiki-publish-btn');
+  if (pub) {
+    const showPub = reading && member && _current && _current.slug;
+    pub.hidden = !showPub;
+    if (showPub) {
+      const isDraft = (_current.status || 'draft') !== 'published';
+      const label = pub.querySelector('.wiki-publish-label');
+      if (label) label.textContent = isDraft ? 'Publish' : 'Unpublish';
+      pub.title = isDraft ? 'Make this article public' : 'Make this article internal (draft)';
+      pub.classList.toggle('wiki-btn-primary', isDraft);
+    }
+  }
+}
+
+// Publish (draft → published) or unpublish (published → draft) the open article.
+async function _toggleStatus() {
+  if (!_current || !_current.slug) return;
+  const isDraft = (_current.status || 'draft') !== 'published';
+  const action = isDraft ? 'publish' : 'unpublish';
+  if (isDraft && !window.confirm(`Publish "${_current.title}"? It will become visible to everyone, including anonymous visitors.`)) return;
+  try {
+    const data = await _api(`/api/v1/wiki/${encodeURIComponent(_current.slug)}/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: app.currentUserId || '' }),
+    });
+    _current = data.article;
+    _renderReader();
+    _toast(isDraft ? 'Published — now public.' : 'Unpublished — now internal.');
+    await _refresh();
+    _markActiveInTree();
+  } catch (e) {
+    _toast(`Couldn't change visibility: ${e.message}`, true);
+  }
 }

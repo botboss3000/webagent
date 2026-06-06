@@ -216,7 +216,47 @@ async def build_openai_history_from_session(
     session_id: str,
     *,
     exclude_interaction_ids: Optional[Set[str]] = None,
+    agent_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch session interactions and map them to OpenAI-style messages."""
+    """Fetch session interactions and map them to OpenAI-style messages.
+
+    Compaction-aware:
+      * If ``agent_id`` is given and the Context Control ability is on for it, run
+        the active compaction step first (folds older turns into a rolling summary
+        when the context exceeds the configured threshold). Failure-safe.
+      * Then, if a rolling summary covers the leading interactions, assemble
+        ``[summary] + [verbatim tail]`` instead of the full transcript. The raw
+        rows are never deleted — they stay searchable.
+    """
+    # Active compaction (write side) — only for agent-loop callers that pass an
+    # agent_id. Other callers (suggestions, webhooks) still get the passive read.
+    if agent_id:
+        try:
+            from app.agent.context_control import get_context_settings
+            from app.agent.compaction import maybe_compact
+            settings = await get_context_settings(db, agent_id)
+            if settings.get("enabled") and settings.get("compaction_enabled", True):
+                await maybe_compact(db, user_id, session_id, settings)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("compaction step skipped: %s", e)
+
     rows = await db.fetch_interactions(user_id, session_id)
+
+    # Passive read (read side): respect any rolling summary marker.
+    summary_row = None
+    try:
+        summary_row = await db.get_session_summary(user_id, session_id)
+    except Exception as e:  # pragma: no cover - older backends / read error
+        logger.debug("get_session_summary unavailable: %s", e)
+    if summary_row:
+        covered = int(summary_row.get("covered_count") or 0)
+        covered = max(0, min(covered, len(rows)))
+        summary_text = (summary_row.get("summary") or "").strip()
+        if covered > 0 and summary_text:
+            from app.agent.compaction import render_summary_message
+            tail = rows[covered:]
+            msgs = interactions_to_openai_messages(
+                tail, exclude_interaction_ids=exclude_interaction_ids)
+            return [render_summary_message(summary_text)] + msgs
+
     return interactions_to_openai_messages(rows, exclude_interaction_ids=exclude_interaction_ids)

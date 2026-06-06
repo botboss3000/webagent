@@ -67,12 +67,15 @@
     <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
   </div>
   <div id="chat-footer-row" class="chat-footer-row">
-    <div id="chat-token-bar" class="chat-token-bar">
-      <span class="chat-token-label">in</span>
-      <span id="chat-tokens-in" class="chat-token-value">0</span>
-      <span id="chat-token-spinner" class="chat-token-spinner"></span>
-      <span id="chat-tokens-out" class="chat-token-value">0</span>
-      <span class="chat-token-label">out</span>
+    <div class="chat-footer-left">
+      <div id="chat-token-bar" class="chat-token-bar">
+        <span class="chat-token-label">in</span>
+        <span id="chat-tokens-in" class="chat-token-value">0</span>
+        <span id="chat-token-spinner" class="chat-token-spinner"></span>
+        <span id="chat-tokens-out" class="chat-token-value">0</span>
+        <span class="chat-token-label">out</span>
+      </div>
+      <div id="chat-model-ctx" class="chat-model-ctx" style="display:none;" title="Active model's context window and max output"></div>
     </div>
     <button id="chat-mode-btn" class="chat-mode-btn" title="Click to toggle execution mode: Read → Write → Auto → Read">Write</button>
   </div>

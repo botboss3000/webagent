@@ -13,7 +13,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Project root — resolved relative to this file (app/admin/../../)
+# Project root — resolved relative to this file (plugins/admin/../../)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # ── Allowed extensions for write/edit/delete ──

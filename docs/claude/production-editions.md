@@ -1,10 +1,10 @@
 # Production editions, drop-in features & the feature catalog
 
-> **Status:** Phase 1 landing. This is the durable design + roadmap for turning
-> webAgent into a single codebase that can ship as a **production** edition
-> (only vetted features), a **full** edition (everything), or any **fork**
-> (a custom mix) — by treating every capability as a self-describing, drop-in
-> plugin that the app discovers at runtime.
+> **Status:** Phases 1–4 landed. This is the durable design + roadmap for the
+> single codebase that ships as a **production** edition (only vetted features),
+> a **full** edition (everything, the default), or any **fork** (a custom mix) —
+> by treating every capability as a self-describing, drop-in plugin the app
+> discovers at runtime and gates by edition.
 
 This doc is the source of truth for the work. The at-a-glance index lives in
 `CLAUDE.md`; the detail lives here.
@@ -167,35 +167,77 @@ Everything else — including **web search** — becomes a demotable add-on.
 | OAuth integrations | `app/integrations/` | ✅ drop-in (folder scan) |
 | Event sources | `app/events/sources/` | ✅ drop-in (folder scan) |
 | Communication channels | `app/communications/plugins/` | ✅ drop-in (folder scan) |
-| Scheduler providers | `app/scheduler/providers/` | ⚠️ registry edit |
-| Data connectors | `app/connectors/` | ⚠️ registry edit **+ DB schema CHECK** |
-| Encryption methods | `app/encryption/` | ⚠️ registry edit |
-| Payment processors | `app/billing/processors/` | ⚠️ registry edit (forgiving) |
-| Secrets vaults | `app/secrets/` | ⚠️ registry edit |
-| Storage backends | `app/db/` | ⚠️ mode switch |
-| Built-in tools (web search…) | `app/tools/` | ❌ hard-imported at boot |
+| Scheduler providers | `app/scheduler/providers/` | ✅ drop-in (drop a file with a `PROVIDER` dict) |
+| Data connectors | `app/connectors/` | ✅ drop-in (auto-discovered; DB `type` CHECK relaxed) |
+| Encryption methods | `app/encryption/` | ✅ drop-in (auto-discovered by `FEATURE.id`) |
+| Payment processors | `app/billing/processors/` | ✅ drop-in (drop a file with `processor_cls`) |
+| Secrets vaults | `app/secrets/` | ✅ drop-in (auto-discovered by `cls.name`) |
+| Storage backends | `app/db/` | ⚠️ mode switch (irreducible-fallback heavy; left as-is) |
+| Built-in tools (web search…) | abilities | ✅ catalogued + editionable (web search via `web_access`) |
+| **Agent abilities** | **`plugins/abilities/`** | ✅ **drop-in** (one `FEATURE` file per ability: tools + UI metadata; both ability panels + the loader map + the catalog all read it) |
 
-**Phase 2** converts the ⚠️ rows to the same folder-scan pattern the ✅ rows use
-(the connectors' DB-schema coupling is the fiddliest single item). **Phase 3**
-demotes the ❌ built-in tools to drop-in add-ons (web search is the reference
-example). **Phase 4** defines the `production` edition + the packaging step.
+> **The root `plugins/` tree.** As of the abilities refactor the canonical home
+> for drop-in capability files is a top-level **`plugins/`** folder (sibling to
+> `app/`), so "plugin vs core" is structural, not just convention. **Abilities
+> live there now** (`plugins/abilities/`). The other subsystems above still sit
+> under `app/` and are migrating into `plugins/` one at a time (each move keeps
+> its core manager/base class in `app/` and lifts only the drop-in leaf files
+> out). Until a subsystem is migrated, add its plugins in the `app/…` folder
+> shown above.
+
+**Done:** Phase 2 converted the registry subsystems to folder-scan discovery
+(additive — the irreducible fallbacks stay hard-wired) and relaxed the connector
+DB-schema coupling; ability-bundled skills are wired (see above). Phase 3 made
+the built-in abilities (incl. web search via `web_access`) catalogued and
+editionable. Phase 4 wired **edition gating** at every load site and added the
+packaging step. Storage selection was intentionally left on its mode-switch
+(every backend falls back to it, so folder-scan there buys little and risks the
+fallback) — new storage backends still register via discovery for the catalog.
 
 ---
 
-## Phases
+## Phases (all landed)
 
-1. **Foundation (no behavior change)** — header format, discovery catalog,
-   edition manifest (default `full`, no gating), `GET /api/v1/features`, the
-   App Config Features report, and headers on the 3 already-drop-in subsystems.
-2. **Unify Tier-2 to drop-in** — convert the registry-based subsystems to
-   folder-scan; merge ability skills into the prompt; mint skill handles; relax
-   the connector DB-schema coupling. Keep SQLite / inline-secrets / none-encryption
-   hard-wired as the irreducible fallbacks.
-3. **Demote built-in tools to add-ons** — move web search & friends out of the
-   boot-time hard imports into the discovered add-on set; shrink core to the loop
-   essentials.
-4. **Cut the production edition** — define `production` = stable-only, build the
-   packaging step, document how to promote a feature (flip its `status`).
+1. ✅ **Foundation** — header format, discovery catalog, edition manifest
+   (default `full`), `GET /api/v1/features`, the App Config Features report,
+   headers on the 3 drop-in subsystems.
+2. ✅ **Unify Tier-2 to drop-in** — secrets/encryption/payments/scheduler/
+   connectors now auto-discover (additive; fallbacks intact); connector DB CHECK
+   relaxed; ability-bundled skills wired with minted handles.
+3. ✅ **Demote built-in tools to add-ons** — abilities (incl. web search via
+   `web_access`) are catalogued and editionable.
+4. ✅ **Cut the production edition** — edition gating wired at every load site
+   (default `full` = no-op) + `scripts/build_edition.py` packaging step.
+5. ✅ **Abilities become drop-in + root `plugins/` tree** — each host ability is
+   now one self-describing file in `plugins/abilities/` (declaring the tools it
+   gates + its render metadata). `app/abilities/` is the core manager; the loader
+   map, the feature catalog, `app/api/agents.py`'s connection rows, and **both**
+   ability panels (`ui/js/app-config.js`, `ui/js/agents.js`) all read it via
+   `GET /api/v1/abilities/catalog`. No per-ability constants remain in those
+   files. **Next:** migrate the remaining `app/…` plugin subsystems into
+   `plugins/` (managers/base classes stay in `app/`; only leaf files move).
+
+## Promoting a feature / cutting a build
+
+- **Promote a feature:** edit one word — its `FEATURE['status']` from
+  `experimental`/`beta` → `stable` (or name it in an edition's `include` list in
+  `app/features/editions.json`). Add a `FEATURE` header to any still-`unknown`
+  plugin so it's never assumed production-ready by accident.
+- **Run as an edition:** set `WEBAGENT_EDITION=production` (or `beta`, or a fork
+  name). The running app then loads only that edition's features; `full` (default)
+  loads everything. Watch the result in **App Config → Features**.
+- **Cut a code-absent artifact:** `python -m scripts.build_edition production
+  ../webagent-production` copies the repo and physically removes the drop-in
+  plugin files the edition excludes (registry subsystems + abilities are
+  runtime-gated, so their files stay but don't load).
+
+### Gating chokepoints (where the edition is enforced)
+- **Integrations** — `inject_integration_tools` skips excluded modules.
+- **Channels / Event sources** — the managers' `get_enabled_plugins()` /
+  `enabled()` filter on each plugin's stashed `FEATURE`.
+- **Abilities** — the loader filters `enabled_providers` through
+  `gating.ability_enabled` (one chokepoint gates every ability's tools).
+All are **fail-open** (unknown → kept) and **no-op for `full`**.
 
 ---
 

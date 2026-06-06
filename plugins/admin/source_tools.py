@@ -27,7 +27,7 @@ BASE = "http://localhost:8080"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # app/../
 
 try:
-    from app.admin.guardrails import check_path as _guard_check_path  # type: ignore
+    from plugins.admin.guardrails import check_path as _guard_check_path  # type: ignore
 except Exception:  # pragma: no cover
     async def _guard_check_path(path: str, action: str = "read") -> None:  # type: ignore
         return None
@@ -535,6 +535,140 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
                 "file_pattern": {"type": "string", "description": "Optional file glob filter (e.g. '*.py', '*.json')", "default": ""},
             },
             "required": ["pattern"],
+        },
+    )
+
+    # ── search_comments: comment-only search + single-file comment outline ──
+    # A "map, not territory" tool: comments are this repo's table of contents.
+    # Two modes:
+    #   • pattern given            → grep ONLY comment lines across the tree, so
+    #     consistency markers (CHAT-PILL-SYNC, SISTER-PANEL, TODO …) surface
+    #     without code-line noise.
+    #   • no pattern + a single file → that file's comments in order, as a quick
+    #     outline of what it does and where each part lives.
+    # Heuristic, NOT a parser: a line counts as a comment only when its STRIPPED
+    # form STARTS WITH a comment marker for that file type. This deliberately
+    # ignores trailing inline comments and '#'-inside-strings (e.g. hex colours
+    # like "#bb9af7") to stay low-noise. When a hit matters, open the file and
+    # read the full comment + surrounding code — the real instruction lives there.
+    _COMMENT_MARKERS = {
+        # extension (no dot) → stripped-line-start markers that begin a comment
+        "py": ("#",), "pyi": ("#",), "sh": ("#",), "bash": ("#",),
+        "yaml": ("#",), "yml": ("#",), "toml": ("#",), "ini": ("#",),
+        "cfg": ("#",), "conf": ("#",), "rb": ("#",), "pl": ("#",),
+        "js": ("//", "/*", "*"), "mjs": ("//", "/*", "*"), "ts": ("//", "/*", "*"),
+        "jsx": ("//", "/*", "*"), "tsx": ("//", "/*", "*"),
+        "css": ("/*", "*"), "scss": ("//", "/*", "*"),
+        "java": ("//", "/*", "*"), "c": ("//", "/*", "*"), "h": ("//", "/*", "*"),
+        "cpp": ("//", "/*", "*"), "go": ("//", "/*", "*"), "rs": ("//", "/*", "*"),
+        "html": ("<!--", "*"), "htm": ("<!--", "*"), "xml": ("<!--", "*"),
+        "vue": ("<!--", "//", "/*", "*"), "svelte": ("<!--", "//", "/*", "*"),
+        "md": ("<!--",), "markdown": ("<!--",),
+    }
+
+    def _markers_for(fpath: Path):
+        return _COMMENT_MARKERS.get(fpath.suffix.lstrip(".").lower())
+
+    def _comment_lines(text: str, markers) -> List[tuple]:
+        """Return [(lineno, stripped_text), …] for a file's comment lines."""
+        out: List[tuple] = []
+        for i, line in enumerate(text.split("\n"), 1):
+            s = line.strip()
+            if s and s.startswith(markers):  # str.startswith accepts a tuple
+                out.append((i, s[:200]))
+        return out
+
+    async def _search_comments(pattern: str = "", path: str = ".", file_pattern: str = "") -> str:
+        """Search ONLY code comments, or outline one file's comments.
+
+        With `pattern`: matching comment lines across the tree (great for finding
+        consistency markers like CHAT-PILL-SYNC or SISTER-PANEL). Without
+        `pattern` on a single file: that file's comments in order, as a quick
+        outline. Heuristic (stripped-line-start markers) — when a hit matters,
+        read the file to see the full comment + surrounding code."""
+        search_path = _safe_path(path)
+        if not search_path:
+            return "Error: path is outside the project root"
+        if not search_path.exists():
+            return f"Error: path does not exist: {path}"
+
+        compiled = None
+        if pattern:
+            try:
+                compiled = re.compile(pattern)
+            except re.error as e:
+                return f"Error: invalid regex pattern: {e}"
+
+        # ── Outline mode: a single file, no pattern → all its comment lines ──
+        if search_path.is_file() and not compiled:
+            markers = _markers_for(search_path)
+            if not markers:
+                return f"No comment syntax known for {search_path.name}; nothing to outline."
+            try:
+                text = search_path.read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                return f"Error reading {path}: {e}"
+            cl = _comment_lines(text, markers)
+            if not cl:
+                return "(no comments found in this file)"
+            rel = search_path.relative_to(_PROJECT_ROOT)
+            head = f"{rel} — {len(cl)} comment lines (outline):\n"
+            return head + "\n".join(f"{n}: {t}" for n, t in cl)
+
+        # ── Search mode: pattern required (single file or whole tree) ──
+        if search_path.is_file():
+            files_to_search = [search_path]
+        else:
+            if not compiled:
+                return ("Error: searching a directory needs a `pattern`. To outline "
+                        "one file's comments, pass that file's `path` with no pattern.")
+            _EXCLUDE_DIRS = {"__pycache__", "node_modules", ".git", ".venv",
+                             "venv", "env", ".source-backups", "temp",
+                             ".mypy_cache", ".pytest_cache", ".cache"}
+            files_to_search = []
+            for f in search_path.rglob("*"):
+                if any(part in _EXCLUDE_DIRS for part in f.parts):
+                    continue
+                if not f.is_file() or not _markers_for(f):
+                    continue
+                if file_pattern and not f.match(file_pattern):
+                    continue
+                files_to_search.append(f)
+                if len(files_to_search) > 50000:
+                    return "Error: too many files to search. Narrow the path or file_pattern."
+
+        matches: List[str] = []
+        for fpath in files_to_search:
+            markers = _markers_for(fpath)
+            if not markers:
+                continue
+            try:
+                text = fpath.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                continue
+            rel = fpath.relative_to(_PROJECT_ROOT)
+            for n, t in _comment_lines(text, markers):
+                if compiled.search(t):
+                    matches.append(f"{rel}:{n}: {t}")
+                    if len(matches) >= 300:
+                        matches.append("... (showing first 300 matches; narrow your search)")
+                        return "\n".join(matches)
+
+        if not matches:
+            return "No matching comments found."
+        return "\n".join(matches)
+
+    tools["search_comments"] = ToolInfo(
+        name="search_comments",
+        handler=_search_comments,
+        parameters={
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex matched within comment text only (e.g. 'CHAT-PILL-SYNC', 'TODO'). Leave empty to outline a single file's comments.", "default": ""},
+                "path": {"type": "string", "description": "A file to outline, or a directory to search (default: project root).", "default": "."},
+                "file_pattern": {"type": "string", "description": "Optional file glob for directory search (e.g. '*.py', '*.css').", "default": ""},
+            },
+            "required": [],
         },
     )
 

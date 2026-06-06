@@ -576,7 +576,7 @@ async def _generic_background_resume(rc: Dict[str, Any], replaced: bool) -> RunO
     system_prompt = await build_system_prompt(
         context_docs, brain_context=None, user_id=user_id, agent_id=agent_id)
 
-    history = await build_openai_history_from_session(db, user_id, sid)
+    history = await build_openai_history_from_session(db, user_id, sid, agent_id=agent_id)
 
     raw_allowed = agent.get("allowed_tools", [])
     if isinstance(raw_allowed, str):

@@ -24,6 +24,9 @@ import { fetchAllToolMeta } from './loop-logic.js';
 import { NODE_PANEL_INFO } from './loop-node-data.js';
 import { LOOP_W, LOOP_H, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from './loop-diagram.js';
 import { icon } from './icons.js';
+// SHARED-DELETE-CONTROL — the trash→hazard→spin delete affordance is shared with
+// the chat header session menu (ui/js/sessions.js). See ui/js/delete-control.js.
+import { advanceDeleteBtn, resetDeleteBtn } from './delete-control.js';
 import { wireChatPillUploads } from './attachments.js';
 import { sortAgentsForDisplay } from './ordering.js';
 function _triggerKeyPlaceholder(triggerType) {
@@ -272,9 +275,12 @@ const DESTRUCTIVE = new Set([
 ]);
 
 // ── Ability-to-tools mapping ──────────────────────────────────────────
-// Maps agent connection_type (ability) to the tool names it unlocks.
-// Mirrors the gating logic in app/tools/loader.py _inject_builtin_tools.
-const ABILITY_TO_TOOLS = {
+// Maps agent connection_type (ability) to the tool names it unlocks. Used only
+// for the agent-card tool-count badge.
+// FALLBACK ONLY — overwritten at runtime by the fetched ability catalog
+// (GET /api/v1/abilities/catalog → _ensureAbilityCatalog). Do NOT add a new
+// ability here; drop a file in plugins/abilities/ instead.
+let ABILITY_TO_TOOLS = {
   codebase_admin:   ['read_source','write_source','edit_source','delete_source','resolve_conflict','run_command','restart_server','db_query','git_tool'],
   git_control:      ['git_tool','resolve_conflict'],
   ui_admin:         ['read_source','write_source','edit_source','patch_source','delete_source','search_source','read_directory'],
@@ -288,9 +294,43 @@ const ABILITY_TO_TOOLS = {
   visualizer:       [],  // visualizer tools are injected dynamically
   agent_orchestration: ['delegate_to_agent','list_delegatable_agents'],
   agent_management: ['list_agent_templates','list_my_agents','get_agent','create_agent','update_agent','edit_agent_prompt','set_agent_ability'],
-  wiki_control:     ['wiki_search','wiki_list','wiki_get','wiki_create','wiki_update','wiki_delete'],
+  wiki_control:     ['wiki_search','wiki_list','wiki_get','wiki_create','wiki_update','wiki_delete','wiki_history','wiki_get_revision','wiki_restore','wiki_backlinks'],
   // register_user is always-on (Tier 1), not gated by an ability
 };
+
+// Fetch the server-built ability catalog ONCE and overwrite the fallback render
+// data above, plus merge ability icons/notes into the shared connection maps
+// (_CONN_ICONS / _CONN_NOTES, defined later). This is what makes abilities
+// drop-in on the agent card: a file in plugins/abilities/ shows up with no JS
+// edit. Resolves quietly (keeps the fallback) on error. Awaited before the
+// Abilities tab renders.
+let _abilityCatalogPromise = null;
+function _ensureAbilityCatalog() {
+  if (_abilityCatalogPromise) return _abilityCatalogPromise;
+  _abilityCatalogPromise = (async () => {
+    try {
+      const res = await fetch('/api/v1/abilities/catalog');
+      if (!res.ok) return;
+      const cat = await res.json();
+      if (!cat || !Array.isArray(cat.groups) || !cat.groups.length) return; // keep fallback
+      const tools = {};
+      for (const [id, a] of Object.entries(cat.abilities || {})) {
+        tools[id] = (a.tools || []).slice();
+        if (a.icon) _CONN_ICONS[id] = a.icon;
+        if (a.description) _CONN_NOTES[id] = a.description;
+      }
+      ABILITY_TO_TOOLS = tools;
+      _AGENT_ABILITY_GROUPS = cat.groups.map(g => ({
+        id: g.id, name: g.name, icon: g.icon, color: g.color, desc: g.desc,
+        members: (g.members || []).slice(),
+      }));
+      _AGENT_CREDENTIAL_MEMBERS = new Set(cat.credential_members || []);
+    } catch (e) {
+      console.warn('Ability catalog fetch failed; using built-in fallback', e);
+    }
+  })();
+  return _abilityCatalogPromise;
+}
 
 function _toolsForAgent(agent, enabledAbilities) {
   const id = agent.id || '';
@@ -907,7 +947,7 @@ function _renderAgentCard(grid, agent) {
       <div class="agent-card-badge-wrap">
         ${isMock
           ? `<button type="button" class="agent-mock-create-go" title="Create agent">${icon('plus', { size: '22px' })}</button>`
-          : `<span class="agent-badge ${badgeType}">${badgeLabel}</span>${isCustom ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}`}
+          : `<span class="agent-badge ${badgeType}">${badgeLabel}</span>${isCustom ? `<button class="agent-card-delete-btn" data-state="trash" title="Delete agent" aria-label="Delete agent">${icon('trash-2', { size: '16px' })}</button>` : ''}`}
       </div>
     </div>
     <div class="agent-card-tabs-wrap">
@@ -917,10 +957,20 @@ function _renderAgentCard(grid, agent) {
     </div>
   `;
 
-  // Wire inline action buttons — stopPropagation so click doesn't toggle the panel
-  const deleteBtn = card.querySelector('.delete-btn');
+  // Wire inline action buttons — stopPropagation so click doesn't toggle the panel.
+  // SHARED-DELETE-CONTROL — the card trash button uses the same two-click
+  // trash→hazard→spin affordance as the chat header session delete. The state
+  // machine lives in ui/js/delete-control.js (mirrored in ui/js/sessions.js).
+  const deleteBtn = card.querySelector('.agent-card-delete-btn');
   if (deleteBtn) {
-    deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
+    deleteBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      advanceDeleteBtn(deleteBtn, {
+        size: '16px', spinSize: '16px',
+        armTitle: 'Click again to delete this agent',
+        onConfirm: () => _deleteAgent(agent, deleteBtn),
+      });
+    });
   }
 
   // Clicking the icon opens the icon picker popover. (The expanded card never
@@ -1331,6 +1381,7 @@ async function _fetchAbilitiesCount(agent) {
  * API to count non-implicit OAuth abilities.
  */
 async function _fetchAbilitiesAndTools(agent) {
+  await _ensureAbilityCatalog();  // ABILITY_TO_TOOLS reflects plugins/abilities/
   // Fetch connections (for ability-type toggles like codebase_admin)
   let connEnabled = new Set();
   let abilitiesCount = 0;
@@ -4597,8 +4648,11 @@ const _CONN_NOTES = {
 // (Off · Mixed · On). Members are alphabetical by display name. The two
 // credential members (scraper / browser_session) keep their own config body and
 // are excluded from a group's On/Off math (managed from their own row).
-const _AGENT_CREDENTIAL_MEMBERS = new Set(['scraper', 'browser_session']);
-const _AGENT_ABILITY_GROUPS = [
+// Fallback only — _AGENT_CREDENTIAL_MEMBERS and _AGENT_ABILITY_GROUPS are
+// overwritten at runtime by the fetched ability catalog (_ensureAbilityCatalog).
+// Do NOT add a new ability/group here; drop a file in plugins/abilities/.
+let _AGENT_CREDENTIAL_MEMBERS = new Set(['scraper', 'browser_session']);
+let _AGENT_ABILITY_GROUPS = [
   {
     id: 'administrator', name: 'Administrator', icon: 'shield-alert', color: '#f7768e',
     desc: 'Full host control — files & shell, version control, terminals, and diagnostics. Grant with care.',
@@ -4606,8 +4660,13 @@ const _AGENT_ABILITY_GROUPS = [
   },
   {
     id: 'basic', name: 'Core', icon: 'wrench', color: '#7dcfff',
-    desc: 'Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, app view control, and the company Wiki.',
-    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer', 'wiki_control'],
+    desc: 'Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, and app view control.',
+    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer'],
+  },
+  {
+    id: 'productivity', name: 'Productivity', icon: 'briefcase', color: '#4285F4',
+    desc: 'Read, search, create, edit, and delete entries in the company-wide Wiki.',
+    members: ['wiki_control'],
   },
   {
     id: 'web', name: 'Web', icon: 'globe', color: '#7aa2f7',
@@ -4716,6 +4775,7 @@ function _buildAbilityGroupsGrid(agent, items, canEdit, indexed) {
 }
 
 async function _renderConnectionsTab(body, agent) {
+  await _ensureAbilityCatalog();  // drop-in ability render data before building rows
   if (_isMockAgent(agent)) {
     body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to configure abilities.</div>';
     return;
@@ -7347,10 +7407,15 @@ function _memoryUpdatesFor(agent, recall, save) {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
-async function _deleteAgent(agent) {
-  if (agent.source !== 'custom') return;
-  const displayName = _displayName(agent);
-  if (!confirm(`Delete agent "${displayName}"? This cannot be undone.`)) return;
+// SHARED-DELETE-CONTROL — confirmation is the second click of the card trash
+// button (see ui/js/delete-control.js), so there is no window.confirm() here.
+// `btn` is the trash button, kept spinning until the delete resolves; on failure
+// we restore it to the trash icon so the user can retry.
+async function _deleteAgent(agent, btn) {
+  if (agent.source !== 'custom') {
+    if (btn) resetDeleteBtn(btn, { size: '16px', title: 'Delete agent' });
+    return;
+  }
 
   try {
     const res = await fetch(
@@ -7358,7 +7423,8 @@ async function _deleteAgent(agent) {
       { method: 'DELETE' }
     );
     if (res.ok) {
-      // Surgical: remove the square with fade-out, then clean up state
+      // Surgical: poof the square (fade + shrink), which also tears down the
+      // expanded card via _rebuildDetailRegion, then clean up state.
       await _surgicalRemoveSquare(agent.id);
       _saveViewState();
       // Bust the shared agent cache so the chat-header dropdown re-fetches
@@ -7366,9 +7432,12 @@ async function _deleteAgent(agent) {
       if (typeof app.populateAgentSelect === 'function') {
         try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
       }
+    } else if (btn) {
+      resetDeleteBtn(btn, { size: '16px', title: 'Delete agent' });
     }
   } catch (e) {
     console.warn('agents: delete failed', e);
+    if (btn) resetDeleteBtn(btn, { size: '16px', title: 'Delete agent' });
   }
 }
 

@@ -28,6 +28,15 @@ import httpx
 
 from app.scheduler.remote_base import BaseRemoteScheduler, _build_fire_url
 
+FEATURE = {
+    "id": "google_cloud",
+    "display_name": "Google Cloud Scheduler",
+    "category": "scheduler",
+    "status": "beta",
+    "summary": "Push scheduled jobs to Google Cloud Scheduler.",
+    "requires": ["a GCP service-account JSON with cloudscheduler.admin"],
+}
+
 logger = logging.getLogger(__name__)
 
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"

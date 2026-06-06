@@ -34,6 +34,15 @@ import httpx
 
 from app.scheduler.remote_base import BaseRemoteScheduler, _build_fire_url
 
+FEATURE = {
+    "id": "generic_webhook",
+    "display_name": "Generic webhook",
+    "category": "scheduler",
+    "status": "beta",
+    "summary": "POST job specs to your own scheduler service, which calls back the fire webhook.",
+    "requires": ["an upstream scheduler URL you control"],
+}
+
 logger = logging.getLogger(__name__)
 
 

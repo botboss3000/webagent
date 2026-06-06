@@ -105,6 +105,7 @@ class SupabaseBackend(StorageBackend):
         summary: str,
         message_count: int,
         title: str = None,
+        covered_count: int = 0,
     ) -> None:
         try:
             data = {
@@ -112,6 +113,7 @@ class SupabaseBackend(StorageBackend):
                 "session_id": session_id,
                 "summary": summary,
                 "message_count": message_count,
+                "covered_count": covered_count,
                 "updated_at": "now()",
             }
             if title:
@@ -127,6 +129,20 @@ class SupabaseBackend(StorageBackend):
         except Exception as e:
             logger.error("Error upserting session summary: %s", e)
             raise
+
+    async def get_session_summary(
+        self, user_id: str, session_id: str
+    ) -> Optional[dict]:
+        try:
+            resp = (self._client.table("session_summaries")
+                    .select("summary, covered_count, message_count, title, updated_at")
+                    .eq("user_id", user_id).eq("session_id", session_id)
+                    .limit(1).execute())
+            rows = resp.data or []
+            return rows[0] if rows else None
+        except Exception as e:
+            logger.error("Error reading session summary: %s", e)
+            return None
 
     # ---- Interactions ----
 
@@ -832,39 +848,6 @@ class SupabaseBackend(StorageBackend):
     ) -> List[dict]:
         logger.warning("memory_search not yet implemented for Supabase backend")
         return []
-
-    async def memory_add_link(
-        self,
-        user_id: str,
-        from_slug: str,
-        to_slug: str,
-        link_type: str,
-        context: Optional[str] = None,
-    ) -> dict:
-        logger.warning("memory_add_link not yet implemented for Supabase backend")
-        return {"status": "stub"}
-
-    async def memory_graph_query(
-        self,
-        user_id: str,
-        node_slug: str,
-        link_type: Optional[str] = None,
-        direction: str = "both",
-        depth: int = 2,
-    ) -> List[dict]:
-        return []
-
-    async def memory_add_timeline_entry(
-        self,
-        user_id: str,
-        page_slug: str,
-        event_date: str,
-        source: str,
-        summary: str,
-        detail: Optional[str] = None,
-    ) -> dict:
-        logger.warning("memory_add_timeline_entry not yet implemented for Supabase backend")
-        return {"status": "stub"}
 
     # ---- Session Search ----
 
@@ -2043,11 +2026,16 @@ class SupabaseClient:
 
     @staticmethod
     async def upsert_session_summary(
-        user_id: str, session_id: str, summary: str, message_count: int, title: str = None
+        user_id: str, session_id: str, summary: str, message_count: int,
+        title: str = None, covered_count: int = 0,
     ) -> None:
         await SupabaseClient._get_backend().upsert_session_summary(
-            user_id, session_id, summary, message_count, title
+            user_id, session_id, summary, message_count, title, covered_count
         )
+
+    @staticmethod
+    async def get_session_summary(user_id: str, session_id: str) -> Optional[dict]:
+        return await SupabaseClient._get_backend().get_session_summary(user_id, session_id)
 
     @staticmethod
     async def fetch_interactions(user_id: str, session_id: str) -> List[InteractionRecord]:
@@ -2157,34 +2145,6 @@ class SupabaseClient:
     @staticmethod
     async def memory_search(user_id: str, query: str, limit: int = 10) -> List[dict]:
         return await SupabaseClient._get_backend().memory_search(user_id, query, limit)
-
-    @staticmethod
-    async def memory_add_link(
-        user_id: str, from_slug: str, to_slug: str,
-        link_type: str, context: Optional[str] = None,
-    ) -> dict:
-        return await SupabaseClient._get_backend().memory_add_link(
-            user_id, from_slug, to_slug, link_type, context
-        )
-
-    @staticmethod
-    async def memory_graph_query(
-        user_id: str, node_slug: str,
-        link_type: Optional[str] = None,
-        direction: str = "both", depth: int = 2,
-    ) -> List[dict]:
-        return await SupabaseClient._get_backend().memory_graph_query(
-            user_id, node_slug, link_type, direction, depth
-        )
-
-    @staticmethod
-    async def memory_add_timeline_entry(
-        user_id: str, page_slug: str, event_date: str,
-        source: str, summary: str, detail: Optional[str] = None,
-    ) -> dict:
-        return await SupabaseClient._get_backend().memory_add_timeline_entry(
-            user_id, page_slug, event_date, source, summary, detail
-        )
 
     @staticmethod
     async def search_sessions(user_id: str, query: str, limit: int = 5) -> List[dict]:

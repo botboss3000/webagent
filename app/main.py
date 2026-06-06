@@ -1,4 +1,12 @@
-"""Entry point for the webAgent server."""
+"""Entry point for the webAgent server.
+
+CORE FILE — do NOT register new integrations / capabilities here. New event
+sources, channels, connectors, integrations, vaults, encryption methods,
+payment processors, and scheduler providers are DROP-IN FILES in their plugin
+folder and are auto-discovered; they need no router/registration here. Only add
+an include_router() for a genuinely new core subsystem. See CLAUDE.md
+("Core vs. plugins") and docs/claude/production-editions.md.
+"""
 
 import logging
 import os
@@ -67,7 +75,7 @@ try:
 except ImportError:
     admin_remote_access_router = None
 try:
-    from app.admin.source import router as admin_source_router
+    from plugins.admin.source import router as admin_source_router
     _HAS_SOURCE_TOOLS = True
 except ImportError:
     _HAS_SOURCE_TOOLS = False

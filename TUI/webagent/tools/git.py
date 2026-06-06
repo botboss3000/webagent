@@ -1,6 +1,6 @@
 """Source Control tools — structured git, self-contained.
 
-Ports the op-safety model from ``app/admin/source_tools.py`` (``git_tool`` +
+Ports the op-safety model from ``plugins/admin/source_tools.py`` (``git_tool`` +
 ``resolve_conflict``). Read-only ops always run; mutating ops require writes to
 be enabled. **Force-push is hard-blocked** and published history is never
 rewritten — matching the Source Controller agent's rules.

@@ -1023,6 +1023,38 @@ details.ac-card:not([open]) > *:not(summary) { display: none; }
   color: var(--fg-1, #c0caf5);
 }
 .ac-model-item:hover { background: rgba(125,207,255,0.08); }
+.ac-model-item-row { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.ac-model-item-badges { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+
+/* Context / cost badges (model rows + selected-model panel) */
+.ac-model-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: var(--fg-2, #9aa5ce);
+  background: var(--bg-base, #0d0d1a);
+  border: 1px solid var(--border, #2a2a4a);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* Selected-model metadata panel (chips + description) */
+.ac-model-meta {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-elev, #16161e);
+  border: 1px solid var(--border, #2a2a4a);
+  border-radius: 8px;
+}
+.ac-model-meta-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.ac-model-meta-chips:last-child { margin-bottom: 0; }
+.ac-model-meta-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-2, #9aa5ce);
+}
 
 /* Segment buttons (cloud/local,
 live/scheduled) */
@@ -1270,6 +1302,75 @@ live/scheduled) */
   padding: 0;
 }
 .ac-prov-del:hover { color: var(--danger); }
+
+/* ══ Models — configurator table (4 rows, each field auto-saves) ══════════════
+   A flush `.ac-list` table where each row is a label + its input/select on the
+   right, plus the shared green auto-save check. overflow:visible so the model
+   search dropdown can escape the table. */
+.ac-list.ac-model-config { overflow: visible; }   /* beat .ac-list's overflow:hidden */
+.ac-model-config > .ac-ability-row:first-child { border-top-left-radius: 9px; border-top-right-radius: 9px; }
+.ac-model-config > .ac-ability-row:last-child { border-bottom-left-radius: 9px; border-bottom-right-radius: 9px; }
+.ac-model-cfg-row { align-items: center; padding-top: 7px; padding-bottom: 7px; }
+.ac-model-cfg-row > .ac-ability-label { flex: 0 0 84px; }
+.ac-model-cfg-control {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ac-model-cfg-control > .ac-input { flex: 1; min-width: 0; }
+.ac-model-search-wrap { position: relative; flex: 1; min-width: 0; }
+.ac-model-search-wrap > .ac-input { width: 100%; }
+.ac-input-sm { padding: 6px 9px; font-size: 12px; }
+/* The auto-save check sits at the end of each control row. */
+.ac-model-cfg-control > .agents-autosave-check { flex: 0 0 auto; }
+
+/* Detected-capability badges (read-only — from the model catalog, not boxes). */
+.ac-model-caps { display: flex; gap: 5px; margin-top: 4px; flex-wrap: wrap; }
+.ac-cap-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg-4);
+  opacity: 0.55;
+}
+.ac-cap-badge.on { color: var(--accent); border-color: var(--accent); opacity: 1; }
+
+/* ══ Saved Models — expandable table (Model · Text/In/Out, expand for cost) ════
+   Rows use a grid so the three capability columns line up under the header. */
+#ac-settings-saved-list .ac-ability-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px 34px 34px 24px 22px;
+  align-items: center;
+  column-gap: 4px;
+}
+.ac-saved-head:hover { background: transparent; }
+.ac-saved-th {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.ac-saved-cap { display: flex; align-items: center; justify-content: center; }
+.ac-saved-model-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#ac-settings-saved-list .ac-row-chevron { justify-self: center; margin-left: 0; }
+#ac-settings-saved-list .ac-prov-del { justify-self: center; }
+
+body.light-mode .ac-cap-badge { color: #b09580; border-color: #d4c4b4; }
+body.light-mode .ac-cap-badge.on { color: #cc6a28; border-color: #cc6a28; }
+body.light-mode .ac-saved-th { color: #9a7c65; }
 
 /* ── Light mode overrides ── */
 body.light-mode #app-config-header { background: #faf5ee; }

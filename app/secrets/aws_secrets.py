@@ -9,6 +9,15 @@ from typing import List, Optional
 
 from app.secrets.interface import SecretsBackend
 
+FEATURE = {
+    "id": "aws_secrets_manager",
+    "display_name": "AWS Secrets Manager",
+    "category": "secrets",
+    "status": "experimental",
+    "summary": "Store secrets in AWS Secrets Manager.",
+    "requires": ["boto3", "AWS credentials + region"],
+}
+
 
 class AWSSecretsManager(SecretsBackend):
     name = "aws_secrets_manager"

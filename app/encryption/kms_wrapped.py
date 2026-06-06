@@ -13,6 +13,15 @@ and inject them into VaultKeyManager in place of the local KEK.
 
 from app.encryption.interface import EncryptionBackend
 
+FEATURE = {
+    "id": "kms",
+    "display_name": "KMS-wrapped (Fernet)",
+    "category": "encryption",
+    "status": "experimental",
+    "summary": "Field encryption with the key-encryption-key held in a cloud KMS. Placeholder — not yet wired.",
+    "requires": ["GCP KMS or AWS KMS"],
+}
+
 
 class KMSWrappedFernet(EncryptionBackend):
     name = "kms"

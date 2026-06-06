@@ -1,6 +1,7 @@
 'use strict';
 
 import { app } from './state.js';
+import { apiPath } from './config.js';
 
 // ── Chat activity ("thinking") indicator ───────────────────────────────────
 // While the agent is working on the CURRENT session's turn, the web-chat pill
@@ -31,6 +32,7 @@ let tokenBarEl = null;   // #chat-token-bar
 let tokensInEl = null;   // #chat-tokens-in
 let tokensOutEl = null;  // #chat-tokens-out
 let tokenSpinnerEl = null; // #chat-token-spinner
+let modelCtxEl = null;   // #chat-model-ctx (active model's context / max output)
 let cumulativeIn = 0;
 let cumulativeOut = 0;
 let _streamCharCount = 0;     // chars streamed in current ongoing LLM call
@@ -188,6 +190,48 @@ function addTokens(inputTokens, outputTokens) {
     }
   }
   _updateTokenBar();
+}
+
+// ── Active-model context indicator (next to in/out counters) ────────────────
+
+function _fmtCtxNum(n) {
+  if (!n || typeof n !== 'number') return '';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`;
+  if (n >= 1000) return `${Math.round(n / 1000)}K`;
+  return `${n}`;
+}
+
+/** Fetch the active model's context window / max output and show it in the
+ *  footer. Resolves the user's effective model server-side (one call). Silent
+ *  on failure — the indicator just stays hidden. */
+async function refreshModelContext() {
+  if (!modelCtxEl) return;
+  try {
+    const headers = {};
+    const tok = localStorage.getItem('auth_token');
+    if (tok) headers.Authorization = `Bearer ${tok}`;
+    // Resolve the model for the CURRENTLY-active agent (its custom model if set,
+    // else the user default) — matches what the run will actually use.
+    const aid = app.currentAgentId || '';
+    const url = apiPath('/admin/settings/current-model-info')
+      + (aid ? `?agent_id=${encodeURIComponent(aid)}` : '');
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+    const ctx = _fmtCtxNum(d.context);
+    const out = _fmtCtxNum(d.max_output);
+    if (!ctx && !out) { modelCtxEl.style.display = 'none'; modelCtxEl.innerHTML = ''; return; }
+    const parts = [];
+    if (ctx) parts.push(`<span class="chat-token-label">ctx</span><span class="chat-ctx-value">${ctx}</span>`);
+    if (out) parts.push(`<span class="chat-token-label">max</span><span class="chat-ctx-value">${out}</span>`);
+    modelCtxEl.innerHTML = parts.join('<span class="chat-ctx-sep">·</span>');
+    modelCtxEl.title = `${d.model || 'model'} — context ${d.context ? d.context.toLocaleString() : '?'} tokens`
+      + (d.max_output ? `, max output ${d.max_output.toLocaleString()} tokens` : '');
+    modelCtxEl.style.display = '';
+  } catch (e) {
+    modelCtxEl.style.display = 'none';
+    modelCtxEl.innerHTML = '';
+  }
 }
 
 function resetTokens() {
@@ -718,8 +762,13 @@ export function initChatActivity() {
   tokensInEl = document.getElementById('chat-tokens-in');
   tokensOutEl = document.getElementById('chat-tokens-out');
   tokenSpinnerEl = document.getElementById('chat-token-spinner');
+  modelCtxEl = document.getElementById('chat-model-ctx');
 
   if (barEl) barEl.addEventListener('click', togglePanel);
+
+  // Show the active model's context window / max output next to the counters.
+  // Re-callable (exposed below) so Settings can refresh it after a model change.
+  refreshModelContext();
 
   // Delegated accordion toggle: one listener survives panel re-renders.
   if (panelEl) {
@@ -740,6 +789,8 @@ export function initChatActivity() {
   // Imperative hooks for chat.js (instant feedback on send / HTTP-error paths).
   app.chatActivityStart = start;
   app.chatActivityStop = stop;
+  // Let Settings re-pull the footer context indicator after a model change.
+  app.refreshModelContext = refreshModelContext;
 
   // Receive every current-session agent event from the per-user WebSocket.
   app._chatActivityHandler = handleEvent;

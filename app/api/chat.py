@@ -784,6 +784,7 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         history = await build_openai_history_from_session(
             db, request.user_id, request.session_id,
             exclude_interaction_ids=exclude_ids,
+            agent_id=agent.get("id"),
         )
 
         # Create event callback that pushes to visualizer and user listeners
@@ -1274,6 +1275,7 @@ async def _run_turn_background(
         history = await build_openai_history_from_session(
             db, request.user_id, request.session_id,
             exclude_interaction_ids={user_interaction_id} if user_interaction_id else set(),
+            agent_id=agent.get("id"),
         )
 
         # If this turn replaced one the user interrupted, tell the agent so it
@@ -1404,7 +1406,7 @@ async def _resume_web_turn(rc: Dict[str, Any], replaced: bool):
         system_prompt = await build_system_prompt(
             context_docs, None, user_id, agent_id=agent_id)
         system_prompt = await append_skills_section(system_prompt, agent, session_id)
-        history = await build_openai_history_from_session(db, user_id, session_id)
+        history = await build_openai_history_from_session(db, user_id, session_id, agent_id=agent_id)
         _raw_at = agent.get("allowed_tools", [])
         if isinstance(_raw_at, str):
             try:

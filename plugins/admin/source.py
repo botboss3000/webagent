@@ -5,7 +5,7 @@ Allows reading, writing, deleting files, and running shell commands.
 Used by agent tools (read_source, write_source, edit_source, delete_source, run_command).
 
 To disable: delete this file and source_tools.py, remove the import from main.py.
-Guardrails can be added by implementing app/admin/guardrails.py.
+Guardrails can be added by implementing plugins/admin/guardrails.py.
 """
 
 import ast
@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 # Optional guardrails — delete guardrails.py to remove restrictions
 try:
-    from app.admin.guardrails import check_path, check_command
+    from plugins.admin.guardrails import check_path, check_command
     _HAS_GUARDRAILS = True
 except ImportError:
     _HAS_GUARDRAILS = False

@@ -682,30 +682,30 @@ class ToolLoader:
         # the agent admin turns it on per-agent in the Abilities tab.
         if "codebase_admin" in enabled_providers:
             try:
-                from app.admin.source_tools import inject_source_tools
+                from plugins.admin.source_tools import inject_source_tools
                 inject_source_tools(tools, user_id)
             except ImportError:
-                pass  # admin/source_tools.py not present — source editing disabled
+                pass  # plugins/admin/source_tools.py not present — source editing disabled
 
         # ── Git Control — structured git ops only (no shell), gated by "git_control" ──
         # setdefault inside inject_git_tools means Codebase Admin's git_tool wins
         # when both are on, so this only adds git when codebase_admin didn't.
         if "git_control" in enabled_providers:
             try:
-                from app.admin.source_tools import inject_git_tools
+                from plugins.admin.source_tools import inject_git_tools
                 inject_git_tools(tools, user_id)
             except ImportError:
-                pass  # admin/source_tools.py not present — git tools disabled
+                pass  # plugins/admin/source_tools.py not present — git tools disabled
 
         # ── UI Admin — file editing confined to ui/ (.css/.html), gated by "ui_admin" ──
         # Skipped when codebase_admin is on (that's the unrestricted superset), so
         # an agent with both keeps full access rather than the guardrailed variant.
         if "ui_admin" in enabled_providers and "codebase_admin" not in enabled_providers:
             try:
-                from app.admin.ui_tools import inject_ui_tools
+                from plugins.admin.ui_tools import inject_ui_tools
                 inject_ui_tools(tools, user_id)
             except ImportError:
-                pass  # admin/ui_tools.py not present — UI editing disabled
+                pass  # plugins/admin/ui_tools.py not present — UI editing disabled
 
         # ── Visualizer tools (page builder: render_visual, list/create/delete/rename/get pages) ──
         # Gated by the "visualizer" ability — only agents whose admin has

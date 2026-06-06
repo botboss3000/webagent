@@ -19,7 +19,11 @@ _SOURCES_DIR = Path(__file__).resolve().parent / "sources"
 class EventSourceManager:
     """Singleton registry. Discovers source plugins under ``app/events/sources/``.
 
-    Each plugin file must expose ``source_cls`` (an ``EventSource`` subclass).
+    DROP-IN — to add an event source, drop ONE file in app/events/sources/ that
+    exposes ``source_cls`` (an ``EventSource`` subclass) and a ``FEATURE`` header
+    (id/display_name/status). It is auto-discovered here; you register nothing.
+    Delete the file to remove it. Do NOT wire sources into the core. See
+    CLAUDE.md ("Core vs. plugins") and docs/claude/production-editions.md.
     """
 
     def __init__(self) -> None:
@@ -49,6 +53,10 @@ class EventSourceManager:
                     logger.debug("Event source %s has no source_cls, skipping", mod_name)
                     continue
                 inst = cls()
+                try:
+                    inst._feature = getattr(mod, "FEATURE", None)
+                except Exception:
+                    inst._feature = None
                 self._sources[inst.name] = inst
                 logger.info("Discovered event source: %s (push=%s)", inst.name, inst.supports_push)
             except Exception as e:
@@ -63,7 +71,18 @@ class EventSourceManager:
         return list(self._sources.values())
 
     def enabled(self) -> List[EventSource]:
-        return [s for s in self._sources.values() if s.enabled]
+        try:
+            from app.features.gating import feature_enabled
+        except Exception:
+            feature_enabled = None
+        out = []
+        for s in self._sources.values():
+            if not s.enabled:
+                continue
+            if feature_enabled is not None and not feature_enabled(getattr(s, "_feature", None), s.name):
+                continue
+            out.append(s)
+        return out
 
     def push_sources(self) -> List[EventSource]:
         return [s for s in self.enabled() if s.supports_push]

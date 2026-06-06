@@ -10,6 +10,15 @@ from typing import List, Optional
 
 from app.secrets.interface import SecretsBackend
 
+FEATURE = {
+    "id": "gcp_secret_manager",
+    "display_name": "GCP Secret Manager",
+    "category": "secrets",
+    "status": "experimental",
+    "summary": "Store secrets in Google Cloud Secret Manager.",
+    "requires": ["google-cloud-secret-manager", "GCP_PROJECT env var"],
+}
+
 
 class GCPSecretManager(SecretsBackend):
     name = "gcp_secret_manager"

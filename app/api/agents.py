@@ -1212,26 +1212,48 @@ _CONNECTION_CATALOG = [
     {"connection_type": "amazon",    "section": "marketplace", "display_name": "Amazon Seller",    "status": "available"},
 
     # ── Agent Tools (host-side privileged capabilities) ──
-    {"connection_type": "codebase_admin",   "section": "ability", "display_name": "Codebase Admin",   "status": "available"},
-    {"connection_type": "git_control",      "section": "ability", "display_name": "Git Control",      "status": "available"},
-    {"connection_type": "ui_admin",         "section": "ability", "display_name": "UI Admin",         "status": "available"},
-    {"connection_type": "create_tools",     "section": "ability", "display_name": "Create Tools",     "status": "available"},
-    {"connection_type": "automation",       "section": "ability", "display_name": "Automation",       "status": "available"},
-    {"connection_type": "web_access",       "section": "ability", "display_name": "Web Access",       "status": "available"},
-    {"connection_type": "browser_control",  "section": "ability", "display_name": "Browser Control",  "status": "available"},
-    {"connection_type": "image_generation", "section": "ability", "display_name": "Image Generation", "status": "available"},
-    {"connection_type": "visualizer",       "section": "ability", "display_name": "Visualizer",       "status": "available"},
-    {"connection_type": "agent_orchestration", "section": "ability", "display_name": "Agent Orchestration", "status": "available"},
-    {"connection_type": "diagnostics",      "section": "ability", "display_name": "Diagnostics",      "status": "available"},
-    {"connection_type": "agent_management", "section": "ability", "display_name": "Agent Management", "status": "available"},
-    {"connection_type": "app_control",      "section": "ability", "display_name": "App Control",      "status": "available"},
-    {"connection_type": "terminal_control", "section": "ability", "display_name": "Terminal Control",  "status": "available"},
-    # Generic providers — non-OAuth helpers grouped under Agent Tools (was its
-    # own "Generic Providers" category). scraper needs an admin scraper_config;
-    # browser_session is per-user (uploaded cookies).
+    # DROP-IN: the host-ability rows are injected below from plugins/abilities/
+    # (see app.abilities). Do NOT hardcode abilities here — drop a file in that
+    # folder instead. Only the non-ability credential providers stay literal:
+    # scraper needs an admin scraper_config; browser_session is per-user cookies.
     {"connection_type": "scraper",          "section": "ability", "display_name": "Web Scraper",      "status": "available"},
     {"connection_type": "browser_session",  "section": "ability", "display_name": "Browser Cookies",  "status": "available"},
 ]
+
+
+def _inject_ability_rows() -> None:
+    """Append the discovered host-ability rows to the connection catalog.
+
+    Each row carries its UI metadata (description/icon/color/group/simple) so the
+    two ability panels render generically. Fail-open: a scan error just leaves
+    the catalog without ability rows rather than breaking the connections API.
+    """
+    try:
+        from app.abilities import connection_rows
+        existing = {c["connection_type"] for c in _CONNECTION_CATALOG}
+        for row in connection_rows():
+            if row["connection_type"] not in existing:
+                _CONNECTION_CATALOG.append(row)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("Could not inject ability rows from plugins/abilities: %s", e)
+
+
+_inject_ability_rows()
+
+
+@router.get("/abilities/catalog")
+async def get_abilities_catalog():
+    """Render-time metadata for the two ability panels (admin Agent Settings +
+    per-agent Abilities tab). Pure static catalogue (no per-agent data), built
+    from the drop-in files in plugins/abilities/ — so both panels render
+    generically with no hardcoded per-ability constants.
+    """
+    try:
+        from app.abilities import ui_catalog
+        return ui_catalog()
+    except Exception as e:
+        logger.warning("Could not build abilities catalog: %s", e)
+        return {"groups": [], "abilities": {}, "credential_members": []}
 
 
 @router.get("/agents/{agent_id}/connections")

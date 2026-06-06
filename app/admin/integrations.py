@@ -1872,7 +1872,7 @@ _ABILITY_CONFIG_KEY: dict[str, str] = {
     # _ALWAYS_ON_ABILITIES (on by default; the per-agent switch is the real gate).
     "git_control":      "ability_git_control",
     # UI Admin — edit only front-end files under ui/ (.css/.html); never backend
-    # or shell. Reuses app/admin/ui_guardrails.py. Also a pure behavioral toggle.
+    # or shell. Reuses plugins/admin/ui_guardrails.py. Also a pure behavioral toggle.
     "ui_admin":         "ability_ui_admin",
     "create_tools":     "ability_create_tools",
     "automation":       "ability_automation",

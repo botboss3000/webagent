@@ -8,6 +8,9 @@ import { chatActivitySessionChanged } from './chat-activity.js';
 import { consumeReplayedEventsFor } from './agentWs.js';
 import { apiPath } from './config.js';
 import { icon } from './icons.js';
+// SHARED-DELETE-CONTROL — the trash→hazard→spin delete affordance is shared with
+// the agents page (ui/js/agents.js). See ui/js/delete-control.js.
+import { advanceDeleteBtn, resetDeleteBtn } from './delete-control.js';
 import { renderAvatar } from './user-avatar.js';
 import {
   listAccounts,
@@ -1664,9 +1667,8 @@ export function initSessions() {
   let _sessionsLoaded = false;
   function openMenu() {
     if (!menu) return;
-    // Opening one header dropdown closes the other — treat the gesture as
-    // an outside-click for any peer menu.
-    closeAgentMenu();
+    // (The peer agent dropdown was removed, so there's no longer a sibling
+    // menu to close here.)
     menu.hidden = false;
     dropdown.classList.add('open');
     _resetAllDeleteButtons();
@@ -1773,34 +1775,23 @@ export function initSessions() {
   /**
    * Two-click delete: first click shows ⚠️ (warning), second click deletes.
    * Any other interaction (clicking elsewhere, opening menu) resets all buttons.
+   *
+   * SHARED-DELETE-CONTROL — the state machine lives in ui/js/delete-control.js
+   * and is mirrored on the agents page (ui/js/agents.js). Don't re-inline it.
    */
   function handleDeleteClick(btn, sid) {
-    const state = btn.dataset.state;
-    if (state === 'trash') {
-      // First click: switch to warning state
-      btn.dataset.state = 'warning';
-      btn.classList.add('warning');
-      btn.title = 'Click again to confirm delete';
-      btn.innerHTML = icon('alert-triangle', { size: '14px' });
-      // Reset all other delete buttons back to trash
-      document.querySelectorAll('.session-row-delete[data-state="warning"]').forEach(other => {
-        if (other !== btn) _resetDeleteBtn(other);
-      });
-    } else if (state === 'warning') {
-      // Second click: show spinner + delete
-      btn.dataset.state = 'deleting';
-      btn.classList.remove('warning');
-      btn.title = 'Deleting…';
-      btn.innerHTML = icon('loader-2', { size: '14px' });
-      deleteSession(sid);
-    }
+    advanceDeleteBtn(btn, {
+      // Arming this row disarms any other row that was waiting to confirm.
+      onArm: (b) => document.querySelectorAll('.session-row-delete[data-state="warning"]').forEach(other => {
+        if (other !== b) _resetDeleteBtn(other);
+      }),
+      onConfirm: () => deleteSession(sid),
+    });
   }
 
   function _resetDeleteBtn(btn) {
-    btn.dataset.state = 'trash';
-    btn.classList.remove('warning');
-    btn.title = 'Delete session';
-    btn.innerHTML = icon('trash-2', { size: '14px' });
+    // SHARED-DELETE-CONTROL — see ui/js/delete-control.js
+    resetDeleteBtn(btn, { title: 'Delete session' });
   }
 
   // Reset all delete buttons to trash state (e.g. when menu opens/closes)
@@ -2201,36 +2192,30 @@ export function initSessions() {
   // populateAgentSelect — which on a cold server start can take many seconds.
   _setNewSessionBtnReady();
 
-  // Header delete button — two-click confirm (same pattern as dropdown rows)
+  // Header delete button — two-click confirm (same pattern as dropdown rows).
+  // SHARED-DELETE-CONTROL — see ui/js/delete-control.js (mirrored in agents.js).
   const sessionDelHeader = document.getElementById('session-delete-header');
   if (sessionDelHeader) {
+    const _resetHeaderDel = () => {
+      clearTimeout(sessionDelHeader._delTimer);
+      resetDeleteBtn(sessionDelHeader, { size: '18px', title: 'Delete session' });
+    };
     sessionDelHeader.addEventListener('click', (e) => {
       e.stopPropagation();
       const sid = app.currentSessionId;
       if (!sid) return;
-      const state = sessionDelHeader.dataset.state;
-      if (state === 'trash') {
-        sessionDelHeader.dataset.state = 'warning';
-        sessionDelHeader.title = 'Click again to confirm delete';
-        sessionDelHeader.innerHTML = icon('alert-triangle', { size: '14px' });
-        sessionDelHeader.style.color = '#e5a83e';
-        setTimeout(() => {
-          sessionDelHeader.dataset.state = 'trash';
-          sessionDelHeader.title = 'Delete session';
-          sessionDelHeader.innerHTML = icon('trash-2', { size: '14px' });
-          sessionDelHeader.style.color = '';
-        }, 3000);
-      } else if (state === 'warning') {
-        sessionDelHeader.dataset.state = 'deleting';
-        sessionDelHeader.title = 'Deleting…';
-        sessionDelHeader.innerHTML = '<span class="session-status-running" style="display:inline-flex;width:18px;height:18px;">' + icon('loader-2', { size: '18px' }) + '</span>';
-        sessionDelHeader.style.color = '';
-        deleteSession(sid).then(() => {
-          sessionDelHeader.dataset.state = 'trash';
-          sessionDelHeader.title = 'Delete session';
-          sessionDelHeader.innerHTML = icon('trash-2', { size: '14px' });
-        });
-      }
+      advanceDeleteBtn(sessionDelHeader, {
+        size: '18px', spinSize: '18px',
+        // Auto-revert if the user arms it but doesn't confirm within 3s.
+        onArm: () => {
+          clearTimeout(sessionDelHeader._delTimer);
+          sessionDelHeader._delTimer = setTimeout(_resetHeaderDel, 3000);
+        },
+        onConfirm: () => {
+          clearTimeout(sessionDelHeader._delTimer);
+          deleteSession(sid).then(_resetHeaderDel);
+        },
+      });
     });
   }
 
@@ -2280,33 +2265,9 @@ export function initSessions() {
     _renderAgentRows();
     _setAgentTriggerLabel();
   }
-  const agentDelHeader = document.getElementById('agent-delete-header');
-  if (agentDelHeader) {
-    agentDelHeader.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const aid = app.currentAgentId;
-      if (!aid) return;
-      const state = agentDelHeader.dataset.state;
-      if (state === 'trash') {
-        agentDelHeader.dataset.state = 'warning';
-        agentDelHeader.title = 'Click again to confirm delete';
-        agentDelHeader.innerHTML = icon('alert-triangle', { size: '14px' });
-        agentDelHeader.style.color = '#ff5577';
-        setTimeout(() => {
-          agentDelHeader.dataset.state = 'trash';
-          agentDelHeader.title = 'Delete agent';
-          agentDelHeader.innerHTML = icon('trash-2', { size: '14px' });
-          agentDelHeader.style.color = '';
-        }, 3000);
-      } else if (state === 'warning') {
-        confirmDeleteAgent(aid);
-        agentDelHeader.dataset.state = 'trash';
-        agentDelHeader.title = 'Delete agent';
-        agentDelHeader.innerHTML = icon('trash-2', { size: '14px' });
-        agentDelHeader.style.color = '';
-      }
-    });
-  }
+  // (The header agent-delete button and its confirmDeleteAgent handler were
+  // removed along with the agent dropdown UI — no #agent-delete-header element
+  // exists anymore.)
 
   // ── Custom agent dropdown ──
   // Agent dropdown UI removed — the full block (agentDropdown, agentTrigger,
@@ -2314,12 +2275,21 @@ export function initSessions() {
   // confirmDeleteAgent, openAgentConfig, _headerRenameAgent, agent-new, and
   // their event wiring) has been deleted.
 
-  // Keep: switchToAgent, app.switchToAgent, startWebagentSession
-  // (these are the core agent-switching logic, still needed by page chat pills).
+  // Expose so other modules (e.g. the Pages prompt bar) can drive the
+  // right-side chat agent without duplicating session/teardown logic.
+  app.switchToAgent = switchToAgent;
 
-  // switchToAgent and startWebagentSession are defined above — we skip the
-  // old inline copy that was inside the agent dropdown event wiring.
-  // app.switchToAgent and app.startWebagentSession are already set above.
+  // Ensure the user's webAgent (the `default` template) exists, switch the
+  // chat to it, and start a brand-new session. This is the single entry point
+  // for every page chat pill — Agents, Pages, Source Control, Agent Settings —
+  // and for the "no agent yet" fallback in chat.js. Returns the agent id.
+  async function startWebagentSession() {
+    const id = await ensureWebagentAgent(app.currentUserId);
+    switchToAgent(id, { forceNewSession: true, silent: true });
+    return id;
+  }
+  app.startWebagentSession = startWebagentSession;
+  app.ensureWebagentAgent = ensureWebagentAgent;
 
   // ── Header new-session button (main header, beside Chat toggle) ──
   // Shows the chat panel and immediately starts a brand-new session, skipping

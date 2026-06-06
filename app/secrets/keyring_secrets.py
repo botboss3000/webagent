@@ -13,6 +13,15 @@ from typing import List, Optional
 
 from app.secrets.interface import SecretsBackend
 
+FEATURE = {
+    "id": "os_keyring",
+    "display_name": "OS keyring",
+    "category": "secrets",
+    "status": "beta",
+    "summary": "Use the OS credential store (Windows Credential Manager / macOS Keychain / Secret Service).",
+    "requires": ["the optional 'keyring' package", "a desktop secret service"],
+}
+
 _SERVICE = "webagent_vault"
 
 

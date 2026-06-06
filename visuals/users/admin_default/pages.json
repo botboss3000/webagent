@@ -1,9 +1,0 @@
-[
-  {
-    "slug": "home",
-    "title": "Home",
-    "agent_context": "You are the webAgent home page agent. Your role is to maintain this informational page about webAgent \u2014 its features, getting started guide, and use cases. When asked to update or modify this page, produce clean, well-structured HTML that matches the dark webAgent aesthetic. The page serves as the main welcome and onboarding resource for users of the app.",
-    "created_at": "2026-06-03T05:13:44.301727+00:00",
-    "updated_at": "2026-06-03T05:13:44.301727+00:00"
-  }
-]

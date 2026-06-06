@@ -27,6 +27,14 @@ from typing import Any, Callable, Dict, List, Optional
 
 from app.connectors.base import Connector, GeneratedTool
 
+FEATURE = {
+    "id": "doc_store",
+    "display_name": "Document store",
+    "category": "connector",
+    "status": "beta",
+    "summary": "Chunk + embed a document folder for hybrid keyword/vector search.",
+}
+
 logger = logging.getLogger(__name__)
 
 

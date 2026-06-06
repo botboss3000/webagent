@@ -306,3 +306,16 @@ def _normalize_paypal_event(t: str) -> str:
             return "subscription.cancelled"
         return "subscription.updated"
     return "other"
+
+
+FEATURE = {
+    "id": "paypal",
+    "display_name": "PayPal",
+    "category": "payment",
+    "status": "beta",
+    "summary": "PayPal Orders + Subscriptions.",
+    "requires": ["PAYPAL_CLIENT_ID + PAYPAL_CLIENT_SECRET"],
+}
+
+# Drop-in hook: the processor registry auto-registers this class.
+processor_cls = PayPalProcessor

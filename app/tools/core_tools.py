@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 
 # ── On-demand skills ──────────────────────────────────────────────────────────
 
+async def _ability_skills(agent_id: str) -> List[dict]:
+    """Skills contributed by the agent's enabled abilities (guarded, never raises)."""
+    if not agent_id:
+        return []
+    try:
+        from app.agent.ability_skills import collect_ability_skills
+        return await collect_ability_skills(agent_id)
+    except Exception:
+        return []
+
+
 async def list_skills(agent_id: str = "", session_id: str = "", db=None) -> str:
     """
     List this agent's skills — named knowledge packs you can pull in on demand.
@@ -29,17 +40,20 @@ async def list_skills(agent_id: str = "", session_id: str = "", db=None) -> str:
         if db is None:
             db = get_db()
         skills = await db.get_agent_skills(agent_id) if agent_id else []
+        skills = skills + await _ability_skills(agent_id)
         active = set(await db.get_session_active_skills(session_id)) if session_id else set()
         out = []
         for s in skills:
             if not s.get("enabled", True):
                 continue
             always = s.get("mode") == "always_on"
+            token = s.get("handle") or s["name"]
             out.append({
-                "name": s["name"],
+                "name": token,
+                "display_name": s.get("display_name") or s["name"],
                 "description": s.get("description", ""),
                 "mode": s.get("mode", "selectable"),
-                "loaded": always or s["name"] in active,
+                "loaded": always or token in active,
             })
         return json.dumps({"status": "ok", "count": len(out), "skills": out})
     except Exception as e:
@@ -62,10 +76,15 @@ async def load_skill(name: str, agent_id: str = "", session_id: str = "", db=Non
         if db is None:
             db = get_db()
         skills = await db.get_agent_skills(agent_id) if agent_id else []
+        skills = skills + await _ability_skills(agent_id)
         target = (name or "").strip().lower()
-        match = next((s for s in skills if s["name"].lower() == target), None)
+        match = next(
+            (s for s in skills
+             if s["name"].lower() == target or (s.get("handle") or "").lower() == target),
+            None,
+        )
         if not match:
-            avail = [s["name"] for s in skills if s.get("enabled", True)]
+            avail = [(s.get("handle") or s["name"]) for s in skills if s.get("enabled", True)]
             return json.dumps({
                 "status": "error",
                 "message": f"No skill named '{name}'. Available: "

@@ -676,17 +676,33 @@ body.light-mode .agent-card-tabs .agents-detail-tab.active .tab-count-badge {
 .agent-card-action-btn.set-default-btn:hover {
   background: #223a3a;
 }
-.agent-card-action-btn.delete-btn {
-  background: #2a1a1a;
-  color: #f7768e;
-  border: 1px solid #4a2a2a;
-}
-.agent-card-action-btn.delete-btn:hover {
-  background: #3a1a1a;
-}
-
 body.light-mode .agent-card-action-btn.set-default-btn { background: #e6f8ff; color: #2288aa; border-color: #b8e8f8; }
-body.light-mode .agent-card-action-btn.delete-btn      { background: #fff0f0; color: #cc3333; border-color: #ffcccc; }
+
+/* SHARED-DELETE-CONTROL — the agent card trash button mirrors the chat header
+   session delete (ui/js/sessions.js). State machine: ui/js/delete-control.js.
+   trash → hover danger; armed (.warning) → hazard amber; deleting → spinner via
+   the global .session-status-running wrapper (no extra CSS needed). */
+.agent-card-delete-btn {
+  background: none;
+  border: none;
+  color: #565f89;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.agent-card-delete-btn > * { pointer-events: none; }
+.agent-card-delete-btn:hover { background: rgba(247, 118, 142, 0.12); color: #f7768e; }
+.agent-card-delete-btn.warning { color: #e5a83e; }
+.agent-card-delete-btn.warning:hover { background: rgba(229, 168, 62, 0.15); color: #f0c050; }
+
+body.light-mode .agent-card-delete-btn { color: #8a7a7a; }
+body.light-mode .agent-card-delete-btn:hover { background: rgba(204, 51, 51, 0.10); color: #cc3333; }
+body.light-mode .agent-card-delete-btn.warning { color: #c8870f; }
 
 /* ── Per-row inline expand panel ── */
 .agent-detail-panel {

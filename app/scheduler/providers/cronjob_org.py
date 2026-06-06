@@ -24,6 +24,15 @@ import httpx
 
 from app.scheduler.remote_base import BaseRemoteScheduler, _build_fire_url
 
+FEATURE = {
+    "id": "cronjob_org",
+    "display_name": "cron-job.org",
+    "category": "scheduler",
+    "status": "beta",
+    "summary": "Push scheduled jobs to the free cron-job.org hosted cron service.",
+    "requires": ["a cron-job.org API key"],
+}
+
 logger = logging.getLogger(__name__)
 
 _BASE = "https://api.cron-job.org"

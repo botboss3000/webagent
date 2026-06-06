@@ -20,6 +20,15 @@ from cryptography.fernet import InvalidToken
 from app.encryption.interface import EncryptionBackend, is_ciphertext, PREFIX
 from app.encryption.vault_keys import get_vault_keys
 
+FEATURE = {
+    "id": "field",
+    "display_name": "Field-level (Fernet)",
+    "category": "encryption",
+    "status": "beta",
+    "summary": "Per-tenant field encryption of sensitive columns via the vault key manager.",
+    "requires": ["a configured secrets vault for key storage"],
+}
+
 logger = logging.getLogger(__name__)
 
 ALGO = "fernet"

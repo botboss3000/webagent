@@ -12,6 +12,14 @@ from typing import List, Optional
 
 from app.secrets.interface import SecretsBackend
 
+FEATURE = {
+    "id": "inline_db",
+    "display_name": "App-DB vault",
+    "category": "secrets",
+    "status": "stable",
+    "summary": "Store secrets in the app database (auth_elements). Bootstrap default.",
+}
+
 
 class InlineDBSecrets(SecretsBackend):
     name = "inline_db"

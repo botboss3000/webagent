@@ -782,24 +782,28 @@ async def stream_agent_events(
         max_turns = 0
 
     from app.tools.loader import load_tools
-    from app.admin.settings import load_provider_for_user
-
-    # Load THIS user's provider config (not shared with any other user)
-    await load_provider_for_user(user_id)
-
-    model_name = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or "deepseek/deepseek-v4-flash"
-    provider_name = os.environ.get("LLM_PROVIDER", "openrouter")
+    from app.admin.settings import apply_provider_for_run
 
     from app.db import get_db
     if db is None:
         db = get_db()
 
+    # Load the agent record first so a per-agent LLM override can be applied.
     agent_name = "Agent"
     _agent_rec: Optional[Dict[str, Any]] = None
     if agent_id:
         _agent_rec = await db.get_agent_by_id(agent_id)
         if _agent_rec and _agent_rec.get("name"):
             agent_name = _agent_rec["name"]
+
+    # Apply the effective provider config for THIS run (not shared with any other
+    # user): the user's default with any per-agent LLM override (custom model)
+    # layered on top, so the agent runs on ITS configured model — not just the
+    # global default.
+    await apply_provider_for_run(user_id, _agent_rec)
+
+    model_name = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or "deepseek/deepseek-v4-flash"
+    provider_name = os.environ.get("LLM_PROVIDER", "openrouter")
 
     load_start = time.time()
     tools = await load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id,
@@ -973,6 +977,34 @@ async def stream_agent_events(
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_message})
+
+    # ── Context Control: surface the live context-fill signal to the agent ──────
+    # If the agent has the context_control ability enabled, estimate how full the
+    # assembled context is against its configured token limit (default 200K) and
+    # inject a one-block gauge into the system message so the agent can feel itself
+    # filling up. Also emit a pipeline event so the UI can show the same number.
+    # Disabled ability → this is a no-op. Never let a failure here break the run.
+    try:
+        from app.agent.context_control import (
+            get_context_settings as _cc_settings,
+            estimate_tokens as _cc_estimate,
+            status_line as _cc_status_line,
+            context_pct as _cc_pct,
+        )
+        _cc = await _cc_settings(db, agent_id)
+        if _cc["enabled"]:
+            _cc_tokens = _cc_estimate(messages)
+            _cc_limit = _cc["token_limit"]
+            _cc_line = _cc_status_line(_cc_tokens, _cc_limit)
+            if messages and messages[0].get("role") == "system":
+                messages[0]["content"] = (messages[0].get("content") or "") + "\n\n" + _cc_line
+            else:
+                messages.insert(0, {"role": "system", "content": _cc_line})
+            yield {"type": "pipeline", "level": "pipeline", "step": "context_status",
+                   "tokens": _cc_tokens, "limit": _cc_limit,
+                   "pct": _cc_pct(_cc_tokens, _cc_limit), "enabled": True}
+    except Exception as _cce:
+        logger.warning("context_control signal skipped: %s", _cce)
 
     turn_count = 0
     original_max_turns = max_turns  # the configured block size; used to rearm at each ceiling

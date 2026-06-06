@@ -46,6 +46,15 @@ BUILTIN_DEFAULT_REMEDY = {
     "resource_memory": NOTIFY,
     "resource_cpu": NOTIFY,
     "untracked_server": NOTIFY,
+    # More than one process listening on 8080 at once (run.py binds with
+    # SO_REUSEADDR, so duplicates can coexist). Trim the extras down to the one
+    # tied to the linked checkout — clearing the surplus listeners is a port-clear.
+    "duplicate_instances": CLEAR_PORT,
+    # A server answering 8080 from a DIFFERENT checkout (a stale duplicate clone,
+    # often under temp/ or a *-fresh-install) that shadows the linked repo and
+    # serves old code. Needs the agent to identify the right checkout, stop the
+    # impostor, and confirm with the user before removing the stray clone.
+    "zombie_repo": ESCALATE,
 }
 
 BUILTIN_LABELS = {
@@ -57,6 +66,8 @@ BUILTIN_LABELS = {
     "resource_memory": "Memory pressure high",
     "resource_cpu": "CPU sustained high",
     "untracked_server": "Untracked server",
+    "duplicate_instances": "Multiple servers on 8080",
+    "zombie_repo": "Zombie repo shadowing 8080",
 }
 
 REMEDY_HUMAN = {

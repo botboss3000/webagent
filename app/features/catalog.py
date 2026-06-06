@@ -56,6 +56,46 @@ _STORAGE_BACKENDS = [
     ("postgres", "app.db.pg_portable"),
 ]
 
+# Agent abilities — the per-agent tool bundles. As of the abilities drop-in
+# refactor these live as self-describing files in plugins/abilities/ and are
+# read via app.abilities.feature_descriptors(). This literal is only a fail-safe
+# used if that scan is unavailable. (id, display_name, status, summary).
+_ABILITIES = [
+    ("web_access", "Web Access", "stable", "web_search, weather, maps geocoding (free public APIs)."),
+    ("codebase_admin", "Codebase Admin", "stable", "read/write/edit/delete source, run commands, restart — privileged."),
+    ("git_control", "Git Control", "stable", "GitHub source-control operations."),
+    ("agent_management", "Agent Management", "stable", "user-scoped agent CRUD + prompt/ability edits."),
+    ("diagnostics", "Diagnostics", "stable", "read the in-app flight-recorder."),
+    ("agent_orchestration", "Agent Orchestration", "beta", "delegate to another agent + run the optimizer."),
+    ("automation", "Automation", "beta", "scheduled tasks + event subscriptions."),
+    ("browser_control", "Browser Control", "beta", "headless Playwright browser + arbitrary HTTP."),
+    ("image_generation", "Image Generation", "beta", "generate_image via the configured image model."),
+    ("visualizer", "Visualizer", "beta", "page-authoring tools for the Pages workspace."),
+    ("ui_admin", "UI Admin", "beta", "admin UI configuration tools."),
+    ("create_tools", "Create Tools", "beta", "define new DB-persisted tools at runtime."),
+    ("terminal_control", "Terminal Control", "experimental", "drive interactive terminal programs (effectively shell access)."),
+]
+
+
+def _ability_features() -> List[FeatureDescriptor]:
+    # Preferred: the drop-in ability files in plugins/abilities/.
+    try:
+        from app.abilities import feature_descriptors
+        descriptors = feature_descriptors()
+        if descriptors:
+            return descriptors
+    except Exception as e:
+        logger.warning("Ability feature scan unavailable (%s); using fallback list", e)
+    # Fail-safe: the static list above.
+    out: List[FeatureDescriptor] = []
+    for aid, display, status, summary in _ABILITIES:
+        out.append(FeatureDescriptor(
+            id=aid, display_name=display, category="ability", status=status,
+            summary=summary, module="app.admin.integrations", drop_in=False,
+            has_header=True,
+        ))
+    return out
+
 
 def _scan_folder(
     category: str, rel: str, package: str, drop_in: bool, skip: set
@@ -121,6 +161,10 @@ def _all_descriptors() -> List[FeatureDescriptor]:
         features.extend(_storage_features())
     except Exception as e:
         logger.warning("Storage feature scan failed: %s", e)
+    try:
+        features.extend(_ability_features())
+    except Exception as e:
+        logger.warning("Ability feature list failed: %s", e)
     return features
 
 

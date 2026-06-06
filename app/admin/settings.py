@@ -179,35 +179,107 @@ def _save_provider(user_id: str, config: dict) -> None:
     logger.info("Provider config saved for user %s: %s", user_id[:12], config.get("provider"))
 
 
+async def _resolve_user_config(user_id: str) -> dict:
+    """Resolve a user's provider config WITHOUT touching env.
+    Tries auth_elements DB table first (own config, then admin fallback), then
+    provider.json. Shared by the runtime applier and the chat-footer resolver so
+    both see the exact same base config.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(user_id, "llm", "default")
+        if not elem:
+            # Fall back to admin user's config (anonymous visitors get a working LLM)
+            elem = await db.auth_element_get("admin_default", "llm", "default")
+        if elem:
+            cfg = json.loads(elem.get("config", "{}"))
+            cfg["api_key"] = elem.get("secret_ref", "")
+            return cfg
+    except Exception:
+        pass
+    return _load_provider(user_id)
+
+
+def _agent_llm_override(agent_rec: Optional[dict]) -> Optional[dict]:
+    """Return an agent's custom LLM config IF it overrides the default.
+
+    Agents store ``{use_default, provider, base_url, api_key, model, …}`` in
+    ``metadata['llm_config']``. Only an explicit ``use_default=False`` carrying a
+    model counts as an override; anything else means "use the app default".
+    """
+    if not agent_rec:
+        return None
+    meta = agent_rec.get("metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    if not isinstance(meta, dict):
+        return None
+    cfg = meta.get("llm_config")
+    if not isinstance(cfg, dict):
+        return None
+    if cfg.get("use_default") is not False:
+        return None
+    if not cfg.get("model"):
+        return None
+    return cfg
+
+
+def _merge_agent_override(base: dict, override: dict) -> dict:
+    """Layer an agent's non-empty override fields over the user's base config.
+    Preserves the user's api_key / base_url when the agent didn't set its own
+    (e.g. an agent that only swaps the model on the same provider + key). A
+    per-agent custom model is single-provider, so race/parallel is forced off.
+    """
+    merged = dict(base or {})
+    for k in ("provider", "base_url", "api_key", "model"):
+        v = override.get(k)
+        if v:
+            merged[k] = v
+    merged["parallel_mode"] = False
+    merged["multi_providers"] = []
+    return merged
+
+
+def _effective_config(base: dict, agent_rec: Optional[dict]) -> dict:
+    """Base user config with any per-agent override layered on top."""
+    override = _agent_llm_override(agent_rec)
+    return _merge_agent_override(base, override) if override else dict(base or {})
+
+
 async def load_provider_for_user(user_id: str) -> None:
     """Load a user's provider config into env vars.
     Tries auth_elements DB table first, falls back to provider.json.
     Called at the start of each agent loop.
     """
-    # Try DB first — own config, then admin fallback
-    try:
-        from app.db import get_db
-        db = get_db()
-        # Try this user's config first
-        elem = await db.auth_element_get(user_id, "llm", "default")
-        if elem:
-            cfg = json.loads(elem.get("config", "{}"))
-            cfg["api_key"] = elem.get("secret_ref", "")
-            _apply_config_to_env(cfg)
-            return
-        # Fall back to admin user's config (anonymous visitors get a working LLM)
-        elem = await db.auth_element_get("admin_default", "llm", "default")
-        if elem:
-            cfg = json.loads(elem.get("config", "{}"))
-            cfg["api_key"] = elem.get("secret_ref", "")
-            _apply_config_to_env(cfg)
-            return
-    except Exception:
-        pass
+    _apply_config_to_env(await _resolve_user_config(user_id))
 
-    # Fall back to provider.json
-    config = _load_provider(user_id)
-    _apply_config_to_env(config)
+
+async def apply_provider_for_run(user_id: str, agent_rec: Optional[dict] = None) -> dict:
+    """Apply the effective provider config for a run to env, honoring a per-agent
+    LLM override (``metadata['llm_config']`` with ``use_default=False``) layered
+    over the user's default. Returns the effective config that was applied.
+
+    This is what makes an agent's *custom model* actually take effect at runtime
+    — without it the loop would always run on the user's global default.
+    """
+    effective = _effective_config(await _resolve_user_config(user_id), agent_rec)
+    _apply_config_to_env(effective)
+    return effective
+
+
+async def resolve_active_model(user_id: str, agent_rec: Optional[dict] = None) -> dict:
+    """Return ``{model, provider, base_url}`` for the effective model of a run,
+    WITHOUT mutating env. Mirrors apply_provider_for_run's resolution so the chat
+    footer shows exactly the model the loop will use. Used by /current-model-info.
+    """
+    effective = _effective_config(await _resolve_user_config(user_id), agent_rec)
+    provider = effective.get("provider", "") or ""
+    base_url = effective.get("base_url") or (PROVIDER_PRESETS.get(provider, {}) or {}).get("base_url", "")
+    return {"model": effective.get("model", "") or "", "provider": provider, "base_url": base_url}
 
 
 def apply_provider_config() -> None:
@@ -954,6 +1026,16 @@ async def get_models(
     if not base_url:
         return {"error": "No base URL configured for this provider", "models": []}
 
+    # Make sure the metadata catalog (models.dev + OpenRouter) is loaded so we
+    # can attach context size / cost / description to each model. Cheap after the
+    # first fetch — served from the on-disk cache and only re-fetched when stale.
+    try:
+        from app import model_catalog
+        await model_catalog.ensure_fresh()
+    except Exception as e:
+        logger.warning("model_catalog enrich unavailable: %s", e)
+        model_catalog = None
+
     # Build models endpoint: <base_url>/models (handle trailing slash)
     models_url = base_url.rstrip("/") + "/models"
 
@@ -971,14 +1053,29 @@ async def get_models(
             models = []
             for m in data.get("data", []):
                 tcap, icap, iocap, known = _detect_model_modalities(m)
-                models.append({
+                entry = {
                     "id": m["id"],
                     "name": m.get("name", m["id"]),
                     "text_capable": tcap,
                     "image_capable": icap,
                     "image_out_capable": iocap,
                     "modality_known": known,
-                })
+                    # Metadata fields (populated below from the catalog when known).
+                    "context": None,
+                    "max_output": None,
+                    "cost_input": None,
+                    "cost_output": None,
+                    "description": "",
+                }
+                if model_catalog is not None:
+                    meta = model_catalog.lookup(m["id"], provider_hint=provider or "")
+                    if meta:
+                        entry["context"] = meta.get("context")
+                        entry["max_output"] = meta.get("max_output")
+                        entry["cost_input"] = meta.get("cost_input")
+                        entry["cost_output"] = meta.get("cost_output")
+                        entry["description"] = meta.get("description") or ""
+                models.append(entry)
             models.sort(key=lambda x: x["id"])
             return {"error": None, "models": models}
     except httpx.RequestError as e:
@@ -987,6 +1084,92 @@ async def get_models(
     except Exception as e:
         logger.warning(f"Failed to fetch models from {models_url}: %s", e)
         return {"error": str(e), "models": []}
+
+
+@router.get("/model-catalog")
+async def get_model_catalog_status():
+    """Status of the merged model-metadata catalog (models.dev + OpenRouter)."""
+    try:
+        from app import model_catalog
+        return {"error": None, **model_catalog.cache_info()}
+    except Exception as e:
+        return {"error": str(e), "fetched_at": 0, "count": 0, "stale": True}
+
+
+@router.post("/model-catalog/refresh")
+async def refresh_model_catalog():
+    """Force a re-fetch of the model-metadata catalog from both sources."""
+    try:
+        from app import model_catalog
+        await model_catalog.refresh(force=True)
+        return {"error": None, **model_catalog.cache_info()}
+    except Exception as e:
+        logger.warning("model_catalog refresh failed: %s", e)
+        return {"error": str(e), "fetched_at": 0, "count": 0, "stale": True}
+
+
+@router.get("/model-info")
+async def get_model_info(model: str = Query("", alias="model")):
+    """Full merged metadata for a single model id (context, cost, description…)."""
+    try:
+        from app import model_catalog
+        await model_catalog.ensure_fresh()
+        meta = model_catalog.lookup(model)
+        return {"error": None, "found": meta is not None, "info": meta or model_catalog.enrich(model)}
+    except Exception as e:
+        return {"error": str(e), "found": False, "info": None}
+
+
+@router.get("/current-model-info")
+async def get_current_model_info(
+    agent_id: str = Query("", alias="agent_id"),
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Resolve the *active* model for the current chat and return its catalog
+    metadata (context window, max output, cost) in a single call. Used by the
+    chat footer to show context/max next to the in/out token counters.
+
+    The model is resolved exactly as the agent loop resolves it for a run: the
+    user's default with any per-agent LLM override (the agent's custom model)
+    layered on top — so the footer shows the model the run will actually use,
+    not just the global default.
+    """
+    user_id = _resolve_user_id(authorization or "", token or "")
+
+    agent_rec = None
+    if agent_id:
+        try:
+            from app.db import get_db
+            agent_rec = await get_db().get_agent_by_id(agent_id)
+        except Exception:
+            agent_rec = None
+
+    active = await resolve_active_model(user_id, agent_rec)
+    model = active.get("model", "")
+    provider = active.get("provider", "")
+
+    result = {
+        "error": None, "model": model, "provider": provider, "found": False,
+        "context": None, "max_output": None, "cost_input": None, "cost_output": None,
+    }
+    if not model:
+        return result
+    try:
+        from app import model_catalog
+        await model_catalog.ensure_fresh()
+        meta = model_catalog.lookup(model, provider_hint=provider)
+        if meta:
+            result.update({
+                "found": True,
+                "context": meta.get("context"),
+                "max_output": meta.get("max_output"),
+                "cost_input": meta.get("cost_input"),
+                "cost_output": meta.get("cost_output"),
+            })
+    except Exception as e:
+        result["error"] = str(e)
+    return result
 
 
 @router.get("/metadata", response_model=MetadataSetting)

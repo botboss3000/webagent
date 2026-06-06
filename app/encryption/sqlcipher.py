@@ -17,6 +17,15 @@ with a clear message and so the UI can offer the option.
 
 from app.encryption.interface import EncryptionBackend
 
+FEATURE = {
+    "id": "full_db",
+    "display_name": "Full-DB (SQLCipher)",
+    "category": "encryption",
+    "status": "experimental",
+    "summary": "Whole-database encryption under one passphrase. Placeholder — not yet wired.",
+    "requires": ["the optional pysqlcipher3 dependency"],
+}
+
 
 class SQLCipherEncryption(EncryptionBackend):
     name = "full_db"

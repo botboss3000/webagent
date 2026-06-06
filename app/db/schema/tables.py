@@ -189,6 +189,10 @@ TABLES: List[Table] = [
         Column("title", "TEXT"),
         Column("summary", "TEXT", nullable=False),
         Column("message_count", "INTEGER", nullable=False, default="0"),
+        # Compaction marker: how many leading interactions (created_at order) are
+        # folded into `summary`. 0 = no rolling summary yet. The verbatim tail is
+        # everything after this count. See app/agent/compaction.py.
+        Column("covered_count", "INTEGER", nullable=False, default="0"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
@@ -324,6 +328,15 @@ TABLES: List[Table] = [
         Column("compiled_truth", "TEXT", nullable=False, default="''"),
         Column("timeline", "TEXT", nullable=False, default="''"),
         Column("frontmatter", "TEXT", nullable=False, default="'{}'"),
+        # Cross-session knowledge engine fields (Context Control):
+        #   origin       — 'deliberate' (user/agent chose to save) vs 'distilled' (system harvested)
+        #   pinned       — protected from auto-merge/trim by the consolidation pass
+        #   provenance   — JSON list of source session/interaction ids the fact came from
+        #   needs_review — flagged when new evidence touches it, so consolidation only revisits changed facts
+        Column("origin", "TEXT", nullable=False, default="'distilled'"),
+        Column("pinned", "INTEGER", nullable=False, default="0"),
+        Column("provenance", "TEXT", nullable=False, default="'[]'"),
+        Column("needs_review", "INTEGER", nullable=False, default="0"),
         Column("content_hash", "TEXT"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
@@ -344,31 +357,6 @@ TABLES: List[Table] = [
     ], constraints=[
         "UNIQUE(memory_id, chunk_index)",
         "CHECK (chunk_source IN ('compiled_truth', 'timeline'))",
-    ]),
-
-    Table("memory_links", [
-        Column("id", "TEXT", nullable=False, primary_key=True),
-        Column("user_id", "TEXT", nullable=False),
-        Column("from_slug", "TEXT", nullable=False),
-        Column("to_slug", "TEXT", nullable=False),
-        Column("link_type", "TEXT", nullable=False),
-        Column("context", "TEXT"),
-        Column("weight", "INTEGER", nullable=False, default="1"),
-        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
-    ], constraints=[
-        "UNIQUE(user_id, from_slug, to_slug, link_type)",
-        "CHECK (link_type IN ('works_at','founded','invested_in','advises','attended','knows','partnered_with','acquired','competes_with','references','related_to'))",
-    ]),
-
-    Table("memory_timeline", [
-        Column("id", "TEXT", nullable=False, primary_key=True),
-        Column("memory_id", "TEXT", nullable=False, references="memories(id)", on_delete="CASCADE"),
-        Column("event_date", "TEXT", nullable=False),
-        Column("source", "TEXT", nullable=False),
-        Column("summary", "TEXT", nullable=False),
-        Column("detail", "TEXT"),
-        Column("source_ref", "TEXT"),
-        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
     Table("tools", [
@@ -560,7 +548,8 @@ TABLES: List[Table] = [
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ], constraints=[
         "UNIQUE(user_id, name)",
-        "CHECK (type IN ('sql_postgres','sql_mysql','rest_api','doc_store','web_search_domain','notion','confluence','shopify','airtable','google_sheets'))",
+        # No CHECK on `type`: connector types are validated in code by
+        # CONNECTOR_REGISTRY (drop-in), so a new connector file needs no schema edit.
         "CHECK (status IN ('unverified','active','error','disabled'))",
     ]),
 
@@ -864,12 +853,6 @@ INDEXES: List[Index] = [
     Index("idx_memories_updated", "memories", "updated_at DESC"),
     Index("idx_chunks_memory", "memory_chunks", "memory_id"),
     Index("idx_chunks_source", "memory_chunks", "chunk_source"),
-    Index("idx_links_from", "memory_links", "from_slug"),
-    Index("idx_links_to", "memory_links", "to_slug"),
-    Index("idx_links_type", "memory_links", "link_type"),
-    Index("idx_links_user", "memory_links", "user_id"),
-    Index("idx_timeline_memory", "memory_timeline", "memory_id"),
-    Index("idx_timeline_date", "memory_timeline", "event_date DESC"),
     Index("idx_tools_status", "tools", "status"),
     Index("idx_tools_creator", "tools", "created_by"),
     Index("idx_skills_user", "skills", "user_id"),

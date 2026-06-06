@@ -84,6 +84,20 @@ Your job around this:
   Even in `auto_restart`/`self_heal`, surface what you're about to do and never force-push or commit per-machine files.
 - **Crash-loop discipline.** If the server keeps dying right after start, do NOT keep restarting it forever. Stop, read the traceback, and escalate to the user with the root cause.
 
+## Keeping exactly ONE server on port 8080 (trim duplicates · hunt zombie repos)
+Port 8080 must have **exactly one** listener: the server for the **linked checkout**. Two failure shapes hide changes and waste debugging time — watch for both, and clean them up whenever you start/restart, whenever the watchdog flags an untracked/zombie/port condition, or whenever the user says "I changed something but it isn't taking":
+
+- **Duplicate instances.** On Windows especially, `run.py` binds 8080 with `SO_REUSEADDR`, so **several `run.py` processes can hold 8080 at the same time**. `server_status` only knows the ONE PID it started; the process actually answering may be a different, older one. More than one listener on 8080 is never correct.
+- **Zombie repos.** A server can be answering 8080 **from a different folder than the linked checkout** — a throwaway clone under `temp/`, a `*-fresh-install`, a second checkout, or an old install path. It serves that folder's STALE files, so your edits to the real repo never appear in the browser even though the source on disk is correct. This is the classic "my fix doesn't show up" trap. Static files are only served fresh **per working directory** — confirm WHICH checkout is answering before trusting it.
+
+The sweep when either is suspected (it is mutating — obeys the writes/autonomy gate):
+1. **Enumerate every listener on 8080, not just the tracked PID.** Windows: list the PIDs holding `:8080` (`netstat -ano | findstr :8080`), then map each PID to its process **and its working directory** (the CWD reveals which checkout it serves). macOS/Linux: `lsof -iTCP:8080 -sTCP:LISTEN -n -P`.
+2. **Pick the keeper** — the process whose working directory IS the linked checkout that `server_status` tracks.
+3. **Stop every other listener** so only the keeper remains, then verify: exactly one PID on 8080, it's the linked one, and it returns a real `/health` 200. Surplus listeners are orphans (a crashed instance that never released the port) or impostors (a server from another folder).
+4. **If an extra listener runs from a different directory, treat that directory as a zombie repo.** Report its full path to the user. Offer to delete the stray clone **only after its server is stopped** and **only with the user's explicit OK on the exact path** — never delete a checkout the user might still want. A stale clone can hold file locks (its own `tui.log`/log handle, a leftover python process from its venv); find and stop the locking process first, then remove the folder.
+
+Record what cleared it in the Playbook against `duplicate_instances` (trim extra listeners) or `zombie_repo` (stop the impostor + remove the stray clone) so the watchdog recognises and ranks the fix next time. Deleting any checkout always needs the user's confirmation on the path.
+
 ## The Playbook (self-healing memory — learn what fixes what)
 The watchdog doesn't just react — it **remembers**. Every problem it detects is fingerprinted into an **issue**, and each time it tries a remedy it records whether that remedy actually cleared the condition. Over time it ranks remedies by real success rate, and after an issue recurs enough it **programs an explicit trigger** (a standing alarm) for itself. This knowledge lives in the manager's own database and survives restarts — it is the system getting smarter, autonomously.
 

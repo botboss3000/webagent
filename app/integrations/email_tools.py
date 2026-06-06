@@ -242,6 +242,21 @@ FEATURE = {
     "status": "stable",
     "summary": "Read, search, and send email across Gmail and Outlook; Yahoo identity.",
     "requires": ["Google and/or Microsoft OAuth credentials"],
+    # Ability-bundled skill: surfaced in the agent's # [SKILLS] catalog whenever
+    # this ability is enabled; the body loads on demand via load_skill(handle).
+    "skill_mode": "selectable",
+    "skill_handle": "email_a1b2c3d4",
+    "skill": (
+        "## Working with email\n"
+        "- Identify the provider first: Gmail tools are prefixed `gmail_`, Outlook `outlook_`.\n"
+        "- To answer 'do I have any email about X', use the search tool with the\n"
+        "  provider's query syntax (Gmail search operators / Graph $search) rather\n"
+        "  than listing the whole inbox.\n"
+        "- Always confirm the recipient and show the user a draft before sending;\n"
+        "  send tools are destructive and will actually deliver.\n"
+        "- Thread replies: reply in-thread (carry the thread/conversation id) rather\n"
+        "  than starting a new message, unless the user asks for a fresh email."
+    ),
 }
 
 TOOLS = [

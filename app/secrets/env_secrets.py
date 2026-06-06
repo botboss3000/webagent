@@ -10,6 +10,14 @@ from typing import List, Optional
 
 from app.secrets.interface import SecretsBackend
 
+FEATURE = {
+    "id": "env",
+    "display_name": "Environment variables",
+    "category": "secrets",
+    "status": "stable",
+    "summary": "Read secrets from process env vars (read-only). Good for Cloud Run / Docker.",
+}
+
 
 class EnvSecrets(SecretsBackend):
     name = "env"

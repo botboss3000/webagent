@@ -274,6 +274,7 @@ CREATE TABLE IF NOT EXISTS session_summaries (
     title TEXT,
     summary TEXT NOT NULL,
     message_count INTEGER NOT NULL DEFAULT 0,
+    covered_count INTEGER NOT NULL DEFAULT 0,  -- compaction marker (leading interactions folded into summary)
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -558,6 +559,11 @@ CREATE TABLE IF NOT EXISTS memories (
     compiled_truth  TEXT NOT NULL DEFAULT '',
     timeline        TEXT NOT NULL DEFAULT '',
     frontmatter     TEXT NOT NULL DEFAULT '{}',  -- JSON
+    -- Cross-session knowledge engine fields (Context Control):
+    origin          TEXT NOT NULL DEFAULT 'distilled',  -- 'deliberate' | 'distilled'
+    pinned          INTEGER NOT NULL DEFAULT 0,          -- protected from auto-merge/trim
+    provenance      TEXT NOT NULL DEFAULT '[]',          -- JSON list of source session/interaction ids
+    needs_review    INTEGER NOT NULL DEFAULT 0,          -- flagged when new evidence touches it
     content_hash    TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
@@ -616,43 +622,6 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_chunks_memory ON memory_chunks(memory_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_source ON memory_chunks(chunk_source);
-
--- Typed knowledge graph edges
-CREATE TABLE IF NOT EXISTS memory_links (
-    id            TEXT PRIMARY KEY,
-    user_id       TEXT NOT NULL,
-    from_slug     TEXT NOT NULL,
-    to_slug       TEXT NOT NULL,
-    link_type     TEXT NOT NULL CHECK (link_type IN (
-                      'works_at', 'founded', 'invested_in', 'advises',
-                      'attended', 'knows', 'partnered_with', 'acquired',
-                      'competes_with', 'references', 'related_to'
-                  )),
-    context       TEXT,
-    weight        INTEGER NOT NULL DEFAULT 1,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(user_id, from_slug, to_slug, link_type)
-);
-
-CREATE INDEX IF NOT EXISTS idx_links_from ON memory_links(from_slug);
-CREATE INDEX IF NOT EXISTS idx_links_to ON memory_links(to_slug);
-CREATE INDEX IF NOT EXISTS idx_links_type ON memory_links(link_type);
-CREATE INDEX IF NOT EXISTS idx_links_user ON memory_links(user_id);
-
--- Append-only timeline event log
-CREATE TABLE IF NOT EXISTS memory_timeline (
-    id            TEXT PRIMARY KEY,
-    memory_id     TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-    event_date    TEXT NOT NULL,       -- ISO date YYYY-MM-DD
-    source        TEXT NOT NULL,       -- 'chat', 'email', 'meeting', 'tweet', 'web', 'manual'
-    summary       TEXT NOT NULL,
-    detail        TEXT,
-    source_ref    TEXT,               -- optional URL, file path, or interaction_id
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_timeline_memory ON memory_timeline(memory_id);
-CREATE INDEX IF NOT EXISTS idx_timeline_date ON memory_timeline(event_date DESC);
 
 CREATE TABLE IF NOT EXISTS tools (
     id TEXT PRIMARY KEY,
@@ -1574,6 +1543,44 @@ class LocalBackend(StorageBackend):
                     logger.info("Added %s.max_stall_strikes column", tbl)
             conn.commit()
 
+            # ── Migration: cross-session knowledge engine fields on memories ──
+            # New fields for the Context Control memory engine (origin/pinned/
+            # provenance/needs_review). Guarded so re-runs are no-ops.
+            cursor = conn.execute("PRAGMA table_info(memories)")
+            _mem_cols = {row[1] for row in cursor.fetchall()}
+            _mem_adds = [
+                ("origin", "ALTER TABLE memories ADD COLUMN origin TEXT NOT NULL DEFAULT 'distilled'"),
+                ("pinned", "ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"),
+                ("provenance", "ALTER TABLE memories ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]'"),
+                ("needs_review", "ALTER TABLE memories ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0"),
+            ]
+            _mem_added = []
+            for _col, _sql in _mem_adds:
+                if _col not in _mem_cols:
+                    conn.execute(_sql)
+                    _mem_added.append(_col)
+            conn.commit()
+            if _mem_added:
+                logger.info("Added memories engine columns: %s", ", ".join(_mem_added))
+
+            # ── Migration: drop dead memory_links / memory_timeline tables ──
+            # Unused CRM-era knowledge-graph + timeline tables, retired with the
+            # cross-session knowledge rebuild. Safe to drop (no app flow used them).
+            for _dead in ("memory_links", "memory_timeline"):
+                try:
+                    conn.execute(f"DROP TABLE IF EXISTS {_dead}")
+                except Exception as _e:
+                    logger.warning("Could not drop %s: %s", _dead, _e)
+            conn.commit()
+
+            # ── Migration: add covered_count to session_summaries (compaction) ──
+            cursor = conn.execute("PRAGMA table_info(session_summaries)")
+            _ss_cols = {row[1] for row in cursor.fetchall()}
+            if "covered_count" not in _ss_cols:
+                conn.execute("ALTER TABLE session_summaries ADD COLUMN covered_count INTEGER NOT NULL DEFAULT 0")
+                conn.commit()
+                logger.info("Added session_summaries.covered_count column")
+
             # ── Migration: add fire_token / external_job_id / external_provider to agent_automations ──
             try:
                 cursor = conn.execute("PRAGMA table_info(agent_automations)")
@@ -2400,6 +2407,7 @@ class LocalBackend(StorageBackend):
         summary: str,
         message_count: int,
         title: Optional[str] = None,
+        covered_count: int = 0,
     ) -> None:
         conn = self._get_conn()
         try:
@@ -2411,22 +2419,43 @@ class LocalBackend(StorageBackend):
             if existing:
                 conn.execute(
                     """UPDATE session_summaries
-                       SET summary = ?, message_count = ?, title = COALESCE(?, title),
-                           updated_at = ?
+                       SET summary = ?, message_count = ?, covered_count = ?,
+                           title = COALESCE(?, title), updated_at = ?
                        WHERE session_id = ?""",
-                    (summary, message_count, title, now, session_id),
+                    (summary, message_count, covered_count, title, now, session_id),
                 )
             else:
                 conn.execute(
-                    """INSERT INTO session_summaries (id, user_id, session_id, title, summary, message_count, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (_uuid(), user_id, session_id, title, summary, message_count, now),
+                    """INSERT INTO session_summaries (id, user_id, session_id, title, summary, message_count, covered_count, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (_uuid(), user_id, session_id, title, summary, message_count, covered_count, now),
                 )
             conn.commit()
-            logger.debug("Upserted session summary for session %s", session_id)
+            logger.debug("Upserted session summary for session %s (covered=%d)", session_id, covered_count)
         except Exception as e:
             logger.error("Error upserting session summary: %s", e)
             raise
+        finally:
+            conn.close()
+
+    async def get_session_summary(
+        self, user_id: str, session_id: str
+    ) -> Optional[dict]:
+        """Return the rolling compaction summary row for a session, or None.
+
+        Shape: {summary, covered_count, message_count, title, updated_at}.
+        """
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                """SELECT summary, covered_count, message_count, title, updated_at
+                   FROM session_summaries WHERE user_id = ? AND session_id = ?""",
+                (user_id, session_id),
+            ).fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error("Error reading session summary: %s", e)
+            return None
         finally:
             conn.close()
 
@@ -3743,7 +3772,7 @@ class LocalBackend(StorageBackend):
                 (user_id, slug),
             )
             conn.commit()
-            # CASCADE deletes memory_chunks, memory_timeline rows
+            # CASCADE deletes memory_chunks rows
             deleted = cursor.rowcount > 0
             if deleted:
                 logger.debug("Deleted memory: %s", slug)
@@ -3985,130 +4014,6 @@ class LocalBackend(StorageBackend):
             stored += 1
         if stored:
             logger.debug("Stored %d chunks for memory %s (%s)", stored, memory_id, source)
-
-    async def memory_add_link(
-        self,
-        user_id: str,
-        from_slug: str,
-        to_slug: str,
-        link_type: str,
-        context: Optional[str] = None,
-    ) -> dict:
-        conn = self._get_conn()
-        try:
-            now = _now_iso()
-            lid = _uuid()
-            conn.execute(
-                """INSERT OR IGNORE INTO memory_links
-                   (id, user_id, from_slug, to_slug, link_type, context, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (lid, user_id, from_slug, to_slug, link_type, context, now),
-            )
-            conn.commit()
-            logger.debug("Added link: %s --%s--> %s", from_slug, link_type, to_slug)
-            return {
-                "id": lid, "user_id": user_id, "from_slug": from_slug,
-                "to_slug": to_slug, "link_type": link_type, "context": context,
-            }
-        except Exception as e:
-            logger.error("Error adding link: %s", e)
-            raise
-        finally:
-            conn.close()
-
-    async def memory_graph_query(
-        self,
-        user_id: str,
-        node_slug: str,
-        link_type: Optional[str] = None,
-        direction: str = "both",
-        depth: int = 2,
-    ) -> List[dict]:
-        """Traverse the knowledge graph. SQLite doesn't support recursive CTEs,
-        so we do a BFS in Python up to the given depth."""
-        conn = self._get_conn()
-        try:
-            visited = set()
-            results = []
-            queue = [(node_slug, 0)]
-
-            while queue:
-                current, current_depth = queue.pop(0)
-                if current in visited or current_depth > depth:
-                    continue
-                visited.add(current)
-
-                if direction in ("out", "both"):
-                    sql = "SELECT * FROM memory_links WHERE user_id = ? AND from_slug = ?"
-                    params = [user_id, current]
-                    if link_type:
-                        sql += " AND link_type = ?"
-                        params.append(link_type)
-                    rows = conn.execute(sql, params).fetchall()
-                    for r in rows:
-                        d = dict(r)
-                        results.append(d)
-                        if current_depth + 1 <= depth:
-                            queue.append((d["to_slug"], current_depth + 1))
-
-                if direction in ("in", "both"):
-                    sql = "SELECT * FROM memory_links WHERE user_id = ? AND to_slug = ?"
-                    params = [user_id, current]
-                    if link_type:
-                        sql += " AND link_type = ?"
-                        params.append(link_type)
-                    rows = conn.execute(sql, params).fetchall()
-                    for r in rows:
-                        d = dict(r)
-                        results.append(d)
-                        if current_depth + 1 <= depth:
-                            queue.append((d["from_slug"], current_depth + 1))
-
-            return results
-        except Exception as e:
-            logger.error("Error in graph query: %s", e)
-            raise
-        finally:
-            conn.close()
-
-    async def memory_add_timeline_entry(
-        self,
-        user_id: str,
-        page_slug: str,
-        event_date: str,
-        source: str,
-        summary: str,
-        detail: Optional[str] = None,
-    ) -> dict:
-        conn = self._get_conn()
-        try:
-            # Find the memory page id
-            page = conn.execute(
-                "SELECT id FROM memories WHERE user_id = ? AND slug = ?",
-                (user_id, page_slug),
-            ).fetchone()
-            if not page:
-                raise ValueError(f"Memory page not found: {page_slug}")
-
-            now = _now_iso()
-            entry_id = _uuid()
-            conn.execute(
-                """INSERT INTO memory_timeline
-                   (id, memory_id, event_date, source, summary, detail, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (entry_id, page["id"], event_date, source, summary, detail, now),
-            )
-            conn.commit()
-            logger.debug("Added timeline entry to %s: %s", page_slug, summary[:50])
-            return {
-                "id": entry_id, "page_slug": page_slug, "event_date": event_date,
-                "source": source, "summary": summary, "detail": detail,
-            }
-        except Exception as e:
-            logger.error("Error adding timeline entry: %s", e)
-            raise
-        finally:
-            conn.close()
 
     # ---- Session Search ----
 
@@ -6515,7 +6420,12 @@ class LocalBackend(StorageBackend):
     async def delete_custom_agent(self, agent_id: str, user_id: str) -> bool:
         """
         Delete a custom agent. Caller must be in admin_users.
-        System agents (template rows) cannot be deleted via this path.
+        System agents (template rows) live in agent_templates, not here, and the
+        built-in 'default' row carries no admin_users — so the ownership check
+        alone already protects them. We must NOT additionally require
+        is_user_default = 0: a user's own agent is normally their default
+        (is_user_default = 1), so that guard would silently match zero rows and
+        make the delete appear to do nothing.
         Also drops every agent_prompts row for the agent (admin base + overrides).
         Returns True if a row was deleted, False if not found or not owned.
         """
@@ -6523,7 +6433,7 @@ class LocalBackend(StorageBackend):
         try:
             cursor = conn.execute(
                 """DELETE FROM agents
-                   WHERE id = ? AND is_user_default = 0
+                   WHERE id = ?
                    AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)""",
                 (agent_id, user_id),
             )

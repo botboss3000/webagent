@@ -20,6 +20,15 @@ from typing import Any, Callable, Dict, List, Optional
 
 from app.connectors.base import Connector, GeneratedTool
 
+FEATURE = {
+    "id": "sql_postgres",
+    "display_name": "SQL (Postgres/MySQL)",
+    "category": "connector",
+    "status": "beta",
+    "summary": "Read-only live queries against an external SQL database with a statement allowlist.",
+    "requires": ["external DB connection details"],
+}
+
 logger = logging.getLogger(__name__)
 
 

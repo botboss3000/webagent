@@ -204,3 +204,16 @@ def _normalize_stripe_event(t: str) -> str:
     if t == "charge.refunded":
         return "payment.refunded"
     return "other"
+
+
+FEATURE = {
+    "id": "stripe",
+    "display_name": "Stripe",
+    "category": "payment",
+    "status": "beta",
+    "summary": "Stripe Checkout + Connect marketplace payouts.",
+    "requires": ["the stripe SDK", "STRIPE_SECRET_KEY"],
+}
+
+# Drop-in hook: the processor registry auto-registers this class.
+processor_cls = StripeProcessor

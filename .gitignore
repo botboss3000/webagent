@@ -26,6 +26,7 @@ provider.json
 scheduler_config.json
 suggestions.json
 data/config/suggestions.json
+data/config/model_catalog.json
 app-settings.json
 .venv
 env/

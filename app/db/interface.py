@@ -36,8 +36,23 @@ class StorageBackend(ABC):
         summary: str,
         message_count: int,
         title: Optional[str] = None,
+        covered_count: int = 0,
     ) -> None:
-        """Insert or update a session summary."""
+        """Insert or update a session summary (rolling compaction summary).
+
+        ``covered_count`` is the compaction marker: how many leading interactions
+        (created_at order) are folded into ``summary``.
+        """
+        ...
+
+    @abstractmethod
+    async def get_session_summary(
+        self, user_id: str, session_id: str
+    ) -> Optional[dict]:
+        """Return the rolling compaction summary row, or None.
+
+        Shape: {summary, covered_count, message_count, title, updated_at}.
+        """
         ...
 
     # ---- Interactions ----
@@ -134,7 +149,7 @@ class StorageBackend(ABC):
         ...
 
     # ---- Memory System (knowledge brain) ----
-    # Four tables: memories, memory_chunks, memory_links, memory_timeline
+    # Tables: memories, memory_chunks
 
     @abstractmethod
     async def memory_upsert(
@@ -157,7 +172,7 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def memory_delete(self, user_id: str, slug: str) -> bool:
-        """Delete a memory page and its chunks/links/timeline."""
+        """Delete a memory page and its chunks."""
         ...
 
     @abstractmethod
@@ -172,43 +187,6 @@ class StorageBackend(ABC):
         self, user_id: str, query: str, limit: int = 10
     ) -> List[dict]:
         """Keyword search across memory pages using FTS."""
-        ...
-
-    @abstractmethod
-    async def memory_add_link(
-        self,
-        user_id: str,
-        from_slug: str,
-        to_slug: str,
-        link_type: str,
-        context: Optional[str] = None,
-    ) -> dict:
-        """Add a typed edge to the knowledge graph."""
-        ...
-
-    @abstractmethod
-    async def memory_graph_query(
-        self,
-        user_id: str,
-        node_slug: str,
-        link_type: Optional[str] = None,
-        direction: str = "both",
-        depth: int = 2,
-    ) -> List[dict]:
-        """Traverse the knowledge graph from a starting node."""
-        ...
-
-    @abstractmethod
-    async def memory_add_timeline_entry(
-        self,
-        user_id: str,
-        page_slug: str,
-        event_date: str,
-        source: str,
-        summary: str,
-        detail: Optional[str] = None,
-    ) -> dict:
-        """Append a new entry to a page's timeline."""
         ...
 
     # ---- Session Search ----

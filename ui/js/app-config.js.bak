@@ -65,8 +65,8 @@ let _intAdminWired = false;
 // ── Sidebar nav + scroll highlighting ────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────
 const _SECTION_KEY = 'appConfig_activeSection';
-	const _VALID_SECTIONS = ['app-settings', 'agent-settings', 'user-management', 'llm', 'database', 'optimizer', 'git', 'automation', 'events', 'monetization'];
-let _activeSection = localStorage.getItem(_SECTION_KEY) || 'llm';
+const _VALID_SECTIONS = ['app-settings', 'agent-settings', 'user-management', 'database', 'optimizer', 'git', 'automation', 'events', 'monetization', 'features'];
+	let _activeSection = localStorage.getItem(_SECTION_KEY) || 'agent-settings';
 
 function _showSection(section) {
   _VALID_SECTIONS.forEach(id => {
@@ -78,6 +78,138 @@ function _showSection(section) {
   _setNavActive(section);
   if (section === 'monetization') _renderPlatformBillingPanel();
   if (section === 'app-settings' && typeof window.__refreshRemoteAccess === 'function') window.__refreshRemoteAccess();
+  if (section === 'agent-settings') _intAdminResetSession();
+  if (section === 'features') _renderFeaturesCatalog();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ── Features (discovery catalog) ──────────────────────────────────────────
+// Read-only report of every capability the app discovered: its maturity, if
+// it's true drop-in, and whether the active edition includes it. Backed by
+// GET /api/v1/features. See docs/claude/production-editions.md. Phase 1 is
+// report-only — nothing is gated here.
+// ─────────────────────────────────────────────────────────────────────────
+const _FEATURE_STATUS_STYLE = {
+  stable:       { label: 'Stable',       color: 'var(--success)' },
+  beta:         { label: 'Beta',         color: 'var(--warning)' },
+  experimental: { label: 'Experimental', color: 'var(--danger)' },
+  unknown:      { label: 'Unmarked',     color: 'var(--fg-4)' },
+};
+const _FEATURE_CAT_ICON = {
+  integration: 'plug', event_source: 'radio', channel: 'message-square',
+  connector: 'database', scheduler: 'clock', encryption: 'lock',
+  payment: 'credit-card', secrets: 'key-round', storage: 'hard-drive',
+  tool: 'wrench', ability: 'sparkles',
+};
+const _FEATURE_CAT_LABEL = {
+  integration: 'Integrations', event_source: 'Event sources', channel: 'Communication channels',
+  connector: 'Data connectors', scheduler: 'Scheduler providers', encryption: 'Encryption methods',
+  payment: 'Payment processors', secrets: 'Secrets vaults', storage: 'Storage backends',
+  tool: 'Tools', ability: 'Abilities',
+};
+const _FEATURE_CAT_ORDER = ['integration', 'event_source', 'channel', 'connector', 'scheduler', 'encryption', 'payment', 'secrets', 'storage', 'tool', 'ability'];
+
+function _featEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function _featChip(label, n, color) {
+  return `<span style="border:1px solid var(--border);border-radius:10px;padding:2px 9px;color:var(--fg-2);">` +
+    `<span style="color:${color || 'var(--fg-3)'};font-weight:600;">${n == null ? 0 : n}</span> ` +
+    `<span style="color:var(--fg-4);">${_featEsc(label)}</span></span>`;
+}
+
+function _featureRow(f) {
+  const st = _FEATURE_STATUS_STYLE[f.status] || _FEATURE_STATUS_STYLE.unknown;
+  const reqs = (f.requires && f.requires.length)
+    ? ` <span style="color:var(--fg-4);">· needs ${_featEsc(f.requires.join(', '))}</span>` : '';
+  const desc = (f.summary ? _featEsc(f.summary) : '<span style="color:var(--fg-4);">no description yet</span>') + reqs;
+  const errTag = f.error
+    ? ` <span style="color:var(--danger);font-size:10px;" title="${_featEsc(f.error)}">import error</span>` : '';
+  const incIcon = f.included
+    ? '<span title="included in the active edition" style="color:var(--success);font-size:13px;">&#9679;</span>'
+    : `<span title="${_featEsc(f.reason || 'excluded')}" style="color:var(--fg-4);font-size:13px;">&#9675;</span>`;
+  return `<div class="ac-ability-row"${f.included ? '' : ' style="opacity:.62;"'}>` +
+    `<i data-lucide="${_FEATURE_CAT_ICON[f.category] || 'box'}" class="lucide-icon ac-ability-icon"></i>` +
+    `<div class="ac-ability-label">` +
+      `<div class="ac-ability-name">${_featEsc(f.display_name)}${errTag}</div>` +
+      `<div class="ac-ability-desc">${desc}</div>` +
+    `</div>` +
+    `<div class="ac-ability-status" style="display:flex;align-items:center;gap:10px;">` +
+      `<span style="font-size:10px;font-weight:600;color:${st.color};border:1px solid var(--border);border-radius:10px;padding:1px 8px;white-space:nowrap;">${st.label}</span>` +
+      incIcon +
+    `</div></div>`;
+}
+
+async function _renderFeaturesCatalog() {
+  const banner = _qs('ac-features-banner');
+  const list = _qs('ac-features-list');
+  if (!banner || !list) return;
+  if (typeof isAdmin === 'function' && !isAdmin()) {
+    banner.innerHTML = '<div style="color:var(--fg-3);font-size:13px;">Platform admin access required.</div>';
+    list.innerHTML = '';
+    return;
+  }
+  banner.innerHTML = '<div style="color:var(--fg-3);font-size:13px;">Loading feature catalog…</div>';
+  list.innerHTML = '';
+
+  let data;
+  try {
+    const res = await _fetch(apiPath('/api/v1/features'));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    data = await res.json();
+  } catch (e) {
+    banner.innerHTML = `<div style="color:var(--danger);font-size:13px;">Could not load feature catalog: ${_featEsc(String(e))}</div>`;
+    return;
+  }
+
+  const c = data.counts || {};
+  const bs = c.by_status || {};
+  const editions = Object.keys(data.editions || {}).map(_featEsc).join(' &middot; ');
+  banner.innerHTML =
+    `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">` +
+      `<span style="font-size:13px;color:var(--fg-2);">Active edition</span>` +
+      `<span style="font-weight:600;color:var(--accent);font-size:14px;">${_featEsc(data.active_edition)}</span>` +
+      `<span style="margin-left:auto;font-size:11px;color:var(--fg-4);">Report only — nothing is gated yet</span>` +
+    `</div>` +
+    `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;font-size:12px;">` +
+      _featChip('Total', c.total) +
+      _featChip('In this edition', c.included, 'var(--success)') +
+      _featChip('Stable', bs.stable || 0, 'var(--success)') +
+      _featChip('Beta', bs.beta || 0, 'var(--warning)') +
+      _featChip('Experimental', bs.experimental || 0, 'var(--danger)') +
+      _featChip('Unmarked', bs.unknown || 0, 'var(--fg-4)') +
+      _featChip('Drop-in', c.drop_in) +
+    `</div>` +
+    `<div style="margin-top:8px;font-size:11px;color:var(--fg-4);">Editions defined: ${editions || '—'}. Set the active edition with the WEBAGENT_EDITION env var.</div>`;
+
+  const feats = (data.features || []).slice();
+  const groups = {};
+  feats.forEach(f => { (groups[f.category] = groups[f.category] || []).push(f); });
+  const cats = Object.keys(groups).sort((a, b) => {
+    const ia = _FEATURE_CAT_ORDER.indexOf(a), ib = _FEATURE_CAT_ORDER.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+
+  let html = '';
+  cats.forEach(cat => {
+    const items = groups[cat];
+    const dropIn = items.length && items[0].drop_in;
+    const tag = dropIn
+      ? '<span style="font-size:10px;color:var(--success);border:1px solid var(--border);border-radius:10px;padding:1px 7px;" title="add/remove by dropping or deleting a file">drop-in</span>'
+      : '<span style="font-size:10px;color:var(--fg-4);border:1px solid var(--border);border-radius:10px;padding:1px 7px;" title="adding/removing needs a central registry edit today">registry</span>';
+    html +=
+      `<div style="margin:16px 0 6px;display:flex;align-items:center;gap:8px;">` +
+        `<i data-lucide="${_FEATURE_CAT_ICON[cat] || 'box'}" class="lucide-icon" style="width:15px;height:15px;color:var(--accent);"></i>` +
+        `<span style="font-weight:600;font-size:13px;color:var(--fg-1);">${_featEsc(_FEATURE_CAT_LABEL[cat] || cat)}</span>` +
+        `<span style="font-size:11px;color:var(--fg-4);">${items.length}</span>` +
+        tag +
+      `</div>` +
+      `<div class="ac-list">${items.map(_featureRow).join('')}</div>`;
+  });
+  list.innerHTML = html;
 }
 
 function _renderPlatformBillingPanel() {
@@ -883,98 +1015,259 @@ function _getSelectedScopes(provider) {
 // all required fields are filled.
 
 const _ABILITY_META = {
-  codebase_admin:   { icon: 'folder-cog',   color: '#bb9af7', simple: true,  desc: 'Lets the agent read, write, edit, delete files, and run shell commands on the host.' },
-  create_tools:     { icon: 'wrench',       color: '#7dcfff', simple: true,  desc: 'Lets the agent define new tools in the database.' },
+  codebase_admin:   { icon: 'folder-cog',   color: '#bb9af7', simple: true,  desc: 'Lets the agent read, write, edit, delete files, and run shell commands on the host. No credentials.' },
+  git_control:      { icon: 'git-branch',   color: '#9ece6a', simple: true,  desc: 'Version control only — status, diff, commit, push, branch, pull — without shell access. On by default.' },
+  ui_admin:         { icon: 'paintbrush',   color: '#7dcfff', simple: true,  desc: 'Edits only front-end files (ui/ — CSS & HTML); never backend code or the shell. On by default.' },
+  create_tools:     { icon: 'wrench',       color: '#7dcfff', simple: true,  desc: 'Lets the agent define new tools in the database. No credentials.' },
   web_access:       { icon: 'globe',        color: '#7aa2f7', simple: true,  desc: 'Lets the agent search the web, look up weather, and geocode addresses. No API keys needed.' },
-  browser_control:  { icon: 'mouse-pointer-2', color: '#9ece6a', simple: true, desc: 'Lets the agent drive a headless Chromium browser and make HTTP requests.' },
+  browser_control:  { icon: 'mouse-pointer-2', color: '#9ece6a', simple: true, desc: 'Lets the agent drive a headless Chromium browser and make HTTP requests. No credentials.' },
+  terminal_control: { icon: 'terminal',     color: '#f7768e', simple: true,  desc: 'Lets the agent open and drive interactive terminal programs (REPLs, CLIs) — effectively shell access, so grant per agent with care.' },
   image_generation: { icon: 'image',        color: '#bb9af7', simple: false, desc: 'Lets the agent generate images from text prompts. Requires a provider + model config.' },
   automation:       { icon: 'clock',        color: '#e0af68', simple: false, desc: 'Scheduled tasks and event-triggered jobs that can call integrations.' },
   visualizer:       { icon: 'layout',       color: '#7aa2f7', simple: false, desc: 'Lets the agent create, edit, rename, and delete pages in the Pages workspace.' },
+  agent_orchestration: { icon: 'share-2',   color: '#7dcfff', simple: true,  desc: 'Lets the agent delegate the session to other agents and run the prompt optimizer. On by default; switch off to remove it platform-wide.' },
+  diagnostics:      { icon: 'activity',     color: '#e0af68', simple: true,  desc: 'Lets the agent read the in-app flight recorder to diagnose the running app. On by default; switch off to remove it platform-wide.' },
+  agent_management: { icon: 'users',        color: '#9ece6a', simple: true,  desc: 'Lets the agent list, create, and update the user\'s own agents and edit their prompts and abilities. On by default; switch off to remove it platform-wide.' },
+  app_control:      { icon: 'app-window',   color: '#73daca', simple: true,  desc: 'Lets the agent change what you\'re looking at — switch the main view (Browser, Pages, Agents…), show or hide the chat panel, and resize it. On by default; switch off to remove it platform-wide.' },
+  wiki_control:     { icon: 'book-open',     color: '#7dcfff', simple: true,  desc: 'Lets the agent read, search, create, edit, and delete entries in the company-wide Wiki. Writes change shared data everyone sees, so grant per agent with care.' },
 };
 
+// Human labels for every ability key (shared by the row builder and search).
+const _ABILITY_NAMES = {
+  codebase_admin: 'Codebase Admin',
+  git_control: 'Git Control',
+  ui_admin: 'UI Admin',
+  create_tools: 'Create Tools',
+  web_access: 'Web Access',
+  browser_control: 'Browser Control',
+  terminal_control: 'Terminal Control',
+  image_generation: 'Image Generation',
+  automation: 'Automation',
+  visualizer: 'Visualizer',
+  agent_orchestration: 'Agent Orchestration',
+  diagnostics: 'Diagnostics',
+  agent_management: 'Agent Management',
+  app_control: 'App Control',
+  wiki_control: 'Wiki Control',
+};
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  SISTER-PANEL: AGENT-ABILITY-TABLE  —  KEEP THE TWO IN SYNC                ║
+// ║  This is one of the TWO ability tables that must stay MIRRORED IN DESIGN: ║
+// ║    • here — the admin **Agent Settings** panel (`_ABILITY_GROUPS` +       ║
+// ║      `_INTEGRATION_GROUPS` / `_initAbilitiesCompact`), and                ║
+// ║    • the per-agent **Abilities tab** in agents.js (`_AGENT_ABILITY_GROUPS`║
+// ║      / `_buildAbilityGroupsGrid`).                                        ║
+// ║  Both render the shared `.ac-list` / `.ac-row` / `.ac-tri` component and  ║
+// ║  read as the SAME table. If you change the look, structure, grouping, or  ║
+// ║  toggle behaviour on EITHER side, apply the matching change on the other  ║
+// ║  (grep `SISTER-PANEL: AGENT-ABILITY-TABLE`). See docs/claude/ui-guidance. ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+//
+// ── Agent Tools grouping ───────────────────────────────────────────────────
+// The 13 host abilities are presented in three alphabetical groups, each an
+// expandable header row carrying a 3-position toggle (Off · Mixed · On). The
+// grouping is purely a UI convenience — there is NO group concept on the
+// backend; turning a group On/Off just flips each member with the same per-
+// ability save the individual rows use.
+//
+// Two Web members — `scraper` (Web Scraper) and `browser_session` (Browser
+// Cookies) — are credential providers, not simple toggles. They keep their own
+// config cards (relocated into the Web group body by _placeWebCredentialRows)
+// and are NOT part of a group's On/Off math (they can't be "on" without
+// credentials); they're managed by their own row. Members are alphabetical by
+// display name; groups are alphabetical (Administrator, Basic, Web).
+const _CREDENTIAL_MEMBERS = new Set(['scraper', 'browser_session']);
+const _ABILITY_GROUPS = [
+  {
+    id: 'administrator', name: 'Administrator', icon: 'shield-alert', color: '#f7768e',
+    desc: 'Full host control — files & shell, version control, terminals, and diagnostics. Grant with care.',
+    members: ['codebase_admin', 'diagnostics', 'git_control', 'terminal_control'],
+  },
+  {
+    id: 'basic', name: 'Core', icon: 'wrench', color: '#7dcfff',
+    desc: 'Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, and app view control.',
+    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer'],
+  },
+  {
+    id: 'productivity', name: 'Productivity', icon: 'briefcase', color: '#4285F4',
+    desc: 'Read, search, create, edit, and delete entries in the company-wide Wiki.',
+    members: ['wiki_control'],
+  },
+	  {
+    id: 'web', name: 'Web', icon: 'globe', color: '#7aa2f7',
+    desc: 'Reach the open web — search, a headless browser, third-party scraping, and authenticated cookie sessions.',
+    members: ['browser_control', 'browser_session', 'web_access', 'scraper'],
+  },
+];
+
 let _abilityStates = {}; // { [ability]: boolean }
+
+// When the admin toggles an ability, we stamp the moment of that action here.
+// `_loadIntegrations()` runs on every settings/admin-tools (re)activation and
+// force-applies a fetched snapshot onto every toggle. That fetch is slow (it
+// makes ~30 sequential DB lookups), so if the admin toggles an ability while a
+// load is still in flight, the load would resolve with its PRE-toggle snapshot
+// and silently revert the just-made change — the backend keeps the new value
+// (so the agent's Abilities page is correct) but the admin toggle flips back,
+// which reads as "it didn't save". We guard against that by skipping, in the
+// load's apply step, any ability the admin changed after that load began.
+let _abilityLastActionAt = {}; // { [ability]: DOMHighResTimeStamp }
+
+function _markAbilityAction(ability) {
+  _abilityLastActionAt[ability] = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+}
+
+// Build one always-visible ability row (icon + name + desc + toggle). Used as a
+// member row inside a group body. The change handler matches the legacy flat
+// list: simple abilities toggle directly; complex ones (need a config panel)
+// expand their card and warn until configured.
+function _buildAbilityRow(id, meta) {
+  const row = document.createElement('div');
+  row.className = 'ac-ability-row';
+  row.id = `ac-ability-row-${id}`;
+  row.dataset.ability = id;
+
+  const iconWrap = document.createElement('div');
+  iconWrap.className = 'ac-ability-icon';
+  iconWrap.style.color = meta.color;
+  iconWrap.innerHTML = `<i data-lucide="${meta.icon}" style="width:18px;height:18px;"></i>`;
+
+  const label = document.createElement('div');
+  label.className = 'ac-ability-label';
+  label.innerHTML = `<div class="ac-ability-name"></div><div class="ac-ability-desc"></div>`;
+  label.querySelector('.ac-ability-name').textContent = _ABILITY_NAMES[id] || id;
+  label.querySelector('.ac-ability-desc').textContent = meta.desc;
+
+  const toggleWrap = document.createElement('label');
+  toggleWrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
+  toggleWrap.title = 'Enable';
+  const toggle = document.createElement('input');
+  toggle.type = 'checkbox';
+  toggle.className = 'conn-toggle ac-ability-toggle';
+  toggle.id = `ac-ability-toggle-${id}`;
+  toggle.dataset.ability = id;
+  const track = document.createElement('span');
+  track.className = 'conn-toggle-track';
+  toggleWrap.appendChild(toggle);
+  toggleWrap.appendChild(track);
+
+  const statusEl = document.createElement('span');
+  statusEl.className = 'ac-status ac-ability-status';
+  statusEl.id = `ac-ability-status-${id}`;
+  statusEl.style.display = 'none';
+
+  row.appendChild(iconWrap);
+  row.appendChild(label);
+  row.appendChild(statusEl);
+  row.appendChild(toggleWrap);
+
+  toggle.addEventListener('change', () => {
+    const enabled = toggle.checked;
+    _markAbilityAction(id);   // protect this toggle from a stale in-flight load
+    if (meta.simple) {
+      _toggleAbility(id, enabled, row);
+    } else {
+      if (enabled && !_abilityStates[id]) {
+        toggle.checked = false;
+        _showAbilityConfigWarning(id, row);
+        _expandAbilityConfig(id);
+      } else if (enabled && _abilityStates[id]) {
+        _toggleAbility(id, true, row);
+      } else {
+        _toggleAbility(id, false, row);
+      }
+    }
+  });
+
+  return row;
+}
 
 function _initAbilitiesCompact() {
   const container = _qs('ac-abilities-compact');
   if (!container) return;
   container.innerHTML = '';
 
-  for (const [id, meta] of Object.entries(_ABILITY_META)) {
-    const row = document.createElement('div');
-    row.className = 'ac-ability-row';
-    row.id = `ac-ability-row-${id}`;
-    row.dataset.ability = id;
+  for (const group of _ABILITY_GROUPS) {
+    const groupEl = document.createElement('div');
+    groupEl.className = 'ac-row ac-group';
+    groupEl.id = `ac-group-${group.id}`;
 
-    // Icon
+    // ── Group head row (icon + name + 3-position toggle + chevron) ──
+    const head = document.createElement('div');
+    head.className = 'ac-ability-row ac-group-head';
+
     const iconWrap = document.createElement('div');
     iconWrap.className = 'ac-ability-icon';
-    iconWrap.style.color = meta.color;
-    iconWrap.innerHTML = `<i data-lucide="${meta.icon}" style="width:18px;height:18px;"></i>`;
+    iconWrap.style.color = group.color;
+    iconWrap.innerHTML = `<i data-lucide="${group.icon}" style="width:18px;height:18px;"></i>`;
 
-    // Label
     const label = document.createElement('div');
     label.className = 'ac-ability-label';
-    const nameMap = {
-      codebase_admin: 'Codebase Admin',
-      create_tools: 'Create Tools',
-      web_access: 'Web Access',
-      browser_control: 'Browser Control',
-      image_generation: 'Image Generation',
-      automation: 'Automation',
-      visualizer: 'Visualizer',
-    };
-    label.innerHTML = `<div class="ac-ability-name">${nameMap[id] || id}</div>
-      <div class="ac-ability-desc">${meta.desc}</div>`;
+    label.innerHTML = `<div class="ac-ability-name"></div><div class="ac-ability-desc"></div>`;
+    label.querySelector('.ac-ability-name').textContent = group.name;
+    label.querySelector('.ac-ability-desc').textContent = group.desc;
 
-    // Toggle
-    const toggleWrap = document.createElement('label');
-    toggleWrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
-    toggleWrap.title = 'Enable';
-    const toggle = document.createElement('input');
-    toggle.type = 'checkbox';
-    toggle.className = 'conn-toggle ac-ability-toggle';
-    toggle.id = `ac-ability-toggle-${id}`;
-    toggle.dataset.ability = id;
-    const track = document.createElement('span');
-    track.className = 'conn-toggle-track';
-    toggleWrap.appendChild(toggle);
-    toggleWrap.appendChild(track);
+    const tri = document.createElement('span');
+    tri.className = 'ac-tri';
+    tri.id = `ac-group-tri-${group.id}`;
+    tri.dataset.state = 'off';
+    tri.setAttribute('role', 'button');
+    tri.setAttribute('tabindex', '0');
+    tri.title = 'Off · Mixed · On — click the left half for all-off, the right half for all-on';
+    tri.innerHTML = `<span class="ac-tri-knob"></span>`;
 
-    // Status message
-    const statusEl = document.createElement('span');
-    statusEl.className = 'ac-status ac-ability-status';
-    statusEl.id = `ac-ability-status-${id}`;
-    statusEl.style.display = 'none';
+    const chevron = document.createElement('span');
+    chevron.className = 'ac-row-chevron';
+    chevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
 
-    row.appendChild(iconWrap);
-    row.appendChild(label);
-    row.appendChild(statusEl);
-    row.appendChild(toggleWrap);
-    container.appendChild(row);
+    head.appendChild(iconWrap);
+    head.appendChild(label);
+    head.appendChild(tri);
+    head.appendChild(chevron);
 
-    // ── Toggle click handler ──
-    toggle.addEventListener('change', () => {
-      const enabled = toggle.checked;
-      if (meta.simple) {
-        // Simple ability — toggle directly
-        _toggleAbility(id, enabled, row);
+    // ── Group body — member rows (credential members get a slot to fill) ──
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'ac-group-body';
+    bodyEl.id = `ac-group-body-${group.id}`;
+    for (const member of group.members) {
+      if (_CREDENTIAL_MEMBERS.has(member)) {
+        const slot = document.createElement('div');
+        slot.id = `ac-group-slot-${member}`;
+        bodyEl.appendChild(slot);
       } else {
-        // Complex ability — need config first
-        if (enabled && !_abilityStates[id]) {
-          // Not yet configured — show warning + expand
-          toggle.checked = false;
-          _showAbilityConfigWarning(id, row);
-          _expandAbilityConfig(id);
-        } else if (enabled && _abilityStates[id]) {
-          // Already configured — enable
-          _toggleAbility(id, true, row);
-        } else {
-          // Disabling
-          _toggleAbility(id, false, row);
-        }
+        bodyEl.appendChild(_buildAbilityRow(member, _ABILITY_META[member]));
+      }
+    }
+
+    groupEl.appendChild(head);
+    groupEl.appendChild(bodyEl);
+    container.appendChild(groupEl);
+
+    // Expand / collapse on head click — but not when the click lands on the tri.
+    head.addEventListener('click', (e) => {
+      if (e.target.closest('.ac-tri')) return;
+      groupEl.classList.toggle('expanded');
+    });
+
+    // 3-position toggle: left half → all off, right half → all on. The middle
+    // "mixed" detent is derived (set by _syncGroupToggle), not clicked into.
+    tri.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const rect = tri.getBoundingClientRect();
+      _setGroupAll(group, (e.clientX - rect.left) > rect.width / 2);
+    });
+    tri.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        _setGroupAll(group, tri.dataset.state !== 'on');
       }
     });
   }
+
+  // Append the former settings "categories" as expandable groups in the SAME
+  // table, after the host-ability groups. Their cards are relocated in later.
+  _buildIntegrationGroupShells(container);
 
   // Wire up save/unconfigure buttons for complex ability config panels
   const complexAbilities = ['image_generation', 'automation', 'visualizer'];
@@ -983,10 +1276,64 @@ function _initAbilitiesCompact() {
     _qs(`ac-int-${a}-unconfigure`)?.addEventListener('click', () => _disableAbility(a));
   }
 
+  _syncAllGroupToggles();
+
   // Render Lucide icons
   if (typeof lucide !== 'undefined' && lucide.createIcons) {
     lucide.createIcons();
   }
+}
+
+// Flip every (non-credential) member of a group to `goOn`. Credential members
+// (Web Scraper, Browser Cookies) are skipped — they need their own credentials
+// and are managed from their own row.
+function _setGroupAll(group, goOn) {
+  for (const m of group.members) {
+    if (_CREDENTIAL_MEMBERS.has(m)) continue;
+    if (!!_abilityStates[m] === goOn) continue;
+    _markAbilityAction(m);
+    const toggle = _qs(`ac-ability-toggle-${m}`);
+    if (toggle) toggle.checked = goOn;   // optimistic; _toggleAbility reverts on error
+    _toggleAbility(m, goOn, _qs(`ac-ability-row-${m}`));
+  }
+  _syncGroupToggle(group.id);
+}
+
+// Reflect a group's 3-position toggle from its members' states.
+function _syncGroupToggle(groupId) {
+  const group = _ABILITY_GROUPS.find(g => g.id === groupId);
+  const tri = _qs(`ac-group-tri-${groupId}`);
+  if (!group || !tri) return;
+  const togglable = group.members.filter(m => !_CREDENTIAL_MEMBERS.has(m));
+  const onCount = togglable.filter(m => !!_abilityStates[m]).length;
+  tri.dataset.state = onCount === 0 ? 'off'
+    : (onCount === togglable.length ? 'on' : 'mixed');
+}
+
+function _syncAllGroupToggles() {
+  for (const g of _ABILITY_GROUPS) _syncGroupToggle(g.id);
+}
+
+function _syncGroupOfAbility(ability) {
+  const g = _ABILITY_GROUPS.find(gr => gr.members.includes(ability));
+  if (g) _syncGroupToggle(g.id);
+}
+
+// Move the compactified credential cards (Web Scraper, Browser Cookies) into
+// the Web group body so they sit with the other Web rows instead of forming a
+// separate list below. Runs after _compactifyAllIntegrations turns them into
+// `.ac-card-compact` rows; mirrors _placeIntegrationGroupCards, which does the
+// same relocation for the channel / OAuth groups.
+function _placeWebCredentialRows() {
+  for (const id of ['scraper', 'browser_session']) {
+    const slot = document.getElementById(`ac-group-slot-${id}`);
+    const card = document.getElementById(`ac-int-${id}-card`);
+    if (slot && card) slot.replaceWith(card);
+  }
+  // The standalone "Non-OAuth web tools" intro is now redundant (its cards moved
+  // into the Web group), so hide it.
+  const intro = document.getElementById('ac-web-tools-intro');
+  if (intro) intro.style.display = 'none';
 }
 
 function _showAbilityConfigWarning(ability, row) {
@@ -1037,6 +1384,7 @@ async function _toggleAbility(ability, enabled, row) {
       const res = await _fetch(apiPath(`/admin/integrations/abilities/${ability}`), { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     }
+    _markAbilityAction(ability);   // re-stamp: the write has now committed
     _abilityStates[ability] = enabled;
     _applyAbilityRowStatus(ability, enabled);
     if (statusEl) {
@@ -1063,6 +1411,7 @@ function _applyAbilityRowStatus(ability, enabled) {
   if (toggle) toggle.checked = !!enabled;
   const row = _qs(`ac-ability-row-${ability}`);
   if (row) row.classList.toggle('ac-ability-enabled', !!enabled);
+  _syncGroupOfAbility(ability);
 }
 
 function _initCollapsible(provider) {
@@ -1113,6 +1462,444 @@ function _expandCard(provider) {
   _toggleCard(provider, true);
 }
 
+// ── Unified compact rows for every integration / channel / generic ─────────
+// Goal: the rest of the page looks like the Agent Tools table — one slim row
+// (icon · name · requirement note · toggle · chevron) that expands to the
+// existing config form. We reuse each card's collapsible body (built by
+// _initCollapsible) and its existing save/OAuth/unconfigure wiring; only the
+// row chrome + the requirement note are layered on top.
+
+const _OAUTH_PROVIDER_IDS = ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon'];
+const _GENERIC_PROVIDER_IDS = ['scraper', 'browser_session'];
+const _CHANNEL_IDS = ['telegram'];
+const _SOON_CHANNEL_IDS = ['whatsapp', 'slack', 'discord', 'email', 'twilio'];
+
+// One-to-1.5-sentence requirement note per row (cost / OAuth / special setup).
+const _ROW_NOTES = {
+  google:    `Free — create a Google Cloud OAuth app. Grants Gmail, Drive, Docs, and Calendar.`,
+  microsoft: `Free — register an Azure app. Grants Outlook, OneDrive, and Calendar.`,
+  yahoo:     `Free OAuth — Yahoo exposes account identity only (no public Mail API).`,
+  dropbox:   `Free — a Dropbox app for file read/write and sharing.`,
+  meta:      `Free OAuth — a Meta app with App Review is required to publish to Facebook/Instagram.`,
+  twitter:   `Paid — X's API needs a paid tier (Basic ≈ $200/mo) for most posting/reading; the free tier is tiny.`,
+  linkedin:  `Free OAuth — posting requires LinkedIn's Community/Marketing API approval.`,
+  tiktok:    `Free OAuth, but the app must pass TikTok's review before going live.`,
+  pinterest: `Free OAuth — a Pinterest app (trial access, then standard approval).`,
+  reddit:    `Free — register a Reddit app for reading and posting.`,
+  snapchat:  `Free OAuth — Snap Kit exposes identity and Bitmoji only.`,
+  twitch:    `Free — register a Twitch app for channel, chat, and clips.`,
+  ebay:      `Free API — an eBay developer account; the production keyset needs approval.`,
+  etsy:      `Free API — an Etsy app, reviewed before production use.`,
+  shopify:   `Free API — a Shopify Partner app; installs per store.`,
+  amazon:    `Requires a Professional Seller plan ($39.99/mo) plus SP-API developer registration.`,
+  scraper:   `Bring-your-own scraping provider (Apify, RapidAPI, or custom HTTP) — most bill per request.`,
+  browser_session: `Free — paste cookies so the agent can act as you on sites with no API. Per-user.`,
+  telegram:  `Free — create a bot with @BotFather; each agent supplies its own token.`,
+  whatsapp:  `Paid — per-conversation fees via Meta WhatsApp Business or Twilio.`,
+  slack:     `Free OAuth app — Slack is free for basic workspaces.`,
+  discord:   `Free — create a Discord bot/app.`,
+  email:     `Free with your own SMTP/IMAP or an email provider.`,
+  twilio:    `Paid — per-message / per-minute Twilio fees.`,
+};
+
+// Coming-soon integrations that have no config card — rendered as greyed rows
+// into the per-category containers added in admin-configuration.html.
+const _COMING_SOON_ROWS = {
+  'ac-rows-productivity': [
+    { name: 'Notion',        icon: 'file-text', note: `Free OAuth — connect Notion pages and databases.` },
+    { name: 'Airtable',      icon: 'table',     note: `Free tier (OAuth or token); paid plans for larger bases.` },
+    { name: 'Google Sheets', icon: 'sheet',     note: `Free OAuth — part of Google Cloud; read/write spreadsheets.` },
+  ],
+  'ac-rows-developer': [
+    { name: 'GitHub',        icon: 'github',        note: `Free — OAuth app or GitHub App for repos, issues, and PRs.` },
+    { name: 'GitLab',        icon: 'git-branch',    note: `Free OAuth — repos, issues, and pipelines.` },
+    { name: 'Jira / Linear', icon: 'kanban-square', note: `Free OAuth — issues and projects.` },
+  ],
+  'ac-rows-crm': [
+    { name: 'HubSpot',    icon: 'contact', note: `Free OAuth app — HubSpot has free and paid tiers.` },
+    { name: 'Salesforce', icon: 'cloud',   note: `OAuth — requires a paid Salesforce org.` },
+    { name: 'Mailchimp',  icon: 'mail',    note: `Free OAuth — Mailchimp has free and paid tiers.` },
+  ],
+  'ac-rows-payments': [
+    { name: 'Stripe', icon: 'credit-card', note: `OAuth (Connect) — free to integrate; Stripe takes a per-transaction fee.` },
+    { name: 'PayPal', icon: 'wallet',      note: `OAuth — free to integrate; per-transaction fees apply.` },
+    { name: 'Square', icon: 'square',      note: `OAuth — free to integrate; per-transaction fees apply.` },
+    { name: 'Bank Accounts', icon: 'landmark', note: `Via an aggregator (e.g. Plaid) — usage-based pricing.` },
+  ],
+};
+
+// ── Former settings "categories" → expandable groups in the ONE Agent Tools
+// table ──────────────────────────────────────────────────────────────────────
+// Each entry renders as an `.ac-row.ac-group` appended into #ac-abilities-compact
+// right after the host-ability groups (Administrator / Core / Web), so the whole
+// tab reads as a single flush table instead of a stack of collapsible category
+// sections. Members are existing integration cards (relocated into the group body
+// at runtime by _placeIntegrationGroupCards) and/or coming-soon placeholder rows.
+//
+// The group's 3-position toggle (Off · Mixed · On) reflects and bulk-controls
+// ONLY the available members — coming-soon rows never count, and a group with no
+// available members yet (Payments / Developer / CRM) shows no toggle at all, just
+// an expand chevron. Turning a group off disables/unconfigures its members;
+// turning it on can only enable members that need no credentials (a channel) —
+// an OAuth app still needs its keys entered on its own row.
+const _INTEGRATION_GROUPS = [
+  {
+    id: 'communication', name: 'Communication', icon: 'message-square', color: '#26A5E4',
+    desc: 'How agents send and receive messages. Enable a channel to make it available to your agents.',
+    members: [{ id: 'telegram', kind: 'channel' }],
+    soonCards: ['whatsapp', 'slack', 'discord', 'email', 'twilio'],
+    soonRowsKey: null,
+  },
+  {
+    id: 'productivity', name: 'Productivity', icon: 'briefcase', color: '#4285F4',
+    desc: 'App-level credentials for mail, calendar and file providers. Users connect their personal accounts from the agent’s Abilities tab.',
+    members: [{ id: 'google', kind: 'oauth' }, { id: 'microsoft', kind: 'oauth' }, { id: 'yahoo', kind: 'oauth' }, { id: 'dropbox', kind: 'oauth' }],
+    soonCards: [],
+    soonRowsKey: 'ac-rows-productivity',
+  },
+  {
+    id: 'social', name: 'Social Media', icon: 'share-2', color: '#bb9af7',
+    desc: 'App-level credentials for social platform OAuth. Users connect their personal accounts from the agent’s Abilities tab.',
+    members: [{ id: 'meta', kind: 'oauth' }, { id: 'twitter', kind: 'oauth' }, { id: 'linkedin', kind: 'oauth' }, { id: 'tiktok', kind: 'oauth' }, { id: 'pinterest', kind: 'oauth' }, { id: 'reddit', kind: 'oauth' }, { id: 'snapchat', kind: 'oauth' }, { id: 'twitch', kind: 'oauth' }],
+    soonCards: [],
+    soonRowsKey: null,
+  },
+  {
+    id: 'marketplace', name: 'Marketplaces', icon: 'shopping-bag', color: '#e0af68',
+    desc: 'App-level credentials for e-commerce platform OAuth. Sellers connect their accounts from the agent’s Abilities tab.',
+    members: [{ id: 'ebay', kind: 'oauth' }, { id: 'etsy', kind: 'oauth' }, { id: 'shopify', kind: 'oauth' }, { id: 'amazon', kind: 'oauth' }],
+    soonCards: [],
+    soonRowsKey: null,
+  },
+  {
+    id: 'payments', name: 'Payments', icon: 'credit-card', color: '#9ece6a',
+    desc: 'Accept payments and read transactions. Free to connect via OAuth; providers charge per-transaction fees.',
+    members: [],
+    soonCards: [],
+    soonRowsKey: 'ac-rows-payments',
+  },
+  {
+    id: 'developer', name: 'Developer', icon: 'git-branch', color: '#7aa2f7',
+    desc: 'Repositories, issues, and CI. Free — connect with an OAuth app or token.',
+    members: [],
+    soonCards: [],
+    soonRowsKey: 'ac-rows-developer',
+  },
+  {
+    id: 'crm', name: 'CRM & Marketing', icon: 'contact', color: '#bb9af7',
+    desc: 'Contacts, deals, and email campaigns. Mostly free OAuth; some products need a paid plan.',
+    members: [],
+    soonCards: [],
+    soonRowsKey: 'ac-rows-crm',
+  },
+];
+
+function _integrationGroupOf(id) {
+  return _INTEGRATION_GROUPS.find(g => g.members.some(m => m.id === id));
+}
+
+// Build the empty group shells (head + body with a slot per card member) and
+// append them to the single Agent Tools table, after the host-ability groups.
+// The real cards are relocated into the slots later by _placeIntegrationGroupCards.
+function _buildIntegrationGroupShells(container) {
+  for (const group of _INTEGRATION_GROUPS) {
+    const groupEl = document.createElement('div');
+    groupEl.className = 'ac-row ac-group';
+    groupEl.id = `ac-group-${group.id}`;
+
+    const head = document.createElement('div');
+    head.className = 'ac-ability-row ac-group-head';
+
+    const iconWrap = document.createElement('div');
+    iconWrap.className = 'ac-ability-icon';
+    iconWrap.style.color = group.color;
+    iconWrap.innerHTML = `<i data-lucide="${group.icon}" style="width:18px;height:18px;"></i>`;
+
+    const label = document.createElement('div');
+    label.className = 'ac-ability-label';
+    label.innerHTML = `<div class="ac-ability-name"></div><div class="ac-ability-desc"></div>`;
+    label.querySelector('.ac-ability-name').textContent = group.name;
+    label.querySelector('.ac-ability-desc').textContent = group.desc;
+
+    head.appendChild(iconWrap);
+    head.appendChild(label);
+
+    // 3-position toggle — only when the group has at least one available
+    // (non-coming-soon) member it can actually reflect / control.
+    if (group.members.length) {
+      const tri = document.createElement('span');
+      tri.className = 'ac-tri';
+      tri.id = `ac-group-tri-${group.id}`;
+      tri.dataset.state = 'off';
+      tri.setAttribute('role', 'button');
+      tri.setAttribute('tabindex', '0');
+      tri.title = 'Off · Mixed · On — click the left half for all-off, the right half for all-on';
+      tri.innerHTML = `<span class="ac-tri-knob"></span>`;
+      head.appendChild(tri);
+      tri.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const rect = tri.getBoundingClientRect();
+        _setIntegrationGroupAll(group, (e.clientX - rect.left) > rect.width / 2);
+      });
+      tri.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          _setIntegrationGroupAll(group, tri.dataset.state !== 'on');
+        }
+      });
+    }
+
+    const chevron = document.createElement('span');
+    chevron.className = 'ac-row-chevron';
+    chevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
+    head.appendChild(chevron);
+
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'ac-group-body';
+    bodyEl.id = `ac-group-body-${group.id}`;
+    for (const m of group.members) {
+      const slot = document.createElement('div');
+      slot.id = `ac-group-slot-${m.id}`;
+      bodyEl.appendChild(slot);
+    }
+
+    groupEl.appendChild(head);
+    groupEl.appendChild(bodyEl);
+    container.appendChild(groupEl);
+
+    head.addEventListener('click', (e) => {
+      if (e.target.closest('.ac-tri')) return;
+      groupEl.classList.toggle('expanded');
+    });
+  }
+}
+
+// Move the compactified integration cards + coming-soon rows into their group
+// bodies in the single Agent Tools table, then hide the now-empty legacy category
+// sections. Runs after _compactifyAllIntegrations has built the compact rows.
+function _placeIntegrationGroupCards() {
+  for (const group of _INTEGRATION_GROUPS) {
+    const body = document.getElementById(`ac-group-body-${group.id}`);
+    if (!body) continue;
+    // Available member cards → their slots, in order.
+    for (const m of group.members) {
+      const slot = document.getElementById(`ac-group-slot-${m.id}`);
+      const card = document.getElementById(`ac-int-${m.id}-card`);
+      if (slot && card) slot.replaceWith(card);
+    }
+    // Coming-soon channel cards (real cards, compactified as 'soon' rows).
+    for (const sid of (group.soonCards || [])) {
+      const card = document.getElementById(`ac-int-${sid}-card`);
+      if (card) body.appendChild(card);
+    }
+    // Coming-soon placeholder rows (no backing card) — build inline.
+    const soon = group.soonRowsKey ? (_COMING_SOON_ROWS[group.soonRowsKey] || []) : [];
+    for (const it of soon) {
+      const row = document.createElement('div');
+      row.className = 'ac-ability-row ac-int-row ac-soon-row';
+      row.innerHTML = `<div class="ac-ability-icon"><i data-lucide="${it.icon}" style="width:18px;height:18px;"></i></div>`
+        + `<div class="ac-ability-label"><div class="ac-ability-name"></div><div class="ac-ability-desc"></div></div>`
+        + `<span class="ac-soon-pill">Coming soon</span>`;
+      row.querySelector('.ac-ability-name').textContent = it.name;
+      row.querySelector('.ac-ability-desc').textContent = it.note;
+      body.appendChild(row);
+    }
+  }
+  // Hide the emptied legacy category sections (their cards now live in groups).
+  for (const cid of ['ac-cat-channels', 'ac-cat-productivity', 'ac-cat-social', 'ac-cat-marketplace', 'ac-cat-payments', 'ac-cat-developer', 'ac-cat-crm']) {
+    const cat = document.getElementById(cid);
+    if (cat) cat.style.display = 'none';
+  }
+  _syncAllIntegrationGroupTris();
+}
+
+// ── Integration-group 3-position toggle: reflect state + bulk on/off ─────────
+// Only AVAILABLE members count (coming-soon never does). "On" = configured /
+// enabled (the row's badge carries ac-int-badge-on, read by _rowConfigured).
+function _syncIntegrationGroupTri(groupId) {
+  const group = _INTEGRATION_GROUPS.find(g => g.id === groupId);
+  const tri = _qs(`ac-group-tri-${groupId}`);
+  if (!group || !tri || !group.members.length) return;
+  const onCount = group.members.filter(m => _rowConfigured(m.id)).length;
+  tri.dataset.state = onCount === 0 ? 'off'
+    : (onCount === group.members.length ? 'on' : 'mixed');
+}
+
+function _syncAllIntegrationGroupTris() {
+  for (const g of _INTEGRATION_GROUPS) _syncIntegrationGroupTri(g.id);
+}
+
+function _syncIntegrationGroupTriOf(id) {
+  const g = _integrationGroupOf(id);
+  if (g) _syncIntegrationGroupTri(g.id);
+}
+
+// Bulk on/off for a group's available members. Off disables channels and
+// unconfigures providers (one confirm for the destructive provider case). On
+// enables what needs no credentials (a channel); unconfigured OAuth providers
+// can't be force-enabled here — they still need their keys on their own row.
+function _setIntegrationGroupAll(group, goOn) {
+  if (!goOn) {
+    const configuredProviders = group.members.filter(m => m.kind !== 'channel' && _rowConfigured(m.id));
+    if (configuredProviders.length &&
+        !confirm(`Disable all configured ${group.name} integrations? This removes their saved app credentials.`)) {
+      return;
+    }
+    for (const m of group.members) {
+      if (!_rowConfigured(m.id)) continue;
+      if (m.kind === 'channel') _disableChannel(m.id);
+      else _unconfigureById(m.id, m.kind);
+    }
+  } else {
+    for (const m of group.members) {
+      if (m.kind === 'channel' && !_rowConfigured(m.id)) _enableChannel(m.id);
+    }
+  }
+}
+
+function _rowConfigured(id) {
+  const badge = _qs(`ac-int-${id}-badge`);
+  return !!(badge && badge.classList.contains('ac-int-badge-on'));
+}
+
+function _unconfigureById(id, kind) {
+  if (id === 'scraper') return _unconfigureScraper();
+  if (id === 'browser_session') return _unconfigureBrowserSession();
+  return _unconfigureProvider(id);
+}
+
+// Transform one existing card into a compact row + collapsible config body.
+function _compactifyCard(id, kind) {
+  const card = _qs(`ac-int-${id}-card`);
+  if (!card || card.dataset.compactified) return;
+  if (!_qs(`ac-int-${id}-body`)) { try { _initCollapsible(id); } catch (_) {} }
+  card.classList.add('ac-card-compact');
+
+  const header = card.querySelector(':scope > div');
+  const soon = (kind === 'soon');
+  const note = _ROW_NOTES[id] || '';
+
+  // Clone the card's existing brand icon (keeps Google's multicolour mark etc.)
+  const iconWrap = document.createElement('div');
+  iconWrap.className = 'ac-ability-icon';
+  const srcIcon = header ? header.querySelector('svg, i[data-lucide]') : null;
+  if (srcIcon) {
+    const ic = srcIcon.cloneNode(true);
+    ic.setAttribute('width', '18'); ic.setAttribute('height', '18');
+    ic.style.width = '18px'; ic.style.height = '18px';
+    iconWrap.appendChild(ic);
+  }
+
+  let name = id;
+  if (header) {
+    const nameNode = header.querySelector('div[style*="font-weight:600"]');
+    if (nameNode) name = nameNode.textContent.trim();
+  }
+
+  const label = document.createElement('div');
+  label.className = 'ac-ability-label';
+  label.innerHTML = `<div class="ac-ability-name"></div><div class="ac-ability-desc"></div>`;
+  label.querySelector('.ac-ability-name').textContent = name;
+  label.querySelector('.ac-ability-desc').textContent = note;
+
+  const row = document.createElement('div');
+  row.className = 'ac-ability-row ac-int-row' + (soon ? ' ac-soon-row' : '');
+  row.id = `ac-int-row-${id}`;
+  row.appendChild(iconWrap);
+  row.appendChild(label);
+
+  if (soon) {
+    const pill = document.createElement('span');
+    pill.className = 'ac-soon-pill';
+    pill.textContent = 'Coming soon';
+    row.appendChild(pill);
+    card.insertBefore(row, card.firstChild);
+    for (const ch of [...card.children]) { if (ch !== row) ch.style.display = 'none'; }
+    card.dataset.compactified = '1';
+    return;
+  }
+
+  const toggleWrap = document.createElement('label');
+  toggleWrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
+  toggleWrap.title = 'Enable';
+  const toggle = document.createElement('input');
+  toggle.type = 'checkbox';
+  toggle.className = 'conn-toggle ac-int-row-toggle';
+  toggle.id = `ac-int-row-toggle-${id}`;
+  const track = document.createElement('span');
+  track.className = 'conn-toggle-track';
+  toggleWrap.appendChild(toggle);
+  toggleWrap.appendChild(track);
+
+  const chevron = document.createElement('span');
+  chevron.className = 'ac-int-row-chevron';
+  chevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
+
+  row.appendChild(toggleWrap);
+  row.appendChild(chevron);
+  if (header) header.style.display = 'none';
+  card.insertBefore(row, card.firstChild);
+  card.dataset.compactified = '1';
+
+  // Row click (away from the toggle) expands / collapses the config body.
+  row.addEventListener('click', (e) => {
+    if (e.target.closest('.ac-ability-toggle-wrap')) return;
+    const body = _qs(`ac-int-${id}-body`);
+    const open = body && body.style.display !== 'none';
+    _toggleCard(id, !open);
+    chevron.style.transform = !open ? 'rotate(90deg)' : 'rotate(0deg)';
+  });
+
+  // Toggle semantics: channels enable/disable directly; OAuth/generic providers
+  // expand the form when turned on unconfigured, and unconfigure when turned off.
+  toggle.addEventListener('change', () => {
+    const on = toggle.checked;
+    if (kind === 'channel') {
+      if (on) _enableChannel(id); else _disableChannel(id);
+      return;
+    }
+    if (on) {
+      if (!_rowConfigured(id)) {
+        toggle.checked = false;
+        _toggleCard(id, true);
+        chevron.style.transform = 'rotate(90deg)';
+      }
+    } else if (_rowConfigured(id)) {
+      if (!confirm(`Disable ${name}? This removes the saved app credentials.`)) {
+        toggle.checked = true;
+        return;
+      }
+      _unconfigureById(id, kind);
+    }
+  });
+}
+
+function _compactifyAllIntegrations() {
+  for (const p of _OAUTH_PROVIDER_IDS) _compactifyCard(p, 'oauth');
+  for (const p of _GENERIC_PROVIDER_IDS) _compactifyCard(p, 'generic');
+  for (const c of _CHANNEL_IDS) _compactifyCard(c, 'channel');
+  for (const c of _SOON_CHANNEL_IDS) _compactifyCard(c, 'soon');
+  _placeWebCredentialRows();        // Web Scraper + Browser Cookies into the Web group
+  _placeIntegrationGroupCards();    // channels/providers into their groups; hide legacy categories
+  if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+}
+
+function _syncRowToggle(id) {
+  const toggle = _qs(`ac-int-row-toggle-${id}`);
+  if (!toggle) return;
+  const on = _rowConfigured(id);
+  toggle.checked = on;
+  const row = _qs(`ac-int-row-${id}`);
+  if (row) row.classList.toggle('ac-ability-enabled', on);
+  _syncIntegrationGroupTriOf(id);   // keep the parent group's 3-pos toggle in sync
+}
+
+function _syncAllRowToggles() {
+  for (const id of [..._OAUTH_PROVIDER_IDS, ..._GENERIC_PROVIDER_IDS, ..._CHANNEL_IDS]) {
+    _syncRowToggle(id);
+  }
+}
+
 function _initIntegrations() {
   const providers = ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon'];
   for (const p of providers) {
@@ -1148,7 +1935,11 @@ function _initIntegrations() {
   // Rendered as compact rows with toggle — see _renderAbilitiesCompact()
   _initAbilitiesCompact();
 
-  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer']);
+  // Unify every OAuth / channel / generic card into the same compact-row look,
+  // and render the card-less coming-soon integrations as greyed rows.
+  _compactifyAllIntegrations();
+
+  _initIntegrationsSearch([...providers, ...genericProviders, ...channels, ...comingSoonChannels, 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management', 'app_control', 'wiki_control']);
   _initIntegrationAdminChat();
 }
 
@@ -1168,6 +1959,16 @@ function _intAdminGetSession() {
   _intAdminSessionId = fresh;
   try { localStorage.setItem(_intAdminStorageKey(), fresh); } catch (_) {}
   return fresh;
+}
+
+// Each visit to the Agent Settings section starts a brand-new webAgent session,
+// so the chat there is a fresh conversation (matching the page chat pills).
+// Clears the cached session id + the inline transcript.
+function _intAdminResetSession() {
+  _intAdminSessionId = null;
+  try { localStorage.removeItem(_intAdminStorageKey()); } catch (_) {}
+  const box = _qs('ac-int-admin-chat-messages');
+  if (box) { box.innerHTML = ''; box.style.display = 'none'; }
 }
 
 function _intAdminAppendBubble(role, text) {
@@ -1220,6 +2021,17 @@ async function _intAdminSend() {
     return;
   }
   _intAdminShowError('');
+
+  // This chat targets the shared webAgent (the `default` template), same as the
+  // Agents / Pages / Source Control pills. Resolve (or create) that agent first.
+  let agentId;
+  try {
+    agentId = await app.ensureWebagentAgent(app.currentUserId);
+  } catch (e) {
+    _intAdminShowError('Could not start webAgent: ' + (e.message || e));
+    return;
+  }
+
   input.value = '';
   _intAdminSetBusy(true);
   _intAdminAppendBubble('user', text);
@@ -1230,7 +2042,7 @@ async function _intAdminSend() {
     message: text,
     session_id: _intAdminGetSession(),
     user_id: app.currentUserId,
-    agent_template_id: 'integration-admin-agent',
+    agent_id: agentId,
   };
   if (_intAdminPending.length > 0) {
     payload.attachment_ids = _intAdminPending.map(a => a.attachment_id);
@@ -1342,19 +2154,36 @@ function _initIntegrationsSearch(providers) {
     })
     .filter(Boolean);
 
-  // Also include compact ability rows in search
+  // Also include compact ability rows in search (member rows only — never the
+  // group head rows, which always stay visible as section labels).
   const compactContainer = _qs('ac-abilities-compact');
   const compactRows = compactContainer
-    ? [...compactContainer.querySelectorAll('.ac-ability-row')]
+    ? [...compactContainer.querySelectorAll('.ac-ability-row:not(.ac-group-head):not(.ac-int-row)')]
+    : [];
+  const groupEls = compactContainer
+    ? [...compactContainer.querySelectorAll('.ac-group')]
     : [];
 
   const apply = () => {
     const q = input.value.trim().toLowerCase();
     let visible = 0;
+
+    // While searching, expand every group so member rows are reachable; collapse
+    // them all when the query is cleared.
+    for (const g of groupEls) g.classList.toggle('expanded', !!q);
+
+    // Track which categories have visible items
+    const catVisibility = {};
+
     for (const { card, haystack } of cards) {
       const match = !q || haystack.includes(q);
       card.style.display = match ? '' : 'none';
-      if (match) visible++;
+      if (match) {
+        visible++;
+        // Mark parent category
+        const cat = card.closest('.ac-category-group');
+        if (cat) catVisibility[cat.id] = true;
+      }
     }
     // Filter compact rows
     for (const row of compactRows) {
@@ -1363,7 +2192,12 @@ function _initIntegrationsSearch(providers) {
       const haystack = (name + ' ' + desc).toLowerCase();
       const match = !q || haystack.includes(q);
       row.style.display = match ? '' : 'none';
-      if (match) visible++;
+      if (match) {
+        visible++;
+        // Parent is the agent-tools category
+        const cat = _qs('ac-cat-agent-tools');
+        if (cat) catVisibility[cat.id] = true;
+      }
     }
     // Also filter config panels
     const configPanels = _qs('ac-ability-config-panels');
@@ -1373,15 +2207,46 @@ function _initIntegrationsSearch(providers) {
         const text = (panel.textContent || '').toLowerCase();
         const match = !q || text.includes(q);
         panel.style.display = match ? '' : 'none';
-        if (match) visible++;
+        if (match) {
+          visible++;
+          const cat = _qs('ac-cat-agent-tools');
+          if (cat) catVisibility[cat.id] = true;
+        }
       }
     }
+
+    // Hide a group entirely when none of its member rows/cards survive the
+    // filter, so a search doesn't leave empty expanded groups behind.
+    for (const g of groupEls) {
+      if (!q) { g.style.display = ''; continue; }
+      const body = g.querySelector('.ac-group-body');
+      const anyVisible = body && [...body.children].some(el => el.style.display !== 'none');
+      g.style.display = anyVisible ? '' : 'none';
+    }
+
+    // When searching, auto-open categories with matches; when cleared, close all
+    for (const cat of document.querySelectorAll('.ac-category-group')) {
+      if (q) {
+        cat.open = !!catVisibility[cat.id];
+      } else {
+        cat.open = false;
+      }
+    }
+
     if (emptyEl) emptyEl.style.display = (q && visible === 0) ? 'block' : 'none';
   };
   input.addEventListener('input', apply);
 }
 
 async function _loadIntegrations() {
+  // Stamp the instant this load begins, BEFORE the (slow) fetch. Any ability the
+  // admin toggles after this point must not be clobbered by this load's stale
+  // snapshot — see `_abilityLastActionAt` above.
+  const _loadStart = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const _applyAbilityFromLoad = (ability, enabled) => {
+    if ((_abilityLastActionAt[ability] || 0) > _loadStart) return; // user changed it mid-load
+    _applyAbilityStatus(ability, enabled);
+  };
   try {
     const res = await _fetch(apiPath('/admin/integrations'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1404,17 +2269,28 @@ async function _loadIntegrations() {
     _applyProviderStatus('amazon',    data.amazon_configured,    data.amazon_client_id,    data.amazon_redirect_uri,       data.amazon_scopes,    data.amazon_redirect_uri_suggested);
     _applyScraperStatus(data);
     _applyChannelStatus('telegram', data.telegram_configured);
-    _applyAbilityStatus('codebase_admin',   data.codebase_admin_configured);
-    _applyAbilityStatus('create_tools',     data.create_tools_configured);
-    _applyAbilityStatus('automation',       data.automation_configured);
-    _applyAbilityStatus('web_access',       data.web_access_configured);
-    _applyAbilityStatus('browser_control',  data.browser_control_configured);
-    _applyAbilityStatus('image_generation', data.image_generation_configured);
-    _applyAbilityStatus('visualizer',       data.visualizer_configured);
+    _applyAbilityFromLoad('codebase_admin',   data.codebase_admin_configured);
+    _applyAbilityFromLoad('git_control',      data.git_control_configured);
+    _applyAbilityFromLoad('ui_admin',         data.ui_admin_configured);
+    _applyAbilityFromLoad('terminal_control', data.terminal_control_configured);
+    _applyAbilityFromLoad('create_tools',     data.create_tools_configured);
+    _applyAbilityFromLoad('automation',       data.automation_configured);
+    _applyAbilityFromLoad('web_access',       data.web_access_configured);
+    _applyAbilityFromLoad('browser_control',  data.browser_control_configured);
+    _applyAbilityFromLoad('image_generation', data.image_generation_configured);
+    _applyAbilityFromLoad('visualizer',       data.visualizer_configured);
+    _applyAbilityFromLoad('agent_orchestration', data.agent_orchestration_configured);
+    _applyAbilityFromLoad('diagnostics',         data.diagnostics_configured);
+    _applyAbilityFromLoad('agent_management',    data.agent_management_configured);
+    _applyAbilityFromLoad('wiki_control',        data.wiki_control_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
+    // Reflect each provider/channel's configured state onto its unified row toggle.
+    _syncAllRowToggles();
+    // Reflect ability states onto each group's 3-position toggle.
+    _syncAllGroupToggles();
   } catch (e) {
-    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer']) {
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management']) {
       const s = _qs(`ac-int-${p}-status`);
       if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
     }
@@ -1441,6 +2317,7 @@ function _applyScraperStatus(data) {
     if (configuredEl) configuredEl.style.display = 'none';
     if (form) form.style.display = 'block';
   }
+  _syncRowToggle('scraper');
 }
 
 function _applyChannelStatus(channel, enabled) {
@@ -1456,6 +2333,7 @@ function _applyChannelStatus(channel, enabled) {
     if (configuredEl) configuredEl.style.display = 'none';
     if (form) form.style.display = 'block';
   }
+  _syncRowToggle(channel);
 }
 
 async function _enableChannel(channel) {
@@ -1503,6 +2381,7 @@ async function _enableAbility(ability) {
   try {
     const res = await _fetch(apiPath(`/admin/integrations/abilities/${ability}`), { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _markAbilityAction(ability);
     _applyAbilityStatus(ability, true);
     if (statusEl) { statusEl.textContent = 'Enabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
   } catch (e) {
@@ -1524,6 +2403,7 @@ async function _disableAbility(ability) {
   try {
     const res = await _fetch(apiPath(`/admin/integrations/abilities/${ability}`), { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _markAbilityAction(ability);
     _applyAbilityStatus(ability, false);
     if (statusEl) { statusEl.textContent = 'Disabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
   } catch (e) {
@@ -1552,6 +2432,7 @@ async function _loadBrowserSessionStatus() {
       if (configuredEl) configuredEl.style.display = 'none';
       if (form) form.style.display = 'block';
     }
+    _syncRowToggle('browser_session');
   } catch (e) {
     const s = _qs('ac-int-browser_session-status');
     if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
@@ -1817,6 +2698,7 @@ function _applyProviderStatus(provider, configured, clientId, redirectUri, enabl
     if (form) form.style.display = 'block';
   }
   _setScopeSelection(provider, enabledScopes || null);
+  _syncRowToggle(provider);
 }
 
 function _editProviderConfig(provider) {
@@ -2203,6 +3085,240 @@ function _initAppSettings() {
   if (saveBtn) saveBtn.addEventListener('click', _saveAppSettings);
   _initBootAnimation();
   _initBootMobileMode();
+  // Startup & Boot settings live in expandable compact rows: the collapsed line
+  // shows the current choice; expanding reveals the dropdown.
+  _wireBootRow('ac-boot-anim-row', 'ac-boot-animation');
+  _wireBootRow('ac-boot-mobile-row', 'ac-boot-mobile-mode');
+  _initMainPanelPages();
+}
+
+// Wire one Startup & Boot row: clicking the head expands/collapses it, and the
+// right-hand status shows the currently selected option's label.
+function _wireBootRow(rowId, selectId) {
+  const row = _qs(rowId);
+  if (!row) return;
+  const sel = _qs(selectId);
+  const head = row.querySelector(':scope > .ac-ability-row');
+  const status = row.querySelector('.ac-ability-status');
+  const syncStatus = () => {
+    if (status && sel) status.textContent = sel.options[sel.selectedIndex]?.text || '';
+  };
+  syncStatus();
+  sel?.addEventListener('change', syncStatus);
+  head?.addEventListener('click', (e) => {
+    // Don't toggle when interacting with the control itself.
+    if (e.target.closest('select, input, button, a, label')) return;
+    row.classList.toggle('expanded');
+  });
+}
+
+// ── Main Panel Pages (tab visibility + order) ──────────────────────────────
+
+const _MAIN_PANEL_PAGES = [
+  { id: 'admin-tools', label: 'Admin Tools', icon: 'wrench', locked: true },
+  { id: 'agents',      label: 'Agents',      icon: 'bot' },
+  { id: 'autoagent',   label: 'Pages',       icon: 'files' },
+  { id: 'web',         label: 'Web',         icon: 'globe' },
+  { id: 'terminal',    label: 'Terminal',    icon: 'terminal' },
+  { id: 'wiki',        label: 'Wiki',        icon: 'book-open' },
+];
+
+const _LS_MAIN_PANEL_ORDER = 'mainPanelOrder';
+const _LS_MAIN_PANEL_HIDDEN = 'mainPanelHidden';
+
+function _getMainPanelOrder() {
+  try {
+    const saved = localStorage.getItem(_LS_MAIN_PANEL_ORDER);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      const allIds = _MAIN_PANEL_PAGES.map(p => p.id);
+      const hasAll = allIds.every(id => parsed.includes(id));
+      if (hasAll && parsed.length === allIds.length) return parsed;
+    }
+  } catch (_) {}
+  return ['admin-tools', 'agents', 'autoagent', 'web', 'terminal', 'wiki'];
+}
+
+function _getMainPanelHidden() {
+  try {
+    const saved = localStorage.getItem(_LS_MAIN_PANEL_HIDDEN);
+    if (saved) return JSON.parse(saved);
+  } catch (_) {}
+  return [];
+}
+
+function _saveMainPanelOrder(order) {
+  try { localStorage.setItem(_LS_MAIN_PANEL_ORDER, JSON.stringify(order)); } catch (_) {}
+}
+
+function _saveMainPanelHidden(hidden) {
+  try { localStorage.setItem(_LS_MAIN_PANEL_HIDDEN, JSON.stringify(hidden)); } catch (_) {}
+}
+
+function _renderMainPanelList() {
+  const list = _qs('ac-main-panel-list');
+  if (!list) return;
+
+  const order = _getMainPanelOrder();
+  const hidden = _getMainPanelHidden();
+
+  list.innerHTML = '';
+
+  order.forEach((id, index) => {
+    const page = _MAIN_PANEL_PAGES.find(p => p.id === id);
+    if (!page) return;
+
+    const isHidden = hidden.includes(id);
+    const isLocked = page.locked;
+
+    const item = document.createElement('div');
+    // Shared compact-row look (`.ac-ability-row` inside the `.ac-list`), plus a
+    // drag handle so the list doubles as a drag-to-reorder list.
+    item.className = 'ac-main-panel-item ac-ability-row' + (isLocked ? ' ac-mp-locked' : '');
+    item.draggable = true;
+    item.dataset.pageId = id;
+    item.dataset.index = index;
+
+    const handle = document.createElement('span');
+    handle.className = 'ac-mp-drag-handle';
+    handle.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="18" x2="16" y2="18"/></svg>';
+
+    const iconWrap = document.createElement('span');
+    iconWrap.className = 'ac-ability-icon';
+    iconWrap.innerHTML = `<i data-lucide="${page.icon}" class="lucide-icon" style="width:18px;height:18px;"></i>`;
+
+    const label = document.createElement('div');
+    label.className = 'ac-ability-label';
+    label.innerHTML = `<div class="ac-ability-name">${_esc(page.label)}</div>`;
+
+    const toggle = document.createElement('button');
+    toggle.className = 'ac-mp-toggle' + (isHidden ? '' : ' active');
+    toggle.type = 'button';
+    toggle.title = isLocked ? 'Admin Tools is always visible' : (isHidden ? 'Show in header' : 'Hide from header');
+    toggle.disabled = isLocked;
+    toggle.addEventListener('click', () => {
+      if (isLocked) return;
+      const currentHidden = _getMainPanelHidden();
+      const idx = currentHidden.indexOf(id);
+      if (idx >= 0) {
+        currentHidden.splice(idx, 1);
+        toggle.classList.add('active');
+        toggle.title = 'Hide from header';
+      } else {
+        currentHidden.push(id);
+        toggle.classList.remove('active');
+        toggle.title = 'Show in header';
+      }
+      _saveMainPanelHidden(currentHidden);
+      _applyMainPanelOrder();
+    });
+
+    item.appendChild(handle);
+    item.appendChild(iconWrap);
+    item.appendChild(label);
+    item.appendChild(toggle);
+
+    // Drag events
+    item.addEventListener('dragstart', (e) => {
+      item.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', id);
+    });
+
+    item.addEventListener('dragend', () => {
+      item.classList.remove('dragging');
+      list.querySelectorAll('.ac-main-panel-item').forEach(el => el.classList.remove('drag-over'));
+    });
+
+    item.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      list.querySelectorAll('.ac-main-panel-item').forEach(el => el.classList.remove('drag-over'));
+      item.classList.add('drag-over');
+    });
+
+    item.addEventListener('dragleave', () => {
+      item.classList.remove('drag-over');
+    });
+
+    item.addEventListener('drop', (e) => {
+      e.preventDefault();
+      item.classList.remove('drag-over');
+      const fromId = e.dataTransfer.getData('text/plain');
+      const toId = id;
+      if (fromId === toId) return;
+
+      const currentOrder = _getMainPanelOrder();
+      const fromIdx = currentOrder.indexOf(fromId);
+      const toIdx = currentOrder.indexOf(toId);
+      if (fromIdx < 0 || toIdx < 0) return;
+
+      currentOrder.splice(fromIdx, 1);
+      const newToIdx = currentOrder.indexOf(toId);
+      currentOrder.splice(newToIdx + (fromIdx < toIdx ? 0 : 0), 0, fromId);
+
+      _saveMainPanelOrder(currentOrder);
+      _renderMainPanelList();
+      _applyMainPanelOrder();
+    });
+
+    list.appendChild(item);
+  });
+
+  if (window.lucide) {
+    try { lucide.createIcons(); } catch (_) {}
+  }
+}
+
+function _applyMainPanelOrder() {
+  const order = _getMainPanelOrder();
+  const hidden = _getMainPanelHidden();
+
+  // Update the hidden <select> options order
+  const nativeSelect = document.getElementById('main-tab-select');
+  if (nativeSelect) {
+    const options = Array.from(nativeSelect.options);
+    const accountOpt = options.find(o => o.value === 'account');
+    const otherOpts = options.filter(o => o.value !== 'account');
+
+    otherOpts.sort((a, b) => {
+      const ai = order.indexOf(a.value);
+      const bi = order.indexOf(b.value);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
+
+    otherOpts.forEach(opt => nativeSelect.appendChild(opt));
+    if (accountOpt) nativeSelect.appendChild(accountOpt);
+  }
+
+  // Reorder + show/hide the header tab buttons. Nodes are KEPT in the DOM
+  // (display toggled, not removed) so a later un-hide restores them live
+  // without a reload. This mirrors the pre-paint block in index.html that
+  // applies the same preference before first paint to avoid a flash.
+  const tabBar = document.getElementById('main-tabs');
+  if (!tabBar) return;
+
+  const adminGroup = document.getElementById('admin-tools-group');
+  const tabButtons = {};
+  if (adminGroup) tabButtons['admin-tools'] = adminGroup;
+  tabBar.querySelectorAll('.main-tab').forEach(btn => {
+    const id = btn.dataset.value;
+    if (!id) return;
+    tabButtons[id] = (adminGroup && adminGroup.contains(btn)) ? adminGroup : btn;
+  });
+
+  order.forEach(id => {
+    const tab = tabButtons[id];
+    if (!tab) return;
+    const hide = id !== 'admin-tools' && hidden.includes(id);
+    tab.style.display = hide ? 'none' : '';
+    tabBar.appendChild(tab);   // reorder
+  });
+}
+
+function _initMainPanelPages() {
+  _renderMainPanelList();
+  _applyMainPanelOrder();
 }
 
 const _BOOT_ANIM_ALLOWED = ['chat-slide-right', 'page-slide-in', 'crossfade'];
@@ -2498,8 +3614,8 @@ export function initAppConfig() {
 /** Called when the App Config tab becomes active — loads fresh data. */
 export async function startAppConfig() {
   _active = true;
-  // Show the last-active section (or default to llm)
-  _showSection(_activeSection || 'llm');
+  // Show the last-active section (or default to agent-settings)
+  _showSection(_activeSection || 'agent-settings');
 
   // Load all sections in parallel (non-blocking)
   _loadLLM();

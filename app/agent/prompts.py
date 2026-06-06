@@ -106,7 +106,16 @@ async def append_skills_section(
         skills = await db.get_agent_skills(agent_id, user_id=None)
     except Exception as e:
         logger.debug("Could not load skills for agent %s: %s", agent_id, e)
-        return system_prompt
+        skills = []
+
+    # Merge in skills contributed by the agent's enabled abilities (drop-in
+    # FEATURE.skill). Handle-keyed so they can't collide with authored skills.
+    try:
+        from app.agent.ability_skills import collect_ability_skills
+        skills = list(skills or []) + await collect_ability_skills(agent_id, user_id=None)
+    except Exception as e:
+        logger.debug("Could not collect ability skills for agent %s: %s", agent_id, e)
+
     if not skills:
         return system_prompt
 

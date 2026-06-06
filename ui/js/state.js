@@ -26,7 +26,6 @@ export const app = {
 
   currentSessionId: '',
   currentUserId: '',
-  currentAgentId: '',
   localUserId: '',
 
   dbTables: [],
@@ -71,6 +70,23 @@ export const app = {
   // when the WS reconnects (refresh, session switch back, network blip).
   lastSessionSeq: {},          // { [sessionId]: int }
 };
+
+// `currentAgentId` is reactive: whenever the active agent changes (agent
+// activation, session switch — set from several places), the chat footer's
+// context/max indicator re-resolves for the new agent's model. Guarded so it's
+// a no-op before the chat activity module has registered its refresher.
+let _currentAgentId = '';
+Object.defineProperty(app, 'currentAgentId', {
+  enumerable: true,
+  configurable: true,
+  get() { return _currentAgentId; },
+  set(v) {
+    const next = v || '';
+    if (next === _currentAgentId) return;
+    _currentAgentId = next;
+    try { app.refreshModelContext?.(); } catch (e) { /* ignore */ }
+  },
+});
 
 export function bindDom() {
   app.aDot = document.getElementById('agent-dot');

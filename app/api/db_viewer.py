@@ -48,7 +48,6 @@ _USER_ID_COLUMN: dict[str, str] = {
     "sessions": "user_id",
     "session_summaries": "user_id",
     "memories": "user_id",
-    "memory_links": "user_id",
     "agent_credentials": "user_id",
     "auth_elements": "user_id",
     "data_sources": "user_id",
@@ -76,7 +75,6 @@ _LINKED_USER_TABLES: dict[str, tuple[str, str, str, str]] = {
     "interactions": ("session_id", "sessions", "id", "user_id"),
     "session_interrupts": ("session_id", "sessions", "id", "user_id"),
     "memory_chunks": ("memory_id", "memories", "id", "user_id"),
-    "memory_timeline": ("memory_id", "memories", "id", "user_id"),
     "webhook_event_log": ("webhook_id", "webhook_registrations", "id", "user_id"),
     "doc_chunks": ("data_source_id", "data_sources", "id", "user_id"),
 }

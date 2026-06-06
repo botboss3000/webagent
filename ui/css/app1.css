@@ -259,6 +259,36 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
     text-align: center;
     font-variant-numeric: tabular-nums;
   }
+
+/* Left group: token counters + active-model context, kept together so the
+   mode button stays pushed to the right edge (footer row is space-between). */
+.chat-footer-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+/* Active model's context window / max output, styled like the token bar but
+   theme-aware via design-system vars and always visible (no activity gating). */
+.chat-model-ctx {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--fg-3, #565f89);
+    user-select: none;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+.chat-ctx-value {
+    color: var(--fg-3, #565f89);
+    font-variant-numeric: tabular-nums;
+  }
+.chat-ctx-sep {
+    color: var(--fg-4, #3b4261);
+    margin: 0 1px;
+  }
 /* Spinning shape — a diamond that rotates. While the agent is active
    (.chat-activity.visible on the sibling #chat-activity) it spins;
    otherwise it sits still as a small dot. */
@@ -2355,6 +2385,10 @@ buttons pinned right via .header-actions ── */
     flex-shrink: 0;
   }
 .header-delete-btn:hover { color: #f7768e; }
+/* SHARED-DELETE-CONTROL — armed (hazard) hue; see ui/js/delete-control.js. The
+   spinner state animates via the global .session-status-running wrapper. */
+.header-delete-btn.warning { color: #e5a83e; }
+.header-delete-btn.warning:hover { color: #f0c050; }
 
 /* Status icon inside the trigger buttons */
 .session-dropdown-status,

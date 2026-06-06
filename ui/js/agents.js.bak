@@ -3,23 +3,29 @@
 /**
  * Agent Management panel.
  *
- * Each agent card lives in an .agent-row wrapper.  Clicking a card toggles
- * an inline .agent-detail-panel that is appended directly to that row, so
- * multiple rows can be open simultaneously and each panel is fully
- * independent.  There is no shared / floating panel element.
+ * Layout: #agents-grid is a flex column with a `.agents-squares-wrap` (holding
+ * the `.agents-squares` strip + carousel chevrons) and an `#agents-detail-region`.
+ * With nothing open the strip is a wrapping grid of square cards and scrolls
+ * vertically. Clicking a square opens that agent: the strip collapses to a
+ * single-row carousel (#agents-grid gets `.carousel`) with masked edge-fades +
+ * chevrons (wired by _wireSquaresCarousel), the open square keeps its place but
+ * gains an accent ring (`.activated`), and the agent's full card + tabs + detail
+ * panel render in the region below. In carousel mode #agents-grid is the single
+ * vertical scroll container for both the carousel and the card, so scrolling
+ * down lifts the carousel off-screen for a full-height card view. Only one agent
+ * is open at a time; opening another replaces it, and clicking the open square
+ * closes it (back to the grid). _renderSquare builds the squares;
+ * _renderAgentCard builds the single expanded card in the region.
  */
 
 import { app } from './state.js';
+import { apiPath } from './config.js';
 import { fetchAllToolMeta } from './loop-logic.js';
 import { NODE_PANEL_INFO } from './loop-node-data.js';
 import { LOOP_W, LOOP_H, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from './loop-diagram.js';
 import { icon } from './icons.js';
 import { wireChatPillUploads } from './attachments.js';
 import { sortAgentsForDisplay } from './ordering.js';
-// ── PRESENTATION-MODE START ── (delete the next 2 lines + the canEdit override below to remove)
-import { isPresentationMode } from './left-login.js';
-import { applyPresentationGate } from './presentation-mode.js';
-// ── PRESENTATION-MODE END ──
 function _triggerKeyPlaceholder(triggerType) {
   const map = {
     slash_command: 'Slash command (e.g. /optimize)',
@@ -33,13 +39,58 @@ function _triggerKeyPlaceholder(triggerType) {
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _agents         = [];   // full list from server
+// At most ONE agent is open at a time. The Map is kept (rather than a scalar)
+// only so the existing per-agent { tab } lookups keep working unchanged; helpers
+// enforce the single-entry invariant.
 let _expandedAgents = new Map(); // Map<agentId, { tab: string }>
 let _userIsAdmin    = false;
 let _extendLlmToAgents = true; // mirrors app-settings.json extend_llm_to_agents
 
-// ── Agent Builder (per-detail-panel chat bar) ────────────────────────────────
-const AGENT_BUILDER_TEMPLATE_ID = 'agent-builder';
-const _agentBuilderAgentCache = new Map(); // userId → agentId
+// The id of the single open agent, or null. (First/only key in _expandedAgents.)
+function _activeId() {
+  for (const id of _expandedAgents.keys()) return id;
+  return null;
+}
+// Open exactly one agent (clearing any other), defaulting to its Config tab.
+function _setActive(agentId, tab = 'config') {
+  _expandedAgents.clear();
+  _expandedAgents.set(agentId, { tab });
+}
+
+// ── Mock agent (create-in-place) ─────────────────────────────────────────────
+const MOCK_AGENT_ID = '__new__';
+
+function _createMockAgent() {
+  return {
+    id: MOCK_AGENT_ID,
+    name: '',
+    description: '',
+    source: 'custom',
+    icon: null,
+    access_level: 'user',
+    llm_config: { use_default: true },
+    allowed_tools: null, // all tools allowed
+    loop_logic: null,
+    trigger_type: null,
+    trigger_key: null,
+    max_turn_count: 0,
+    max_wall_seconds: null,
+    max_identical_tool_calls: 0,
+    max_stall_strikes: 0,
+    user_mode: 'user',
+    slots: [],
+    discoverable: false,
+    is_mock: true,
+  };
+}
+
+function _isMockAgent(agent) {
+  return agent && agent.id === MOCK_AGENT_ID;
+}
+
+// ── Agents-page chat bar ─────────────────────────────────────────────────────
+// The pill on the Agents page hands off to the shared webAgent (see
+// _sendAgentBuilderPrompt → app.startWebagentSession in ui/js/sessions.js).
 
 // Tool descriptions for the Tools tab (matches BUILTIN_TOOL_METADATA keys)
 const TOOL_DESCRIPTIONS = {
@@ -75,15 +126,27 @@ const TOOL_DESCRIPTIONS = {
   write_source:                 'Create or overwrite a file (with backup)',
   edit_source:                  'Replace exact text in a file',
   delete_source:                'Delete a file or directory',
+  resolve_conflict:             'Resolve merge conflict markers in a file',
   run_command:                  'Execute a shell command on the server',
   restart_server:               'Restart the webAgent server process',
   register_user:                'Register a new user from a communication channel',
+  generate_image:               'Generate an image from a text description',
+  read_diagnostics:             'Read server diagnostics, errors, and logs',
+  maps_geocode:                 'Geocode an address or reverse-geocode coordinates',
+  list_agent_templates:         'List agent templates (and a template’s prompt slots) to build from',
+  list_my_agents:               'List the agents this user owns',
+  get_agent:                    'Read one of the user’s agents: config, prompts, abilities',
+  create_agent:                 'Create a new agent for the user from a template',
+  update_agent:                 'Update fields on one of the user’s own agents',
+  edit_agent_prompt:            'Read or edit the prompt slots of the user’s own agent',
+  set_agent_ability:            'Turn an ability on/off for the user’s own agent',
 };
 
 // ── Tool tier definitions ─────────────────────────────────────────────
 // Tier 0: Admin-only. Never shown or toggleable for normal agents.
 const TIER_0_ADMIN = new Set([
-  'read_source','write_source','edit_source','delete_source','run_command','restart_server',
+  'read_source','write_source','edit_source','delete_source','resolve_conflict',
+  'run_command','restart_server',
   'run_worker_trials','handoff_to_closer','deploy_optimization',
 ]);
 
@@ -91,7 +154,7 @@ const TIER_0_ADMIN = new Set([
 const TIER_1_ALWAYS_ON = new Set([
   'list_tools','search_tools','get_tool_definition',
   'get_time','get_date','calculate','read_attachment',
-  'delegate_to_agent','list_delegatable_agents','register_user',
+  'register_user',
 ]);
 
 // Tier 2: Configurable standard tools — shown in the toggle UI.
@@ -114,6 +177,7 @@ const TOOL_CATEGORIES = [
     tools: [
       'web_search','http_request','browser_action','session_search','memory',
       'list_tools','search_tools','get_tool_definition','read_attachment',
+      'maps_geocode',
     ],
   },
   {
@@ -122,7 +186,7 @@ const TOOL_CATEGORIES = [
     tools: [
       'db_query','list_agent_context_documents','get_agent_context_document',
       'update_agent_context_document','insert_agent_context_document','create_tool',
-      'get_time','get_date','calculate','delegate_to_agent','list_delegatable_agents','register_user',
+      'get_time','get_date','calculate','register_user',
     ],
   },
   {
@@ -134,13 +198,64 @@ const TOOL_CATEGORIES = [
     ],
   },
   {
+    label: 'Image & Diagnostics',
+    condition: null,
+    tools: [
+      'generate_image','read_diagnostics',
+    ],
+  },
+  {
     label: 'Admin & System',
     condition: 'admin',
     tools: [
-      'read_source','write_source','edit_source','delete_source',
+      'read_source','write_source','edit_source','delete_source','resolve_conflict',
       'run_command','restart_server',
       'run_worker_trials','handoff_to_closer','deploy_optimization',
     ],
+  },
+  {
+    label: 'Codebase Admin',
+    condition: 'codebase_admin',
+    tools: [
+      'read_source','write_source','edit_source','delete_source','resolve_conflict',
+      'run_command','restart_server',
+    ],
+  },
+  {
+    label: 'Web Access',
+    condition: 'web_access',
+    tools: ['web_search','get_weather','maps_geocode'],
+  },
+  {
+    label: 'Browser Control',
+    condition: 'browser_control',
+    tools: ['browser_action','http_request'],
+  },
+  {
+    label: 'Image Generation',
+    condition: 'image_generation',
+    tools: ['generate_image'],
+  },
+  {
+    label: 'Create Tools',
+    condition: 'create_tools',
+    tools: ['create_tool'],
+  },
+  {
+    label: 'Diagnostics',
+    condition: 'diagnostics',
+    tools: ['read_diagnostics'],
+  },
+  {
+    label: 'Agent Orchestration',
+    condition: 'agent_orchestration',
+    tools: ['delegate_to_agent','list_delegatable_agents'],
+  },
+  {
+    label: 'Agent Management',
+    condition: 'agent_management',
+    tools: ['list_agent_templates','list_my_agents','get_agent','create_agent',
+            'update_agent','edit_agent_prompt','set_agent_ability'],
   },
 ];
 
@@ -151,34 +266,132 @@ const PIPELINE_TOOLS = {
 
 const DESTRUCTIVE = new Set([
   'db_query','update_agent_context_document','create_tool',
-  'delete_webhook','write_source','edit_source','delete_source','run_command','restart_server',
+  'delete_webhook','write_source','edit_source','delete_source','resolve_conflict',
+  'run_command','restart_server',
+  'create_agent','update_agent','edit_agent_prompt','set_agent_ability',
 ]);
 
-function _toolsForAgent(agent) {
+// ── Ability-to-tools mapping ──────────────────────────────────────────
+// Maps agent connection_type (ability) to the tool names it unlocks.
+// Mirrors the gating logic in app/tools/loader.py _inject_builtin_tools.
+const ABILITY_TO_TOOLS = {
+  codebase_admin:   ['read_source','write_source','edit_source','delete_source','resolve_conflict','run_command','restart_server','db_query','git_tool'],
+  git_control:      ['git_tool','resolve_conflict'],
+  ui_admin:         ['read_source','write_source','edit_source','patch_source','delete_source','search_source','read_directory'],
+  web_access:       ['web_search','get_weather','maps_geocode'],
+  browser_control:  ['browser_action','http_request'],
+  terminal_control: ['terminal_open','terminal_read','terminal_send','terminal_wait','terminal_list','terminal_close'],
+  image_generation: ['generate_image'],
+  create_tools:     ['create_tool'],
+  diagnostics:      ['read_diagnostics'],
+  automation:       [],  // automation tools are injected dynamically; no static tool names to list
+  visualizer:       [],  // visualizer tools are injected dynamically
+  agent_orchestration: ['delegate_to_agent','list_delegatable_agents'],
+  agent_management: ['list_agent_templates','list_my_agents','get_agent','create_agent','update_agent','edit_agent_prompt','set_agent_ability'],
+  wiki_control:     ['wiki_search','wiki_list','wiki_get','wiki_create','wiki_update','wiki_delete','wiki_history','wiki_get_revision','wiki_restore','wiki_backlinks'],
+  // register_user is always-on (Tier 1), not gated by an ability
+};
+
+function _toolsForAgent(agent, enabledAbilities) {
   const id = agent.id || '';
   if (agent.is_admin_agent) {
     return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL,
-            'read_source','write_source','edit_source','delete_source','run_command','restart_server'];
+            'read_source','write_source','edit_source','delete_source','run_command','restart_server','git_tool'];
   }
   if (id === 'opt_planner') return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_planner || [])];
   if (id === 'opt_closer')  return [...TIER_1_ALWAYS_ON, ...TIER_2_ALL, ...(PIPELINE_TOOLS.opt_closer  || [])];
 
   const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  const base = TIER_2_ALL.filter(name => !disabled.has(name));
+
+  // Add ability-gated tools for any enabled abilities
+  const abilityTools = [];
+  if (enabledAbilities) {
+    for (const [ability, tools] of Object.entries(ABILITY_TO_TOOLS)) {
+      if (enabledAbilities.has(ability)) {
+        for (const t of tools) {
+          if (!disabled.has(t) && !abilityTools.includes(t)) {
+            abilityTools.push(t);
+          }
+        }
+      }
+    }
+  }
+
   return [
     ...TIER_1_ALWAYS_ON,
-    ...TIER_2_ALL.filter(name => !disabled.has(name)),
+    ...base,
+    ...abilityTools,
   ];
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 export async function initAgents() {
+  // Always bind the pill bar so the send button works even if the user hasn't
+  // logged in yet — _sendAgentBuilderPrompt checks app.currentUserId itself.
+  _bindAgentBuilderBar();
   if (!app.currentUserId) return;
+
+  // If the agents tab isn't active, defer the 3 fetches + grid render until
+  // the user switches to it. The tab switch calls startAgents() → initAgents()
+  // again, which will then proceed past this guard.
+  const tabSelect = document.getElementById('main-tab-select');
+  if (tabSelect && tabSelect.value !== 'agents') {
+    return;
+  }
+
+  // Show a shimmer skeleton immediately so the grid isn't blank while the
+  // profile/agents/settings fetches are in flight (the gap is most visible on
+  // a cold backend). Only on first load — a refresh already has cards to show.
+  if (_agents.length === 0) _renderSkeleton();
+
   await Promise.all([_loadProfile(), _loadAgents(), _loadAppSettings()]);
   _renderList();
-  _bindCreateModal();
-  _bindAgentBuilderBar();
+  _bindSystemToggle();
   _restoreViewState();
+}
+
+// Wire the eye-icon toggle in the footer row below the builder pill.
+// Clicking it toggles system-level agent visibility, re-fetches, and renders.
+function _bindSystemToggle() {
+  const btn = document.querySelector('.agent-builder-eye-btn');
+  if (!btn || btn._bound) return;
+  btn._bound = true;
+  btn.classList.toggle('active', _showSystem);
+  btn.addEventListener('click', async () => {
+    _showSystem = !_showSystem;
+    btn.classList.toggle('active', _showSystem);
+    // Replace the icon element outright — inject a fresh <i> placeholder,
+    // and the central MutationObserver in icons.js converts it automatically.
+    btn.innerHTML = `<i data-lucide="${_showSystem ? 'eye' : 'eye-off'}" style="width:16px;height:16px;"></i>`;
+    _renderSkeleton();
+    await _loadAgents();
+    _renderList();
+  });
+}
+
+// Placeholder cards shown while the agent list loads. Replaced by _renderList()
+// as soon as the fetches resolve.
+function _renderSkeleton(count = 6) {
+  const grid = document.getElementById('agents-grid');
+  if (!grid) return;
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    html += `
+      <div class="agent-row">
+        <div class="agent-skeleton" aria-hidden="true">
+          <div class="sk-icon sk-shimmer"></div>
+          <div class="sk-lines">
+            <div class="sk-line long sk-shimmer"></div>
+            <div class="sk-line short sk-shimmer"></div>
+          </div>
+        </div>
+      </div>`;
+  }
+  // No toggle-row to preserve — the eye button lives in the builder pill.
+  grid.classList.remove('carousel');
+  grid.innerHTML = `<div class="agents-squares">${html}</div>`;
 }
 
 // Re-sync this page after the chat-header dropdown changes agent order or pins.
@@ -196,17 +409,16 @@ app.refreshAgentsOrder = async function refreshAgentsOrder() {
 // (initAgents may still be loading when the user clicks Config from chat).
 window.expandAgent = function expandAgent(agentId) {
   if (!agentId) return;
-  _expandedAgents.set(agentId, { tab: 'config' });
+  _setActive(agentId);
   _saveViewState();
   let attempts = 0;
   const tryRender = () => {
     attempts += 1;
-    const grid = document.getElementById('agents-grid');
     if (_agents.find(a => a.id === agentId)) {
       _renderList();
       requestAnimationFrame(() => {
-        const row = document.querySelector(`.agent-row[data-agent-id="${CSS.escape(agentId)}"]`);
-        if (row && row.scrollIntoView) row.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const region = document.getElementById('agents-detail-region');
+        if (region && region.scrollIntoView) region.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
       return;
     }
@@ -227,6 +439,12 @@ export function stopAgents() {
 // ── Data loading ──────────────────────────────────────────────────────────────
 
 async function _loadProfile() {
+  // Use cached data from main.js's early fetch if available.
+  const cached = window.__agentsProfileData;
+  if (cached) {
+    _userIsAdmin = !!cached.is_admin;
+    return;
+  }
   try {
     const res = await fetch(`/api/v1/user/profile?user_id=${encodeURIComponent(app.currentUserId)}`);
     if (res.ok) {
@@ -238,20 +456,43 @@ async function _loadProfile() {
   }
 }
 
+// Whether the "Show system agents" toggle is on. When off (default) the page
+// shows only the agents the user added themselves; when on, the built-in utility
+// agents are fetched and shown too (and stay configurable).
+let _showSystem = false;
+
 async function _loadAgents() {
   try {
-    const res = await fetch(`/api/v1/agents?user_id=${encodeURIComponent(app.currentUserId)}`);
+    // Use shared data from sessions.js if available — but only for the default
+    // (user-own) view. The system view needs its own fetch with include_system.
+    if (!_showSystem) {
+      const shared = window.__agentsSharedData;
+      if (shared && shared.agents) {
+        _agents = shared.agents;
+        return;
+      }
+    }
+    const params = new URLSearchParams({ user_id: app.currentUserId });
+    if (_showSystem) params.set('include_system', 'true');
+    const res = await fetch(`/api/v1/agents?${params.toString()}`);
     if (res.ok) {
       const data = await res.json();
       _agents = data.agents || [];
+      // Only cache the default view so other modules don't pick up system rows.
+      if (!_showSystem) window.__agentsSharedData = data;
     }
-
   } catch (e) {
     console.warn('agents: could not load agent list', e);
   }
 }
 
 async function _loadAppSettings() {
+  // Use cached data from main.js's early fetch if available.
+  const cached = window.__agentsAppSettingsData;
+  if (cached) {
+    _extendLlmToAgents = cached.extend_llm_to_agents !== false;
+    return;
+  }
   try {
     const token = localStorage.getItem('auth_token');
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
@@ -292,110 +533,723 @@ function _renderList() {
   const grid = document.getElementById('agents-grid');
   if (!grid) return;
 
+  const activeId = _activeId();
+  grid.classList.toggle('carousel', !!activeId);
   grid.innerHTML = '';
 
-  if (_agents.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'agents-empty';
-    empty.textContent = 'No agents assigned to this user yet.';
-    grid.appendChild(empty);
-    return;
-  }
+  // ── Squares strip ─────────────────────────────────────────────────────────
+  // Every agent (plus the "New Agent" tile) is a square here. When an agent is
+  // open the strip becomes a single-row carousel (CSS); the open agent keeps its
+  // square but gains an accent ring (.activated). The wrap hosts the edge-fade
+  // chevrons that appear (carousel mode only) when the row overflows.
+  const wrap = document.createElement('div');
+  wrap.className = 'agents-squares-wrap';
+  wrap.innerHTML = `
+    <button type="button" class="agents-carousel-chev left" aria-label="Scroll agents left" tabindex="-1">&#10094;</button>
+    <button type="button" class="agents-carousel-chev right" aria-label="Scroll agents right" tabindex="-1">&#10095;</button>`;
+  const squares = document.createElement('div');
+  squares.className = 'agents-squares';
+  wrap.appendChild(squares);
+  grid.appendChild(wrap);
+
+  const mockAgent = _createMockAgent();
+  let activeAgent = activeId === MOCK_AGENT_ID ? mockAgent : null;
+
+  _renderSquare(squares, mockAgent, activeId === MOCK_AGENT_ID);
 
   // Match the chat-header agent dropdown exactly: the server returns agents in
   // the synced sort_order; sortAgentsForDisplay then floats pinned agents to
   // the top. Reordering happens in the dropdown — this page just follows.
-  const ordered = sortAgentsForDisplay(_agents, app.currentUserId);
-  for (const agent of ordered) {
-    const isExpanded = _expandedAgents.has(agent.id);
+  if (_agents.length) {
+    const ordered = sortAgentsForDisplay(_agents, app.currentUserId);
+    for (const agent of ordered) {
+      const isActive = activeId === agent.id;
+      _renderSquare(squares, agent, isActive);
+      if (isActive) activeAgent = agent;
+    }
+  }
 
-    const badgeType  = agent.access_level === 'admin_only' ? 'admin'
-                     : agent.source === 'custom'            ? 'custom'
-                     : 'system';
-    const badgeLabel = agent.access_level === 'admin_only' ? 'Admin'
-                     : agent.source === 'custom'            ? 'Custom'
-                     : 'System';
+  // ── Detail region ─────────────────────────────────────────────────────────
+  // The single open agent's full (expanded) card + tabs + panel live here,
+  // below the carousel. Empty/hidden when nothing is open.
+  const region = document.createElement('div');
+  region.id = 'agents-detail-region';
+  grid.appendChild(region);
+  if (activeAgent) {
+    region.classList.add('open');
+    _renderAgentCard(region, activeAgent);
+  }
 
-    const isCustom = agent.source === 'custom';
+  // Wire the carousel edge-fades + chevrons (no-op visually until the row
+  // actually overflows in carousel mode).
+  _wireSquaresCarousel(wrap);
+}
 
-    const card = document.createElement('div');
-    card.className = 'agent-card' + (isExpanded ? ' active' : '');
-    card.innerHTML = `
-      <div class="agent-card-top">
-        <div class="agent-card-icon-wrap ${_iconColor(agent)}">
-          ${agent.icon || icon('bot', { size: '20px' })}
-        </div>
-        <div class="agent-card-meta">
-          <div class="agent-card-name-row">
-            <span class="agent-card-name">${_esc(_displayName(agent))}</span>
-            <span class="agent-status-dot"></span>
-          </div>
-          ${agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
-        </div>
-        <div class="agent-card-badge-wrap">
-          <span class="agent-badge ${badgeType}">${badgeLabel}</span>
-          ${isCustom ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}
+// Edge-fade + chevron wiring for the squares carousel. Mirrors _wireTabCarousel
+// but for the .agents-squares scroller: toggles can-scroll-left/right on the
+// wrap (driving the mask + chevron visibility), scrolls a page per chevron, and
+// supports pointer drag — swallowing the trailing click so a drag never opens an
+// agent.
+function _wireSquaresCarousel(wrap) {
+  const scroller = wrap.querySelector('.agents-squares');
+  if (!scroller) return;
+  const chevLeft  = wrap.querySelector('.agents-carousel-chev.left');
+  const chevRight = wrap.querySelector('.agents-carousel-chev.right');
+
+  const updateAffordances = () => {
+    const maxScroll = scroller.scrollWidth - scroller.clientWidth;
+    const atStart = scroller.scrollLeft <= 1;
+    const atEnd   = scroller.scrollLeft >= maxScroll - 1;
+    const overflowing = maxScroll > 1;
+    wrap.classList.toggle('can-scroll-left',  overflowing && !atStart);
+    wrap.classList.toggle('can-scroll-right', overflowing && !atEnd);
+  };
+
+  scroller.addEventListener('scroll', updateAffordances, { passive: true });
+  // rAF + a short deferred pass cover layout that settles after this render
+  // (carousel-mode reflow, async icon paint); the ResizeObserver then keeps it
+  // current on viewport/visibility changes.
+  requestAnimationFrame(updateAffordances);
+  setTimeout(updateAffordances, 120);
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(updateAffordances).observe(scroller);
+  }
+
+  const page = () => Math.max(scroller.clientWidth * 0.7, 132);
+  if (chevLeft)  chevLeft.addEventListener('click',  e => { e.stopPropagation(); scroller.scrollBy({ left: -page(), behavior: 'smooth' }); });
+  if (chevRight) chevRight.addEventListener('click', e => { e.stopPropagation(); scroller.scrollBy({ left:  page(), behavior: 'smooth' }); });
+
+  // ── Pointer drag-to-scroll ──
+  let dragging = false, startX = 0, startScroll = 0, moved = false;
+  scroller.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    dragging = true; moved = false;
+    startX = e.clientX; startScroll = scroller.scrollLeft;
+  });
+  scroller.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    if (Math.abs(dx) > 4) {
+      moved = true;
+      try { scroller.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    if (moved) { scroller.scrollLeft = startScroll - dx; e.preventDefault(); }
+  });
+  const endDrag = e => {
+    if (!dragging) return;
+    dragging = false;
+    try { scroller.releasePointerCapture(e.pointerId); } catch (_) {}
+  };
+  scroller.addEventListener('pointerup', endDrag);
+  scroller.addEventListener('pointercancel', endDrag);
+  // Swallow the click that follows a drag so a square isn't selected mid-swipe.
+  scroller.addEventListener('click', e => {
+    if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; }
+  }, true);
+}
+
+// A collapsed square card for the carousel/grid. Clicking it opens (or, if it's
+// the already-open one, closes) the agent. The expanded view is rendered
+// separately into the detail region by _renderAgentCard.
+function _renderSquare(container, agent, isActive) {
+  const isMock = _isMockAgent(agent);
+  const colorClass = isMock ? 'color-blue' : _iconColor(agent);
+  const iconHtml = isMock ? icon('plus', { size: '24px' }) : _renderAgentIcon(agent, '24px');
+  const name = isMock ? 'New Agent' : _displayName(agent);
+
+  const card = document.createElement('div');
+  card.className = 'agent-card agent-square' + (isActive ? ' activated' : '');
+  card.innerHTML = `
+    <div class="agent-card-top">
+      <div class="agent-card-icon-wrap ${colorClass}">${iconHtml}</div>
+      <div class="agent-card-meta">
+        <div class="agent-card-name-row">
+          <span class="agent-card-name">${_esc(name)}</span>
+          ${isMock ? '' : '<span class="agent-status-dot"></span>'}
         </div>
       </div>
-      <div class="agent-card-tabs" role="tablist"></div>
-    `;
+    </div>`;
+  card.addEventListener('click', () => _selectAgent(agent));
 
-    // Wire inline action buttons — stopPropagation so click doesn't toggle the panel
-    const deleteBtn = card.querySelector('.delete-btn');
-    if (deleteBtn) {
-      deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
-    }
+  const row = document.createElement('div');
+  row.className = 'agent-row';
+  row.dataset.agentId = agent.id;
+  row.appendChild(card);
+  container.appendChild(row);
+}
 
-    card.addEventListener('click', () => _selectAgent(agent));
+// ── Surgical DOM updates (no full grid re-render) ────────────────────────────
 
-    // Each agent gets its own .agent-row; the detail panel lives inside it
-    const row = document.createElement('div');
-    row.className = 'agent-row';
-    row.dataset.agentId = agent.id;
-    row.appendChild(card);
+/** Find the .agents-squares container (the scroller holding all squares). */
+function _squaresContainer() {
+  return document.querySelector('.agents-squares');
+}
 
-    let panel = null;
-    if (isExpanded) {
-      panel = _buildDetailPanel(agent);
-      row.appendChild(panel);
-    }
+/** Find a specific agent's .agent-row in the squares container by id. */
+function _squareRow(agentId) {
+  return document.querySelector(`.agents-squares > .agent-row[data-agent-id="${agentId}"]`);
+}
 
-    // Tabs render in both collapsed and expanded states; clicking a tab on a
-    // collapsed card expands it to that tab.
-    const cardTabBar = card.querySelector('.agent-card-tabs');
-    if (cardTabBar) _populateAgentTabBar(cardTabBar, agent, panel);
+/**
+ * Remove a single agent's square from the grid with a fade-out animation.
+ * Also removes it from _agents. If it was the active (open) agent, closes it.
+ * Returns a promise that resolves once the animation completes and the DOM
+ * is cleaned up (or immediately if the row wasn't found).
+ */
+async function _surgicalRemoveSquare(agentId) {
+  // Remove from the data array first
+  _agents = _agents.filter(a => a.id !== agentId);
 
-    grid.appendChild(row);
+  // If this agent was the open one, close it
+  if (_activeId() === agentId) {
+    _expandedAgents.delete(agentId);
   }
+
+  const row = _squareRow(agentId);
+  if (!row) return;
+
+  // If the detail region had this agent open, rebuild it too
+  const region = document.getElementById('agents-detail-region');
+
+  // Animate exit
+  row.classList.add('agent-exit');
+  await new Promise(resolve => { row.addEventListener('animationend', resolve, { once: true }); });
+  row.remove();
+
+  // If the detail region was showing this agent — rebuild it for whatever is
+  // now the active agent (or clear it if nothing is open).
+  _rebuildDetailRegion();
+
+  // Re-sync grid carousel state (may need to exit carousel mode)
+  _syncCarouselState();
+}
+
+/**
+ * Add a single agent's square to the grid with a fade-in animation.
+ * The new row is appended at the end (sortAgentsForDisplay will position
+ * pinned agents appropriately — a full re-order isn't needed here).
+ */
+function _surgicalAddSquare(agent, opts = {}) {
+  const container = _squaresContainer();
+  if (!container) return;
+
+  // Don't duplicate
+  if (_squareRow(agent.id)) return;
+
+  // Append to the data array
+  _agents.push(agent);
+
+  // Render the row and prepend the enter animation class.
+  // Pass the correct active state so the activated class is right from the start.
+  _renderSquare(container, agent, _activeId() === agent.id);
+  const newRow = container.lastElementChild;
+  if (newRow) {
+    // If insertBefore is given, move the row to the right position
+    if (opts.insertBefore && opts.insertBefore !== newRow) {
+      container.insertBefore(newRow, opts.insertBefore);
+    }
+    newRow.classList.add('agent-enter');
+    newRow.addEventListener('animationend', () => {
+      newRow.classList.remove('agent-enter');
+    }, { once: true });
+  }
+
+  _syncCarouselState();
+}
+
+/**
+ * Update a single square's displayed name (and icon, color) in-place
+ * with a subtle pulse flash so the user sees something changed.
+ * Patches the agent data in _agents too.
+ */
+function _surgicalUpdateSquare(agent) {
+  // Update data in-place
+  const idx = _agents.findIndex(a => a.id === agent.id);
+  if (idx !== -1) _agents[idx] = agent;
+
+  // Re-render the square in-place (swap the card element)
+  const row = _squareRow(agent.id);
+  if (!row) return;
+
+  // Build a fresh square in a throwaway fragment
+  const fragment = document.createElement('div');
+  _renderSquare(fragment, agent, _activeId() === agent.id);
+  // _renderSquare creates an .agent-row with a .agent-card inside; extract the card
+  const newRow = fragment.firstElementChild;
+  const newCard = newRow ? newRow.querySelector('.agent-card') : null;
+  if (!newCard) return;
+
+  // Replace the old card while keeping the row
+  const oldCard = row.querySelector('.agent-card');
+  if (oldCard) {
+    oldCard.replaceWith(newCard);
+  } else {
+    row.prepend(newCard);
+  }
+
+  // Pulse flash for visual feedback
+  row.classList.remove('agent-pulse'); // re-trigger
+  void row.offsetWidth; // force reflow
+  row.classList.add('agent-pulse');
+  row.addEventListener('animationend', () => {
+    row.classList.remove('agent-pulse');
+  }, { once: true });
+
+  // If the agent's open card is showing, we need to update the detail region too
+  const region = document.getElementById('agents-detail-region');
+  if (_activeId() === agent.id && region) {
+    // Rebuild the card with updated data
+    _rebuildAgentCard(agent);
+  }
+}
+
+/** Rebuild the detail region card for the currently open agent. */
+function _rebuildDetailRegion() {
+  const region = document.getElementById('agents-detail-region');
+  if (!region) return;
+  region.innerHTML = '';
+  const activeId = _activeId();
+  if (!activeId) {
+    region.classList.remove('open');
+    _syncSquareActivation();
+    return;
+  }
+  region.classList.add('open');
+  if (activeId === MOCK_AGENT_ID) {
+    _renderAgentCard(region, _createMockAgent());
+  } else {
+    const agent = _agents.find(a => a.id === activeId);
+    if (agent) _renderAgentCard(region, agent);
+  }
+  _syncSquareActivation();
+}
+
+/** Sync the .activated class on every square based on the active agent id. */
+function _syncSquareActivation() {
+  const activeId = _activeId();
+  document.querySelectorAll('.agents-squares .agent-row').forEach(row => {
+    const card = row.querySelector('.agent-card');
+    if (!card) return;
+    const aid = row.dataset.agentId;
+    card.classList.toggle('activated', aid === activeId);
+  });
+}
+
+/** Rebuild just the agent card in the detail region (not the whole region). */
+function _rebuildAgentCard(agent) {
+  const region = document.getElementById('agents-detail-region');
+  if (!region) return;
+  region.innerHTML = '';
+  region.classList.add('open');
+  _renderAgentCard(region, agent);
+  _syncSquareActivation();
+}
+
+/** Sync the carousel CSS class + wire affordances after surgical changes. */
+function _syncCarouselState() {
+  const grid = document.getElementById('agents-grid');
+  if (!grid) return;
+  const activeId = _activeId();
+  grid.classList.toggle('carousel', !!activeId);
+  const wrap = grid.querySelector('.agents-squares-wrap');
+  if (wrap) _wireSquaresCarousel(wrap);
+}
+
+// Renders the EXPANDED (open) agent's full card + tab bar + detail panel into
+// the given container (the detail region). Only ever called for the single
+// open agent, so the card is always in its wide/active layout. The square in
+// the carousel is what the user clicks to close — this card never toggles.
+function _renderAgentCard(grid, agent) {
+  const isMock = _isMockAgent(agent);
+
+  const badgeType  = isMock ? 'custom'
+                   : agent.access_level === 'admin_only' ? 'admin'
+                   : agent.source === 'custom'            ? 'custom'
+                   : 'system';
+  const badgeLabel = isMock ? 'New'
+                   : agent.access_level === 'admin_only' ? 'Admin'
+                   : agent.source === 'custom'            ? 'Custom'
+                   : 'System';
+
+  const isCustom = agent.source === 'custom' || isMock;
+
+  const card = document.createElement('div');
+  // Always the wide/active layout — this is the open agent's expanded card.
+  card.className = 'agent-card active' + (isMock ? ' agent-card-mock' : '');
+  const iconSize = '20px';
+  // For the mock card, the "name" cell is an inline contenteditable field plus a
+  // template dropdown toggle. Picking a template prefills the name; typing works
+  // too. The big "+" button on the right creates the agent (Enter also works).
+  // It is a contenteditable <div>, NOT an <input>, specifically so browser
+  // password managers never attach their saved-credential popup to it.
+  const nameCell = isMock
+    ? `<div class="agent-mock-create-field">
+         <div class="agent-mock-name-input" contenteditable="true" role="textbox"
+              aria-label="New agent name" data-placeholder="Create a new agent…"
+              spellcheck="false"></div>
+         <button type="button" class="agent-mock-tpl-toggle" title="Choose a template" disabled></button>
+         <div class="agent-mock-tpl-menu" role="listbox" style="display:none"></div>
+       </div>`
+    : `<span class="agent-card-name">${_esc(_displayName(agent))}</span>`;
+  card.innerHTML = `
+    <div class="agent-card-top">
+      <div class="agent-card-icon-wrap ${isMock ? 'color-blue' : _iconColor(agent)}">
+        ${isMock ? icon(_mockRandomIcon(), { size: iconSize }) : _renderAgentIcon(agent, iconSize)}
+      </div>
+      <div class="agent-card-meta">
+        <div class="agent-card-name-row">
+          ${nameCell}
+          ${isMock ? '' : '<span class="agent-status-dot"></span>'}
+        </div>
+        ${!isMock && agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''}
+        ${isMock ? '<div class="agent-card-desc agent-card-mock-hint">Pick a template or type a name, then hit +</div>' : ''}
+      </div>
+      <div class="agent-card-badge-wrap">
+        ${isMock
+          ? `<button type="button" class="agent-mock-create-go" title="Create agent">${icon('plus', { size: '22px' })}</button>`
+          : `<span class="agent-badge ${badgeType}">${badgeLabel}</span>${isCustom ? '<button class="agent-card-action-btn delete-btn">Delete</button>' : ''}`}
+      </div>
+    </div>
+    <div class="agent-card-tabs-wrap">
+      <button type="button" class="agent-card-tabs-chev left" aria-label="Scroll tabs left" tabindex="-1">&#10094;</button>
+      <div class="agent-card-tabs" role="tablist"></div>
+      <button type="button" class="agent-card-tabs-chev right" aria-label="Scroll tabs right" tabindex="-1">&#10095;</button>
+    </div>
+  `;
+
+  // Wire inline action buttons — stopPropagation so click doesn't toggle the panel
+  const deleteBtn = card.querySelector('.delete-btn');
+  if (deleteBtn) {
+    deleteBtn.addEventListener('click', e => { e.stopPropagation(); _deleteAgent(agent); });
+  }
+
+  // Clicking the icon opens the icon picker popover. (The expanded card never
+  // toggles itself closed — that's done by clicking its square in the carousel.)
+  const iconWrap = card.querySelector('.agent-card-icon-wrap');
+  if (iconWrap && !isMock) {
+    iconWrap.addEventListener('click', e => {
+      e.stopPropagation();
+      _openIconPicker(iconWrap, agent, null);
+    });
+  }
+
+  if (isMock) _wireMockCreateField(card);
+
+  // The expanded card lives in its own .agent-row inside the detail region.
+  const row = document.createElement('div');
+  row.className = 'agent-row expanded';
+  row.dataset.agentId = agent.id;
+  row.appendChild(card);
+
+  // The open agent always shows a detail panel (defaulting to the Config tab).
+  const state = _expandedAgents.get(agent.id);
+  let panel = null;
+  if (state) {
+    panel = _buildDetailPanel(agent);
+    row.appendChild(panel);
+  }
+
+  const cardTabBar = card.querySelector('.agent-card-tabs');
+  if (cardTabBar) _populateAgentTabBar(cardTabBar, agent, panel);
+  const cardTabWrap = card.querySelector('.agent-card-tabs-wrap');
+  if (cardTabWrap) _wireTabCarousel(cardTabWrap);
+
+  grid.appendChild(row);
 }
 
 // ── Selection / toggle ────────────────────────────────────────────────────────
 
 function _selectAgent(agent) {
   if (_expandedAgents.has(agent.id)) {
+    // Clicking the already-open agent's square closes it (back to the grid).
     _expandedAgents.delete(agent.id);
   } else {
-    _expandedAgents.set(agent.id, { tab: 'config' });
+    // Open this one (replacing whatever was open). Only one at a time.
+    _setActive(agent.id);
   }
   _renderList();
   _saveViewState();
+}
+
+// ── Mock agent helpers ────────────────────────────────────────────────────────
+
+function _getMockAgent() {
+  // Return the live mock agent from the expanded state, or create a fresh one
+  const existing = _agents.find(a => a.id === MOCK_AGENT_ID);
+  if (existing) return existing;
+  // The mock agent isn't in _agents — it's rendered separately in _renderList
+  return _createMockAgent();
+}
+
+function _mockAgentName() {
+  const row = document.querySelector(`.agent-row[data-agent-id="${MOCK_AGENT_ID}"]`);
+  if (!row) return '';
+  const nameEl = row.querySelector('[data-field="name"]');
+  return nameEl ? nameEl.value.trim() : '';
+}
+
+// ── Mock card: inline quick-create (name input + template dropdown) ────────────
+
+let _mockTemplatesCache  = null;   // [{id, name, description}, …]
+let _mockDocHandlerInstalled = false;
+
+// A random Lucide icon for the "create a new agent" card, re-picked after each
+// successful create so each fresh card looks distinct.
+const _MOCK_ICON_CHOICES = ['bot','cpu','sparkles','zap','rocket','brain-circuit',
+  'wand-2','compass','feather','flame','gem','globe','lightbulb','orbit','atom',
+  'telescope','puzzle','shapes','terminal','bird','star','blocks','boxes','wrench'];
+let _mockIconName = null;
+function _mockRandomIcon() {
+  if (!_mockIconName) _mockIconName = _MOCK_ICON_CHOICES[Math.floor(Math.random() * _MOCK_ICON_CHOICES.length)];
+  return _mockIconName;
+}
+
+async function _fetchMockTemplates() {
+  if (_mockTemplatesCache) return _mockTemplatesCache;
+  try {
+    const url = `/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&discoverable_only=true`;
+    const res = await fetch(url);
+    _mockTemplatesCache = res.ok ? ((await res.json()).templates || []) : [];
+  } catch (e) {
+    console.warn('agents: failed to load templates for mock', e);
+    _mockTemplatesCache = [];
+  }
+  return _mockTemplatesCache;
+}
+
+async function _populateMockTemplateMenu(menu, onPick) {
+  menu.innerHTML = '<div class="agent-mock-tpl-loading">Loading templates…</div>';
+  const templates = await _fetchMockTemplates();
+  menu.innerHTML = '';
+  if (!templates.length) {
+    menu.innerHTML = '<div class="agent-mock-tpl-empty">No templates available</div>';
+    return;
+  }
+  for (const tpl of templates) {
+    const row = document.createElement('div');
+    row.className = 'agent-mock-tpl-row';
+    row.setAttribute('role', 'option');
+    let html = `<span class="agent-mock-tpl-name">${_esc(tpl.name || tpl.id)}</span>`;
+    if (tpl.description) html += `<span class="agent-mock-tpl-desc">${_esc(tpl.description)}</span>`;
+    row.innerHTML = html;
+    row.addEventListener('click', () => onPick(tpl));
+    menu.appendChild(row);
+  }
+}
+
+// Installed once. Closes the template menu on any click outside the field.
+function _ensureMockDocHandler() {
+  if (_mockDocHandlerInstalled) return;
+  _mockDocHandlerInstalled = true;
+  document.addEventListener('click', (e) => {
+    const field = document.querySelector('.agent-card-mock .agent-mock-create-field');
+    if (!field || field.contains(e.target)) return;
+    const card = field.closest('.agent-card');
+    const menu = field.querySelector('.agent-mock-tpl-menu');
+    if (menu) menu.style.display = 'none';
+    if (card) card.classList.remove('mock-menu-open');
+  });
+}
+
+function _wireMockCreateField(card) {
+  const field = card.querySelector('.agent-mock-create-field');
+  if (!field) return;
+  const input  = field.querySelector('.agent-mock-name-input');
+  const toggle = field.querySelector('.agent-mock-tpl-toggle');
+  const menu   = field.querySelector('.agent-mock-tpl-menu');
+  if (!input || !toggle || !menu) return;
+
+  input.dataset.templateId = 'default';
+
+  // Clicks inside the field never bubble to the document outside-click handler
+  // (which would close the menu).
+  field.addEventListener('click', e => e.stopPropagation());
+
+  // The big "+" button on the right of the bar creates the agent.
+  const createGo = card.querySelector('.agent-mock-create-go');
+  if (createGo) createGo.addEventListener('click', (e) => { e.stopPropagation(); _submitMockCreate(input); });
+
+  // Toggle shows a spinner until the template list is loaded, then a chevron.
+  // Prefetching here means the dropdown opens instantly when the user clicks.
+  const CHEVRON = icon('chevron-down', { size: '16px' });
+  const SPINNER = icon('loader-2', { size: '16px' });
+  const _setToggleReady = (ready) => {
+    toggle.innerHTML = ready ? CHEVRON : SPINNER;
+    toggle.disabled = !ready;
+    toggle.classList.toggle('loading', !ready);
+    toggle.title = ready ? 'Choose a template' : 'Loading templates…';
+  };
+  if (_mockTemplatesCache) {
+    _setToggleReady(true);
+  } else {
+    _setToggleReady(false);
+    _fetchMockTemplates().finally(() => _setToggleReady(true));
+  }
+
+  const closeMenu = () => { menu.style.display = 'none'; card.classList.remove('mock-menu-open'); };
+  const openMenu  = () => {
+    menu.style.display = 'block';
+    card.classList.add('mock-menu-open');
+    _populateMockTemplateMenu(menu, (tpl) => {
+      input.dataset.templateId = tpl.id;
+      input.textContent = tpl.name || tpl.id;
+      closeMenu();
+      input.focus();
+    });
+  };
+
+  toggle.addEventListener('click', () => {
+    if (menu.style.display === 'block') closeMenu();
+    else openMenu();
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); _submitMockCreate(input); }
+    else if (e.key === 'Escape') { if (menu.style.display === 'block') closeMenu(); else input.blur(); }
+  });
+  // Paste as plain text so the contenteditable name never holds markup.
+  input.addEventListener('paste', (e) => {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text').replace(/\s+/g, ' ').trim();
+    document.execCommand('insertText', false, text);
+  });
+
+  _ensureMockDocHandler();
+}
+
+async function _submitMockCreate(input) {
+  if (!input || input.dataset.busy === '1') return;
+  const name = (input.textContent || '').trim();
+  if (!name) return;
+  input.dataset.busy = '1';
+  try {
+    await _postNewAgent({ name, templateId: input.dataset.templateId || 'default' });
+  } catch (e) {
+    console.warn('agents: quick create failed', e);
+    alert('Error creating agent: ' + e.message);
+    input.dataset.busy = '';
+  }
+}
+
+// ── Tab carousel: drag-to-scroll + edge fades + clickable chevrons ────────────
+
+/**
+ * Make the in-card tab strip draggable with the mouse, show/hide edge fades and
+ * the left/right chevron buttons depending on scroll position, and wire the
+ * chevrons to scroll a page at a time.
+ *
+ * The scroller (.agent-card-tabs) is the overflow container; the wrapper holds
+ * the fades (::before/::after) and the chevron buttons. We toggle the
+ * can-scroll-left / can-scroll-right classes on the wrapper to reveal them.
+ */
+function _wireTabCarousel(wrap) {
+  if (wrap.dataset.carouselWired === '1') return;
+  wrap.dataset.carouselWired = '1';
+  const scroller = wrap.querySelector('.agent-card-tabs');
+  if (!scroller) return;
+  const chevLeft  = wrap.querySelector('.agent-card-tabs-chev.left');
+  const chevRight = wrap.querySelector('.agent-card-tabs-chev.right');
+
+  const updateAffordances = () => {
+    // Allow a 1px slack so rounding doesn't leave a fade stuck on.
+    const maxScroll = scroller.scrollWidth - scroller.clientWidth;
+    const atStart = scroller.scrollLeft <= 1;
+    const atEnd   = scroller.scrollLeft >= maxScroll - 1;
+    const overflowing = maxScroll > 1;
+    wrap.classList.toggle('can-scroll-left',  overflowing && !atStart);
+    wrap.classList.toggle('can-scroll-right', overflowing && !atEnd);
+  };
+
+  scroller.addEventListener('scroll', updateAffordances, { passive: true });
+  // Recompute after tab content (and async count badges) settle, and on resize.
+  requestAnimationFrame(updateAffordances);
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(updateAffordances).observe(scroller);
+  }
+
+  const page = () => Math.max(scroller.clientWidth * 0.7, 120);
+  if (chevLeft) {
+    chevLeft.addEventListener('click', e => {
+      e.stopPropagation();
+      scroller.scrollBy({ left: -page(), behavior: 'smooth' });
+    });
+  }
+  if (chevRight) {
+    chevRight.addEventListener('click', e => {
+      e.stopPropagation();
+      scroller.scrollBy({ left: page(), behavior: 'smooth' });
+    });
+  }
+
+  // ── Pointer drag-to-scroll ──
+  let dragging = false;
+  let startX = 0;
+  let startScroll = 0;
+  let moved = false;
+
+  scroller.addEventListener('pointerdown', e => {
+    // Only primary button; ignore clicks on the chevrons (they live in the wrap,
+    // not the scroller, so they never reach here).
+    if (e.button !== 0) return;
+    dragging = true;
+    moved = false;
+    startX = e.clientX;
+    startScroll = scroller.scrollLeft;
+    scroller.classList.add('dragging');
+  });
+
+  scroller.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    if (Math.abs(dx) > 4) {
+      moved = true;
+      // Capture once we know it's a drag so the pointer can leave the strip.
+      try { scroller.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    if (moved) {
+      scroller.scrollLeft = startScroll - dx;
+      e.preventDefault();
+    }
+  });
+
+  const endDrag = e => {
+    if (!dragging) return;
+    dragging = false;
+    scroller.classList.remove('dragging');
+    try { scroller.releasePointerCapture(e.pointerId); } catch (_) {}
+  };
+  scroller.addEventListener('pointerup', endDrag);
+  scroller.addEventListener('pointercancel', endDrag);
+
+  // Swallow the click that follows a drag so a tab isn't selected mid-swipe.
+  scroller.addEventListener('click', e => {
+    if (moved) {
+      e.stopPropagation();
+      e.preventDefault();
+      moved = false;
+    }
+  }, true);
 }
 
 // ── Per-row detail panel ──────────────────────────────────────────────────────
 
 function _populateAgentTabBar(tabBar, agent, panel) {
   const state = _expandedAgents.get(agent.id);
+  const isMock = _isMockAgent(agent);
   // Highlight a tab only when the card is open — a collapsed card has no
   // active content, so no tab should look selected.
-  const activeTab = state ? (state.tab || 'config') : null;
+  // When tab is null (card expanded but no tab selected), no tab is highlighted.
+  const activeTab = state ? state.tab : null;
   tabBar.innerHTML = '';
-  const tabs = [['config','Config'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities']];
-  if (state?.automationEnabled) tabs.push(['automation','Automation']);
-  if (_userIsAdmin) tabs.push(['members','Members']);
-  tabs.push(['monetization','Monetization']);
+  const tabs = [['config','Config'],['prompts','Prompts'],['tools','Tools'],['test','Agent Loop'],['connections','Abilities']];
+  if (!isMock) {
+    if (state?.automationEnabled) tabs.push(['automation','Automation']);
+    if (_userIsAdmin) tabs.push(['members','Members']);
+    tabs.push(['monetization','Monetization']);
+  }
 
-  // ── Compute synchronous counts ──
-  const toolCount = _toolsForAgent(agent).length;
+  // ── Compute synchronous counts (base tools, no abilities yet) ──
+  const baseToolCount = _toolsForAgent(agent).length;
 
   for (const [key, label] of tabs) {
     const btn = document.createElement('button');
@@ -403,7 +1257,7 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     btn.dataset.tab = key;
     // Set label with count badge where applicable
     if (key === 'tools') {
-      btn.innerHTML = `${label} <span class="tab-count-badge">${toolCount}</span>`;
+      btn.innerHTML = `${label} <span class="tab-count-badge tab-count-badge-pending">…</span>`;
     } else if (key === 'connections') {
       btn.innerHTML = `${label} <span class="tab-count-badge tab-count-badge-pending">…</span>`;
     } else if (key === 'members') {
@@ -413,27 +1267,32 @@ function _populateAgentTabBar(tabBar, agent, panel) {
     }
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const entry = _expandedAgents.get(agent.id);
-      if (entry) {
-        // Card is open → switch to the clicked tab (never collapse from tab clicks).
-        _expandedAgents.set(agent.id, { tab: key });
-      } else {
-        // Collapsed → expand to the clicked tab.
-        _expandedAgents.set(agent.id, { tab: key });
-      }
+      // Switch to the clicked tab (tab clicks never collapse the card).
+      _setActive(agent.id, key);
       _renderList();
       _saveViewState();
     });
     tabBar.appendChild(btn);
   }
 
-  // ── Async: fetch abilities count ──
-  _fetchAbilitiesCount(agent).then(count => {
+  if (isMock) return; // no async fetches for mock agent
+
+  // ── Async: fetch abilities + compute tool count ──
+  _fetchAbilitiesAndTools(agent).then(({ toolCount, abilitiesCount }) => {
+    const toolsBtn = tabBar.querySelector('.agents-detail-tab[data-tab="tools"]');
+    if (toolsBtn) {
+      toolsBtn.innerHTML = `Tools <span class="tab-count-badge">${toolCount}</span>`;
+    }
     const connBtn = tabBar.querySelector('.agents-detail-tab[data-tab="connections"]');
     if (connBtn) {
-      connBtn.innerHTML = `Abilities <span class="tab-count-badge">${count}</span>`;
+      connBtn.innerHTML = `Abilities <span class="tab-count-badge">${abilitiesCount}</span>`;
     }
   }).catch(() => {
+    // Fallback: show base count if fetch fails
+    const toolsBtn = tabBar.querySelector('.agents-detail-tab[data-tab="tools"]');
+    if (toolsBtn) {
+      toolsBtn.innerHTML = `Tools <span class="tab-count-badge">${baseToolCount}</span>`;
+    }
     const connBtn = tabBar.querySelector('.agents-detail-tab[data-tab="connections"]');
     if (connBtn) {
       connBtn.innerHTML = `Abilities <span class="tab-count-badge">0</span>`;
@@ -463,6 +1322,44 @@ async function _fetchAbilitiesCount(agent) {
   return abilities.filter(a => !a.implicit && a.enabled).length;
 }
 
+/**
+ * Fetch abilities and compute both the abilities count and the tool count
+ * (including ability-gated tools). Returns { toolCount, abilitiesCount }.
+ *
+ * Uses the connections API to get enabled ability-type connection_types
+ * (codebase_admin, web_access, browser_control, etc.) and the abilities
+ * API to count non-implicit OAuth abilities.
+ */
+async function _fetchAbilitiesAndTools(agent) {
+  // Fetch connections (for ability-type toggles like codebase_admin)
+  let connEnabled = new Set();
+  let abilitiesCount = 0;
+  try {
+    const [connRes, abilRes] = await Promise.all([
+      fetch(`/api/v1/agents/${agent.id}/connections?user_id=${encodeURIComponent(app.currentUserId)}`),
+      fetch(`/api/v1/agents/${agent.id}/abilities?user_id=${encodeURIComponent(app.currentUserId)}`).catch(() => null),
+    ]);
+    if (connRes.ok) {
+      const connData = await connRes.json();
+      for (const c of (connData.connections || [])) {
+        if (c.enabled && c.section === 'ability') {
+          connEnabled.add(c.connection_type);
+        }
+      }
+    }
+    if (abilRes && abilRes.ok) {
+      const abilData = await abilRes.json();
+      const abilities = abilData.abilities || [];
+      abilitiesCount = abilities.filter(a => !a.implicit && a.enabled).length;
+    }
+  } catch (e) {
+    // non-fatal — proceed without ability data
+  }
+
+  const tools = _toolsForAgent(agent, connEnabled);
+  return { toolCount: tools.length, abilitiesCount };
+}
+
 async function _fetchMembersCount(agent) {
   const res = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/members?user_id=${encodeURIComponent(app.currentUserId)}`);
   if (!res.ok) return 0;
@@ -473,10 +1370,12 @@ async function _fetchMembersCount(agent) {
 }
 
 function _refreshAgentTabBar(agent) {
-  const row = document.querySelector(`.agent-row[data-agent-id="${agent.id}"]`);
-  if (!row) return;
-  const tabBar = row.querySelector('.agent-card-tabs');
-  const panel = row.querySelector('.agent-detail-panel');
+  // The tabs + panel only exist on the expanded card in the detail region (the
+  // carousel square shares the data-agent-id but has neither).
+  const region = document.getElementById('agents-detail-region');
+  if (!region) return;
+  const tabBar = region.querySelector('.agent-card-tabs');
+  const panel = region.querySelector('.agent-detail-panel');
   if (tabBar && panel) _populateAgentTabBar(tabBar, agent, panel);
 }
 
@@ -511,6 +1410,21 @@ function _buildDetailPanel(agent) {
   content.className = 'agent-detail-content';
   panel.appendChild(content);
 
+  // For the mock agent, add a create button bar at the top of the panel
+  if (_isMockAgent(agent)) {
+    const createBar = document.createElement('div');
+    createBar.className = 'agent-mock-create-bar';
+    const createBtn = document.createElement('button');
+    createBtn.className = 'agent-mock-create-btn';
+    createBtn.innerHTML = icon('plus', { size: '16px' }) + ' Create Agent';
+    createBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _createAgentFromMock(panel);
+    });
+    createBar.appendChild(createBtn);
+    content.appendChild(createBar);
+  }
+
   // Scrollable body (the tab carousel now lives in the card header above)
   const body = document.createElement('div');
   body.className = 'agent-detail-body';
@@ -520,93 +1434,80 @@ function _buildDetailPanel(agent) {
   _renderPanelBody(agent, panel);
 
   // Asynchronously discover whether the Automation tab should be visible.
-  _detectAgentAbilities(agent, panel);
+  if (!_isMockAgent(agent)) {
+    _detectAgentAbilities(agent, panel);
+  }
 
   return panel;
 }
 
-// ── Agent Builder chat bar ────────────────────────────────────────────────────
+// ── Agent Manager chat bar ────────────────────────────────────────────────────
 //
 // Persistent textarea + send button at the top of every agent detail body.
-// Submitting a prompt hands the conversation off to the built-in `agent-builder`
-// system agent (find-or-created on first send), then injects the message into
-// the main chat composer. Mirrors the Pages tab Visualizer pattern in
-// ui/js/autoagent.js:129-232.
-
-async function _findAgentBuilderAgent(userId) {
-  const cached = _agentBuilderAgentCache.get(userId);
-  if (cached) return cached;
-  try {
-    const res = await fetch(`/api/v1/agents?user_id=${encodeURIComponent(userId)}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    const match = (data.agents || []).find(a => a.template_id === AGENT_BUILDER_TEMPLATE_ID);
-    if (match) {
-      _agentBuilderAgentCache.set(userId, match.id);
-      return match.id;
-    }
-  } catch (_) { /* fall through */ }
-  return null;
-}
-
-async function _createAgentBuilderAgent(userId) {
-  const res = await fetch('/api/v1/agents', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      user_id: userId,
-      name: 'Agent Builder',
-      description: 'Guides agent configuration — templates, prompt slots, abilities, model settings.',
-      template_id: AGENT_BUILDER_TEMPLATE_ID,
-    }),
-  });
-  if (!res.ok) throw new Error(`agent create failed (${res.status})`);
-  const data = await res.json();
-  const id = data.agent && data.agent.id;
-  if (!id) throw new Error('agent create returned no id');
-  _agentBuilderAgentCache.set(userId, id);
-  if (typeof app.populateAgentSelect === 'function') {
-    try { await app.populateAgentSelect(userId); } catch (_) {}
-  }
-  return id;
-}
-
-async function _ensureAgentBuilderAgent(userId) {
-  return (await _findAgentBuilderAgent(userId)) || (await _createAgentBuilderAgent(userId));
-}
+// Submitting a prompt hands the conversation off to the shared webAgent in a
+// fresh session (app.startWebagentSession), then injects the message into the
+// main chat composer. The Pages, Source Control, and Agent Settings pills do
+// the same.
 
 async function _sendAgentBuilderPrompt() {
   const input = document.getElementById('agent-builder-bar-input');
   const row   = document.getElementById('agent-builder-bar-row');
-  if (!input) return;
+  if (!input) { console.error('[AgentMgr] input not found'); return; }
 
   const text = input.value.trim();
   if (!text) return;
-  if (!app.currentUserId) return;
-
-  const tagged = `[Agent Builder Request | Source: Agents Page]: ${text}`;
-
-  let builderAgentId;
-  try {
-    builderAgentId = await _ensureAgentBuilderAgent(app.currentUserId);
-  } catch (_e) {
+  if (!app.currentUserId) {
+    console.error('[AgentMgr] no userId');
     return;
   }
 
-  if (typeof app.switchToAgent === 'function') {
-    app.switchToAgent(builderAgentId);
-  } else if (builderAgentId !== app.currentAgentId) {
-    app.currentAgentId = builderAgentId;
-    try { localStorage.setItem('selectedAgentId', builderAgentId); } catch (_) {}
+  const tagged = `[webAgent Request | Source: Agents Page]: ${text}`;
+
+  // All page pills hand off to the one do-it-all webAgent in a fresh session.
+  let builderAgentId;
+  try {
+    builderAgentId = await app.startWebagentSession();
+  } catch (e) {
+    console.error('[AgentMgr] startWebagentSession failed:', e);
+    app.addChatBubble('agent', '❌ webAgent unavailable: ' + (e.message || e), 'error');
+    return;
   }
 
   input.value = '';
   if (row) row.classList.remove('has-text');
 
-  if (app.chatInput && app.chatSend) {
+  if (app.chatInput) {
     app.chatInput.value = tagged;
     app.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-    app.chatSend.click();
+    setTimeout(() => {
+      if (app.chatSend) {
+        app.chatSend.click();
+      } else {
+        // Direct fallback if the main chat send button is not wired
+        fetch(apiPath('/api/v1/chat/send'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: tagged,
+            session_id: app.currentSessionId,
+            user_id: app.currentUserId,
+            agent_id: builderAgentId,
+          }),
+        }).catch(err => console.error('[AgentMgr] direct send failed:', err));
+      }
+    }, 50);
+  } else {
+    // No main chat input at all — fire direct
+    fetch(apiPath('/api/v1/chat/send'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: tagged,
+        session_id: app.currentSessionId,
+        user_id: app.currentUserId,
+        agent_id: builderAgentId,
+      }),
+    }).catch(err => console.error('[AgentMgr] direct send (no chatInput) failed:', err));
   }
 }
 
@@ -690,6 +1591,7 @@ function _renderPanelBody(agent, panelEl) {
   if (oldSaveBar) oldSaveBar.remove();
 
   if (tab === 'config')            _renderConfigTab(body, agent, panelEl);
+  else if (tab === 'prompts')      _renderPromptsTab(body, agent, panelEl);
   else if (tab === 'tools')        _renderToolsTab(body, agent, panelEl);
   else if (tab === 'test')         _renderTestTab(body, agent);
   else if (tab === 'connections')  _renderConnectionsTab(body, agent);
@@ -708,6 +1610,10 @@ function _renderPanelBody(agent, panelEl) {
 // ── Automation tab ────────────────────────────────────────────────────────────
 
 async function _renderAutomationTab(body, agent, panelEl) {
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to configure automation.</div>';
+    return;
+  }
   body.innerHTML = '<div style="font-size:12px;color:var(--fg-3);padding:8px;">Loading automation…</div>';
 
   let slotContent = '';
@@ -1305,17 +2211,262 @@ function _renderEventTriggerRow(agent, sub, channels, onRefresh) {
   return row;
 }
 
+// ── Suggested-Replies mode control (user-impersonator config) ───────────────
+// Reads/writes the silent suggestion engine's runtime config so the user can
+// switch between Off / On / On + idle refresh and pick how many chips to show.
+function _renderSuggestionModeControl(body) {
+  const group = document.createElement('div');
+  group.className = 'agents-field-group';
+
+  const intro = document.createElement('div');
+  intro.className = 'agents-field-label';
+  intro.textContent = 'Suggested replies';
+  group.appendChild(intro);
+
+  const hint = document.createElement('div');
+  hint.style.cssText = 'font-size:12px;color:var(--fg-4);margin:-2px 0 8px;';
+  hint.textContent = 'Grey suggestion chips above the chat box, written in your voice.';
+  group.appendChild(hint);
+
+  // Mode selector
+  const modeWrap = document.createElement('label');
+  modeWrap.style.cssText = 'display:block;font-size:12px;color:var(--fg-3);margin-bottom:8px;';
+  modeWrap.textContent = 'When to suggest';
+  const modeSel = document.createElement('select');
+  modeSel.className = 'agents-input';
+  [['on', 'On — after each reply'],
+   ['scheduler', 'On + refresh while idle'],
+   ['off', 'Off']].forEach(([v, t]) => {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = t; modeSel.appendChild(o);
+  });
+  modeWrap.appendChild(modeSel);
+  group.appendChild(modeWrap);
+
+  // Count selector
+  const countWrap = document.createElement('label');
+  countWrap.style.cssText = 'display:block;font-size:12px;color:var(--fg-3);margin-bottom:8px;';
+  countWrap.textContent = 'How many suggestions';
+  const countSel = document.createElement('select');
+  countSel.className = 'agents-input';
+  [1, 2, 3, 4, 5].forEach(n => {
+    const o = document.createElement('option');
+    o.value = String(n); o.textContent = String(n); countSel.appendChild(o);
+  });
+  countWrap.appendChild(countSel);
+  group.appendChild(countWrap);
+
+  const status = document.createElement('div');
+  status.style.cssText = 'font-size:11px;color:var(--fg-4);min-height:14px;';
+  group.appendChild(status);
+
+  body.appendChild(group);
+
+  // Load current values.
+  fetch('/api/v1/chat/suggestions/config')
+    .then(r => r.ok ? r.json() : null)
+    .then(cfg => {
+      if (!cfg) return;
+      if (cfg.mode) modeSel.value = cfg.mode;
+      if (cfg.count) countSel.value = String(cfg.count);
+    })
+    .catch(() => {});
+
+  async function _save() {
+    status.textContent = 'Saving…';
+    try {
+      const res = await fetch('/api/v1/chat/suggestions/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: modeSel.value, count: parseInt(countSel.value, 10) }),
+      });
+      status.textContent = res.ok ? 'Saved.' : 'Save failed.';
+    } catch (_) {
+      status.textContent = 'Save failed.';
+    }
+    setTimeout(() => { status.textContent = ''; }, 2000);
+  }
+  modeSel.addEventListener('change', _save);
+  countSel.addEventListener('change', _save);
+}
+
+// ── Per-field auto-save ───────────────────────────────────────────────────────
+// Config / Prompts fields persist on change instead of via a bottom Save button.
+// Each field gets a small indicator that flashes a green check on success.
+
+function _makeAutosaveCheck() {
+  const el = document.createElement('span');
+  el.className = 'agents-autosave-check';
+  el.setAttribute('aria-hidden', 'true');
+  return el;
+}
+
+function _flashSaved(indicator, ok = true, errMsg = '') {
+  if (!indicator) return;
+  clearTimeout(indicator._fadeT);
+  indicator.classList.remove('saving', 'saved', 'error');
+  if (ok) {
+    // Only appears once the backend has confirmed the write, then fades after a
+    // couple of seconds so it reads as a transient "saved!" confirmation.
+    indicator.classList.add('saved');
+    indicator.textContent = '✓';
+    indicator.title = 'Saved';
+    indicator._fadeT = setTimeout(() => {
+      indicator.classList.remove('saved');
+      indicator.textContent = '';
+    }, 2200);
+  } else {
+    indicator.classList.add('error');
+    indicator.textContent = '!';
+    indicator.title = errMsg || 'Save failed';
+    indicator._fadeT = setTimeout(() => {
+      indicator.classList.remove('error');
+      indicator.textContent = '';
+    }, 4000);
+  }
+}
+
+// While a save is in flight, clear the indicator — no icon shows until the
+// backend confirms the write in _flashSaved.
+function _markSaving(indicator) {
+  if (!indicator) return;
+  clearTimeout(indicator._fadeT);
+  indicator.classList.remove('saved', 'error', 'saving');
+  indicator.textContent = '';
+}
+
+/**
+ * PUT a partial update for a single custom agent. Returns true on success.
+ * Flashes `indicator` (if given) and patches the local agent cache so a later
+ * re-render is consistent. No-op (returns false) for non-custom / mock agents.
+ */
+async function _putAgentField(agent, updates, indicator) {
+  if (!agent || agent.source !== 'custom' || _isMockAgent(agent)) return false;
+  _markSaving(indicator);
+  try {
+    const res = await fetch(`/api/v1/agents/${agent.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: app.currentUserId, ...updates }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      const idx = _agents.findIndex(a => a.id === agent.id);
+      if (idx !== -1) Object.assign(_agents[idx], data.agent);
+      Object.assign(agent, data.agent);
+      // Surgically update the square (name, description, icon changes)
+      _surgicalUpdateSquare(agent);
+      _flashSaved(indicator, true);
+      return true;
+    }
+    _flashSaved(indicator, false, data.detail || 'Save failed');
+    return false;
+  } catch (e) {
+    _flashSaved(indicator, false, e.message);
+    return false;
+  }
+}
+
+/**
+ * Non-optimistic toggle/button save. The control shows a spinner while the
+ * request is in flight, ignores further clicks until it resolves, and only
+ * adopts the new visual state once the backend confirms it — so a slow or
+ * failed save never leaves the UI showing a value that wasn't persisted.
+ *
+ * @param control   the clickable element (button / checkbox)
+ * @param buildUpdates (newOn) => updates object to PUT
+ * @param applyState  (on) => void   apply the confirmed on/off look to `control`
+ * @param indicator   the green-check element
+ */
+async function _toggleSave(agent, control, currentOn, buildUpdates, applyState, indicator) {
+  if (control.dataset.busy === '1') return;        // ignore double-clicks mid-save
+  const targetOn = !currentOn;
+  control.dataset.busy = '1';
+  control.classList.add('control-saving');
+  const prevHTML = control.innerHTML;
+  control.innerHTML = '<span class="agents-spinner"></span>';
+  _markSaving(indicator);
+  const ok = await _putAgentField(agent, buildUpdates(targetOn), indicator);
+  control.dataset.busy = '0';
+  control.classList.remove('control-saving');
+  if (ok) {
+    applyState(targetOn);                          // adopt the new state only now
+  } else {
+    control.innerHTML = prevHTML;                  // restore the prior look untouched
+  }
+}
+
+/** Debounce a handler so rapid typing only saves once it settles. */
+function _debounced(fn, ms = 700) {
+  let t;
+  const wrapped = (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+  wrapped.flush = (...args) => { clearTimeout(t); fn(...args); };
+  return wrapped;
+}
+
 // ── Config tab ────────────────────────────────────────────────────────────────
 
 function _renderConfigTab(body, agent, panelEl) {
   const isEditable = agent.source === 'custom';
+  const isMock = _isMockAgent(agent);
+
+  // The Suggested Replies (user-impersonator) agent powers the grey suggestion
+  // chips above the chat pill. Its behaviour is tuned by a small runtime config
+  // (mode + count), not the normal agent-row fields — so give it a dedicated
+  // control here.
+  if (agent.id === 'user-impersonator') {
+    _renderSuggestionModeControl(body);
+  }
 
   // Name + description (editable for custom agents only)
+  // Mock agents have no row to save to yet — the create flow gathers these,
+  // so skip auto-save wiring (passing no onSave) for the mock card.
   if (isEditable) {
     _addField(body, 'Name', 'agents-input', 'name',
-      agent.name || (agent.source === 'custom' ? 'autoAgent' : ''), false);
+      agent.name || '', false, 4, '',
+      isMock ? null : (val, ind) => _putAgentField(agent, { name: val.trim() }, ind));
     _addField(body, 'Description', 'agents-textarea', 'desc',
-      agent.description || '', false, 2);
+      agent.description || '', false, 2, '',
+      isMock ? null : (val, ind) => _putAgentField(agent, { description: val }, ind));
+  }
+
+  // ── Template selector (mock agent only) ────────────────────────────────────
+  if (isMock) {
+    const tplGroup = document.createElement('div');
+    tplGroup.className = 'agents-field-group';
+    const tplLabel = document.createElement('label');
+    tplLabel.className = 'agents-field-label';
+    tplLabel.textContent = 'Template';
+    const tplSelect = document.createElement('select');
+    tplSelect.className = 'agents-input';
+    tplSelect.dataset.field = 'template';
+    tplSelect.innerHTML = '<option value="">— No template —</option>';
+    tplGroup.appendChild(tplLabel);
+    tplGroup.appendChild(tplSelect);
+    body.appendChild(tplGroup);
+
+    // Fetch templates
+    (async () => {
+      try {
+        const url = `/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&discoverable_only=true`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json();
+          (data.templates || []).forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t.id;
+            opt.textContent = t.name || t.id;
+            if (t.id === 'default') opt.selected = true;
+            tplSelect.appendChild(opt);
+          });
+        }
+      } catch (e) {
+        console.warn('agents: failed to load templates for mock', e);
+      }
+    })();
   }
 
   // ── Per-agent LLM card ───────────────────────────────────────────────────
@@ -1337,12 +2488,20 @@ function _renderConfigTab(body, agent, panelEl) {
     llmTitle.textContent = 'LLM';
     const llmBadge = document.createElement('span');
     llmBadge.className = 'agents-llm-badge';
+    const llmCheck = _makeAutosaveCheck();
     const llmChevron = document.createElement('span');
     llmChevron.className = 'agents-llm-chevron';
     llmChevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
     llmHeader.appendChild(llmTitle);
     llmHeader.appendChild(llmBadge);
+    llmHeader.appendChild(llmCheck);
     llmHeader.appendChild(llmChevron);
+
+    // Persist the whole LLM block on any change (mock create captures it separately).
+    const _saveLlm = _debounced(() => {
+      if (isMock) return;
+      _putAgentField(agent, { llm_config: { ...panelEl._llmState } }, llmCheck);
+    }, 500);
 
     // Body (collapsed by default)
     const llmBody = document.createElement('div');
@@ -1490,6 +2649,7 @@ function _renderConfigTab(body, agent, panelEl) {
           modelStatus.style.color = '#9ece6a';
           panelEl._llmState.model = m.id;
           _llmUpdateBadge();
+          _saveLlm();
         });
         modelDd.appendChild(item);
       });
@@ -1533,11 +2693,13 @@ function _renderConfigTab(body, agent, panelEl) {
       panelEl._llmState.model = '';
       _fetchAgentModels();
       _llmUpdateBadge();
+      _saveLlm();
     });
 
-    urlInput.addEventListener('change', () => { panelEl._llmState.base_url = urlInput.value.trim(); });
+    urlInput.addEventListener('change', () => { panelEl._llmState.base_url = urlInput.value.trim(); _saveLlm(); });
     keyInput.addEventListener('change', () => {
       panelEl._llmState.api_key = keyInput.value.trim();
+      _saveLlm();
     });
 
     modelSearch.addEventListener('focus', () => _renderAgentModelDd(modelSearch.value.toLowerCase()));
@@ -1560,7 +2722,7 @@ function _renderConfigTab(body, agent, panelEl) {
     }
 
     Object.entries(_llmModeLabels).forEach(([val, { radio }]) => {
-      radio.addEventListener('change', () => { if (radio.checked) _applyLlmMode(val); });
+      radio.addEventListener('change', () => { if (radio.checked) { _applyLlmMode(val); _saveLlm(); } });
     });
 
     const initialMode = (llmCfg.use_default === false || !_extendLlmToAgents) ? 'custom' : 'default';
@@ -1603,37 +2765,230 @@ function _renderConfigTab(body, agent, panelEl) {
     })();
   }
 
-  // Turn count
-  const tcGroup = document.createElement('div');
-  tcGroup.className = 'agents-field-group';
-  tcGroup.innerHTML = `
-    <label class="agents-field-label">Max Turn Count</label>
-    <span class="agents-field-hint">Maximum number of tool-calling turns per session.</span>
-    <input type="number" class="agents-input" data-field="max_turn_count"
-      value="${agent.max_turn_count || 10}" min="1" max="99999"
-      ${!isEditable ? 'readonly' : ''} style="width:100px">
-  `;
-  body.appendChild(tcGroup);
+  // ── Limits (compact table with popover descriptions) ────────────────────────
+  const L = [
+    {
+      field: 'max_turn_count',
+      label: 'Max Turn Count',
+      value: agent.max_turn_count != null ? agent.max_turn_count : 9999,
+      placeholder: '9999',
+      min: 0, max: 99999,
+      hint: 'Caps the LLM → tool → LLM cycles per response — catches loops where the agent repeats tool calls without resolving. 0 = unlimited (a wall-clock safety limit still ends a stuck run gracefully). New agents start at 9999 — effectively unlimited but bounded.',
+    },
+    {
+      field: 'max_wall_seconds',
+      label: 'Wall Clock (seconds)',
+      value: agent.max_wall_seconds != null ? agent.max_wall_seconds : '',
+      placeholder: '0 (off)',
+      min: 0, max: 86400, step: 1,
+      hint: 'Limits total real time (in seconds) for one response, across all turns. Catches hanging tool calls, slow models, and long-running operations. Wall clock is about real-world duration. Set e.g. 300 for 5 min.',
+    },
+    {
+      field: 'max_identical_tool_calls',
+      label: 'Identical Tool Calls',
+      value: agent.max_identical_tool_calls != null ? agent.max_identical_tool_calls : '',
+      placeholder: '0 (off)',
+      min: 0, max: 9999, step: 1,
+      hint: 'Limits how many times the agent can call the same tool with the same arguments. Prevents infinite loops (e.g. running the same search 20 times). Also limits how many consecutive calls to the same tool (different args) are allowed. Set to 0 for no limit.',
+    },
+    {
+      field: 'max_stall_strikes',
+      label: 'Stall Strikes',
+      value: agent.max_stall_strikes != null ? agent.max_stall_strikes : '',
+      placeholder: '0 (off)',
+      min: 0, max: 99, step: 1,
+      hint: 'After this many stall guard strikes (tool-call loop detections), the agent stops and asks the user for clarification. Set to 0 for no limit — the agent can keep looping as long as max-turn-count allows.',
+    },
+  ];
 
-  // Wall clock safety cap
-  const wcGroup = document.createElement('div');
-  wcGroup.className = 'agents-field-group';
-  const wcVal = agent.max_wall_seconds != null ? agent.max_wall_seconds : '';
-  wcGroup.innerHTML = `
-    <label class="agents-field-label">Wall Clock Safety Cap (seconds)</label>
-    <span class="agents-field-hint">Max wall-clock seconds before the loop stops. Default 300 (5 min). Set 0 to disable.</span>
-    <input type="number" class="agents-input" data-field="max_wall_seconds"
-      value="${wcVal}" min="0" max="86400" step="1"
-      ${!isEditable ? 'readonly' : ''} style="width:100px" placeholder="300">
-  `;
-  body.appendChild(wcGroup);
+  const limitsGroup = document.createElement('div');
+  limitsGroup.className = 'agents-field-group';
+
+  const limitsLabel = document.createElement('label');
+  limitsLabel.className = 'agents-field-label';
+  limitsLabel.textContent = 'Limits';
+  limitsGroup.appendChild(limitsLabel);
+
+  const limitsTable = document.createElement('div');
+  limitsTable.className = 'limits-table';
+
+  // Shared popover element and dismiss handler.
+  const _popover = document.createElement('div');
+  _popover.className = 'limits-popover';
+  _popover.style.display = 'none';
+  document.body.appendChild(_popover);
+  function _hidePopover() { _popover.style.display = 'none'; }
+  function _showPopover(anchorEl, text) {
+    _popover.textContent = text;
+    _popover.style.display = 'block';
+    const rect = anchorEl.getBoundingClientRect();
+    const popH = _popover.offsetHeight || 0;
+    // Position below the name, or above if not enough room.
+    let top = rect.bottom + 6;
+    if (top + popH > window.innerHeight - 10) {
+      top = rect.top - popH - 6;
+    }
+    _popover.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 280)) + 'px';
+    _popover.style.top = top + 'px';
+  }
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.limits-name')) _hidePopover();
+  });
+  window.addEventListener('scroll', _hidePopover, true);
+
+  L.forEach(cfg => {
+    const row = document.createElement('div');
+    row.className = 'limits-row';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'limits-name';
+    nameEl.textContent = cfg.label;
+    nameEl.dataset.field = cfg.field + '_desc';
+    nameEl.addEventListener('click', e => {
+      e.stopPropagation();
+      if (_popover.style.display === 'block' && _popover._activeField === cfg.field) {
+        _hidePopover();
+      } else {
+        _popover._activeField = cfg.field;
+        _showPopover(nameEl, cfg.hint);
+      }
+    });
+
+    const inputEl = document.createElement('input');
+    inputEl.type = 'number';
+    inputEl.className = 'agents-input limits-input';
+    inputEl.dataset.field = cfg.field;
+    inputEl.value = cfg.value;
+    inputEl.placeholder = cfg.placeholder;
+    inputEl.min = cfg.min;
+    inputEl.max = cfg.max;
+    if (cfg.step) inputEl.step = cfg.step;
+    if (!isEditable) inputEl.readOnly = true;
+
+    // Right side: input + auto-save indicator.
+    const rightWrap = document.createElement('span');
+    rightWrap.style.cssText = 'display:flex;align-items:center;flex-shrink:0;';
+    rightWrap.appendChild(inputEl);
+
+    if (isEditable && !isMock) {
+      const ind = _makeAutosaveCheck();
+      rightWrap.appendChild(ind);
+      const saveLimit = _debounced(() => {
+        const raw = inputEl.value;
+        let val;
+        if (cfg.field === 'max_wall_seconds') {
+          val = (raw === '') ? null : (isNaN(parseFloat(raw)) ? null : parseFloat(raw));
+        } else {
+          val = (raw === '') ? 0 : (parseInt(raw, 10) || 0);
+        }
+        _putAgentField(agent, { [cfg.field]: val }, ind);
+      });
+      inputEl.addEventListener('input', saveLimit);
+      inputEl.addEventListener('blur', () => saveLimit.flush());
+    }
+
+    row.appendChild(nameEl);
+    row.appendChild(rightWrap);
+    limitsTable.appendChild(row);
+  });
+
+  limitsGroup.appendChild(limitsTable);
+  body.appendChild(limitsGroup);
+
+  // ── Memory (compact table with toggle switches) ────────────────────────────
+  if (isEditable) {
+    const mem = _memoryStateFromAgent(agent);
+    const memGroup = document.createElement('div');
+    memGroup.className = 'agents-field-group';
+
+    const memLabel = document.createElement('label');
+    memLabel.className = 'agents-field-label';
+    memLabel.textContent = 'Memory';
+    memGroup.appendChild(memLabel);
+
+    const memTable = document.createElement('div');
+    memTable.className = 'limits-table';
+
+    const memItems = [
+      {
+        field: 'memory_recall',
+        label: 'Recall Past Info',
+        checked: mem.recall,
+        hint: 'Search memory before answering, and let the agent read or write it on demand. When on, the agent automatically pulls relevant past information into its context before replying. Trivial messages (greetings, "ok") skip recall automatically.',
+      },
+      {
+        field: 'memory_save',
+        label: 'Remember Conversations',
+        checked: mem.save,
+        hint: 'Automatically save a short note of each exchange afterward. The agent files a summary of each conversation for future recall. This is a private knowledge store kept per user and shared across that user\'s agents.',
+      },
+    ];
+
+    memItems.forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'limits-row';
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'limits-name';
+      nameEl.textContent = item.label;
+      nameEl.dataset.field = item.field + '_desc';
+      nameEl.addEventListener('click', e => {
+        e.stopPropagation();
+        if (_popover.style.display === 'block' && _popover._activeField === item.field) {
+          _hidePopover();
+        } else {
+          _popover._activeField = item.field;
+          _showPopover(nameEl, item.hint);
+        }
+      });
+
+      const tog = document.createElement('button');
+      tog.className = 'limits-toggle';
+      tog.dataset.field = item.field;
+      tog.dataset.on = item.checked ? '1' : '0';
+      tog.textContent = item.checked ? 'ON' : 'OFF';
+
+      const rightWrap = document.createElement('span');
+      rightWrap.style.cssText = 'display:flex;align-items:center;flex-shrink:0;';
+      rightWrap.appendChild(tog);
+      const ind = (!isMock) ? _makeAutosaveCheck() : null;
+      if (ind) rightWrap.appendChild(ind);
+
+      const applyTog = on => { tog.dataset.on = on ? '1' : '0'; tog.textContent = on ? 'ON' : 'OFF'; };
+
+      tog.addEventListener('click', e => {
+        e.stopPropagation();
+        if (isMock) { applyTog(tog.dataset.on !== '1'); return; }  // mock: local flip only
+        const curOn = tog.dataset.on === '1';
+        _toggleSave(agent, tog, curOn,
+          // Memory toggles both feed loop_logic + allowed_tools — recompute from
+          // this toggle's target plus the other switch's confirmed state.
+          (targetOn) => {
+            const other = panelEl.querySelector(`[data-field="${item.field === 'memory_recall' ? 'memory_save' : 'memory_recall'}"]`);
+            const otherOn = other ? other.dataset.on === '1' : false;
+            const recall = item.field === 'memory_recall' ? targetOn : otherOn;
+            const save   = item.field === 'memory_save'   ? targetOn : otherOn;
+            const mu = _memoryUpdatesFor(agent, recall, save);
+            return { loop_logic: mu.loop_logic, allowed_tools: mu.allowed_tools };
+          },
+          applyTog, ind);
+      });
+
+      row.appendChild(nameEl);
+      row.appendChild(rightWrap);
+      memTable.appendChild(row);
+    });
+
+    memGroup.appendChild(memTable);
+    body.appendChild(memGroup);
+  }
 
   // User mode (applies across all channels)
   const umGroup = document.createElement('div');
   umGroup.className = 'agents-field-group';
   const umMode = agent.user_mode || 'anonymous';
   umGroup.innerHTML = `
-    <label class="agents-field-label">User Mode</label>
+    <label class="agents-field-label">User Mode<span class="agents-autosave-check" data-role="um-check" aria-hidden="true"></span></label>
     <span class="agents-field-hint">How this agent handles users across all channels.</span>
     <div class="conn-user-mode" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;padding:6px 10px;border-radius:6px;border:1px solid ${umMode === 'anonymous' ? '#7aa2f7' : 'var(--border,#2a2a3a)'};background:${umMode === 'anonymous' ? 'rgba(122,162,247,0.08)' : 'transparent'};">
@@ -1650,20 +3005,40 @@ function _renderConfigTab(body, agent, panelEl) {
       : 'Users get auto-generated anonymous IDs. No registration required.'}</span>
   `;
   if (isEditable) {
-    umGroup.querySelectorAll('[data-field="user_mode"]').forEach(radio => {
-      radio.addEventListener('change', () => {
+    const umCheck = umGroup.querySelector('[data-role="um-check"]');
+    const umRadios = [...umGroup.querySelectorAll('[data-field="user_mode"]')];
+    // Paint the selected radio's label + hint to match a given mode.
+    const paintUm = (mode) => {
+      umGroup.querySelectorAll('.conn-user-mode label').forEach(lbl => {
+        const val = lbl.querySelector('input')?.value;
+        lbl.style.borderColor = val === mode ? '#7aa2f7' : 'var(--border,#2a2a3a)';
+        lbl.style.background = val === mode ? 'rgba(122,162,247,0.08)' : 'transparent';
+      });
+      const r = umRadios.find(x => x.value === mode);
+      if (r) r.checked = true;
+      const hintEl = umGroup.querySelector('.conn-user-mode-hint');
+      if (hintEl) {
+        hintEl.textContent = mode === 'register'
+          ? 'Agent guides new users to register and links accounts across channels.'
+          : 'Users get auto-generated anonymous IDs. No registration required.';
+      }
+    };
+    let umConfirmed = umMode;       // last value the backend acknowledged
+    let umBusy = false;
+    umRadios.forEach(radio => {
+      radio.addEventListener('change', async () => {
         const selected = umGroup.querySelector('[data-field="user_mode"]:checked')?.value || 'anonymous';
-        umGroup.querySelectorAll('.conn-user-mode label').forEach(lbl => {
-          const val = lbl.querySelector('input')?.value;
-          lbl.style.borderColor = val === selected ? '#7aa2f7' : 'var(--border,#2a2a3a)';
-          lbl.style.background = val === selected ? 'rgba(122,162,247,0.08)' : 'transparent';
-        });
-        const hintEl = umGroup.querySelector('.conn-user-mode-hint');
-        if (hintEl) {
-          hintEl.textContent = selected === 'register'
-            ? 'Agent guides new users to register and links accounts across channels.'
-            : 'Users get auto-generated anonymous IDs. No registration required.';
-        }
+        paintUm(selected);          // reflect the click immediately for responsiveness
+        if (isMock || umBusy || selected === umConfirmed) return;
+        umBusy = true;
+        umRadios.forEach(r => { r.disabled = true; });
+        if (umCheck) { umCheck.classList.remove('saved','error'); umCheck.innerHTML = '<span class="agents-spinner"></span>'; }
+        const ok = await _putAgentField(agent, { user_mode: selected }, null);
+        umBusy = false;
+        umRadios.forEach(r => { r.disabled = false; });
+        if (umCheck) umCheck.innerHTML = '';
+        if (ok) { umConfirmed = selected; _flashSaved(umCheck, true); }
+        else    { paintUm(umConfirmed); _flashSaved(umCheck, false); }  // revert on failure
       });
     });
   }
@@ -1676,6 +3051,8 @@ function _renderConfigTab(body, agent, panelEl) {
     const triggerLabel = document.createElement('label');
     triggerLabel.className = 'agents-field-label';
     triggerLabel.textContent = 'Trigger';
+    const triggerCheck = (!isMock) ? _makeAutosaveCheck() : null;
+    if (triggerCheck) triggerLabel.appendChild(triggerCheck);
     const triggerSel = document.createElement('select');
     triggerSel.className = 'agents-input';
     triggerSel.dataset.field = 'trigger_type';
@@ -1703,6 +3080,8 @@ function _renderConfigTab(body, agent, panelEl) {
     const keyLabel = document.createElement('label');
     keyLabel.className = 'agents-field-label';
     keyLabel.textContent = 'Trigger Key';
+    const keyCheck = (!isMock) ? _makeAutosaveCheck() : null;
+    if (keyCheck) keyLabel.appendChild(keyCheck);
     const keyInput = document.createElement('input');
     keyInput.type = 'text';
     keyInput.className = 'agents-input';
@@ -1716,77 +3095,26 @@ function _renderConfigTab(body, agent, panelEl) {
     triggerSel.addEventListener('change', () => {
       keyRow.style.display = triggerSel.value !== 'user_input' ? '' : 'none';
       keyInput.placeholder = _triggerKeyPlaceholder(triggerSel.value);
+      if (!isMock) _putAgentField(agent, { trigger_type: triggerSel.value }, triggerCheck);
     });
+
+    if (!isMock) {
+      const saveKey = _debounced(() => {
+        _putAgentField(agent, { trigger_key: keyInput.value.trim() || null }, keyCheck);
+      });
+      keyInput.addEventListener('input', saveKey);
+      keyInput.addEventListener('blur', () => saveKey.flush());
+    }
   }
 
-  // ── Prompt slots ────────────────────────────────────────────────────────
-  // Admin (isEditable) sees the full slot editor; everyone else sees the
-  // override view for unlocked slots + read-only base for locked ones.
-  const slotsHost = document.createElement('div');
-  slotsHost.className = 'agents-field-group';
-  slotsHost.dataset.role = 'slots-host';
-
-  const slotsCard = document.createElement('div');
-  slotsCard.className = 'agents-llm-card';
-
-  const slotsHeader = document.createElement('div');
-  slotsHeader.className = 'agents-llm-header';
-  const slotsTitle = document.createElement('span');
-  slotsTitle.className = 'agents-llm-title';
-  slotsTitle.textContent = 'Prompt Slots';
-  const slotsChevron = document.createElement('span');
-  slotsChevron.className = 'agents-llm-chevron';
-  slotsChevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
-  slotsHeader.appendChild(slotsTitle);
-  slotsHeader.appendChild(slotsChevron);
-
-  const slotsBody = document.createElement('div');
-  slotsBody.className = 'agents-llm-body';
-  slotsBody.style.display = 'none';
-
-  slotsHeader.addEventListener('click', () => {
-    const open = slotsBody.style.display === 'none';
-    slotsBody.style.display = open ? 'flex' : 'none';
-    slotsChevron.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
-  });
-
-  const slotsHint = document.createElement('span');
-  slotsHint.className = 'agents-field-hint';
-  slotsHint.textContent = isEditable
-    ? 'Slots are concatenated in order into the system message. Lock a slot to keep it admin-only; otherwise users may write overrides.'
-    : 'You can override unlocked slots for yourself without affecting other users.';
-  slotsBody.appendChild(slotsHint);
-
-  const slotsList = document.createElement('div');
-  slotsList.className = 'agents-slots-list';
-  slotsList.dataset.role = 'slots-list';
-  slotsList.style.marginTop = '8px';
-  slotsBody.appendChild(slotsList);
-
-  if (isEditable) {
-    const slotsAddBtn = document.createElement('button');
-    slotsAddBtn.type = 'button';
-    slotsAddBtn.className = 'agents-btn';
-    slotsAddBtn.dataset.role = 'slots-add';
-    slotsAddBtn.style.marginTop = '8px';
-    slotsAddBtn.textContent = '+ Add slot';
-    slotsBody.appendChild(slotsAddBtn);
-  }
-
-  slotsCard.appendChild(slotsHeader);
-  slotsCard.appendChild(slotsBody);
-  slotsHost.appendChild(slotsCard);
-  body.appendChild(slotsHost);
-  // Track slot edit state on the panel for save handlers.
-  panelEl._slotState = { slots: [], overrides: {}, resetOverridesFor: new Set(), userRole: 'member', loaded: false };
-  _loadAndRenderSlots(panelEl, agent, isEditable);
+  // Prompt slots now live in their own "Prompts" carousel tab (_renderPromptsTab).
 
   // Admin-only: Discoverable toggle for system templates
   if (!isEditable && _userIsAdmin && agent.source === 'template') {
     const discGroup = document.createElement('div');
     discGroup.className = 'agents-field-group';
     discGroup.innerHTML = `
-      <label class="agents-field-label">Discoverable</label>
+      <label class="agents-field-label">Discoverable<span class="agents-autosave-check" data-role="disc-check" aria-hidden="true"></span></label>
       <span class="agents-field-hint">Show this template in the "New Agent" creation dropdown.</span>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px;">
         <input type="checkbox" data-field="discoverable" ${agent.discoverable ? 'checked' : ''}>
@@ -1795,45 +3123,40 @@ function _renderConfigTab(body, agent, panelEl) {
     `;
     body.appendChild(discGroup);
 
-    const content = panelEl.querySelector('.agent-detail-content');
-    const bar = document.createElement('div');
-    bar.className = 'agents-save-bar';
-    const saveBtn = _btn('Save', 'agents-btn primary');
-    const msg = document.createElement('span');
-    msg.className = 'agents-save-msg';
-    saveBtn.addEventListener('click', async () => {
-      msg.textContent = '';
-      msg.className = 'agents-save-msg';
-      const cb = panelEl.querySelector('[data-field="discoverable"]');
+    const discCheck = discGroup.querySelector('[data-role="disc-check"]');
+    const cb = discGroup.querySelector('[data-field="discoverable"]');
+    cb.addEventListener('change', async () => {
+      const target = cb.checked;
+      cb.disabled = true;
+      if (discCheck) { discCheck.classList.remove('saved','error'); discCheck.innerHTML = '<span class="agents-spinner"></span>'; }
+      let ok = false, errMsg = '';
       try {
         const res = await fetch(`/api/v1/agent-templates/config`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: app.currentUserId, template_id: agent.id, discoverable: cb ? cb.checked : false }),
+          body: JSON.stringify({ user_id: app.currentUserId, template_id: agent.id, discoverable: target }),
         });
         const data = await res.json();
         if (res.ok) {
           agent.discoverable = data.template?.discoverable;
           const idx = _agents.findIndex(a => a.id === agent.id);
           if (idx !== -1) _agents[idx].discoverable = agent.discoverable;
-          msg.textContent = '✓ Saved';
-          msg.className = 'agents-save-msg';
+          ok = true;
         } else {
-          msg.textContent = data.detail || 'Save failed';
-          msg.className = 'agents-save-msg error';
+          errMsg = data.detail || 'Save failed';
         }
       } catch (e) {
-        msg.textContent = `Error: ${e.message}`;
-        msg.className = 'agents-save-msg error';
+        errMsg = e.message;
       }
+      cb.disabled = false;
+      if (discCheck) discCheck.innerHTML = '';
+      if (ok) { _flashSaved(discCheck, true); }
+      else    { cb.checked = !target; _flashSaved(discCheck, false, errMsg); }  // revert on failure
     });
-    bar.appendChild(saveBtn);
-    bar.appendChild(msg);
-    if (content) content.appendChild(bar);
   }
 
   // ── External Data Sources (per-agent) ───────────────────────────────────────
-  if (isEditable) {
+  if (isEditable && !isMock) {
     const dsHost = document.createElement('div');
     dsHost.className = 'agents-field-group';
     dsHost.dataset.role = 'agent-data-sources';
@@ -1854,22 +3177,18 @@ function _renderConfigTab(body, agent, panelEl) {
     }
   }
 
-  // Save bar (sticky at bottom of content — outside the scrollable body)
-  if (isEditable) {
+  // Fields auto-save individually now (each shows its own green check), so there
+  // is no "Save Changes" button. Admins still get a "Save as Template" action.
+  if (isEditable && !isMock && _userIsAdmin) {
     const content = panelEl.querySelector('.agent-detail-content');
     const bar = document.createElement('div');
     bar.className = 'agents-save-bar';
-    const saveBtn = _btn('Save Changes', 'agents-btn primary');
     const msg = document.createElement('span');
     msg.className = 'agents-save-msg';
-    saveBtn.addEventListener('click', () => _saveChanges(agent, bar, panelEl));
-    bar.appendChild(saveBtn);
-    if (_userIsAdmin) {
-      const tplBtn = _btn('Save as Template', 'agents-btn');
-      tplBtn.title = 'Save this agent\'s config and prompts as a reusable template (admin only).';
-      tplBtn.addEventListener('click', () => _openSaveAsTemplateModal(agent, bar));
-      bar.appendChild(tplBtn);
-    }
+    const tplBtn = _btn('Save as Template', 'agents-btn');
+    tplBtn.title = 'Save this agent\'s config and prompts as a reusable template (admin only).';
+    tplBtn.addEventListener('click', () => _openSaveAsTemplateModal(agent, bar));
+    bar.appendChild(tplBtn);
     bar.appendChild(msg);
     if (content) content.appendChild(bar);
   }
@@ -2001,9 +3320,358 @@ function _openSaveAsTemplateModal(agent, hostBar) {
   slugIn.select();
 }
 
+// ── Prompts tab ───────────────────────────────────────────────────────────────
+// Prompt slots used to live inside the Config tab; they now have their own
+// carousel page. Admins edit the base slots; members write personal overrides.
+// Edits auto-save (debounced) and flash a green check in the header.
+
+function _renderPromptsTab(body, agent, panelEl) {
+  const isEditable = agent.source === 'custom';
+
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to configure prompts.</div>';
+    return;
+  }
+
+  const host = document.createElement('div');
+  host.className = 'agents-field-group';
+  host.dataset.role = 'slots-host';
+
+  // Header with title + auto-save indicator.
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;margin-bottom:6px;';
+  const title = document.createElement('label');
+  title.className = 'agents-field-label';
+  title.style.marginBottom = '0';
+  title.textContent = 'Prompt Slots';
+  const check = _makeAutosaveCheck();
+  title.appendChild(check);
+  header.appendChild(title);
+  host.appendChild(header);
+
+  const hint = document.createElement('span');
+  hint.className = 'agents-field-hint';
+  hint.textContent = isEditable
+    ? 'Slots are concatenated in order into the system message. Lock a slot to keep it admin-only; otherwise users may write overrides. Changes save automatically.'
+    : 'You can override unlocked slots for yourself without affecting other users. Changes save automatically.';
+  host.appendChild(hint);
+
+  const list = document.createElement('div');
+  list.className = 'agents-slots-list';
+  list.dataset.role = 'slots-list';
+  list.style.marginTop = '10px';
+  host.appendChild(list);
+
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'agents-btn';
+  addBtn.dataset.role = 'slots-add';
+  addBtn.style.marginTop = '8px';
+  addBtn.textContent = '+ Add slot';
+  host.appendChild(addBtn);
+
+  body.appendChild(host);
+
+  // Debounced auto-save shared by every slot/override edit on this panel.
+  panelEl._slotsCheck = check;
+  panelEl._slotsOnChange = _debounced(() => _saveSlotsNow(agent, panelEl, check), 800);
+
+  // Track slot edit state on the panel for save handlers.
+  panelEl._slotState = { slots: [], overrides: {}, resetOverridesFor: new Set(), userRole: 'member', loaded: false };
+  _loadAndRenderSlots(panelEl, agent, isEditable);
+
+  // On-demand skills editor (own group below the slots).
+  _renderSkillsSection(body, agent, panelEl, isEditable);
+}
+
+/**
+ * Render the on-demand skills editor. Each skill is a named knowledge pack with
+ * a one-line "when to use" description and a full body. The "Always on" check
+ * decides whether the body is injected every turn or only loaded on demand via
+ * the agent's load_skill tool. Admin-editable on custom agents; read-only else.
+ */
+function _renderSkillsSection(body, agent, panelEl, isEditable) {
+  const group = document.createElement('div');
+  group.className = 'agents-field-group';
+  group.style.marginTop = '18px';
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;margin-bottom:6px;';
+  const title = document.createElement('label');
+  title.className = 'agents-field-label';
+  title.style.marginBottom = '0';
+  title.textContent = 'Skills';
+  const check = _makeAutosaveCheck();
+  title.appendChild(check);
+  header.appendChild(title);
+  group.appendChild(header);
+
+  const hint = document.createElement('span');
+  hint.className = 'agents-field-hint';
+  hint.textContent = isEditable
+    ? 'Named knowledge packs. “Always on” injects the body every turn; otherwise the agent only sees the name + description and loads the body on demand via load_skill. Changes save automatically.'
+    : 'This agent’s skills. “Always on” skills are always in context; the others load on demand when the agent needs them.';
+  group.appendChild(hint);
+
+  const list = document.createElement('div');
+  list.dataset.role = 'skills-list';
+  list.style.marginTop = '10px';
+  group.appendChild(list);
+
+  body.appendChild(group);
+
+  panelEl._skillsCheck = check;
+  panelEl._skillsState = [];
+  panelEl._skillsEditable = false;
+  panelEl._skillsOnChange = _debounced(() => _saveSkillsNow(agent, panelEl, check), 800);
+
+  // Load skills from the agent's __skills__ prompt slot via the dedicated
+  // endpoint (skills live in agent_prompts, not metadata).
+  const token = localStorage.getItem('auth_token');
+  const headers = {}; if (token) headers.Authorization = `Bearer ${token}`;
+  fetch(`/api/v1/agents/${agent.id}/skills?user_id=${encodeURIComponent(app.currentUserId)}`, { headers })
+    .then(r => (r.ok ? r.json() : { skills: [], user_role: 'member' }))
+    .then(data => {
+      const editable = data.user_role === 'admin' && agent.source === 'custom';
+      panelEl._skillsEditable = editable;
+      const seed = Array.isArray(data.skills) ? data.skills : [];
+      panelEl._skillsState = seed.map(s => ({
+        name: s.name || '', description: s.description || '', body: s.body || '',
+        mode: s.mode === 'always_on' ? 'always_on' : 'selectable',
+        enabled: s.enabled !== false,
+      }));
+      hint.textContent = editable
+        ? 'Named knowledge packs stored on the agent. The name + description are always shown to the agent; “Always on” also injects the body every turn, otherwise the body loads on demand when the agent calls load_skill. Changes save automatically.'
+        : 'This agent’s skills. The name + description are always visible to the agent; “Always on” skills stay in context, the others load on demand.';
+      if (editable) {
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'agents-btn';
+        addBtn.style.marginTop = '8px';
+        addBtn.textContent = '+ Add skill';
+        addBtn.addEventListener('click', () => {
+          panelEl._skillsState.push({ name: '', description: '', body: '', mode: 'selectable', enabled: true });
+          _renderSkillCards(panelEl, agent);
+          panelEl._skillsOnChange();
+        });
+        group.appendChild(addBtn);
+      }
+      _renderSkillCards(panelEl, agent);
+    })
+    .catch(() => { _renderSkillCards(panelEl, agent); });
+}
+
+function _renderSkillCards(panelEl, agent) {
+  const list = panelEl.querySelector('[data-role="skills-list"]');
+  if (!list) return;
+  const isEditable = !!panelEl._skillsEditable;
+  const skills = panelEl._skillsState || [];
+  list.innerHTML = '';
+
+  if (!skills.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:12px;color:var(--fg-3);padding:8px 2px;';
+    empty.textContent = isEditable
+      ? 'No skills yet. Add one to give this agent a loadable playbook.'
+      : 'This agent has no skills.';
+    list.appendChild(empty);
+    return;
+  }
+
+  skills.forEach((skill, idx) => {
+    const card = document.createElement('div');
+    card.style.cssText =
+      'border:1px solid var(--border-soft);border-radius:8px;padding:10px;margin-bottom:8px;background:var(--bg-1);';
+
+    // Top row: name + controls.
+    const top = document.createElement('div');
+    top.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = skill.name;
+    nameInput.placeholder = 'skill-name';
+    nameInput.disabled = !isEditable;
+    nameInput.style.cssText =
+      'flex:1;min-width:140px;padding:5px 8px;border:1px solid var(--border-soft);border-radius:6px;background:var(--bg-0);color:var(--fg-1);font-size:13px;font-weight:600;';
+    nameInput.addEventListener('input', () => { skill.name = nameInput.value; panelEl._skillsOnChange(); });
+    top.appendChild(nameInput);
+
+    // Always-on toggle (the "check for always on or selectable").
+    const alwaysWrap = document.createElement('label');
+    alwaysWrap.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--fg-2);cursor:pointer;';
+    const alwaysCb = document.createElement('input');
+    alwaysCb.type = 'checkbox';
+    alwaysCb.checked = skill.mode === 'always_on';
+    alwaysCb.disabled = !isEditable;
+    const alwaysTxt = document.createElement('span');
+    const setModeLabel = () => { alwaysTxt.textContent = alwaysCb.checked ? 'Always on' : 'Selectable'; };
+    setModeLabel();
+    alwaysCb.addEventListener('change', () => {
+      skill.mode = alwaysCb.checked ? 'always_on' : 'selectable';
+      setModeLabel();
+      panelEl._skillsOnChange();
+    });
+    alwaysWrap.appendChild(alwaysCb);
+    alwaysWrap.appendChild(alwaysTxt);
+    alwaysWrap.title = 'Checked = body always in the prompt. Unchecked = agent loads it on demand via load_skill.';
+    top.appendChild(alwaysWrap);
+
+    // Enabled toggle.
+    const enWrap = document.createElement('label');
+    enWrap.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--fg-3);cursor:pointer;';
+    const enCb = document.createElement('input');
+    enCb.type = 'checkbox';
+    enCb.checked = skill.enabled !== false;
+    enCb.disabled = !isEditable;
+    enCb.addEventListener('change', () => { skill.enabled = enCb.checked; panelEl._skillsOnChange(); });
+    enWrap.appendChild(enCb);
+    enWrap.appendChild(document.createTextNode('Enabled'));
+    top.appendChild(enWrap);
+
+    if (isEditable) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = '×';
+      del.title = 'Delete skill';
+      del.style.cssText =
+        'margin-left:auto;width:24px;height:24px;border:none;border-radius:6px;background:none;color:var(--fg-3);font-size:16px;cursor:pointer;';
+      del.addEventListener('mouseenter', () => { del.style.background = 'var(--danger)'; del.style.color = '#fff'; });
+      del.addEventListener('mouseleave', () => { del.style.background = 'none'; del.style.color = 'var(--fg-3)'; });
+      del.addEventListener('click', () => {
+        panelEl._skillsState.splice(idx, 1);
+        _renderSkillCards(panelEl, agent);
+        panelEl._skillsOnChange();
+      });
+      top.appendChild(del);
+    }
+    card.appendChild(top);
+
+    // Description (when-to-use).
+    const desc = document.createElement('input');
+    desc.type = 'text';
+    desc.value = skill.description;
+    desc.placeholder = 'When to use this skill (the agent always sees this line)';
+    desc.disabled = !isEditable;
+    desc.style.cssText =
+      'width:100%;margin-top:8px;padding:5px 8px;border:1px solid var(--border-soft);border-radius:6px;background:var(--bg-0);color:var(--fg-2);font-size:12px;';
+    desc.addEventListener('input', () => { skill.description = desc.value; panelEl._skillsOnChange(); });
+    card.appendChild(desc);
+
+    // Body (full instructions).
+    const ta = document.createElement('textarea');
+    ta.value = skill.body;
+    ta.placeholder = 'Full step-by-step instructions the agent loads when it uses this skill…';
+    ta.disabled = !isEditable;
+    ta.rows = 4;
+    ta.style.cssText =
+      'width:100%;margin-top:8px;padding:6px 8px;border:1px solid var(--border-soft);border-radius:6px;background:var(--bg-0);color:var(--fg-1);font-size:12px;font-family:inherit;resize:vertical;';
+    ta.addEventListener('input', () => { skill.body = ta.value; panelEl._skillsOnChange(); });
+    card.appendChild(ta);
+
+    list.appendChild(card);
+  });
+}
+
+/** Persist the agent's full skills list into its __skills__ prompt slot via
+ * PUT /api/v1/agents/{id}/skills. */
+async function _saveSkillsNow(agent, panelEl, indicator) {
+  const st = panelEl._skillsState;
+  if (!st || !panelEl._skillsEditable) return;
+  _markSaving(indicator);
+  const token = localStorage.getItem('auth_token');
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    const res = await fetch(`/api/v1/agents/${agent.id}/skills`, {
+      method: 'PUT', headers,
+      body: JSON.stringify({ user_id: app.currentUserId, skills: st }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) _flashSaved(indicator, true);
+    else _flashSaved(indicator, false, data.detail || 'Save failed');
+  } catch (e) {
+    _flashSaved(indicator, false, e.message);
+  }
+}
+
+/**
+ * Persist prompt-slot edits. Admins PUT the full slot set on the agent; members
+ * PUT their personal overrides via the my-prompts endpoint. Flashes `indicator`.
+ */
+async function _saveSlotsNow(agent, panelEl, indicator) {
+  const sstate = panelEl._slotState || {};
+  if (!sstate.loaded) return;
+  const role = sstate.userRole || 'member';
+  _markSaving(indicator);
+  const token = localStorage.getItem('auth_token');
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    if (role === 'admin') {
+      if (agent.source !== 'custom') {
+        // Base-slot edits are only persistable on custom agents.
+        _flashSaved(indicator, false, 'Base prompts can only be edited on custom agents.');
+        return;
+      }
+      const slotsPayload = (sstate.slots || []).map(s => ({
+        slot_name: s.slot_name,
+        order_index: s.order_index || 0,
+        lock: !!s.lock,
+        merge_mode: s.merge_mode || 'replace',
+        content: s.content || '',
+      }));
+      const payload = { user_id: app.currentUserId, slots: slotsPayload };
+      if (sstate.resetOverridesFor && sstate.resetOverridesFor.size > 0) {
+        payload.reset_overrides_for = Array.from(sstate.resetOverridesFor);
+      }
+      const res = await fetch(`/api/v1/agents/${agent.id}`, {
+        method: 'PUT', headers, body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const idx = _agents.findIndex(a => a.id === agent.id);
+        if (idx !== -1) Object.assign(_agents[idx], data.agent);
+        Object.assign(agent, data.agent);
+        if (sstate.resetOverridesFor) sstate.resetOverridesFor.clear();
+        _flashSaved(indicator, true);
+      } else {
+        _flashSaved(indicator, false, data.detail || 'Save failed');
+      }
+    } else {
+      const items = [];
+      for (const s of (sstate.slots || [])) {
+        if (s.lock) continue;
+        const v = sstate.overrides && sstate.overrides[s.slot_name];
+        if (v === undefined || v === null) continue;
+        items.push({ slot_name: s.slot_name, content: v });
+      }
+      const res = await fetch(`/api/v1/agents/${agent.id}/my-prompts`, {
+        method: 'PUT', headers,
+        body: JSON.stringify({ user_id: app.currentUserId, slots: items }),
+      });
+      if (res.ok) _flashSaved(indicator, true);
+      else {
+        let detail = 'Save failed';
+        try { detail = (await res.json()).detail || detail; } catch (_) {}
+        _flashSaved(indicator, false, detail);
+      }
+    }
+  } catch (e) {
+    _flashSaved(indicator, false, e.message);
+  }
+}
+
 async function _loadAndRenderSlots(panelEl, agent, _isEditable) {
   const listEl = panelEl.querySelector('[data-role="slots-list"]');
   if (!listEl) return;
+
+  // Mock agent: show placeholder
+  if (_isMockAgent(agent)) {
+    listEl.innerHTML = '<div style="font-size:12px;color:var(--fg-muted,#565f89);padding:12px;text-align:center;">Save this agent first to configure prompt slots.</div>';
+    return;
+  }
+
   listEl.innerHTML = '<div style="font-size:12px;color:var(--fg-muted,#565f89);">Loading slots…</div>';
   let data = null;
   try {
@@ -2048,6 +3716,7 @@ async function _loadAndRenderSlots(panelEl, agent, _isEditable) {
       while (state.slots.some(s => s.slot_name === nm)) { n += 1; nm = `new_slot_${n}`; }
       state.slots.push({ slot_name: nm, order_index: nextOrder, lock: false, merge_mode: 'replace', content: '' });
       _renderSlotsList(panelEl, agent, adminEditor);
+      panelEl._slotsOnChange?.();
     });
   }
 }
@@ -2084,7 +3753,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
     nameInput.className = 'agents-input';
     nameInput.value = slot.slot_name;
     nameInput.style.cssText = 'flex:1;min-width:140px;';
-    nameInput.addEventListener('input', () => { slot.slot_name = nameInput.value.trim(); });
+    nameInput.addEventListener('input', () => { slot.slot_name = nameInput.value.trim(); panelEl._slotsOnChange?.(); });
     head.appendChild(nameInput);
 
     const orderInput = document.createElement('input');
@@ -2095,6 +3764,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
     orderInput.title = 'Order (lower = earlier in system prompt)';
     orderInput.addEventListener('input', () => {
       slot.order_index = parseInt(orderInput.value, 10) || 0;
+      panelEl._slotsOnChange?.();
     });
     head.appendChild(orderInput);
 
@@ -2107,6 +3777,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
       slot.lock = lockCb.checked;
       // Locking disables merge_mode in the UI.
       _renderSlotsList(panelEl, agent, adminEditor);
+      panelEl._slotsOnChange?.();
     });
     const lockTxt = document.createElement('span'); lockTxt.textContent = 'admin only';
     lockLabel.appendChild(lockCb); lockLabel.appendChild(lockTxt);
@@ -2123,7 +3794,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
     }
     modeSel.disabled = slot.lock;
     modeSel.title = slot.lock ? 'Locked slots have no overrides — merge mode does not apply.' : 'How a user override combines with the admin base.';
-    modeSel.addEventListener('change', () => { slot.merge_mode = modeSel.value; });
+    modeSel.addEventListener('change', () => { slot.merge_mode = modeSel.value; panelEl._slotsOnChange?.(); });
     head.appendChild(modeSel);
 
     const delBtn = document.createElement('button');
@@ -2135,6 +3806,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
       if (!confirm(`Delete slot "${slot.slot_name}"? This also drops all user overrides for it.`)) return;
       state.slots.splice(idx, 1);
       _renderSlotsList(panelEl, agent, adminEditor);
+      panelEl._slotsOnChange?.();
     });
     head.appendChild(delBtn);
   } else {
@@ -2156,7 +3828,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
     ta.rows = 6;
     ta.value = slot.content || '';
     ta.placeholder = 'Slot content (admin base)';
-    ta.addEventListener('input', () => { slot.content = ta.value; });
+    ta.addEventListener('input', () => { slot.content = ta.value; panelEl._slotsOnChange?.(); });
     card.appendChild(ta);
 
     // Reset-overrides checkbox shown only for unlocked slots (locked → nothing to reset).
@@ -2167,11 +3839,15 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
       resetCb.type = 'checkbox';
       resetCb.checked = state.resetOverridesFor.has(slot.slot_name);
       resetCb.addEventListener('change', () => {
-        if (resetCb.checked) state.resetOverridesFor.add(slot.slot_name);
-        else state.resetOverridesFor.delete(slot.slot_name);
+        if (resetCb.checked) {
+          state.resetOverridesFor.add(slot.slot_name);
+          panelEl._slotsOnChange?.();
+        } else {
+          state.resetOverridesFor.delete(slot.slot_name);
+        }
       });
       const resetTxt = document.createElement('span');
-      resetTxt.textContent = 'On save: reset existing user overrides for this slot';
+      resetTxt.textContent = 'Reset existing user overrides for this slot';
       resetWrap.appendChild(resetCb); resetWrap.appendChild(resetTxt);
       card.appendChild(resetWrap);
     }
@@ -2199,7 +3875,7 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
       ovTa.rows = 4;
       ovTa.value = state.overrides[slot.slot_name] || '';
       ovTa.placeholder = 'Your override (leave empty to inherit admin base)';
-      ovTa.addEventListener('input', () => { state.overrides[slot.slot_name] = ovTa.value; });
+      ovTa.addEventListener('input', () => { state.overrides[slot.slot_name] = ovTa.value; panelEl._slotsOnChange?.(); });
       card.appendChild(ovTa);
 
       const clearBtn = document.createElement('button');
@@ -2224,12 +3900,18 @@ function _renderSlotCard(panelEl, agent, adminEditor, idx) {
   return card;
 }
 
-function _addField(container, label, tag, fieldKey, value, readonly, rows = 4, hint = '') {
+function _addField(container, label, tag, fieldKey, value, readonly, rows = 4, hint = '', onSave = null) {
   const group = document.createElement('div');
   group.className = 'agents-field-group';
   const labelEl = document.createElement('label');
   labelEl.className = 'agents-field-label';
   labelEl.textContent = label;
+  // Auto-save indicator rides on the label line.
+  let indicator = null;
+  if (onSave && !readonly) {
+    indicator = _makeAutosaveCheck();
+    labelEl.appendChild(indicator);
+  }
   group.appendChild(labelEl);
   if (hint) {
     const hintEl = document.createElement('span');
@@ -2248,8 +3930,16 @@ function _addField(container, label, tag, fieldKey, value, readonly, rows = 4, h
     el.value = value;
   }
   if (readonly) el.readOnly = true;
+  if (onSave && !readonly) {
+    const save = () => onSave(el.value, indicator);
+    const debouncedSave = _debounced(save);
+    el.addEventListener('input', debouncedSave);
+    // Commit immediately when focus leaves so nothing is lost mid-debounce.
+    el.addEventListener('blur', () => debouncedSave.flush());
+  }
   group.appendChild(el);
   container.appendChild(group);
+  return el;
 }
 
 // ── Tools tab ─────────────────────────────────────────────────────────────────
@@ -2263,102 +3953,218 @@ function _localLoopLogicObjs(agent) {
   return ll.map(item => ({ ...item }));
 }
 
-async function _renderToolsTab(body, agent, panelEl) {
-  const isEditable = agent.source === 'custom';
+// Human label for an ability key (e.g. "agent_management" → "Agent management").
+function _abilityLabel(key) {
+  if (!key) return 'Other';
+  return key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ');
+}
 
-  // ── Non-editable: read-only tool list ────────────────────────────────────
-  if (!isEditable) {
-    const tools = _toolsForAgent(agent);
-    const toolSet = new Set(tools);
-    const section = document.createElement('div');
-    section.className = 'agents-tools-list';
-    const intro = document.createElement('div');
-    intro.style.cssText = 'font-size:12px;color:#565f89;margin-bottom:14px;line-height:1.5;';
-    intro.textContent = `This agent has access to ${tools.length} tools. Tools marked destructive can modify data or execute code.`;
-    section.appendChild(intro);
+// Build one tool row for the Tool Availability section: name, description, and
+// either a locked "core" pill or a Sent / Discover segmented toggle that
+// persists immediately. Theme-safe (design-system vars only).
+function _buildExposureRow(agent, t, canEdit) {
+  const row = document.createElement('div');
+  row.style.cssText = 'display:grid;grid-template-columns:1fr 2fr auto;align-items:center;gap:8px;' +
+                      'padding:5px 8px;border-radius:5px;background:var(--bg-2);margin-bottom:4px;';
 
-    const agentId = agent.id || '';
-    const isAdmin = agent.is_admin_agent || agentId.startsWith('opt_');
+  const nameEl = document.createElement('span');
+  nameEl.style.cssText = 'font-size:12px;font-weight:500;color:var(--fg-1);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+  nameEl.textContent = t.name;
+  row.appendChild(nameEl);
 
-    for (const cat of TOOL_CATEGORIES) {
-      if (cat.condition === 'admin' && !isAdmin) continue;
-      const catTools = cat.tools.filter(n => toolSet.has(n));
-      if (catTools.length === 0) continue;
+  const descEl = document.createElement('span');
+  descEl.style.cssText = 'font-size:11px;color:var(--fg-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+  descEl.textContent = t.description || '';
+  row.appendChild(descEl);
 
-      const wrapper = document.createElement('div');
-      wrapper.className = 'agents-tool-category';
+  if (t.locked) {
+    const pill = document.createElement('span');
+    pill.className = 'agents-tool-always-on';
+    pill.textContent = 'core';
+    pill.title = 'Core tool — always sent, cannot be changed.';
+    row.appendChild(pill);
+    return row;
+  }
 
-      const header = document.createElement('div');
-      header.className = 'agents-tool-category-header';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
-        <span class="agents-tool-category-label">${_esc(cat.label)}</span>
-        <span class="agents-tool-category-count">${catTools.length}</span>`;
+  const seg = document.createElement('div');
+  seg.style.cssText = 'display:flex;border:1px solid var(--border);border-radius:4px;overflow:hidden;flex-shrink:0;font-size:11px;';
+  const MODES = [
+    { id: 'always',       label: 'Sent' },
+    { id: 'discoverable', label: 'Discover' },
+  ];
+  const btns = {};
+  let current = (t.mode === 'discoverable') ? 'discoverable' : 'always';
 
-      const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body';
-
-      header.addEventListener('click', () => {
-        header.classList.toggle('collapsed');
-        catBody.classList.toggle('collapsed');
-      });
-
-      for (const name of catTools) {
-        const item = document.createElement('div');
-        item.className = 'agents-tool-item';
-        const isDestructive = DESTRUCTIVE.has(name);
-        item.innerHTML = `
-          <span class="agents-tool-name">${name}</span>
-          <span class="agents-tool-desc">${_esc(TOOL_DESCRIPTIONS[name] || '')}</span>
-          <span class="agents-tool-badge ${isDestructive ? 'destructive' : 'safe'}">
-            ${isDestructive ? 'write' : 'read-only'}
-          </span>
-        `;
-        catBody.appendChild(item);
-      }
-
-      wrapper.appendChild(header);
-      wrapper.appendChild(catBody);
-      section.appendChild(wrapper);
+  function paint(mode) {
+    for (const m of MODES) {
+      const b = btns[m.id];
+      const active = m.id === mode;
+      b.style.cssText =
+        'border:none;padding:3px 10px;border-right:1px solid var(--border);' +
+        'cursor:' + (canEdit ? 'pointer' : 'default') + ';' +
+        (active
+          ? 'background:var(--accent-soft);color:var(--accent);font-weight:600;'
+          : 'background:transparent;color:var(--fg-3);font-weight:400;');
     }
+    btns['discoverable'].style.borderRight = 'none';
+  }
 
-    // Uncategorized tools (custom skills or tools not in any category)
-    const categorized = new Set(TOOL_CATEGORIES.flatMap(c => c.tools));
-    const uncategorized = tools.filter(n => !categorized.has(n));
-    if (uncategorized.length > 0) {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'agents-tool-category';
-      const header = document.createElement('div');
-      header.className = 'agents-tool-category-header';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
-        <span class="agents-tool-category-label">Custom Skills</span>
-        <span class="agents-tool-category-count">${uncategorized.length}</span>`;
-      const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body';
-      header.addEventListener('click', () => {
-        header.classList.toggle('collapsed');
-        catBody.classList.toggle('collapsed');
+  async function choose(mode) {
+    if (!canEdit || mode === current) return;
+    const prev = current;
+    current = mode; paint(mode);
+    try {
+      const res = await fetch(`/api/v1/agents/${agent.id}/tools/${encodeURIComponent(t.name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: app.currentUserId, mode }),
       });
-      for (const name of uncategorized) {
-        const item = document.createElement('div');
-        item.className = 'agents-tool-item';
-        const isDestructive = DESTRUCTIVE.has(name);
-        item.innerHTML = `
-          <span class="agents-tool-name">${name}</span>
-          <span class="agents-tool-desc">${_esc(TOOL_DESCRIPTIONS[name] || '')}</span>
-          <span class="agents-tool-badge ${isDestructive ? 'destructive' : 'safe'}">
-            ${isDestructive ? 'write' : 'read-only'}
-          </span>
-        `;
-        catBody.appendChild(item);
-      }
-      wrapper.appendChild(header);
-      wrapper.appendChild(catBody);
-      section.appendChild(wrapper);
+      if (!res.ok) throw new Error('save failed');
+    } catch (e) {
+      current = prev; paint(prev);
     }
+  }
 
-    body.appendChild(section);
+  for (const m of MODES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = m.label;
+    if (canEdit) b.addEventListener('click', () => choose(m.id));
+    else b.disabled = true;
+    btns[m.id] = b;
+    seg.appendChild(b);
+  }
+  paint(current);
+  row.appendChild(seg);
+  return row;
+}
+
+// Tool Availability section — the authoritative per-agent tool list (from the
+// real loader) with a Sent/Discover exposure toggle per tool. Shown for every
+// agent; toggles are interactive only for agent admins. Grouped by the ability
+// that provides each tool.
+async function _renderToolExposureSection(body, agent) {
+  const group = document.createElement('div');
+  group.className = 'agents-field-group';
+
+  const label = document.createElement('label');
+  label.className = 'agents-field-label';
+  label.textContent = 'Tool Availability';
+  group.appendChild(label);
+
+  const hint = document.createElement('span');
+  hint.className = 'agents-field-hint';
+  hint.textContent = '“Sent” keeps a tool’s full details in the agent’s context every turn. ' +
+    '“Discover” lists it by name only and loads its details when the agent needs it, saving context. ' +
+    'Core tools are always sent.';
+  group.appendChild(hint);
+
+  const listEl = document.createElement('div');
+  listEl.style.cssText = 'margin-top:10px;';
+  const loading = document.createElement('div');
+  loading.style.cssText = 'font-size:12px;color:var(--fg-3);';
+  loading.textContent = 'Loading…';
+  listEl.appendChild(loading);
+  group.appendChild(listEl);
+  body.appendChild(group);
+
+  let data;
+  try {
+    const res = await fetch(`/api/v1/agents/${agent.id}/tools?user_id=${encodeURIComponent(app.currentUserId)}`);
+    data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'failed');
+  } catch (e) {
+    loading.textContent = 'Could not load this agent’s tools.';
     return;
   }
+  loading.remove();
+
+  const canEdit = data.user_role === 'admin';
+  const tools = data.tools || [];
+  if (!tools.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:12px;color:var(--fg-3);';
+    empty.textContent = 'This agent has no tools yet. Enable an ability to add some.';
+    listEl.appendChild(empty);
+    return;
+  }
+
+  // Group by gating ability; "Always available" collects ungated tools.
+  const groups = new Map();
+  for (const t of tools) {
+    const key = t.ability || '__core__';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  }
+  const orderedKeys = [...groups.keys()].sort((a, b) => {
+    if (a === '__core__') return -1;
+    if (b === '__core__') return 1;
+    return a.localeCompare(b);
+  });
+
+  for (const key of orderedKeys) {
+    const catTools = groups.get(key);
+    const wrapper = document.createElement('div');
+    wrapper.className = 'agents-tool-category';
+
+    const header = document.createElement('div');
+    header.className = 'agents-tool-category-header collapsed';
+    const labelTxt = key === '__core__' ? 'Always available' : _abilityLabel(key);
+    header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
+      <span class="agents-tool-category-label">${_esc(labelTxt)}</span>
+      <span class="agents-tool-category-count">${catTools.length}</span>`;
+
+    const catBody = document.createElement('div');
+    catBody.className = 'agents-tool-category-body collapsed';
+
+    header.addEventListener('click', () => {
+      header.classList.toggle('collapsed');
+      catBody.classList.toggle('collapsed');
+      const chevron = header.querySelector('.agents-tool-category-chevron');
+      if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
+    });
+
+    for (const t of catTools) {
+      catBody.appendChild(_buildExposureRow(agent, t, canEdit));
+    }
+
+    wrapper.appendChild(header);
+    wrapper.appendChild(catBody);
+    listEl.appendChild(wrapper);
+  }
+}
+
+async function _renderToolsTab(body, agent, panelEl) {
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to configure tools.</div>';
+    return;
+  }
+  const isEditable = agent.source === 'custom';
+
+  // ── Fetch enabled abilities to include ability-gated tools ──────────────
+  let enabledAbilities = new Set();
+  try {
+    const connRes = await fetch(`/api/v1/agents/${agent.id}/connections?user_id=${encodeURIComponent(app.currentUserId)}`);
+    if (connRes.ok) {
+      const connData = await connRes.json();
+      for (const c of (connData.connections || [])) {
+        if (c.enabled && c.section === 'ability') {
+          enabledAbilities.add(c.connection_type);
+        }
+      }
+    }
+  } catch (e) {
+    // non-fatal — proceed without ability-gated tools
+  }
+
+  // ── Tool Availability (Sent vs Discover) — authoritative list for every
+  //    agent, from the real tool loader. Replaces the old client-side
+  //    read-only list, which could show tools the agent didn't actually have.
+  await _renderToolExposureSection(body, agent);
+
+  // Non-editable agents (system templates): the availability section is the
+  // whole panel — the guardrail editor below is for custom agents only.
+  if (!isEditable) return;
 
   // ── Editable: full guardrails + per-tool controls ─────────────────────────
 
@@ -2536,7 +4342,7 @@ async function _renderToolsTab(body, agent, panelEl) {
   try {
     const allMeta    = await fetchAllToolMeta();
     const metaByName = new Map(allMeta.map(t => [t.name, t]));
-    const tools      = _toolsForAgent(agent);
+    const tools      = _toolsForAgent(agent, enabledAbilities);
     const toolSet    = new Set(tools);
 
     loadingEl.remove();
@@ -2614,11 +4420,14 @@ async function _renderToolsTab(body, agent, panelEl) {
       return row;
     }
 
-    // Render categories as collapsible accordions
+    // Render categories as collapsible accordions (collapsed by default)
     const categorized = new Set(TOOL_CATEGORIES.flatMap(c => c.tools));
 
     for (const cat of TOOL_CATEGORIES) {
+      // Check category condition: null=always, 'admin'=admin/optimizer only,
+      // otherwise it's an ability name that must be enabled
       if (cat.condition === 'admin' && !isAdmin) continue;
+      if (cat.condition && cat.condition !== 'admin' && !enabledAbilities.has(cat.condition)) continue;
       const catTools = cat.tools.filter(n => toolSet.has(n));
       if (catTools.length === 0) continue;
 
@@ -2626,17 +4435,19 @@ async function _renderToolsTab(body, agent, panelEl) {
       wrapper.className = 'agents-tool-category';
 
       const header = document.createElement('div');
-      header.className = 'agents-tool-category-header';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
+      header.className = 'agents-tool-category-header collapsed';
+      header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
         <span class="agents-tool-category-label">${_esc(cat.label)}</span>
         <span class="agents-tool-category-count">${catTools.length}</span>`;
 
       const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body';
+      catBody.className = 'agents-tool-category-body collapsed';
 
       header.addEventListener('click', () => {
         header.classList.toggle('collapsed');
         catBody.classList.toggle('collapsed');
+        const chevron = header.querySelector('.agents-tool-category-chevron');
+        if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
       });
 
       for (const name of catTools) {
@@ -2654,15 +4465,17 @@ async function _renderToolsTab(body, agent, panelEl) {
       const wrapper = document.createElement('div');
       wrapper.className = 'agents-tool-category';
       const header = document.createElement('div');
-      header.className = 'agents-tool-category-header';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▼</span>
+      header.className = 'agents-tool-category-header collapsed';
+      header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
         <span class="agents-tool-category-label">Custom Skills</span>
         <span class="agents-tool-category-count">${uncategorized.length}</span>`;
       const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body';
+      catBody.className = 'agents-tool-category-body collapsed';
       header.addEventListener('click', () => {
         header.classList.toggle('collapsed');
         catBody.classList.toggle('collapsed');
+        const chevron = header.querySelector('.agents-tool-category-chevron');
+        if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
       });
       for (const name of uncategorized) {
         catBody.appendChild(buildToolRow(name, metaByName.get(name) || {}));
@@ -2692,9 +4505,22 @@ const _CONN_ICONS = {
   microsoft: 'monitor',
   yahoo:     'mail',
   dropbox:   'folder-open',
+  notion:    'file-text',
+  airtable:  'table',
+  google_sheets: 'sheet',
   github:    'github',
+  gitlab:    'git-branch',
+  jira:      'kanban-square',
   bank:      'landmark',
   search:    'globe',
+  // Payments
+  stripe:    'credit-card',
+  paypal:    'wallet',
+  square:    'square',
+  // CRM & Marketing
+  hubspot:   'contact',
+  salesforce:'cloud',
+  mailchimp: 'mail',
   scraper:         'globe',
   browser_session: 'cookie',
   // Social Media
@@ -2709,16 +4535,198 @@ const _CONN_ICONS = {
   twitch:    'tv',
   // Agent Tools
   codebase_admin:   'folder-cog',
+  git_control:      'git-branch',
+  ui_admin:         'paintbrush',
   create_tools:     'wrench',
   automation:       'clock',
   web_access:       'globe',
   browser_control:  'mouse-pointer-2',
+  terminal_control: 'terminal',
   image_generation: 'image',
   visualizer:       'layout-dashboard',
   agent_orchestration: 'workflow',
+  diagnostics:      'stethoscope',
+  agent_management: 'user-cog',
+  wiki_control:     'book-open',
 };
 
+// Brief one-line description shown under each connection's name on the collapsed
+// row. The API may already send `conn.description`; this is the fallback so the
+// privileged "Agent Tools" rows (and common channels) always read clearly.
+// Mirrors the admin wording in app-config.js `_ABILITY_META`.
+const _CONN_NOTES = {
+  // Agent Tools (privileged capabilities)
+  codebase_admin:   'Read, write, edit, delete files and run shell commands on the host. No credentials.',
+  git_control:      'Version control — status, diff, commit, push, branch, pull — without shell access.',
+  ui_admin:         'Edits only front-end files (ui/ — CSS & HTML); never backend code or the shell.',
+  create_tools:     'Lets the agent define new tools in the database. No credentials.',
+  web_access:       'Search the web, look up weather, and geocode addresses. No API keys needed.',
+  browser_control:  'Drive a headless Chromium browser and make HTTP requests. No credentials.',
+  terminal_control: 'Open and drive interactive terminal programs (REPLs, CLIs) — effectively shell access.',
+  image_generation: 'Generate images from text prompts. Requires a provider + model config.',
+  automation:       'Scheduled tasks and event-triggered jobs that can call integrations.',
+  visualizer:       'Create, edit, rename, and delete pages in the Pages workspace.',
+  agent_orchestration: 'Delegate the session to other agents and run the prompt optimizer.',
+  diagnostics:      'Read the in-app flight recorder to diagnose the running app.',
+  agent_management: 'List, create, and update agents and edit their prompts and abilities.',
+  wiki_control:     'Read, search, create, edit, and delete entries in the company-wide Wiki.',
+  // Channels
+  telegram:  'Send and receive messages through a Telegram bot.',
+  twilio:    'Send and receive SMS / voice via Twilio.',
+  email:     'Send and receive email on behalf of the agent.',
+  whatsapp:  'Send and receive messages through WhatsApp.',
+  discord:   'Send and receive messages through a Discord bot.',
+  slack:     'Send and receive messages through Slack.',
+};
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  SISTER-PANEL: AGENT-ABILITY-TABLE  —  KEEP THE TWO IN SYNC                ║
+// ║  This is one of the TWO ability tables that must stay MIRRORED IN DESIGN: ║
+// ║    • here — the per-agent **Abilities tab** (agent card), and             ║
+// ║    • the admin **Agent Settings** panel (app-config.js `_ABILITY_GROUPS`  ║
+// ║      / `_initAbilitiesCompact` / `_buildIntegrationGroupShells`).         ║
+// ║  Both render the shared `.ac-list` / `.ac-row` / `.ac-tri` component and  ║
+// ║  read as the SAME table. If you change the look, structure, grouping, or  ║
+// ║  toggle behaviour on EITHER side, apply the matching change on the other  ║
+// ║  (grep `SISTER-PANEL: AGENT-ABILITY-TABLE`). See docs/claude/ui-guidance. ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+//
+// Agent Tools grouping — mirrors the admin Agent Tools panel (app-config.js
+// `_ABILITY_GROUPS`). The single "Agent Tools" section is split into three
+// alphabetical groups, each an expandable header row with a 3-position toggle
+// (Off · Mixed · On). Members are alphabetical by display name. The two
+// credential members (scraper / browser_session) keep their own config body and
+// are excluded from a group's On/Off math (managed from their own row).
+const _AGENT_CREDENTIAL_MEMBERS = new Set(['scraper', 'browser_session']);
+const _AGENT_ABILITY_GROUPS = [
+  {
+    id: 'administrator', name: 'Administrator', icon: 'shield-alert', color: '#f7768e',
+    desc: 'Full host control — files & shell, version control, terminals, and diagnostics. Grant with care.',
+    members: ['codebase_admin', 'diagnostics', 'git_control', 'terminal_control'],
+  },
+  {
+    id: 'basic', name: 'Core', icon: 'wrench', color: '#7dcfff',
+    desc: 'Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, and app view control.',
+    members: ['agent_management', 'agent_orchestration', 'app_control', 'automation', 'create_tools', 'image_generation', 'ui_admin', 'visualizer'],
+  },
+  {
+    id: 'productivity', name: 'Productivity', icon: 'briefcase', color: '#4285F4',
+    desc: 'Read, search, create, edit, and delete entries in the company-wide Wiki.',
+    members: ['wiki_control'],
+},
+
+  {
+
+    id: 'web', name: 'Web', icon: 'globe', color: '#7aa2f7',
+    desc: 'Reach the open web — search, a headless browser, third-party scraping, and authenticated cookie sessions.',
+    members: ['browser_control', 'browser_session', 'web_access', 'scraper'],
+  },
+];
+
+// Build the "Agent Tools" section grid as three grouped, expandable rows. Each
+// member is a normal connection card nested in the group body; a 3-position
+// group toggle bulk-enables/disables the group's (non-credential) members.
+function _buildAbilityGroupsGrid(agent, items, canEdit, indexed) {
+  const grid = document.createElement('div');
+  grid.className = 'conn-grid ac-list';
+  const byType = {};
+  for (const conn of items) byType[conn.connection_type] = conn;
+  const used = new Set();
+  const chevronSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
+
+  for (const group of _AGENT_ABILITY_GROUPS) {
+    if (!group.members.some(m => byType[m])) continue;
+
+    const groupEl = document.createElement('div');
+    groupEl.className = 'ac-row ac-group';
+    groupEl.dataset.group = group.id;
+
+    const head = document.createElement('div');
+    head.className = 'ac-ability-row ac-group-head';
+    head.innerHTML = `
+      <span class="ac-ability-icon" style="color:${group.color}">${icon(group.icon, { size: '18px' })}</span>
+      <div class="ac-ability-label">
+        <div class="ac-ability-name">${_esc(group.name)}</div>
+        <div class="ac-ability-desc">${_esc(group.desc)}</div>
+      </div>
+      ${canEdit ? '<span class="ac-tri" data-state="off" role="button" tabindex="0" title="Off · Mixed · On — left half for all-off, right half for all-on"><span class="ac-tri-knob"></span></span>' : ''}
+      <span class="ac-row-chevron">${chevronSvg}</span>`;
+
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'ac-group-body';
+    for (const m of group.members) {
+      const conn = byType[m];
+      if (!conn) continue;
+      used.add(m);
+      const card = _buildConnectionCard(agent, conn, canEdit);
+      card.dataset.connType = m;
+      const haystack = ((conn.display_name || '') + ' ' + (conn.connection_type || '') + ' Agent Tools').toLowerCase();
+      indexed.push({ card, haystack });
+      bodyEl.appendChild(card);
+    }
+
+    groupEl.appendChild(head);
+    groupEl.appendChild(bodyEl);
+    grid.appendChild(groupEl);
+
+    head.addEventListener('click', (e) => {
+      if (e.target.closest('.ac-tri')) return;
+      groupEl.classList.toggle('expanded');
+    });
+
+    const tri = head.querySelector('.ac-tri');
+    if (tri && canEdit) {
+      const togglable = group.members.filter(m => byType[m] && !_AGENT_CREDENTIAL_MEMBERS.has(m));
+      const sync = () => {
+        const on = togglable.filter(m => {
+          const cb = bodyEl.querySelector(`[data-conn-type="${m}"] .conn-toggle`);
+          return cb && cb.checked;
+        }).length;
+        tri.dataset.state = on === 0 ? 'off' : (on === togglable.length ? 'on' : 'mixed');
+      };
+      sync();
+      // Re-sync when a member's own toggle changes (user click).
+      bodyEl.addEventListener('change', (e) => {
+        if (e.target.classList && e.target.classList.contains('conn-toggle')) sync();
+      });
+      const setAll = async (goOn) => {
+        for (const m of togglable) {
+          const conn = byType[m];
+          if (!!conn.enabled === goOn) continue;
+          const card = bodyEl.querySelector(`[data-conn-type="${m}"]`);
+          const cb = card && card.querySelector('.conn-toggle');
+          if (cb) cb.checked = goOn;
+          await _saveConnection(agent, conn, card, goOn);
+        }
+        sync();
+      };
+      tri.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const r = tri.getBoundingClientRect();
+        setAll((e.clientX - r.left) > r.width / 2);
+      });
+      tri.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAll(tri.dataset.state !== 'on'); }
+      });
+    }
+  }
+
+  // Safety: any ability not placed in a group is appended as a plain card.
+  for (const conn of items) {
+    if (used.has(conn.connection_type)) continue;
+    const card = _buildConnectionCard(agent, conn, canEdit);
+    indexed.push({ card, haystack: ((conn.display_name || '') + ' ' + conn.connection_type + ' Agent Tools').toLowerCase() });
+    grid.appendChild(card);
+  }
+
+  return grid;
+}
+
 async function _renderConnectionsTab(body, agent) {
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to configure abilities.</div>';
+    return;
+  }
   body.innerHTML = '<div class="conn-loading">Loading abilities…</div>';
 
   let connections = [];
@@ -2756,8 +4764,7 @@ async function _renderConnectionsTab(body, agent) {
     return;
   }
 
-  // ── PRESENTATION-MODE: drop the second condition below to remove demo gating
-  const canEdit = (userRole === 'admin') && !(isPresentationMode() && !_userIsAdmin);
+  const canEdit = (userRole === 'admin');
 
   body.innerHTML = '';
 
@@ -2816,18 +4823,23 @@ async function _renderConnectionsTab(body, agent) {
       <span class="conn-section-hint">${_esc(sec.hint)}</span>
     `;
 
-    const grid = document.createElement('div');
-    grid.className = 'conn-grid';
-
-    for (const conn of items) {
-      const card = _buildConnectionCard(agent, conn, canEdit);
-      const haystack = (
-        (conn.display_name || '') + ' ' +
-        (conn.connection_type || '') + ' ' +
-        sec.label
-      ).toLowerCase();
-      indexed.push({ card, haystack });
-      grid.appendChild(card);
+    let grid;
+    if (sec.key === 'ability') {
+      // Agent Tools — render as the three grouped, expandable rows.
+      grid = _buildAbilityGroupsGrid(agent, items, canEdit, indexed);
+    } else {
+      grid = document.createElement('div');
+      grid.className = 'conn-grid ac-list';
+      for (const conn of items) {
+        const card = _buildConnectionCard(agent, conn, canEdit);
+        const haystack = (
+          (conn.display_name || '') + ' ' +
+          (conn.connection_type || '') + ' ' +
+          sec.label
+        ).toLowerCase();
+        indexed.push({ card, haystack });
+        grid.appendChild(card);
+      }
     }
 
     secEl.appendChild(header);
@@ -2844,9 +4856,17 @@ async function _renderConnectionsTab(body, agent) {
       card.style.display = match ? '' : 'none';
       if (match) visible++;
     }
+    // Ability groups: expand while searching so members are reachable, and hide
+    // a group whose member cards are all filtered out.
+    body.querySelectorAll('.ac-group').forEach(g => {
+      g.classList.toggle('expanded', !!q);
+      if (!q) { g.style.display = ''; return; }
+      const anyVisible = [...g.querySelectorAll('.conn-card')].some(c => c.style.display !== 'none');
+      g.style.display = anyVisible ? '' : 'none';
+    });
     // Hide section wrappers whose grids have no visible cards left.
     for (const { secEl, grid } of sectionEls) {
-      const anyVisible = Array.from(grid.children).some(c => c.style.display !== 'none');
+      const anyVisible = [...grid.querySelectorAll('.conn-card')].some(c => c.style.display !== 'none');
       secEl.style.display = anyVisible ? '' : 'none';
     }
     searchEmpty.style.display = (q && visible === 0) ? 'block' : 'none';
@@ -2855,10 +4875,6 @@ async function _renderConnectionsTab(body, agent) {
 
   // Populate Telegram mode badge and wire Test button
   _loadTelegramCardStatus(body);
-
-  // ── PRESENTATION-MODE START ── (delete to drop demo re-gating after re-render)
-  try { setTimeout(() => applyPresentationGate(body), 30); } catch (_) {}
-  // ── PRESENTATION-MODE END ──
 }
 
 function _showAbilitiesNotice(agent, text) {
@@ -2953,24 +4969,30 @@ async function _loadTelegramCardStatus(body) {
 
 function _buildConnectionCard(agent, conn, canEdit = true) {
   const isComingSoon = conn.status === 'coming_soon';
+  // `.ac-row` is the shared expandable-row wrapper (look lives in app3.css);
+  // `.conn-card` is kept purely as a JS/behaviour hook for the wiring below.
   const card = document.createElement('div');
-  card.className = 'conn-card' + (isComingSoon ? ' coming-soon' : '') + (conn.enabled ? ' enabled' : '');
+  card.className = 'conn-card ac-row' + (isComingSoon ? ' coming-soon ac-row-static' : '') + (conn.enabled ? ' enabled' : '');
 
   const connIcon = icon(_CONN_ICONS[conn.connection_type] || 'plug', { size: '16px' });
+  const desc = conn.description || _CONN_NOTES[conn.connection_type] || '';
 
   const toggleTitle = canEdit
     ? (conn.enabled ? 'Disable' : 'Enable')
     : (conn.enabled ? 'Enabled (admin only)' : 'Disabled (admin only)');
 
-  // ── Always-visible header ──
+  // ── Always-visible head line (shared `.ac-ability-row` look) ──
   const header = document.createElement('div');
-  header.className = 'conn-card-header';
+  header.className = 'conn-card-header ac-ability-row';
   header.innerHTML = `
-    <span class="conn-icon">${connIcon}</span>
-    <span class="conn-name">${_esc(conn.display_name)}</span>
+    <span class="conn-icon ac-ability-icon">${connIcon}</span>
+    <div class="ac-ability-label">
+      <div class="conn-name ac-ability-name">${_esc(conn.display_name)}</div>
+      ${desc ? `<div class="ac-ability-desc">${_esc(desc)}</div>` : ''}
+    </div>
     ${isComingSoon
       ? '<span class="conn-badge coming-soon">Coming soon</span>'
-      : `<label class="conn-toggle-wrap" title="${toggleTitle}">
+      : `<label class="conn-toggle-wrap ac-ability-toggle-wrap" title="${toggleTitle}">
            <input type="checkbox" class="conn-toggle" ${conn.enabled ? 'checked' : ''} ${canEdit ? '' : 'disabled'}>
            <span class="conn-toggle-track"></span>
          </label>`
@@ -2982,10 +5004,15 @@ function _buildConnectionCard(agent, conn, canEdit = true) {
   const connBody = _buildConnectionBody(conn, canEdit, agent.id);
   if (connBody) {
     card.appendChild(connBody);
-    // Click header (not toggle) to expand/collapse
+    // Click head (not toggle) to expand/collapse — `.expanded` drives the shared CSS.
     header.classList.add('conn-card-header-clickable');
+    const chevron = document.createElement('span');
+    chevron.className = 'ac-row-chevron';
+    chevron.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
+    header.appendChild(chevron);
     header.addEventListener('click', e => {
       if (e.target.closest('.conn-toggle-wrap')) return;
+      card.classList.toggle('expanded');
       card.classList.toggle('conn-card-expanded');
     });
   }
@@ -3044,7 +5071,7 @@ function _buildConnectionBody(conn, canEdit = true, agentId = null) {
   if (conn.status === 'coming_soon') return null;
 
   const el = document.createElement('div');
-  el.className = 'conn-fields';
+  el.className = 'conn-fields ac-ability-body';
 
   if (conn.connection_type === 'telegram') {
     if (!canEdit) {
@@ -3207,31 +5234,33 @@ function _renderAbilitiesBlock(abilities, conn, canEdit) {
   const byoAllowed = canEdit && list.some(a => a.mode === 'byo_only' || a.mode === 'both');
   const byoLink = byoAllowed
     ? `<button class="conn-byo-setup-btn" data-provider="${_esc(list[0].provider)}"
-                style="background:none;border:none;color:#7aa2f7;font-size:10px;cursor:pointer;padding:0;margin-left:auto;">
+                style="background:none;border:none;color:var(--accent);font-size:10px;cursor:pointer;padding:0;margin-left:auto;">
          Use my own credentials →
        </button>`
     : '';
 
+  // Nested abilities render as their own shared `.ac-list` so they match the
+  // top-level row look. `.conn-ability-row` / `.conn-ability-toggle` are kept
+  // only as JS hooks for the toggle wiring in _buildConnectionCard.
   const rows = list.map(ab => {
     const cantToggle = !canEdit;
     const checked = ab.enabled ? 'checked' : '';
     const dis = cantToggle ? 'disabled' : '';
     const sourceTag = ab.source === 'byo'
-      ? '<span style="font-size:9px;background:#3a2a4a;color:#bb9af7;padding:1px 4px;border-radius:3px;margin-left:6px;font-weight:600;">BYO</span>'
+      ? '<span style="font-size:9px;background:var(--bg-2);color:var(--accent);padding:1px 4px;border-radius:3px;margin-left:6px;font-weight:600;">BYO</span>'
       : '';
     const byoConfigured = ab.byo_configured
-      ? '<span title="BYO credentials configured" style="font-size:10px;color:#9ece6a;margin-left:6px;">●</span>'
+      ? '<span title="BYO credentials configured" style="font-size:10px;color:var(--success);margin-left:6px;">●</span>'
       : '';
     return `
-      <div class="conn-ability-row" data-ability-id="${_esc(ab.id)}" data-provider="${_esc(ab.provider)}"
-           style="display:flex;align-items:center;padding:6px 8px;gap:8px;border-top:1px solid #2a2a4a;">
-        <div style="flex:1;min-width:0;">
-          <div style="font-size:12px;color:#c0caf5;font-weight:500;">
+      <div class="conn-ability-row ac-ability-row" data-ability-id="${_esc(ab.id)}" data-provider="${_esc(ab.provider)}">
+        <div class="ac-ability-label">
+          <div class="ac-ability-name" style="font-size:12px;">
             ${_esc(ab.display_name)}${sourceTag}${byoConfigured}
           </div>
-          <div style="font-size:10px;color:#565f89;line-height:1.4;">${_esc(ab.description || '')}</div>
+          <div class="ac-ability-desc">${_esc(ab.description || '')}</div>
         </div>
-        <label class="conn-toggle-wrap" title="${cantToggle ? 'Admin only' : (ab.enabled ? 'Disable' : 'Enable')}">
+        <label class="conn-toggle-wrap ac-ability-toggle-wrap" title="${cantToggle ? 'Admin only' : (ab.enabled ? 'Disable' : 'Enable')}">
           <input type="checkbox" class="conn-toggle conn-ability-toggle" ${checked} ${dis}>
           <span class="conn-toggle-track"></span>
         </label>
@@ -3240,9 +5269,9 @@ function _renderAbilitiesBlock(abilities, conn, canEdit) {
   }).join('');
 
   return `
-    <div class="conn-abilities-block" style="margin-top:10px;border:1px solid #2a2a4a;border-radius:6px;background:#161728;">
-      <div style="font-size:10px;color:#7aa2f7;padding:6px 8px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;display:flex;align-items:center;">
-        Abilities
+    <div class="conn-abilities-block ac-list" style="margin-top:10px;">
+      <div class="ac-ability-row conn-abilities-head">
+        <span class="ac-ability-name" style="font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);">Abilities</span>
         ${byoLink}
       </div>
       ${rows}
@@ -3475,6 +5504,10 @@ async function _saveConnection(agent, conn, cardEl, enabled) {
 // ── Members tab (admin only) ──────────────────────────────────────────────────
 
 async function _renderMembersTab(body, agent) {
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to manage members.</div>';
+    return;
+  }
   body.innerHTML = '<div class="members-loading">Loading members…</div>';
 
   let admins = [], members = [], userMode = agent.user_mode || 'anonymous';
@@ -3663,6 +5696,10 @@ function _buildMembersSection(agent, title, rows, kind, panelBody) {
 // ── Agent Loop (Test) tab ─────────────────────────────────────────────────────
 
 function _renderTestTab(body, agent) {
+  if (_isMockAgent(agent)) {
+    body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to test it in the loop.</div>';
+    return;
+  }
   const area = document.createElement('div');
   area.className = 'agents-test-area';
   area.innerHTML = `
@@ -3936,8 +5973,8 @@ function _lvNodeHint(nd, agent) {
 
     case 'turn_counter':
       return isCustom
-        ? `Max turns: ${agent.max_turn_count || 10} — click to edit turn limit & permission gate`
-        : `Turn counter — exits at max_turns (${agent.max_turn_count || 10})`;
+        ? `Max turns: ${agent.max_turn_count || '∞ (unlimited)'} — click to edit turn limit & permission gate`
+        : `Turn counter — unlimited by default (${agent.max_turn_count || '∞'})`;
 
     case 'build_tool_defs':
       return 'Converts tool metadata into the OpenAI tool_calls schema for the LLM';
@@ -3985,8 +6022,8 @@ function _lvNodeHint(nd, agent) {
 
     case 'check_continue':
       return isCustom
-        ? `Max turns: ${agent.max_turn_count || 10} — click to edit`
-        : `Loops back if tool results exist; stops at max_turns (${agent.max_turn_count || 10})`;
+        ? `Max turns: ${agent.max_turn_count || '∞ (unlimited)'} — click to edit`
+        : `Loops back if tool results exist; stops at max_turns (${agent.max_turn_count || 'unlimited'})`;
 
     case 'final_response':
       return 'Final reply streamed to the user over WebSocket';
@@ -4109,7 +6146,7 @@ function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
       list.className = 'lv-tool-panel-list';
       _lvAppendItem(list, { name: 'Name',     type: 'tool', desc: agent.name || agent.id || '—' });
       _lvAppendItem(list, { name: 'Model',    type: 'tool', desc: agent.model || 'claude-3-5-sonnet-20241022' });
-      _lvAppendItem(list, { name: 'Max turns',type: 'tool', desc: String(agent.max_turn_count || 10) });
+      _lvAppendItem(list, { name: 'Max turns',type: 'tool', desc: agent.max_turn_count ? String(agent.max_turn_count) : '∞ (unlimited)' });
       panel.appendChild(list);
       break;
     }
@@ -4268,7 +6305,7 @@ function _lvShowReadOnlyPanel(nd, nodeEl, container, agent) {
       const list = document.createElement('div');
       list.className = 'lv-tool-panel-list';
       _lvAppendItem(list, {
-        name: `Max turns: ${agent.max_turn_count || 10}`,
+        name: `Max turns: ${agent.max_turn_count || '∞ (unlimited)'}`,
         type: 'tool',
         desc: 'Agent stops looping after this many tool-calling turns',
       });
@@ -4983,9 +7020,9 @@ function _lvRenderSessionSetupInfo(body, agent) {
 function _lvRenderContinueEditor(body, agent) {
   const desc = document.createElement('div');
   desc.className = 'lv-edit-desc';
-  desc.textContent = 'Set how many agentic turns the loop can run before forcing a final response.';
+  desc.textContent = 'Set how many agentic turns the loop can run (0 = unlimited) before forcing a final response.';
   body.appendChild(desc);
-  _lvSliderRow(body, 'Max turns', agent.max_turn_count ?? 10, 1, 30, 1, val => {
+  _lvSliderRow(body, 'Max turns', agent.max_turn_count ?? 0, 0, 30, 1, val => {
     _lvSetPending('max_turn_count', parseInt(val, 10));
   });
 
@@ -5260,96 +7297,62 @@ function _interactionsToNodeStates(rows) {
   return s;
 }
 
-// ── Actions ───────────────────────────────────────────────────────────────────
-
-async function _saveChanges(agent, barEl, panelEl) {
-  if (agent.source !== 'custom') return;
-  const msg = barEl.querySelector('.agents-save-msg');
-  if (msg) { msg.textContent = ''; msg.className = 'agents-save-msg'; }
-
-  const updates = {};
-  const fv = key => { const el = panelEl.querySelector(`[data-field="${key}"]`); return el ? el.value : undefined; };
-  const nameVal = fv('name');        if (nameVal !== undefined) updates.name          = nameVal.trim();
-  const descVal = fv('desc');        if (descVal !== undefined) updates.description   = descVal;
-  const tcVal   = fv('max_turn_count'); if (tcVal !== undefined) updates.max_turn_count = parseInt(tcVal, 10) || 10;
-  const wcVal   = fv('max_wall_seconds');
-  if (wcVal !== undefined && wcVal !== '') {
-    const parsed = parseFloat(wcVal);
-    updates.max_wall_seconds = isNaN(parsed) ? null : parsed;
-  } else if (wcVal !== undefined) {
-    updates.max_wall_seconds = null;
-  }
-  const ttVal   = fv('trigger_type');   if (ttVal !== undefined) updates.trigger_type   = ttVal;
-  const tkVal   = fv('trigger_key');    if (tkVal !== undefined) updates.trigger_key    = tkVal || null;
-  const umChecked = panelEl.querySelector('[data-field="user_mode"]:checked');
-  if (umChecked) updates.user_mode = umChecked.value;
-
-  // Per-agent LLM override
-  if (panelEl._llmState) updates.llm_config = { ...panelEl._llmState };
-
-  // Slot writes: split into admin (slots payload) and member (overrides payload).
-  const sstate = panelEl._slotState || {};
-  const role = sstate.userRole || 'member';
-  let slotsPayload = null;
-  let overridesPayload = null;
-  if (sstate.loaded) {
-    if (role === 'admin') {
-      slotsPayload = (sstate.slots || []).map(s => ({
-        slot_name: s.slot_name,
-        order_index: s.order_index || 0,
-        lock: !!s.lock,
-        merge_mode: s.merge_mode || 'replace',
-        content: s.content || '',
-      }));
-      updates.slots = slotsPayload;
-      if (sstate.resetOverridesFor && sstate.resetOverridesFor.size > 0) {
-        updates.reset_overrides_for = Array.from(sstate.resetOverridesFor);
-      }
-    } else {
-      const items = [];
-      for (const s of (sstate.slots || [])) {
-        if (s.lock) continue;
-        const v = sstate.overrides && sstate.overrides[s.slot_name];
-        if (v === undefined || v === null) continue;
-        items.push({ slot_name: s.slot_name, content: v });
-      }
-      if (items.length > 0) overridesPayload = items;
-    }
-  }
-
-  try {
-    const res = await fetch(`/api/v1/agents/${agent.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: app.currentUserId, ...updates }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      // Patch the local agents array so re-render shows fresh values
-      const idx = _agents.findIndex(a => a.id === agent.id);
-      if (idx !== -1) Object.assign(_agents[idx], data.agent);
-      Object.assign(agent, data.agent); // also update the closure reference
-
-      // Member-only: send override writes via the my-prompts endpoint.
-      if (overridesPayload) {
-        try {
-          await fetch(`/api/v1/agents/${agent.id}/my-prompts`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ user_id: app.currentUserId, slots: overridesPayload }),
-          });
-        } catch (_) { /* surface only main save status */ }
-      }
-      // Reset the reset-overrides marks so saving again doesn't repeat.
-      if (sstate.resetOverridesFor) sstate.resetOverridesFor.clear();
-      if (msg) { msg.textContent = '✓ Saved'; msg.className = 'agents-save-msg'; }
-    } else {
-      if (msg) { msg.textContent = data.detail || 'Save failed'; msg.className = 'agents-save-msg error'; }
-    }
-  } catch (e) {
-    if (msg) { msg.textContent = `Error: ${e.message}`; msg.className = 'agents-save-msg error'; }
-  }
+// ── Per-agent Memory switches (Config tab) ────────────────────────────────────
+// Memory has two independently-gated halves at runtime, both already honored by
+// the agent loop (app/api/chat.py) and the Agent Loop diagram:
+//   • Recall — auto pre-turn brain search (loop_logic "memory_search") plus the
+//     agent-callable "memory" tool.
+//   • Save   — auto post-turn note, gated by BOTH loop_logic "memory_save" AND
+//     the absence of "memory_save" from allowed_tools.
+// NOTE: allowed_tools is a DISABLED list, not an allow list — a tool name present
+// there is OFF. These helpers read/merge the very same signals the loop diagram
+// uses, so flipping a switch here is identical to flipping it on the diagram.
+function _loopNodeEnabledPersisted(agent, nodeId) {
+  const ll = Array.isArray(agent.loop_logic) ? agent.loop_logic : [];
+  if (!ll.length || typeof ll[0] === 'string') return true;   // legacy flat / empty → all nodes run
+  const found = ll.find(it => it && it.node === nodeId);
+  return found ? found.enabled !== false : true;              // unknown node → enabled
 }
+
+function _memoryStateFromAgent(agent) {
+  const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  return {
+    recall: _loopNodeEnabledPersisted(agent, 'memory_search'),
+    save: _loopNodeEnabledPersisted(agent, 'memory_save') && !disabled.has('memory_save'),
+  };
+}
+
+// Encode the two switches into loop_logic (object-array) + allowed_tools, preserving
+// every other node/tool setting. Returns { loop_logic, allowed_tools }.
+function _memoryUpdatesFor(agent, recall, save) {
+  // loop_logic → object array (seed from the full node list when legacy/empty,
+  // exactly as the loop diagram does, so the stored shape stays identical).
+  const ll = Array.isArray(agent.loop_logic) ? agent.loop_logic : [];
+  let objs;
+  if (!ll.length || typeof ll[0] === 'string') {
+    objs = (Array.isArray(LOOP_NODES) && LOOP_NODES.length)
+      ? LOOP_NODES.map(n => ({ node: n.id, enabled: true }))
+      : [{ node: 'memory_search', enabled: true }, { node: 'memory_save', enabled: true }];
+  } else {
+    objs = ll.map(it => ({ ...it }));
+  }
+  const setNode = (nodeId, enabled) => {
+    const f = objs.find(o => o && o.node === nodeId);
+    if (f) f.enabled = enabled; else objs.push({ node: nodeId, enabled });
+  };
+  setNode('memory_search', recall);
+  setNode('memory_save', save);
+
+  // allowed_tools (DISABLED list): the "memory" read/write tool follows Recall;
+  // the "memory_save" auto-save gate follows Save.
+  const disabled = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+  if (recall) disabled.delete('memory'); else disabled.add('memory');
+  if (save) disabled.delete('memory_save'); else disabled.add('memory_save');
+
+  return { loop_logic: objs, allowed_tools: [...disabled] };
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
 
 async function _deleteAgent(agent) {
   if (agent.source !== 'custom') return;
@@ -5362,105 +7365,101 @@ async function _deleteAgent(agent) {
       { method: 'DELETE' }
     );
     if (res.ok) {
-      _expandedAgents.delete(agent.id);
-      await _loadAgents();
-      _renderList();
+      // Surgical: remove the square with fade-out, then clean up state
+      await _surgicalRemoveSquare(agent.id);
       _saveViewState();
+      // Bust the shared agent cache so the chat-header dropdown re-fetches
+      window.__agentsSharedData = null;
+      if (typeof app.populateAgentSelect === 'function') {
+        try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
+      }
     }
   } catch (e) {
     console.warn('agents: delete failed', e);
   }
 }
 
-// ── Create modal ──────────────────────────────────────────────────────────────
+// ── Create agent from mock card ───────────────────────────────────────────────
 
-function _bindCreateModal() {
-  // initAgents may run multiple times (page load + tab switch). Replace each
-  // button with a clone to drop any prior listeners, then bind fresh.
-  let newBtn    = document.getElementById('btn-new-agent');
-  const modal   = document.getElementById('agents-create-modal');
-  let cancelBtn = document.getElementById('btn-create-cancel');
-  let createBtn = document.getElementById('btn-create-confirm');
-  if (newBtn)    { const c = newBtn.cloneNode(true);    newBtn.replaceWith(c);    newBtn    = c; }
-  if (cancelBtn) { const c = cancelBtn.cloneNode(true); cancelBtn.replaceWith(c); cancelBtn = c; }
-  if (createBtn) { const c = createBtn.cloneNode(true); createBtn.replaceWith(c); createBtn = c; }
-  if (newBtn) newBtn.addEventListener('click', async () => {
-    if (!modal) return;
-    modal.classList.remove('hidden');
-    // Populate template dropdown
-    const tplSelect = document.getElementById('agents-create-template');
-    if (tplSelect) {
-      tplSelect.innerHTML = '<option value="">— No template —</option>';
-      try {
-        const url = `/api/v1/agents/templates?user_id=${encodeURIComponent(app.currentUserId)}&discoverable_only=true${_userIsAdmin ? '&include_admin=true' : ''}`;
-        const res = await fetch(url);
-        if (res.ok) {
-          const data = await res.json();
-          (data.templates || []).forEach(t => {
-            const opt = document.createElement('option');
-            opt.value = t.id;
-            opt.textContent = t.name || t.id;
-            if (t.id === 'default') opt.selected = true;
-            tplSelect.appendChild(opt);
-          });
-        }
-      } catch (e) {
-        console.warn('agents: failed to load templates', e);
-      }
-    }
+/**
+ * Shared create-agent core. POSTs a new agent, then closes the mock card,
+ * reloads the list, auto-expands the new agent's Config tab, and makes it the
+ * active agent so chat picks it up. Returns the created agent (or null on error).
+ */
+async function _postNewAgent({ name, description = '', templateId = 'default', llmConfig = { use_default: true } }) {
+  const res = await fetch('/api/v1/agents', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: app.currentUserId,
+      name,
+      description,
+      template_id: templateId || 'default',
+      llm_config: llmConfig,
+    }),
   });
-  if (cancelBtn) cancelBtn.addEventListener('click', () => modal && modal.classList.add('hidden'));
+  const data = await res.json();
+  if (!res.ok) {
+    alert(data.detail || 'Failed to create agent');
+    return null;
+  }
+  const newAgent = data.agent;
+  if (!newAgent) return null;
 
-  if (createBtn) {
-    createBtn.addEventListener('click', async () => {
-      const nameEl = document.getElementById('agents-create-name');
-      const descEl = document.getElementById('agents-create-desc');
-      const name   = nameEl ? nameEl.value.trim() : '';
-      if (!name) { nameEl && nameEl.focus(); return; }
+  // Don't remove the mock "New Agent" square — it's a permanent UI element.
+  // Just close it (deselect) and reset its icon for next time.
+  _expandedAgents.delete(MOCK_AGENT_ID);
+  _mockIconName = null;  // re-randomize the icon for the next "create" card
 
-      try {
-        const tplSelect = document.getElementById('agents-create-template');
-        const templateId = tplSelect ? tplSelect.value : 'default';
-        const res = await fetch('/api/v1/agents', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            user_id: app.currentUserId,
-            name,
-            description: descEl ? descEl.value.trim() : '',
-            template_id: templateId || 'default',
-          }),
-        });
-        const data = await res.json();
-        if (res.ok) {
-          modal && modal.classList.add('hidden');
-          if (nameEl) nameEl.value = '';
-          if (descEl) descEl.value = '';
-          if (tplSelect) tplSelect.value = '';
-          await _loadAgents();
-          // Auto-expand the new agent
-          const newAgent = _agents.find(a => a.id === data.agent?.id);
-          if (newAgent) {
-            _expandedAgents.set(newAgent.id, { tab: 'config' });
-            _saveViewState();
-          }
-          _renderList();
-          // Make the new agent the active one so chat picks it up on next send.
-          const newId = data.agent && data.agent.id;
-          if (newId) {
-            app.currentAgentId = newId;
-            try { localStorage.setItem('selectedAgentId', newId); } catch (_) {}
-            if (typeof app.populateAgentSelect === 'function') {
-              try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('agents: create failed', e);
-      }
+  // Bust the shared agent cache so the chat-header dropdown re-fetches
+  window.__agentsSharedData = null;
+
+  // Set the new agent as active BEFORE adding its square so the carousel
+  // state and activated class are correct from the start.
+  _setActive(newAgent.id, 'config');
+  _saveViewState();
+
+  // Add the new agent surgically with fade-in.
+  // Appends at the end — the "New Agent" square is always first (far left).
+  _surgicalAddSquare(newAgent);
+
+  // Rebuild detail region for the newly active agent
+  _rebuildDetailRegion();
+
+  // Make the new agent the active one so chat picks it up on next send.
+  app.currentAgentId = newAgent.id;
+  try { localStorage.setItem('selectedAgentId', newAgent.id); } catch (_) {}
+  if (typeof app.populateAgentSelect === 'function') {
+    try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
+  }
+  return newAgent;
+}
+
+async function _createAgentFromMock(panelEl) {
+  // Gather the name from the config tab
+  const nameEl = panelEl.querySelector('[data-field="name"]');
+  const descEl = panelEl.querySelector('[data-field="desc"]');
+  const tplEl = panelEl.querySelector('[data-field="template"]');
+  const name = nameEl ? nameEl.value.trim() : '';
+  if (!name) {
+    if (nameEl) nameEl.focus();
+    return;
+  }
+
+  try {
+    await _postNewAgent({
+      name,
+      description: descEl ? descEl.value.trim() : '',
+      templateId: tplEl ? tplEl.value : 'default',
+      llmConfig: panelEl._llmState || { use_default: true },
     });
+  } catch (e) {
+    console.warn('agents: create from mock failed', e);
+    alert('Error creating agent: ' + e.message);
   }
 }
+
+// ── Create modal (removed — replaced by mock card) ───────────────────────────
 
 // ── Persisted view state ──────────────────────────────────────────────────────
 
@@ -5470,7 +7469,8 @@ function _saveViewState() {
   try {
     const expanded = {};
     for (const [agentId, state] of _expandedAgents) {
-      expanded[agentId] = { tab: state.tab || 'config' };
+      if (agentId === MOCK_AGENT_ID) continue; // don't persist mock state
+      expanded[agentId] = { tab: state.tab };
     }
     localStorage.setItem(_STORAGE_KEY, JSON.stringify({ expanded }));
   } catch (_) {}
@@ -5483,18 +7483,180 @@ function _restoreViewState() {
     const { expanded } = JSON.parse(raw);
     if (!expanded || typeof expanded !== 'object') return;
     let changed = false;
+    // Only one agent is open at a time — restore the first still-existing entry.
     for (const [agentId, state] of Object.entries(expanded)) {
-      // Only restore if the agent still exists
       if (_agents.find(a => a.id === agentId)) {
-        _expandedAgents.set(agentId, { tab: state.tab || 'config' });
+        _setActive(agentId, state.tab || 'config');
         changed = true;
+        break;
       }
     }
     if (changed) _renderList();
   } catch (_) {}
 }
 
-// ── Utilities ─────────────────────────────────────────────────────────────────
+// ── Icon picker popover ─────────────────────────────────────────────────────
+
+const _ICON_PICKER_ICONS = [
+  // Bot & AI
+  'bot', 'bot-message-square', 'brain', 'sparkles', 'cpu', 'zap',
+  'radio', 'antenna', 'satellite', 'telescope',
+  // Communication
+  'message-square', 'message-circle', 'chat', 'send', 'mail',
+  'phone', 'megaphone', 'bell', 'bell-ring',
+  // Code & Tools
+  'code', 'terminal', 'wrench', 'hammer', 'settings-2',
+  'sliders', 'cog', 'scroll', 'book-open',
+  // Actions
+  'play', 'square-play', 'forward', 'rotate-cw', 'refresh-cw',
+  'repeat', 'loop', 'shuffle', 'arrow-right-left',
+  // Data
+  'database', 'hard-drive', 'folder', 'folder-open', 'file-text',
+  'globe', 'search', 'eye', 'scan-search',
+  // Security
+  'shield', 'shield-check', 'lock', 'key-round', 'fingerprint',
+  'user-check', 'users', 'user-plus',
+  // Design
+  'palette', 'paintbrush', 'image', 'camera', 'layout-dashboard',
+  'layout-grid', 'panel-top', 'panel-left',
+  // Network
+  'network', 'share-2', 'link', 'git-branch', 'git-merge',
+  'workflow', 'tree-pine', 'layers',
+  // Math / Logic
+  'calculator', 'divide', 'equal', 'variable', 'function-square',
+  'sigma', 'pi', 'infinity',
+  // Status
+  'check-circle', 'alert-circle', 'info', 'help-circle',
+  'loader-2', 'activity', 'signal', 'wifi',
+  // Arrows
+  'arrow-up', 'arrow-down', 'arrow-left', 'arrow-right',
+  'chevrons-left-right', 'chevrons-up-down', 'expand', 'minimize-2',
+  // Documents
+  'notepad-text', 'clipboard-list', 'list-checks', 'check-square',
+  'pen-square', 'edit-3', 'bookmark', 'tags',
+  // Misc
+  'star', 'heart', 'award', 'target', 'crosshair',
+  'compass', 'map', 'map-pin', 'clock', 'timer',
+  'cloud', 'sun', 'moon', 'feather', 'lightbulb',
+  'briefcase', 'shopping-cart', 'credit-card', 'coins', 'piggy-bank',
+];
+
+function _openIconPicker(anchorEl, agent, panelEl) {
+  // Remove any existing picker
+  const old = document.getElementById('agent-icon-picker');
+  if (old) old.remove();
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'agent-icon-picker';
+  backdrop.className = 'icon-picker-backdrop';
+
+  const popover = document.createElement('div');
+  popover.className = 'icon-picker-popover';
+
+  popover.innerHTML = `
+    <div class="icon-picker-header">
+      <span class="icon-picker-title">Choose an icon</span>
+      <button class="icon-picker-close" title="Close">✕</button>
+    </div>
+    <div class="icon-picker-search-wrap">
+      <input type="text" class="icon-picker-search" placeholder="Search icons…" autofocus>
+    </div>
+    <div class="icon-picker-grid"></div>
+    <div class="icon-picker-footer">
+      <button class="icon-picker-clear agents-btn">Clear (use emoji)</button>
+      <span class="icon-picker-selected"></span>
+    </div>
+  `;
+
+  backdrop.appendChild(popover);
+  document.body.appendChild(backdrop);
+
+  const grid = popover.querySelector('.icon-picker-grid');
+  const search = popover.querySelector('.icon-picker-search');
+  const closeBtn = popover.querySelector('.icon-picker-close');
+  const clearBtn = popover.querySelector('.icon-picker-clear');
+  const selectedEl = popover.querySelector('.icon-picker-selected');
+
+  let currentIcon = agent.icon || '';
+
+  function renderIcons(filter) {
+    grid.innerHTML = '';
+    const list = filter
+      ? _ICON_PICKER_ICONS.filter(name => name.includes(filter.toLowerCase()))
+      : _ICON_PICKER_ICONS;
+
+    if (list.length === 0) {
+      grid.innerHTML = '<div class="icon-picker-empty">No icons match</div>';
+      return;
+    }
+
+    for (const name of list) {
+      const item = document.createElement('div');
+      item.className = 'icon-picker-item' + (name === currentIcon ? ' selected' : '');
+      item.title = name;
+      item.innerHTML = icon(name, { size: '22px' });
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Remove selected class from all
+        grid.querySelectorAll('.icon-picker-item.selected').forEach(el => el.classList.remove('selected'));
+        item.classList.add('selected');
+        currentIcon = name;
+        selectedEl.innerHTML = icon(name, { size: '18px' }) + ` <span style="font-size:12px;color:var(--fg-3);">${name}</span>`;
+      });
+      grid.appendChild(item);
+    }
+  }
+
+  search.addEventListener('input', () => renderIcons(search.value));
+  renderIcons('');
+
+  // Show currently selected if any
+  if (currentIcon && _ICON_PICKER_ICONS.includes(currentIcon)) {
+    selectedEl.innerHTML = icon(currentIcon, { size: '18px' }) + ` <span style="font-size:12px;color:var(--fg-3);">${currentIcon}</span>`;
+  }
+
+  function applyIcon(iconName) {
+    agent.icon = iconName;
+    // Re-render the icon everywhere this agent shows: the carousel square (24px)
+    // and the expanded card in the detail region (20px).
+    document.querySelectorAll(`.agent-row[data-agent-id="${CSS.escape(agent.id)}"] .agent-card-icon-wrap`).forEach(iconWrap => {
+      const iconSize = iconWrap.closest('.agent-card.active') ? '20px' : '24px';
+      iconWrap.innerHTML = _renderAgentIcon({ icon: iconName }, iconSize);
+    });
+    backdrop.remove();
+  }
+
+  closeBtn.addEventListener('click', () => backdrop.remove());
+  clearBtn.addEventListener('click', () => {
+    currentIcon = '';
+    selectedEl.innerHTML = '<span style="font-size:12px;color:var(--fg-3);">Emoji (drag text input)</span>';
+    applyIcon('');
+  });
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) backdrop.remove();
+  });
+
+  // Enter applies the selected icon (but not while typing in the search field)
+  document.addEventListener('keydown', function _onKey(e) {
+    if (e.key === 'Enter' && currentIcon && e.target !== search) {
+      applyIcon(currentIcon);
+      document.removeEventListener('keydown', _onKey);
+    }
+    if (e.key === 'Escape') {
+      backdrop.remove();
+      document.removeEventListener('keydown', _onKey);
+    }
+  });
+}
+
+function _renderAgentIcon(agent, size) {
+  const name = agent.icon || '';
+  if (!name) return icon('bot', { size });
+  // If it's one of our known Lucide icons, render as SVG
+  if (_ICON_PICKER_ICONS.includes(name)) return icon(name, { size });
+  // Otherwise treat as emoji (or raw text)
+  return _esc(name);
+}
 
 function _btn(label, cls) {
   const b = document.createElement('button');

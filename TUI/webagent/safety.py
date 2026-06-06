@@ -4,7 +4,7 @@ The server manager runs with the user's own shell privileges, so the guardrails 
 are about *predictability*, not sandboxing:
 
 * **path resolution** scoped to the target project (relative paths can't escape;
-  absolute paths are allowed but flagged), mirroring ``app/admin/source.py``.
+  absolute paths are allowed but flagged), mirroring ``plugins/admin/source.py``.
 * **secret scanning** of diffs/content before a commit, mirroring the
   Source Controller's pre-commit check.
 * **sensitive-file** awareness so per-machine runtime files aren't committed.
