@@ -124,6 +124,13 @@ def _fts5_safe_match_query(raw: str, max_tokens: int = 12, max_token_len: int = 
 
 
 # ── Schema DDL ──────────────────────────────────────────────────────────────
+#
+# ⚠ DROP-IN POLICY — CORE, app-wide tables only (this is the SQLite mirror of
+# app/db/schema/tables.py). Do NOT add a table here for a drop-in plugin
+# capability (ability / integration / connector / …). A self-contained plugin
+# creates its own storage lazily with `CREATE TABLE IF NOT EXISTS` on first use
+# (worked example: plugins/abilities/agent_orchestration.py), so the capability
+# stays deletable as a single file. See CLAUDE.md "Core vs. plugins".
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sessions (

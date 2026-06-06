@@ -496,6 +496,17 @@ async def shutdown():
         await stop_event_runtime()
     except Exception:
         pass
+    # Stop ability background services (generic — mirror of startup discovery).
+    try:
+        from app import abilities as _abilities_mgr
+        for _svc in _abilities_mgr.background_service_hooks():
+            if callable(_svc.get("stop")):
+                try:
+                    await _svc["stop"]()
+                except Exception:
+                    pass
+    except Exception:
+        pass
     # Stop the liveness watchdog.
     try:
         from app.agent.watchdog import stop_watchdog
@@ -739,6 +750,25 @@ async def startup():
         await start_event_runtime()
     except Exception as _evt_err:
         logger.warning("Failed to start event runtime: %s", _evt_err)
+
+    # ── Start ability background services (generic drop-in discovery) ──
+    # Any ability whose plugin file defines an async start_background() gets it
+    # run here — e.g. the orchestration follow-up-timer poller. No ability is
+    # named: app/abilities discovers the hooks. Stopped symmetrically on shutdown.
+    #
+    # ⚠ DROP-IN POLICY — do NOT add a per-ability startup line in this lifespan.
+    # If a drop-in ability needs a long-lived service, define start_background()/
+    # stop_background() in its plugin file (plugins/abilities/<id>.py); this one
+    # generic loop runs it. See CLAUDE.md "Core vs. plugins".
+    try:
+        from app import abilities as _abilities_mgr
+        for _svc in _abilities_mgr.background_service_hooks():
+            try:
+                await _svc["start"]()
+            except Exception as _svc_err:
+                logger.warning("Ability '%s' background start failed: %s", _svc["id"], _svc_err)
+    except Exception as _absvc_err:
+        logger.warning("Ability background services unavailable: %s", _absvc_err)
 
     # ── Self-healing recovery (step 2 of 2): re-ignite resumable orphans ──
     # Runs AFTER scheduler/events are up (a resumed turn may use their machinery).

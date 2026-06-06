@@ -40,8 +40,12 @@ by the feature catalog + edition gating) PLUS ability-specific fields:
         # "skill": "…how-to…", "skill_handle": "web_access_a1b2c3d4",
     }
 
-The tool *handlers* still live in core (app/tools/core_tools.py and friends); an
-ability file only declares which tool *names* it unlocks and how it renders.
+Tool handlers can live EITHER in core (the classic ability just declares which
+tool *names* it unlocks, and the handlers sit in app/tools/core_tools.py and
+friends) OR in the ability file itself — a SELF-CONTAINED ability ships its own
+handlers via an optional ``build_tools()`` hook (and an optional
+``start_background()`` service), exactly like an integration carries its TOOLS.
+Both are auto-discovered; see "Self-contained abilities" lower in this file.
 
 Groups are EMERGENT — there is no master list to edit. The ``group`` id you give
 an ability decides its bucket: name an existing id to JOIN that group, or a new
@@ -132,6 +136,10 @@ _CREDENTIAL_MEMBERS: Dict[str, Dict[str, str]] = {
 
 
 _CACHE: Optional[Dict[str, Dict[str, Any]]] = None
+# {ability_id: loaded module} — kept alongside _CACHE so an ability that ships
+# its OWN tool handlers / background service (see "Self-contained abilities"
+# below) can be reached without re-executing the file.
+_MODULE_CACHE: Dict[str, Any] = {}
 
 
 def _load(force: bool = False) -> Dict[str, Dict[str, Any]]:
@@ -139,15 +147,20 @@ def _load(force: bool = False) -> Dict[str, Dict[str, Any]]:
 
     Path-based loading (not import_module) so the top-level ``plugins/`` tree
     need not be on ``sys.path``. Mirrors the communications / events managers.
+    The executed module objects are cached in ``_MODULE_CACHE`` so a
+    self-contained ability's ``build_tools`` / ``start_background`` hooks can be
+    invoked later without re-importing.
     """
     global _CACHE
     if _CACHE is not None and not force:
         return _CACHE
 
     out: Dict[str, Dict[str, Any]] = {}
+    mods: Dict[str, Any] = {}
     if not _ABILITIES_DIR.is_dir():
         logger.warning("Abilities dir not found: %s", _ABILITIES_DIR)
         _CACHE = out
+        _MODULE_CACHE.clear()
         return out
 
     for fpath in sorted(_ABILITIES_DIR.iterdir()):
@@ -167,17 +180,71 @@ def _load(force: bool = False) -> Dict[str, Dict[str, Any]]:
             feat = dict(feature)
             feat.setdefault("id", stem)
             feat.setdefault("category", "ability")
-            out[str(feat["id"])] = feat
+            aid = str(feat["id"])
+            out[aid] = feat
+            mods[aid] = mod
         except Exception as e:
             logger.error("Failed to load ability %s: %s", stem, e)
 
     _CACHE = out
+    _MODULE_CACHE.clear()
+    _MODULE_CACHE.update(mods)
     return out
 
 
 def reload() -> None:
     """Drop the cache so a newly-dropped ability file is picked up."""
     _load(force=True)
+
+
+# ── Self-contained abilities — abilities that ship their own tools / runtime ──
+# By default an ability only DECLARES tool names (handlers live in core). But an
+# ability MAY instead carry its own implementation in its plugin file, exactly
+# like an integration does (app/integrations/*). It does so with two optional
+# module-level hooks, both discovered generically — no core edit per ability:
+#
+#   build_tools(*, user_id, session_id, agent_id, agent_template_id, **ctx)
+#       → {tool_name: async_handler}.  Called by app/tools/loader.py for every
+#         ENABLED ability that defines it; the returned handlers are injected as
+#         normal tools. The module may also expose TOOL_SCHEMAS ({name: schema})
+#         and DESTRUCTIVE (a set of names needing confirmation). The ability owns
+#         any gating of its own (e.g. refusing to arm inside certain sessions) —
+#         return {} to inject nothing this call.
+#
+#   start_background() / stop_background()  (async)
+#       → a long-lived service (e.g. a poller) the ability needs running while
+#         the app is up. Started/stopped generically by app/main.py.
+#
+# This keeps a tool-bearing ability fully drop-in: its FEATURE, skill, handlers,
+# storage, and background service all live in plugins/abilities/, and deleting
+# the file removes the whole capability. Heavy imports should be done lazily
+# INSIDE these hooks (or in a sibling ``_<id>_impl.py``, skipped by the scanner)
+# so the FEATURE scan stays cheap.
+
+
+def ability_module(ability_id: str) -> Optional[Any]:
+    """Return the executed plugin module for an ability id (or None). Used to
+    reach optional ``build_tools`` / ``start_background`` hooks."""
+    _load()
+    return _MODULE_CACHE.get(ability_id)
+
+
+def background_service_hooks() -> List[Dict[str, Any]]:
+    """Discover abilities that expose a background service. Returns a list of
+    ``{"id", "start", "stop"}`` for every ability module defining an async
+    ``start_background`` (``stop`` may be None). app/main.py runs these at
+    startup / shutdown so no ability wires itself into the lifespan by name."""
+    _load()
+    hooks: List[Dict[str, Any]] = []
+    for aid, mod in _MODULE_CACHE.items():
+        start = getattr(mod, "start_background", None)
+        if callable(start):
+            hooks.append({
+                "id": aid,
+                "start": start,
+                "stop": getattr(mod, "stop_background", None),
+            })
+    return hooks
 
 
 # ── Ability-bundled skills ───────────────────────────────────────────────────

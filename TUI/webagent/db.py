@@ -8,6 +8,8 @@ Tables:
 * ``sessions``  — one row per conversation.
 * ``messages``  — chat + tool transcript (role, content, tool metadata).
 * ``actions``   — append-only audit of mutating tool calls (what / when / ok).
+* ``settings``  — a small key/value store for manager-level state that must
+  survive restarts (e.g. the linked **repo directory** the user/agent designated).
 * ``playbook_issues`` / ``playbook_remedies`` / ``playbook_incidents`` — the
   self-healing knowledge base: recognised issues (fingerprints), the remedies
   tried against each (with helped/didn't-help counters), and an append-only log
@@ -58,6 +60,13 @@ CREATE TABLE IF NOT EXISTS actions (
     created_at  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_actions_session ON actions(session_id, created_at);
+
+-- ── Key/value settings (manager-level state that survives restarts) ───────
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL DEFAULT '',
+    updated_at REAL NOT NULL
+);
 
 -- ── Self-healing Playbook (issue knowledge base) ──────────────────────────
 CREATE TABLE IF NOT EXISTS playbook_issues (
@@ -255,6 +264,25 @@ class Store:
                 "SELECT * FROM actions ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── key/value settings ───────────────────────────────────────────────
+    def get_setting(self, key: str, default: str = "") -> str:
+        """Read a saved setting value (e.g. the linked repo directory). Returns
+        ``default`` when the key has never been set."""
+        row = self._conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row is not None else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Insert or update a setting (upsert). Stamps ``updated_at`` each time."""
+        self._conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+            "updated_at = excluded.updated_at",
+            (key, value, time.time()),
+        )
+        self._conn.commit()
 
     # ── Playbook: issues ─────────────────────────────────────────────────
     def pb_get_issue(self, key: str) -> Optional[dict[str, Any]]:

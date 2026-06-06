@@ -14,6 +14,14 @@
  *
  * Note: App Connections (webhooks, Telegram bot config) was removed — managed
  *       via each agent's Connections tab instead.
+ *
+ * ⚠ DROP-IN POLICY — do NOT hardcode a new ability, integration, or tool in this
+ * file. Capabilities are discovered from their plugin folders (abilities:
+ * plugins/abilities/; integrations: app/integrations/) and rendered generically
+ * here (Agent Tools / Abilities render from GET /api/v1/abilities/catalog; the
+ * Features report from GET /api/v1/features). Add a capability by dropping a file
+ * in the matching plugin folder — never by editing this file. See CLAUDE.md
+ * "Core vs. plugins".
  */
 
 import { apiPath } from './config.js';

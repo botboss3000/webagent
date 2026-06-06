@@ -713,19 +713,32 @@ body.light-mode .th-funnel {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  /* Own the page background with the design-system elevated-panel surface
-     (blue in dark, warm off-white in light) so the body doesn't leak the
-     flat grey --files-bg from the host admin-tools pane behind it. Uses
-     --bg-elev to match the Agents page's panel tone, not the darker base. */
-  background: var(--bg-elev);
+  /* Transparent so the host admin-tools panes (made transparent while the
+     settings view is active — see "App Config transparency" block below) let
+     the floating #main-panel's dynamic glass + spotlight show through, exactly
+     like the Agents page. No solid fill of our own. */
+  background: transparent;
 }
 #app-config-container[hidden] { display: none; }
+
+/* ── App Config transparency ──
+   The App Configuration page lives inside the Admin-Tools "Files" workspace,
+   whose panes (#tab-admin-tools → .admin-tools → #files-settings-main) paint an
+   opaque flat grey (--files-bg) for the code-editor / terminal views. While the
+   *settings* view is showing, drop that grey on all three so the floating
+   #main-panel's dynamic glass + cursor spotlight shows through — giving the App
+   Configuration page the same living background as the Agents page, instead of a
+   flat fill. Scoped via :has() to the settings pane being visible, so the Files
+   editor, terminal, git, etc. keep their grey. */
+#files-settings-main { background: transparent; }
+.admin-tools:has(> #files-settings-main:not([hidden])),
+#tab-admin-tools:has(#files-settings-main:not([hidden])) { background: transparent; }
 
 /* Top header */
 #app-config-header {
 	  flex-shrink: 0;
 	  padding: 18px 28px 12px;
-	  background: #07070c;
+	  background: transparent;
 	}
 .ac-page-title {
   font-size: 18px;
@@ -740,7 +753,7 @@ body.light-mode .th-funnel {
 	  display: block;
 	  border-bottom: 1px solid var(--border, #2a2a4a);
 	  flex-shrink: 0;
-	  background: #07070c;
+	  background: transparent;
 	}
 #app-config-tabs {
   display: flex;
@@ -828,13 +841,13 @@ body.light-mode .ac-tab.active .ac-tab-count-badge {
 	  left: 0;
 	  justify-content: flex-start;
 	  padding-left: 4px;
-	  background: linear-gradient(to right, #07070c 50%, transparent 100%);
+	  background: linear-gradient(to right, color-mix(in oklab, var(--bg-elev) 88%, transparent) 45%, transparent 100%);
 	}
 	.ac-tabs-chev.right {
 	  right: 0;
 	  justify-content: flex-end;
 	  padding-right: 4px;
-	  background: linear-gradient(to left, #07070c 50%, transparent 100%);
+	  background: linear-gradient(to left, color-mix(in oklab, var(--bg-elev) 88%, transparent) 45%, transparent 100%);
 	}
 .ac-tabs-chev.visible { display: flex; }
 .ac-tabs-chev:hover { color: var(--fg-1, #c0caf5); }
@@ -1378,10 +1391,10 @@ body.light-mode .ac-cap-badge.on { color: #cc6a28; border-color: #cc6a28; }
 body.light-mode .ac-saved-th { color: #9a7c65; }
 
 /* ── Light mode overrides ── */
-body.light-mode #app-config-header { background: #faf5ee; }
+body.light-mode #app-config-header { background: transparent; }
 body.light-mode .ac-page-title { color: #2d1f14; }
 body.light-mode #app-config-tabs-wrap {
-	  background: #faf5ee;
+	  background: transparent;
 	  border-bottom-color: #ffdec4;
 	}
 body.light-mode .ac-tab { color: #b09580; }
@@ -1390,10 +1403,10 @@ body.light-mode .ac-tab.active { color: #ff8c42; border-bottom-color: #ff8c42; }
 body.light-mode .ac-tabs-chev { color: #ff8c42; }
 body.light-mode .ac-tabs-chev:hover { color: #cc6a28; }
 body.light-mode .ac-tabs-chev.left {
-	  background: linear-gradient(to right, #faf5ee 55%, transparent 100%);
+	  background: linear-gradient(to right, color-mix(in oklab, var(--bg-elev) 88%, transparent) 50%, transparent 100%);
 	}
 	body.light-mode .ac-tabs-chev.right {
-	  background: linear-gradient(to left, #faf5ee 55%, transparent 100%);
+	  background: linear-gradient(to left, color-mix(in oklab, var(--bg-elev) 88%, transparent) 50%, transparent 100%);
 	}
 body.light-mode .ac-card { background: #ffffff; border-color: #e8ddd0; }
 body.light-mode .ac-section-title { color: #2d1f14; }

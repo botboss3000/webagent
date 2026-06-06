@@ -65,6 +65,15 @@ class Trigger:
 
 
 # ── Tables ──────────────────────────────────────────────────────────────────
+#
+# ⚠ DROP-IN POLICY — this list is for CORE, app-wide tables only.
+# Do NOT add a table here for a drop-in plugin capability (an ability,
+# integration, connector, event source, …). A self-contained plugin owns its
+# OWN storage: create it lazily with `CREATE TABLE IF NOT EXISTS` on first use
+# from inside the plugin file (worked example: the `agent_spawns` table in
+# plugins/abilities/agent_orchestration.py; precedent: optimizer_runs). That way
+# deleting the plugin file removes the whole capability, storage included.
+# See CLAUDE.md "Core vs. plugins" and plugins/abilities/_TEMPLATE.py.
 
 TABLES: List[Table] = [
     Table("sessions", [

@@ -656,11 +656,17 @@ function _renderSessionRows() {
     } else if (s.has_unread) {
       statusHtml = `<span class="session-row-status session-status-unread" title="New response ready">${icon('check-circle', { size: '12px' })}</span>`;
     }
+    // Spawn badge: orchestration helper sessions carry a `spawn-` id prefix.
+    // Mark them so the user can tell a spawned helper apart from a normal chat.
+    const _isSpawn = typeof s.id === 'string' && s.id.startsWith('spawn-');
+    const spawnBadge = _isSpawn
+      ? `<span class="session-row-spawn-badge" title="Spawned helper session">${icon('git-branch', { size: '11px' })}</span>`
+      : '';
     row.innerHTML = `
       <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       ${statusHtml}
-      <span class="session-row-title" title="Hold to rename"><span class="session-row-agent-icon">${agentIcon.replace(/</g, '&lt;')}</span><span class="session-row-sep"> </span>${_truncate(label, 28).replace(/</g, '&lt;')}</span>
+      <span class="session-row-title" title="Hold to rename"><span class="session-row-agent-icon">${agentIcon.replace(/</g, '&lt;')}</span><span class="session-row-sep"> </span>${spawnBadge}${_truncate(label, 28).replace(/</g, '&lt;')}</span>
       <button class="session-row-delete" title="Delete session" data-id="${s.id}" data-state="trash">${icon('trash-2', { size: '14px' })}</button>
     `;
     menu.appendChild(row);

@@ -26,9 +26,18 @@ HOW TO ADD ONE
 ────────────────────────────────────────────────────────────────────────────
   1. Copy this file to  plugins/abilities/<your_ability_id>.py
   2. Fill in the FEATURE dict below.
-  3. Make sure the tool *handlers* you name in `tools` already exist (they live
-     in core — e.g. app/tools/core_tools.py). This file only declares which tool
-     NAMES the ability unlocks; it does not implement them.
+  3. Provide the tools one of TWO ways:
+     A. DECLARE-ONLY (common): the handlers you name in `tools` already exist in
+        core (e.g. app/tools/core_tools.py); this file only declares the NAMES.
+     B. SELF-CONTAINED: ship the handlers HERE, like an integration does — add an
+        optional module-level `build_tools(*, user_id, session_id, agent_id,
+        agent_template_id, **ctx) -> {name: async_handler}` (plus optional
+        `TOOL_SCHEMAS` dict and `DESTRUCTIVE` set), and an optional
+        `start_background()` / `stop_background()` for a long-lived service. Core
+        discovers these generically — you wire nothing in app/. Keep heavy
+        imports lazy so the FEATURE scan stays cheap; create any table you need
+        lazily with CREATE TABLE IF NOT EXISTS (no core schema edit). See
+        plugins/abilities/agent_orchestration.py for a full worked example.
   4. That's it. (Files whose name starts with "_", like this one, are skipped.)
 
 ────────────────────────────────────────────────────────────────────────────

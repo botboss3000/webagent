@@ -27,8 +27,13 @@ from app.auth.jwt import decode_token
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/db", tags=["db_viewer"])
 
-# SQLite files for this API live under app/db/ (same directory as local.py)
-_DB_FILES_DIR = Path(__file__).resolve().parent.parent / "db"
+# SQLite files live under data/db/ alongside every other runtime DB. Import the
+# canonical location from app.db.local so this stays in lockstep if it ever moves
+# again — recomputing the path here is what left this endpoint pointing at the old
+# app/db/ location after the relocation, so the chat dropdown read an empty/missing
+# file and every session showed as "New Session".
+from app.db.local import DB_DIR as _DB_DIR_STR
+_DB_FILES_DIR = Path(_DB_DIR_STR)
 
 # In-process cache for /tables responses. Keyed by absolute db path.
 # Counts can be expensive for large tables; clients poll this every ~20s, and

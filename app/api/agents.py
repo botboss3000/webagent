@@ -1227,6 +1227,11 @@ def _inject_ability_rows() -> None:
     Each row carries its UI metadata (description/icon/color/group/simple) so the
     two ability panels render generically. Fail-open: a scan error just leaves
     the catalog without ability rows rather than breaking the connections API.
+
+    ⚠ DROP-IN POLICY — abilities are discovered from plugins/abilities/ here; do
+    NOT hardcode a new ability anywhere in this file. Drop a file in
+    plugins/abilities/ and it appears in the catalog + both panels automatically.
+    See CLAUDE.md "Core vs. plugins".
     """
     try:
         from app.abilities import connection_rows

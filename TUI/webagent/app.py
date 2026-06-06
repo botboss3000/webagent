@@ -296,6 +296,21 @@ class PromptInput(TextArea):
         self.styles.height = target
 
 
+class ClipInput(Input):
+    """A single-line panel field whose **Ctrl+V pastes from the real OS clipboard**.
+    Textual's default Ctrl+V only reads its own internal buffer / OSC-52, which never
+    reaches the OS clipboard on Windows conhost and many terminals — so a path or key
+    copied from a browser/file manager wouldn't paste. This mirrors the prompt pill's
+    clipboard-aware paste. Bracketed terminal paste still flows through the parent."""
+
+    BINDINGS = [Binding("ctrl+v", "os_paste", "Paste", show=False)]
+
+    def action_os_paste(self) -> None:
+        text = read_clipboard() or self.app.clipboard
+        if text:
+            self.insert_text_at_cursor(text.replace("\n", " ").replace("\r", "").strip())
+
+
 class SpinnerBar(Widget):
     """A one-row activity spinner (``-`` ``/`` ``|`` ``\\``) shown whenever the agent
     is busy, so the user can see it isn't frozen. Blank at rest, and the timer is
@@ -825,6 +840,12 @@ class ServerManagerApp(App):
         self.project_root = p.resolve()
         self.cfg.project_path = str(self.project_root)
         self.cfg.save()
+        # Mirror the linked path into the manager's DB so the Admin ▸ Repo directory
+        # field reflects what's in play — including when the agent self-links.
+        try:
+            self.store.set_setting("repo_dir", str(self.project_root))
+        except Exception:
+            pass
         self._apply_provider()                         # the repo's provider.json wins now
         if self.agent is not None:
             self.agent.project_root = self.project_root
@@ -1552,6 +1573,8 @@ class ServerManagerApp(App):
             return out + self._readout_widgets(kind)
         if kind == "playbook":
             return out + self._playbook_widgets()
+        if kind == "admin":
+            out += self._repo_dir_widgets()
         ka_label = f"[Keep-alive: {'ON' if guardian.read_enabled() else 'OFF'}]"
         specs = {
             "admin": [("[App Config]", "panel_config"),
@@ -1566,6 +1589,30 @@ class ServerManagerApp(App):
         }.get(kind, [])
         for label, action in specs:
             out.append(self._panel_btn(label, action))
+        return out
+
+    # ── Admin: repo directory field (paste a folder → hand it to the agent) ────
+    def _repo_dir_widgets(self) -> list[Widget]:
+        """The repo/project directory field on the Admin panel. The user pastes a
+        folder path (e.g. C:\\webagent) and Saves it; the path is persisted as an
+        entry in the manager's own SQLite store and the agent is handed that
+        directory to act on — link an existing webAgent checkout there, or install
+        one if the folder is empty. The agent's own link hook writes this same
+        entry, so when the agent links itself the field is already filled in."""
+        c = self.cc
+        saved = self.store.get_setting("repo_dir", "") or (
+            str(self.project_root) if self.project_root else "")
+        out: list[Widget] = []
+        out.append(Static(Text("Repo directory", style=c["dim"]), classes="panel-sub"))
+        out.append(ClipInput(value=saved, id="repo-dir-input",
+                             placeholder="paste a folder path, e.g. C:\\webagent…"))
+        out.append(Horizontal(self._panel_btn("[Save]", "repo_dir_save"),
+                              self._panel_btn("[Clear]", "repo_dir_clear"),
+                              classes="panel-row"))
+        note = f"✓ saved: {saved}" if saved else "no directory saved yet"
+        ncol = c["secondary"] if saved else c["dim"]
+        out.append(Static(Text(note, style=ncol), id="repo-dir-status",
+                          classes="panel-sub", markup=False))
         return out
 
     # ── Git view (source control: token + fetch / pull / push) ────────────────
@@ -2239,6 +2286,7 @@ class ServerManagerApp(App):
     # Buttons whose action should NOT close the panel (they edit it in place).
     _KEEP_OPEN = {"panel_expand",
                   "panel_connect", "panel_config", "panel_model",
+                  "repo_dir_save", "repo_dir_clear",
                   "git_token_save", "git_token_clear",
                   "toggle_webagent", "toggle_manager", "connect_refresh",
                   "cfg_save_settings", "cfg_save_auth", "cfg_refresh",
@@ -2343,6 +2391,42 @@ class ServerManagerApp(App):
                       f"[{self.cc['dim']}]— used to authenticate fetch/pull/push[/]")
         else:
             self._log(f"[{self.cc['tool']}]{G.WARN} no token entered — paste one and Save again.[/]")
+        self._rebuild_panel()
+
+    def action_repo_dir_save(self) -> None:
+        """Persist the repo/project directory the user pasted (an entry in the
+        manager's own SQLite store), then hand the agent that directory to act on —
+        link an existing checkout there, or install one if the folder is empty."""
+        try:
+            path = self.query_one("#side-panel", Vertical).query_one(
+                "#repo-dir-input", Input).value.strip()
+        except Exception:
+            return
+        if not path:
+            self._log(f"[{self.cc['tool']}]{G.WARN} no directory entered — "
+                      "paste a folder path and Save again.[/]")
+            return
+        self.store.set_setting("repo_dir", path)
+        self._log(f"[{self.cc['secondary']}]{G.OK} repo directory saved[/] "
+                  f"[{self.cc['dim']}]— {path}[/]")
+        if not self.provider.configured:
+            self._log(f"[{self.cc['tool']}]{G.WARN} No AI key configured.[/] "
+                      "Set a provider + key in Admin ▸ Model Settings, then the agent "
+                      "can link or install there.")
+            self._rebuild_panel()
+            return
+        self._log_user(f"Repo directory: {path}")
+        self._run_turn(
+            f"The repo directory \"{path}\" has been saved. Use it now: if that folder "
+            "already contains a webAgent checkout (run.py + an app/ folder), link to it. "
+            "If the folder is empty or has no checkout, install webAgent into it (the "
+            "fresh-install flow) and then link it. Tell me what you found and did."
+        )
+        self._rebuild_panel()
+
+    def action_repo_dir_clear(self) -> None:
+        self.store.set_setting("repo_dir", "")
+        self._log(f"[{self.cc['dim']}]{G.BULLET} repo directory cleared.[/]")
         self._rebuild_panel()
 
     def action_git_token_clear(self) -> None:

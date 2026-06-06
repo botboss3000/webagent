@@ -387,6 +387,15 @@ class ToolLoader:
         for this agent AND admin-configured. It gates the OAuth helper tools
         (check_oauth_connection) so the LLM never sees provider names it has
         no permission to use.
+
+        ⚠ DROP-IN POLICY — do NOT add a new `if "<ability>" in enabled_providers:`
+        block here to wire a new ability's tools. The per-ability blocks below
+        (terminal_control, app_control, wiki_control, …) are LEGACY core-wired
+        abilities. A NEW tool-bearing ability ships its own handlers in its plugin
+        file via a `build_tools()` hook and is injected automatically by the ONE
+        generic block further down (search "Self-contained ability tools"). Drop a
+        file in plugins/abilities/ — wire nothing here. See CLAUDE.md "Core vs.
+        plugins" and plugins/abilities/_TEMPLATE.py ("TWO FLAVOURS OF ABILITY").
         """
         if enabled_providers is None:
             enabled_providers = set()
@@ -834,6 +843,46 @@ class ToolLoader:
                     )
             except Exception as _we:
                 logger.warning("Wiki-control tools unavailable: %s", _we)
+
+        # ── Self-contained ability tools (generic drop-in discovery) ──────────
+        # The blocks above wire specific abilities whose handlers live in core.
+        # This ONE generic block covers the newer contract: an ability that ships
+        # its OWN handlers in its plugin file (plugins/abilities/<id>.py) via a
+        # module-level build_tools() hook — exactly like an integration carries
+        # its TOOLS. For every ENABLED such ability we call its build_tools and
+        # inject what it returns. Adding a tool-bearing ability therefore needs NO
+        # edit here: drop the plugin file in and it is discovered. The ability
+        # owns its own gating (it may return {} to inject nothing this call).
+        try:
+            from app import abilities as _abilities_mgr
+            for _ab_id in list(enabled_providers or ()):
+                _ab_mod = _abilities_mgr.ability_module(_ab_id)
+                _build = getattr(_ab_mod, "build_tools", None) if _ab_mod else None
+                if not callable(_build):
+                    continue
+                try:
+                    _built = _build(
+                        user_id=user_id, session_id=session_id,
+                        agent_id=agent_id or "", agent_template_id=agent_template_id,
+                    ) or {}
+                except Exception as _abe:
+                    logger.warning("Ability %s build_tools failed: %s", _ab_id, _abe)
+                    continue
+                _ab_schemas = getattr(_ab_mod, "TOOL_SCHEMAS", {}) or {}
+                _ab_destr = set(getattr(_ab_mod, "DESTRUCTIVE", ()) or ())
+                for _abname, _abhandler in _built.items():
+                    _abd = _abname in _ab_destr
+                    tools[_abname] = ToolInfo(
+                        name=_abname,
+                        handler=_abhandler,
+                        parameters=_ab_schemas.get(
+                            _abname, {"type": "object", "properties": {}, "required": []}
+                        ),
+                        destructive=_abd,
+                        requires_confirmation=_abd,
+                    )
+        except Exception as _abme:
+            logger.warning("Drop-in ability tools unavailable: %s", _abme)
 
         # ═══════════════════════════════════════════════════════════════
         # Bootstrap core tools — always available from turn 1

@@ -86,10 +86,11 @@ errors, docs, solutions, and current information.
 ## External database
 
 The server manager keeps its **own** SQLite store (conversation history, a full
-audit trail of every mutating action, and the **Playbook** knowledge base —
-`playbook_issues` / `playbook_remedies` / `playbook_incidents`) — **separate from
-the web app's `app/db/local.db`**, so resetting the web app never wipes the
-manager's memory of what fixes what.
+audit trail of every mutating action, a small **`settings`** key/value table — e.g.
+the linked **repo directory** the user/agent designated — and the **Playbook**
+knowledge base — `playbook_issues` / `playbook_remedies` / `playbook_incidents`) —
+**separate from the web app's `app/db/local.db`**, so resetting the web app never
+wipes the manager's memory of what fixes what.
 
 When you **run from source**, it lives **right here in the project folder** (this
 `TUI` directory), so the whole install is self-contained — `webagent.db`,
@@ -334,7 +335,7 @@ pytest-asyncio dependency), run with the venv Python:
 | Style | What it drives | Files |
 |-------|----------------|-------|
 | **Logic / agent loop** | `ServerManagerAgent` directly with a `FakeLLM` — no UI, no network. Verifies the event-driven loop, subagents, and delegate tools. | `test_event_loop.py`, `test_subagents.py`, `test_delegate.py`, `test_playbook.py` |
-| **UI / Pilot** | The whole `ServerManagerApp` **headlessly** via Textual's `App.run_test()` → a `Pilot`. Boots into an off-screen buffer (no terminal opens), then types, presses keys, clicks widgets, inspects the tree, and takes **text** screenshots to verify appearance. | [`pilot_harness.py`](tests/pilot_harness.py) (reusable boot/snapshot/LLM helpers), [`test_tui_pilot.py`](tests/test_tui_pilot.py) (pure-UI smoke test) |
+| **UI / Pilot** | The whole `ServerManagerApp` **headlessly** via Textual's `App.run_test()` → a `Pilot`. Boots into an off-screen buffer (no terminal opens), then types, presses keys, clicks widgets, inspects the tree, and takes **text** screenshots to verify appearance. | [`pilot_harness.py`](tests/pilot_harness.py) (reusable boot/snapshot/LLM helpers), [`test_tui_pilot.py`](tests/test_tui_pilot.py) (pure-UI smoke test), [`test_tui_pilot_repo_dir.py`](tests/test_tui_pilot_repo_dir.py) (Admin ▸ Repo directory field save/clear → DB) |
 | **UI / Pilot + LLM** | A full chat turn driven **through the UI** with a scripted `FakeLLM` — prompt submit → agent loop → assistant bubble → token HUD → Stop pill — offline and deterministic. Use `use_fake_llm` + `drive_turn` from the harness. | [`test_tui_pilot_llm.py`](tests/test_tui_pilot_llm.py) |
 
 Run a Pilot test:
@@ -552,7 +553,7 @@ agent re-reads each session's history by id, so its context follows the active t
 | Header item | Action |
 |-------------|--------|
 | **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Same gate as the App panel's Read/Write/Auto. |
-| **Admin** | opens `[Connect]` · `[App Config]` · `[Model Settings]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` · `[Keep-alive: ON/OFF]` |
+| **Admin** | a **Repo directory** field (paste a folder path → `[Save]` / `[Clear]`) at the top, then opens `[Connect]` · `[App Config]` · `[Model Settings]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` · `[Keep-alive: ON/OFF]` |
 | **Git** (managed mode only) | source control: a **GitHub token** field with `[Save]` / `[Clear]` (used to authenticate network ops; stored in the TUI's own config, never written into the repo's `.git/config`), then `[Fetch]` · `[Pull]` · `[Push]`. Each button hands the agent a plain-language request so it runs the matching `git_tool` op under the usual op-safety rules (force-push blocked); Pull/Push arm writes first since the click is the consent. |
 | **Playbook** (managed mode only) | the self-healing **issue knowledge base**: a **remediation-mode** selector (`[Document]` / `[Safe-auto]` / `[Autonomous]`), then the list of learned issues (occurrences, status, best remedy + confidence). Click an issue to drill in: its remedies with helped/didn't stats, recent incidents, and `[Approve]` / `[Disable]` / `[Forget]` controls. See [The Playbook](#the-playbook-self-healing-issue-knowledge-base). |
 | **App** | the **AI provider** block — **Provider** as a grid of **pill buttons** (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom); clicking one highlights it and fills the **Base URL** + **Model** to match (Custom leaves them as typed). Then a plain-text **AI key** field, `[Save]` / `[Clear]`; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`). **Keys are shown in clear text** (not masked) so you can verify what you pasted. |
@@ -566,6 +567,7 @@ the header.
 
 | Button | Action |
 |--------|--------|
+| **Repo directory** (field, top of the panel) | Paste the folder a webAgent checkout lives in (or should live in), e.g. `C:\webagent`, and `[Save]`. The path is stored as an entry in the manager's own SQLite store (`settings` table, key `repo_dir`) and the agent is handed a message — *"the repo directory X has been saved"* — telling it to **link** an existing checkout there, or **install** one if the folder is empty. The field is pasteable and pre-fills from the saved entry; it's also written whenever the agent links a checkout itself, so it always reflects the directory in play. `[Clear]` forgets it. (If no AI key is set yet the path is still saved, with a nudge to set a provider first.) |
 | `[Connect]` | Open the **Connect** view — browse the admin's agents, pick one, then pick (or start) a session to set the **target**, and flip the two mute toggles (see [Driving the running app](#driving-the-running-app-the-two-mutes)) |
 | `[App Config]` | Open the **App Config** view — edit `app-settings.json` (access mode, presentation mode, **render recorder** on/off — the browser flight-recorder that captures HTML snapshots / lag / JS errors), saved over the admin API; plus **Session naming** (TUI-local) — how the Sessions list names each conversation: **Summary (AI)** (LLM summary of the last ~10 messages, falling back to the latest user message), **Latest message**, or **Off** |
 | `[Model Settings]` | Open the **Model Settings** view — the app's **LLM provider + auth key** (provider quick-pick pills that fill base URL + model, then provider / base URL / model / API key), saved over the admin API. (Moved here out of App Config.) |

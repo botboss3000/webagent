@@ -2600,6 +2600,18 @@ body.light-mode .session-status-unread { color: #73a64a; }
 .session-row-sep { color: var(--fg-3); }
 /* Agent emoji icon prefix in session rows */
 .session-row-agent-icon { font-size: 14px; line-height: 1; flex-shrink: 0; }
+/* Spawn badge: orchestration helper sessions (id prefix `spawn-`). Uses the
+   accent colour so it reads as a tag in both dark and light themes. */
+.session-row-spawn-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--accent, #7dcfff);
+    margin-right: 3px;
+    vertical-align: middle;
+    opacity: 0.85;
+}
 .session-row-time {
     flex-shrink: 0;
     font-size: 11px;

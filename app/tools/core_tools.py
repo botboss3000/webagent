@@ -5,6 +5,14 @@ These are the agent's essential utilities. Tools the agent has but that aren't
 sent in full every turn are surfaced by name in the generated # [TOOLS] index
 and pulled into context on demand via the `load_tool` core tool (see
 app/tools/loader.py and app/tools/tool_modes.py).
+
+⚠ DROP-IN POLICY — this file is ONLY for the always-on core bootstrap tools.
+Do NOT add a new agent capability's tool handler here. New capabilities are
+DROP-IN PLUGINS, never core edits:
+  • an ability      → plugins/abilities/<id>.py  (ship handlers via build_tools())
+  • an integration  → app/integrations/<id>_tools.py  (ship handlers via TOOLS)
+Both are auto-discovered; you wire nothing. See CLAUDE.md "Core vs. plugins"
+and plugins/abilities/_TEMPLATE.py.
 """
 
 import json
