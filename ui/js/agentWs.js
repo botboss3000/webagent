@@ -357,6 +357,17 @@ export function connectAgent() {
         break;
       }
 
+      case 'session_title': {
+        // Auto-generated session name (app/agent/session_titler.py). status
+        // 'generating' lights the header spinner; 'done' swaps in the new name.
+        // Not gated on the active session — the cache is updated for any session
+        // so the sidebar reflects the new name on its next render too.
+        if (typeof app.applySessionTitle === 'function') {
+          try { app.applySessionTitle(event); } catch (_) { /* ignore */ }
+        }
+        break;
+      }
+
       // All other event types (stream, tool_call, tool_result, pipeline,
       // db, attachment) are handled by:
       //   - SSE reader in chat.js (chat bubble updates for user turns)

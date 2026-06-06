@@ -192,12 +192,14 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
    PILL-PANEL-ALIGN: this area is a flex COLUMN holding the pill on top and the
    .chat-footer-row (token/mode row) below it, so the PILL's bottom edge floats
    this far above the panel floor: 8px (this `bottom`) + 6px (this `gap`) + the
-   rendered .chat-footer-row height (~18px). The agents-page builder bar
-   reproduces that exact offset as a bottom margin so the two side-by-side pills
-   line up (it has no footer row of its own). So if you change THIS `bottom`,
-   THIS `gap`, or the .chat-footer-row height, you MUST update the matching
-   `--chat-*` terms on `#agent-builder-bar > .chat-pill` in agents.css — they
-   are a commonized pair. (Pill skin/geometry is separately commonized; see the
+   rendered .chat-footer-row height (~18px). The agents-page builder bar has its
+   OWN footer row (#agent-builder-footer — a FIXED 18px slot, not content-sized)
+   below its pill, and reproduces a matching reserve so the two side-by-side
+   pills line up despite #main-panel's floor sitting ~6px higher than this one's
+   (verified: pill-bottom delta = 0). So if you change THIS `bottom`, THIS `gap`,
+   or the .chat-footer-row height, you MUST update the matching `--chat-*` terms
+   and the fixed footer height on `#agent-builder-bar > .chat-pill` /
+   #agent-builder-footer in agents.css — they are a commonized pair. (Pill skin/geometry is separately commonized; see the
    CHAT-PILL-SYNC block lower in this file.) */
   #chat-input-area {
     display: flex;
@@ -2459,6 +2461,11 @@ body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label 
 }
 .session-dropdown[data-loaded="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-chevron-spinner { display: none; }
 .session-dropdown[data-loaded="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-chevron-arrow { display: inline-flex; }
+/* While the session is being auto-named (app/agent/session_titler.py), re-show
+   the flower spinner over the chevron — same indicator as initial load. Matches
+   the data-loaded specificity (0,5,0) and comes later, so it wins. */
+.session-dropdown[data-titling="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-chevron-spinner { display: inline-flex; }
+.session-dropdown[data-titling="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-chevron-arrow { display: none; }
 
   .session-dropdown,
 .agent-dropdown {

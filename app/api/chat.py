@@ -836,6 +836,23 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         except Exception as _eb:
             logger.debug("end_turn failed (buffered) for session %s: %s", request.session_id, _eb)
 
+        # ── Background: auto-name the session from its first few user turns ──
+        # Fire-and-forget like the memory save above. The titler summarizes the
+        # opening user messages into a short name, refining over the first 3
+        # turns then locking it, and pushes a live "session_title" event so the
+        # chat-panel header swaps in the name (with a spinner while it thinks).
+        # Skip the special optimizer/closer/slash sessions, which are named by
+        # their own flows.
+        if not request.session_id.startswith(("optimizer-", "closer-", "slash-")):
+            try:
+                from app.agent.session_titler import maybe_title_session
+                asyncio.create_task(maybe_title_session(
+                    db, request.user_id, request.session_id,
+                    lambda ev: _emit_to_user_listeners(request.user_id, ev),
+                ))
+            except Exception as _tt:
+                logger.debug("session titler dispatch failed: %s", _tt)
+
         return ChatResponse(
             reply=assistant_reply,
             response=assistant_reply,

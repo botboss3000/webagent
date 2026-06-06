@@ -1474,11 +1474,41 @@ export function _cacheAppendMessage(sessionId, msg) {
 }
 
 /** Call before first connectAgent() so agent onopen can refresh users. */
+/**
+ * Live-apply an auto-generated session name pushed from the backend titler
+ * (app/agent/session_titler.py) over the per-user WebSocket. Two phases:
+ *   status 'generating' → show the header flower-spinner while the LLM thinks
+ *   status 'done'       → store the new title + refresh the header label
+ * The cache is updated for ANY session so the sidebar shows the new name on its
+ * next render; the header spinner/label only changes for the active session.
+ */
+function applySessionTitle(event) {
+  const sid = event && (event.session_id || event.sessionId);
+  if (!sid) return;
+  const status = event.status || 'done';
+  const dropdown = document.getElementById('session-dropdown');
+  const isCurrent = sid === app.currentSessionId;
+
+  if (status === 'generating') {
+    if (isCurrent && dropdown) dropdown.dataset.titling = 'true';
+    return;
+  }
+
+  // status === 'done'
+  if (event.title) {
+    const found = _sessionsCache.find(s => s.id === sid);
+    if (found) found.title = event.title;
+  }
+  if (isCurrent && dropdown) delete dropdown.dataset.titling;
+  if (isCurrent) _setTriggerLabel();
+}
+
 export function registerSessionApi() {
   app.populateUserSelect = populateUserSelect;
   app.populateSessionSelect = populateSessionSelect;
   app.populateAgentSelect = populateAgentSelect;
   app.loadSessionChat = loadSessionChat;
+  app.applySessionTitle = applySessionTitle;
   // Dead-WS fallback: re-render the current session straight from the DB.
   app.reloadCurrentSession = () => {
     if (app.currentSessionId) loadSessionChat(app.currentSessionId);

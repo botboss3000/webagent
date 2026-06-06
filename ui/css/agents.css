@@ -173,14 +173,33 @@
    A slim flex row below the builder pill holding the system-agents eye
    toggle on the left. Mirrors #chat-footer-row in layout and spacing so
    the two panels stay visually aligned. The eye button is styled like
-   .chat-mode-btn (same size, font, border-radius) for consistency. */
+   .chat-mode-btn (same size, font, border-radius) for consistency.
+
+   FIXED-HEIGHT SLOT — DO NOT let this row's CONTENT set its height.
+   The builder pill floats above the panel floor by exactly this row's
+   reserved stack (margin-top + height + margin-bottom). That reserve is
+   what lines the pill's bottom up with the chat panel's pill (see the
+   PILL-PANEL-ALIGN note on `#agent-builder-bar > .chat-pill` below). So
+   the height here is a FIXED `height`, never `min-height`: whatever control
+   you put inside is vertically centred and may visually overflow this slot
+   (overflow stays visible), but it must NOT grow the row. The eye button
+   renders ~25px tall — taller than this 18px slot — and is meant to; it
+   simply centres and overflows. If you ever switch this back to min-height,
+   or add a taller element that the row is allowed to grow around, the slot
+   gets taller, the reserve grows, and the pill gets pushed UP out of
+   alignment with the chat pill (the exact bug this guard prevents).
+   ADDING / SWAPPING controls here is fine — keep them inside this fixed
+   slot and let them overflow; do not change `height` to fit them. */
 #agent-builder-footer {
   display: flex;
   align-items: center;
   justify-content: flex-start;
   padding: 0 12px;
-  min-height: 18px;
+  /* FIXED — not min-height — so footer content can never bump the pill.
+     18px is the budgeted chat-footer-row height (see PILL-PANEL-ALIGN). */
+  height: 18px;
   margin: 6px 0 8px 0;
+  overflow: visible;
 }
 .agent-builder-eye-btn {
   display: inline-flex;
@@ -784,26 +803,36 @@ body.light-mode .agent-card-delete-btn.warning { color: #c8870f; }
 #agent-builder-bar > .chat-pill {
   pointer-events: auto;
   /* PILL-PANEL-ALIGN — keep this pill's BOTTOM edge level with the chat pill's
-     so the two side-by-side pills read as one row. This is NOT a free-standing
-     magic number: it is COMPUTED from the chat pill's bottom spacing. The chat
-     pill (see #chat-input-area in app1.css) floats this far above ITS panel
-     floor:
-        --chat-area-bottom-inset  = #chat-input-area `bottom`        (8px)
-      + --chat-pill-footer-gap    = #chat-input-area `gap`           (6px)
-      + --chat-footer-row-h       = rendered .chat-footer-row height (18px)
-     This bar has NO footer/token row and sits at `bottom:0` on its own panel
-     floor, so it reproduces that same offset as a bottom margin. The two panels
-     currently bottom out on the same line; if that ever changes — a page/panel
-     BORDER is added, or #main-panel's / #chat-panel's margin changes so the
-     floors diverge — add that delta as a 4th term here.
-     IF YOU CHANGE ANY TERM (chat area inset, the gap, the footer row height, or
-     a panel border/margin) UPDATE THIS, and see the reciprocal note at
-     #chat-input-area in app1.css. Keep the named vars below in sync with app1. */
+     so the two side-by-side pills read as one row. The pill itself carries NO
+     bottom offset; the footer row below it (#agent-builder-footer) reserves the
+     space that floats the pill up, and that reserve is what does the aligning.
+     How the alignment is held — and how it can break if you're not careful:
+       • The chat pill (see #chat-input-area in app1.css) floats above ITS panel
+         floor by:  --chat-area-bottom-inset (8px) + --chat-pill-footer-gap (6px)
+         + the rendered .chat-footer-row height.
+       • This bar sits at `bottom:0` and reproduces a matching reserve below its
+         own pill: footer margin-top (6px) + footer HEIGHT + footer margin-bottom
+         (8px). The footer HEIGHT is a FIXED 18px slot (see #agent-builder-footer
+         above), NOT driven by whatever control sits in it.
+       • The two panel FLOORS are NOT on the same line: #main-panel (this page)
+         has a bottom margin + ~1px border that lifts its floor ~6px ABOVE the
+         chat panel's floor. The fixed 18px footer slot is sized so this bar's
+         smaller reserve, measured from its higher floor, lands the pill bottom
+         on the SAME line as the chat pill. Verified: pill-bottom delta = 0px.
+     WHY THE FIXED SLOT MATTERS — the alignment only holds while the footer's
+     reserved height stays put. If you add or swap controls around the pill and
+     let them set the footer's height (e.g. switch it back to min-height, or drop
+     in a taller element the row grows around), the reserve grows and THIS PILL
+     GETS PUSHED UP out of line with the chat pill. Keep new controls inside the
+     fixed 18px slot (they centre and may overflow) — do not let them resize it.
+     IF YOU CHANGE ANY TERM (chat area inset, the gap, the chat footer height,
+     this footer's fixed height, or #main-panel's / #chat-panel's margin/border
+     so the floors diverge differently) re-verify the pill-bottom delta is 0 and
+     UPDATE THIS; see the reciprocal note at #chat-input-area in app1.css. Keep
+     the named vars below in sync with app1. */
   --chat-area-bottom-inset: 8px;
   --chat-pill-footer-gap: 6px;
   --chat-footer-row-h: 18px;
-  /* The pill itself no longer needs a bottom offset — the footer row
-     (#agent-builder-footer) below it carries the gap and bottom inset. */
   margin: 0 12px 0;
   width: calc(100% - 24px);
 }

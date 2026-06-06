@@ -463,6 +463,19 @@ async def patch_session(
         if req.title is not None:
             sets.append("title = ?")
             params.append(req.title)
+            # A manual rename wins over the auto-namer: lock it so the background
+            # session titler (app/agent/session_titler.py) stops overwriting it.
+            try:
+                cur.execute("SELECT metadata FROM sessions WHERE id = ?", (session_id,))
+                _mrow = cur.fetchone()
+                _meta = json.loads(_mrow[0]) if (_mrow and _mrow[0]) else {}
+                if not isinstance(_meta, dict):
+                    _meta = {}
+            except Exception:
+                _meta = {}
+            _meta["auto_title_locked"] = True
+            sets.append("metadata = ?")
+            params.append(json.dumps(_meta))
         if req.pinned is not None:
             # Confirm column exists before writing
             cur.execute("PRAGMA table_info(sessions)")

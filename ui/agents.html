@@ -12,7 +12,14 @@
 <!-- Agent Manager chat bar — page-level assistant for creating and modifying agents -->
 <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #chat-input-row,
      #ac-int-admin-chat-input-row, #autoagent-prompt-row. Style rules live
-     in ui/css/app1.css under the "Chat-pill" block. -->
+     in ui/css/app1.css under the "Chat-pill" block.
+     ALIGNMENT WARNING — this pill's bottom is lined up with the chat panel's
+     pill on purpose. That alignment depends on the footer row below the pill
+     (#agent-builder-footer) staying a FIXED-height slot. If you add or change
+     elements AROUND the pill here (extra buttons/rows above or below it), keep
+     them inside that fixed slot — anything that makes the space below the pill
+     TALLER will push this pill UP and break the alignment. See the
+     PILL-PANEL-ALIGN notes in ui/css/agents.css before changing this markup. -->
 <div id="agent-builder-bar">
   <div id="agent-builder-bar-row" class="chat-pill">
     <button type="button" id="agent-builder-bar-attach" class="chat-pill-attach" title="Attach files">
