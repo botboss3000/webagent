@@ -713,6 +713,11 @@ body.light-mode .th-funnel {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  /* Own the page background with the design-system elevated-panel surface
+     (blue in dark, warm off-white in light) so the body doesn't leak the
+     flat grey --files-bg from the host admin-tools pane behind it. Uses
+     --bg-elev to match the Agents page's panel tone, not the darker base. */
+  background: var(--bg-elev);
 }
 #app-config-container[hidden] { display: none; }
 
