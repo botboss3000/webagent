@@ -41,12 +41,14 @@
 | `server.py` | `server_status`, `server_start`, `server_stop`, `server_restart`, `server_logs` |
 | `appctl.py` | `app_login`, `app_list_agents`, `app_chat` |
 | `webapp.py` | `webapp_send`, `webapp_status`, `app_list_sessions`, `app_get_settings`, `app_set_settings`, `app_get_auth_keys`, `app_set_auth_keys` |
-| `diagnostics.py` | `read_diagnostics` |
+| `diagnostics.py` | `read_diagnostics` (server flight-recorder → `logs.db`) |
+| `recordings.py` | `read_recordings` (browser render flight-recorder → `recordings.db`) |
 | `monitor.py` | `monitor_status`, `server_resources`, `list_alarms`, `add_alarm`, `remove_alarm`, `set_monitor_config`, `notify_test` |
 | `selfupdate.py` | `self_status`, `self_update`, `self_restart` |
 | `update.py` | `check_updates` |
 | `reset.py` | `reset_app` |
 | `web_search.py` | `web_search` |
+| `browser.py` | `browser_navigate`, `browser_snapshot`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_evaluate`, `browser_close` |
 | `manage.py` | `link_project`, `setup_launch_shortcut` |
 | `registry.py` | `ToolRegistry` — assembles all specs, overlays tools.json, dispatches calls |
 | `base.py` | `ToolContext`, `ToolSpec`, `WRITES_DISABLED_MSG` |

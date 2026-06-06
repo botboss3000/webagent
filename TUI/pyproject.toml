@@ -8,6 +8,7 @@ dependencies = [
     "textual>=0.83.0",
     "httpx>=0.27.0",
     "websockets>=12.0",
+    "playwright>=1.48.0",
     # Windows PTY for the terminal_* tools (interactive program control).
     # Unix uses the stdlib `pty`, so the dep is Windows-only.
     "pywinpty>=2.0; sys_platform == 'win32'",

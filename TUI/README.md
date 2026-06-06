@@ -33,6 +33,11 @@ Ability sets:
 
 - **Web Search** — `web_search` (any mode, no API key) — search DuckDuckGo for
 errors, docs, solutions, and current information.
+- **Browser (Playwright)** — `browser_navigate`, `browser_snapshot`, `browser_screenshot`,
+  `browser_click`, `browser_type`, `browser_evaluate`, `browser_close` — a shared headless
+  Chromium browser you can navigate, inspect, interact with, and screenshot. Use to test
+  `localhost:8080`, verify UI changes, scrape data, or fill forms. Launch-on-first-use,
+  lives until `browser_close`.
 - **Onboarding / Install** — `check_install_readiness`, `clone_repo`,
   `setup_environment`, `seed_config`, `verify_install` (clone
   `github.com/botboss3000/webagent` → build the venv + deps + browser → seed
@@ -63,9 +68,15 @@ errors, docs, solutions, and current information.
   `app_set_settings`) and the app's **LLM auth key / provider** stored in the DB
   (`app_get_auth_keys` / `app_set_auth_keys`), via the App Config panel or the agent.
 - **Updates** — `check_updates` (compare the checkout to the public repo).
-- **Diagnose** — `read_diagnostics` reads the app's flight-recorder (warnings /
-  errors with tracebacks, agent-loop problems, tool errors) straight from the
-  checkout's local DB, so it works even when the server is **down**.
+- **Diagnose** — `read_diagnostics` reads the app's **server-side** flight-recorder
+  (warnings / errors with tracebacks, agent-loop problems, tool errors) straight
+  from the checkout's `logs.db`, so it works even when the server is **down**.
+  `read_recordings` reads the app's **browser-side** flight-recorder (the render
+  recorder: HTML snapshots, DOM-mutation deltas, lag / long-task metrics, JS
+  errors, console warnings, failed/slow network calls) straight from
+  `recordings.db` — the agent can both **turn the recorder on/off**
+  (`app_set_settings({"render_recording_enabled": true})`) and **collect the
+  captured logs itself**, so it can verify a UI/render change end-to-end.
 - **Monitoring / alarms** — `monitor_status`, `server_resources`, `list_alarms`,
   `add_alarm`, `remove_alarm`, `set_monitor_config`, `notify_test`. Configure the
   autonomous **watchdog** by talking to the agent (see
@@ -627,6 +638,13 @@ config.
 > Provider dropdown keeps the URL and the key aligned. The client is **OpenAI-compatible**
 > (`/chat/completions`, `Authorization: Bearer`), so use a provider that exposes that —
 > Anthropic's native API is **not** OpenAI-compatible; reach Claude via OpenRouter instead.
+
+> **Transient provider hiccups are retried.** OpenAI-compatible providers (OpenRouter
+> especially) sometimes return a rate-limit / upstream-failure body — including an
+> **HTTP 200 that carries an error or no `choices`** instead of a completion. The client
+> retries these a few times with exponential backoff, so a single blip no longer fails the
+> turn. Only a persistent failure surfaces, and now with a readable cause (the provider's
+> message + raw body) rather than the old cryptic `bad response shape: 'choices'`.
 
 The server **auto-starts** when you open the manager in managed mode (if it isn't
 already running), so there's no separate Launch control. The server status item is

@@ -16,6 +16,7 @@ from __future__ import annotations
 from ..resources import load_tool_overrides
 from . import (
     appctl,
+    browser,
     delegate,
     diagnostics,
     fs,
@@ -24,6 +25,7 @@ from . import (
     manage,
     monitor,
     playbook,
+    recordings,
     reset,
     selfupdate,
     webapp,
@@ -269,6 +271,27 @@ def _base_specs() -> list[ToolSpec]:
                            "level": {**_STR, "default": ""},
                            "category": {**_STR, "default": ""}},
         }, diagnostics.read_diagnostics),
+        ToolSpec("read_recordings", (
+            "Read the webAgent app's RENDER RECORDER — the browser flight-recorder "
+            "of HTML snapshots, DOM-mutation deltas, lag/long-task metrics, JS "
+            "errors, console warnings, and failed/slow network calls — straight "
+            "from the checkout's recordings DB (data/db/recordings.db), so it works "
+            "even when the server is DOWN. The recorder is OFF by default: enable it "
+            "with app_set_settings({\"render_recording_enabled\": true}), reproduce "
+            "the UI behaviour in the browser, then read it back here. Filter by kind "
+            "(snapshot/mutation/lag/js_error/console/network/nav/meta), level, "
+            "session_id, since_minutes, or search; pass rec_id or include_html=true "
+            "to also return the captured HTML. Read-only."), {
+            "type": "object",
+            "properties": {"limit": {**_INT, "default": 20},
+                           "kind": {**_STR, "default": ""},
+                           "level": {**_STR, "default": ""},
+                           "session_id": {**_STR, "default": ""},
+                           "since_minutes": {**_INT, "default": 0},
+                           "search": {**_STR, "default": ""},
+                           "rec_id": {**_STR, "default": ""},
+                           "include_html": {"type": "boolean", "default": False}},
+        }, recordings.read_recordings),
         # ── Monitoring / alarms (the watchdog) ─────────────────────────────
         # These edit the manager's OWN config (data dir JSON) or just report /
         # notify — they never touch the repo or run commands, so they are not
@@ -361,6 +384,70 @@ def _base_specs() -> list[ToolSpec]:
                   "properties": {"key": {**_STR, "default": ""},
                                  "remedy_id": {**_STR, "default": ""}}},
                  playbook.playbook_forget, needs_project=False),
+        # ── Web search (any mode) ──────────────────────────────────────────
+        # ── Browser / Playwright ────────────────────────────────────────
+        ToolSpec("browser_navigate", (
+            "Navigate the shared headless browser to a URL and return a plain-text "
+            "snapshot of the page (title, visible text). Use this first, then "
+            "browser_snapshot for interactive elements, browser_screenshot for a "
+            "visual, browser_click / browser_type to interact. Read-only."), {
+            "type": "object",
+            "properties": {"url": _STR},
+            "required": ["url"],
+        }, browser.browser_navigate, needs_project=False),
+        ToolSpec("browser_snapshot", (
+            "Capture the accessibility snapshot of the CURRENT page — a numbered "
+            "list of interactive elements (buttons, links, inputs) with their "
+            "selectors, roles, labels, and text. Use this after navigate to "
+            "decide what to click or fill. Read-only."), {
+            "type": "object", "properties": {},
+        }, browser.browser_snapshot, needs_project=False),
+        ToolSpec("browser_screenshot", (
+            "Take a full-page PNG screenshot of the current page (or a single "
+            "element matching an optional CSS selector) and save it to a temp "
+            "file. Returns the absolute path. Read-only."), {
+            "type": "object",
+            "properties": {"selector": {**_STR, "default": ""}},
+        }, browser.browser_screenshot, needs_project=False),
+        ToolSpec("browser_click", (
+            "Click an element on the current page by CSS selector. Use "
+            "browser_snapshot first to find element selectors. If the selector "
+            "matches multiple elements, use index (0 = first). Waits for any "
+            "navigation triggered by the click. Mutating (changes page state)."), {
+            "type": "object",
+            "properties": {
+                "selector": _STR,
+                "index": {"type": "integer", "default": 0},
+            },
+            "required": ["selector"],
+        }, browser.browser_click, mutating=True, needs_project=False),
+        ToolSpec("browser_type", (
+            "Type text into an input/textarea/select element. Clears the field "
+            "first. If submit=True, presses Enter afterwards and waits for "
+            "navigation. Use browser_snapshot to find the right selector. "
+            "Mutating (changes page state)."), {
+            "type": "object",
+            "properties": {
+                "selector": _STR,
+                "text": _STR,
+                "submit": {"type": "boolean", "default": False},
+            },
+            "required": ["selector", "text"],
+        }, browser.browser_type, mutating=True, needs_project=False),
+        ToolSpec("browser_evaluate", (
+            "Run a JavaScript expression in the current page and return the "
+            "result (JSON-serialised). Use for extracting data, checking state, "
+            "or running custom DOM queries. Read-only."), {
+            "type": "object",
+            "properties": {"expression": _STR},
+            "required": ["expression"],
+        }, browser.browser_evaluate, needs_project=False),
+        ToolSpec("browser_close", (
+            "Close the shared browser and free its resources. Call this when "
+            "done browsing. The browser restarts automatically on the next "
+            "browser_* call. Mutating (frees memory)."), {
+            "type": "object", "properties": {},
+        }, browser.browser_close, mutating=True, needs_project=False),
         # ── Web search (any mode) ──────────────────────────────────────────
         ToolSpec("web_search", (
             "Search the web via DuckDuckGo. Returns titles, URLs, and snippets "

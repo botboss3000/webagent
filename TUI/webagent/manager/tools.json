@@ -124,7 +124,12 @@
     "read_diagnostics": {
       "category": "diagnostics",
       "enabled": true,
-      "description": "Read the webAgent app's diagnostics — its flight-recorder of warnings/errors (with tracebacks), agent-loop problems, run outcomes, tool errors, every HTTP request (access) and WebSocket lifecycle (ws) — straight from the checkout's dedicated logs database (app/db/logs.db; falls back to local.db on older builds), so it works even when the server is DOWN. Filter by level (error/warning) or category (server/http/access/ws/loop/run/recovery/tool). Use it to diagnose a broken server."
+      "description": "Read the webAgent app's diagnostics — its flight-recorder of warnings/errors (with tracebacks), agent-loop problems, run outcomes, tool errors, every HTTP request (access) and WebSocket lifecycle (ws) — straight from the checkout's dedicated logs database (app/db/logs.db; falls back to local.db on older builds), so it works even when the server is DOWN. Filter by level (error/warning) or category (server/http/access/ws/loop/run/recovery/tool). Use it to diagnose a broken server. For BROWSER/UI-side problems (wrong render, lag, a JS error, a failed fetch in the page) use read_recordings instead — that's the browser flight-recorder."
+    },
+    "read_recordings": {
+      "category": "diagnostics",
+      "enabled": true,
+      "description": "Collect the webAgent app's RENDER RECORDER yourself — the browser flight-recorder of HTML snapshots, DOM-mutation deltas, lag/long-task metrics, JS errors, console warnings, and failed/slow network calls — read STRAIGHT from the checkout's recordings DB (data/db/recordings.db), so it works even when the server is DOWN. This is the browser-side counterpart to read_diagnostics (which is server-side). The recorder is OFF by default; YOU can turn it on with app_set_settings({\"render_recording_enabled\": true}), reproduce the UI behaviour in the browser (or via the connected app session), read it back here, then turn it off. Filter by kind (snapshot/mutation/lag/js_error/console/network/nav/meta), level, session_id, since_minutes, or search; pass rec_id or include_html=true to also pull the captured HTML (large — keep limit small). Read-only. Use this whenever a UI/rendering change needs verifying or a browser-side bug needs evidence."
     },
     "monitor_status": {
       "category": "monitoring",
@@ -190,6 +195,41 @@
       "category": "web",
       "enabled": true,
       "description": "Search the web via DuckDuckGo. Returns titles, URLs, and snippets (no API key required). Use to research errors, find current docs, check dependency versions, or look up solutions. Read-only."
+    },
+    "browser_navigate": {
+      "category": "web",
+      "enabled": true,
+      "description": "Navigate the shared headless Chromium browser to a URL and return a plain-text snapshot of the page (title, visible text up to 6000 chars). ALWAYS start with this before inspecting or interacting with a page. Read-only."
+    },
+    "browser_snapshot": {
+      "category": "web",
+      "enabled": true,
+      "description": "Capture an accessibility snapshot of the CURRENT page: a numbered list of interactive elements (buttons, links, inputs, selects) with their CSS selectors, ARIA roles, labels, and visible text. Use this after browser_navigate to find what to click, type into, or read. Read-only."
+    },
+    "browser_screenshot": {
+      "category": "web",
+      "enabled": true,
+      "description": "Take a full-page PNG screenshot of the current page (or a single element matching an optional CSS selector) and save it to a temp file. Returns the absolute file path. Use when the user wants to SEE the page, verify a visual change, or debug layout. Read-only."
+    },
+    "browser_click": {
+      "category": "web",
+      "enabled": true,
+      "description": "Click an element on the current page by CSS selector. ALWAYS use browser_snapshot first to find the element's selector. If multiple elements match, use index (0=first). Waits for any navigation triggered by the click and reports the new URL + title. Mutating (changes page state)."
+    },
+    "browser_type": {
+      "category": "web",
+      "enabled": true,
+      "description": "Type text into an input/textarea element. Clears the field first, then types with a small human-like delay. If submit=True, presses Enter and waits for navigation. Use browser_snapshot first to find the right selector. Mutating (changes page state)."
+    },
+    "browser_evaluate": {
+      "category": "web",
+      "enabled": true,
+      "description": "Run an arbitrary JavaScript expression in the current page and return the result (JSON-serialised). Use for extracting data from the DOM, counting elements, checking state — anything the snapshot doesn't cover. Read-only."
+    },
+    "browser_close": {
+      "category": "web",
+      "enabled": true,
+      "description": "Close the shared browser and free its memory. Call this when you're done browsing. The browser will restart automatically on the next browser_* call. Mutating (frees resources)."
     },
     "read_source": {
       "category": "files",
