@@ -763,3 +763,225 @@ async def manage_agent_skills(
     except Exception as e:
         logger.error("manage_agent_skills failed: %s", e)
         return _err(str(e))
+
+
+# ── Tool schemas + danger labels ──────────────────────────────────────────────
+# The 10 agent-management tool schemas, verbatim from the old loader block, so
+# the self-contained ability (plugins/abilities/agent_management.py) can expose
+# them without the loader carrying any per-ability wiring. None of these tools is
+# inherently destructive (they are user-scoped, ownership-enforced agent CRUD),
+# so AGENT_MGMT_DESTRUCTIVE is empty — matching the old loader, which marked none
+# of them for confirmation.
+AGENT_MGMT_TOOL_SCHEMAS: Dict[str, dict] = {
+    "list_agent_templates": {
+        "type": "object",
+        "properties": {
+            "template_id": {"type": "string", "description": "Optional: a template id to also return its canonical prompt slots."},
+            "include_admin": {"type": "boolean", "description": "Include admin-only templates (platform admins only).", "default": False},
+        },
+        "required": [],
+    },
+    "list_my_agents": {"type": "object", "properties": {}, "required": []},
+    "get_agent": {
+        "type": "object",
+        "properties": {"agent_id": {"type": "string", "description": "The agent's id."}},
+        "required": ["agent_id"],
+    },
+    "list_agent_tools": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "The agent whose tools to list (must be visible to you)."},
+            "ability": {"type": "string", "description": "Optional: only tools provided by this ability."},
+            "query": {"type": "string", "description": "Optional: substring filter on tool name or description."},
+        },
+        "required": ["agent_id"],
+    },
+    "create_agent": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Display name for the new agent."},
+            "template_id": {"type": "string", "description": "Template to clone from (see list_agent_templates).", "default": "default"},
+            "description": {"type": "string", "description": "Short description of the agent."},
+        },
+        "required": ["name"],
+    },
+    "update_agent": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "The agent to update (must be yours)."},
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "model": {"type": "string", "description": "Model id (e.g. an OpenRouter model slug)."},
+            "temperature": {"type": "number"},
+            "max_tokens": {"type": "integer"},
+            "max_turn_count": {"type": "integer", "description": "Max turns per run; 0 = unlimited."},
+            "max_wall_seconds": {"type": "integer", "description": "Wall-clock cap per run in seconds."},
+            "max_identical_tool_calls": {"type": "integer", "description": "Loop-breaker for repeated identical calls; 0 = off."},
+            "max_stall_strikes": {"type": "integer", "description": "Stall-guard strikes before stopping; 0 = off."},
+            "trigger_type": {"type": "string", "enum": ["user_input", "slash_command", "tool_call", "schedule", "webhook", "background"], "description": "What starts the agent."},
+            "trigger_key": {"type": "string", "description": "Command/event key for the trigger type."},
+        },
+        "required": ["agent_id"],
+    },
+    "set_agent_tool": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "The agent to change (must be yours)."},
+            "tool": {"type": "string", "description": "The tool name (see list_agent_tools)."},
+            "availability": {"type": "string", "enum": ["sent", "discover"], "description": "'sent' = full schema every turn; 'discover' = loaded on demand."},
+            "permission": {"type": "string", "enum": ["auto", "ask", "deny"], "description": "'auto' = runs unattended; 'ask' = confirm first; 'deny' = blocked. Sets policy only — cannot relabel a tool's built-in danger."},
+        },
+        "required": ["agent_id", "tool"],
+    },
+    "edit_agent_prompt": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["list", "get", "insert", "update", "delete"], "description": "What to do with the prompt slots."},
+            "agent_id": {"type": "string", "description": "The agent whose prompts to read/edit."},
+            "slot_name": {"type": "string", "description": "Slot name (e.g. system, agent, user, skills, tasks, misc)."},
+            "content": {"type": "string", "description": "New slot content (for insert/update)."},
+            "lock": {"type": "boolean", "description": "Whether per-user overrides are blocked for this slot."},
+            "merge_mode": {"type": "string", "description": "'replace' or 'append'."},
+            "order_index": {"type": "integer", "description": "Sort order of the slot."},
+        },
+        "required": ["action", "agent_id"],
+    },
+    "set_agent_ability": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "description": "The agent to change (must be yours)."},
+            "ability": {"type": "string", "description": "Ability connection_type, e.g. codebase_admin, web_access, diagnostics, agent_orchestration, browser_control, create_tools, image_generation, visualizer, agent_management."},
+            "enabled": {"type": "boolean", "description": "Turn the ability on (true) or off (false).", "default": True},
+        },
+        "required": ["agent_id", "ability"],
+    },
+    "manage_agent_skills": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["list", "set", "remove"], "description": "list the agent's skills, set (add/update) one, or remove one."},
+            "agent_id": {"type": "string", "description": "The agent whose skills to read/edit (must be yours to write)."},
+            "name": {"type": "string", "description": "Skill name (required for set/remove)."},
+            "description": {"type": "string", "description": "When to use the skill — ALWAYS shown to the agent."},
+            "body": {"type": "string", "description": "The full step-by-step instructions for the skill."},
+            "mode": {"type": "string", "enum": ["always_on", "selectable"], "description": "'always_on' = body always in context; 'selectable' = body hidden until the agent calls load_skill. Defaults to 'selectable'."},
+            "enabled": {"type": "boolean", "description": "Whether the skill is active."},
+        },
+        "required": ["action", "agent_id"],
+    },
+}
+
+# None of the agent-management tools is inherently destructive.
+AGENT_MGMT_DESTRUCTIVE: set = set()
+
+
+def build_agent_mgmt_tools(user_id: str) -> Dict[str, Any]:
+    """Build the 10 agent-management tool handlers, each closing over ``user_id``.
+
+    Wrappers (and the docstring-copy below) are lifted verbatim from the old
+    ``if "agent_management" in enabled_providers:`` block in app/tools/loader.py.
+    The nested wrappers carry no docstring of their own, so each tool's real
+    usage doc is copied from the underlying in-process function — this feeds both
+    the tool-call description and the # [TOOLS] index.
+    """
+
+    async def _amt_list_templates_wrapper(template_id: Optional[str] = None,
+                                          include_admin: bool = False):
+        return await list_agent_templates(template_id=template_id,
+                                          include_admin=include_admin, user_id=user_id)
+
+    async def _amt_list_agents_wrapper():
+        return await list_my_agents(user_id=user_id)
+
+    async def _amt_get_agent_wrapper(agent_id: str):
+        return await get_agent(agent_id=agent_id, user_id=user_id)
+
+    async def _amt_list_tools_wrapper(agent_id: str, ability: Optional[str] = None,
+                                      query: Optional[str] = None):
+        return await list_agent_tools(agent_id=agent_id, ability=ability,
+                                      query=query, user_id=user_id)
+
+    async def _amt_create_agent_wrapper(name: str, template_id: str = "default",
+                                        description: str = ""):
+        return await create_agent(name=name, template_id=template_id,
+                                  description=description, user_id=user_id)
+
+    async def _amt_update_agent_wrapper(agent_id: str, name: Optional[str] = None,
+                                        description: Optional[str] = None,
+                                        model: Optional[str] = None,
+                                        temperature: Optional[float] = None,
+                                        max_tokens: Optional[int] = None,
+                                        max_turn_count: Optional[int] = None,
+                                        max_wall_seconds: Optional[int] = None,
+                                        max_identical_tool_calls: Optional[int] = None,
+                                        max_stall_strikes: Optional[int] = None,
+                                        trigger_type: Optional[str] = None,
+                                        trigger_key: Optional[str] = None):
+        return await update_agent(agent_id=agent_id, name=name,
+                                  description=description, model=model,
+                                  temperature=temperature, max_tokens=max_tokens,
+                                  max_turn_count=max_turn_count,
+                                  max_wall_seconds=max_wall_seconds,
+                                  max_identical_tool_calls=max_identical_tool_calls,
+                                  max_stall_strikes=max_stall_strikes,
+                                  trigger_type=trigger_type, trigger_key=trigger_key,
+                                  user_id=user_id)
+
+    async def _amt_set_tool_wrapper(agent_id: str, tool: str,
+                                    availability: Optional[str] = None,
+                                    permission: Optional[str] = None):
+        return await set_agent_tool(agent_id=agent_id, tool=tool,
+                                    availability=availability, permission=permission,
+                                    user_id=user_id)
+
+    async def _amt_edit_prompt_wrapper(action: str, agent_id: str,
+                                       slot_name: Optional[str] = None,
+                                       content: Optional[str] = None,
+                                       lock: Optional[bool] = None,
+                                       merge_mode: Optional[str] = None,
+                                       order_index: Optional[int] = None):
+        return await edit_agent_prompt(action=action, agent_id=agent_id,
+                                       slot_name=slot_name, content=content, lock=lock,
+                                       merge_mode=merge_mode, order_index=order_index,
+                                       user_id=user_id)
+
+    async def _amt_set_ability_wrapper(agent_id: str, ability: str, enabled: bool = True):
+        return await set_agent_ability(agent_id=agent_id, ability=ability,
+                                       enabled=enabled, user_id=user_id)
+
+    async def _amt_manage_skills_wrapper(action: str, agent_id: str,
+                                         name: Optional[str] = None,
+                                         description: Optional[str] = None,
+                                         body: Optional[str] = None,
+                                         mode: Optional[str] = None,
+                                         enabled: Optional[bool] = None):
+        return await manage_agent_skills(action=action, agent_id=agent_id, name=name,
+                                         description=description, body=body, mode=mode,
+                                         enabled=enabled, user_id=user_id)
+
+    # The nested wrappers carry no docstring of their own, so the model would see
+    # an empty/generic description. Copy each tool's real usage doc from the
+    # underlying in-process function — this feeds both the tool-call description
+    # and the # [TOOLS] index.
+    _amt_list_templates_wrapper.__doc__ = list_agent_templates.__doc__
+    _amt_list_agents_wrapper.__doc__    = list_my_agents.__doc__
+    _amt_get_agent_wrapper.__doc__      = get_agent.__doc__
+    _amt_list_tools_wrapper.__doc__     = list_agent_tools.__doc__
+    _amt_create_agent_wrapper.__doc__   = create_agent.__doc__
+    _amt_update_agent_wrapper.__doc__   = update_agent.__doc__
+    _amt_set_tool_wrapper.__doc__       = set_agent_tool.__doc__
+    _amt_edit_prompt_wrapper.__doc__    = edit_agent_prompt.__doc__
+    _amt_set_ability_wrapper.__doc__    = set_agent_ability.__doc__
+    _amt_manage_skills_wrapper.__doc__  = manage_agent_skills.__doc__
+
+    return {
+        "list_agent_templates": _amt_list_templates_wrapper,
+        "list_my_agents": _amt_list_agents_wrapper,
+        "get_agent": _amt_get_agent_wrapper,
+        "list_agent_tools": _amt_list_tools_wrapper,
+        "create_agent": _amt_create_agent_wrapper,
+        "update_agent": _amt_update_agent_wrapper,
+        "set_agent_tool": _amt_set_tool_wrapper,
+        "edit_agent_prompt": _amt_edit_prompt_wrapper,
+        "set_agent_ability": _amt_set_ability_wrapper,
+        "manage_agent_skills": _amt_manage_skills_wrapper,
+    }

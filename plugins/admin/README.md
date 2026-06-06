@@ -24,18 +24,22 @@ This folder holds the **implementation** behind the privileged developer abiliti
 
 ## How injection works
 
-`app/tools/loader.py` imports the injector for whichever ability is enabled, e.g.:
+These three abilities are **self-contained drop-ins**. Each ability file in `plugins/abilities/` (`codebase_admin.py`, `git_control.py`, `ui_admin.py`) exposes a `build_tools(...)` hook that the core loader discovers and calls generically for every enabled ability — there is **no** per-ability `if/elif` in `app/tools/loader.py` anymore. `build_tools` returns `{tool_name: handler}`, and the loader then reads each module's `TOOL_SCHEMAS` / `DESTRUCTIVE` (populated *during* the call) to register the tools.
 
-```python
-if "codebase_admin" in enabled_providers:
-    try:
-        from plugins.admin.source_tools import inject_source_tools
-        inject_source_tools(tools, user_id)
-    except ImportError:
-        pass  # plugins/admin/source_tools.py not present — source editing disabled
-```
+The handlers themselves still live here in the shared admin library via the `inject_*` functions, which mutate a tools dict with `ToolInfo` objects (the historical shape). The bridge between the two is **`adapter.extract_injected`**:
 
-If the files don't exist, the agent simply gets no privileged tools — no errors, no side effects. `app/main.py` mounts the `/admin/source` router the same guarded way.
+- Each ability's `build_tools` calls `extract_injected(inject_source_tools | inject_git_tools | inject_ui_tools, user_id)`.
+- `extract_injected` runs the injector against a *throwaway* dict, then pulls `handler` and `parameters` off every `ToolInfo` and folds `destructive` / `requires_confirmation` into a destructive set. It returns the `(handlers, schemas, destructive)` triple the loader contract wants — so the schemas and guardrail flags come straight from the `ToolInfo` objects and **never drift**.
+
+Per-ability specifics:
+
+| Ability | `build_tools` does |
+|---|---|
+| `codebase_admin` | `extract_injected(inject_source_tools, user_id)` for the full suite, **plus** a `db_query` handler lazily wrapped from `app.tools.core_tools.db_query` (merged into handlers + schemas; `db_query` is not destructive). |
+| `git_control` | `extract_injected(inject_git_tools, user_id)` — the git subset only. |
+| `ui_admin` | `extract_injected(inject_ui_tools, user_id)`, but returns `{}` when `enabled_providers` contains `codebase_admin` (the unrestricted superset wins). It accepts `enabled_providers=None` and guards defensively, since the generic loader call does not yet pass `enabled_providers` into `build_tools`. |
+
+Imports stay **lazy** (inside `build_tools`) so scanning the `FEATURE` descriptor is cheap. If these files don't exist, the agent simply gets no privileged tools — no errors, no side effects. `app/main.py` mounts the `/admin/source` router the same guarded way.
 
 ## Disabling / editions
 

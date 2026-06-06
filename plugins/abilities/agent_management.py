@@ -26,3 +26,34 @@ FEATURE = {
                      "availability/permission, and safe-edit workflow. Load this "
                      "before creating or editing any agent.",
 }
+
+
+# Populated inside build_tools() from the core factory's constants so they can
+# never drift; the loader reads them AFTER calling build_tools().
+TOOL_SCHEMAS: dict = {}
+DESTRUCTIVE: set = set()
+
+
+def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
+                agent_template_id: str = "", enabled_providers=None, **_ctx):
+    """Return {tool_name: handler} for the 10 agent-management tools.
+
+    Handlers + schemas live in the core factory (app/tools/agent_mgmt_tools.py),
+    which also exports the schema/danger constants. Import is lazy so the FEATURE
+    scan stays cheap, and TOOL_SCHEMAS/DESTRUCTIVE are populated here from the
+    factory's constants so they can't drift from the handlers.
+    """
+    from app.tools.agent_mgmt_tools import (
+        build_agent_mgmt_tools,
+        AGENT_MGMT_TOOL_SCHEMAS,
+        AGENT_MGMT_DESTRUCTIVE,
+    )
+
+    handlers = build_agent_mgmt_tools(user_id)
+
+    TOOL_SCHEMAS.clear()
+    TOOL_SCHEMAS.update(AGENT_MGMT_TOOL_SCHEMAS)
+    DESTRUCTIVE.clear()
+    DESTRUCTIVE.update(AGENT_MGMT_DESTRUCTIVE)
+
+    return handlers

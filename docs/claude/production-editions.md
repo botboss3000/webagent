@@ -1,6 +1,6 @@
 # Production editions, drop-in features & the feature catalog
 
-> **Status:** Phases 1–4 landed. This is the durable design + roadmap for the
+> **Status:** Phases 1–6 landed. This is the durable design + roadmap for the
 > single codebase that ships as a **production** edition (only vetted features),
 > a **full** edition (everything, the default), or any **fork** (a custom mix) —
 > by treating every capability as a self-describing, drop-in plugin the app
@@ -174,7 +174,7 @@ Everything else — including **web search** — becomes a demotable add-on.
 | Secrets vaults | `app/secrets/` | ✅ drop-in (auto-discovered by `cls.name`) |
 | Storage backends | `app/db/` | ⚠️ mode switch (irreducible-fallback heavy; left as-is) |
 | Built-in tools (web search…) | abilities | ✅ catalogued + editionable (web search via `web_access`) |
-| **Agent abilities** | **`plugins/abilities/`** | ✅ **drop-in** (one `FEATURE` file per ability: tools + UI metadata; both ability panels + the loader map + the catalog all read it) |
+| **Agent abilities** | **`plugins/abilities/`** | ✅ **drop-in + self-contained tools** (one file per ability carries its `FEATURE`, its own `build_tools()` handlers, `TOOL_SCHEMAS`/`DESTRUCTIVE`, and any background service; both ability panels + the loader's generic discovery + the catalog all read it — no per-ability wiring in core) |
 
 > **The root `plugins/` tree.** As of the abilities refactor the canonical home
 > for drop-in capability files is a top-level **`plugins/`** folder (sibling to
@@ -214,8 +214,22 @@ fallback) — new storage backends still register via discovery for the catalog.
    map, the feature catalog, `app/api/agents.py`'s connection rows, and **both**
    ability panels (`ui/js/app-config.js`, `ui/js/agents.js`) all read it via
    `GET /api/v1/abilities/catalog`. No per-ability constants remain in those
-   files. **Next:** migrate the remaining `app/…` plugin subsystems into
-   `plugins/` (managers/base classes stay in `app/`; only leaf files move).
+   files.
+6. ✅ **Abilities ship their own tools (fully self-contained)** — every
+   tool-bearing ability now carries its handlers in its own file via a
+   `build_tools(*, user_id, session_id, agent_id, agent_template_id,
+   enabled_providers=None, **ctx)` hook, plus module-level `TOOL_SCHEMAS` and
+   `DESTRUCTIVE`. The loader has ONE generic discovery block (search
+   "Self-contained ability tools") that calls every enabled ability's
+   `build_tools` and reads its schemas/destructive set afterward; all the old
+   per-ability `if "<id>" in enabled_providers:` wiring blocks were removed.
+   Heavy handler logic that stays in core lives in factory files
+   (`app/tools/wiki_tools.py`, `terminal_tools.py`, `automation_tools.py`,
+   `agent_mgmt_tools.py`) or the admin adapter (`plugins/admin/adapter.py`); the
+   ability file just wraps them and mirrors their constants. Adding/removing a
+   tool-bearing ability now needs **zero** loader edits. **Next:** migrate the
+   remaining `app/…` plugin subsystems into `plugins/` (managers/base classes
+   stay in `app/`; only leaf files move).
 
 ## Promoting a feature / cutting a build
 
