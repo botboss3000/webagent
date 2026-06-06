@@ -33,7 +33,7 @@ _RUNTIME_CONFIG = os.path.join(_REPO_ROOT, "data", "config", "suggestions.json")
 VALID_MODES = ("off", "on", "scheduler")  # "scheduler" == on + idle refresh
 
 _DEFAULTS = {
-    "mode": "on",
+    "mode": "off",
     "count": 3,
     "idle_seconds": 25,
 }

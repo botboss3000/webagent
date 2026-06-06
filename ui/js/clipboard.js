@@ -173,6 +173,15 @@ function onKeyDown(e) {
   // ── Paste ─────────────────────────────────────────────────────────────────
   if (key === 'v') {
     if (!field) return;                    // paste only makes sense into a field
+    // Chat pills (composer, agent builder, page/admin prompt bars) accept
+    // pasted IMAGES via their own native `paste` handler (see attachments.js).
+    // That handler only fires if the browser's native paste runs — so we must
+    // NOT cancel it here. Re-implementing paste as text-only below would
+    // silently swallow image pastes. Native paste handles their text fine too,
+    // so bow out for any field inside a chat pill. (`.chat-pill` is on every
+    // such row in markup; `data-chat-pill-uploads-wired` is set once the
+    // image/drop handler is attached.)
+    if (field.closest && field.closest('.chat-pill, [data-chat-pill-uploads-wired]')) return;
     // If we can't read the clipboard programmatically (non-secure context with
     // no API), DON'T cancel — let the browser's native paste do its job.
     if (!(navigator.clipboard && navigator.clipboard.readText)) return;

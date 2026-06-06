@@ -390,6 +390,41 @@ function _initLLM() {
       if (dd) dd.style.display = 'none';
     }
   });
+
+  _initSuggestionsCheckbox();
+}
+
+// ── AI Message Suggestions checkbox ─────────────────────────────────────────
+// Toggle on/off the silent suggestion-engine. "Off" by default.
+function _initSuggestionsCheckbox() {
+  const cb = _qs('ac-use-ai-suggestions');
+  if (!cb) return;
+  cb.addEventListener('change', _saveSuggestionsCheckbox);
+}
+
+async function _loadSuggestionsCheckbox() {
+  const cb = _qs('ac-use-ai-suggestions');
+  if (!cb) return;
+  try {
+    const res = await _fetch(apiPath('/api/v1/chat/suggestions/config'));
+    if (res.ok) {
+      const cfg = await res.json();
+      cb.checked = cfg.mode === 'on' || cfg.mode === 'scheduler';
+    }
+  } catch (_) {}
+}
+
+async function _saveSuggestionsCheckbox() {
+  const cb = _qs('ac-use-ai-suggestions');
+  if (!cb) return;
+  const mode = cb.checked ? 'on' : 'off';
+  try {
+    await _fetch(apiPath('/api/v1/chat/suggestions/config'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+  } catch (_) {}
 }
 
 function _saveCurrentProviderToMap(key) {
@@ -426,6 +461,9 @@ async function _loadLLM() {
     const modelSrch = _qs('ac-settings-model-search');
     if (modelSrch) modelSrch.value = _selectedModel;
     const modelStatus = _qs('ac-settings-model-status');
+
+    // Sync suggestions checkbox from server config (default: off)
+    _loadSuggestionsCheckbox();
     if (modelStatus) {
       if (_selectedModel) {
         modelStatus.textContent = `Selected: ${_selectedModel}`;

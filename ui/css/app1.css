@@ -1262,13 +1262,19 @@ body.light-mode .chat-stop-btn:hover {
      .has-text   — set by JS when input has content (swaps mic→send)
      .no-voice   — force send-only (used by web-chat sign-in gate)
      .thinking   — set by chat-activity.js while the agent works (glow)
-   Known pills using these classes:
-     #chat-input-row              (web chat — chat.js)
-     #ac-int-admin-chat-input-row (integration admin chat)
-     #agent-builder-bar-row       (agents page — agents.js)
-     #autoagent-prompt-row        (Pages tab — autoagent.js)
-   When tweaking, change here and every pill in the app updates.
-   SEPARATE concern — the two FLOATING pills (web-chat + agents builder bar) also
+    Known pills using these classes:
+      #chat-input-row              (web chat — chat.js)
+      #ac-int-admin-chat-input-row (integration admin chat)
+      #agent-builder-bar-row       (agents page — agents.js)
+      #autoagent-prompt-row        (Pages tab — autoagent.js)
+    When tweaking, change here and every pill in the app updates.
+    SIBLING-BTN-COHESION: all buttons displayed around the pill (Continue,
+    Stop, tool-call bar, suggested chips, etc.) must share the same box math
+    — 12px font-size, 1.4 line-height, 4px 14px padding, 12px radius — so
+    they sit at the same visual height and look like one cohesive set of
+    controls. If you add or change a sibling button, grep SIBLING-BTN-COHESION
+    and match every instance.
+    SEPARATE concern — the two FLOATING pills (web-chat + agents builder bar) also
    share a PANEL LAYOUT and a cross-panel bottom ALIGNMENT that this block does
    NOT cover. Those have their own grep tags: PILL-PANEL-LAYOUT (full-height
    scroller + absolute overlay) and PILL-PANEL-ALIGN (the agents bar's bottom
@@ -1517,6 +1523,11 @@ body.light-mode .chat-stop-btn:hover {
        to inherit so currentColor (the glass tint above) equals the pill's fg. */
     color: inherit;
     font: inherit;
+    /* SIBLING-BTN-COHESION: explicit size + line-height so the box math
+       matches the Continue/Stop buttons. font:inherit above would give us
+       the browser default ~16px, making this ~2px taller. */
+    font-size: 12px;
+    line-height: 1.4;
     text-align: left;
     cursor: default;
     transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;

@@ -105,6 +105,37 @@ export function initAttachments() {
 
 // ── Upload ─────────────────────────────────────────────────────────────────
 
+// Turn a server error body into readable text. FastAPI/Pydantic validation
+// errors arrive as `detail: [{ msg, loc, ... }, ...]`; stringifying that list
+// yields "[object Object],[object Object]", which is what the user used to see
+// on a failed paste. Pull the human messages out instead.
+function _serverErrText(detail, fallback) {
+  if (!detail) return fallback;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail.map(d => (d && d.msg) ? d.msg : '').filter(Boolean);
+    return msgs.length ? msgs.join('; ') : fallback;
+  }
+  if (typeof detail === 'object' && detail.msg) return detail.msg;
+  return fallback;
+}
+
+// Attachments are stored against the active user + session. A paste or drop can
+// fire before the chat has identity behind it — a fresh page that hasn't
+// finished booting, or a secondary pill whose chat hasn't started a session.
+// Without a user + session the upload is rejected by the server and the failure
+// is invisible. Mirror the send flow: if we have a user but no session, spin up
+// the shared webAgent session; with no user at all the upload can't be
+// attributed and must be refused.
+async function _ensureSessionForUpload() {
+  if (app.currentUserId && app.currentSessionId) return true;
+  if (!app.currentUserId) return false;
+  if (typeof app.startWebagentSession === 'function') {
+    try { await app.startWebagentSession(); } catch { /* fall through to recheck */ }
+  }
+  return !!(app.currentUserId && app.currentSessionId);
+}
+
 export async function uploadAndPreview(file, opts = {}) {
   if (!file) return;
 
@@ -124,6 +155,28 @@ export async function uploadAndPreview(file, opts = {}) {
   previewBar.appendChild(chip);
   previewBar.style.display = 'flex';
 
+  // Make sure the upload can be attributed to a user + session before sending
+  // it. Otherwise the server rejects it and (previously) the only feedback was
+  // a garbled chip that vanished after a few seconds — i.e. paste "did nothing".
+  if (!(await _ensureSessionForUpload())) {
+    chip.className = 'chat-attachment-pill error';
+    chip.textContent = app.currentUserId
+      ? `${file.name}: chat isn't ready yet — try again in a moment`
+      : `${file.name}: start a chat before attaching files`;
+    // Persistent (no auto-remove) with a dismiss button, so the message is
+    // actually readable rather than flashing past.
+    const dismiss = document.createElement('button');
+    dismiss.className = 'chat-attachment-remove';
+    dismiss.innerHTML = icon('x', { size: '11px' });
+    dismiss.title = 'Dismiss';
+    dismiss.addEventListener('click', () => {
+      chip.remove();
+      if (previewBar.children.length === 0) previewBar.style.display = 'none';
+    });
+    chip.appendChild(dismiss);
+    return;
+  }
+
   try {
     const backend = await _resolveBackend();
     let data;
@@ -138,7 +191,7 @@ export async function uploadAndPreview(file, opts = {}) {
       const r1 = await fetch(apiPath('/api/v1/upload'), { method: 'POST', body: fd });
       if (!r1.ok) {
         const err = await r1.json().catch(() => ({ detail: r1.statusText }));
-        throw new Error(err.detail || 'Upload (metadata) failed');
+        throw new Error(_serverErrText(err.detail, 'Upload (metadata) failed'));
       }
       data = await r1.json();
       // Stash the bytes locally under the assigned attachment_id.
@@ -164,7 +217,7 @@ export async function uploadAndPreview(file, opts = {}) {
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail || 'Upload failed');
+        throw new Error(_serverErrText(err.detail, 'Upload failed'));
       }
 
       data = await res.json();
@@ -212,7 +265,7 @@ export async function uploadAndPreview(file, opts = {}) {
   } catch (err) {
     chip.className = 'chat-attachment-pill error';
     chip.textContent = `${file.name}: ${err.message}`;
-    setTimeout(() => { chip.remove(); if (targetPending.length === 0) previewBar.style.display = 'none'; }, 3000);
+    setTimeout(() => { chip.remove(); if (targetPending.length === 0) previewBar.style.display = 'none'; }, 6000);
   }
 }
 
@@ -252,15 +305,19 @@ async function _processImagePaste(e, opts) {
     return;
   }
 
-  // Phase 2: Firefox - images are in string items
+  // Phase 2: Firefox exposes a pasted image as string items (an image/* item,
+  // or an <img src="data:…"> inside text/html) rather than as a File. Only take
+  // over the paste when there's a genuine image signal — a string item whose
+  // type is image/*. Crucially we must NOT preventDefault merely because a
+  // text/html item is present: ordinary rich text copied from a web page also
+  // carries text/html, and cancelling that here would swallow normal text
+  // pastes into the chat box (the very thing the user types). Plain/rich text
+  // with no image therefore falls through to the browser's native paste.
   const hasImageType = Array.from(items).some(
     i => i.kind === 'string' && i.type.startsWith('image/')
   );
-  const hasHtml = Array.from(items).some(
-    i => i.kind === 'string' && i.type === 'text/html'
-  );
 
-  if (!hasImageType && !hasHtml) return;  // plain text paste
+  if (!hasImageType) return;  // no image to capture → let native paste insert text
 
   // Prevent default so Firefox doesn't show its error message
   e.preventDefault();

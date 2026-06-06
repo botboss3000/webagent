@@ -967,8 +967,12 @@ async function _maybeLoadMoreOnScrollTop(sessionId) {
     // Render above existing bubbles (insertBefore each new bubble before firstChild)
     for (const msg of data.messages) {
       if (msg.role === 'user') {
-        const bubble = _createBubble('user', msg.content, null, null, null, msg.id);
+        const bubble = _createBubble('user', msg.content, null, null, null, msg.id, msg.created_at);
         container.insertBefore(bubble, firstChild);
+        // Add bubble actions (includes relative timestamp)
+        if (typeof app._addBubbleActions === 'function' && !bubble.classList.contains('streaming')) {
+          try { app._addBubbleActions(bubble); } catch(_) {}
+        }
       } else if (msg.role === 'assistant') {
         let text = msg.content || '';
         const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
@@ -978,8 +982,12 @@ async function _maybeLoadMoreOnScrollTop(sessionId) {
         const cls = msg.status === 'streaming' ? 'streaming' :
                     msg.status === 'interrupted' ? 'interrupted' :
                     msg.status === 'error' ? 'error' : null;
-        const bubble = _createBubble('agent', text, cls, null, msg.id, null);
+        const bubble = _createBubble('agent', text, cls, null, msg.id, null, msg.created_at);
         container.insertBefore(bubble, firstChild);
+        // Add bubble actions (includes relative timestamp)
+        if (typeof app._addBubbleActions === 'function' && !bubble.classList.contains('streaming')) {
+          try { app._addBubbleActions(bubble); } catch(_) {}
+        }
       }
     }
     // Adjust scrollTop so the view doesn't jump
@@ -1244,11 +1252,14 @@ function _teardownVirtualScroll() {
 /**
  * Create a chat bubble element without appending it (used for prepend pagination).
  */
-function _createBubble(role, text, extraClass, imageUrl, turnId, msgId) {
-	  const bubble = document.createElement('div');
+function _createBubble(role, text, extraClass, imageUrl, turnId, msgId, createdAt) {
+		  const bubble = document.createElement('div');
   bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
   if (turnId) bubble.setAttribute('data-turn-id', turnId);
   if (msgId) bubble.setAttribute('data-msg-id', msgId);
+  // Store creation timestamp for the actions-row timer
+  const createdAtMs = createdAt ? new Date(createdAt.replace(' ', 'T') + 'Z').getTime() : Date.now();
+  bubble.setAttribute('data-created-at', createdAtMs);
   if (role === 'user') {
     const label = document.createElement('span');
     label.className = 'label';
@@ -2400,6 +2411,22 @@ export function initSessions() {
         if (msg.status === 'error') bubble.classList.add('error');
         if (msg.status === 'interrupted') bubble.classList.add('interrupted');
         if (msg.id) bubble.setAttribute('data-msg-id', msg.id);
+        // Store creation timestamp; render inline time for peek preview
+        {
+          const createdAtMs = msg.created_at ? new Date(msg.created_at.replace(' ', 'T') + 'Z').getTime() : Date.now();
+          bubble.setAttribute('data-created-at', createdAtMs);
+          const elapsed = Date.now() - createdAtMs;
+          const totalMin = Math.floor(elapsed / 60000);
+          let timeText;
+          if (totalMin < 1) timeText = '0m';
+          else if (totalMin < 60) timeText = totalMin + 'm';
+          else { const h = Math.floor(totalMin / 60); const m = totalMin % 60; timeText = h + 'h ' + m + 'm'; }
+          const timeEl = document.createElement('span');
+          timeEl.className = 'bubble-time';
+          timeEl.setAttribute('data-created-at', createdAtMs);
+          timeEl.textContent = timeText;
+          bubble.appendChild(timeEl);
+        }
         if (msg.role === 'user') {
           const label = document.createElement('span');
           label.className = 'label';
@@ -2561,13 +2588,13 @@ export function initSessions() {
     if (prevBtn) {
       prevBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        _go(-1);
+        _go(1); // left = down the list
       });
     }
     if (nextBtn) {
       nextBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        _go(1);
+        _go(-1); // right = up the list
       });
     }
   })();

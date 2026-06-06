@@ -95,17 +95,21 @@
               </summary>
               <div class="ac-category-body">
 
+                <!-- Loading spinner — shown while _loadParallelProviders fetches data.
+                     Hidden once data arrives; the table below takes over. -->
+                <div class="ac-model-loader" id="ac-model-loader">
+                    <span class="ac-spinner"></span>
+                    <span>Loading models…</span>
+                  </div>
+
                 <!-- ONE unified flush table. The first four rows are the provider /
                      base-url / key / model configurator (each field auto-saves; the
                      Model row is two lines — model name on top, detected capabilities
                      below — with Add / Clear pinned to the right). The saved models are
                      injected as further rows of this SAME table by _renderParallelRows()
-                     (header + one expandable row per model). -->
-                <div class="ac-model-loader" id="ac-model-loader">
-                    <span class="ac-spinner"></span>
-                    <span>Loading models…</span>
-                  </div>
-                  <div class="ac-list ac-model-config" id="ac-model-config">
+                     (header + one expandable row per model). Hidden on load; shown
+                     by JS once providers finish loading. -->
+                <div class="ac-list ac-model-config" id="ac-model-config" style="display:none;">
                   <div class="ac-ability-row ac-model-cfg-row ac-row-static">
                     <span class="ac-ability-label"><span class="ac-ability-name">Provider</span></span>
                     <span class="ac-model-cfg-control">
