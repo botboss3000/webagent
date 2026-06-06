@@ -17,17 +17,11 @@
             <button type="button" class="ac-tab" data-section="app-settings" role="tab">
               <i data-lucide="settings-2" class="lucide-icon ac-tab-icon"></i>App Settings
             </button>
-            <button type="button" class="ac-tab" data-section="integrations" role="tab">
-              <i data-lucide="puzzle" class="lucide-icon ac-tab-icon"></i>Agent Abilities
-            </button>
             <button type="button" class="ac-tab" data-section="agent-settings" role="tab">
               <i data-lucide="bot" class="lucide-icon ac-tab-icon"></i>Agent Settings
             </button>
             <button type="button" class="ac-tab" data-section="user-management" role="tab">
               <i data-lucide="users" class="lucide-icon ac-tab-icon"></i>Users
-            </button>
-            <button type="button" class="ac-tab active" data-section="llm" role="tab">
-              <i data-lucide="bot" class="lucide-icon ac-tab-icon"></i>Models
             </button>
             <button type="button" class="ac-tab" data-section="database" role="tab">
               <i data-lucide="database" class="lucide-icon ac-tab-icon"></i>Data Management
@@ -47,6 +41,9 @@
             <button type="button" class="ac-tab" data-section="monetization" role="tab">
               <i data-lucide="credit-card" class="lucide-icon ac-tab-icon"></i>Monetization
             </button>
+            <button type="button" class="ac-tab" data-section="features" role="tab">
+              <i data-lucide="layers" class="lucide-icon ac-tab-icon"></i>Features
+            </button>
           </div>
           <button type="button" id="app-config-tabs-chev-right" class="ac-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
         </div>
@@ -54,82 +51,13 @@
         <!-- Scrollable content -->
         <div id="app-config-content">
 
-          <!-- ── Default LLM ── -->
-          <section id="ac-section-llm" class="ac-section">
+          <!-- ── Agent Settings ── -->
+          <section id="ac-section-agent-settings" class="ac-section active">
             <div class="ac-section-header">
               <i data-lucide="bot" class="lucide-icon ac-section-icon"></i>
               <div>
-                <h2 class="ac-section-title">Models</h2>
-                <p class="ac-section-desc">Add the models your agents use and tick what each one is for — answering (Text), reading images (Image-in), or creating images (Image-out). Capabilities are auto-detected.</p>
-              </div>
-            </div>
-            <div class="ac-card">
-              <div class="ac-field">
-                <label class="ac-label">Provider</label>
-                <select id="ac-settings-provider" class="ac-input"></select>
-              </div>
-              <div class="ac-field">
-                <label class="ac-label">Base URL</label>
-                <input type="text" id="ac-settings-base-url" class="ac-input" placeholder="https://openrouter.ai/api/v1" autocomplete="off">
-                <div class="ac-hint">Auto-filled when you pick a provider. Edit for custom endpoints.</div>
-              </div>
-              <div class="ac-field">
-                <label class="ac-label">API Key</label>
-                <input type="text" id="ac-settings-api-key" class="ac-input" placeholder="sk-..." autocomplete="off">
-                <div class="ac-hint">Stored on this device only. Never sent elsewhere.</div>
-              </div>
-              <div class="ac-field" id="ac-settings-model-group">
-                <label class="ac-label">Model</label>
-                <div style="position:relative;">
-                  <input type="text" id="ac-settings-model-search" class="ac-input" placeholder="Search models…" autocomplete="off">
-                  <div id="ac-settings-model-dropdown" class="ac-model-dropdown" style="display:none;"></div>
-                </div>
-                <div id="ac-settings-model-status" class="ac-hint"></div>
-              </div>
-              <div class="ac-field" id="ac-settings-cap-group">
-                <label class="ac-label">Capabilities</label>
-                <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">
-                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
-                    <input type="checkbox" id="ac-settings-cap-text" checked style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
-                    Text
-                  </label>
-                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
-                    <input type="checkbox" id="ac-settings-cap-image" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
-                    Image-in (vision)
-                  </label>
-                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);cursor:pointer;">
-                    <input type="checkbox" id="ac-settings-cap-image-out" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer;">
-                    Image-out (generate)
-                  </label>
-                </div>
-                <div class="ac-hint">Auto-detected when you pick a model. <strong>Image-in</strong> = can read attached images; <strong>Image-out</strong> = can create images. Override if detection is wrong.</div>
-              </div>
-              <div class="ac-actions">
-                <button id="ac-settings-save" class="ac-btn ac-btn-primary">Save</button>
-                <button id="ac-settings-clear" class="ac-btn ac-btn-ghost">Clear</button>
-                <span id="ac-settings-status" class="ac-status" style="display:none;"></span>
-              </div>
-
-              <!-- Saved models — same panel as the chooser above -->
-              <div id="ac-settings-saved-wrap" style="display:none;border-top:1px solid var(--border-soft);margin-top:16px;padding-top:14px;">
-                <div class="ac-card-label">Saved Models</div>
-                <div class="ac-card-sublabel">Tick how to use each model. Two or more ticked for <strong>Text</strong> race in parallel — fastest response wins.</div>
-                <div id="ac-settings-saved-list" style="margin-top:12px;"></div>
-                <div id="ac-settings-parallel-count" class="ac-hint" style="margin-top:6px;text-align:right;"></div>
-                <div id="ac-settings-describer-hint" class="ac-hint" style="margin-top:4px;"></div>
-                <div id="ac-settings-imagegen-hint" class="ac-hint" style="margin-top:2px;"></div>
-              </div>
-            </div>
-          </section>
-
-
-	          <!-- ── User Management ── -->
-	          <section id="ac-section-user-management" class="ac-section">
-	            <div class="ac-section-header">
-	              <i data-lucide="users" class="lucide-icon ac-section-icon"></i>
-	              <div>
-	                <h2 class="ac-section-title">User Management</h2>
-	                <p class="ac-section-desc">Control who can sign up and use the app.</p>
+                <h2 class="ac-section-title">Agent Settings</h2>
+                <p class="ac-section-desc">Configure agent tools, integrations, channels, and provider credentials.</p>
               </div>
             </div>
 
@@ -152,201 +80,301 @@
               <div id="ac-int-admin-chat-error" class="ac-hint" style="display:none;margin-top:6px;color:#f7768e;"></div>
             </div>
 
-            <!-- ── Agent Tools (host-side privileged capabilities) ── -->
-            <div class="ac-section-header" style="margin-top:24px;">
-              <i data-lucide="wrench" class="lucide-icon ac-section-icon"></i>
-              <div>
-                <h3 class="ac-section-title" style="font-size:14px;">Agent Tools</h3>
-                <p class="ac-section-desc">Privileged capabilities for editing the running app. Enable here, then turn on per agent from the agent's <strong>Abilities</strong> tab.</p>
-              </div>
-            </div>
+            <!-- ── Models (collapsible, collapsed by default) ──
+                 Two bare flush tables (no wrapping card): a 4-row CONFIGURATOR
+                 (provider / base url / key / model) whose fields auto-save to the
+                 DB on change — each showing the shared green auto-save check, same
+                 as the agent abilities table — and a SAVED MODELS table whose rows
+                 expand to show token usage + cost. Capabilities are detected from
+                 the model catalog (models.dev / OpenRouter), not entered by hand. -->
+            <details class="ac-category-group" id="ac-cat-models">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="bot" class="lucide-icon" style="width:16px;height:16px;color:#7aa2f7;"></i>
+                <span class="ac-category-title">Models</span>
+              </summary>
+              <div class="ac-category-body">
 
-            <!-- Codebase Admin -->
-            <div class="ac-card" id="ac-int-codebase_admin-card">
+                <!-- ONE unified flush table. The first four rows are the provider /
+                     base-url / key / model configurator (each field auto-saves; the
+                     Model row is two lines — model name on top, detected capabilities
+                     below — with Add / Clear pinned to the right). The saved models are
+                     injected as further rows of this SAME table by _renderParallelRows()
+                     (header + one expandable row per model). -->
+                <div class="ac-model-loader" id="ac-model-loader">
+                    <span class="ac-spinner"></span>
+                    <span>Loading models…</span>
+                  </div>
+                  <div class="ac-list ac-model-config" id="ac-model-config">
+                  <div class="ac-ability-row ac-model-cfg-row ac-row-static">
+                    <span class="ac-ability-label"><span class="ac-ability-name">Provider</span></span>
+                    <span class="ac-model-cfg-control">
+                      <select id="ac-settings-provider" class="ac-input ac-input-sm"></select>
+                      <span class="agents-autosave-check" id="ac-cfg-check-provider" aria-hidden="true"></span>
+                    </span>
+                  </div>
+                  <div class="ac-ability-row ac-model-cfg-row ac-row-static">
+                    <span class="ac-ability-label"><span class="ac-ability-name">Base URL</span></span>
+                    <span class="ac-model-cfg-control">
+                      <input type="text" id="ac-settings-base-url" class="ac-input ac-input-sm" placeholder="https://openrouter.ai/api/v1" autocomplete="off">
+                      <span class="agents-autosave-check" id="ac-cfg-check-url" aria-hidden="true"></span>
+                    </span>
+                  </div>
+                  <div class="ac-ability-row ac-model-cfg-row ac-row-static">
+                    <span class="ac-ability-label"><span class="ac-ability-name">API Key</span></span>
+                    <span class="ac-model-cfg-control">
+                      <input type="text" id="ac-settings-api-key" class="ac-input ac-input-sm" placeholder="sk-..." autocomplete="off">
+                      <span class="agents-autosave-check" id="ac-cfg-check-key" aria-hidden="true"></span>
+                    </span>
+                  </div>
+                  <!-- Model row — two lines (name on top, detected capabilities below),
+                       Add / Clear on the right. -->
+                  <div class="ac-ability-row ac-model-cfg-row ac-model-cfg-model ac-row-static" id="ac-settings-model-group">
+                    <span class="ac-ability-label">
+                      <span class="ac-model-search-wrap">
+                        <input type="text" id="ac-settings-model-search" class="ac-input ac-input-sm" placeholder="Search models…" autocomplete="off">
+                        <div id="ac-settings-model-dropdown" class="ac-model-dropdown" style="display:none;"></div>
+                      </span>
+                      <span class="ac-model-caps" id="ac-settings-detected-caps"></span>
+                    </span>
+                    <span class="ac-model-cfg-control ac-model-add-control">
+                      <button id="ac-settings-save" class="ac-btn ac-btn-primary ac-btn-sm">Add</button>
+                      <button id="ac-settings-clear" class="ac-btn ac-btn-ghost ac-btn-sm">Clear</button>
+                      <span class="agents-autosave-check" id="ac-cfg-check-model" aria-hidden="true"></span>
+                    </span>
+                  </div>
+                </div>
+                <span id="ac-settings-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              </div>
+            </details>
+
+            <!-- ── Agent Tools — the single unified groups table. No category
+                 header: the host-ability groups (Administrator / Core / Web) AND
+                 the former integration "categories" (Communication, Productivity,
+                 Social Media, Marketplaces, Payments, Developer, CRM) all render as
+                 expandable group rows inside #ac-abilities-compact. The legacy
+                 category <details> below are emptied + hidden at runtime by
+                 _placeIntegrationGroupCards(). ── -->
+            <div class="ac-category-group" id="ac-cat-agent-tools">
+              <div class="ac-category-body">
+
+                <!-- Agent Tools — compact row layout with toggle -->
+                <div class="ac-abilities-compact" id="ac-abilities-compact">
+                  <!-- Each ability is a single row with icon, name, desc, toggle.
+                       Simple abilities toggle directly. Complex abilities (need config)
+                       expand to show a config panel when toggled. -->
+                </div>
+                <span id="ac-abilities-compact-status" class="ac-status" style="display:none;"></span>
+
+                <!-- ── Complex ability config panels (hidden by default, shown on expand) ── -->
+                <div id="ac-ability-config-panels" style="margin-top:8px;display:flex;flex-direction:column;gap:8px;">
+
+                  <!-- Image Generation config -->
+                  <div class="ac-card" id="ac-int-image_generation-card" style="display:none;">
+                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                      <i data-lucide="image" class="lucide-icon" style="width:20px;height:20px;flex-shrink:0;color:#bb9af7;"></i>
+                      <div style="flex:1;">
+                        <div style="font-weight:600;font-size:13px;">Image Generation — Configuration</div>
+                        <div class="ac-hint" style="margin:0;">Configure a provider + model for image generation before enabling the toggle above.</div>
+                      </div>
+                    </div>
+                    <div id="ac-int-image_generation-configured" style="display:none;font-size:12px;">
+                      <div class="ac-hint" style="margin:0;">Image Generation is available on the agent's <strong>Abilities</strong> tab.</div>
+                      <div style="margin-top:12px;display:flex;gap:8px;">
+                        <button id="ac-int-image_generation-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                      </div>
+                    </div>
+                    <div id="ac-int-image_generation-form" style="display:block;">
+                      <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Image Generation as a toggle to agent admins. The agent's <code>generate_image</code> tool uses whichever provider you configured under Image Generation.</div>
+                      <button id="ac-int-image_generation-save" class="ac-btn ac-btn-primary">Enable Image Generation</button>
+                    </div>
+                    <span id="ac-int-image_generation-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+                  </div>
+
+                  <!-- Automation config -->
+                  <div class="ac-card" id="ac-int-automation-card" style="display:none;">
+                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                      <i data-lucide="clock" class="lucide-icon" style="width:20px;height:20px;flex-shrink:0;color:#e0af68;"></i>
+                      <div style="flex:1;">
+                        <div style="font-weight:600;font-size:13px;">Automation — Configuration</div>
+                        <div class="ac-hint" style="margin:0;">Configure automation settings before enabling the toggle above.</div>
+                      </div>
+                    </div>
+                    <div id="ac-int-automation-configured" style="display:none;font-size:12px;">
+                      <div class="ac-hint" style="margin:0;">Automation is available on each agent's <strong>Abilities</strong> tab.</div>
+                      <div class="ac-hint" style="margin:8px 0 0;color:#f7768e;"><strong>Warning:</strong> Disabling will permanently delete every agent's scheduled tasks and event subscriptions.</div>
+                      <div style="margin-top:12px;display:flex;gap:8px;">
+                        <button id="ac-int-automation-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                      </div>
+                    </div>
+                    <div id="ac-int-automation-form" style="display:block;">
+                      <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Automation as a per-agent toggle. Agents with the toggle off see no Automation tab.</div>
+                      <button id="ac-int-automation-save" class="ac-btn ac-btn-primary">Enable Automation</button>
+                    </div>
+                    <span id="ac-int-automation-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+                  </div>
+
+                  <!-- Visualizer config -->
+                  <div class="ac-card" id="ac-int-visualizer-card" style="display:none;">
+                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                      <i data-lucide="layout" class="lucide-icon" style="width:20px;height:20px;flex-shrink:0;color:#7aa2f7;"></i>
+                      <div style="flex:1;">
+                        <div style="font-weight:600;font-size:13px;">Visualizer — Configuration</div>
+                        <div class="ac-hint" style="margin:0;">Configure visualizer settings before enabling the toggle above.</div>
+                      </div>
+                    </div>
+                    <div id="ac-int-visualizer-configured" style="display:none;font-size:12px;">
+                      <div class="ac-hint" style="margin:0;">Visualizer is available on the agent's <strong>Abilities</strong> tab.</div>
+                      <div style="margin-top:12px;display:flex;gap:8px;">
+                        <button id="ac-int-visualizer-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                      </div>
+                    </div>
+                    <div id="ac-int-visualizer-form" style="display:block;">
+                      <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Visualizer as a per-agent toggle. With the toggle off, an agent cannot see <code>render_visual</code>, <code>create_page</code>, or any other page-authoring tool.</div>
+                      <button id="ac-int-visualizer-save" class="ac-btn ac-btn-primary">Enable Visualizer</button>
+                    </div>
+                    <span id="ac-int-visualizer-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+                  </div>
+
+                </div>
+
+                <!-- ── Web tools (moved here from the obsolete "Generic Providers" category) ──
+                     These two credential cards are relocated INTO the Web group body at
+                     runtime by _placeWebCredentialRows(); this intro is hidden there too. -->
+                <p class="ac-category-desc" id="ac-web-tools-intro" style="margin-top:4px;">Non-OAuth web tools for sites without a public API. Configure here, then turn on per agent from the agent's <strong>Abilities</strong> tab.</p>
+
+            <!-- Web Scraper (generic third-party scraping API) -->
+            <div class="ac-card" id="ac-int-scraper-card">
               <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="folder-cog" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#bb9af7;"></i>
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#7aa2f7" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 0 1-7.06-4.27c.74-.92 2.85-1.73 7.06-1.73s6.32.81 7.06 1.73A8 8 0 0 1 12 20zm0-8a3 3 0 1 1 3-3 3 3 0 0 1-3 3z"/>
+                </svg>
                 <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Codebase Admin</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent read, write, edit, delete files, and run shell commands on the host.</div>
+                  <div style="font-weight:600;font-size:14px;">Web Scraper</div>
+                  <div class="ac-hint" style="margin:0;">Bring-your-own scraping API (Apify, RapidAPI, or any custom HTTP endpoint). Works for any site.</div>
                 </div>
-                <span id="ac-int-codebase_admin-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+                <span id="ac-int-scraper-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
               </div>
 
-              <div id="ac-int-codebase_admin-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Codebase Admin is available on the agent's <strong>Abilities</strong> tab. Only agents that turn it on receive the source tools.</div>
+              <div id="ac-int-scraper-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Provider:</span> <code id="ac-int-scraper-provider" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Endpoint:</span> <code id="ac-int-scraper-endpoint" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Actor / Host:</span> <code id="ac-int-scraper-extra" style="font-size:11px;word-break:break-all;"></code></div>
+                </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-codebase_admin-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                  <button id="ac-int-scraper-edit" class="ac-btn ac-btn-ghost">Edit</button>
+                  <button id="ac-int-scraper-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
 
-              <div id="ac-int-codebase_admin-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Codebase Admin as a toggle to agent admins. Destructive operations still require the user to confirm at chat time.</div>
-                <button id="ac-int-codebase_admin-save" class="ac-btn ac-btn-primary">Enable Codebase Admin</button>
+              <div id="ac-int-scraper-form" style="display:block;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Provider</label>
+                  <select id="ac-int-scraper-input-provider" class="ac-input">
+                    <option value="apify">Apify</option>
+                    <option value="rapidapi">RapidAPI</option>
+                    <option value="custom_http">Custom HTTP endpoint</option>
+                  </select>
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">API Key</label>
+                  <input type="password" id="ac-int-scraper-input-key" class="ac-input" placeholder="API key / token" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Endpoint <span style="color:var(--fg-muted);font-weight:400;">(optional for Apify / RapidAPI; required for custom_http)</span></label>
+                  <input type="text" id="ac-int-scraper-input-endpoint" class="ac-input" placeholder="https://…" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Actor ID <span style="color:var(--fg-muted);font-weight:400;">(Apify only)</span></label>
+                  <input type="text" id="ac-int-scraper-input-actor" class="ac-input" placeholder="apify/web-scraper" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Host <span style="color:var(--fg-muted);font-weight:400;">(RapidAPI only)</span></label>
+                  <input type="text" id="ac-int-scraper-input-host" class="ac-input" placeholder="example.p.rapidapi.com" autocomplete="off">
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-scraper-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
               </div>
-              <span id="ac-int-codebase_admin-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <span id="ac-int-scraper-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>How agents use this</summary>
+                <div class="ac-details-body">
+                  Enables the <code>web_scrape_search</code> and <code>web_scrape_url</code> tools. The agent decides when to use them based on the user's request — e.g. asking the agent to "search Marketplace for bicycles" will route through this scraper. No site-specific configuration here; site recipes live in the agent's skills prompt.
+                </div>
+              </details>
             </div>
 
-            <!-- Create Tools -->
-            <div class="ac-card" id="ac-int-create_tools-card">
+            <!-- Browser Session (per-user cookie jar for authenticated scraping) -->
+            <div class="ac-card" id="ac-int-browser_session-card">
               <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="wrench" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#7dcfff;"></i>
+                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
+                  <path fill="#bb9af7" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm6.93 6h-2.95a15.61 15.61 0 0 0-1.38-3.56A8 8 0 0 1 18.93 8zM12 4a13.94 13.94 0 0 1 1.84 4H10.16A13.94 13.94 0 0 1 12 4zM4.26 14a7.69 7.69 0 0 1 0-4h3.38a16.49 16.49 0 0 0 0 4zm.82 2h2.95a15.61 15.61 0 0 0 1.38 3.56A8 8 0 0 1 5.08 16zm2.95-8H5.08a8 8 0 0 1 4.33-3.56A15.61 15.61 0 0 0 8.03 8zM12 20a13.94 13.94 0 0 1-1.84-4h3.68A13.94 13.94 0 0 1 12 20zm2.34-6H9.66a14.4 14.4 0 0 1 0-4h4.68a14.4 14.4 0 0 1 0 4zm.25 5.56A15.61 15.61 0 0 0 15.97 16h2.95a8 8 0 0 1-4.33 3.56zM16.36 14a16.49 16.49 0 0 0 0-4h3.38a7.69 7.69 0 0 1 0 4z"/>
+                </svg>
                 <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Create Tools</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent define new tools in the database. Useful for cloud / ephemeral deployments where the codebase resets but the tools table persists.</div>
+                  <div style="font-weight:600;font-size:14px;">Browser Cookies</div>
+                  <div class="ac-hint" style="margin:0;">Paste cookies from a site you're already logged into. Lets the agent act on your behalf for sites without an API.</div>
                 </div>
-                <span id="ac-int-create_tools-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
+                <span id="ac-int-browser_session-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
               </div>
 
-              <div id="ac-int-create_tools-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Create Tools is available on the agent's <strong>Abilities</strong> tab. The agent's <code>create_tool</code> handler writes to the <code>tools</code> table.</div>
+              <div id="ac-int-browser_session-configured" style="display:none;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div><span style="color:var(--fg-muted);">Domain:</span> <code id="ac-int-browser_session-domain" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">User-Agent:</span> <code id="ac-int-browser_session-ua" style="font-size:11px;word-break:break-all;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Cookies stored:</span> <code id="ac-int-browser_session-count" style="font-size:11px;"></code></div>
+                  <div><span style="color:var(--fg-muted);">Saved:</span> <code id="ac-int-browser_session-saved" style="font-size:11px;"></code></div>
+                </div>
                 <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-create_tools-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
+                  <button id="ac-int-browser_session-edit" class="ac-btn ac-btn-ghost">Replace</button>
+                  <button id="ac-int-browser_session-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
                 </div>
               </div>
 
-              <div id="ac-int-create_tools-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Create Tools as a toggle to agent admins. Tool code is sandboxed by a safety scanner that blocks filesystem and shell imports.</div>
-                <button id="ac-int-create_tools-save" class="ac-btn ac-btn-primary">Enable Create Tools</button>
+              <div id="ac-int-browser_session-form" style="display:block;">
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Domain <span style="color:var(--fg-muted);font-weight:400;">(optional label, e.g. .facebook.com)</span></label>
+                  <input type="text" id="ac-int-browser_session-input-domain" class="ac-input" placeholder=".facebook.com" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">User-Agent <span style="color:var(--fg-muted);font-weight:400;">(leave blank for a default Chrome UA)</span></label>
+                  <input type="text" id="ac-int-browser_session-input-ua" class="ac-input" placeholder="Mozilla/5.0 …" autocomplete="off">
+                </div>
+                <div class="ac-field" style="margin-bottom:10px;">
+                  <label class="ac-label">Cookies</label>
+                  <textarea id="ac-int-browser_session-input-cookies" class="ac-input" rows="6" placeholder='{"c_user":"…","xs":"…"}  — or Netscape cookie-jar text' style="font-family:monospace;font-size:11px;"></textarea>
+                  <div class="ac-hint" style="margin-top:6px;">Accepts JSON (<code>{"name":"value"}</code>) or Netscape cookie-jar format. Export from your browser using a "cookie editor" extension. Cookies never leave your account.</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <button id="ac-int-browser_session-save" class="ac-btn ac-btn-primary">Save</button>
+                </div>
               </div>
-              <span id="ac-int-create_tools-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <span id="ac-int-browser_session-status" class="ac-status" style="display:none;margin-top:8px;"></span>
+              <details class="ac-details" style="margin-top:12px;">
+                <summary>How agents use this & risks</summary>
+                <div class="ac-details-body">
+                  Enables the <code>web_session_status</code>, <code>web_session_fetch</code>, and <code>web_session_graphql</code> tools. The agent talks to the site exactly as your browser would — useful when no official API exists.
+                  <div style="margin-top:6px;color:var(--fg-muted);">Cookies expire (often daily). The agent will surface a <code>session_expired</code> error when that happens — re-paste fresh cookies here. Some sites' Terms of Service forbid automated access; you accept that risk.</div>
+                </div>
+              </details>
             </div>
 
-            <!-- Web Access -->
-            <div class="ac-card" id="ac-int-web_access-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="globe" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#7aa2f7;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Web Access</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent search the web (DuckDuckGo), look up weather, and geocode addresses via OpenStreetMap. No API keys needed.</div>
-                </div>
-                <span id="ac-int-web_access-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
               </div>
+            </div><!-- /ac-cat-agent-tools -->
 
-              <div id="ac-int-web_access-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Web Access is available on the agent's <strong>Abilities</strong> tab. Bundles <code>web_search</code>, <code>get_weather</code>, and <code>maps_geocode</code>.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-web_access-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
-                </div>
-              </div>
+            <!-- ── Channels (collapsible, collapsed by default) ── -->
+            <details class="ac-category-group" id="ac-cat-channels">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="message-square" class="lucide-icon" style="width:16px;height:16px;color:#26A5E4;"></i>
+                <span class="ac-category-title">Channels</span>
+                <span class="ac-category-count" id="ac-cat-channels-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">How agents send and receive messages. Enable a channel here to make it available to your agents.</p>
 
-              <div id="ac-int-web_access-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Web Access as a toggle to agent admins. Uses free public endpoints (DuckDuckGo, Open-Meteo, Nominatim) — no platform credentials required.</div>
-                <button id="ac-int-web_access-save" class="ac-btn ac-btn-primary">Enable Web Access</button>
-              </div>
-              <span id="ac-int-web_access-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-            </div>
-
-            <!-- Browser Control -->
-            <div class="ac-card" id="ac-int-browser_control-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="mouse-pointer-2" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#9ece6a;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Browser Control</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent drive a real headless Chromium browser (navigate, click, type, screenshot, JS eval) and make arbitrary outbound HTTP requests.</div>
-                </div>
-                <span id="ac-int-browser_control-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
-              </div>
-
-              <div id="ac-int-browser_control-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Browser Control is available on the agent's <strong>Abilities</strong> tab. Bundles <code>browser_action</code> (Playwright) and <code>http_request</code>.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-browser_control-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
-                </div>
-              </div>
-
-              <div id="ac-int-browser_control-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Browser Control as a toggle to agent admins. Each session gets its own persistent Chromium instance.</div>
-                <button id="ac-int-browser_control-save" class="ac-btn ac-btn-primary">Enable Browser Control</button>
-              </div>
-              <span id="ac-int-browser_control-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-            </div>
-
-            <!-- Image Generation -->
-            <div class="ac-card" id="ac-int-image_generation-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="image" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#bb9af7;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Image Generation</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent generate images from text prompts. Pick a provider + model in the <strong>Image Generation</strong> card just above the Agent Abilities section first.</div>
-                </div>
-                <span id="ac-int-image_generation-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
-              </div>
-
-              <div id="ac-int-image_generation-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Image Generation is available on the agent's <strong>Abilities</strong> tab. Generated images are saved under <code>visuals/users/&lt;user_id&gt;/</code>.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-image_generation-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
-                </div>
-              </div>
-
-              <div id="ac-int-image_generation-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Image Generation as a toggle to agent admins. The agent's <code>generate_image</code> tool uses whichever provider you configured under Image Generation.</div>
-                <button id="ac-int-image_generation-save" class="ac-btn ac-btn-primary">Enable Image Generation</button>
-              </div>
-              <span id="ac-int-image_generation-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-            </div>
-
-            <!-- Automation -->
-            <div class="ac-card" id="ac-int-automation-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="clock" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#e0af68;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Automation</div>
-                  <div class="ac-hint" style="margin:0;">Exposes the per-agent <strong>Automation</strong> tab — scheduled tasks and event-triggered jobs that can call integrations.</div>
-                </div>
-                <span id="ac-int-automation-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
-              </div>
-
-              <div id="ac-int-automation-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Automation is available on each agent's <strong>Abilities</strong> tab. Agent admins must toggle it on per agent before the Automation tab appears.</div>
-                <div class="ac-hint" style="margin:8px 0 0;color:#f7768e;"><strong>Warning:</strong> Disabling will permanently delete every agent's scheduled tasks and event subscriptions.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-automation-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
-                </div>
-              </div>
-
-              <div id="ac-int-automation-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Automation as a per-agent toggle. Agents with the toggle off see no Automation tab.</div>
-                <button id="ac-int-automation-save" class="ac-btn ac-btn-primary">Enable Automation</button>
-              </div>
-              <span id="ac-int-automation-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-            </div>
-
-            <!-- Visualizer -->
-            <div class="ac-card" id="ac-int-visualizer-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <i data-lucide="layout" class="lucide-icon" style="width:24px;height:24px;flex-shrink:0;color:#7aa2f7;"></i>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Visualizer</div>
-                  <div class="ac-hint" style="margin:0;">Lets the agent create, edit, rename, and delete pages in the user's <strong>Pages</strong> workspace. Typically only the Page Builder / Visualizer agent needs this on.</div>
-                </div>
-                <span id="ac-int-visualizer-badge" class="ac-int-badge ac-int-badge-off">Disabled</span>
-              </div>
-
-              <div id="ac-int-visualizer-configured" style="display:none;font-size:12px;">
-                <div class="ac-hint" style="margin:0;">Visualizer is available on the agent's <strong>Abilities</strong> tab. Agent admins must toggle it on per agent before the page-authoring tools are exposed.</div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-visualizer-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Disable</button>
-                </div>
-              </div>
-
-              <div id="ac-int-visualizer-form" style="display:block;">
-                <div class="ac-hint" style="margin:0 0 10px;">Enabling exposes Visualizer as a per-agent toggle. With the toggle off, an agent cannot see <code>render_visual</code>, <code>create_page</code>, or any other page-authoring tool.</div>
-                <button id="ac-int-visualizer-save" class="ac-btn ac-btn-primary">Enable Visualizer</button>
-              </div>
-              <span id="ac-int-visualizer-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-            </div>
-
-            <!-- ── Channels ── -->
-            <div class="ac-section-header" style="margin-top:24px;">
-              <i data-lucide="message-square" class="lucide-icon ac-section-icon"></i>
-              <div>
-                <h3 class="ac-section-title" style="font-size:14px;">Channels</h3>
-                <p class="ac-section-desc">How agents send and receive messages. Enable a channel here to make it available to your agents.</p>
-              </div>
-            </div>
-
-            <!-- Telegram Channel -->
+                <!-- Telegram Channel -->
             <div class="ac-card" id="ac-int-telegram-card">
               <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
                 <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
@@ -446,14 +474,19 @@
               </div>
             </div>
 
-            <!-- ── Productivity ── -->
-            <div class="ac-section-header" style="margin-top:24px;">
-              <i data-lucide="briefcase" class="lucide-icon ac-section-icon"></i>
-              <div>
-                <h3 class="ac-section-title" style="font-size:14px;">Productivity</h3>
-                <p class="ac-section-desc">App-level credentials for mail, calendar and file providers. Users connect their personal accounts from the agent's Abilities tab.</p>
-              </div>
-            </div>
+            </div><!-- /ac-category-body -->
+            </details><!-- /ac-cat-channels -->
+
+            <!-- ── Productivity (collapsible, collapsed by default) ── -->
+            <details class="ac-category-group" id="ac-cat-productivity">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="briefcase" class="lucide-icon" style="width:16px;height:16px;color:#4285F4;"></i>
+                <span class="ac-category-title">Productivity</span>
+                <span class="ac-category-count" id="ac-cat-productivity-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">App-level credentials for mail, calendar and file providers. Users connect their personal accounts from the agent's Abilities tab.</p>
 
             <!-- Google OAuth Config -->
             <div class="ac-card" id="ac-int-google-card">
@@ -693,14 +726,22 @@
               </details>
             </div>
 
-            <!-- ── Social Media ── -->
-            <div class="ac-section-header" style="margin-top:24px;">
-              <i data-lucide="share-2" class="lucide-icon ac-section-icon"></i>
-              <div>
-                <h3 class="ac-section-title" style="font-size:14px;">Social Media</h3>
-                <p class="ac-section-desc">App-level credentials for social platform OAuth. Users connect their personal accounts from the agent's Abilities tab.</p>
-              </div>
-            </div>
+                <!-- Coming-soon productivity apps (rendered by app-config.js) -->
+                <div class="ac-abilities-compact ac-soon-rows" id="ac-rows-productivity"></div>
+
+              </div><!-- /ac-category-body -->
+            </details><!-- /ac-cat-productivity -->
+
+            <!-- ── Social Media (root category) ── -->
+            <details class="ac-category-group" id="ac-cat-social">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="share-2" class="lucide-icon" style="width:16px;height:16px;color:#bb9af7;"></i>
+                <span class="ac-category-title">Social Media</span>
+                <span class="ac-category-count" id="ac-cat-social-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">App-level credentials for social platform OAuth. Users connect their personal accounts from the agent's Abilities tab.</p>
 
             <!-- Meta (Facebook + Instagram) OAuth Config -->
             <div class="ac-card" id="ac-int-meta-card">
@@ -1153,14 +1194,19 @@
               </details>
             </div>
 
-            <!-- ── Marketplaces ── -->
-            <div class="ac-section-header" style="margin-top:24px;">
-              <i data-lucide="shopping-bag" class="lucide-icon ac-section-icon"></i>
-              <div>
-                <h3 class="ac-section-title" style="font-size:14px;">Marketplaces</h3>
-                <p class="ac-section-desc">App-level credentials for e-commerce platform OAuth. Sellers connect their accounts from the agent's Abilities tab.</p>
-              </div>
-            </div>
+              </div><!-- /ac-category-body -->
+            </details><!-- /ac-cat-social -->
+
+            <!-- ── Marketplaces (root category) ── -->
+            <details class="ac-category-group" id="ac-cat-marketplace">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="shopping-bag" class="lucide-icon" style="width:16px;height:16px;color:#e0af68;"></i>
+                <span class="ac-category-title">Marketplaces</span>
+                <span class="ac-category-count" id="ac-cat-marketplace-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">App-level credentials for e-commerce platform OAuth. Sellers connect their accounts from the agent's Abilities tab.</p>
 
             <!-- eBay OAuth Config -->
             <div class="ac-card" id="ac-int-ebay-card">
@@ -1391,131 +1437,50 @@
               </details>
             </div>
 
-            <!-- ── Generic providers ── -->
-            <div class="ac-section-header" style="margin-top:24px;">
-              <i data-lucide="globe" class="lucide-icon ac-section-icon"></i>
-              <div>
-                <h3 class="ac-section-title" style="font-size:14px;">Generic Providers</h3>
-                <p class="ac-section-desc">Non-OAuth integrations for sites without a public API.</p>
-              </div>
-            </div>
+            </div><!-- /ac-category-body -->
+            </details><!-- /ac-cat-marketplace -->
 
-            <!-- Web Scraper (generic third-party scraping API) -->
-            <div class="ac-card" id="ac-int-scraper-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
-                  <path fill="#7aa2f7" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 0 1-7.06-4.27c.74-.92 2.85-1.73 7.06-1.73s6.32.81 7.06 1.73A8 8 0 0 1 12 20zm0-8a3 3 0 1 1 3-3 3 3 0 0 1-3 3z"/>
-                </svg>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Web Scraper</div>
-                  <div class="ac-hint" style="margin:0;">Bring-your-own scraping API (Apify, RapidAPI, or any custom HTTP endpoint). Works for any site.</div>
-                </div>
-                <span id="ac-int-scraper-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
+            <!-- ── Payments (root category — coming soon) ── -->
+            <details class="ac-category-group" id="ac-cat-payments">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="credit-card" class="lucide-icon" style="width:16px;height:16px;color:#9ece6a;"></i>
+                <span class="ac-category-title">Payments</span>
+                <span class="ac-category-count" id="ac-cat-payments-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">Accept payments and read transactions. Free to connect via OAuth; providers charge per-transaction fees.</p>
+                <div class="ac-abilities-compact ac-soon-rows" id="ac-rows-payments"></div>
               </div>
+            </details>
 
-              <div id="ac-int-scraper-configured" style="display:none;font-size:12px;">
-                <div style="display:flex;flex-direction:column;gap:6px;">
-                  <div><span style="color:var(--fg-muted);">Provider:</span> <code id="ac-int-scraper-provider" style="font-size:11px;"></code></div>
-                  <div><span style="color:var(--fg-muted);">Endpoint:</span> <code id="ac-int-scraper-endpoint" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div><span style="color:var(--fg-muted);">Actor / Host:</span> <code id="ac-int-scraper-extra" style="font-size:11px;word-break:break-all;"></code></div>
-                </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-scraper-edit" class="ac-btn ac-btn-ghost">Edit</button>
-                  <button id="ac-int-scraper-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
-                </div>
+            <!-- ── Developer (root category — coming soon) ── -->
+            <details class="ac-category-group" id="ac-cat-developer">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="git-branch" class="lucide-icon" style="width:16px;height:16px;color:#7aa2f7;"></i>
+                <span class="ac-category-title">Developer</span>
+                <span class="ac-category-count" id="ac-cat-developer-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">Repositories, issues, and CI. Free — connect with an OAuth app or token.</p>
+                <div class="ac-abilities-compact ac-soon-rows" id="ac-rows-developer"></div>
               </div>
+            </details>
 
-              <div id="ac-int-scraper-form" style="display:block;">
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Provider</label>
-                  <select id="ac-int-scraper-input-provider" class="ac-input">
-                    <option value="apify">Apify</option>
-                    <option value="rapidapi">RapidAPI</option>
-                    <option value="custom_http">Custom HTTP endpoint</option>
-                  </select>
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">API Key</label>
-                  <input type="password" id="ac-int-scraper-input-key" class="ac-input" placeholder="API key / token" autocomplete="off">
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Endpoint <span style="color:var(--fg-muted);font-weight:400;">(optional for Apify / RapidAPI; required for custom_http)</span></label>
-                  <input type="text" id="ac-int-scraper-input-endpoint" class="ac-input" placeholder="https://…" autocomplete="off">
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Actor ID <span style="color:var(--fg-muted);font-weight:400;">(Apify only)</span></label>
-                  <input type="text" id="ac-int-scraper-input-actor" class="ac-input" placeholder="apify/web-scraper" autocomplete="off">
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Host <span style="color:var(--fg-muted);font-weight:400;">(RapidAPI only)</span></label>
-                  <input type="text" id="ac-int-scraper-input-host" class="ac-input" placeholder="example.p.rapidapi.com" autocomplete="off">
-                </div>
-                <div style="margin-top:12px;">
-                  <button id="ac-int-scraper-save" class="ac-btn ac-btn-primary">Save</button>
-                </div>
+            <!-- ── CRM & Marketing (root category — coming soon) ── -->
+            <details class="ac-category-group" id="ac-cat-crm">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="contact" class="lucide-icon" style="width:16px;height:16px;color:#bb9af7;"></i>
+                <span class="ac-category-title">CRM &amp; Marketing</span>
+                <span class="ac-category-count" id="ac-cat-crm-count"></span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">Contacts, deals, and email campaigns. Mostly free OAuth; some products need a paid plan.</p>
+                <div class="ac-abilities-compact ac-soon-rows" id="ac-rows-crm"></div>
               </div>
-              <span id="ac-int-scraper-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-              <details class="ac-details" style="margin-top:12px;">
-                <summary>How agents use this</summary>
-                <div class="ac-details-body">
-                  Enables the <code>web_scrape_search</code> and <code>web_scrape_url</code> tools. The agent decides when to use them based on the user's request — e.g. asking the agent to "search Marketplace for bicycles" will route through this scraper. No site-specific configuration here; site recipes live in the agent's skills prompt.
-                </div>
-              </details>
-            </div>
-
-            <!-- Browser Session (per-user cookie jar for authenticated scraping) -->
-            <div class="ac-card" id="ac-int-browser_session-card">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                <svg viewBox="0 0 24 24" width="24" height="24" style="flex-shrink:0;">
-                  <path fill="#bb9af7" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm6.93 6h-2.95a15.61 15.61 0 0 0-1.38-3.56A8 8 0 0 1 18.93 8zM12 4a13.94 13.94 0 0 1 1.84 4H10.16A13.94 13.94 0 0 1 12 4zM4.26 14a7.69 7.69 0 0 1 0-4h3.38a16.49 16.49 0 0 0 0 4zm.82 2h2.95a15.61 15.61 0 0 0 1.38 3.56A8 8 0 0 1 5.08 16zm2.95-8H5.08a8 8 0 0 1 4.33-3.56A15.61 15.61 0 0 0 8.03 8zM12 20a13.94 13.94 0 0 1-1.84-4h3.68A13.94 13.94 0 0 1 12 20zm2.34-6H9.66a14.4 14.4 0 0 1 0-4h4.68a14.4 14.4 0 0 1 0 4zm.25 5.56A15.61 15.61 0 0 0 15.97 16h2.95a8 8 0 0 1-4.33 3.56zM16.36 14a16.49 16.49 0 0 0 0-4h3.38a7.69 7.69 0 0 1 0 4z"/>
-                </svg>
-                <div style="flex:1;">
-                  <div style="font-weight:600;font-size:14px;">Browser Session</div>
-                  <div class="ac-hint" style="margin:0;">Paste cookies from a site you're already logged into. Lets the agent act on your behalf for sites without an API.</div>
-                </div>
-                <span id="ac-int-browser_session-badge" class="ac-int-badge ac-int-badge-off">Not configured</span>
-              </div>
-
-              <div id="ac-int-browser_session-configured" style="display:none;font-size:12px;">
-                <div style="display:flex;flex-direction:column;gap:6px;">
-                  <div><span style="color:var(--fg-muted);">Domain:</span> <code id="ac-int-browser_session-domain" style="font-size:11px;"></code></div>
-                  <div><span style="color:var(--fg-muted);">User-Agent:</span> <code id="ac-int-browser_session-ua" style="font-size:11px;word-break:break-all;"></code></div>
-                  <div><span style="color:var(--fg-muted);">Cookies stored:</span> <code id="ac-int-browser_session-count" style="font-size:11px;"></code></div>
-                  <div><span style="color:var(--fg-muted);">Saved:</span> <code id="ac-int-browser_session-saved" style="font-size:11px;"></code></div>
-                </div>
-                <div style="margin-top:12px;display:flex;gap:8px;">
-                  <button id="ac-int-browser_session-edit" class="ac-btn ac-btn-ghost">Replace</button>
-                  <button id="ac-int-browser_session-unconfigure" class="ac-btn ac-btn-ghost" style="color:#f7768e;">Unconfigure</button>
-                </div>
-              </div>
-
-              <div id="ac-int-browser_session-form" style="display:block;">
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Domain <span style="color:var(--fg-muted);font-weight:400;">(optional label, e.g. .facebook.com)</span></label>
-                  <input type="text" id="ac-int-browser_session-input-domain" class="ac-input" placeholder=".facebook.com" autocomplete="off">
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">User-Agent <span style="color:var(--fg-muted);font-weight:400;">(leave blank for a default Chrome UA)</span></label>
-                  <input type="text" id="ac-int-browser_session-input-ua" class="ac-input" placeholder="Mozilla/5.0 …" autocomplete="off">
-                </div>
-                <div class="ac-field" style="margin-bottom:10px;">
-                  <label class="ac-label">Cookies</label>
-                  <textarea id="ac-int-browser_session-input-cookies" class="ac-input" rows="6" placeholder='{"c_user":"…","xs":"…"}  — or Netscape cookie-jar text' style="font-family:monospace;font-size:11px;"></textarea>
-                  <div class="ac-hint" style="margin-top:6px;">Accepts JSON (<code>{"name":"value"}</code>) or Netscape cookie-jar format. Export from your browser using a "cookie editor" extension. Cookies never leave your account.</div>
-                </div>
-                <div style="margin-top:12px;">
-                  <button id="ac-int-browser_session-save" class="ac-btn ac-btn-primary">Save</button>
-                </div>
-              </div>
-              <span id="ac-int-browser_session-status" class="ac-status" style="display:none;margin-top:8px;"></span>
-              <details class="ac-details" style="margin-top:12px;">
-                <summary>How agents use this & risks</summary>
-                <div class="ac-details-body">
-                  Enables the <code>web_session_status</code>, <code>web_session_fetch</code>, and <code>web_session_graphql</code> tools. The agent talks to the site exactly as your browser would — useful when no official API exists.
-                  <div style="margin-top:6px;color:var(--fg-muted);">Cookies expire (often daily). The agent will surface a <code>session_expired</code> error when that happens — re-paste fresh cookies here. Some sites' Terms of Service forbid automated access; you accept that risk.</div>
-                </div>
-              </details>
-            </div>
+            </details>
 
           </section>
 
@@ -1533,13 +1498,16 @@
               Configuration is locked to environment variables. UI changes are disabled. Edit the deployment to modify storage settings.
             </div>
 
-            <!-- ── Application Data ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="server" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
-                Application Data
-                <span id="ac-storage-active-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Application Data — shared collapsible pattern (see CSS .ac-category-group) ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="server" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Application Data</span>
+                <span id="ac-storage-active-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <label class="ac-label" style="margin-top:10px;">Provider</label>
               <select id="ac-storage-db-provider" class="ac-input">
@@ -1574,15 +1542,20 @@
                 <div id="ac-db-current-mode" class="ac-hint" style="margin-top:6px;"></div>
                 <div id="ac-db-status" class="ac-hint" style="margin-top:4px;"></div>
               </details>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Secrets Vault ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="key-round" class="lucide-icon" style="width:14px;height:14px;color:#bb9af7;"></i>
-                Secrets Vault
-                <span id="ac-storage-secrets-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Secrets Vault — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="key-round" class="lucide-icon" style="width:16px;height:16px;color:#bb9af7;"></i>
+                <span class="ac-category-title">Secrets Vault</span>
+                <span id="ac-storage-secrets-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <label class="ac-label" style="margin-top:10px;">Provider</label>
               <select id="ac-storage-secrets-provider" class="ac-input">
@@ -1604,15 +1577,20 @@
                 <button id="ac-storage-secrets-save" class="ac-btn ac-btn-primary">Activate</button>
               </div>
               <pre id="ac-storage-secrets-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Page Storage ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="layout-template" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
-                Page Storage
-                <span id="ac-storage-pages-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Page Storage — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="layout-template" class="lucide-icon" style="width:16px;height:16px;color:#9ece6a;"></i>
+                <span class="ac-category-title">Page Storage</span>
+                <span id="ac-storage-pages-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <label class="ac-label" style="margin-top:10px;">Mode</label>
               <select id="ac-storage-pages-mode" class="ac-input">
@@ -1627,15 +1605,20 @@
                 <button id="ac-storage-pages-save" class="ac-btn ac-btn-primary">Activate</button>
               </div>
               <pre id="ac-storage-pages-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Chat Attachments (per-row storage backend) ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="paperclip" class="lucide-icon" style="width:14px;height:14px;color:#bb9af7;"></i>
-                Chat Attachments
-                <span id="ac-attach-active-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Chat Attachments (per-row storage backend) — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="paperclip" class="lucide-icon" style="width:16px;height:16px;color:#bb9af7;"></i>
+                <span class="ac-category-title">Chat Attachments</span>
+                <span id="ac-attach-active-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <div class="ac-hint" style="margin-top:8px;">
                 Where chat attachments (images, voice, dropped files) are stored. Switch any time — existing files keep working because each attachment row remembers which backend wrote it.
@@ -1660,15 +1643,20 @@
               </div>
 
               <div id="ac-attach-counts" class="ac-hint" style="margin-top:8px;font-size:11px;"></div>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Encryption ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="lock" class="lucide-icon" style="width:14px;height:14px;color:#7dcfff;"></i>
-                Encryption
-                <span id="ac-storage-enc-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Encryption — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="lock" class="lucide-icon" style="width:16px;height:16px;color:#7dcfff;"></i>
+                <span class="ac-category-title">Encryption</span>
+                <span id="ac-storage-enc-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <div id="ac-storage-enc-vault-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:#f7768e;color:#f7768e;font-size:11px;">
                 Secrets vault is set to <strong>inline_db</strong> while the database backend is remote. Encryption keys would live in the same DB they protect. Switch the Secrets Vault provider above before enabling per-tenant encryption.
@@ -1699,15 +1687,20 @@
               </div>
 
               <pre id="ac-storage-enc-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Stream Buffer (in-memory per-turn event log for WS replay) ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="activity" class="lucide-icon" style="width:14px;height:14px;color:#7dcfff;"></i>
-                Stream Buffer
-                <span id="ac-storage-sbuf-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;"></span>
+            <!-- ── Stream Buffer (in-memory per-turn event log for WS replay) — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="activity" class="lucide-icon" style="width:16px;height:16px;color:#7dcfff;"></i>
+                <span class="ac-category-title">Stream Buffer</span>
+                <span id="ac-storage-sbuf-badge" class="ac-category-count"></span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
               <div class="ac-hint" style="margin-top:8px;">
                 Each chat turn keeps its events (stream tokens, tool calls, results) in memory so a refresh or session switch can replay what was missed. Buffer is dropped this many seconds after the turn finishes. 0 = drop immediately. Max 3600.
               </div>
@@ -1717,15 +1710,20 @@
                 <button id="ac-storage-sbuf-save" class="ac-btn ac-btn-primary">Save</button>
                 <span id="ac-storage-sbuf-status" class="ac-hint" style="margin-left:6px;"></span>
               </div>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Agent Prompt Templates ── -->
-            <details class="ac-card" open>
-              <summary class="ac-card-label">
-                <i data-lucide="file-stack" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
-                Agent Prompt Templates
-                <span id="ac-tpl-sync-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Agent Prompt Templates — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="file-stack" class="lucide-icon" style="width:16px;height:16px;color:#9ece6a;"></i>
+                <span class="ac-category-title">Agent Prompt Templates</span>
+                <span id="ac-tpl-sync-badge" class="ac-category-count">loading…</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
               <div class="ac-hint" style="margin-top:8px;">
                 Templates seed from <code>data/agents/*.json</code> at boot. Re-seed never overwrites slots edited from the admin UI (<code>source = admin</code>) unless you click <strong>Force Re-Seed</strong>.
               </div>
@@ -1737,14 +1735,19 @@
               <div id="ac-tpl-hash-row" class="ac-hint" style="margin-top:8px;font-family:var(--mono,monospace);font-size:10px;word-break:break-all;"></div>
               <div id="ac-tpl-list" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
               <pre id="ac-tpl-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
-            <!-- ── Data Migration ── -->
-            <details class="ac-card">
-              <summary class="ac-card-label">
-                <i data-lucide="arrow-right-left" class="lucide-icon" style="width:14px;height:14px;color:#9ece6a;"></i>
-                Data Migration
+            <!-- ── Data Migration — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="arrow-right-left" class="lucide-icon" style="width:16px;height:16px;color:#9ece6a;"></i>
+                <span class="ac-category-title">Data Migration</span>
               </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
               <div class="ac-hint" style="margin-top:10px;">
                 Export current backend data to JSON, switch active backend, then import the file. Heavy tables may take a while.
               </div>
@@ -1756,6 +1759,8 @@
                 </label>
               </div>
               <pre id="ac-storage-migrate-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
 
           </section>
@@ -1994,6 +1999,21 @@
             </div>
           </section>
 
+          <!-- ── Features (discovery catalog) ── -->
+          <section id="ac-section-features" class="ac-section">
+            <div class="ac-section-header">
+              <i data-lucide="layers" class="lucide-icon ac-section-icon"></i>
+              <div>
+                <h2 class="ac-section-title">Features</h2>
+                <p class="ac-section-desc">Everything the running app discovered — each capability, how mature it is, whether it's true drop-in, and whether the active edition switches it on. Report only: nothing is gated yet.</p>
+              </div>
+            </div>
+            <div id="ac-features-banner" class="ac-card" style="margin-bottom:14px;">
+              <div style="color:var(--fg-3);font-size:13px;">Loading feature catalog…</div>
+            </div>
+            <div id="ac-features-list"></div>
+          </section>
+
           <!-- ── Users ── -->
           <section id="ac-section-user-management" class="ac-section">
             <div class="ac-section-header">
@@ -2100,50 +2120,120 @@
                 <p class="ac-section-desc">Global behavior toggles for this application.</p>
               </div>
             </div>
-            <div class="ac-card">
-              <div class="ac-field">
-                <label class="ac-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                  <input type="checkbox" id="ac-extend-llm-to-agents" checked style="width:15px;height:15px;accent-color:#7aa2f7;cursor:pointer;">
-                  Extend default LLM to agents
-                </label>
-                <div class="ac-hint">When enabled, agents can select "Use app default" for their LLM. When disabled, each agent must configure its own LLM.</div>
-                <div style="margin-top:10px;padding:10px 12px;background:rgba(224,175,104,0.12);border:1px solid rgba(224,175,104,0.4);border-radius:6px;color:#e0af68;font-size:13px;line-height:1.5;">
-                  <strong>Warning:</strong> Any agents currently configured to use the app default LLM will have their LLM disconnected. They will stop working until an admin assigns them a custom LLM.
+            <!-- ════════════════════════════════════════════════════════════════
+                 COLLAPSIBLE SECTION PATTERN — SHARED ACROSS ADMIN CONFIG PAGES
+                 Each setting group is a `<details class="ac-category-group">`:
+                 a plain text heading (chevron + icon + title), collapsed by
+                 default, that opens to reveal ONE full-width `.ac-card` of
+                 options. NOT a card-within-a-card. The same pattern is used by
+                 Agent Settings (the Agent Tools / Channels / Providers groups).
+                 STYLING IS SYNCED: the look lives in `.ac-category-group` /
+                 `.ac-category-summary` / `.ac-category-body` in ui/css/app3.css.
+                 If you restyle one page's groups, update the shared CSS so every
+                 page (App Settings, Agent Settings, and future pages) stays in
+                 sync — do NOT fork per-page styles.
+                 ════════════════════════════════════════════════════════════════ -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="cpu" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Agent LLM Defaults</span>
+              </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
+                  <div class="ac-field">
+                    <label class="ac-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                      <input type="checkbox" id="ac-extend-llm-to-agents" checked style="width:15px;height:15px;accent-color:#7aa2f7;cursor:pointer;">
+                      Extend default LLM to agents
+                    </label>
+                    <div class="ac-hint">When enabled, agents can select "Use app default" for their LLM. When disabled, each agent must configure its own LLM.</div>
+                    <div style="margin-top:10px;padding:10px 12px;background:rgba(224,175,104,0.12);border:1px solid rgba(224,175,104,0.4);border-radius:6px;color:#e0af68;font-size:13px;line-height:1.5;">
+                      <strong>Warning:</strong> Any agents currently configured to use the app default LLM will have their LLM disconnected. They will stop working until an admin assigns them a custom LLM.
+                    </div>
+                  </div>
+                  <div class="ac-actions">
+                    <button id="ac-app-settings-save" class="ac-btn ac-btn-primary">Save</button>
+                    <span id="ac-app-settings-status" class="ac-status" style="display:none;"></span>
+                  </div>
                 </div>
               </div>
-              <div class="ac-actions">
-                <button id="ac-app-settings-save" class="ac-btn ac-btn-primary">Save</button>
-                <span id="ac-app-settings-status" class="ac-status" style="display:none;"></span>
-              </div>
-            </div>
+            </details>
 
-            <div class="ac-card" style="margin-top:14px;">
-              <div class="ac-field">
-                <label class="ac-label" for="ac-boot-animation">Boot animation</label>
-                <select id="ac-boot-animation" class="ac-input">
-                  <option value="chat-slide-right">Chat slides right, page reveals on left</option>
-                  <option value="page-slide-in">Page slides in from the right</option>
-                  <option value="crossfade">Crossfade</option>
-                </select>
-                <div class="ac-hint">Picks how the chat shrinks and the saved page appears when the app first loads. Saved per browser; applied on the next reload.</div>
-              </div>
-              <div class="ac-field" style="margin-top:14px;">
-                <label class="ac-label" for="ac-boot-mobile-mode">Mobile boot</label>
-                <select id="ac-boot-mobile-mode" class="ac-input">
-                  <option value="chat-first">Always start with chat full-screen</option>
-                  <option value="memory">Remember last view (chat or page)</option>
-                </select>
-                <div class="ac-hint">Mobile only. "Always" forces the chat-first boot then animates to the saved view. "Remember" skips the animation and goes straight to whichever panel you had open last.</div>
-              </div>
-            </div>
-
-            <!-- ── Remote Access (reach this server from a phone / other device) ── -->
-            <details class="ac-card" id="ac-ra-card" open style="margin-top:14px;">
-              <summary class="ac-card-label">
-                <i data-lucide="radio-tower" class="lucide-icon" style="width:14px;height:14px;color:var(--accent);"></i>
-                Remote Access
-                <span id="ac-ra-active-badge" style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400;">loading…</span>
+            <!-- ── Main Panel Pages (tab visibility + order) — shared collapsible pattern ── -->
+            <details class="ac-category-group" id="ac-main-panel-card">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="layout" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Main Panel Pages</span>
+                <span class="ac-category-count">Drag to reorder, toggle visibility</span>
               </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">
+                  Choose which pages appear in the header and in what order. Admin Tools is always visible.
+                </p>
+                <div id="ac-main-panel-list" class="ac-main-panel-list ac-list" style="margin-top:10px;"></div>
+              </div>
+            </details>
+
+            <!-- ── Startup & Boot — shared collapsible pattern ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="power" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Startup &amp; Boot</span>
+              </summary>
+              <div class="ac-category-body">
+                <div class="ac-list" id="ac-boot-list">
+                  <!-- Each setting is a compact row; the dropdown lives in the expanded body. -->
+                  <div class="ac-row" id="ac-boot-anim-row">
+                    <div class="ac-ability-row">
+                      <span class="ac-ability-icon"><i data-lucide="play" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+                      <div class="ac-ability-label">
+                        <div class="ac-ability-name">Boot animation</div>
+                        <div class="ac-ability-desc">How the chat shrinks and the saved page appears when the app first loads. Saved per browser; applied on the next reload.</div>
+                      </div>
+                      <span class="ac-ability-status"></span>
+                      <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+                    </div>
+                    <div class="ac-ability-body">
+                      <select id="ac-boot-animation" class="ac-input" style="width:100%;">
+                        <option value="chat-slide-right">Chat slides right, page reveals on left</option>
+                        <option value="page-slide-in">Page slides in from the right</option>
+                        <option value="crossfade">Crossfade</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="ac-row" id="ac-boot-mobile-row">
+                    <div class="ac-ability-row">
+                      <span class="ac-ability-icon"><i data-lucide="smartphone" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+                      <div class="ac-ability-label">
+                        <div class="ac-ability-name">Mobile boot</div>
+                        <div class="ac-ability-desc">Mobile only. "Always" forces the chat-first boot then animates to the saved view. "Remember" skips the animation and goes straight to whichever panel you had open last.</div>
+                      </div>
+                      <span class="ac-ability-status"></span>
+                      <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+                    </div>
+                    <div class="ac-ability-body">
+                      <select id="ac-boot-mobile-mode" class="ac-input" style="width:100%;">
+                        <option value="chat-first">Always start with chat full-screen</option>
+                        <option value="memory">Remember last view (chat or page)</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
+
+            <!-- ── Remote Access (reach this server from a phone / other device) — shared collapsible pattern ── -->
+            <details class="ac-category-group" id="ac-ra-card">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="radio-tower" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Remote Access</span>
+                <span id="ac-ra-active-badge" class="ac-category-count">loading…</span>
+              </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
 
               <div class="ac-hint" style="margin-top:8px;">
                 Reach this server from your phone or another device. The same-network address always works on your Wi-Fi; pick a method below to reach it from anywhere.
@@ -2228,6 +2318,8 @@
                   </div>
                 </details>
               </div>
+                </div><!-- /.ac-card -->
+              </div><!-- /.ac-category-body -->
             </details>
           </section>
 

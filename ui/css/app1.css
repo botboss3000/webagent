@@ -2635,7 +2635,69 @@ body.light-mode .session-dropdown-menu::-webkit-scrollbar-thumb {
 /* New-session agent picker: a small floating menu anchored under the + button.
    Reuses .agent-dropdown-menu chrome but is body-mounted + fixed-positioned. */
 .new-session-agent-picker {
-    position: fixed;
+    /* ── "Send to agent" long-press affordance ──────────────────────────────────
+   The reverse of the App-control ability: on a still hold (500ms) the floating
+   "Send to agent" button appears near the cursor. During the hold a subtle
+   ripple ring grows at the touch point (300ms → 500ms) to signal the gesture
+   is building. Clicking the button stages a context note (current view, the
+   outlined container, selected text) at the front of the chat box. The
+   container it will capture is outlined via .s2a-highlight. Right-click also
+   works as a desktop fallback. Handler lives in ui/js/sendToAgent.js.
+   Design-system tokens only, so it tracks dark/light. */
+.s2a-fab {
+  position: fixed;
+  z-index: 4000;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  background: var(--accent);
+  color: var(--bg-0);
+  border: none;
+  border-radius: 999px;
+  box-shadow: var(--shadow-lg);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  animation: s2a-fab-in 0.12s ease-out;
+}
+.s2a-fab:hover { background: var(--accent-hover); }
+.s2a-fab .lucide { width: 15px; height: 15px; flex-shrink: 0; }
+@keyframes s2a-fab-in {
+  from { opacity: 0; transform: translateY(3px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* The container that will be captured — outlined while the button is up.
+   outline (not box-shadow) so it's never clipped by an overflow ancestor and
+   adds no layout shift. */
+.s2a-highlight {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 1px;
+  border-radius: 4px;
+  transition: outline-color 0.12s;
+}
+
+/* Ripple ring that appears during the last ~200ms of the 500ms long-press
+   hold, signaling the gesture is about to fire (appears at 280ms). Design-
+   system --accent with low opacity so it works in dark and light mode. */
+.s2a-ripple-ring {
+  position: fixed;
+  z-index: 3999;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2.5px solid var(--accent);
+  opacity: 0.55;
+  pointer-events: none;
+  animation: s2a-ripple-grow 0.32s ease-out forwards;
+}
+@keyframes s2a-ripple-grow {
+  from { transform: scale(0.4); opacity: 0.55; }
+  to   { transform: scale(1.4); opacity: 0; }
+}
     top: auto;
     left: auto;
     width: auto;

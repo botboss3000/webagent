@@ -90,12 +90,12 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "list_delegatable_agents":       {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     # ── Terminal control (gated by terminal_control) — open/drive interactive
     #    terminal programs; open/send/close write, so they pass guardrails ──
-    "terminal_open":                 {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": []},
+    "terminal_open":                 {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": []},
     "terminal_read":                 {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
-    "terminal_send":                 {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": []},
+    "terminal_send":                 {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": []},
     "terminal_wait":                 {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "terminal_list":                 {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
-    "terminal_close":                {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": True,  "agent_types": []},
+    "terminal_close":                {"stages": ["guardrails", "execute_tools"],                 "destructive": True,  "requires_confirmation": False, "agent_types": []},
     # ── App control (gated by app_control) — rearrange the viewer's own screen,
     #    writes no data ──
     "set_app_view":                  {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
