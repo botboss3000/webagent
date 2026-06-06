@@ -8,7 +8,7 @@ FEATURE = {
     "summary": "page-authoring tools for the Pages workspace.",
     # Visualizer tools are injected dynamically; no static tool names to gate.
     "tools": [],
-    "group": "basic",
+    "group": "core",
     "icon": "layout",
     "color": "#7aa2f7",
     "description": "Lets the agent create, edit, rename, and delete pages in the Pages workspace.",

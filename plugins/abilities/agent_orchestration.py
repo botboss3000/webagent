@@ -49,7 +49,7 @@ FEATURE = {
         # Run the prompt optimizer (handler in core).
         "run_optimizer",
     ],
-    "group": "basic",
+    "group": "core",
     "icon": "share-2",
     "color": "#7dcfff",
     "description": (

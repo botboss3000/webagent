@@ -10,7 +10,7 @@ FEATURE = {
               "list_agent_tools", "create_agent", "update_agent",
               "set_agent_tool", "edit_agent_prompt",
               "set_agent_ability", "manage_agent_skills"],
-    "group": "basic",
+    "group": "core",
     "icon": "users",
     "color": "#9ece6a",
     "description": "Lets the agent list, create, and update the user's own agents — their prompts, abilities, per-tool availability/permissions, and skills. On by default; switch off to remove it platform-wide.",

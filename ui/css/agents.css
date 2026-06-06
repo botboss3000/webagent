@@ -2467,8 +2467,31 @@ body.light-mode .agent-mock-create-btn:hover {
   border-radius: 4px;
 }
 .icon-picker-close:hover {
-  color: var(--fg-1, #c0caf5);
-  background: rgba(255,255,255,0.06);
+	color: var(--fg-1, #c0caf5);
+	background: rgba(255,255,255,0.06);
+}
+
+.icon-picker-header-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.icon-picker-save {
+	background: none;
+	border: none;
+	color: var(--fg-3, #565f89);
+	font-size: 16px;
+	cursor: pointer;
+	padding: 2px 6px;
+	border-radius: 4px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+.icon-picker-save:hover {
+	color: var(--success, #9ece6a);
+	background: rgba(158,206,106,0.12);
 }
 
 .icon-picker-search-wrap {
@@ -2535,22 +2558,4 @@ body.light-mode .agent-mock-create-btn:hover {
   padding: 24px;
   color: var(--fg-3, #565f89);
   font-size: 13px;
-}
-
-.icon-picker-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px 12px;
-  border-top: 1px solid var(--border, #2a2a4a);
-}
-
-.icon-picker-selected {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.icon-picker-clear {
-  font-size: 12px;
 }

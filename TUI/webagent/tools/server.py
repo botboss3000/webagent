@@ -64,7 +64,7 @@ def _clear_pidinfo() -> None:
 # ── process primitives (cross-platform, testable in isolation) ────────────────
 def _venv_python(project_root: Path) -> Optional[Path]:
     """The checkout's own venv interpreter, or None if the env isn't built yet."""
-    for venv_dir in (".venv", "venv"):
+    for venv_dir in (".venv", "venv", "venv313"):
         cand = (project_root / venv_dir / ("Scripts" if _IS_WIN else "bin")
                 / ("python.exe" if _IS_WIN else "python"))
         # The symlink may be broken on the host (e.g. inside proot), but the
@@ -263,6 +263,69 @@ async def server_stop(ctx: ToolContext) -> str:
     _clear_pidinfo()
     ctx.audit("server_stop", {"pid": pid}, ok, "terminated" if ok else "terminate failed")
     return f"[server] stopped (pid {pid})." if ok else f"[server] could not stop pid {pid}."
+
+
+async def server_kill_all(ctx: ToolContext) -> str:
+    """Force-kill EVERY process on port 8080 (not just the tracked server) plus any
+    run.py / proot wrappers. Like kill.bat: finds all listeners on 8080, sends SIGKILL,
+    clears the tracked PID state. Returns a list of what was killed."""
+    if not ctx.writes_enabled:
+        return WRITES_DISABLED_MSG
+    killed: list[int] = []
+    my_pid = os.getpid()
+
+    # 1) Every listener on port 8080 — SIGKILL every PID holding the port
+    try:
+        out = subprocess.run(["lsof", "-ti", "tcp:8080", "-sTCP:LISTEN"],
+                             capture_output=True, text=True, timeout=10).stdout
+        for tok in out.split():
+            if tok.isdigit():
+                pid = int(tok)
+                if pid != my_pid:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        killed.append(pid)
+                    except OSError:
+                        pass
+    except Exception:
+        pass
+
+    # 2) Any tracked PID from the pidfile (might not show on lsof if it died weird)
+    info = _read_pidinfo()
+    if info and info.get("pid"):
+        pid = int(info["pid"])
+        if pid not in killed:
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed.append(pid)
+            except OSError:
+                pass
+    _clear_pidinfo()
+
+    # 3) Any run.py processes (the proot wrapper or a bare run.py)
+    try:
+        out = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=10).stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            if "run.py" in line or "proot-distro login" in line:
+                pid_s = parts[1]
+                if pid_s.isdigit():
+                    pid = int(pid_s)
+                    if pid != my_pid and pid not in killed:
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                            killed.append(pid)
+                        except OSError:
+                            pass
+    except Exception:
+        pass
+
+    killed.sort()
+    ctx.audit("server_kill_all", {"pids": killed}, bool(killed), "done")
+    return (f"[server] force-killed {len(killed)} process(es) on port 8080"
+            + (f" (pids {killed})" if killed else " — nothing found."))
 
 
 async def server_restart(ctx: ToolContext) -> str:

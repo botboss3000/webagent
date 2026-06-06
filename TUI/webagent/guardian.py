@@ -58,6 +58,7 @@ _NEW_CONSOLE = 0x00000010    # CREATE_NEW_CONSOLE — a real, visible window for
 
 # ── cadence / thresholds ──────────────────────────────────────────────────────
 POLL_SECONDS = 5.0           # gap between supervision ticks
+_FAIL_LIMIT = 36             # consecutive launch failures before giving up (~3 min)
 HEALTH_TIMEOUT = 4.0         # per-probe HTTP timeout
 INITIAL_GRACE = 8.0          # let the TUI's own autostart begin before we act
 SERVER_SETTLE = 60.0         # after launching the server, give it this long to boot
@@ -96,6 +97,12 @@ def _server_pid_file() -> Path:
 
 def _server_log_file() -> Path:
     return data_dir() / "server.log"
+
+
+def _gfail_file() -> Path:
+    """Marker file the guardian writes when it gives up on launching the server.
+    The TUI reads this to show why the guardian is dead or dormant."""
+    return data_dir() / "guardian.fail"
 
 
 # ── tiny JSON + process primitives (no psutil, no tools.server import) ─────────
@@ -159,7 +166,7 @@ def _terminate(pid: int) -> bool:
 
 def _venv_python(project_root: Path) -> Optional[Path]:
     """The webAgent checkout's own venv interpreter (for running ``run.py``)."""
-    for venv_dir in (".venv", "venv"):
+    for venv_dir in (".venv", "venv", "venv313"):
         cand = (project_root / venv_dir / ("Scripts" if _IS_WIN else "bin")
                 / ("python.exe" if _IS_WIN else "python"))
         if cand.exists() or cand.is_symlink():
@@ -274,7 +281,21 @@ def stop_guardian() -> bool:
         _gpid_file().unlink()
     except OSError:
         pass
+    # Clear the fail marker so a dead guardian doesn't leave stale warnings.
+    try:
+        _gfail_file().unlink()
+    except OSError:
+        pass
     return ok
+
+
+def read_fail_marker() -> Optional[dict]:
+    """Read the guardian's failure marker if present.
+    Returns None if the guardian is fine or hasn't failed."""
+    data = _read_json(_gfail_file())
+    if isinstance(data, dict):
+        return data
+    return None
 
 
 def _spawn_guardian() -> bool:
@@ -315,6 +336,7 @@ class Guardian:
         self._srv_restart_times: list[float] = []
         self._srv_pause_logged = 0.0
         self._last_tui_relaunch = 0.0
+        self._consecutive_fails = 0
 
     # ── singleton ─────────────────────────────────────────────────────────
     def _claim_singleton(self) -> bool:
@@ -355,6 +377,7 @@ class Guardian:
         if root is None:
             return                                     # no checkout linked → nothing to keep
         if _is_healthy():
+            self._consecutive_fails = 0                # success resets the counter
             return
         now = time.monotonic()
         if now - self._srv_launched_at < SERVER_SETTLE:
@@ -367,16 +390,32 @@ class Guardian:
             return
         py = _venv_python(root)
         if py is None:
-            return                                     # env not built yet
+            self._consecutive_fails += 1
+            if self._consecutive_fails >= _FAIL_LIMIT:
+                _write_json_atomic(_gfail_file(),
+                                   {"reason": f"venv not found (looked for .venv/bin/python, venv/bin/python in {root})",
+                                    "consecutive_fails": self._consecutive_fails})
+                _log(f"giving up after {self._consecutive_fails} consecutive launch failures — venv not found")
+                raise SystemExit(1)                    # exit the guardian so the TUI sees it's dead
+            return
         for pid in _pids_on_port(PORT):                # clear a zombie holding the port
             _terminate(pid)
         pid = self._spawn_server(py, root)
         if pid:
+            self._consecutive_fails = 0                # success resets the counter
             self._srv_launched_at = time.monotonic()
             self._srv_restart_times.append(self._srv_launched_at)
             _write_json_atomic(_server_pid_file(),
                                {"pid": pid, "port": PORT, "project": str(root)})
             _log(f"relaunched the web server (pid {pid})")
+        else:
+            self._consecutive_fails += 1
+            if self._consecutive_fails >= _FAIL_LIMIT:
+                _write_json_atomic(_gfail_file(),
+                                   {"reason": f"server launch failed {self._consecutive_fails} times in a row",
+                                    "consecutive_fails": self._consecutive_fails})
+                _log(f"giving up after {self._consecutive_fails} consecutive launch failures")
+                raise SystemExit(1)                    # exit the guardian
 
     def _spawn_server(self, py: Path, root: Path) -> int:
         try:

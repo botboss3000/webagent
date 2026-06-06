@@ -545,6 +545,10 @@ class ServerManagerApp(App):
         self._cfg_settings: dict = {}                # last-fetched app settings (config view)
         self._cfg_provider: dict = {}                # last-fetched LLM provider (config view)
         self._cfg_provider_pick: str = ""            # highlighted provider preset (App Config)
+        self._server_procs: list[dict] = []          # cached process scan for the server panel
+        self._server_panel_state: str = "idle"       # idle | loading | loaded
+        self._server_loading_dots: str = ""           # animated dots during loading
+        self._loading_timer = None                    # set_interval for dots
         self._diag_text: str = ""                    # last diagnostics readout (sidebar view)
         self._logs_text: str = ""                    # last server-logs readout (sidebar view)
         self._playbook_key: str = ""                 # issue currently expanded in the Playbook view
@@ -1233,12 +1237,15 @@ class ServerManagerApp(App):
 
     async def _do_server(self, which: str) -> None:
         from .tools import server as srv
-        fn = {"start": srv.server_start, "stop": srv.server_stop,
-              "restart": srv.server_restart}[which]
-        if which in ("start", "restart"):
-            self._server_state = "starting"     # spin the header pill while it boots
-            self._refresh_status()
-        msg = await fn(self._server_ctx())
+        if which == "kill_all":
+            msg = await srv.server_kill_all(self._server_ctx())
+        else:
+            fn = {"start": srv.server_start, "stop": srv.server_stop,
+                  "restart": srv.server_restart}[which]
+            if which in ("start", "restart"):
+                self._server_state = "starting"     # spin the header pill while it boots
+                self._refresh_status()
+            msg = await fn(self._server_ctx())
         self._log(f"[{self.cc['dim']}]{msg}[/]")
         self._tui_log.server(f"server {which}: {msg}")
         self._server_state = await server_health() if self.project_root else "n/a"
@@ -1575,6 +1582,23 @@ class ServerManagerApp(App):
             return out + self._playbook_widgets()
         if kind == "admin":
             out += self._repo_dir_widgets()
+        # Guardian status line for the server panel (shown above action buttons).
+        if kind == "server":
+            fail = guardian.read_fail_marker()
+            if fail:
+                reason = fail.get("reason", "unknown")
+                out.append(Static(Text(f"\u26a0 Guardian: gave up\n{reason}",
+                         style=c["error"]), classes="panel-sub", markup=False))
+            elif guardian.guardian_alive():
+                pid = guardian.guardian_pid()
+                out.append(Static(Text(f"\U0001f7e2 Guardian alive (pid {pid})",
+                         style=f"bold {c['success']}"), classes="panel-sub", markup=False))
+            elif guardian.read_enabled():
+                out.append(Static(Text("\u25cb Guardian: not running (will start on next tick)",
+                         style=c["dim"]), classes="panel-sub", markup=False))
+            else:
+                out.append(Static(Text("\u25cb Guardian: OFF",
+                         style=c["dim"]), classes="panel-sub", markup=False))
         ka_label = f"[Keep-alive: {'ON' if guardian.read_enabled() else 'OFF'}]"
         specs = {
             "admin": [("[App Config]", "panel_config"),
@@ -1585,10 +1609,53 @@ class ServerManagerApp(App):
                       ("[Diagnostics]", "diagnostics"), ("[Logs]", "server_logs"),
                       (ka_label, "guardian_toggle")],
             "server": [("[Start]", "server_start"), ("[Restart]", "server_restart"),
-                       ("[Kill]", "server_stop")],
+                       ("[Kill All]", "server_kill_all"),
+                       ("[Update List]", "server_refresh_procs")],
         }.get(kind, [])
         for label, action in specs:
             out.append(self._panel_btn(label, action))
+        # Process list below the action buttons
+        if kind == "server":
+            if self._server_panel_state == "loading":
+                dots = self._server_loading_dots or "."
+                out.append(Static(Text(f"  Loading{dots}",
+                         style=c["dim"]), classes="panel-sub", markup=False))
+            elif self._server_panel_state == "loaded":
+                procs = self._server_procs
+                if not procs:
+                    out.append(Static(Text("  No processes on port 8080",
+                             style=c["dim"]), classes="panel-sub", markup=False))
+                else:
+                    for p in procs:
+                        pid = p["pid"]
+                        # Status icon
+                        if p.get("serving"):
+                            dot = G.DOT_LIVE if hasattr(G, 'DOT_LIVE') else "\u25cf"
+                            status_clr = c.get("success", "#7be06a")
+                            note = "serving"
+                        elif p.get("zombie"):
+                            dot = "\u26a0"
+                            status_clr = c.get("error", "#ff5f56")
+                            note = "zombie"
+                        elif p.get("tracked"):
+                            dot = "\u25cb"
+                            status_clr = c.get("tool", "#ff9d2f")
+                            note = "tracked"
+                        else:
+                            dot = "\u25cb"
+                            status_clr = c["dim"]
+                            note = "idle"
+                        age = p.get("age", "?")
+                        label = f"  {dot} pid {pid}  {age}  [{note}]"
+                        out.append(Static(Text(label, style=status_clr),
+                                 classes="panel-sub", markup=False))
+                        # Per-process kill button with PID in label
+                        kill_btn = self._value_btn(f"[Kill {pid}]", "server_kill_pid",
+                                                    "proc-kill-btn", pid)
+                        cmd = p.get("cmd_short", "")
+                        if cmd:
+                            kill_btn.tooltip = cmd
+                        out.append(kill_btn)
         return out
 
     # ── Admin: repo directory field (paste a folder → hand it to the agent) ────
@@ -1927,6 +1994,57 @@ class ServerManagerApp(App):
         if self.project_root is None:
             return
         self._open_panel("server")
+        # Auto-load the process list with loading animation
+        self._server_panel_state = "loading"
+        self._server_loading_dots = "."
+        # Start the dot animation
+        if self._loading_timer is not None:
+            try:
+                self._loading_timer.stop()
+            except Exception:
+                pass
+        self._loading_timer = self.set_interval(0.5, self._tick_loading_dots)
+        self._rebuild_panel()
+        # Kick off the actual scan
+        self.run_worker(self._load_server_procs(), group="procsscan", exclusive=True)
+    
+    def _tick_loading_dots(self) -> None:
+        """Animate loading dots: . → .. → ... → . → ..."""
+        dots = self._server_loading_dots
+        if len(dots) >= 3:
+            self._server_loading_dots = "."
+        else:
+            self._server_loading_dots = dots + "."
+        if self._panel_kind == "server":
+            self._rebuild_panel()
+    
+    async def _load_server_procs(self) -> None:
+        """Scan for port 8080 processes, then show results."""
+        import asyncio
+        from .procscan import scan_webagent_processes
+        from .tools import server as srv
+        procs = await asyncio.to_thread(scan_webagent_processes)
+        info = srv._read_pidinfo()
+        tracked = int(info["pid"]) if info and info.get("pid") else None
+        # Attach tracked flag
+        for p in procs:
+            p["tracked"] = (p["pid"] == tracked)
+        health = await server_health()
+        for p in procs:
+            zombie = p["on_8080"] and health != "running"
+            orphan = (not p["on_8080"]) and not p["tracked"] and health != "running"
+            p["zombie"] = zombie or orphan
+            p["serving"] = health == "running" and p["on_8080"]
+        self._server_procs = procs
+        self._server_panel_state = "loaded"
+        if self._loading_timer is not None:
+            try:
+                self._loading_timer.stop()
+            except Exception:
+                pass
+            self._loading_timer = None
+        if self._panel_kind == "server":
+            self._rebuild_panel()
 
     def action_panel_git(self) -> None:
         if self.project_root is None:
@@ -2312,6 +2430,12 @@ class ServerManagerApp(App):
             if fn is not None:
                 fn()
 
+    @on(Click, ".proc-kill-btn")
+    def _on_proc_kill(self, event: Click) -> None:
+        pid = getattr(event.widget, "_btn_value", None)
+        if pid and isinstance(pid, int):
+            self.action_server_kill_pid(pid)
+
     def on_click(self, event: Click) -> None:
         # Click-outside does not close the panel — re-clicking its own category
         # toggles it shut. This ensures clicking in the main/chat area never
@@ -2561,6 +2685,87 @@ class ServerManagerApp(App):
             self._log(f"[{self.cc['dim']}]no server to start in onboarding mode[/]")
             return
         self.run_worker(self._do_server("start"), group="server", exclusive=True)
+
+    def action_server_scan(self) -> None:
+        """Scan for webAgent processes on/off port 8080 and refresh the panel."""
+        self.run_worker(self._scan_and_show_procs(), group="procsscan", exclusive=False)
+
+    def action_server_kill_all(self) -> None:
+        """Force-kill EVERY process on port 8080 (tracked server, zombies, proot)."""
+        if self.project_root is None:
+            self._log(f"[{self.cc['dim']}]no server to kill in onboarding mode[/]")
+            return
+        self.run_worker(self._do_server("kill_all"), group="server", exclusive=True)
+
+    def action_server_kill_pid(self, pid: int) -> None:
+        """Kill a single specific PID on port 8080."""
+        from .tools.server import _terminate
+        if _terminate(pid):
+            self._log(f"[{self.cc['tool']}]{G.OK} killed pid {pid}[/]")
+        else:
+            self._log(f"[{self.cc['error']}]failed to kill pid {pid}[/]")
+        # Auto-refresh the process list in-place
+        if self._panel_kind == "server":
+            self._server_panel_state = "loading"
+            self._server_loading_dots = "."
+            if self._loading_timer is not None:
+                try:
+                    self._loading_timer.stop()
+                except Exception:
+                    pass
+            self._loading_timer = self.set_interval(0.5, self._tick_loading_dots)
+            self._rebuild_panel()
+            self.run_worker(self._load_server_procs(), group="procsscan", exclusive=True)
+
+    def action_server_refresh_procs(self) -> None:
+        """Refresh the process list in the server panel."""
+        if self.project_root is None:
+            return
+        self._server_panel_state = "loading"
+        self._server_loading_dots = "."
+        if self._loading_timer is not None:
+            try:
+                self._loading_timer.stop()
+            except Exception:
+                pass
+        self._loading_timer = self.set_interval(0.5, self._tick_loading_dots)
+        self._rebuild_panel()
+        self.run_worker(self._load_server_procs(), group="procsscan", exclusive=True)
+
+    async def _scan_and_show_procs(self) -> None:
+        """Scan running webAgent processes and cache the result, then rebuild panel."""
+        import asyncio
+        from .procscan import scan_webagent_processes
+        from .tools import server as srv
+        procs = await asyncio.to_thread(scan_webagent_processes)
+        info = srv._read_pidinfo()
+        tracked = int(info["pid"]) if info and info.get("pid") else None
+        self._server_procs = procs
+        health = await server_health()
+        lines = ["── Processes ──"]
+        stale_count = 0
+        for p in procs:
+            pid, on, cmd = p["pid"], p["on_8080"], p["cmdline"]
+            who = "tracked" if pid == tracked else ("port 8080" if on else "run.py")
+            zombie = on and health != "running"
+            orphan = (not on) and pid != tracked and health != "running"
+            if zombie or orphan:
+                stale_count += 1
+                label = " ⚠ stale (zombie)" if zombie else " ⚠ stale (orphan)"
+            elif on:
+                label = " ✓ serving" if health == "running" else " ? unresponsive"
+            else:
+                label = ""
+            label += f"  [{who}]"
+            lines.append(f"  pid {pid}{label}")
+        if not procs:
+            lines.append("  (no webAgent processes found)")
+        else:
+            srv_status = f"[tracked {[p['pid'] for p in procs if p['pid']==tracked][0] if tracked else '?'}]"
+            lines.append(f"  → health check: {health}")
+        # Log the scan result in the transcript
+        self._log_block("\n".join(lines))
+        self._rebuild_panel()
 
     def action_guardian_toggle(self) -> None:
         """Flip the external keep-alive guardian on/off. ON keeps the web server AND

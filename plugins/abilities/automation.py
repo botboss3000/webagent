@@ -7,7 +7,7 @@ FEATURE = {
     "status": "beta",
     "summary": "scheduled tasks + event subscriptions.",
     "tools": ["list_event_sources", "list_delivery_channels", "event_subscribe"],
-    "group": "basic",
+    "group": "core",
     "icon": "clock",
     "color": "#e0af68",
     "description": "Scheduled tasks and event-triggered jobs that can call integrations.",

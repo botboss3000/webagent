@@ -8,6 +8,9 @@ import { chatActivitySessionChanged } from './chat-activity.js';
 import { consumeReplayedEventsFor } from './agentWs.js';
 import { apiPath } from './config.js';
 import { icon } from './icons.js';
+// SHARED-DELETE-CONTROL — the trash→hazard→spin delete affordance is shared with
+// the agents page (ui/js/agents.js). See ui/js/delete-control.js.
+import { advanceDeleteBtn, resetDeleteBtn } from './delete-control.js';
 import { renderAvatar } from './user-avatar.js';
 import {
   listAccounts,
@@ -46,8 +49,6 @@ const _VS_BUFFER = 400;
 // Refs to the real addChatBubble / _createBubble for recycling
 let _origAddChatBubble = null;
 let _origCreateBubble = null;
-let _totalUnpinnedCount = 0; // total unpinned sessions on the server (for "+ N more" row)
-
 // ── Last-active session per agent ──────────────────────────────────────────
 // Map<agentId, sessionId> — persisted in localStorage so switching back to an
 // agent resumes the session you were last using with it.
@@ -150,45 +151,13 @@ function interruptSession(sessionId) {
 let _agentsCache = [];
 
 // The header "+" new-session button starts as a spinner and only becomes a
-// clickable plus once the agent list has loaded, so early clicks during the
-// cold-start window (before the handler/agents are ready) don't half-fire.
-// Flipped on by _setNewSessionBtnReady() at the end of populateAgentSelect.
-let _newSessionBtnReady = false;
 // Whether the server is currently reachable. Flipped by the health poll in
-// reconnect.js via setChatHeaderReachable(). While unreachable, the new-session
-// "+" and the session-dropdown chevron both render as spinners and ignore
-// clicks, since neither can act on fresh data until the server is back.
+// reconnect.js. When unreachable the session-dropdown chevron shows a spinner
+// and ignores clicks.
 let _serverReachable = true;
 
-// Render the new-session "+" button to match the current state: a spinner while
-// the agent list is still loading OR the server is unreachable, a clickable plus
-// otherwise. Idempotent, so it can be called from either gate.
-function _renderNewSessionBtn() {
-  const btn = document.getElementById('session-new');
-  if (!btn) return;
-  const spinner = !_newSessionBtnReady || !_serverReachable;
-  if (spinner) {
-    if (!btn.classList.contains('loading')) {
-      btn.classList.add('loading');
-      btn.innerHTML = icon('loader-2', { size: '24px' });
-    }
-    btn.disabled = true;
-    btn.title = _serverReachable ? 'Loading…' : 'Server unreachable…';
-  } else if (btn.classList.contains('loading')) {
-    btn.classList.remove('loading');
-    btn.innerHTML = icon('plus', { size: '24px' });
-    btn.disabled = false;
-    btn.title = 'New session';
-  }
-}
-
-function _setNewSessionBtnReady() {
-  _newSessionBtnReady = true;
-  _renderNewSessionBtn();
-}
-
-// Health-poll hook (reconnect.js): toggle the chat-header controls between their
-// normal state and the "waiting for the server" spinner state.
+// Health-poll hook (reconnect.js): toggle the session-dropdown between normal
+// and offline-spinner states.
 export function setChatHeaderReachable(reachable) {
   reachable = reachable !== false;
   if (reachable === _serverReachable) return;
@@ -198,7 +167,6 @@ export function setChatHeaderReachable(reachable) {
     if (_serverReachable) dropdown.removeAttribute('data-offline');
     else dropdown.dataset.offline = 'true';
   }
-  _renderNewSessionBtn();
 }
 
 // Removed: _toggleAgentPin, _setAgentTriggerLabel, _renderAgentRows,
@@ -232,11 +200,7 @@ function _applyAgentReorder(orderedIds) {
 }
 
 export async function populateAgentSelect(userId) {
-  // No user yet (cold start / anon id not resolved): still flip the spinner to a
-  // clickable + so the new-session button never sits dead. Starting a fresh
-  // session doesn't require the agent list — the click handler falls back to a
-  // direct new session when nothing is cached.
-  if (!userId) { _setNewSessionBtnReady(); return; }
+  if (!userId) { return; }
 
   try {
     // Share the agent data with agents.js so it doesn't re-fetch.
@@ -311,9 +275,6 @@ export async function populateAgentSelect(userId) {
     // populateSessionSelect(userId);
   } catch (e) {
     console.warn('Failed to load agents for selector:', e);
-  } finally {
-    // Agents are loaded (or failed) — turn the spinner into a clickable +.
-    _setNewSessionBtnReady();
   }
 }
 
@@ -653,24 +614,20 @@ function _renderSessionRows() {
     } else if (s.has_unread) {
       statusHtml = `<span class="session-row-status session-status-unread" title="New response ready">${icon('check-circle', { size: '12px' })}</span>`;
     }
+    // Spawn badge: orchestration helper sessions carry a `spawn-` id prefix.
+    // Mark them so the user can tell a spawned helper apart from a normal chat.
+    const _isSpawn = typeof s.id === 'string' && s.id.startsWith('spawn-');
+    const spawnBadge = _isSpawn
+      ? `<span class="session-row-spawn-badge" title="Spawned helper session">${icon('git-branch', { size: '11px' })}</span>`
+      : '';
     row.innerHTML = `
       <span class="row-drag-handle" data-drag-handle title="Drag to reorder · hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       ${statusHtml}
-      <span class="session-row-title" title="Hold to rename"><span class="session-row-agent-icon">${agentIcon.replace(/</g, '&lt;')}</span><span class="session-row-sep"> </span>${_truncate(label, 28).replace(/</g, '&lt;')}</span>
+      <span class="session-row-title" title="Hold to rename"><span class="session-row-agent-icon">${agentIcon.replace(/</g, '&lt;')}</span><span class="session-row-sep"> </span>${spawnBadge}${_truncate(label, 28).replace(/</g, '&lt;')}</span>
       <button class="session-row-delete" title="Delete session" data-id="${s.id}" data-state="trash">${icon('trash-2', { size: '14px' })}</button>
     `;
     menu.appendChild(row);
-  }
-  // Append "+ N more" row if there are unpinned sessions beyond what was returned
-  const unpinnedReturned = sorted.filter(s => !s.pinned).length;
-  const extra = _totalUnpinnedCount - unpinnedReturned;
-  if (extra > 0) {
-    const moreRow = document.createElement('div');
-    moreRow.className = 'session-row-more';
-    moreRow.textContent = `+ ${extra} more sessions`;
-    moreRow.title = `${extra} additional sessions not shown — increase limit to see them`;
-    menu.appendChild(moreRow);
   }
 }
 
@@ -720,8 +677,6 @@ export async function populateSessionSelect(userId) {
       run_status: s.run_status || null,
       has_unread: !!s.has_unread,
     }));
-    // Store total_count so _renderSessionRows can show the "+ N more" row
-    _totalUnpinnedCount = data.total_count || 0;
     // If current session not yet in DB (fresh session before first msg),
     // synthesize a row so trigger label shows "New Session" and it appears
     if (app.currentSessionId && !_sessionsCache.some(s => s.id === app.currentSessionId)) {
@@ -739,6 +694,7 @@ export async function populateSessionSelect(userId) {
     _renderSessionRows();
     _setTriggerLabel();
     _setAgentTriggerLabel();  // refresh agent status icon based on session states
+    _fetchAgentRunningStatuses();  // refresh running-status sprites in agent dropdown
     _fetchAgentRunningStatuses();  // refresh running-status sprites in agent dropdown
     _updateHeaderSessionCounter();
   } catch (e) {
@@ -1295,6 +1251,11 @@ export async function loadSessionChat(sessionId) {
   if (typeof app.refreshActiveSkills === 'function') {
     try { app.refreshActiveSkills(); } catch (_) { /* best-effort */ }
   }
+  // Mount/unmount the terminal-tunnel UI for the session being opened (a
+  // session bound to a terminal shows the live terminal + key palette).
+  if (typeof app.refreshTunnelForSession === 'function') {
+    try { app.refreshTunnelForSession(); } catch (_) { /* best-effort */ }
+  }
   try {
     // Check cache first
     const cached = _messageCache.get(sessionId);
@@ -1343,6 +1304,11 @@ export async function loadSessionChat(sessionId) {
       // Attach tool-call panels from cached data
       _attachToolCallsFromMessages(cached.messages);
 
+      // Show live context from cached messages
+      if (typeof app.setContextFromMessages === 'function') {
+        app.setContextFromMessages(cached.messages);
+      }
+
       // Infinite-scroll: auto-loads when the user scrolls to the top
 
       app.chatMessages.scrollTop = app.chatMessages.scrollHeight;
@@ -1384,6 +1350,10 @@ export async function loadSessionChat(sessionId) {
       app.addChatBubble('agent', 'New session. Start typing below.');
       if (app.currentUserId) populateSessionSelect(app.currentUserId);
       _messageCache.delete(sessionId);
+      // Reset ctx for the new session
+      if (typeof app.setContextFromMessages === 'function') {
+        app.setContextFromMessages([]);
+      }
       return;
     }
 
@@ -1395,11 +1365,20 @@ export async function loadSessionChat(sessionId) {
       loadedAt: Date.now(),
     });
 
+    // Show live context from loaded messages
+    if (typeof app.setContextFromMessages === 'function') {
+      app.setContextFromMessages(msgs);
+    }
+
     if (msgs.length === 0) {
       app.addChatBubble(
         'agent',
         'Session loaded. No messages yet \u2014 start typing below.',
       );
+      // Reset ctx to 0 for fresh session
+      if (typeof app.setContextFromMessages === 'function') {
+        app.setContextFromMessages([]);
+      }
       return;
     }
 
@@ -1456,14 +1435,48 @@ export function _cacheAppendMessage(sessionId, msg) {
 
   // Refresh the timestamp so the cache doesn't go stale while actively chatting
   cached.loadedAt = Date.now();
+  // Update ctx indicator after every new message
+  if (typeof app.setContextFromMessages === 'function') {
+    app.setContextFromMessages(cached.messages);
+  }
 }
 
 /** Call before first connectAgent() so agent onopen can refresh users. */
+/**
+ * Live-apply an auto-generated session name pushed from the backend titler
+ * (app/agent/session_titler.py) over the per-user WebSocket. Two phases:
+ *   status 'generating' → show the header flower-spinner while the LLM thinks
+ *   status 'done'       → store the new title + refresh the header label
+ * The cache is updated for ANY session so the sidebar shows the new name on its
+ * next render; the header spinner/label only changes for the active session.
+ */
+function applySessionTitle(event) {
+  const sid = event && (event.session_id || event.sessionId);
+  if (!sid) return;
+  const status = event.status || 'done';
+  const dropdown = document.getElementById('session-dropdown');
+  const isCurrent = sid === app.currentSessionId;
+
+  if (status === 'generating') {
+    if (isCurrent && dropdown) dropdown.dataset.titling = 'true';
+    return;
+  }
+
+  // status === 'done'
+  if (event.title) {
+    const found = _sessionsCache.find(s => s.id === sid);
+    if (found) found.title = event.title;
+  }
+  if (isCurrent && dropdown) delete dropdown.dataset.titling;
+  if (isCurrent) _setTriggerLabel();
+}
+
 export function registerSessionApi() {
   app.populateUserSelect = populateUserSelect;
   app.populateSessionSelect = populateSessionSelect;
   app.populateAgentSelect = populateAgentSelect;
   app.loadSessionChat = loadSessionChat;
+  app.applySessionTitle = applySessionTitle;
   // Dead-WS fallback: re-render the current session straight from the DB.
   app.reloadCurrentSession = () => {
     if (app.currentSessionId) loadSessionChat(app.currentSessionId);
@@ -1658,9 +1671,8 @@ export function initSessions() {
   let _sessionsLoaded = false;
   function openMenu() {
     if (!menu) return;
-    // Opening one header dropdown closes the other — treat the gesture as
-    // an outside-click for any peer menu.
-    closeAgentMenu();
+    // (The peer agent dropdown was removed, so there's no longer a sibling
+    // menu to close here.)
     menu.hidden = false;
     dropdown.classList.add('open');
     _resetAllDeleteButtons();
@@ -1767,34 +1779,23 @@ export function initSessions() {
   /**
    * Two-click delete: first click shows ⚠️ (warning), second click deletes.
    * Any other interaction (clicking elsewhere, opening menu) resets all buttons.
+   *
+   * SHARED-DELETE-CONTROL — the state machine lives in ui/js/delete-control.js
+   * and is mirrored on the agents page (ui/js/agents.js). Don't re-inline it.
    */
   function handleDeleteClick(btn, sid) {
-    const state = btn.dataset.state;
-    if (state === 'trash') {
-      // First click: switch to warning state
-      btn.dataset.state = 'warning';
-      btn.classList.add('warning');
-      btn.title = 'Click again to confirm delete';
-      btn.innerHTML = icon('alert-triangle', { size: '14px' });
-      // Reset all other delete buttons back to trash
-      document.querySelectorAll('.session-row-delete[data-state="warning"]').forEach(other => {
-        if (other !== btn) _resetDeleteBtn(other);
-      });
-    } else if (state === 'warning') {
-      // Second click: show spinner + delete
-      btn.dataset.state = 'deleting';
-      btn.classList.remove('warning');
-      btn.title = 'Deleting…';
-      btn.innerHTML = icon('loader-2', { size: '14px' });
-      deleteSession(sid);
-    }
+    advanceDeleteBtn(btn, {
+      // Arming this row disarms any other row that was waiting to confirm.
+      onArm: (b) => document.querySelectorAll('.session-row-delete[data-state="warning"]').forEach(other => {
+        if (other !== b) _resetDeleteBtn(other);
+      }),
+      onConfirm: () => deleteSession(sid),
+    });
   }
 
   function _resetDeleteBtn(btn) {
-    btn.dataset.state = 'trash';
-    btn.classList.remove('warning');
-    btn.title = 'Delete session';
-    btn.innerHTML = icon('trash-2', { size: '14px' });
+    // SHARED-DELETE-CONTROL — see ui/js/delete-control.js
+    resetDeleteBtn(btn, { title: 'Delete session' });
   }
 
   // Reset all delete buttons to trash state (e.g. when menu opens/closes)
@@ -2016,11 +2017,6 @@ export function initSessions() {
     if (e.key === 'Escape' && menu && !menu.hidden) closeMenu();
   });
 
-  // New session button — start a fresh session. When the user owns more than
-  // one agent, clicking + opens a small picker so they choose which agent the
-  // new session belongs to; with a single agent (or none) it starts directly.
-  const sessionNewBtn = document.getElementById('session-new');
-
   /** Create a fresh session, optionally switching to a chosen agent first. */
   function _startNewSession(agentId) {
     app.abortChatStream?.();
@@ -2064,7 +2060,7 @@ export function initSessions() {
     return !!_agentPickerEl && document.body.contains(_agentPickerEl);
   }
   function _onAgentPickerOutside(e) {
-    if (_agentPickerEl && !_agentPickerEl.contains(e.target) && !e.target.closest('#session-new') && !e.target.closest('#session-new-header-btn')) {
+    if (_agentPickerEl && !_agentPickerEl.contains(e.target) && !e.target.closest('#session-new-header-btn')) {
       _closeAgentPicker();
     }
   }
@@ -2092,7 +2088,7 @@ export function initSessions() {
     document.body.appendChild(picker);
     // Anchor under the triggering + button. If the header button triggered
     // this, anchor below it instead of the chat-panel button.
-    const anchorBtn = anchorEl || document.getElementById('session-new') || sessionNewBtn;
+    const anchorBtn = anchorEl;
     const r = anchorBtn.getBoundingClientRect();
     picker.style.top = Math.round(r.bottom + 6) + 'px';
     const w = picker.offsetWidth || 200;
@@ -2116,26 +2112,14 @@ export function initSessions() {
   // no race on whether the cache happened to be populated at click time.
 
   let _newSessionBusy = false;     // a load is in flight — ignore extra clicks
-  let _newSessionClickTimer = null; // pending single-click (waiting for a 2nd)
-
-  // Swap the + into a spinner (or back) while the agent list loads on click.
-  function _setNewSessionBtnSpinning(on) {
-    const b = document.getElementById('session-new');
-    if (!b) return;
-    b.classList.toggle('loading', on);
-    b.title = on ? 'Loading agents…' : 'New session';
-    b.innerHTML = icon(on ? 'loader-2' : 'plus', { size: '24px' });
-  }
 
   // Make sure the agent list has been fetched at least once. populateAgentSelect
   // caches the fetch on window.__agentsSharedData, so this only hits the network
   // the first time; later calls are effectively instant.
   async function _ensureAgentsLoaded() {
     if (window.__agentsSharedData || !app.currentUserId) return;
-    _setNewSessionBtnSpinning(true);
     try { await populateAgentSelect(app.currentUserId); }
     catch (_) { /* fall through — we still let the user start a session */ }
-    finally { _setNewSessionBtnSpinning(false); }
   }
 
   // Single click: load agents (with spinner) if needed, then pick or start.
@@ -2157,74 +2141,30 @@ export function initSessions() {
     }
   }
 
-  // Double click: skip the picker entirely, start fresh on the current agent.
-  function _onNewSessionDouble() {
-    _closeAgentPicker();
-    _startNewSession(app.currentAgentId || null);
-  }
-
-  // Delegated on document (capture) so it fires even if the #session-new button
-  // is re-rendered/replaced after init or sits under another element — we just
-  // need the click to land anywhere on (or inside) #session-new. A short timer
-  // holds the single-click action so a second click can promote it to a
-  // double-click instead.
-  document.addEventListener('click', (e) => {
-    const btn = e.target.closest && e.target.closest('#session-new');
-    if (!btn) return;
-    e.stopPropagation();
-    e.preventDefault();
-    if (_newSessionClickTimer) return; // 2nd click of a pair — dblclick handles it
-    _newSessionClickTimer = setTimeout(() => {
-      _newSessionClickTimer = null;
-      _onNewSessionSingle();
-    }, 220);
-  }, true);
-
-  document.addEventListener('dblclick', (e) => {
-    const btn = e.target.closest && e.target.closest('#session-new');
-    if (!btn) return;
-    e.stopPropagation();
-    e.preventDefault();
-    if (_newSessionClickTimer) { clearTimeout(_newSessionClickTimer); _newSessionClickTimer = null; }
-    _onNewSessionDouble();
-  }, true);
-
-  // The handler is wired, so flip the boot spinner to a clickable + right away
-  // (the button starts disabled in chat.html). The on-click flow above handles
-  // loading agents itself, so the + no longer has to wait on the initial
-  // populateAgentSelect — which on a cold server start can take many seconds.
-  _setNewSessionBtnReady();
-
-  // Header delete button — two-click confirm (same pattern as dropdown rows)
+  // Header delete button — two-click confirm (same pattern as dropdown rows).
+  // SHARED-DELETE-CONTROL — see ui/js/delete-control.js (mirrored in agents.js).
   const sessionDelHeader = document.getElementById('session-delete-header');
   if (sessionDelHeader) {
+    const _resetHeaderDel = () => {
+      clearTimeout(sessionDelHeader._delTimer);
+      resetDeleteBtn(sessionDelHeader, { size: '18px', title: 'Delete session' });
+    };
     sessionDelHeader.addEventListener('click', (e) => {
       e.stopPropagation();
       const sid = app.currentSessionId;
       if (!sid) return;
-      const state = sessionDelHeader.dataset.state;
-      if (state === 'trash') {
-        sessionDelHeader.dataset.state = 'warning';
-        sessionDelHeader.title = 'Click again to confirm delete';
-        sessionDelHeader.innerHTML = icon('alert-triangle', { size: '14px' });
-        sessionDelHeader.style.color = '#e5a83e';
-        setTimeout(() => {
-          sessionDelHeader.dataset.state = 'trash';
-          sessionDelHeader.title = 'Delete session';
-          sessionDelHeader.innerHTML = icon('trash-2', { size: '14px' });
-          sessionDelHeader.style.color = '';
-        }, 3000);
-      } else if (state === 'warning') {
-        sessionDelHeader.dataset.state = 'deleting';
-        sessionDelHeader.title = 'Deleting…';
-        sessionDelHeader.innerHTML = '<span class="session-status-running" style="display:inline-flex;width:18px;height:18px;">' + icon('loader-2', { size: '18px' }) + '</span>';
-        sessionDelHeader.style.color = '';
-        deleteSession(sid).then(() => {
-          sessionDelHeader.dataset.state = 'trash';
-          sessionDelHeader.title = 'Delete session';
-          sessionDelHeader.innerHTML = icon('trash-2', { size: '14px' });
-        });
-      }
+      advanceDeleteBtn(sessionDelHeader, {
+        size: '18px', spinSize: '18px',
+        // Auto-revert if the user arms it but doesn't confirm within 3s.
+        onArm: () => {
+          clearTimeout(sessionDelHeader._delTimer);
+          sessionDelHeader._delTimer = setTimeout(_resetHeaderDel, 3000);
+        },
+        onConfirm: () => {
+          clearTimeout(sessionDelHeader._delTimer);
+          deleteSession(sid).then(_resetHeaderDel);
+        },
+      });
     });
   }
 
@@ -2274,33 +2214,9 @@ export function initSessions() {
     _renderAgentRows();
     _setAgentTriggerLabel();
   }
-  const agentDelHeader = document.getElementById('agent-delete-header');
-  if (agentDelHeader) {
-    agentDelHeader.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const aid = app.currentAgentId;
-      if (!aid) return;
-      const state = agentDelHeader.dataset.state;
-      if (state === 'trash') {
-        agentDelHeader.dataset.state = 'warning';
-        agentDelHeader.title = 'Click again to confirm delete';
-        agentDelHeader.innerHTML = icon('alert-triangle', { size: '14px' });
-        agentDelHeader.style.color = '#ff5577';
-        setTimeout(() => {
-          agentDelHeader.dataset.state = 'trash';
-          agentDelHeader.title = 'Delete agent';
-          agentDelHeader.innerHTML = icon('trash-2', { size: '14px' });
-          agentDelHeader.style.color = '';
-        }, 3000);
-      } else if (state === 'warning') {
-        confirmDeleteAgent(aid);
-        agentDelHeader.dataset.state = 'trash';
-        agentDelHeader.title = 'Delete agent';
-        agentDelHeader.innerHTML = icon('trash-2', { size: '14px' });
-        agentDelHeader.style.color = '';
-      }
-    });
-  }
+  // (The header agent-delete button and its confirmDeleteAgent handler were
+  // removed along with the agent dropdown UI — no #agent-delete-header element
+  // exists anymore.)
 
   // ── Custom agent dropdown ──
   // Agent dropdown UI removed — the full block (agentDropdown, agentTrigger,
@@ -2308,12 +2224,21 @@ export function initSessions() {
   // confirmDeleteAgent, openAgentConfig, _headerRenameAgent, agent-new, and
   // their event wiring) has been deleted.
 
-  // Keep: switchToAgent, app.switchToAgent, startWebagentSession
-  // (these are the core agent-switching logic, still needed by page chat pills).
+  // Expose so other modules (e.g. the Pages prompt bar) can drive the
+  // right-side chat agent without duplicating session/teardown logic.
+  app.switchToAgent = switchToAgent;
 
-  // switchToAgent and startWebagentSession are defined above — we skip the
-  // old inline copy that was inside the agent dropdown event wiring.
-  // app.switchToAgent and app.startWebagentSession are already set above.
+  // Ensure the user's webAgent (the `default` template) exists, switch the
+  // chat to it, and start a brand-new session. This is the single entry point
+  // for every page chat pill — Agents, Pages, Source Control, Agent Settings —
+  // and for the "no agent yet" fallback in chat.js. Returns the agent id.
+  async function startWebagentSession() {
+    const id = await ensureWebagentAgent(app.currentUserId);
+    switchToAgent(id, { forceNewSession: true, silent: true });
+    return id;
+  }
+  app.startWebagentSession = startWebagentSession;
+  app.ensureWebagentAgent = ensureWebagentAgent;
 
   // ── Header new-session button (main header, beside Chat toggle) ──
   // Shows the chat panel and immediately starts a brand-new session, skipping
@@ -2372,4 +2297,217 @@ export function initSessions() {
   setInterval(() => {
     _updateHeaderSessionCounter();
   }, 10000);
+
+  // ── Swipe navigation between pinned sessions ──
+  // Horizontal swipe on the transcript area: the current session's bubbles
+  // slide out and the next pinned session's actual bubbles slide in.
+  (function _initPinSwipeNavigation() {
+    const inner = app.chatMessages;            // #chat-messages-inner (scroller)
+    const wrapper = inner && inner.parentElement; // #chat-messages (position: relative)
+    if (!inner || !wrapper) return;
+
+    let _startX = 0, _startY = 0, _startT = 0;
+    let _active = false;
+    let _stashedDirection = 0;
+    let _nextPanel = null; // a sibling panel sliding in from the side
+    let _pinnedPreloaded = false;
+
+    function _pinnedInOrder() {
+      const pinned = _sessionsCache.filter(s => s.pinned);
+      const order = new Map(_sessionsCache.map((s, i) => [s.id, i]));
+      return pinned.sort((a, b) => (order.get(a.id) || 0) - (order.get(b.id) || 0));
+    }
+
+    function _targetSid(direction) {
+      const pinned = _pinnedInOrder();
+      if (!pinned.length) return null;
+      const cur = pinned.findIndex(s => s.id === app.currentSessionId);
+      let idx;
+      if (cur === -1) idx = direction === 1 ? 0 : pinned.length - 1;
+      else idx = (cur + direction + pinned.length) % pinned.length;
+      return pinned[idx].id;
+    }
+
+    function _preloadAllPinned() {
+      if (_pinnedPreloaded) return;
+      _pinnedPreloaded = true;
+      for (const s of _pinnedInOrder()) {
+        if (s.id !== app.currentSessionId) {
+          _fetchMessages(s.id, 20).then(data => {
+            if (!data.restricted && data.messages) {
+              _messageCache.set(s.id, { messages: data.messages, loadedAt: Date.now() });
+            }
+          }).catch(() => {});
+        }
+      }
+    }
+
+    /** Render cached messages into a container as proper chat bubbles. */
+    function _renderBubbles(sid, container) {
+      const cached = _messageCache.get(sid);
+      if (!cached || !cached.messages || !cached.messages.length) {
+        container.innerHTML =
+          '<div class="chat-loading-wrap">' +
+            '<div class="chat-loading-spinner">' +
+              '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>' +
+            '</div>' +
+          '</div>';
+        return;
+      }
+      container.innerHTML = '';
+      for (const msg of cached.messages) {
+        let text = (msg.content || '').replace(/\n\n\[Tool calls: .*/, '').trim();
+        if (!text && msg.role === 'assistant') continue;
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble ' + (msg.role === 'user' ? 'user' : 'agent');
+        if (msg.status === 'error') bubble.classList.add('error');
+        if (msg.status === 'interrupted') bubble.classList.add('interrupted');
+        if (msg.id) bubble.setAttribute('data-msg-id', msg.id);
+        if (msg.role === 'user') {
+          const label = document.createElement('span');
+          label.className = 'label';
+          label.textContent = 'You';
+          bubble.appendChild(label);
+          const body = document.createElement('div');
+          body.className = 'bubble-body';
+          body.textContent = text;
+          bubble.appendChild(body);
+        } else {
+          // Matches the markup _fillAgentBubble creates
+          const textClass = text.includes('```') ? 'md-body' : 'plain-body';
+          const body = document.createElement('div');
+          body.className = textClass;
+          if (textClass === 'plain-body') {
+            body.textContent = text;
+          } else {
+            body.style.whiteSpace = 'pre-wrap';
+            body.textContent = text;
+          }
+          bubble.appendChild(body);
+        }
+        container.appendChild(bubble);
+      }
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function _ensureNextPanel(direction) {
+      const sid = _targetSid(direction);
+      if (!sid) { _cleanNextPanel(); return null; }
+      if (_nextPanel && _nextPanel.dataset.sid === sid) return _nextPanel;
+
+      _cleanNextPanel();
+      const panel = document.createElement('div');
+      panel.className = 'chat-messages-next';
+      panel.dataset.sid = sid;
+      // Position: starts off-screen left (-100%) or right (+100%)
+      panel.style.transform = 'translateX(' + (direction === 1 ? '100%' : '-100%') + ')';
+      panel.scrollTop = 0;
+      _renderBubbles(sid, panel);
+      wrapper.appendChild(panel);
+      _nextPanel = panel;
+      return panel;
+    }
+
+    function _cleanNextPanel() {
+      if (_nextPanel) { _nextPanel.remove(); _nextPanel = null; }
+    }
+
+    function _toast(msg) {
+      const old = wrapper.querySelector('.pin-swipe-toast');
+      if (old) old.remove();
+      const t = document.createElement('div');
+      t.className = 'pin-swipe-toast';
+      t.textContent = msg;
+      wrapper.prepend(t);
+      requestAnimationFrame(() => t.classList.add('show'));
+      setTimeout(() => t.classList.remove('show'), 1800);
+      setTimeout(() => t.remove(), 2300);
+    }
+
+    function _go(direction) {
+      _cleanNextPanel();
+      const pinned = _pinnedInOrder();
+      if (!pinned.length) { _toast('No pinned sessions for quick navigation'); return; }
+      const cur = pinned.findIndex(s => s.id === app.currentSessionId);
+      let idx;
+      if (cur === -1) idx = direction === 1 ? 0 : pinned.length - 1;
+      else idx = (cur + direction + pinned.length) % pinned.length;
+      switchToSession(pinned[idx].id);
+    }
+
+    function _applyOffset(dx) {
+      const dir = dx > 0 ? -1 : 1; // right → prev (-1), left → next (1)
+      if (dir !== _stashedDirection) {
+        _stashedDirection = dir;
+        _cleanNextPanel();
+        _ensureNextPanel(dir);
+      }
+
+      // Convert px drag to fraction of wrapper width
+      const w = wrapper.clientWidth || 380;
+      const frac = Math.max(-1, Math.min(1, dx / w)); // -1..1
+
+      // Slide the current inner in pixels (as the user drags)
+      inner.style.transition = 'none';
+      inner.style.transform = 'translateX(' + Math.round(dx) + 'px)';
+      inner.style.opacity = String(Math.max(0.3, 1 - Math.abs(frac)));
+
+      // Slide the next panel from the opposite side (in %)
+      if (_nextPanel) {
+        _nextPanel.style.transition = 'none';
+        const offset = dir === 1 ? (1 + frac) * 100 : (-1 + frac) * 100;
+        _nextPanel.style.transform = 'translateX(' + Math.round(offset) + '%)';
+        _nextPanel.style.opacity = String(Math.min(1, Math.abs(frac) * 2));
+      }
+    }
+
+    function _resetOffset(instant) {
+      inner.style.transition = instant ? 'none' : 'transform 0.3s cubic-bezier(.22,.68,0,1), opacity 0.3s ease';
+      inner.style.transform = 'translateX(0)';
+      inner.style.opacity = '1';
+      inner.style.willChange = '';
+
+      if (_nextPanel) {
+        _nextPanel.style.transition = instant ? 'none' : 'transform 0.3s cubic-bezier(.22,.68,0,1), opacity 0.25s ease';
+        _nextPanel.style.transform = 'translateX(' + (_stashedDirection === 1 ? '100%' : '-100%') + ')';
+        _nextPanel.style.opacity = '0';
+      }
+      _stashedDirection = 0;
+    }
+
+    setTimeout(_preloadAllPinned, 2000);
+
+    wrapper.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+      if (e.target.closest('#chat-input-area, button, input, textarea, select, .chat-pill, #chat-header')) return;
+      _startX = e.clientX; _startY = e.clientY; _startT = Date.now();
+      _active = true;
+      _preloadAllPinned();
+    });
+
+    wrapper.addEventListener('pointermove', (e) => {
+      if (!_active) return;
+      const dx = e.clientX - _startX;
+      const dy = e.clientY - _startY;
+      if (Math.abs(dy) > Math.abs(dx) + 10) { _active = false; _resetOffset(); return; }
+      if (Math.abs(dx) > 5) _applyOffset(dx);
+    });
+
+    wrapper.addEventListener('pointerup', (e) => {
+      if (!_active) { _resetOffset(true); return; }
+      _active = false;
+      const dx = e.clientX - _startX;
+      const dt = Date.now() - _startT;
+      if (dt < 500 && Math.abs(dx) > 20) {
+        // Snap to next instantly before switching
+        _resetOffset(true);
+        _go(dx > 0 ? -1 : 1);
+      } else {
+        _resetOffset(false);
+      }
+    });
+
+    wrapper.addEventListener('pointercancel', () => { _active = false; _resetOffset(false); });
+    wrapper.addEventListener('pointerleave', () => { _active = false; _resetOffset(false); });
+  })();
 }

@@ -7,7 +7,7 @@ FEATURE = {
     "status": "beta",
     "summary": "define new DB-persisted tools at runtime.",
     "tools": ["create_tool"],
-    "group": "basic",
+    "group": "core",
     "icon": "wrench",
     "color": "#7dcfff",
     "description": "Lets the agent define new tools in the database. No credentials.",

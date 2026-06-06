@@ -385,6 +385,7 @@ body.light-mode .chat-mode-btn:hover {
     overflow-y: auto;
     overscroll-behavior-y: contain;
     -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
     padding: 12px 8px 40px 8px;
     display: flex;
     flex-direction: column;
@@ -455,6 +456,52 @@ body.light-mode .chat-mode-btn:hover {
 body.light-mode .chat-loading-wrap {
   color: #9a7c65;
 }
+
+/* ── Pin-swipe toast ── */
+.pin-swipe-toast {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.92);
+  background: #1a1b2ee0;
+  backdrop-filter: blur(8px);
+  border: 1px solid #2a2a4a;
+  border-radius: 12px;
+  padding: 12px 24px;
+  font-size: 13px;
+  color: #c0caf5;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 15;
+  opacity: 0;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.pin-swipe-toast.show {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* ── Pin-swipe next panel ── */
+.chat-messages-next {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  padding: 12px 8px 40px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a4a transparent;
+  z-index: 14;
+  background: #13132a;
+  opacity: 0;
+  pointer-events: none;
+  border-left: 2px solid #2a2a4a;
+}
+
 .chat-bubble {
     padding: 10px 14px;
     border-radius: 12px;
@@ -2553,8 +2600,10 @@ body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label 
     width: 100%;
     min-width: 0;
     max-width: none;
-    max-height: 360px;
+    max-height: min(480px, 60vh);
     overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a4a transparent;
     background: #1a1a2e;
     border: 1px solid #2a2a4a;
     border-radius: 8px;
@@ -2569,6 +2618,20 @@ body.light-mode .agent-dropdown-menu {
     border-color: #ffdec4;
     box-shadow: 0 8px 24px rgba(0,0,0,0.1);
   }
+/* Thin scrollbar for the session dropdown (Chrome/Safari) */
+.session-dropdown-menu::-webkit-scrollbar {
+    width: 4px;
+}
+.session-dropdown-menu::-webkit-scrollbar-track {
+    background: transparent;
+}
+.session-dropdown-menu::-webkit-scrollbar-thumb {
+    background: #2a2a4a;
+    border-radius: 2px;
+}
+body.light-mode .session-dropdown-menu::-webkit-scrollbar-thumb {
+    background: #d4c5b0;
+}
 /* New-session agent picker: a small floating menu anchored under the + button.
    Reuses .agent-dropdown-menu chrome but is body-mounted + fixed-positioned. */
 .new-session-agent-picker {

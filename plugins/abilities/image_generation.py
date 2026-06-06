@@ -7,7 +7,7 @@ FEATURE = {
     "status": "beta",
     "summary": "generate_image via the configured image model.",
     "tools": ["generate_image"],
-    "group": "basic",
+    "group": "core",
     "icon": "image",
     "color": "#bb9af7",
     "description": "Lets the agent generate images from text prompts. Requires a provider + model config.",

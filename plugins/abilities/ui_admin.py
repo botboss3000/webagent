@@ -7,7 +7,7 @@ FEATURE = {
     "status": "beta",
     "summary": "admin UI configuration tools.",
     "tools": [],
-    "group": "basic",
+    "group": "core",
     "icon": "paintbrush",
     "color": "#7dcfff",
     "description": "Edits only front-end files (ui/ — CSS & HTML); never backend code or the shell. On by default.",

@@ -115,9 +115,35 @@ def _runpy_procs() -> dict[int, str]:
     return procs
 
 
+def process_age(pid: int) -> str:
+    """Human-readable age for a PID, e.g. '00:12:34' or '3d 02:15'.
+    Returns '?' on any failure."""
+    try:
+        import subprocess
+        out = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=5,
+                             **_NO_WINDOW).stdout.strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    return "?"
+
+
+def process_stat(pid: int) -> str:
+    """Process state letter from /proc (Linux) or '?'."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        # field 3 is the state (after pid, comm)
+        return stat.split()[2] if len(stat.split()) > 2 else "?"
+    except Exception:
+        return "?"
+
+
 def scan_webagent_processes(port: int = 8080) -> list[dict]:
     """Merge port-8080 listeners and webAgent python processes into one list:
-    ``[{pid, cmdline, on_8080}]`` sorted by pid. Never raises."""
+    ``[{pid, cmdline, on_8080, age, stat, cmd_short}]`` sorted by pid.
+    Never raises."""
     try:
         on_port = listeners_on(port)
     except Exception:
@@ -129,9 +155,24 @@ def scan_webagent_processes(port: int = 8080) -> list[dict]:
     pids = set(on_port) | set(by_cmd.keys())
     out = []
     for pid in sorted(pids):
+        cmd = by_cmd.get(pid, "")
+        # shorten the command line for display
+        cmd_short = cmd
+        if "python" in cmd_short or "python3" in cmd_short:
+            # try to show just the meaningful tail
+            for marker in ("run.py", "webagent", "-m webagent"):
+                idx = cmd_short.find(marker)
+                if idx != -1:
+                    cmd_short = cmd_short[idx:]
+                    break
+        if len(cmd_short) > 50:
+            cmd_short = cmd_short[:47] + "..."
         out.append({
             "pid": pid,
-            "cmdline": by_cmd.get(pid, ""),
+            "cmdline": cmd,
+            "cmd_short": cmd_short,
             "on_8080": pid in on_port,
+            "age": process_age(pid),
+            "stat": process_stat(pid),
         })
     return out

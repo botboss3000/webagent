@@ -33,7 +33,10 @@ let tokenBarEl = null;   // #chat-token-bar
 let tokensInEl = null;   // #chat-tokens-in
 let tokensOutEl = null;  // #chat-tokens-out
 let tokenSpinnerEl = null; // #chat-token-spinner
-let modelCtxEl = null;   // #chat-model-ctx (active model's context / max output)
+let footerLeftEl = null;  // #chat-footer-left — click target for model picker
+let modelCtxEl = null;   // #chat-model-ctx (live context tokens / model's max limit)
+let _contextTokens = 0;  // live assembled context tokens (from context_status events)
+let _modelContextLimit = null; // model's context window limit (from current-model-info)
 let cumulativeIn = 0;
 let cumulativeOut = 0;
 let _streamCharCount = 0;     // chars streamed in current ongoing LLM call
@@ -197,8 +200,8 @@ function addTokens(inputTokens, outputTokens) {
 
 function _fmtCtxNum(n) {
   if (!n || typeof n !== 'number') return '';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`;
-  if (n >= 1000) return `${Math.round(n / 1000)}K`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 10_000) return `${(n / 1000).toFixed(1)}K`;
   return `${n}`;
 }
 
@@ -211,28 +214,228 @@ async function refreshModelContext() {
     const headers = {};
     const tok = localStorage.getItem('auth_token');
     if (tok) headers.Authorization = `Bearer ${tok}`;
-    // Resolve the model for the CURRENTLY-active agent (its custom model if set,
-    // else the user default) — matches what the run will actually use.
     const aid = app.currentAgentId || '';
     const url = apiPath('/admin/settings/current-model-info')
       + (aid ? `?agent_id=${encodeURIComponent(aid)}` : '');
     const res = await fetch(url, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = await res.json();
-    const ctx = _fmtCtxNum(d.context);
-    const out = _fmtCtxNum(d.max_output);
-    if (!ctx && !out) { modelCtxEl.style.display = 'none'; modelCtxEl.innerHTML = ''; return; }
-    const parts = [];
-    if (ctx) parts.push(`<span class="chat-token-label">ctx</span><span class="chat-ctx-value">${ctx}</span>`);
-    if (out) parts.push(`<span class="chat-token-label">max</span><span class="chat-ctx-value">${out}</span>`);
-    modelCtxEl.innerHTML = parts.join('<span class="chat-ctx-sep">·</span>');
-    modelCtxEl.title = `${d.model || 'model'} — context ${d.context ? d.context.toLocaleString() : '?'} tokens`
-      + (d.max_output ? `, max output ${d.max_output.toLocaleString()} tokens` : '');
-    modelCtxEl.style.display = '';
+    _modelContextLimit = d.context || null;
+    _currentModelName = d.model || '';
+    _renderCtxIndicator();
   } catch (e) {
     modelCtxEl.style.display = 'none';
     modelCtxEl.innerHTML = '';
   }
+}
+
+/** Estimate context tokens from an array of message objects (chars/4 heuristic). */
+function _estimateContextFromMessages(messages) {
+  if (!messages || !messages.length) return 0;
+  let totalChars = 0;
+  for (const m of messages) {
+    const c = m.content;
+    if (typeof c === 'string') totalChars += c.length;
+    else if (c) totalChars += String(c).length;
+    // Also count tool_calls payload if present
+    if (m.tool_calls) {
+      try { totalChars += JSON.stringify(m.tool_calls).length; }
+      catch (_) { totalChars += String(m.tool_calls).length; }
+    }
+  }
+  return Math.max(0, Math.round(totalChars / 4));
+}
+
+/** Set the live context from an array of messages (called on session load). */
+function setContextFromMessages(messages) {
+  _contextTokens = _estimateContextFromMessages(messages);
+  _renderCtxIndicator();
+}
+
+/** Render the ctx indicator: live context tokens / model's max context limit */
+function _renderCtxIndicator() {
+  if (!modelCtxEl) return;
+  const ctx = _contextTokens || 0;
+  const max = _modelContextLimit;
+  if (!max && !ctx) { modelCtxEl.style.display = 'none'; modelCtxEl.innerHTML = ''; return; }
+  modelCtxEl.innerHTML = `<span class="chat-token-label">ctx</span> ${_fmtCtxNum(ctx)} <span class="chat-ctx-sep">/</span> ${_fmtCtxNum(max)}`;
+  modelCtxEl.title = `${_currentModelName || '??'} — ctx ${ctx.toLocaleString()} / max ${max ? max.toLocaleString() : '?'} — click to switch model`;
+  modelCtxEl.style.display = '';
+}
+
+// ── Model picker (click ctx indicator) ───────────────────────────────────────
+
+let _modelPickerEl = null;       // the floating dropdown container
+let _modelPickerInput = null;    // search input inside the picker
+let _modelPickerList = null;     // scrollable list inside the picker
+let _allAvailableModels = [];    // fetched model list
+let _currentModelName = '';      // the currently-selected model id (for highlight)
+
+function _buildModelPicker() {
+  if (_modelPickerEl) return;
+  const picker = document.createElement('div');
+  picker.className = 'chat-model-picker';
+  picker.style.cssText = 'display:none;position:fixed;z-index:1000;background:#1a1b2e;border:1px solid #2a2a4a;border-radius:8px;padding:6px;min-width:260px;max-width:360px;box-shadow:0 8px 24px rgba(0,0,0,0.5);';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Search models…';
+  input.style.cssText = 'width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #2a2a4a;border-radius:4px;background:#13132a;color:#c0caf5;font-size:12px;outline:none;';
+  input.autocomplete = 'off';
+  const list = document.createElement('div');
+  list.style.cssText = 'max-height:200px;overflow-y:auto;margin-top:4px;';
+  picker.appendChild(input);
+  picker.appendChild(list);
+  document.body.appendChild(picker);
+  _modelPickerEl = picker;
+  _modelPickerInput = input;
+  _modelPickerList = list;
+
+  // Search filtering
+  input.addEventListener('input', () => _renderModelPickerList(input.value.toLowerCase()));
+
+  // Close on click outside
+  document.addEventListener('click', (e) => {
+    if (_modelPickerEl && !_modelPickerEl.contains(e.target) && e.target !== footerLeftEl && !(footerLeftEl && footerLeftEl.contains(e.target))) {
+      _modelPickerEl.style.display = 'none';
+    }
+  });
+
+  // Close on Escape
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { _modelPickerEl.style.display = 'none'; input.blur(); }
+    if (e.key === 'Enter' && input.value.trim()) {
+      // Select first visible item
+      const first = _modelPickerList.querySelector('.cmp-item:not(.cmp-hidden)');
+      if (first) first.click();
+    }
+  });
+}
+
+function _renderModelPickerList(filter) {
+  if (!_modelPickerList) return;
+  const filtered = filter
+    ? _allAvailableModels.filter(m => m.id.toLowerCase().includes(filter) || (m.name || '').toLowerCase().includes(filter))
+    : _allAvailableModels;
+  _modelPickerList.innerHTML = '';
+  if (!filtered.length) {
+    _modelPickerList.innerHTML = '<div style="padding:8px;color:#565f89;font-size:11px;text-align:center;">No models match</div>';
+    return;
+  }
+  filtered.slice(0, 200).forEach(m => {
+    const item = document.createElement('div');
+    item.className = 'cmp-item';
+    const isSelected = m.id === _currentModelName;
+    item.style.cssText = `padding:5px 8px;border-radius:4px;cursor:pointer;font-size:12px;color:#c0caf5;${isSelected ? 'background:rgba(125,207,255,0.12);' : ''}`;
+    item.dataset.modelId = m.id;
+    const ctxStr = m.context ? _fmtCtxNum(m.context) : '';
+    item.innerHTML = `<span style="font-weight:500;">${m.id.replace(/[&<>"']/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}</span>${ctxStr ? ` <span style="color:#565f89;font-size:10px;margin-left:6px;">ctx ${ctxStr}</span>` : ''}`;
+    item.addEventListener('click', async () => {
+      _modelPickerEl.style.display = 'none';
+      _modelPickerInput.value = '';
+      await _selectModel(m.id);
+    });
+    item.addEventListener('mouseenter', () => { item.style.background = 'rgba(125,207,255,0.08)'; });
+    item.addEventListener('mouseleave', () => { if (!isSelected) item.style.background = 'transparent'; });
+    _modelPickerList.appendChild(item);
+  });
+}
+
+async function _fetchModelsForPicker() {
+  try {
+    const headers = {};
+    const tok = localStorage.getItem('auth_token');
+    if (tok) headers.Authorization = `Bearer ${tok}`;
+    // Use the same endpoint as the settings panel — reads current provider config
+    const res = await fetch(apiPath('/admin/settings/models'), { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    _allAvailableModels = data.models || [];
+  } catch (e) {
+    _allAvailableModels = [];
+  }
+}
+
+async function _selectModel(modelId) {
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    const tok = localStorage.getItem('auth_token');
+    if (tok) headers.Authorization = `Bearer ${tok}`;
+    const aid = app.currentAgentId || '';
+    if (aid) {
+      // Agent context — save as agent's llm_config override
+      const getRes = await fetch(apiPath(`/api/v1/agents/${encodeURIComponent(aid)}`), { headers });
+      if (getRes.ok) {
+        const agent = await getRes.json();
+        const meta = (agent.agent && agent.agent.metadata) || {};
+        let llmCfg = (typeof meta === 'object' && meta.llm_config) ? { ...meta.llm_config } : {};
+        llmCfg.model = modelId;
+        llmCfg.use_default = false;
+        await fetch(apiPath(`/api/v1/agents/${encodeURIComponent(aid)}`), {
+          method: 'PUT', headers,
+          body: JSON.stringify({ user_id: app.currentUserId || '', llm_config: llmCfg }),
+        });
+      }
+    } else {
+      // No agent — fetch current provider config, update just the model field
+      const getRes = await fetch(apiPath('/admin/settings/provider'), { headers });
+      if (getRes.ok) {
+        const cfg = await getRes.json();
+        await fetch(apiPath('/admin/settings/provider'), {
+          method: 'POST', headers,
+          body: JSON.stringify({
+            provider: cfg.provider,
+            base_url: cfg.base_url || '',
+            api_key: cfg.api_key || '',
+            model: modelId,
+          }),
+        });
+      }
+    }
+    _currentModelName = modelId;
+    refreshModelContext();
+  } catch (e) {
+    console.warn('Failed to switch model:', e);
+  }
+}
+
+// Toggle the picker open/close when clicking the footer left area
+function _toggleModelPicker() {
+  if (_modelPickerEl && _modelPickerEl.style.display !== 'none') {
+    _modelPickerEl.style.display = 'none';
+    return;
+  }
+  _buildModelPicker();
+
+  // Anchor above the chat input row (the pill), not the footer
+  const anchor = document.getElementById('chat-input-row') || document.getElementById('chat-footer-row') || footerLeftEl || modelCtxEl;
+  if (!anchor) return;
+  const rect = anchor.getBoundingClientRect();
+  const estH = 220;
+  const top = (rect.top - 4 - estH);
+  const left = Math.max(4, Math.min(rect.left, window.innerWidth - 280));
+
+  if (top < 8) {
+    _modelPickerEl.style.top = (rect.bottom + 4) + 'px';
+  } else {
+    _modelPickerEl.style.top = top + 'px';
+  }
+  _modelPickerEl.style.left = left + 'px';
+  // Show it after a microtask so the document click handler (set in _buildModelPicker)
+  // doesn't fire on this same click event and immediately close it.
+  setTimeout(() => {
+    _modelPickerEl.style.display = 'block';
+  }, 0);
+
+  // Show loading
+  _modelPickerList.innerHTML = '<div style="padding:8px;color:#565f89;font-size:11px;text-align:center;">Loading models…</div>';
+  _modelPickerInput.value = '';
+  _modelPickerInput.focus();
+
+  // Fetch models async, then render
+  _fetchModelsForPicker().then(() => {
+    _renderModelPickerList('');
+  });
 }
 
 function resetTokens() {
@@ -739,6 +942,14 @@ function handleEvent(event) {
     }
   }
 
+  // Live context size from pipeline context_status events
+  if (type === 'pipeline' && event.step === 'context_status') {
+    if (typeof event.tokens === 'number') {
+      _contextTokens = event.tokens;
+      _renderCtxIndicator();
+    }
+  }
+
   const note = eventToNote(event);
   if (note == null) {
     if (active) _armWatchdog(); // sign of life — keep the watchdog from firing
@@ -763,6 +974,7 @@ export function initChatActivity() {
   tokensInEl = document.getElementById('chat-tokens-in');
   tokensOutEl = document.getElementById('chat-tokens-out');
   tokenSpinnerEl = document.getElementById('chat-token-spinner');
+  footerLeftEl = document.querySelector('.chat-footer-left');
   modelCtxEl = document.getElementById('chat-model-ctx');
 
   if (barEl) barEl.addEventListener('click', togglePanel);
@@ -771,6 +983,20 @@ export function initChatActivity() {
   // Re-callable (exposed below) so Settings can refresh it after a model change.
   refreshModelContext();
 
+  // Click footer left (token bar + ctx) to open model picker
+  function _onFooterClick(e) {
+    e.stopPropagation();
+    _toggleModelPicker();
+  }
+  if (footerLeftEl) {
+    footerLeftEl.style.cursor = 'pointer';
+    footerLeftEl.addEventListener('click', _onFooterClick);
+  }
+  // Also wire the ctx element directly as a reliable fallback
+  if (modelCtxEl) {
+    modelCtxEl.style.cursor = 'pointer';
+    modelCtxEl.addEventListener('click', _onFooterClick);
+  }
   // Delegated accordion toggle: one listener survives panel re-renders.
   if (panelEl) {
     panelEl.addEventListener('click', (e) => {
@@ -795,4 +1021,6 @@ export function initChatActivity() {
 
   // Receive every current-session agent event from the per-user WebSocket.
   app._chatActivityHandler = handleEvent;
+  // Let sessions.js update the ctx indicator after loading message history.
+  app.setContextFromMessages = setContextFromMessages;
 }

@@ -711,6 +711,25 @@ function _renderSquare(container, agent, isActive) {
     </div>`;
   card.addEventListener('click', () => _selectAgent(agent));
 
+  // Long-press the icon opens the icon picker (same as expanded card).
+  // Only long-press on squares — dblclick would conflict with the card's
+  // click-to-open/close handler.
+  if (!isMock) {
+    const sqIconWrap = card.querySelector('.agent-card-icon-wrap');
+    if (sqIconWrap) {
+      let _lpTimer = null;
+      sqIconWrap.addEventListener('pointerdown', e => {
+        _lpTimer = setTimeout(() => {
+          _lpTimer = null;
+          e.stopPropagation();
+          _openIconPicker(sqIconWrap, agent, null);
+        }, 500);
+      });
+      sqIconWrap.addEventListener('pointerup', () => { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } });
+      sqIconWrap.addEventListener('pointerleave', () => { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } });
+    }
+  }
+
   const row = document.createElement('div');
   row.className = 'agent-row';
   row.dataset.agentId = agent.id;
@@ -973,14 +992,27 @@ function _renderAgentCard(grid, agent) {
     });
   }
 
-  // Clicking the icon opens the icon picker popover. (The expanded card never
-  // toggles itself closed — that's done by clicking its square in the carousel.)
+  // Double-click or long-press the icon opens the icon picker popover.
+  // (The expanded card never toggles itself closed — that's done by clicking
+  // its square in the carousel. A plain click stays harmless so it doesn't
+  // fire accidentally.)
   const iconWrap = card.querySelector('.agent-card-icon-wrap');
   if (iconWrap && !isMock) {
-    iconWrap.addEventListener('click', e => {
+    iconWrap.addEventListener('dblclick', e => {
       e.stopPropagation();
       _openIconPicker(iconWrap, agent, null);
     });
+    // Long-press (touch)
+    let _lpTimer = null;
+    iconWrap.addEventListener('pointerdown', e => {
+      _lpTimer = setTimeout(() => {
+        _lpTimer = null;
+        e.stopPropagation();
+        _openIconPicker(iconWrap, agent, null);
+      }, 500);
+    });
+    iconWrap.addEventListener('pointerup', () => { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } });
+    iconWrap.addEventListener('pointerleave', () => { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } });
   }
 
   if (isMock) _wireMockCreateField(card);
@@ -7559,19 +7591,169 @@ function _restoreViewState() {
 
 // ── Icon picker popover ─────────────────────────────────────────────────────
 
+/**
+ * Synonym map for the icon picker search. When a user types a keyword, the
+ * search checks *both* the icon name and its synonyms. Keep keywords lowercase.
+ * Each entry maps a keyword to an array of icon names (kebab-case) that should
+ * appear when the user types that word.
+ */
+const _ICON_SYNONYMS = {
+  // Emotion / face
+  'smile':     ['smile', 'smile-plus', 'laugh'],
+  'happy':     ['smile', 'smile-plus', 'laugh', 'sparkles'],
+  'joy':       ['smile', 'smile-plus', 'laugh', 'heart', 'star'],
+  'laugh':     ['laugh', 'smile', 'smile-plus'],
+  'funny':     ['laugh', 'smile', 'smile-plus'],
+  'sad':       ['frown', 'meh'],
+  'frown':     ['frown'],
+  'angry':     ['angry'],
+  'mad':       ['angry'],
+  'meh':       ['meh'],
+  'neutral':   ['meh'],
+  'face':      ['smile', 'smile-plus', 'laugh', 'frown', 'meh', 'angry'],
+  // Gestures
+  'thumbs':    ['thumbs-up', 'thumbs-down'],
+  'like':      ['thumbs-up', 'heart', 'heart-handshake'],
+  'dislike':   ['thumbs-down'],
+  'hand':      ['thumbs-up', 'thumbs-down', 'hand-heart', 'handshake', 'fingerprint'],
+  'wave':      ['hand-heart', 'arrow-right-left'],
+  'point':     ['target', 'crosshair', 'map-pin'],
+  // Actions
+  'save':      ['database', 'hard-drive', 'save', 'download'],
+  'download':  ['download', 'save'],
+  'upload':    ['upload', 'cloud', 'arrow-up'],
+  'delete':    ['trash-2', 'x', 'x-circle'],
+  'trash':     ['trash-2'],
+  'edit':      ['pen-square', 'edit-3', 'pencil', 'settings-2'],
+  'write':     ['pen-square', 'edit-3', 'pencil', 'notepad-text'],
+  'send':      ['send', 'mail', 'forward', 'share-2'],
+  'copy':      ['copy', 'duplicate', 'clipboard-list'],
+  'search':    ['search', 'scan-search', 'eye'],
+  'find':      ['search', 'scan-search', 'compass', 'map'],
+  'filter':    ['filter', 'sliders'],
+  'settings':  ['settings-2', 'cog', 'sliders', 'wrench'],
+  'config':    ['settings-2', 'cog', 'sliders'],
+  'lock':      ['lock', 'shield', 'shield-check', 'key-round'],
+  'secure':    ['shield', 'shield-check', 'lock', 'fingerprint'],
+  'key':       ['key-round', 'fingerprint'],
+  // Communication
+  'chat':      ['message-square', 'message-circle', 'message-square-text', 'bot-message-square', 'send', 'mail'],
+  'message':   ['message-square', 'message-circle', 'message-square-text', 'bot-message-square', 'send', 'mail'],
+  'talk':      ['message-square', 'message-circle', 'phone', 'megaphone'],
+  'call':      ['phone', 'phone-call', 'phone-forwarded'],
+  'mail':      ['mail', 'send', 'inbox'],
+  'email':     ['mail', 'send', 'inbox'],
+  'notify':    ['bell', 'bell-ring', 'alert-circle', 'info'],
+  'alert':     ['alert-circle', 'bell', 'bell-ring', 'info', 'warning'],
+  'warning':   ['alert-circle', 'help-circle', 'info'],
+  // Nature / weather
+  'sun':       ['sun', 'sunrise', 'sunset', 'sun-dim'],
+  'moon':      ['moon', 'cloud-moon'],
+  'star':      ['star', 'stars', 'sparkles', 'award'],
+  'cloud':     ['cloud', 'cloud-sun', 'cloud-moon', 'cloud-lightning', 'cloud-rain'],
+  'rain':      ['cloud-rain', 'cloud-drizzle', 'cloud-lightning', 'umbrella'],
+  'fire':      ['flame', 'zap'],
+  'water':     ['droplet', 'waves', 'cloud-rain', 'umbrella'],
+  'tree':      ['trees', 'tree-pine', 'palm-tree'],
+  // Code / dev
+  'code':      ['code', 'terminal', 'git-branch', 'git-merge', 'workflow'],
+  'dev':       ['code', 'terminal', 'cpu', 'database', 'wrench'],
+  'terminal':  ['terminal', 'code', 'command'],
+  'git':       ['git-branch', 'git-merge', 'workflow'],
+  'branch':    ['git-branch', 'git-merge'],
+  'robot':     ['bot', 'bot-message-square', 'cpu', 'brain', 'circuit-board'],
+  'ai':        ['bot', 'brain', 'cpu', 'sparkles', 'bot-message-square'],
+  'brain':     ['brain', 'circuit-board'],
+  // Shapes / design
+  'shape':     ['shapes', 'circle', 'square', 'triangle', 'hexagon', 'diamond'],
+  'circle':    ['circle', 'radio', 'target'],
+  'box':       ['box', 'blocks', 'package', 'cube'],
+  'grid':      ['layout-grid', 'grid-3x3'],
+  'layout':    ['layout-dashboard', 'layout-grid', 'panel-top', 'panel-left'],
+  // Money / business
+  'money':     ['coins', 'credit-card', 'piggy-bank', 'banknote', 'dollar-sign'],
+  'payment':   ['credit-card', 'coins', 'wallet', 'shopping-cart'],
+  'shop':      ['shopping-cart', 'store', 'credit-card'],
+  'cart':      ['shopping-cart'],
+  'business':  ['briefcase', 'building-2', 'banknote', 'coins'],
+  'work':      ['briefcase', 'building-2', 'clock', 'calendar-days'],
+  'time':      ['clock', 'timer', 'alarm-clock', 'hourglass', 'calendar-days'],
+  'clock':     ['clock', 'alarm-clock', 'timer', 'hourglass'],
+  'calendar':  ['calendar-days', 'calendar-check', 'clock'],
+  // General
+  'user':      ['users', 'user-plus', 'user-check', 'user-round'],
+  'people':    ['users', 'users-round', 'user-plus'],
+  'group':     ['users', 'users-round', 'network'],
+  'home':      ['home', 'compass', 'map'],
+  'map':       ['map', 'map-pin', 'compass', 'globe', 'navigation'],
+  'world':     ['globe', 'network', 'earth', 'map'],
+  'travel':    ['compass', 'map', 'map-pin', 'globe', 'plane'],
+  'learn':     ['book-open', 'book', 'bookmark', 'graduation-cap', 'scroll'],
+  'book':      ['book-open', 'bookmark', 'notepad-text', 'scroll'],
+  'tool':      ['wrench', 'hammer', 'settings-2', 'cog', 'sliders'],
+  'build':     ['wrench', 'hammer', 'hard-drive', 'cpu', 'blocks'],
+  'idea':      ['lightbulb', 'sparkles', 'brain', 'wand-2', 'atom'],
+  'creative':  ['palette', 'paintbrush', 'image', 'camera', 'wand-2', 'feather'],
+  'art':       ['palette', 'paintbrush', 'image', 'camera', 'feather'],
+  'photo':     ['image', 'camera', 'scan-search'],
+  'game':      ['gamepad-2', 'dice-5', 'puzzle', 'shapes'],
+  'puzzle':    ['puzzle', 'shapes'],
+  'target':    ['target', 'crosshair', 'bullseye', 'award'],
+  'goal':      ['target', 'crosshair', 'award', 'flag-triangle'],
+  'win':       ['award', 'trophy', 'medal', 'star', 'crown'],
+  'award':     ['award', 'trophy', 'medal', 'crown', 'star'],
+  'heart':     ['heart', 'heart-handshake', 'heart-crack'],
+  'love':      ['heart', 'heart-handshake', 'sparkles'],
+  'friend':    ['users', 'user-plus', 'handshake', 'heart-handshake'],
+  'help':      ['help-circle', 'life-buoy', 'message-circle-question'],
+  'question':  ['help-circle', 'message-circle-question'],
+  'info':      ['info', 'alert-circle', 'bell'],
+  'check':     ['check-circle', 'check-square', 'list-checks', 'shield-check'],
+  'done':      ['check-circle', 'check-square', 'list-checks'],
+  'on':        ['toggle-left', 'toggle-right', 'power'],
+  'off':       ['toggle-left', 'power', 'x-circle'],
+  'power':     ['power', 'zap', 'loader-2', 'activity'],
+  'loading':   ['loader-2', 'activity', 'refresh-cw', 'rotate-cw'],
+  'refresh':   ['refresh-cw', 'rotate-cw', 'repeat', 'repeat2'],
+  'sync':      ['refresh-cw', 'repeat2', 'arrow-right-left', 'shuffle'],
+  'play':      ['play', 'square-play', 'forward', 'shuffle'],
+  'stop':      ['stop-circle', 'square', 'x-circle'],
+  'link':      ['link', 'share-2', 'git-branch', 'network'],
+  'more':      ['more-horizontal', 'more-vertical', 'expand', 'list'],
+  'menu':      ['menu', 'list', 'more-horizontal', 'panel-top'],
+  'top':       ['arrow-up', 'chevron-up', 'panel-top', 'trending-up'],
+  'down':      ['arrow-down', 'chevron-down', 'panel-bottom', 'trending-down'],
+  'left':      ['arrow-left', 'chevron-left', 'panel-left', 'undo-2'],
+  'right':     ['arrow-right', 'chevron-right', 'panel-right', 'redo-2'],
+  'move':      ['arrow-right-left', 'chevrons-up-down', 'expand', 'move'],
+  'expand':    ['expand', 'maximize-2', 'fullscreen', 'zoom-in'],
+  'crop':      ['crop', 'scissors', 'minimize-2'],
+  'print':     ['print', 'printer'],
+  'camera':    ['camera', 'image', 'video', 'scan-search'],
+  'music':     ['music', 'music-2', 'music-3', 'music-4', 'radio'],
+  'rocket':    ['rocket', 'space', 'zap', 'sparkles'],
+  'fast':      ['zap', 'rocket', 'forward', 'arrow-right'],
+  'slow':      ['timer', 'clock', 'snail'],
+  'new':       ['sparkles', 'star', 'award', 'gem'],
+  'top':       ['crown', 'award', 'star', 'trending-up'],
+  'data':      ['database', 'hard-drive', 'file-text', 'bar-chart-3'],
+  'chart':     ['bar-chart-3', 'pie-chart', 'trending-up', 'activity'],
+  'graph':     ['activity', 'trending-up', 'bar-chart-3', 'sigma'],
+};
+
 const _ICON_PICKER_ICONS = [
   // Bot & AI
   'bot', 'bot-message-square', 'brain', 'sparkles', 'cpu', 'zap',
   'radio', 'antenna', 'satellite', 'telescope',
   // Communication
-  'message-square', 'message-circle', 'chat', 'send', 'mail',
+  'message-square', 'message-circle', 'message-square-text', 'send', 'mail',
   'phone', 'megaphone', 'bell', 'bell-ring',
   // Code & Tools
   'code', 'terminal', 'wrench', 'hammer', 'settings-2',
-  'sliders', 'cog', 'scroll', 'book-open',
+  'sliders', 'cog', 'book-open',
   // Actions
   'play', 'square-play', 'forward', 'rotate-cw', 'refresh-cw',
-  'repeat', 'loop', 'shuffle', 'arrow-right-left',
+  'repeat', 'repeat2', 'shuffle', 'arrow-right-left',
   // Data
   'database', 'hard-drive', 'folder', 'folder-open', 'file-text',
   'globe', 'search', 'eye', 'scan-search',
@@ -7592,15 +7774,49 @@ const _ICON_PICKER_ICONS = [
   'loader-2', 'activity', 'signal', 'wifi',
   // Arrows
   'arrow-up', 'arrow-down', 'arrow-left', 'arrow-right',
-  'chevrons-left-right', 'chevrons-up-down', 'expand', 'minimize-2',
+  'chevrons-left-right', 'chevrons-up-down',
   // Documents
   'notepad-text', 'clipboard-list', 'list-checks', 'check-square',
   'pen-square', 'edit-3', 'bookmark', 'tags',
   // Misc
-  'star', 'heart', 'award', 'target', 'crosshair',
-  'compass', 'map', 'map-pin', 'clock', 'timer',
-  'cloud', 'sun', 'moon', 'feather', 'lightbulb',
+  'star', 'heart', 'heart-crack', 'heart-handshake', 'award', 'target', 'crosshair',
+  'compass', 'map', 'map-pin', 'clock', 'timer', 'alarm-clock', 'hourglass',
+  'cloud', 'sun', 'sunrise', 'sunset', 'sun-dim', 'sun-medium', 'moon', 'feather', 'lightbulb',
   'briefcase', 'shopping-cart', 'credit-card', 'coins', 'piggy-bank',
+  // Emotions / faces
+  'smile', 'smile-plus', 'laugh', 'frown', 'meh', 'angry',
+  // Gestures
+  'thumbs-up', 'thumbs-down', 'hand-heart', 'hand-helping', 'handshake',
+  // Shapes
+  'circle', 'triangle', 'diamond', 'hexagon', 'shapes', 'puzzle',
+  // Nature / weather
+  'trees', 'leaf', 'flame', 'droplet', 'snowflake', 'stars', 'rainbow', 'umbrella', 'wind', 'waves',
+  // UI / actions
+  'trash-2', 'copy', 'save', 'download', 'upload', 'filter', 'pencil', 'command',
+  'x', 'x-circle', 'stop-circle', 'more-horizontal', 'more-vertical', 'list', 'menu',
+  'chevron-up', 'chevron-down', 'chevron-left', 'chevron-right', 'move', 'expand',
+  'maximize-2', 'minimize-2', 'crop', 'scissors', 'power', 'toggle-left', 'toggle-right',
+  // Business / money
+  'rocket', 'crown', 'gem', 'trophy', 'medal', 'dollar-sign', 'banknote', 'wallet', 'store', 'building-2',
+  'bar-chart-3', 'pie-chart', 'trending-up', 'trending-down',
+  // Code / dev
+  'circuit-board', 'atom', 'wand-2', 'monitor', 'home', 'inbox',
+  'cloud-sun', 'cloud-moon', 'cloud-lightning', 'cloud-rain', 'cloud-drizzle', 'cloud-fog', 'cloud-snow',
+  // Media
+  'music', 'music-2', 'music-3', 'music-4', 'gamepad-2', 'dice-5',
+  // Users
+  'user-round', 'users-round',
+  // Transport
+  'plane', 'navigation', 'earth',
+  // Communication
+  'phone-call', 'phone-forwarded', 'message-circle-question', 'life-buoy',
+  // Calendar
+  'calendar-days', 'calendar-check',
+  // Book / learn
+  'book', 'graduation-cap', 'scroll',
+  // Edges / misc
+  'undo-2', 'redo-2', 'panel-bottom', 'blocks', 'package', 'box', 'grid-3x3',
+  'square', 'scan-face', 'zoom-in', 'fullscreen',
 ];
 
 function _openIconPicker(anchorEl, agent, panelEl) {
@@ -7618,16 +7834,15 @@ function _openIconPicker(anchorEl, agent, panelEl) {
   popover.innerHTML = `
     <div class="icon-picker-header">
       <span class="icon-picker-title">Choose an icon</span>
-      <button class="icon-picker-close" title="Close">✕</button>
+      <div class="icon-picker-header-actions">
+        <button class="icon-picker-save" title="Apply selected icon">${icon('check', { size: '18px' })}</button>
+        <button class="icon-picker-close" title="Close">✕</button>
+      </div>
     </div>
     <div class="icon-picker-search-wrap">
       <input type="text" class="icon-picker-search" placeholder="Search icons…" autofocus>
     </div>
     <div class="icon-picker-grid"></div>
-    <div class="icon-picker-footer">
-      <button class="icon-picker-clear agents-btn">Clear (use emoji)</button>
-      <span class="icon-picker-selected"></span>
-    </div>
   `;
 
   backdrop.appendChild(popover);
@@ -7636,16 +7851,37 @@ function _openIconPicker(anchorEl, agent, panelEl) {
   const grid = popover.querySelector('.icon-picker-grid');
   const search = popover.querySelector('.icon-picker-search');
   const closeBtn = popover.querySelector('.icon-picker-close');
-  const clearBtn = popover.querySelector('.icon-picker-clear');
-  const selectedEl = popover.querySelector('.icon-picker-selected');
+  const saveBtn = popover.querySelector('.icon-picker-save');
+
+  // Focus the search input immediately so the on-screen keyboard opens on mobile
+  search.focus();
 
   let currentIcon = agent.icon || '';
 
   function renderIcons(filter) {
     grid.innerHTML = '';
-    const list = filter
-      ? _ICON_PICKER_ICONS.filter(name => name.includes(filter.toLowerCase()))
-      : _ICON_PICKER_ICONS;
+    const q = filter ? filter.toLowerCase().trim() : '';
+    let list;
+    if (!q) {
+      list = _ICON_PICKER_ICONS;
+    } else {
+      // Match against icon names (substring) OR synonym keywords (exact or prefix)
+      const matched = new Set();
+      // 1. Check icon names directly
+      for (const name of _ICON_PICKER_ICONS) {
+        if (name.includes(q)) matched.add(name);
+      }
+      // 2. Check synonyms — if the query is a prefix of any keyword, add its icons
+      for (const [keyword, icons] of Object.entries(_ICON_SYNONYMS)) {
+        if (keyword.startsWith(q) || keyword.includes(q)) {
+          for (const iconName of icons) {
+            // Only include icons that are actually in our picker
+            if (_ICON_PICKER_ICONS.includes(iconName)) matched.add(iconName);
+          }
+        }
+      }
+      list = [...matched].sort();
+    }
 
     if (list.length === 0) {
       grid.innerHTML = '<div class="icon-picker-empty">No icons match</div>';
@@ -7659,11 +7895,10 @@ function _openIconPicker(anchorEl, agent, panelEl) {
       item.innerHTML = icon(name, { size: '22px' });
       item.addEventListener('click', (e) => {
         e.stopPropagation();
-        // Remove selected class from all
+        // Toggle selection — remove from others, set on this one
         grid.querySelectorAll('.icon-picker-item.selected').forEach(el => el.classList.remove('selected'));
         item.classList.add('selected');
         currentIcon = name;
-        selectedEl.innerHTML = icon(name, { size: '18px' }) + ` <span style="font-size:12px;color:var(--fg-3);">${name}</span>`;
       });
       grid.appendChild(item);
     }
@@ -7672,10 +7907,10 @@ function _openIconPicker(anchorEl, agent, panelEl) {
   search.addEventListener('input', () => renderIcons(search.value));
   renderIcons('');
 
-  // Show currently selected if any
-  if (currentIcon && _ICON_PICKER_ICONS.includes(currentIcon)) {
-    selectedEl.innerHTML = icon(currentIcon, { size: '18px' }) + ` <span style="font-size:12px;color:var(--fg-3);">${currentIcon}</span>`;
-  }
+  // Save applies the selected icon and closes
+  saveBtn.addEventListener('click', () => {
+    if (currentIcon) applyIcon(currentIcon);
+  });
 
   function applyIcon(iconName) {
     agent.icon = iconName;
@@ -7685,24 +7920,31 @@ function _openIconPicker(anchorEl, agent, panelEl) {
       const iconSize = iconWrap.closest('.agent-card.active') ? '20px' : '24px';
       iconWrap.innerHTML = _renderAgentIcon({ icon: iconName }, iconSize);
     });
+    // Persist to the database so it survives a refresh
+    if (agent.source === 'custom') {
+      _putAgentField(agent, { icon: iconName });
+    }
     backdrop.remove();
   }
 
   closeBtn.addEventListener('click', () => backdrop.remove());
-  clearBtn.addEventListener('click', () => {
-    currentIcon = '';
-    selectedEl.innerHTML = '<span style="font-size:12px;color:var(--fg-3);">Emoji (drag text input)</span>';
-    applyIcon('');
-  });
   backdrop.addEventListener('click', (e) => {
     if (e.target === backdrop) backdrop.remove();
   });
 
-  // Enter applies the selected icon (but not while typing in the search field)
+  // Enter blurs the search field (closes mobile keyboard) but does NOT save.
+  // Only the check button applies the icon.
   document.addEventListener('keydown', function _onKey(e) {
-    if (e.key === 'Enter' && currentIcon && e.target !== search) {
-      applyIcon(currentIcon);
-      document.removeEventListener('keydown', _onKey);
+    if (e.key === 'Enter') {
+      if (e.target === search) {
+        search.blur();    // dismiss the on-screen keyboard
+        return;
+      }
+      if (currentIcon) {
+        applyIcon(currentIcon);
+        document.removeEventListener('keydown', _onKey);
+      }
+      return;
     }
     if (e.key === 'Escape') {
       backdrop.remove();

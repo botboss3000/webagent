@@ -85,7 +85,7 @@ _ABILITIES_DIR = Path(__file__).resolve().parents[2] / "plugins" / "abilities"
 _KNOWN_GROUPS: Dict[str, Dict[str, Any]] = {
     "administrator": {"order": 0, "name": "Administrator", "icon": "shield-alert", "color": "#f7768e",
                       "desc": "Full host control — files & shell, version control, terminals, and diagnostics. Grant with care."},
-    "basic":         {"order": 1, "name": "Core", "icon": "wrench", "color": "#7dcfff",
+    "core":          {"order": 1, "name": "Core", "icon": "wrench", "color": "#7dcfff",
                       "desc": "Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, and app view control."},
     "productivity":  {"order": 2, "name": "Productivity", "icon": "briefcase", "color": "#4285F4",
                       "desc": "Read, search, create, edit, and delete entries in the company-wide Wiki."},
@@ -94,7 +94,7 @@ _KNOWN_GROUPS: Dict[str, Dict[str, Any]] = {
 }
 # An ability that forgets to declare a group lands here, so it's never silently
 # dropped from the UI.
-_DEFAULT_GROUP = "basic"
+_DEFAULT_GROUP = "core"
 # Look for an emergent (unknown) group when the ability gives no styling hints.
 _EMERGENT_GROUP_ICON = "layers"
 _EMERGENT_GROUP_COLOR = "#9aa5ce"

@@ -45,7 +45,7 @@ HOW GROUPS WORK  (groups are emergent — there is no master list to edit)
 ────────────────────────────────────────────────────────────────────────────
 The `group` id you set below decides which UI bucket the ability sits in:
   • Use an EXISTING id  → the ability JOINS that group.
-        existing ids: "administrator", "basic" (shown as “Core”),
+        existing ids: "administrator", "core",
                       "productivity", "web".
   • Use a NEW id        → a NEW group is CREATED automatically.
 A brand-new group gets a default look (Title-cased name, neutral icon/colour).
@@ -68,7 +68,7 @@ FEATURE = {
     "tools": [],                        # e.g. ["my_tool_a", "my_tool_b"]; [] is fine
 
     # ── UI: how the ability renders in BOTH ability panels ──
-    "group": "basic",                   # reuse an id (administrator/basic/productivity/web) OR invent one
+    "group": "core",                    # reuse an id (administrator/core/productivity/web) OR invent one
     "icon": "puzzle",                   # lucide icon name (https://lucide.dev/icons)
     "color": "#7aa2f7",                 # accent colour (a hex; design-system accents look best)
     "description": "What this ability lets the agent do, in one sentence.",

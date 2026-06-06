@@ -86,8 +86,11 @@ async def playbook_record_remedy(ctx: ToolContext, issue_key: str, kind: str,
         return "[playbook] knowledge store unavailable."
     if kind not in playbook.CATALOG_KINDS:
         return f"[playbook] unknown remedy kind '{kind}'. Use one of: {', '.join(playbook.CATALOG_KINDS)}."
+    # Auto-create the issue if it doesn't exist yet — so we can record a remedy
+    # for any problem the manager discovers, not just ones the watchdog has seen.
     if not ctx.store.pb_get_issue(issue_key):
-        return f"[playbook] no issue with key '{issue_key}'. Use playbook_list to see keys."
+        label = kind.replace("_", " ").title()  # fallback label
+        ctx.store.pb_upsert_issue(issue_key, label=label, kind="manual")
     # Safe built-in actions can be approved on sight; commands/notes default to suggested.
     status = "approved" if (approved or kind in playbook.SAFE_KINDS) else "suggested"
     r = ctx.store.pb_add_remedy(issue_key, kind, payload=payload, status=status)

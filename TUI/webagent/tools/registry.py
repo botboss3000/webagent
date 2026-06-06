@@ -136,6 +136,14 @@ def _base_specs() -> list[ToolSpec]:
         ToolSpec("server_restart", "Restart the local webAgent server. Mutating.", {
             "type": "object", "properties": {},
         }, server.server_restart, mutating=True),
+        ToolSpec("server_kill_all",
+                 "Force-kill EVERY process on port 8080 (not just the tracked "
+                 "server) plus any run.py / proot wrappers. Like kill.bat: finds "
+                 "all listeners on 8080, sends SIGKILL, clears the tracked PID "
+                 "state. Use this when something is squatting on port 8080 and "
+                 "gentle stop didn't work. Mutating.", {
+            "type": "object", "properties": {},
+        }, server.server_kill_all, mutating=True),
         ToolSpec("server_logs", "Tail the captured server log. Read-only.", {
             "type": "object",
             "properties": {"lines": {**_INT, "default": 40}},

@@ -100,3 +100,43 @@ Acceptable vs not:
   truth.
 - **Promote to main:** finish by pushing with `git push origin HEAD:main` — or
   use the `commit_and_push` tool — don't stop at a feature branch.
+
+## Repo map: where to find things
+
+When the user asks about a specific UI feature, page, or backend component, use
+this directory signpost to jump straight to the right area instead of guessing
+from a flat listing:
+
+| What the user is talking about | Where to look |
+|---|---|
+| Chat panel, message bubbles, input bar, streaming | `ui/chat.html` (HTML), `ui/js/chat.js` (logic), `ui/css/app1.css` (styling) |
+| Session/agent list sidebar, pinning, renaming | `ui/js/sessions.js` (+ `ui/js/ordering.js`) |
+| Main CSS, layout vars, dark/light modes | `ui/css/app1.css` |
+| Page visualizer (rendered pages like home/dashboard) | `app/pages_store/` + `app/visualizer/` |
+| Web terminal (TUI) — **separate** from the chat panel | `app/web-terminal/` |
+| Python backend logic, agent loop, DB | `app/` (backing Python code) |
+| API endpoints (chat, agents, auth, etc.) | `app/api/` |
+| Agent loop, runner, prompt assembly | `app/agent/` |
+| Tool implementations | `app/tools/` or `app/abilities/` |
+| Plugin abilities (codebase admin, web access, etc.) | `plugins/abilities/` |
+| Page visuals rendered in the browser | `app/pages_store/` |
+| Host-level app control (show/hide chat panel, resize) | `app/tools/app_control_tools.py` |
+
+**Discovery workflow — use this, not scatter-shot guessing:**
+
+1. First `read_directory(depth=1, ".")` to see the top-level dirs.
+2. Match the user's request to the table above and drill into the right dir.
+3. If the table doesn't cover it, `search_source()` with domain-specific terms.
+4. Only read a file after you've narrowed down — don't read multiple candidates
+   in parallel hoping one is right.
+
+## Self-improvement: keep this map accurate
+
+The directory structure of this repo changes over time — files get moved,
+renamed, or created. This map is **not authoritative**; it's a heuristic you
+loaded at the start of a conversation. If you discover that a file you're
+looking for is **not** where this map says it is (or the table sends you to the
+wrong place), **update this skill file** (`plugins/abilities/codebase_admin.skill.md`)
+with the corrected path so the next time you (or another agent) loads the
+skill, the map is right. The file map is part of the codebase — keep it as
+current as the code it describes.
