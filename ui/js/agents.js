@@ -996,8 +996,9 @@ function _renderAgentCard(grid, agent) {
   // (The expanded card never toggles itself closed — that's done by clicking
   // its square in the carousel. A plain click stays harmless so it doesn't
   // fire accidentally.)
-  const iconWrap = card.querySelector('.agent-card-icon-wrap');
+const iconWrap = card.querySelector('.agent-card-icon-wrap');
   if (iconWrap && !isMock) {
+    iconWrap.dataset.hasLongPress = 'true';  // so sendToAgent skips this zone
     iconWrap.addEventListener('dblclick', e => {
       e.stopPropagation();
       _openIconPicker(iconWrap, agent, null);

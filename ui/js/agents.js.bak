@@ -997,8 +997,9 @@ function _renderAgentCard(grid, agent) {
   // its square in the carousel. A plain click stays harmless so it doesn't
   // fire accidentally.)
   const iconWrap = card.querySelector('.agent-card-icon-wrap');
-  if (iconWrap && !isMock) {
-    iconWrap.addEventListener('dblclick', e => {
+if (iconWrap && !isMock) {
+	    iconWrap.dataset.hasLongPress = 'true';  // so sendToAgent skips this zone
+	    iconWrap.addEventListener('dblclick', e => {
       e.stopPropagation();
       _openIconPicker(iconWrap, agent, null);
     });
@@ -7848,13 +7849,13 @@ function _openIconPicker(anchorEl, agent, panelEl) {
   backdrop.appendChild(popover);
   document.body.appendChild(backdrop);
 
-  // Focus the search input immediately so the on-screen keyboard opens on mobile
-  search.focus();
-
   const grid = popover.querySelector('.icon-picker-grid');
   const search = popover.querySelector('.icon-picker-search');
   const closeBtn = popover.querySelector('.icon-picker-close');
   const saveBtn = popover.querySelector('.icon-picker-save');
+
+  // Focus the search input immediately so the on-screen keyboard opens on mobile
+  search.focus();
 
   let currentIcon = agent.icon || '';
 

@@ -30,6 +30,26 @@ import {
   attachRowLongPress,
 } from './ordering.js';
 
+// ── Current-agent abilities cache ────────────────────────────────────────────
+// Fetched whenever the active agent changes. Used by sendToAgent.js to gate
+// the long-press "Send to agent" button on the app_control ability.
+window.__currentAgentAbilities = null;  // Set<string> or null when unknown
+
+async function _refreshAgentAbilities(agentId) {
+  window.__currentAgentAbilities = null;
+  if (!agentId) return;
+  try {
+    const res = await fetch(apiPath(`/api/v1/agents/${agentId}/abilities?user_id=${encodeURIComponent(app.currentUserId)}`));
+    if (!res.ok) return;
+    const data = await res.json();
+    const enabled = new Set();
+    for (const ab of data.abilities || []) {
+      if (ab.enabled) enabled.add(ab.id);
+    }
+    window.__currentAgentAbilities = enabled;
+  } catch (_) { /* non-fatal — fall back to null-gated */ }
+}
+
 // ── Message cache + infinite-scroll state ────────────────────────────────────
 // Keyed by sessionId. Each entry: { messages: [...], hasMore: bool, loadedAll: bool }
 const _messageCache = new Map();
@@ -255,6 +275,7 @@ export async function populateAgentSelect(userId) {
       found = _agentsCache[0] || null;
     }
     app.currentAgentId = (found && found.id) || '';
+    _refreshAgentAbilities(app.currentAgentId);
 
     // Lock the trigger when visiting a public agent URL — no longer needed
     // since the agent dropdown was removed, but kept for __agentId support.
@@ -1699,6 +1720,7 @@ export function initSessions() {
     const targetAgentId = (targetSess && targetSess.agent_id) || app.currentAgentId;
     if (targetAgentId && targetAgentId !== app.currentAgentId) {
       app.currentAgentId = targetAgentId;
+      _refreshAgentAbilities(targetAgentId);
       try { localStorage.setItem('selectedAgentId', targetAgentId); } catch (_) {}
     }
     // Record this session as the last active for its owning agent

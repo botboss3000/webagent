@@ -145,6 +145,7 @@ function _suppressNextClick(container) {
 export function attachRowLongPress(container, opts) {
   if (!container || container.__longPressBound) return;
   container.__longPressBound = true;
+  container.dataset.hasLongPress = 'true';  // so sendToAgent can skip this zone
 
   const {
     rowSelector,
@@ -209,6 +210,7 @@ export function attachRowLongPress(container, opts) {
 export function makeRowsReorderable(container, opts) {
   if (!container || container.__reorderBound) return;
   container.__reorderBound = true;
+  container.dataset.hasLongPress = 'true';  // so sendToAgent can skip this zone
 
   const {
     rowSelector,

@@ -756,7 +756,9 @@ function _showLLMStatus(msg, type) {
 // ── Parallel providers ──
 async function _loadParallelProviders() {
   const loader = document.getElementById('ac-model-loader');
+  const table = document.getElementById('ac-model-config');
   if (loader) loader.classList.add('show');
+  if (table) table.style.display = 'none';
   try {
     const res = await _fetch(apiPath('/admin/settings/multi-providers'));
     if (!res.ok) return;
@@ -777,9 +779,10 @@ async function _loadParallelProviders() {
     }));
   } catch (e) {
     _parallelProviders = [];
+  } finally {
+    if (loader) loader.classList.remove('show');
+    if (table) table.style.display = '';
   }
-  const loader = document.getElementById('ac-model-loader');
-  if (loader) loader.classList.remove('show');
 }
 
 async function _saveParallelProviders() {
