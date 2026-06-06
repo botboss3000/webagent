@@ -29,8 +29,15 @@ import { fetchAdminStatus, isAdmin, fetchAccessMode } from './left-login.js';
 import { installAuthRefresh, ensureFreshToken, startTokenAutoRefresh } from './auth-refresh.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
 import { randomUUID } from './uuid.js';
+import { initClipboard } from './clipboard.js';
 
 bindDom();
+
+// Guarantee Ctrl/Cmd + C / X / V / A work in every input, textarea,
+// contenteditable and text selection across the whole app (terminals keep
+// their own handling). Installed first so it sits ahead of every panel's key
+// handlers. See clipboard.js for the why.
+initClipboard();
 
 // Keep the 24h access token fresh. When it expires while a tab is open (or
 // between visits), authenticated features break two ways: the session-messages

@@ -1108,6 +1108,59 @@ async def refresh_model_catalog():
         return {"error": str(e), "fetched_at": 0, "count": 0, "stale": True}
 
 
+@router.get("/model-usage")
+async def get_model_usage(
+    model: str = Query(""),
+    provider: str = Query(""),
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Aggregate real token usage and provider cost for one model+provider combo,
+    scoped to the current user."""
+    user_id = _resolve_user_id(authorization or "", token or "")
+    if not user_id:
+        return {"error": "not_authenticated", "total_input_tokens": 0, "total_output_tokens": 0, "total_cost_cents": 0}
+
+    try:
+        from app.db import get_db
+        db = get_db()
+        total_in = 0
+        total_out = 0
+        total_cost_cents = 0
+
+        if hasattr(db, "_get_conn"):
+            conn = db._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), "
+                    "COALESCE(SUM(provider_cost_cents),0) FROM usage_events "
+                    "WHERE user_id=? AND model=? AND provider=?",
+                    (user_id, model, provider),
+                ).fetchall()
+                if rows:
+                    total_in, total_out, total_cost_cents = int(rows[0][0]), int(rows[0][1]), int(rows[0][2])
+            finally:
+                conn.close()
+        elif hasattr(db, "get_raw_client"):
+            resp = db.get_raw_client().table("usage_events") \
+                .select("input_tokens, output_tokens, provider_cost_cents") \
+                .eq("user_id", user_id).eq("model", model).eq("provider", provider) \
+                .execute()
+            for row in resp.data:
+                total_in += row.get("input_tokens", 0)
+                total_out += row.get("output_tokens", 0)
+                total_cost_cents += row.get("provider_cost_cents", 0)
+
+        return {
+            "error": None,
+            "total_input_tokens": total_in,
+            "total_output_tokens": total_out,
+            "total_cost_cents": total_cost_cents,
+        }
+    except Exception as e:
+        return {"error": str(e), "total_input_tokens": 0, "total_output_tokens": 0, "total_cost_cents": 0}
+
+
 @router.get("/model-info")
 async def get_model_info(model: str = Query("", alias="model")):
     """Full merged metadata for a single model id (context, cost, description…)."""

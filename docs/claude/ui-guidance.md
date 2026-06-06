@@ -170,3 +170,14 @@ The app pins **Lucide 0.469.0** (loaded as a global in `index.html`). This versi
 4. **Bind click handlers to the button element, never to the inner icon node.** Icon `<svg>`/`<path>` nodes can be replaced by a render pass, so a listener on them (or a cached reference to them) is unreliable. Attach to the `<button>` directly (like the chevron/delete buttons) or delegate with `e.target.closest('#the-button-id')` on a document capture listener (like `#session-new`). The button element itself persists across icon swaps.
 
 5. **Use valid Lucide 0.469 icon names.** An unknown name (e.g. `users-cog` instead of `user-cog`) leaves an unrendered `<i>` and spams the console with `icon name was not found`. When unsure, verify the name exists in this version before shipping.
+
+## Clipboard — Ctrl/Cmd C / X / V / A work everywhere (don't re-implement)
+
+`ui/js/clipboard.js` installs ONE document-level capture-phase key handler (`initClipboard()`, called once in `main.js` right after `bindDom()`). For the four clipboard shortcuts it performs the operation itself — copy/cut the selection (from an input/textarea value, a contenteditable, or any page text selection), paste at the caret, select-all within a field — and stops anything downstream from swallowing or cancelling the key. This is why copy/paste works in every panel without each panel wiring it.
+
+**Rules:**
+
+1. **Don't add per-field copy/paste keydown handlers** for the basic shortcuts — the global net already covers them. A panel-level `keydown` that `preventDefault`s on Ctrl+C/X/V isn't needed and risks fighting the net.
+2. **For copy *buttons*, use `copyText(text)` from `clipboard.js`** (not `navigator.clipboard.writeText` directly). It falls back to the legacy `execCommand` path so copy buttons also work over a non-secure `http://<ip>` LAN address, where the async Clipboard API is unavailable.
+3. **Terminals are intentionally excluded.** The net bails out for anything inside `.xterm` / `.terminal` / `.terminal-frame` / `[data-terminal]` so Ctrl+C still sends an interrupt and xterm keeps its own copy/paste. If you add a new terminal surface, give it one of those classes (or `data-terminal`) so it's excluded too.
+4. **Cross-document iframes are out of scope** (their key events never reach the parent). The sandboxed page-output preview is fine; a new editable iframe would need its own handling inside that document.

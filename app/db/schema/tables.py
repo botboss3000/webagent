@@ -637,6 +637,8 @@ TABLES: List[Table] = [
         Column("is_byo_llm", "INTEGER", nullable=False, default="0"),
         Column("is_trial", "INTEGER", nullable=False, default="0"),
         Column("is_exempt", "INTEGER", nullable=False, default="0"),
+        Column("model", "TEXT"),
+        Column("provider", "TEXT"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 

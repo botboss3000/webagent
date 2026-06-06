@@ -526,6 +526,8 @@ async def _record_billing_usage(
     input_tokens: Optional[int],
     output_tokens: Optional[int],
     llm_cost: Optional[float],
+    model_name: Optional[str] = None,
+    provider_name: Optional[str] = None,
     interaction_id: Optional[str] = None,
 ) -> Optional[dict]:
     """Compute the per-call charge, write a usage_events row, and debit the
@@ -560,8 +562,9 @@ async def _record_billing_usage(
                         "INSERT INTO usage_events ("
                         "id, agent_id, user_id, interaction_id, input_tokens, output_tokens, "
                         "provider_cost_cents, end_user_charge_cents, platform_fee_cents, "
-                        "agent_admin_earnings_cents, strategy, is_byo_llm, is_trial, is_exempt"
-                        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "agent_admin_earnings_cents, strategy, is_byo_llm, is_trial, is_exempt, "
+                        "model, provider"
+                        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             str(_uuid.uuid4()), agent_id, user_id, interaction_id,
                             usage.input_tokens, usage.output_tokens, provider_cents,
@@ -570,6 +573,7 @@ async def _record_billing_usage(
                             1 if result.is_byo_llm else 0,
                             1 if result.is_trial else 0,
                             1 if result.is_exempt else 0,
+                            model_name, provider_name,
                         ),
                     )
                     conn.commit()
@@ -591,6 +595,8 @@ async def _record_billing_usage(
                     "is_byo_llm": 1 if result.is_byo_llm else 0,
                     "is_trial": 1 if result.is_trial else 0,
                     "is_exempt": 1 if result.is_exempt else 0,
+                    "model": model_name,
+                    "provider": provider_name,
                 }).execute()
         except Exception as e:
             logger.debug("usage_events insert skipped: %s", e)
@@ -1563,6 +1569,7 @@ async def stream_agent_events(
             # ── Billing: record usage + charge wallet (best-effort, never blocks chat) ──
             _billing_event = await _record_billing_usage(
                 db, agent_id, user_id, input_tokens, output_tokens, llm_cost,
+                model_name=model_name, provider_name=provider_name,
                 interaction_id=parent_interaction_id,
             )
             if _billing_event:

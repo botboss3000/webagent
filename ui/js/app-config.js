@@ -816,8 +816,41 @@ function _capCell(capable, checked, title, onChange) {
 }
 
 // Fill a saved-model row's expanded body with token usage + cost (lazy, cached).
-async function _loadSavedModelDetail(p, body) {
-  if (body.dataset.loaded === '1') return;
+// Also updates the three inline stat cells with real usage data.
+// cache is keyed on `usage|{provider}|{model}` to avoid re-fetching per page re-render.
+const _modelUsageCache = {};
+
+async function _loadSavedModelDetail(p, body, statIn, statOut, statCost) {
+  const loaded = body.dataset.loaded;
+  const usageCacheKey = `usage|${p.provider || ''}|${p.model || ''}`;
+
+  // Fetch real usage data (once per session)
+  if (!_modelUsageCache[usageCacheKey] && loaded !== 'usage') {
+    try {
+      const params = new URLSearchParams({ model: p.model || '', provider: p.provider || '' });
+      const res = await _fetch(apiPath(`/admin/settings/model-usage?${params.toString()}`));
+      const data = res.ok ? await res.json() : null;
+      if (data && !data.error) {
+        _modelUsageCache[usageCacheKey] = data;
+      }
+    } catch (e) { /* best-effort */ }
+  }
+
+  // Update inline stat cells with real data.
+  const usage = _modelUsageCache[usageCacheKey] || {};
+  if (usage.total_input_tokens != null) {
+    if (statIn) statIn.textContent = _fmtTokens(usage.total_input_tokens);
+    if (statOut) statOut.textContent = _fmtTokens(usage.total_output_tokens);
+    if (statCost) {
+      const cents = usage.total_cost_cents || 0;
+      statCost.textContent = cents >= 100 ? `$${(cents / 100).toFixed(2)}` : `${cents}¢`;
+    }
+  }
+
+  // Load catalog metadata (context window, rates, description) once.
+  if (loaded === '1') return;
+  body.dataset.loaded = '1';
+
   const cacheKey = `${p.provider || ''}|${p.model || ''}`;
   let meta = _modelMetaCache[cacheKey];
   if (!meta) {
@@ -829,13 +862,26 @@ async function _loadSavedModelDetail(p, body) {
     } catch (e) { meta = {}; }
     _modelMetaCache[cacheKey] = meta;
   }
-  body.dataset.loaded = '1';
+
   const ctx = _fmtContext(meta.context);
   const out = (typeof meta.max_output === 'number')
     ? `${_fmtContext(meta.max_output).replace(' ctx', '')} out` : '';
   const price = _fmtPrice(meta.cost_input, meta.cost_output);
   const chips = [ctx, out, price].filter(Boolean)
     .map(t => `<span class="ac-model-badge">${_esc(t)}</span>`).join('');
+
+  // Build the usage summary block
+  let usageHtml = '';
+  if (usage.total_input_tokens != null) {
+    const inT = usage.total_input_tokens || 0;
+    const outT = usage.total_output_tokens || 0;
+    const cents = usage.total_cost_cents || 0;
+    const costStr = cents >= 100 ? `$${(cents / 100).toFixed(2)}` : `${cents}¢`;
+    usageHtml = `<div class="ac-usage-summary" style="margin-top:8px;display:flex;gap:16px;font-size:13px;">`
+      + `<span style="color:var(--fg-2);">Used: <strong>${_fmtTokens(inT)}</strong> in · <strong>${_fmtTokens(outT)}</strong> out · <strong>${costStr}</strong></span>`
+      + `</div>`;
+  }
+
   const caps = `<div class="ac-model-caps" style="margin-top:8px;">`
     + `<span class="ac-cap-badge ${p.text_capable !== false ? 'on' : 'off'}">Text</span>`
     + `<span class="ac-cap-badge ${p.image_capable ? 'on' : 'off'}">Image-in</span>`
@@ -843,6 +889,7 @@ async function _loadSavedModelDetail(p, body) {
   const desc = meta.description
     ? `<div class="ac-model-meta-desc" style="margin-top:8px;">${_esc(meta.description)}</div>` : '';
   body.innerHTML = (chips ? `<div class="ac-model-meta-chips">${chips}</div>` : '')
+    + usageHtml
     + caps
     + desc
     + (chips ? '' : '<div class="ac-hint" style="margin:8px 0 0;">No token or cost data available for this model.</div>');
@@ -851,7 +898,6 @@ async function _loadSavedModelDetail(p, body) {
 function _renderParallelRows() {
   const wrap = _qs('ac-settings-saved-wrap');
   const list = _qs('ac-settings-saved-list');
-  const countEl = _qs('ac-settings-parallel-count');
   if (!list) return;
 
   if (!_parallelProviders.length) {
@@ -862,7 +908,7 @@ function _renderParallelRows() {
 
   list.innerHTML = '';
 
-  // ── Column header: Model · Text / In / Out ──
+  // ── Column header: Model · Tokens In · Tokens Out · Cost ──
   const head = document.createElement('div');
   head.className = 'ac-ability-row ac-saved-head';
   const headName = document.createElement('span');
@@ -870,9 +916,9 @@ function _renderParallelRows() {
   headName.innerHTML = '<span class="ac-saved-th">Model</span>';
   head.appendChild(headName);
   [
-    ['Text', 'Use for text answers (joins the parallel race)'],
-    ['In',   'Use to read attached images (vision)'],
-    ['Out',  'Use to generate images'],
+    ['In',    'Total input tokens consumed'],
+    ['Out',   'Total output tokens consumed'],
+    ['Cost',  'Total provider cost (USD cents)'],
   ].forEach(([label, tip]) => {
     const cell = document.createElement('span');
     cell.className = 'ac-saved-cap';
@@ -900,24 +946,21 @@ function _renderParallelRows() {
       + `<span class="ac-ability-desc">${_esc(_providerPresets[p.provider]?.name || p.provider || 'custom')}</span>`;
     row.appendChild(label);
 
-    // Text → enabled (every chat model is text-capable)
-    row.appendChild(_capCell(
-      p.text_capable !== false, p.enabled,
-      'Use for text answers (joins the parallel race)',
-      v => { p.enabled = v; _saveParallelProviders().then(_renderParallelRows); },
-    ));
-    // Image-in → use_for_image (box only when the model can see images)
-    row.appendChild(_capCell(
-      !!p.image_capable, !!p.use_for_image,
-      'Use to read attached images',
-      v => { p.use_for_image = v; _saveParallelProviders().then(_renderParallelRows); },
-    ));
-    // Image-out → use_for_image_out (box only when the model can make images)
-    row.appendChild(_capCell(
-      !!p.image_out_capable, !!p.use_for_image_out,
-      'Use to generate images',
-      v => { p.use_for_image_out = v; _saveParallelProviders().then(_renderParallelRows); },
-    ));
+    // Three stat cells — shown as dashes until expanded.
+    const statIn = document.createElement('span');
+    statIn.className = 'ac-saved-cap ac-saved-stat';
+    statIn.textContent = '—';
+    row.appendChild(statIn);
+
+    const statOut = document.createElement('span');
+    statOut.className = 'ac-saved-cap ac-saved-stat';
+    statOut.textContent = '—';
+    row.appendChild(statOut);
+
+    const statCost = document.createElement('span');
+    statCost.className = 'ac-saved-cap ac-saved-stat';
+    statCost.textContent = '—';
+    row.appendChild(statCost);
 
     const removeBtn = document.createElement('button');
     removeBtn.textContent = '×';
@@ -942,35 +985,13 @@ function _renderParallelRows() {
 
     row.addEventListener('click', () => {
       const open = rowWrap.classList.toggle('expanded');
-      if (open) _loadSavedModelDetail(p, body);
+      if (open) _loadSavedModelDetail(p, body, statIn, statOut, statCost);
     });
 
     rowWrap.appendChild(row);
     rowWrap.appendChild(body);
     list.appendChild(rowWrap);
   });
-
-  const enabledCount = _parallelProviders.filter(p => p.enabled).length;
-  if (countEl) {
-    countEl.textContent = `${enabledCount} ticked for Text (need 2+ to race in parallel)`;
-    countEl.style.color = enabledCount < 2 ? 'var(--warning)' : 'var(--fg-3)';
-  }
-
-  const describerHint = _qs('ac-settings-describer-hint');
-  if (describerHint) {
-    const describer = _parallelProviders.find(p => p.image_capable && p.use_for_image);
-    describerHint.textContent = describer
-      ? `Image describer: ${describer.model}`
-      : 'No Image-in model ticked — text-only models won\'t see attached images.';
-  }
-
-  const imageGenHint = _qs('ac-settings-imagegen-hint');
-  if (imageGenHint) {
-    const gen = _parallelProviders.find(p => p.image_out_capable && p.use_for_image_out);
-    imageGenHint.textContent = gen
-      ? `Image generator: ${gen.model}`
-      : 'No Image-out model ticked — agents can\'t create images.';
-  }
 }
 
 

@@ -1359,11 +1359,11 @@ live/scheduled) */
 }
 .ac-cap-badge.on { color: var(--accent); border-color: var(--accent); opacity: 1; }
 
-/* ══ Saved Models — expandable table (Model · Text/In/Out, expand for cost) ════
-   Rows use a grid so the three capability columns line up under the header. */
+/* ══ Saved Models — expandable table (Model · Tokens In/Out · Cost) ════
+   Rows use a grid so the three stat columns line up under the header. */
 #ac-settings-saved-list .ac-ability-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px 34px 34px 24px 22px;
+  grid-template-columns: minmax(0, 1fr) 85px 85px 72px 24px 22px;
   align-items: center;
   column-gap: 4px;
 }
@@ -1377,6 +1377,12 @@ live/scheduled) */
   white-space: nowrap;
 }
 .ac-saved-cap { display: flex; align-items: center; justify-content: center; }
+.ac-saved-stat {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
 .ac-saved-model-name {
   display: block;
   overflow: hidden;

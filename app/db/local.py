@@ -1005,6 +1005,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
     is_byo_llm                  INTEGER NOT NULL DEFAULT 0,
     is_trial                    INTEGER NOT NULL DEFAULT 0,
     is_exempt                   INTEGER NOT NULL DEFAULT 0,
+    model                       TEXT,
+    provider                    TEXT,
     created_at                  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

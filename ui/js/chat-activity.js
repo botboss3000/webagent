@@ -2,6 +2,7 @@
 
 import { app } from './state.js';
 import { apiPath } from './config.js';
+import { copyText } from './clipboard.js';
 
 // ── Chat activity ("thinking") indicator ───────────────────────────────────
 // While the agent is working on the CURRENT session's turn, the web-chat pill
@@ -406,7 +407,7 @@ function _makeCopyBtn(text, label) {
   btn.textContent = 'copy';
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(text).then(() => {
+    copyText(text).then(() => {
       btn.textContent = 'copied';
       btn.classList.add('copied');
       setTimeout(() => { btn.textContent = 'copy'; btn.classList.remove('copied'); }, 1500);
