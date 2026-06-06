@@ -1375,15 +1375,33 @@ live/scheduled) */
 }
 .ac-cap-badge.on { color: var(--accent); border-color: var(--accent); opacity: 1; }
 
-/* ══ Saved Models — expandable rows injected into the unified model table
-   (Model · Tokens In/Out · Cost). Rows use a grid so the three stat columns
-   line up under the header. */
+/* ══ Saved Models — expandable rows injected into the unified model table.
+   Rows use a grid; column widths are set dynamically by JS based on the
+   active view mode (usage vs. capabilities). The static CSS value here is
+   the default fallback before JS sets it inline. */
 .ac-model-config .ac-saved-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 85px 85px 72px 24px 22px;
   align-items: center;
   column-gap: 4px;
 }
+
+/* ── Toggle button: switches between Usage / Capabilities column mode ── */
+.ac-saved-col-toggle {
+  background: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  width: 16px; height: 16px;
+  padding: 0;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--fg-3);
+  font-size: 10px;
+  line-height: 1;
+  transition: color 0.15s, border-color 0.15s;
+  justify-self: center;
+}
+.ac-saved-col-toggle:hover { color: var(--accent); border-color: var(--accent); }
 .ac-saved-head:hover { background: transparent; }
 .ac-saved-th {
   font-size: 10px;

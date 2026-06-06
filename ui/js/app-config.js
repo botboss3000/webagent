@@ -972,8 +972,7 @@ function _renderParallelRows() {
     });
   }
 
-  const delSpacer = document.createElement('span'); delSpacer.className = 'ac-saved-del-spacer';
-  // ── Toggle button ──
+  // ── Toggle button (direct grid child, sits in the × column slot) ──
   const toggleBtn = document.createElement('button');
   toggleBtn.className = 'ac-saved-col-toggle';
   toggleBtn.title = mode === 'caps' ? 'Switch to usage columns' : 'Switch to capability columns';
@@ -983,8 +982,7 @@ function _renderParallelRows() {
     _savedModelsViewMode = mode === 'caps' ? 'usage' : 'caps';
     _renderParallelRows();
   });
-  delSpacer.appendChild(toggleBtn);
-  head.appendChild(delSpacer);
+  head.appendChild(toggleBtn);
 
   const chevSpacer = document.createElement('span'); chevSpacer.className = 'ac-saved-chev-spacer'; head.appendChild(chevSpacer);
   list.appendChild(head);
