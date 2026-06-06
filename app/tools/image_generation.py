@@ -9,8 +9,13 @@ fallback for setups created before image generation was folded into Models.
 
 Default dispatch hits an OpenAI-compatible `/images/generations` endpoint —
 that covers OpenAI (DALL·E, gpt-image-1), Together AI, DeepInfra, Fireworks,
-and other OpenAI-compatible image hosts. Two providers have non-OpenAI APIs
-and are special-cased below: Stability AI and Google Gemini/Imagen.
+and other OpenAI-compatible image hosts. Three providers do NOT use that route
+and are special-cased below: Stability AI, Google Gemini/Imagen, and OpenRouter.
+OpenRouter has **no** `/images/generations` endpoint at all — image models there
+are driven through `/chat/completions` with `modalities: ["image","text"]`, and
+the generated image comes back as a data URL in `message.images[]`. Hitting the
+OpenAI route on OpenRouter returns its website's 404 HTML page, so an OpenRouter
+image model MUST take the `openrouter` shape.
 
 Generated images are persisted under `visuals/users/{user_id}/` and a relative
 URL is returned so the chat UI can render the result inline.
@@ -194,6 +199,11 @@ async def generate_image(
                 user_id=user_id, base_url=base_url, api_key=api_key, model=model,
                 prompt=prompt, n=n, client_cls=httpx.AsyncClient,
             )
+        if api_shape == "openrouter":
+            return await _openrouter(
+                user_id=user_id, base_url=base_url, api_key=api_key, model=model,
+                prompt=prompt, client_cls=httpx.AsyncClient,
+            )
         return json.dumps({"status": "error", "message": f"Unknown api_shape '{api_shape}'"})
     except Exception as e:
         logger.exception("generate_image failed")
@@ -350,6 +360,69 @@ async def _gemini(*, user_id, base_url, api_key, model, prompt, n, client_cls) -
         return json.dumps({
             "status": "ok",
             "provider": "gemini",
+            "model": model,
+            "images": saved,
+            "count": len(saved),
+        })
+
+
+async def _openrouter(*, user_id, base_url, api_key, model, prompt, client_cls) -> str:
+    """OpenRouter image generation — via /chat/completions, NOT /images/generations.
+
+    OpenRouter routes image models through the chat API: send the prompt as a user
+    message with ``modalities: ["image", "text"]``; the result image(s) come back as
+    data URLs under ``choices[].message.images[].image_url.url``. We decode and
+    persist them like every other provider.
+    """
+    url = f"{base_url}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["image", "text"],
+    }
+    async with client_cls(timeout=180.0) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code != 200:
+            return json.dumps({
+                "status": "error",
+                "message": f"OpenRouter HTTP {resp.status_code}: {resp.text[:500]}",
+            })
+        data = resp.json() or {}
+        saved: list[str] = []
+        for choice in (data.get("choices") or []):
+            msg = (choice or {}).get("message") or {}
+            for img in (msg.get("images") or []):
+                # OpenRouter shape: {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}
+                src = ((img or {}).get("image_url") or {}).get("url") or img.get("url") or ""
+                if src.startswith("data:"):
+                    try:
+                        b64 = src.split(",", 1)[1]
+                        saved.append(_save_png_bytes(user_id, base64.b64decode(b64), ext="png"))
+                    except Exception:
+                        continue
+                elif src.startswith("http"):
+                    rel = _save_from_url(user_id, src, client)
+                    if rel:
+                        saved.append(rel)
+        if not saved:
+            # No image came back — surface any text the model returned to explain why.
+            txt = ""
+            for choice in (data.get("choices") or []):
+                txt = ((choice or {}).get("message") or {}).get("content") or ""
+                if txt:
+                    break
+            return json.dumps({
+                "status": "error",
+                "message": f"OpenRouter returned no image. Model said: {txt[:300]}" if txt
+                else "OpenRouter returned no image (the model may not support image output).",
+            })
+        return json.dumps({
+            "status": "ok",
+            "provider": "openrouter",
             "model": model,
             "images": saved,
             "count": len(saved),

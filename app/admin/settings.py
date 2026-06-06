@@ -244,10 +244,46 @@ def _merge_agent_override(base: dict, override: dict) -> dict:
     return merged
 
 
-def _effective_config(base: dict, agent_rec: Optional[dict]) -> dict:
-    """Base user config with any per-agent override layered on top."""
+def _session_llm_override(cfg: Optional[dict]) -> Optional[dict]:
+    """Return a session's custom LLM config IF it overrides the layer below.
+
+    Sessions store ``{use_default, model}`` in ``metadata['llm_config']`` (set by
+    the chat footer model picker). Only an explicit ``use_default=False`` carrying
+    a model counts; anything else means "fall back to the agent/app default".
+    """
+    if not isinstance(cfg, dict):
+        return None
+    if cfg.get("use_default") is not False:
+        return None
+    if not cfg.get("model"):
+        return None
+    return cfg
+
+
+def _effective_config(
+    base: dict,
+    agent_rec: Optional[dict],
+    session_override: Optional[dict] = None,
+) -> dict:
+    """User config with any per-agent override, then any per-session override,
+    layered on top — resolution order app-default → agent → session."""
     override = _agent_llm_override(agent_rec)
-    return _merge_agent_override(base, override) if override else dict(base or {})
+    merged = _merge_agent_override(base, override) if override else dict(base or {})
+    sess = _session_llm_override(session_override)
+    if sess:
+        merged = _merge_agent_override(merged, sess)
+    return merged
+
+
+async def _load_session_override(session_id: Optional[str]) -> Optional[dict]:
+    """Fetch a session's stored llm_config (best-effort, None on any failure)."""
+    if not session_id:
+        return None
+    try:
+        from app.db import get_db
+        return await get_db().get_session_llm_override(session_id)
+    except Exception:
+        return None
 
 
 async def load_provider_for_user(user_id: str) -> None:
@@ -258,25 +294,39 @@ async def load_provider_for_user(user_id: str) -> None:
     _apply_config_to_env(await _resolve_user_config(user_id))
 
 
-async def apply_provider_for_run(user_id: str, agent_rec: Optional[dict] = None) -> dict:
+async def apply_provider_for_run(
+    user_id: str,
+    agent_rec: Optional[dict] = None,
+    session_id: Optional[str] = None,
+) -> dict:
     """Apply the effective provider config for a run to env, honoring a per-agent
-    LLM override (``metadata['llm_config']`` with ``use_default=False``) layered
-    over the user's default. Returns the effective config that was applied.
+    LLM override (``metadata['llm_config']`` with ``use_default=False``) and then a
+    per-session override (``sessions.metadata['llm_config']``) layered over the
+    user's default. Returns the effective config that was applied.
 
-    This is what makes an agent's *custom model* actually take effect at runtime
-    — without it the loop would always run on the user's global default.
+    This is what makes an agent's *custom model* — or a session's picked model —
+    actually take effect at runtime; without it the loop would always run on the
+    user's global default.
     """
-    effective = _effective_config(await _resolve_user_config(user_id), agent_rec)
+    session_override = await _load_session_override(session_id)
+    effective = _effective_config(await _resolve_user_config(user_id), agent_rec, session_override)
+    effective = await _ensure_tool_capable(effective, user_id)
     _apply_config_to_env(effective)
     return effective
 
 
-async def resolve_active_model(user_id: str, agent_rec: Optional[dict] = None) -> dict:
+async def resolve_active_model(
+    user_id: str,
+    agent_rec: Optional[dict] = None,
+    session_id: Optional[str] = None,
+) -> dict:
     """Return ``{model, provider, base_url}`` for the effective model of a run,
     WITHOUT mutating env. Mirrors apply_provider_for_run's resolution so the chat
     footer shows exactly the model the loop will use. Used by /current-model-info.
     """
-    effective = _effective_config(await _resolve_user_config(user_id), agent_rec)
+    session_override = await _load_session_override(session_id)
+    effective = _effective_config(await _resolve_user_config(user_id), agent_rec, session_override)
+    effective = await _ensure_tool_capable(effective, user_id)
     provider = effective.get("provider", "") or ""
     base_url = effective.get("base_url") or (PROVIDER_PRESETS.get(provider, {}) or {}).get("base_url", "")
     return {"model": effective.get("model", "") or "", "provider": provider, "base_url": base_url}
@@ -448,6 +498,8 @@ def _infer_api_shape(base_url: str, provider: str = "") -> str:
     Mirrors IMAGE_PROVIDER_PRESETS in app/tools/image_generation.py:
       api.stability.ai                    → stability
       generativelanguage.googleapis.com   → gemini
+      openrouter.ai                       → openrouter (chat-completions image out;
+                                            OpenRouter has NO /images/generations)
       everything else                     → openai-compatible /images/generations
     """
     b = (base_url or "").lower()
@@ -455,7 +507,29 @@ def _infer_api_shape(base_url: str, provider: str = "") -> str:
         return "stability"
     if "generativelanguage.google" in b:
         return "gemini"
+    if "openrouter.ai" in b or (provider or "").lower() == "openrouter":
+        return "openrouter"
     return "openai"
+
+
+def _catalog_modality(model: str, provider: str, direction: str) -> Optional[bool]:
+    """Best-effort: does the model catalog say ``model`` supports image in/out?
+    direction ∈ {"in","out"}. Returns True / False / None (unknown). Sync lookup
+    against the already-loaded catalog cache — never raises, never blocks on a
+    network fetch (a cold cache just yields None, and the caller trusts the flag).
+    """
+    try:
+        from app import model_catalog
+        meta = model_catalog.lookup(model, provider_hint=provider)
+    except Exception:
+        meta = None
+    if not meta:
+        return None
+    key = "input_modalities" if direction == "in" else "output_modalities"
+    mods = meta.get(key)
+    if not isinstance(mods, list):
+        return None
+    return "image" in [str(m).lower() for m in mods]
 
 
 def pick_image_generator(caps: dict) -> Optional[dict]:
@@ -464,11 +538,17 @@ def pick_image_generator(caps: dict) -> Optional[dict]:
     Prefer the default model when it is flagged ``use_for_image_out`` (and
     capable), else the first saved row flagged ``use_for_image_out``. A row need
     NOT be enabled for text — a user may save an image-only model used solely for
-    generation. Returns {model, provider, base_url, api_key, api_shape} or None.
+    generation. The model catalog is used as a guard: a candidate the catalog says
+    canNOT output images is skipped even if mis-ticked, so a stale checkbox can't
+    route generation to a text-only model. Returns
+    {model, provider, base_url, api_key, api_shape} or None.
     """
     def _ok(e: dict) -> bool:
-        return bool(e.get("use_for_image_out") and e.get("image_out_capable")
-                    and e.get("model") and e.get("api_key"))
+        if not (e.get("use_for_image_out") and e.get("image_out_capable")
+                and e.get("model") and e.get("api_key")):
+            return False
+        # Catalog veto: False = definitely can't; None/True = trust the flag.
+        return _catalog_modality(e["model"], e.get("provider", ""), "out") is not False
 
     candidates = [caps.get("default") or {}] + list(caps.get("racers") or [])
     for e in candidates:
@@ -477,6 +557,96 @@ def pick_image_generator(caps: dict) -> Optional[dict]:
                     "base_url": e.get("base_url", ""), "api_key": e.get("api_key", ""),
                     "api_shape": _infer_api_shape(e.get("base_url", ""), e.get("provider", ""))}
     return None
+
+
+def pick_vision_model(caps: dict) -> Optional[dict]:
+    """Choose the model that READS images for the ``process_image`` delegate tool.
+
+    Prefer the default model if it can see images, else the first saved row flagged
+    image-input capable. A row need NOT be enabled for text — an image-only model
+    (e.g. a Gemini *-image variant) is a fine vision worker even though it can't be
+    the agent's tool-calling brain. The model catalog guards the pick: a candidate
+    the catalog says canNOT accept image input is skipped even if mis-ticked, so a
+    stale checkbox can't send an image to a blind text model. Returns
+    {model, provider, base_url, api_key} or None when no image-input model fits.
+    """
+    def _ok(e: dict) -> bool:
+        if not (e.get("image_capable") and e.get("model") and e.get("api_key")):
+            return False
+        return _catalog_modality(e["model"], e.get("provider", ""), "in") is not False
+
+    def _pick(e):
+        return {"model": e["model"], "provider": e.get("provider", ""),
+                "base_url": e.get("base_url", ""), "api_key": e.get("api_key", "")}
+
+    d = caps.get("default") or {}
+    if _ok(d):
+        return _pick(d)
+    # Prefer rows the admin explicitly ticked for image input, then any capable row.
+    racers = list(caps.get("racers") or [])
+    for e in racers:
+        if _ok(e) and e.get("use_for_image"):
+            return _pick(e)
+    for e in racers:
+        if _ok(e):
+            return _pick(e)
+    return None
+
+
+async def _ensure_tool_capable(effective: dict, user_id: str) -> dict:
+    """Safety net for the MAIN turn: if the resolved model definitively cannot call
+    tools (catalog ``tool_call`` is False — e.g. an image-only model someone set as
+    the brain), swap to a tool-capable enabled text model so the agent loop doesn't
+    hard-fail with OpenRouter's "No endpoints found that support tool use". Only
+    acts when we KNOW the model can't do tools; unknown/True is left untouched.
+
+    Image generation and vision are handled by their own pickers/workers — this
+    only guards the conversational model the loop attaches tools to.
+    """
+    model = effective.get("model", "")
+    if not model:
+        return effective
+    try:
+        from app import model_catalog
+        await model_catalog.ensure_fresh()
+        meta = model_catalog.lookup(model, provider_hint=effective.get("provider", ""))
+    except Exception:
+        meta = None
+    if not meta or meta.get("tool_call") is not False:
+        return effective  # capable, or unknown — don't second-guess
+
+    try:
+        caps = await load_llm_capabilities_for_user(user_id)
+    except Exception:
+        return effective
+    candidates = [caps.get("default") or {}]
+    candidates += [r for r in (caps.get("racers") or [])
+                   if r.get("enabled") and r.get("text_capable") and r.get("model")]
+    for c in candidates:
+        cm = c.get("model", "")
+        if not cm or cm == model:
+            continue
+        try:
+            cmeta = model_catalog.lookup(cm, provider_hint=c.get("provider", ""))
+        except Exception:
+            cmeta = None
+        if cmeta and cmeta.get("tool_call") is False:
+            continue  # also tool-less — keep looking
+        merged = dict(effective)
+        merged["model"] = cm
+        for k in ("provider", "base_url", "api_key"):
+            if c.get(k):
+                merged[k] = c[k]
+        logger.info(
+            "tool-use fallback: %s cannot call tools; running this turn on %s", model, cm
+        )
+        return merged
+    logger.warning(
+        "tool-use fallback: %s cannot call tools and no tool-capable text model is "
+        "enabled — the turn may fail. Tick TEXT on a tool-capable model in App Config.",
+        model,
+    )
+    return effective
 
 
 def _load_app_settings() -> dict:
@@ -1161,6 +1331,76 @@ async def get_model_usage(
         return {"error": str(e), "total_input_tokens": 0, "total_output_tokens": 0, "total_cost_cents": 0}
 
 
+@router.get("/session-model-usage")
+async def get_session_model_usage(
+    session_id: str = Query(""),
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Per-model token totals for one session, scoped to the current user.
+
+    usage_events has no session_id column; it links to a session through
+    interaction_id -> interactions.session_id, so we join on that. Returns a
+    map keyed by model id: {input, output, total}. Used by the footer model
+    picker to show each model's session usage next to its name."""
+    user_id = _resolve_user_id(authorization or "", token or "")
+    if not user_id:
+        return {"error": "not_authenticated", "usage": {}}
+    if not session_id:
+        return {"error": None, "usage": {}}
+
+    try:
+        from app.db import get_db
+        db = get_db()
+        usage: dict = {}
+
+        if hasattr(db, "_get_conn"):
+            conn = db._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT ue.model, COALESCE(SUM(ue.input_tokens),0), "
+                    "COALESCE(SUM(ue.output_tokens),0) "
+                    "FROM usage_events ue "
+                    "JOIN interactions i ON ue.interaction_id = i.id "
+                    "WHERE ue.user_id=? AND i.session_id=? "
+                    "GROUP BY ue.model",
+                    (user_id, session_id),
+                ).fetchall()
+                for r in rows or []:
+                    model = r[0] or ""
+                    if not model:
+                        continue
+                    inp, out = int(r[1] or 0), int(r[2] or 0)
+                    usage[model] = {"input": inp, "output": out, "total": inp + out}
+            finally:
+                conn.close()
+        elif hasattr(db, "get_raw_client"):
+            client = db.get_raw_client()
+            # Two-step (no server-side join): which interactions belong to the
+            # session, then sum usage for those interaction ids.
+            irows = client.table("interactions").select("id") \
+                .eq("session_id", session_id).execute()
+            iids = [row["id"] for row in (irows.data or []) if row.get("id")]
+            if iids:
+                resp = client.table("usage_events") \
+                    .select("model, input_tokens, output_tokens, interaction_id") \
+                    .eq("user_id", user_id).in_("interaction_id", iids).execute()
+                for row in resp.data or []:
+                    model = row.get("model") or ""
+                    if not model:
+                        continue
+                    inp = row.get("input_tokens", 0) or 0
+                    out = row.get("output_tokens", 0) or 0
+                    cur = usage.setdefault(model, {"input": 0, "output": 0, "total": 0})
+                    cur["input"] += inp
+                    cur["output"] += out
+                    cur["total"] += inp + out
+
+        return {"error": None, "usage": usage}
+    except Exception as e:
+        return {"error": str(e), "usage": {}}
+
+
 @router.get("/model-info")
 async def get_model_info(model: str = Query("", alias="model")):
     """Full merged metadata for a single model id (context, cost, description…)."""
@@ -1176,6 +1416,7 @@ async def get_model_info(model: str = Query("", alias="model")):
 @router.get("/current-model-info")
 async def get_current_model_info(
     agent_id: str = Query("", alias="agent_id"),
+    session_id: str = Query("", alias="session_id"),
     authorization: Optional[str] = Header(None),
     token: Optional[str] = Query(None),
 ):
@@ -1185,8 +1426,9 @@ async def get_current_model_info(
 
     The model is resolved exactly as the agent loop resolves it for a run: the
     user's default with any per-agent LLM override (the agent's custom model)
-    layered on top — so the footer shows the model the run will actually use,
-    not just the global default.
+    and then any per-session override (the session's picked model) layered on
+    top — so the footer shows the model the run will actually use, not just the
+    global default.
     """
     user_id = _resolve_user_id(authorization or "", token or "")
 
@@ -1198,7 +1440,7 @@ async def get_current_model_info(
         except Exception:
             agent_rec = None
 
-    active = await resolve_active_model(user_id, agent_rec)
+    active = await resolve_active_model(user_id, agent_rec, session_id or None)
     model = active.get("model", "")
     provider = active.get("provider", "")
 

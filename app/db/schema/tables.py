@@ -89,6 +89,29 @@ TABLES: List[Table] = [
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
+    # Browser sessions — first-class, persistent browser TABS that live BESIDE
+    # chat (not keyed to a chat session). Each row is one shareable tab the user
+    # owns: its own cookie jar (storage_state) so logins survive restarts, an
+    # optional linked agent, and a `shared` flag (0 = private to the user,
+    # 1 = visible to the linked agent). The Web tab and the agent's browser_action
+    # both address a tab by THIS id, so they reliably drive the same Playwright
+    # page. agent_id / user_id are free TEXT (NOT foreign keys) so a tab is
+    # independent of any chat session and outlives it. See app/tools/browser.py
+    # and app/api/browser_stream.py.
+    Table("browser_sessions", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("user_id", "TEXT", nullable=False),
+        Column("agent_id", "TEXT"),                          # linked agent (nullable)
+        Column("title", "TEXT"),
+        Column("url", "TEXT"),
+        Column("shared", "INTEGER", nullable=False, default="0"),   # 0 private, 1 shared with agent
+        Column("status", "TEXT", nullable=False, default="'active'"),  # active | idle | closed
+        Column("storage_state", "JSON"),                    # Playwright cookies/localStorage
+        Column("position", "INTEGER", nullable=False, default="0"),  # tab ordering (future multi-tab UI)
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
     Table("interactions", [
         Column("id", "TEXT", nullable=False, primary_key=True),
         Column("session_id", "TEXT", nullable=False, references="sessions(id)"),
@@ -839,6 +862,8 @@ TABLES: List[Table] = [
 # ── Indexes ─────────────────────────────────────────────────────────────────
 
 INDEXES: List[Index] = [
+    Index("idx_browser_sessions_user", "browser_sessions", "user_id"),
+    Index("idx_browser_sessions_agent", "browser_sessions", "agent_id"),
     Index("idx_interactions_session", "interactions", "session_id"),
     Index("idx_interactions_created", "interactions", "created_at"),
     Index("idx_interactions_session_seq", "interactions", "session_id, session_seq"),

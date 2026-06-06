@@ -2,6 +2,14 @@
 
 How to keep docs in sync, where to put scratch files, and how to push. Read this when your change adds/removes/renames paths, touches config, or before committing.
 
+## Wiki upkeep (user-facing docs live in `data/wiki.db`)
+
+The product's user-facing documentation is the **in-app Wiki** (`data/wiki.db`, its own SQLite file — see `app/wiki/db.py`), and README is being **trimmed** as docs move there. So:
+
+- When you add or change **user-facing behaviour** (a new ability, a new tool, a workflow, a setting), **update or add the relevant Wiki article(s)** in the same work — articles are keyed by `slug`, written as Markdown, linked with `[[Title]]`, and `status='published'` to be public. Upsert via `app/wiki/db.py`'s `get_wiki_store().upsert(...)`, the `wiki_*` agent tools, or the Wiki tab.
+- Keep the matching **README** entry **short** and point to the `[[Wiki Article]]` rather than duplicating prose there.
+- Developer/architecture detail still belongs in README + these `docs/claude/*.md` files; the Wiki is for how users (and agents) *use* the feature.
+
 ## README upkeep (required with code changes)
 
 After **any** change that affects how the repo is structured, configured, or used, **update `README.md` in the same work** so it stays the single accurate guide. Do not leave README stale while landing features or refactors.

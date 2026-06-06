@@ -804,9 +804,10 @@ async def stream_agent_events(
 
     # Apply the effective provider config for THIS run (not shared with any other
     # user): the user's default with any per-agent LLM override (custom model)
-    # layered on top, so the agent runs on ITS configured model — not just the
-    # global default.
-    await apply_provider_for_run(user_id, _agent_rec)
+    # and then any per-session override (the model picked in this chat's footer)
+    # layered on top, so the run uses the right model — not just the global
+    # default. Resolution order: app-default → agent → session.
+    await apply_provider_for_run(user_id, _agent_rec, session_id)
 
     model_name = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or "deepseek/deepseek-v4-flash"
     provider_name = os.environ.get("LLM_PROVIDER", "openrouter")

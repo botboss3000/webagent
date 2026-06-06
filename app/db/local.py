@@ -145,6 +145,31 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Browser sessions — first-class, persistent browser TABS that live BESIDE chat
+-- (not keyed to a chat session). Each row is one shareable tab the user owns:
+-- its own cookie jar (storage_state) so logins survive restarts, an optional
+-- linked agent, and a `shared` flag (0 = private, 1 = visible to the linked
+-- agent). The Web tab and the agent's browser_action both address a tab by THIS
+-- id, so they drive the same Playwright page. agent_id/user_id are free TEXT (NOT
+-- foreign keys) so a tab is independent of any chat session. See
+-- app/tools/browser.py and app/api/browser_stream.py.
+CREATE TABLE IF NOT EXISTS browser_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    agent_id TEXT,
+    title TEXT,
+    url TEXT,
+    shared INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    storage_state TEXT,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_browser_sessions_user ON browser_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_browser_sessions_agent ON browser_sessions(agent_id);
+
 CREATE TABLE IF NOT EXISTS interactions (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -4451,6 +4476,70 @@ class LocalBackend(StorageBackend):
                 )
                 conn.commit()
                 return lst
+            finally:
+                conn.close()
+
+    # ── Per-session model override (lives in sessions.metadata["llm_config"]) ──
+    # Lets a single chat run on a model different from the agent's default — the
+    # footer model picker writes here so each session remembers its own model.
+    # Same shape as an agent override: {use_default: False, model: "<id>"}.
+    # Resolution order at run time is app-default → agent → session.
+
+    async def get_session_llm_override(self, session_id: str) -> Optional[dict]:
+        """Return the session's stored llm_config dict, or None if unset."""
+        if not session_id:
+            return None
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row or not row["metadata"]:
+                return None
+            try:
+                meta = json.loads(row["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                return None
+            cfg = meta.get("llm_config") if isinstance(meta, dict) else None
+            return cfg if isinstance(cfg, dict) else None
+        finally:
+            conn.close()
+
+    async def set_session_llm_override(
+        self, session_id: str, model: Optional[str]
+    ) -> Optional[dict]:
+        """Set (or clear) the session's model override. A non-empty model stores
+        ``{use_default: False, model}``; an empty/None model clears the override
+        so the session falls back to the agent/app default. Returns the new cfg
+        (or None when cleared)."""
+        if not session_id:
+            return None
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return None
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                if model:
+                    cfg = {"use_default": False, "model": model}
+                    meta["llm_config"] = cfg
+                else:
+                    cfg = None
+                    meta.pop("llm_config", None)
+                conn.execute(
+                    "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), session_id),
+                )
+                conn.commit()
+                return cfg
             finally:
                 conn.close()
 

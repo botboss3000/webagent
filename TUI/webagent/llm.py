@@ -8,6 +8,7 @@ small and bionic-friendly for a future Termux build.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -19,6 +20,14 @@ from .config import ProviderConfig
 
 
 class LLMError(Exception):
+    pass
+
+
+class _TransientLLMError(LLMError):
+    """A retryable failure (rate limit, upstream provider hiccup, timeout, or a
+    200-OK response that carried an error / empty / garbled body instead of choices).
+    These are the cause of the intermittent 'bad response shape: choices' the user saw:
+    OpenAI-compatible providers — OpenRouter especially — return such bodies under load."""
     pass
 
 
@@ -79,11 +88,30 @@ class LLMClient:
             return f"Couldn't connect to '{host}': {detail}. Check the Base URL and your network."
         return f"Request to '{host}' failed: {detail}"
 
+    @staticmethod
+    def _error_text(resp: httpx.Response) -> str:
+        """Pull a human message out of an error response body when it's structured JSON
+        ({"error": {"message": ...}} or {"error": "..."}); fall back to the raw text."""
+        try:
+            data = resp.json()
+        except Exception:
+            return resp.text[:400]
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict) and err.get("message"):
+                return str(err["message"])
+            if isinstance(err, str) and err:
+                return err
+        return resp.text[:400]
+
     async def aclose(self) -> None:
         try:
             await self._client.aclose()
         except Exception:
             pass
+
+    # Statuses worth retrying: rate limit + the standard transient server/gateway codes.
+    _RETRY_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
 
     async def complete(
         self,
@@ -91,7 +119,13 @@ class LLMClient:
         tools: Optional[list[dict]] = None,
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        max_retries: int = 3,
     ) -> Completion:
+        """Run one chat completion, retrying transient failures with exponential backoff.
+
+        The intermittent 'bad response shape: choices' was a transient upstream condition
+        (rate limit / provider hiccup) leaking through as a hard error. Such failures are
+        now retried a few times; only a persistent failure surfaces to the user."""
         if not self.provider.configured:
             raise LLMError("No API key configured. Open the App panel and set a provider + key.")
         parts = urlsplit(self.provider.base_url or "")
@@ -110,17 +144,64 @@ class LLMClient:
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
+
+        last: _TransientLLMError | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                return await self._attempt(body, host)
+            except _TransientLLMError as e:
+                last = e
+                if attempt >= max_retries:
+                    break
+                # Exponential backoff: 0.5s, 1s, 2s … keeps a flaky provider from
+                # turning a single hiccup into a failed turn.
+                await asyncio.sleep(0.5 * (2 ** attempt))
+        assert last is not None
+        raise LLMError(f"{last} (after {max_retries + 1} attempts)")
+
+    async def _attempt(self, body: dict[str, Any], host: str) -> Completion:
         try:
             resp = await self._client.post("/chat/completions", json=body)
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError,
+                httpx.RemoteProtocolError) as e:
+            # Network-level blips are transient — retry.
+            raise _TransientLLMError(self._network_error(e, host)) from e
         except httpx.HTTPError as e:
             raise LLMError(self._network_error(e, host)) from e
         if resp.status_code >= 400:
-            raise LLMError(f"HTTP {resp.status_code} from {host}: {resp.text[:400]}")
+            text = self._error_text(resp)
+            msg = f"HTTP {resp.status_code} from {host}: {text}"
+            if resp.status_code in self._RETRY_STATUSES:
+                raise _TransientLLMError(msg)
+            raise LLMError(msg)
         try:
             data = resp.json()
-            msg = data["choices"][0]["message"]
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
-            raise LLMError(f"bad response shape: {e}") from e
+        except json.JSONDecodeError as e:
+            # A 200 with a non-JSON body is almost always a proxy/gateway hiccup — retry.
+            raise _TransientLLMError(
+                f"{host} returned non-JSON (HTTP {resp.status_code}): {resp.text[:400]!r}"
+            ) from e
+        # OpenAI-compatible providers (OpenRouter especially) often return HTTP 200 with an
+        # error payload instead of 'choices' — rate limits, upstream provider failures,
+        # transient capacity. Surface/retry that instead of a cryptic KeyError('choices').
+        if isinstance(data, dict) and "choices" not in data and data.get("error"):
+            err = data["error"]
+            detail = err.get("message") if isinstance(err, dict) else str(err)
+            raise _TransientLLMError(f"{host} returned an error: {detail or err}")
+        try:
+            choices = data["choices"]
+        except (KeyError, TypeError) as e:
+            raise _TransientLLMError(
+                f"bad response shape ({e}); raw: {str(data)[:400]}"
+            ) from e
+        if not choices:
+            raise _TransientLLMError(
+                f"{host} returned no choices (empty completion). Raw: {str(data)[:400]}"
+            )
+        try:
+            msg = choices[0]["message"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise LLMError(f"bad response shape ({e}); raw: {str(data)[:400]}") from e
 
         calls: list[ToolCall] = []
         for tc in msg.get("tool_calls") or []:

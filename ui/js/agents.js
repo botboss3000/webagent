@@ -95,64 +95,7 @@ function _isMockAgent(agent) {
 // The pill on the Agents page hands off to the shared webAgent (see
 // _sendAgentBuilderPrompt → app.startWebagentSession in ui/js/sessions.js).
 
-// Tool descriptions for the Tools tab (matches BUILTIN_TOOL_METADATA keys)
-const TOOL_DESCRIPTIONS = {
-  list_tools:                   'Discover available tools at runtime',
-  search_tools:                 'Search for tools by keyword',
-  get_tool_definition:          'Retrieve full definition and parameters for a tool',
-  web_search:                   'Search the web for current information',
-  browser_action:               'Interact with live web pages (click, type, screenshot)',
-  http_request:                 'Make arbitrary HTTP requests to external APIs',
-  db_query:                     'Query or modify the database directly',
-  list_agent_context_documents: 'List the context documents for this agent',
-  get_agent_context_document:   'Read a specific context document',
-  update_agent_context_document:'Update a context document',
-  insert_agent_context_document:'Insert a new context document',
-  memory:                       'Store and retrieve information across sessions',
-  session_search:               'Search past session interactions',
-  get_time:                     'Get the current time',
-  get_date:                     'Get today\'s date',
-  get_weather:                  'Get current weather for a location',
-  calculate:                    'Evaluate a mathematical expression',
-  read_attachment:              'Read the contents of an uploaded file',
-  create_tool:                  'Create a new tool and save it to the database',
-  rate_skill:                   'Rate a skill after user feedback',
-  register_webhook:             'Register an inbound webhook',
-  list_webhooks:                'List registered webhooks',
-  delete_webhook:               'Delete a webhook registration',
-  get_webhook_log:              'View recent webhook event log',
-  run_optimizer:                'Trigger the optimizer pipeline for this session',
-  run_worker_trials:            'Run simulated trial conversations (Optimizer Planner only)',
-  handoff_to_closer:            'Hand off optimization results to the Closer',
-  deploy_optimization:          'Deploy an approved optimization change (Closer only)',
-  read_source:                  'Read any file on the server filesystem',
-  write_source:                 'Create or overwrite a file (with backup)',
-  edit_source:                  'Replace exact text in a file',
-  delete_source:                'Delete a file or directory',
-  resolve_conflict:             'Resolve merge conflict markers in a file',
-  run_command:                  'Execute a shell command on the server',
-  restart_server:               'Restart the webAgent server process',
-  register_user:                'Register a new user from a communication channel',
-  generate_image:               'Generate an image from a text description',
-  read_diagnostics:             'Read server diagnostics, errors, and logs',
-  maps_geocode:                 'Geocode an address or reverse-geocode coordinates',
-  list_agent_templates:         'List agent templates (and a template’s prompt slots) to build from',
-  list_my_agents:               'List the agents this user owns',
-  get_agent:                    'Read one of the user’s agents: config, prompts, abilities',
-  create_agent:                 'Create a new agent for the user from a template',
-  update_agent:                 'Update fields on one of the user’s own agents',
-  edit_agent_prompt:            'Read or edit the prompt slots of the user’s own agent',
-  set_agent_ability:            'Turn an ability on/off for the user’s own agent',
-};
-
 // ── Tool tier definitions ─────────────────────────────────────────────
-// Tier 0: Admin-only. Never shown or toggleable for normal agents.
-const TIER_0_ADMIN = new Set([
-  'read_source','write_source','edit_source','delete_source','resolve_conflict',
-  'run_command','restart_server',
-  'run_worker_trials','handoff_to_closer','deploy_optimization',
-]);
-
 // Tier 1: Always-on. Present for all agents, not shown as toggleable.
 const TIER_1_ALWAYS_ON = new Set([
   'list_tools','search_tools','get_tool_definition',
@@ -172,107 +115,10 @@ const TIER_2_TOOLS = [
 
 const TIER_2_ALL = TIER_2_TOOLS;
 
-// Category definitions covering all tiers. condition: null=always, 'admin'=admin/optimizer only
-const TOOL_CATEGORIES = [
-  {
-    label: 'Information & Search',
-    condition: null,
-    tools: [
-      'web_search','http_request','browser_action','session_search','memory',
-      'list_tools','search_tools','get_tool_definition','read_attachment',
-      'maps_geocode',
-    ],
-  },
-  {
-    label: 'Data & Context',
-    condition: null,
-    tools: [
-      'db_query','list_agent_context_documents','get_agent_context_document',
-      'update_agent_context_document','insert_agent_context_document','create_tool',
-      'get_time','get_date','calculate','register_user',
-    ],
-  },
-  {
-    label: 'Integrations & Automation',
-    condition: null,
-    tools: [
-      'register_webhook','list_webhooks','delete_webhook','get_webhook_log',
-      'get_weather','rate_skill','run_optimizer',
-    ],
-  },
-  {
-    label: 'Image & Diagnostics',
-    condition: null,
-    tools: [
-      'generate_image','read_diagnostics',
-    ],
-  },
-  {
-    label: 'Admin & System',
-    condition: 'admin',
-    tools: [
-      'read_source','write_source','edit_source','delete_source','resolve_conflict',
-      'run_command','restart_server',
-      'run_worker_trials','handoff_to_closer','deploy_optimization',
-    ],
-  },
-  {
-    label: 'Codebase Admin',
-    condition: 'codebase_admin',
-    tools: [
-      'read_source','write_source','edit_source','delete_source','resolve_conflict',
-      'run_command','restart_server',
-    ],
-  },
-  {
-    label: 'Web Access',
-    condition: 'web_access',
-    tools: ['web_search','get_weather','maps_geocode'],
-  },
-  {
-    label: 'Browser Control',
-    condition: 'browser_control',
-    tools: ['browser_action','http_request'],
-  },
-  {
-    label: 'Image Generation',
-    condition: 'image_generation',
-    tools: ['generate_image'],
-  },
-  {
-    label: 'Create Tools',
-    condition: 'create_tools',
-    tools: ['create_tool'],
-  },
-  {
-    label: 'Diagnostics',
-    condition: 'diagnostics',
-    tools: ['read_diagnostics'],
-  },
-  {
-    label: 'Agent Orchestration',
-    condition: 'agent_orchestration',
-    tools: ['delegate_to_agent','list_delegatable_agents'],
-  },
-  {
-    label: 'Agent Management',
-    condition: 'agent_management',
-    tools: ['list_agent_templates','list_my_agents','get_agent','create_agent',
-            'update_agent','edit_agent_prompt','set_agent_ability'],
-  },
-];
-
 const PIPELINE_TOOLS = {
   opt_planner: ['run_worker_trials','handoff_to_closer'],
   opt_closer:  ['deploy_optimization'],
 };
-
-const DESTRUCTIVE = new Set([
-  'db_query','update_agent_context_document','create_tool',
-  'delete_webhook','write_source','edit_source','delete_source','resolve_conflict',
-  'run_command','restart_server',
-  'create_agent','update_agent','edit_agent_prompt','set_agent_ability',
-]);
 
 // ── Ability-to-tools mapping ──────────────────────────────────────────
 // Maps agent connection_type (ability) to the tool names it unlocks. Used only
@@ -1478,9 +1324,14 @@ async function _detectAgentAbilities(agent, panel) {
     const enabled = !!(automation && automation.enabled);
     if (state.automationEnabled !== enabled) {
       state.automationEnabled = enabled;
-      if (!enabled && state.tab === 'automation') state.tab = 'config';
+      // Only the tab BAR needs refreshing to show/hide the Automation tab.
+      // Re-rendering the whole body is required solely when we must kick the
+      // user off a now-hidden Automation tab; doing it unconditionally races
+      // the in-flight initial body render and duplicates async sections.
+      const needBodyRerender = (!enabled && state.tab === 'automation');
+      if (needBodyRerender) state.tab = 'config';
       _refreshAgentTabBar(agent);
-      _renderPanelBody(agent, panel);
+      if (needBodyRerender) _renderPanelBody(agent, panel);
     }
   } catch (_e) { /* leave tab hidden on error */ }
 }
@@ -4046,10 +3897,18 @@ function _abilityLabel(key) {
 // Build one tool row for the Tool Availability section: name, description, and
 // either a locked "core" pill or a Sent / Discover segmented toggle that
 // persists immediately. Theme-safe (design-system vars only).
-function _buildExposureRow(agent, t, canEdit) {
+// One tool row carrying BOTH controls: the permission gate (Auto / Ask / Deny)
+// and the availability mode (Sent / Discover). Either control collapses to a
+// static pill when it can't be changed (core tools, always-on utilities, or a
+// non-admin viewer). `permCtx` is null for non-editable agents (system
+// templates) — those rows show availability only.
+//   permCtx = { blockedSet, dtSet, persist }  (from the editable Tools tab)
+function _buildUnifiedToolRow(agent, t, canEditAvail, permCtx) {
+  const showPerm = Boolean(permCtx);
   const row = document.createElement('div');
-  row.style.cssText = 'display:grid;grid-template-columns:1fr 2fr auto;align-items:center;gap:8px;' +
-                      'padding:5px 8px;border-radius:5px;background:var(--bg-2);margin-bottom:4px;';
+  row.style.cssText = 'display:grid;align-items:center;gap:8px;' +
+    'grid-template-columns:' + (showPerm ? '1fr 1.5fr auto auto' : '1fr 2fr auto') + ';' +
+    'padding:5px 8px;border-radius:5px;background:var(--bg-2);margin-bottom:4px;';
 
   const nameEl = document.createElement('span');
   nameEl.style.cssText = 'font-size:12px;font-weight:500;color:var(--fg-1);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
@@ -4061,6 +3920,59 @@ function _buildExposureRow(agent, t, canEdit) {
   descEl.textContent = t.description || '';
   row.appendChild(descEl);
 
+  // ── Permission control (Auto / Ask / Deny) — editable agents only ──────────
+  if (showPerm) {
+    // Core/meta tools the agent cannot run without are never gated.
+    const permLocked = t.locked || TIER_1_ALWAYS_ON.has(t.name);
+    if (permLocked) {
+      const pill = document.createElement('span');
+      pill.className = 'agents-tool-always-on';
+      pill.textContent = 'always on';
+      pill.title = 'Essential tool — always permitted, cannot be gated.';
+      row.appendChild(pill);
+    } else {
+      const { blockedSet, dtSet, persist } = permCtx;
+      const seg = document.createElement('div');
+      seg.style.cssText = 'display:flex;border:1px solid var(--border);border-radius:4px;overflow:hidden;flex-shrink:0;font-size:11px;';
+      const MODES = [
+        { id: 'auto', label: 'Auto', activeStyle: 'background:#9ece6a;color:#1a1b26;' },
+        { id: 'ask',  label: 'Ask',  activeStyle: 'background:#e0af68;color:#1a1b26;' },
+        { id: 'deny', label: 'Deny', activeStyle: 'background:#f7768e;color:#fff;'    },
+      ];
+      const segBtns = {};
+      function applyMode(mode) {
+        blockedSet.delete(t.name);
+        dtSet.delete(t.name);
+        if (mode === 'deny') blockedSet.add(t.name);
+        else if (mode === 'ask') dtSet.add(t.name);
+        for (const m of MODES) {
+          const b = segBtns[m.id];
+          if (m.id === mode) {
+            b.style.cssText = 'border:none;cursor:pointer;padding:3px 8px;font-weight:600;border-right:1px solid var(--border);' + m.activeStyle;
+          } else {
+            b.style.cssText = 'border:none;cursor:pointer;padding:3px 8px;font-weight:400;color:var(--fg-2);background:var(--bg-3);border-right:1px solid var(--border);';
+          }
+        }
+        segBtns['deny'].style.borderRight = 'none';
+      }
+      let initialMode;
+      if      (blockedSet.has(t.name)) initialMode = 'deny';
+      else if (dtSet.has(t.name) || t.destructive) initialMode = 'ask';
+      else                             initialMode = 'auto';
+      for (const m of MODES) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = m.label;
+        b.addEventListener('click', () => { applyMode(m.id); persist(); });
+        segBtns[m.id] = b;
+        seg.appendChild(b);
+      }
+      applyMode(initialMode);
+      row.appendChild(seg);
+    }
+  }
+
+  // ── Availability control (Sent / Discover) ─────────────────────────────────
   if (t.locked) {
     const pill = document.createElement('span');
     pill.className = 'agents-tool-always-on';
@@ -4085,7 +3997,7 @@ function _buildExposureRow(agent, t, canEdit) {
       const active = m.id === mode;
       b.style.cssText =
         'border:none;padding:3px 10px;border-right:1px solid var(--border);' +
-        'cursor:' + (canEdit ? 'pointer' : 'default') + ';' +
+        'cursor:' + (canEditAvail ? 'pointer' : 'default') + ';' +
         (active
           ? 'background:var(--accent-soft);color:var(--accent);font-weight:600;'
           : 'background:transparent;color:var(--fg-3);font-weight:400;');
@@ -4094,7 +4006,7 @@ function _buildExposureRow(agent, t, canEdit) {
   }
 
   async function choose(mode) {
-    if (!canEdit || mode === current) return;
+    if (!canEditAvail || mode === current) return;
     const prev = current;
     current = mode; paint(mode);
     try {
@@ -4113,7 +4025,7 @@ function _buildExposureRow(agent, t, canEdit) {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = m.label;
-    if (canEdit) b.addEventListener('click', () => choose(m.id));
+    if (canEditAvail) b.addEventListener('click', () => choose(m.id));
     else b.disabled = true;
     btns[m.id] = b;
     seg.appendChild(b);
@@ -4127,20 +4039,25 @@ function _buildExposureRow(agent, t, canEdit) {
 // real loader) with a Sent/Discover exposure toggle per tool. Shown for every
 // agent; toggles are interactive only for agent admins. Grouped by the ability
 // that provides each tool.
-async function _renderToolExposureSection(body, agent) {
+async function _renderToolExposureSection(body, agent, searchIndex, isStale, permCtx) {
+  const showPerm = Boolean(permCtx);
   const group = document.createElement('div');
   group.className = 'agents-field-group';
 
   const label = document.createElement('label');
   label.className = 'agents-field-label';
-  label.textContent = 'Tool Availability';
+  label.textContent = 'Tools';
   group.appendChild(label);
 
   const hint = document.createElement('span');
   hint.className = 'agents-field-hint';
-  hint.textContent = '“Sent” keeps a tool’s full details in the agent’s context every turn. ' +
-    '“Discover” lists it by name only and loads its details when the agent needs it, saving context. ' +
-    'Core tools are always sent.';
+  hint.innerHTML = (showPerm
+      ? '<b>Permission</b> (left) — <b>Auto</b>: runs freely. <b>Ask</b>: pauses for confirmation. ' +
+        '<b>Deny</b>: blocked entirely.<br>'
+      : '') +
+    '<b>Availability</b> (right) — <b>Sent</b> keeps a tool’s full details in the agent’s context every ' +
+    'turn. <b>Discover</b> lists it by name only and loads its details on demand, saving context. ' +
+    'Core tools are always available.';
   group.appendChild(hint);
 
   const listEl = document.createElement('div');
@@ -4161,6 +4078,7 @@ async function _renderToolExposureSection(body, agent) {
     loading.textContent = 'Could not load this agent’s tools.';
     return;
   }
+  if (isStale && isStale()) { group.remove(); return; }
   loading.remove();
 
   const canEdit = data.user_role === 'admin';
@@ -4208,8 +4126,15 @@ async function _renderToolExposureSection(body, agent) {
       if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
     });
 
+    const catCountEl = header.querySelector('.agents-tool-category-count');
     for (const t of catTools) {
-      catBody.appendChild(_buildExposureRow(agent, t, canEdit));
+      const exRow = _buildUnifiedToolRow(agent, t, canEdit, permCtx);
+      catBody.appendChild(exRow);
+      if (searchIndex) searchIndex.push({
+        row: exRow,
+        haystack: (t.name + ' ' + (t.description || '')).toLowerCase(),
+        wrapper, countEl: catCountEl, total: catTools.length,
+      });
     }
 
     wrapper.appendChild(header);
@@ -4225,353 +4150,244 @@ async function _renderToolsTab(body, agent, panelEl) {
   }
   const isEditable = agent.source === 'custom';
 
-  // ── Fetch enabled abilities to include ability-gated tools ──────────────
-  let enabledAbilities = new Set();
-  try {
-    const connRes = await fetch(`/api/v1/agents/${agent.id}/connections?user_id=${encodeURIComponent(app.currentUserId)}`);
-    if (connRes.ok) {
-      const connData = await connRes.json();
-      for (const c of (connData.connections || [])) {
-        if (c.enabled && c.section === 'ability') {
-          enabledAbilities.add(c.connection_type);
-        }
-      }
-    }
-  } catch (e) {
-    // non-fatal — proceed without ability-gated tools
+  // Render-generation guard: if the body is re-rendered while we're awaiting,
+  // the stale run must stop appending so sections don't get duplicated.
+  const _gen = (body._toolsRenderGen = (body._toolsRenderGen || 0) + 1);
+  const isStale = () => body._toolsRenderGen !== _gen;
+
+  // ── Unified search — one box at the top filters rows in BOTH the Tool
+  //    Availability section and the Per-Tool Mode section. Rows register
+  //    themselves into searchIndex as each section renders.
+  //    Entry shape: { row, haystack, wrapper, countEl, total }.
+  const searchIndex = [];
+  const searchWrap = document.createElement('div');
+  searchWrap.className = 'conn-search-wrap';
+  searchWrap.style.display = 'none';
+  const searchInput = document.createElement('input');
+  searchInput.type        = 'search';
+  searchInput.className    = 'conn-search-input agents-input';
+  searchInput.placeholder  = 'Search tools…';
+  searchInput.autocomplete = 'off';
+  searchWrap.appendChild(searchInput);
+  const searchEmpty = document.createElement('div');
+  searchEmpty.className = 'conn-search-empty';
+  searchEmpty.textContent = 'No tools match your search.';
+  searchEmpty.style.display = 'none';
+  body.appendChild(searchWrap);
+  body.appendChild(searchEmpty);
+  const revealSearch = () => { if (searchIndex.length) searchWrap.style.display = ''; };
+
+  function _setCollapsed(header, catBody, collapsed) {
+    if (!header || !catBody) return;
+    header.classList.toggle('collapsed', collapsed);
+    catBody.classList.toggle('collapsed', collapsed);
+    const chevron = header.querySelector('.agents-tool-category-chevron');
+    if (chevron) chevron.textContent = collapsed ? '▶' : '▼';
   }
 
-  // ── Tool Availability (Sent vs Discover) — authoritative list for every
-  //    agent, from the real tool loader. Replaces the old client-side
-  //    read-only list, which could show tools the agent didn't actually have.
-  await _renderToolExposureSection(body, agent);
+  function applyToolFilter() {
+    const q = searchInput.value.trim().toLowerCase();
+    const wrappers = [...new Set(searchIndex.map(e => e.wrapper))];
 
-  // Non-editable agents (system templates): the availability section is the
-  // whole panel — the guardrail editor below is for custom agents only.
-  if (!isEditable) return;
+    if (!q) {
+      // Restore: show every row + category, reset counts, re-collapse all.
+      searchEmpty.style.display = 'none';
+      for (const e of searchIndex) {
+        e.row.style.display = '';
+        if (e.countEl) e.countEl.textContent = e.total;
+      }
+      for (const w of wrappers) {
+        w.style.display = '';
+        _setCollapsed(w.querySelector('.agents-tool-category-header'),
+                      w.querySelector('.agents-tool-category-body'), true);
+      }
+      return;
+    }
 
-  // ── Editable: full guardrails + per-tool controls ─────────────────────────
+    const matchCount = new Map(); // wrapper -> visible count
+    let totalHits = 0;
+    for (const e of searchIndex) {
+      const hit = e.haystack.includes(q);
+      e.row.style.display = hit ? '' : 'none';
+      if (hit) { matchCount.set(e.wrapper, (matchCount.get(e.wrapper) || 0) + 1); totalHits++; }
+    }
+    for (const w of wrappers) {
+      const n = matchCount.get(w) || 0;
+      w.style.display = n ? '' : 'none';
+      if (n) {
+        const countEl = w.querySelector('.agents-tool-category-count');
+        if (countEl) countEl.textContent = n;
+        _setCollapsed(w.querySelector('.agents-tool-category-header'),
+                      w.querySelector('.agents-tool-category-body'), false);
+      }
+    }
+    searchEmpty.style.display = totalHits ? 'none' : '';
+  }
+  searchInput.addEventListener('input', applyToolFilter);
 
-  // Mutable state captured by closures for the Save handler
-  const sp0 = (agent.safety_policy && typeof agent.safety_policy === 'object') ? agent.safety_policy : {};
-  const blockedSet = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
-  const dtSet      = new Set(Array.isArray(sp0.destructive_tools) ? sp0.destructive_tools : []);
-  let autoConfirmAll = Boolean(sp0.auto_confirm);
-  let maxConcVal     = sp0.max_concurrent_tools || '';
+  // ── Editable agents: guardrail master + execution settings + the per-tool
+  //    permission state, all wired to auto-save. Set up BEFORE the tool list so
+  //    each tool row can carry its Auto/Ask/Deny control (via permCtx). For
+  //    non-editable system templates permCtx stays null and rows show the
+  //    availability control only.
+  let permCtx = null;
+  if (isEditable) {
+    // Mutable state captured by closures for the Save handler
+    const sp0 = (agent.safety_policy && typeof agent.safety_policy === 'object') ? agent.safety_policy : {};
+    const blockedSet = new Set(Array.isArray(agent.allowed_tools) ? agent.allowed_tools : []);
+    const dtSet      = new Set(Array.isArray(sp0.destructive_tools) ? sp0.destructive_tools : []);
+    let autoConfirmAll = Boolean(sp0.auto_confirm);
+    let maxConcVal     = sp0.max_concurrent_tools || '';
 
-  // Loop-logic state for the guardrail master toggle
-  let localLL   = _localLoopLogicObjs(agent);
-  let llDirty   = false;
-  const llGuard = localLL.find(o => o.node === 'guardrails');
-  let guardrailOn = llGuard ? llGuard.enabled !== false : true;
+    // Loop-logic state for the guardrail master toggle
+    let localLL   = _localLoopLogicObjs(agent);
+    let llDirty   = false;
+    const llGuard = localLL.find(o => o.node === 'guardrails');
+    let guardrailOn = llGuard ? llGuard.enabled !== false : true;
 
-  function setGuardrailEnabled(on) {
-    guardrailOn = on;
-    llDirty     = true;
-    const idx   = localLL.findIndex(o => o.node === 'guardrails');
-    if (idx !== -1) localLL[idx] = { ...localLL[idx], enabled: on };
-    else            localLL.push({ node: 'guardrails', enabled: on });
+    function setGuardrailEnabled(on) {
+      guardrailOn = on;
+      llDirty     = true;
+      const idx   = localLL.findIndex(o => o.node === 'guardrails');
+      if (idx !== -1) localLL[idx] = { ...localLL[idx], enabled: on };
+      else            localLL.push({ node: 'guardrails', enabled: on });
+    }
+
+    // ── Auto-save: every guardrail / execution / per-tool change persists
+    //    immediately (mirrors the instant-save Sent/Discover toggles), so there
+    //    is no Save button. statusEl is the sticky footer indicator.
+    const _content = panelEl ? panelEl.querySelector('.agent-detail-content') : null;
+    const statusBar = document.createElement('div');
+    statusBar.className = 'agents-save-bar';
+    const statusEl = document.createElement('span');
+    statusEl.className = 'agents-save-msg';
+    statusEl.textContent = 'Changes save automatically';
+    statusBar.appendChild(statusEl);
+    if (_content) _content.appendChild(statusBar);
+
+    let _saveTimer = null;
+    function _showStatus(txt, isErr) {
+      statusEl.textContent = txt;
+      statusEl.className = 'agents-save-msg' + (isErr ? ' error' : '');
+    }
+    async function persist() {
+      if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+      const newSp = { ...sp0, destructive_tools: [...dtSet], auto_confirm: autoConfirmAll };
+      const mv = parseInt(maxConcVal, 10);
+      if (mv > 0) newSp.max_concurrent_tools = mv;
+      else        delete newSp.max_concurrent_tools;
+      const updates = { allowed_tools: [...blockedSet], safety_policy: newSp };
+      if (llDirty) updates.loop_logic = localLL;
+      _showStatus('Saving…');
+      try {
+        const res = await fetch(`/api/v1/agents/${agent.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: app.currentUserId, ...updates }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          const idx = _agents.findIndex(a => a.id === agent.id);
+          if (idx !== -1) Object.assign(_agents[idx], data.agent);
+          Object.assign(agent, data.agent);
+          _showStatus('✓ Saved');
+        } else {
+          _showStatus(data.detail || 'Save failed', true);
+        }
+      } catch (e) {
+        _showStatus(`Error: ${e.message}`, true);
+      }
+    }
+    // Debounced variant for the free-typing number field.
+    function persistSoon() {
+      if (_saveTimer) clearTimeout(_saveTimer);
+      _saveTimer = setTimeout(persist, 500);
+    }
+
+    // ── Guardrail master toggle ───────────────────────────────────────────
+    const guardrailGroup = document.createElement('div');
+    guardrailGroup.className = 'agents-field-group';
+
+    const guardrailLabelEl = document.createElement('label');
+    guardrailLabelEl.className = 'agents-field-label';
+    guardrailLabelEl.textContent = 'Guardrails';
+    guardrailGroup.appendChild(guardrailLabelEl);
+
+    const guardrailHintEl = document.createElement('span');
+    guardrailHintEl.className = 'agents-field-hint';
+    guardrailHintEl.textContent = 'Master switch for the confirmation gate. When off, all tools run without prompting regardless of per-tool settings.';
+    guardrailGroup.appendChild(guardrailHintEl);
+
+    const guardrailRow = document.createElement('label');
+    guardrailRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;';
+    const guardrailCb = document.createElement('input');
+    guardrailCb.type    = 'checkbox';
+    guardrailCb.checked = guardrailOn;
+    guardrailCb.addEventListener('change', () => { setGuardrailEnabled(guardrailCb.checked); persist(); });
+    const guardrailTxt = document.createElement('span');
+    guardrailTxt.style.cssText = 'font-size:13px;color:var(--fg-1);';
+    guardrailTxt.textContent = 'Require confirmation before running destructive tools';
+    guardrailRow.appendChild(guardrailCb);
+    guardrailRow.appendChild(guardrailTxt);
+    guardrailGroup.appendChild(guardrailRow);
+    body.appendChild(guardrailGroup);
+
+    // ── Execution settings (auto-confirm all, max concurrent) ─────────────
+    const execGroup = document.createElement('div');
+    execGroup.className = 'agents-field-group';
+
+    const execLabel = document.createElement('label');
+    execLabel.className = 'agents-field-label';
+    execLabel.textContent = 'Execution Settings';
+    execGroup.appendChild(execLabel);
+
+    // Auto-confirm all
+    const autoRow = document.createElement('label');
+    autoRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;';
+    const autoCb = document.createElement('input');
+    autoCb.type    = 'checkbox';
+    autoCb.checked = autoConfirmAll;
+    autoCb.addEventListener('change', () => { autoConfirmAll = autoCb.checked; persist(); });
+    const autoTxt = document.createElement('span');
+    autoTxt.style.cssText = 'font-size:13px;color:var(--fg-1);';
+    autoTxt.textContent = 'Auto-confirm all tools (bypass guardrail for this agent — useful for automation)';
+    autoRow.appendChild(autoCb);
+    autoRow.appendChild(autoTxt);
+    execGroup.appendChild(autoRow);
+
+    // Max concurrent
+    const maxRow = document.createElement('div');
+    maxRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:10px;';
+    const maxLbl = document.createElement('span');
+    maxLbl.style.cssText = 'font-size:13px;color:var(--fg-1);white-space:nowrap;';
+    maxLbl.textContent = 'Max concurrent tools:';
+    const maxInput = document.createElement('input');
+    maxInput.type        = 'number';
+    maxInput.min         = '0';
+    maxInput.max         = '20';
+    maxInput.className   = 'agents-input';
+    maxInput.style.width = '70px';
+    maxInput.value       = sp0.max_concurrent_tools || '';
+    maxInput.placeholder = 'unlimited';
+    maxInput.addEventListener('input', () => { maxConcVal = maxInput.value; persistSoon(); });
+    const maxHint = document.createElement('span');
+    maxHint.style.cssText = 'font-size:11px;color:var(--fg-3);';
+    maxHint.textContent = '0 = unlimited';
+    maxRow.appendChild(maxLbl);
+    maxRow.appendChild(maxInput);
+    maxRow.appendChild(maxHint);
+    execGroup.appendChild(maxRow);
+    body.appendChild(execGroup);
+
+    permCtx = { blockedSet, dtSet, persist };
   }
 
-  // ── Section 1: Guardrail master toggle ──────────────────────────────────
-  const guardrailGroup = document.createElement('div');
-  guardrailGroup.className = 'agents-field-group';
-
-  const guardrailLabelEl = document.createElement('label');
-  guardrailLabelEl.className = 'agents-field-label';
-  guardrailLabelEl.textContent = 'Guardrails';
-  guardrailGroup.appendChild(guardrailLabelEl);
-
-  const guardrailHintEl = document.createElement('span');
-  guardrailHintEl.className = 'agents-field-hint';
-  guardrailHintEl.textContent = 'Master switch for the confirmation gate. When off, all tools run without prompting regardless of per-tool settings.';
-  guardrailGroup.appendChild(guardrailHintEl);
-
-  const guardrailRow = document.createElement('label');
-  guardrailRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;';
-  const guardrailCb = document.createElement('input');
-  guardrailCb.type    = 'checkbox';
-  guardrailCb.checked = guardrailOn;
-  guardrailCb.addEventListener('change', () => setGuardrailEnabled(guardrailCb.checked));
-  const guardrailTxt = document.createElement('span');
-  guardrailTxt.style.cssText = 'font-size:13px;color:var(--fg-1);';
-  guardrailTxt.textContent = 'Require confirmation before running destructive tools';
-  guardrailRow.appendChild(guardrailCb);
-  guardrailRow.appendChild(guardrailTxt);
-  guardrailGroup.appendChild(guardrailRow);
-  body.appendChild(guardrailGroup);
-
-  // ── Section 2: Execution settings (auto-confirm all, max concurrent) ────
-  const execGroup = document.createElement('div');
-  execGroup.className = 'agents-field-group';
-
-  const execLabel = document.createElement('label');
-  execLabel.className = 'agents-field-label';
-  execLabel.textContent = 'Execution Settings';
-  execGroup.appendChild(execLabel);
-
-  // Auto-confirm all
-  const autoRow = document.createElement('label');
-  autoRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;';
-  const autoCb = document.createElement('input');
-  autoCb.type    = 'checkbox';
-  autoCb.checked = autoConfirmAll;
-  autoCb.addEventListener('change', () => { autoConfirmAll = autoCb.checked; });
-  const autoTxt = document.createElement('span');
-  autoTxt.style.cssText = 'font-size:13px;color:var(--fg-1);';
-  autoTxt.textContent = 'Auto-confirm all tools (bypass guardrail for this agent — useful for automation)';
-  autoRow.appendChild(autoCb);
-  autoRow.appendChild(autoTxt);
-  execGroup.appendChild(autoRow);
-
-  // Max concurrent
-  const maxRow = document.createElement('div');
-  maxRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:10px;';
-  const maxLbl = document.createElement('span');
-  maxLbl.style.cssText = 'font-size:13px;color:var(--fg-1);white-space:nowrap;';
-  maxLbl.textContent = 'Max concurrent tools:';
-  const maxInput = document.createElement('input');
-  maxInput.type        = 'number';
-  maxInput.min         = '0';
-  maxInput.max         = '20';
-  maxInput.className   = 'agents-input';
-  maxInput.style.width = '70px';
-  maxInput.value       = sp0.max_concurrent_tools || '';
-  maxInput.placeholder = 'unlimited';
-  maxInput.addEventListener('input', () => { maxConcVal = maxInput.value; });
-  const maxHint = document.createElement('span');
-  maxHint.style.cssText = 'font-size:11px;color:var(--fg-3);';
-  maxHint.textContent = '0 = unlimited';
-  maxRow.appendChild(maxLbl);
-  maxRow.appendChild(maxInput);
-  maxRow.appendChild(maxHint);
-  execGroup.appendChild(maxRow);
-  body.appendChild(execGroup);
-
-  // ── Section 3: Per-tool mode ─────────────────────────────────────────────
-  const toolsGroup = document.createElement('div');
-  toolsGroup.className = 'agents-field-group';
-
-  const toolsLabelEl = document.createElement('label');
-  toolsLabelEl.className = 'agents-field-label';
-  toolsLabelEl.textContent = 'Per-Tool Mode';
-  toolsGroup.appendChild(toolsLabelEl);
-
-  const toolsHintEl = document.createElement('span');
-  toolsHintEl.className = 'agents-field-hint';
-  toolsHintEl.textContent = 'Auto-confirm: runs freely. Ask: pauses and asks before running. Deny: blocked entirely.';
-  toolsGroup.appendChild(toolsHintEl);
-
-  const loadingEl = document.createElement('div');
-  loadingEl.style.cssText = 'font-size:12px;color:var(--fg-3);margin-top:10px;';
-  loadingEl.textContent = 'Loading…';
-  toolsGroup.appendChild(loadingEl);
-  body.appendChild(toolsGroup);
-
-  // ── Save bar (sticky, outside scrollable body) ───────────────────────────
-  const content = panelEl ? panelEl.querySelector('.agent-detail-content') : null;
-  const bar     = document.createElement('div');
-  bar.className = 'agents-save-bar';
-  const saveBtn = _btn('Save Changes', 'agents-btn primary');
-  const saveMsg = document.createElement('span');
-  saveMsg.className = 'agents-save-msg';
-
-  saveBtn.addEventListener('click', async () => {
-    saveMsg.textContent = 'Saving…';
-    saveMsg.className   = 'agents-save-msg';
-
-    const newSp = {
-      ...sp0,
-      destructive_tools: [...dtSet],
-      auto_confirm:      autoConfirmAll,
-    };
-    const mv = parseInt(maxConcVal, 10);
-    if (mv > 0) newSp.max_concurrent_tools = mv;
-    else        delete newSp.max_concurrent_tools;
-
-    const updates = {
-      allowed_tools: [...blockedSet],
-      safety_policy: newSp,
-    };
-    if (llDirty) updates.loop_logic = localLL;
-
-    try {
-      const res = await fetch(`/api/v1/agents/${agent.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: app.currentUserId, ...updates }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        const idx = _agents.findIndex(a => a.id === agent.id);
-        if (idx !== -1) Object.assign(_agents[idx], data.agent);
-        Object.assign(agent, data.agent);
-        saveMsg.textContent = '✓ Saved';
-        saveMsg.className   = 'agents-save-msg';
-      } else {
-        saveMsg.textContent = data.detail || 'Save failed';
-        saveMsg.className   = 'agents-save-msg error';
-      }
-    } catch (e) {
-      saveMsg.textContent = `Error: ${e.message}`;
-      saveMsg.className   = 'agents-save-msg error';
-    }
-  });
-
-  bar.appendChild(saveBtn);
-  bar.appendChild(saveMsg);
-  if (content) content.appendChild(bar);
-
-  // ── Async: fetch tool metadata and render per-tool rows ──────────────────
-  try {
-    const allMeta    = await fetchAllToolMeta();
-    const metaByName = new Map(allMeta.map(t => [t.name, t]));
-    const tools      = _toolsForAgent(agent, enabledAbilities);
-    const toolSet    = new Set(tools);
-
-    loadingEl.remove();
-
-    const agentId = agent.id || '';
-    const isAdmin = agent.is_admin_agent || agentId.startsWith('opt_');
-
-    // Helper: build a tool row with segmented control or "always on" pill
-    function buildToolRow(name, meta) {
-      const isTier1 = TIER_1_ALWAYS_ON.has(name);
-
-      const row = document.createElement('div');
-      row.style.cssText = 'display:grid;grid-template-columns:1fr 2fr auto;align-items:center;gap:8px;' +
-                          'padding:5px 8px;border-radius:5px;background:var(--bg-2);';
-
-      const nameEl = document.createElement('span');
-      nameEl.style.cssText = 'font-size:12px;font-weight:500;color:var(--fg-1);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      nameEl.textContent = name;
-      row.appendChild(nameEl);
-
-      const descEl = document.createElement('span');
-      descEl.style.cssText = 'font-size:11px;color:var(--fg-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      descEl.textContent = TOOL_DESCRIPTIONS[name] || (meta && meta.description) || '';
-      row.appendChild(descEl);
-
-      if (isTier1) {
-        const pill = document.createElement('span');
-        pill.className = 'agents-tool-always-on';
-        pill.textContent = 'always on';
-        row.appendChild(pill);
-      } else {
-        let initialMode;
-        if      (blockedSet.has(name))          initialMode = 'deny';
-        else if (dtSet.has(name) || DESTRUCTIVE.has(name) || Boolean(meta && meta.requires_confirmation))
-                                                initialMode = 'ask';
-        else                                    initialMode = 'auto';
-
-        const seg = document.createElement('div');
-        seg.style.cssText = 'display:flex;border:1px solid var(--border);border-radius:4px;overflow:hidden;flex-shrink:0;font-size:11px;';
-
-        const MODES = [
-          { id: 'auto', label: 'Auto', activeStyle: 'background:#9ece6a;color:#1a1b26;' },
-          { id: 'ask',  label: 'Ask',  activeStyle: 'background:#e0af68;color:#1a1b26;' },
-          { id: 'deny', label: 'Deny', activeStyle: 'background:#f7768e;color:#fff;'    },
-        ];
-        const segBtns = {};
-
-        function applyMode(mode) {
-          blockedSet.delete(name);
-          dtSet.delete(name);
-          if (mode === 'deny') blockedSet.add(name);
-          else if (mode === 'ask') dtSet.add(name);
-          for (const m of MODES) {
-            const b = segBtns[m.id];
-            if (m.id === mode) {
-              b.style.cssText = 'border:none;cursor:pointer;padding:3px 8px;font-weight:600;border-right:1px solid var(--border);' + m.activeStyle;
-            } else {
-              b.style.cssText = 'border:none;cursor:pointer;padding:3px 8px;font-weight:400;color:var(--fg-2);background:var(--bg-3);border-right:1px solid var(--border);';
-            }
-          }
-          segBtns['deny'].style.borderRight = 'none';
-        }
-
-        for (const m of MODES) {
-          const b = document.createElement('button');
-          b.textContent = m.label;
-          b.addEventListener('click', () => applyMode(m.id));
-          segBtns[m.id] = b;
-          seg.appendChild(b);
-        }
-        applyMode(initialMode);
-        row.appendChild(seg);
-      }
-
-      return row;
-    }
-
-    // Render categories as collapsible accordions (collapsed by default)
-    const categorized = new Set(TOOL_CATEGORIES.flatMap(c => c.tools));
-
-    for (const cat of TOOL_CATEGORIES) {
-      // Check category condition: null=always, 'admin'=admin/optimizer only,
-      // otherwise it's an ability name that must be enabled
-      if (cat.condition === 'admin' && !isAdmin) continue;
-      if (cat.condition && cat.condition !== 'admin' && !enabledAbilities.has(cat.condition)) continue;
-      const catTools = cat.tools.filter(n => toolSet.has(n));
-      if (catTools.length === 0) continue;
-
-      const wrapper = document.createElement('div');
-      wrapper.className = 'agents-tool-category';
-
-      const header = document.createElement('div');
-      header.className = 'agents-tool-category-header collapsed';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
-        <span class="agents-tool-category-label">${_esc(cat.label)}</span>
-        <span class="agents-tool-category-count">${catTools.length}</span>`;
-
-      const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body collapsed';
-
-      header.addEventListener('click', () => {
-        header.classList.toggle('collapsed');
-        catBody.classList.toggle('collapsed');
-        const chevron = header.querySelector('.agents-tool-category-chevron');
-        if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
-      });
-
-      for (const name of catTools) {
-        catBody.appendChild(buildToolRow(name, metaByName.get(name) || {}));
-      }
-
-      wrapper.appendChild(header);
-      wrapper.appendChild(catBody);
-      toolsGroup.appendChild(wrapper);
-    }
-
-    // Custom Skills category: tools from metadata not in any built-in category
-    const uncategorized = tools.filter(n => !categorized.has(n) && !TIER_0_ADMIN.has(n));
-    if (uncategorized.length > 0) {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'agents-tool-category';
-      const header = document.createElement('div');
-      header.className = 'agents-tool-category-header collapsed';
-      header.innerHTML = `<span class="agents-tool-category-chevron">▶</span>
-        <span class="agents-tool-category-label">Custom Skills</span>
-        <span class="agents-tool-category-count">${uncategorized.length}</span>`;
-      const catBody = document.createElement('div');
-      catBody.className = 'agents-tool-category-body collapsed';
-      header.addEventListener('click', () => {
-        header.classList.toggle('collapsed');
-        catBody.classList.toggle('collapsed');
-        const chevron = header.querySelector('.agents-tool-category-chevron');
-        if (chevron) chevron.textContent = header.classList.contains('collapsed') ? '▶' : '▼';
-      });
-      for (const name of uncategorized) {
-        catBody.appendChild(buildToolRow(name, metaByName.get(name) || {}));
-      }
-      wrapper.appendChild(header);
-      wrapper.appendChild(catBody);
-      toolsGroup.appendChild(wrapper);
-    }
-
-  } catch (e) {
-    loadingEl.textContent = 'Failed to load tool list.';
-  }
+  // ── Combined Tools list — the authoritative per-agent tool set from the real
+  //    loader. Each row carries the permission control (Auto/Ask/Deny, editable
+  //    agents only) and the availability control (Sent/Discover) side by side.
+  await _renderToolExposureSection(body, agent, searchIndex, isStale, permCtx);
+  if (isStale()) return;
+  revealSearch();
 }
 
 // ── Connections tab ───────────────────────────────────────────────────────────

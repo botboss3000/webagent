@@ -103,7 +103,7 @@ body {
     flex-shrink: 0;
     gap: 8px;
   }
-#header-user-session { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; flex: 1 1 auto; min-width: 0; }
+#header-user-session { display: flex; flex-direction: row; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; }
 #chat-header .sub { color: #565f89; font-weight: 400; font-size: 11px; }
 #chat-header .actions { display: flex; gap: 8px; }
 #chat-header button {
@@ -270,6 +270,17 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
     gap: 12px;
     min-width: 0;
   }
+/* Right side of the chat footer row: skill button + mode button, kept on the
+   far right via margin-left: auto so left and right groups are independent.
+   PANEL-SYNC-FOOTER: mirror any layout change in .chat-footer-right across
+   the agents page footer (#agent-builder-footer) if it gains similar controls. */
+.chat-footer-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
 /* Active model's context window / max output, styled like the token bar but
    theme-aware via design-system vars and always visible (no activity gating). */
 .chat-model-ctx {
@@ -333,6 +344,301 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
     0%   { transform: rotate(45deg); }
     100% { transform: rotate(-315deg); }
   }
+
+/* ── Footer model picker (click the token/ctx footer to switch model) ─────
+   A floating panel anchored to the LEFT edge of the chat pill footer, sitting
+   just above the context-details line. Lists the curated models (App Config saved
+   models + the agent's own model), with a detail footer (description + cost)
+   for the focused row. Themed entirely via design-system vars (dark + light).
+   PANEL-SYNC-FOOTER: keep .chat-model-picker and .chat-skill-picker in sync —
+   if you change max-height, border-radius, padding, shadow, z-index, or
+   background on one, mirror it on the other. */
+.chat-model-picker {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    box-sizing: border-box;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px;
+    min-width: 280px;
+    max-width: 380px;
+    box-shadow: var(--shadow-md);
+  }
+.chat-model-picker .cmp-search {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-1);
+    color: var(--fg-1);
+    font-size: 12px;
+    outline: none;
+  }
+.chat-model-picker .cmp-search:focus { border-color: var(--accent-line); }
+.chat-model-picker .cmp-list {
+    max-height: 360px;
+    overflow-y: auto;
+    margin-top: 4px;
+  }
+.chat-model-picker .cmp-empty {
+    padding: 8px;
+    color: var(--fg-3);
+    font-size: 11px;
+    text-align: center;
+  }
+.chat-model-picker .cmp-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--fg-1);
+  }
+.chat-model-picker .cmp-item:hover,
+.chat-model-picker .cmp-item.cmp-active { background: var(--accent-soft); }
+.chat-model-picker .cmp-item.cmp-selected { background: var(--accent-mid); }
+.chat-model-picker .cmp-item-id {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+.chat-model-picker .cmp-item-meta {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+.chat-model-picker .cmp-item-ctx {
+    color: var(--fg-3);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+.chat-model-picker .cmp-item-tok {
+    color: var(--accent);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+/* Per-row save status slot (spinner / green check / red cross). */
+.chat-model-picker .cmp-item-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+.chat-model-picker .cmp-item-status:empty { display: none; }
+.chat-model-picker .cmp-spinner {
+    width: 11px;
+    height: 11px;
+    border: 1.5px solid var(--accent-mid);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: cmpSpin 0.7s linear infinite;
+  }
+@keyframes cmpSpin { to { transform: rotate(360deg); } }
+.chat-model-picker .cmp-check { color: var(--success); font-size: 12px; font-weight: 700; line-height: 1; }
+.chat-model-picker .cmp-cross { color: var(--danger); font-size: 12px; font-weight: 700; line-height: 1; }
+.chat-model-picker .cmp-item.cmp-saving { opacity: 0.7; }
+/* Detail footer — description + cost for the focused/selected model. */
+.chat-model-picker .cmp-detail {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-soft);
+    font-size: 11px;
+    color: var(--fg-2);
+  }
+.chat-model-picker .cmp-detail-name {
+    font-weight: 600;
+    color: var(--fg-1);
+    font-size: 11px;
+    margin-bottom: 3px;
+    word-break: break-all;
+  }
+.chat-model-picker .cmp-detail-desc {
+    color: var(--fg-2);
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+.chat-model-picker .cmp-detail-cost {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 5px;
+  }
+.chat-model-picker .cmp-cost-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--bg-tint);
+    color: var(--fg-2);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+.chat-model-picker .cmp-cost-chip.cmp-cost-free { background: var(--success-soft); color: var(--success); }
+.chat-model-picker .cmp-detail-muted { color: var(--fg-3); font-style: italic; }
+
+/* ── Footer skill-selector panel (right-aligned, mirrors model picker) ─────
+   A floating panel anchored to the RIGHT edge of the chat pill footer, sitting
+   just above the context-details line. Shows every selectable skill (authored +
+   ability-bundled), greyed out when not active, highlighted when engaged.
+   Uses the same max-height as the model picker so the two panels are cohesive.
+   PANEL-SYNC-FOOTER: keep .chat-skill-picker and .chat-model-picker in sync —
+   if you change max-height, border-radius, padding, shadow, z-index, or
+   background on one, mirror it on the other. */
+.chat-skill-picker {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    box-sizing: border-box;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px;
+    min-width: 220px;
+    max-width: 300px;
+    box-shadow: var(--shadow-md);
+  }
+.chat-skill-picker .csp-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fg-2);
+    border-bottom: 1px solid var(--border-soft);
+  }
+.chat-skill-picker .csp-header svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+.chat-skill-picker .csp-list {
+    max-height: 360px;
+    overflow-y: auto;
+    margin-top: 4px;
+  }
+.chat-skill-picker .csp-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--fg-1);
+    transition: background 0.1s;
+  }
+.chat-skill-picker .csp-item:hover { background: var(--accent-soft); }
+.chat-skill-picker .csp-item.csp-active { background: var(--accent-mid); }
+.chat-skill-picker .csp-item.csp-idle {
+    color: var(--fg-3);
+    opacity: 0.7;
+  }
+.chat-skill-picker .csp-item.csp-idle:hover {
+    color: var(--fg-1);
+    opacity: 1;
+  }
+.chat-skill-picker .csp-item-indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    font-size: 9px;
+    font-weight: 700;
+  }
+.chat-skill-picker .csp-item.csp-active .csp-item-indicator {
+    background: var(--success);
+    color: #fff;
+  }
+.chat-skill-picker .csp-item.csp-idle .csp-item-indicator {
+    background: var(--bg-2);
+    color: var(--fg-4);
+    border: 1px solid var(--border-soft);
+  }
+.chat-skill-picker .csp-item-name {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+.chat-skill-picker .csp-empty {
+    padding: 12px 8px;
+    color: var(--fg-3);
+    font-size: 11px;
+    text-align: center;
+  }
+
+/* ── Skill toggle button in footer (counter badge) ────────────────────────
+   Sits in the footer row, right side next to the mode button. Shows the
+   Blocks icon and a badge with the number of active skills. PANEL-SYNC-FOOTER:
+   keep visual style aligned with .chat-mode-btn. */
+.chat-skills-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--fg-3);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    flex-shrink: 0;
+  }
+.chat-skills-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+.chat-skills-btn:hover {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+.chat-skills-btn .csp-badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    padding: 0 4px;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1;
+    background: var(--accent);
+    color: #fff;
+    pointer-events: none;
+    user-select: none;
+    transition: opacity 0.2s;
+    opacity: 0;
+  }
+.chat-skills-btn .csp-badge.visible { opacity: 1; }
 
 /* ── Execution mode button (single cycle: Read → Ask → Auto → Read) ─────
    Sits above the chat pill, right-aligned alongside continue/stop buttons.
@@ -512,6 +818,28 @@ body.light-mode .chat-loading-wrap {
     white-space: pre-wrap;
     flex-shrink: 0;
   }
+
+/* Header row inside every chat bubble: timestamp on the left, role label on the right. */
+.bubble-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+/* Relative timestamp in the bubble-actions row — "5m", "1h 13m", etc.
+   Small text, pushes the action buttons to the right. */
+.bubble-time {
+  font-size: 11px;
+  color: var(--fg-3);
+  margin-right: auto;
+  opacity: 0.7;
+  user-select: none;
+  pointer-events: none;
+  line-height: 1;
+  align-self: center;
+}
 .chat-bubble.user {
     background: #7dcfff15;
     border: 1px solid #7dcfff30;
@@ -913,72 +1241,6 @@ body.light-mode .chat-stop-btn:hover {
   }
 .chat-suggest-chip:active {
     color: var(--fg-1);
-  }
-
-/* ── Active on-demand skill chips (below the chat box) ──────────────────────
-   One small "pill" per skill the agent has loaded this conversation. The × on
-   each deactivates it (drops its instructions from the agent's context).
-   Theme-aware via design tokens — legible in dark + light. */
-.chat-skills-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    align-self: stretch;
-    margin-bottom: 4px;
-    padding: 0 6px;
-  }
-.chat-skills-row[hidden] {
-    display: none;
-  }
-.chat-skills-label {
-    font-size: 11px;
-    color: var(--fg-4);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-.chat-skill-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    max-width: 100%;
-    padding: 2px 4px 2px 9px;
-    background: var(--bg-tint);
-    border: 1px solid var(--border-soft);
-    border-radius: 999px;
-    color: var(--fg-2);
-    font-size: 12px;
-    line-height: 1.3;
-  }
-.chat-skill-chip-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 220px;
-  }
-.chat-skill-chip-x {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 16px;
-    padding: 0;
-    border: none;
-    border-radius: 999px;
-    background: none;
-    color: var(--fg-4);
-    font-size: 14px;
-    line-height: 1;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-  }
-.chat-skill-chip-x:hover {
-    background: var(--danger);
-    color: #fff;
-  }
-.chat-skill-chip-x:disabled {
-    cursor: default;
-    opacity: 0.6;
   }
 
 /* ── Chat-pill ─────────────────────────────────────────────────────────────
@@ -2475,6 +2737,41 @@ buttons pinned right via .header-actions ── */
    spinner state animates via the global .session-status-running wrapper. */
 .header-delete-btn.warning { color: #e5a83e; }
 .header-delete-btn.warning:hover { color: #f0c050; }
+
+/* ── Session nav arrows (prev/next pinned session) ── */
+.header-session-nav {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+.session-nav-btn {
+  background: none;
+  border: none;
+  color: #565f89;
+  cursor: pointer;
+  padding: 4px 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+.session-nav-btn:hover {
+  color: #7dcfff;
+  background: rgba(255,255,255,0.06);
+}
+body.light-mode .session-nav-btn { color: #b09580; }
+body.light-mode .session-nav-btn:hover {
+  color: #d96f1f;
+  background: rgba(0,0,0,0.04);
+}
+/* Hide session nav arrows on mobile to save space for the session name */
+@media (max-width: 800px) {
+  .header-session-nav { display: none; }
+}
 
 /* Status icon inside the trigger buttons */
 .session-dropdown-status,

@@ -865,7 +865,7 @@ function _renderMessages(messages, sessionId, run, prepend) {
 
   for (const msg of messages) {
     if (msg.role === 'user') {
-      app.addChatBubble('user', msg.content, undefined, undefined, undefined, msg.id);
+      app.addChatBubble('user', msg.content, undefined, undefined, undefined, msg.id, msg.created_at);
       count++;
     } else if (msg.role === 'assistant') {
       let text = msg.content || '';
@@ -876,20 +876,20 @@ function _renderMessages(messages, sessionId, run, prepend) {
         if (typeof app.seedStreamingBubble === 'function') {
           app.seedStreamingBubble(msg.id, text);
         } else {
-          app.addChatBubble('agent', text || '…', 'streaming', undefined, msg.id);
+          app.addChatBubble('agent', text || '…', 'streaming', undefined, msg.id, msg.created_at);
         }
         seededStreaming = true;
         count++;
       } else if (!hasText) {
         continue;
       } else if (msg.status === 'interrupted') {
-        app.addChatBubble('agent', text + '\n\n(interrupted)', 'interrupted', undefined, msg.id);
+        app.addChatBubble('agent', text + '\n\n(interrupted)', 'interrupted', undefined, msg.id, msg.created_at);
         count++;
       } else if (msg.status === 'error') {
-        app.addChatBubble('agent', text, 'error', undefined, msg.id);
+        app.addChatBubble('agent', text, 'error', undefined, msg.id, msg.created_at);
         count++;
       } else {
-        app.addChatBubble('agent', text, undefined, undefined, msg.id);
+        app.addChatBubble('agent', text, undefined, undefined, msg.id, msg.created_at);
         count++;
       }
     }
@@ -1097,6 +1097,12 @@ function _recyclePlaceholderToBubble(placeholder, msgId) {
   bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
   if (msg.id) bubble.setAttribute('data-msg-id', msg.id);
 
+  // Store creation timestamp on the bubble so _addBubbleActions renders it
+  {
+    const createdAtMs = msg.created_at ? new Date(msg.created_at.replace(' ', 'T') + 'Z').getTime() : Date.now();
+    bubble.setAttribute('data-created-at', createdAtMs);
+  }
+
   if (role === 'user') {
     const label = document.createElement('span');
     label.className = 'label';
@@ -1121,16 +1127,17 @@ function _recyclePlaceholderToBubble(placeholder, msgId) {
     if (extraClass === 'streaming') {
       const stopBtn = document.createElement('button');
       stopBtn.className = 'stop-btn';
-      stopBtn.textContent = '\uD83D\uDED1';
-      stopBtn.title = 'Stop generation';
-      stopBtn.addEventListener('click', app._sendStopMessage);
+      stopBtn.textContent = '⏹';
+      stopBtn.addEventListener('click', () => {
+        if (typeof app._sendStopMessage === 'function') app._sendStopMessage();
+      });
       bubble.appendChild(stopBtn);
     }
+  }
 
-    // Add bubble actions for finalized messages
-    if (extraClass !== 'streaming' && text && text.trim() && text !== '\u2026') {
-      app._addBubbleActions(bubble);
-    }
+  // Add bubble actions (includes timestamp via _addBubbleActions)
+  if (typeof app._addBubbleActions === 'function') {
+    try { app._addBubbleActions(bubble); } catch(_) {}
   }
 
   placeholder.parentNode.replaceChild(bubble, placeholder);
@@ -1298,7 +1305,7 @@ export async function loadSessionChat(sessionId) {
 
       for (const msg of cached.messages) {
         if (msg.role === 'user') {
-          app.addChatBubble('user', msg.content, undefined, undefined, undefined, msg.id);
+          app.addChatBubble('user', msg.content, undefined, undefined, undefined, msg.id, msg.created_at);
         } else if (msg.role === 'assistant') {
           let text = msg.content || '';
           const toolCallIdx = text.indexOf('\n\n[Tool calls: ');
@@ -1308,16 +1315,16 @@ export async function loadSessionChat(sessionId) {
             if (typeof app.seedStreamingBubble === 'function') {
               app.seedStreamingBubble(msg.id, text);
             } else {
-              app.addChatBubble('agent', text || '\u2026', 'streaming', undefined, msg.id);
+              app.addChatBubble('agent', text || '\u2026', 'streaming', undefined, msg.id, msg.created_at);
             }
           } else if (!hasText) {
             continue;
           } else if (msg.status === 'interrupted') {
-            app.addChatBubble('agent', text + '\n\n(interrupted)', 'interrupted', undefined, msg.id);
+            app.addChatBubble('agent', text + '\n\n(interrupted)', 'interrupted', undefined, msg.id, msg.created_at);
           } else if (msg.status === 'error') {
-            app.addChatBubble('agent', text, 'error', undefined, msg.id);
+            app.addChatBubble('agent', text, 'error', undefined, msg.id, msg.created_at);
           } else {
-            app.addChatBubble('agent', text, undefined, undefined, msg.id);
+            app.addChatBubble('agent', text, undefined, undefined, msg.id, msg.created_at);
           }
         }
       }
@@ -1718,7 +1725,7 @@ export function initSessions() {
     // before loading the session, so chat sends and agent-scoped UI line up.
     const targetSess = _sessionsCache.find(s => s.id === sid);
     const targetAgentId = (targetSess && targetSess.agent_id) || app.currentAgentId;
-if (targetAgentId && targetAgentId !== app.currentAgentId) {
+    if (targetAgentId && targetAgentId !== app.currentAgentId) {
       app.currentAgentId = targetAgentId;
       _refreshAgentAbilities(targetAgentId);
       try { localStorage.setItem('selectedAgentId', targetAgentId); } catch (_) {}
@@ -2044,6 +2051,7 @@ if (targetAgentId && targetAgentId !== app.currentAgentId) {
     app.abortChatStream?.();
     if (agentId && agentId !== app.currentAgentId) {
       app.currentAgentId = agentId;
+      _refreshAgentAbilities(agentId);
       try { localStorage.setItem('selectedAgentId', agentId); } catch (_) {}
     }
     app.currentSessionId = generateUUID();
@@ -2407,6 +2415,22 @@ if (targetAgentId && targetAgentId !== app.currentAgentId) {
           body.textContent = text;
           bubble.appendChild(body);
         }
+        // ── Relative timestamp (peek-preview panel) ──
+        {── Relative timestamp ──
+        {
+          const createdAtMs = msg.created_at ? new Date(msg.created_at.replace(' ', 'T') + 'Z').getTime() : Date.now();
+          const elapsed = Date.now() - createdAtMs;
+          const totalMin = Math.floor(elapsed / 60000);
+          let label;
+          if (totalMin < 1) label = '0m';
+          else if (totalMin < 60) label = totalMin + 'm';
+          else { const h = Math.floor(totalMin / 60); const m = totalMin % 60; label = h + 'h ' + m + 'm'; }
+          const timeEl = document.createElement('span');
+          timeEl.className = 'bubble-time';
+          timeEl.setAttribute('data-created-at', createdAtMs);
+          timeEl.textContent = label;
+          bubble.appendChild(timeEl);
+        }
         container.appendChild(bubble);
       }
       container.scrollTop = container.scrollHeight;
@@ -2531,5 +2555,21 @@ if (targetAgentId && targetAgentId !== app.currentAgentId) {
 
     wrapper.addEventListener('pointercancel', () => { _active = false; _resetOffset(false); });
     wrapper.addEventListener('pointerleave', () => { _active = false; _resetOffset(false); });
+
+    // ── Desktop nav arrows (prev/next pinned session) ──
+    const prevBtn = document.getElementById('session-prev-btn');
+    const nextBtn = document.getElementById('session-next-btn');
+    if (prevBtn) {
+      prevBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _go(-1);
+      });
+    }
+    if (nextBtn) {
+      nextBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _go(1);
+      });
+    }
   })();
 }

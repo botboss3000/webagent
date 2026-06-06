@@ -215,8 +215,12 @@ async function refreshModelContext() {
     const tok = localStorage.getItem('auth_token');
     if (tok) headers.Authorization = `Bearer ${tok}`;
     const aid = app.currentAgentId || '';
+    const sid = app.currentSessionId || '';
+    const qs = new URLSearchParams();
+    if (aid) qs.set('agent_id', aid);
+    if (sid) qs.set('session_id', sid);
     const url = apiPath('/admin/settings/current-model-info')
-      + (aid ? `?agent_id=${encodeURIComponent(aid)}` : '');
+      + (qs.toString() ? `?${qs.toString()}` : '');
     const res = await fetch(url, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = await res.json();
@@ -268,27 +272,32 @@ function _renderCtxIndicator() {
 let _modelPickerEl = null;       // the floating dropdown container
 let _modelPickerInput = null;    // search input inside the picker
 let _modelPickerList = null;     // scrollable list inside the picker
+let _modelPickerDetail = null;   // detail footer (description + cost)
 let _allAvailableModels = [];    // fetched model list
 let _currentModelName = '';      // the currently-selected model id (for highlight)
+let _sessionModelUsage = {};     // { [modelId]: {input, output, total} } for this session
 
 function _buildModelPicker() {
   if (_modelPickerEl) return;
   const picker = document.createElement('div');
   picker.className = 'chat-model-picker';
-  picker.style.cssText = 'display:none;position:fixed;z-index:1000;background:#1a1b2e;border:1px solid #2a2a4a;border-radius:8px;padding:6px;min-width:260px;max-width:360px;box-shadow:0 8px 24px rgba(0,0,0,0.5);';
   const input = document.createElement('input');
   input.type = 'text';
+  input.className = 'cmp-search';
   input.placeholder = 'Search models…';
-  input.style.cssText = 'width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #2a2a4a;border-radius:4px;background:#13132a;color:#c0caf5;font-size:12px;outline:none;';
   input.autocomplete = 'off';
   const list = document.createElement('div');
-  list.style.cssText = 'max-height:200px;overflow-y:auto;margin-top:4px;';
+  list.className = 'cmp-list';
+  const detail = document.createElement('div');
+  detail.className = 'cmp-detail';
   picker.appendChild(input);
   picker.appendChild(list);
+  picker.appendChild(detail);
   document.body.appendChild(picker);
   _modelPickerEl = picker;
   _modelPickerInput = input;
   _modelPickerList = list;
+  _modelPickerDetail = detail;
 
   // Search filtering
   input.addEventListener('input', () => _renderModelPickerList(input.value.toLowerCase()));
@@ -305,10 +314,83 @@ function _buildModelPicker() {
     if (e.key === 'Escape') { _modelPickerEl.style.display = 'none'; input.blur(); }
     if (e.key === 'Enter' && input.value.trim()) {
       // Select first visible item
-      const first = _modelPickerList.querySelector('.cmp-item:not(.cmp-hidden)');
+      const first = _modelPickerList.querySelector('.cmp-item');
       if (first) first.click();
     }
   });
+}
+
+function _escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+/** Compact token count: 0 / 950 / 12.3K / 1.05M. */
+function _fmtTok(n) {
+  if (!n || typeof n !== 'number') return '0';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return `${n}`;
+}
+
+/** Format a per-1M-token USD cost into a chip label, or null if unknown. */
+function _fmtCostChip(label, v) {
+  if (v === 0) return { text: `${label} free`, free: true };
+  if (typeof v === 'number') return { text: `${label} $${v}/1M`, free: false };
+  return null;
+}
+
+/** Render the detail footer (description + cost) for one model. */
+function _renderModelDetail(m) {
+  if (!_modelPickerDetail) return;
+  if (!m) { _modelPickerDetail.innerHTML = ''; return; }
+  const desc = m.description
+    ? `<div class="cmp-detail-desc">${_escHtml(m.description)}</div>`
+    : `<div class="cmp-detail-desc cmp-detail-muted">No description available.</div>`;
+  const chips = [
+    _fmtCostChip('in', m.cost_input),
+    _fmtCostChip('out', m.cost_output),
+  ].filter(Boolean)
+    .map(c => `<span class="cmp-cost-chip${c.free ? ' cmp-cost-free' : ''}">${_escHtml(c.text)}</span>`)
+    .join('');
+  const cost = chips
+    ? `<div class="cmp-detail-cost">${chips}</div>`
+    : `<div class="cmp-detail-cost"><span class="cmp-detail-muted">Cost unavailable</span></div>`;
+  _modelPickerDetail.innerHTML =
+    `<div class="cmp-detail-name">${_escHtml(m.id)}</div>${desc}${cost}`;
+}
+
+// Click a row → save with a spinner, then confirm with a green check (or a red
+// cross on failure). The picker stays open showing the result, then closes.
+let _pickerSaving = false;
+async function _onPickModel(item, modelId) {
+  if (_pickerSaving) return;                       // ignore clicks mid-save
+  _pickerSaving = true;
+  const status = item.querySelector('.cmp-item-status');
+  item.classList.add('cmp-saving');
+  if (status) status.innerHTML = '<span class="cmp-spinner"></span>';
+
+  // Keep the spinner visible for a beat even on an instant (localhost) save, so
+  // the save→confirm transition reads as intentional rather than a flash.
+  const [ok] = await Promise.all([
+    _selectModel(modelId),
+    new Promise(r => setTimeout(r, 320)),
+  ]);
+
+  item.classList.remove('cmp-saving');
+  if (status) status.innerHTML = ok
+    ? '<span class="cmp-check" title="Saved">✓</span>'
+    : '<span class="cmp-cross" title="Save failed">✕</span>';
+
+  if (ok) {
+    _modelPickerList.querySelectorAll('.cmp-item.cmp-selected')
+      .forEach(el => el.classList.remove('cmp-selected'));
+    item.classList.add('cmp-selected');
+    setTimeout(() => {
+      if (_modelPickerEl) _modelPickerEl.style.display = 'none';
+      if (_modelPickerInput) _modelPickerInput.value = '';
+    }, 650);
+  }
+  _pickerSaving = false;
 }
 
 function _renderModelPickerList(filter) {
@@ -318,84 +400,167 @@ function _renderModelPickerList(filter) {
     : _allAvailableModels;
   _modelPickerList.innerHTML = '';
   if (!filtered.length) {
-    _modelPickerList.innerHTML = '<div style="padding:8px;color:#565f89;font-size:11px;text-align:center;">No models match</div>';
+    _modelPickerList.innerHTML = '<div class="cmp-empty">No models match</div>';
+    _renderModelDetail(null);
     return;
   }
   filtered.slice(0, 200).forEach(m => {
     const item = document.createElement('div');
-    item.className = 'cmp-item';
-    const isSelected = m.id === _currentModelName;
-    item.style.cssText = `padding:5px 8px;border-radius:4px;cursor:pointer;font-size:12px;color:#c0caf5;${isSelected ? 'background:rgba(125,207,255,0.12);' : ''}`;
+    item.className = 'cmp-item' + (m.id === _currentModelName ? ' cmp-selected' : '');
     item.dataset.modelId = m.id;
     const ctxStr = m.context ? _fmtCtxNum(m.context) : '';
-    item.innerHTML = `<span style="font-weight:500;">${m.id.replace(/[&<>"']/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}</span>${ctxStr ? ` <span style="color:#565f89;font-size:10px;margin-left:6px;">ctx ${ctxStr}</span>` : ''}`;
-    item.addEventListener('click', async () => {
-      _modelPickerEl.style.display = 'none';
-      _modelPickerInput.value = '';
-      await _selectModel(m.id);
-    });
-    item.addEventListener('mouseenter', () => { item.style.background = 'rgba(125,207,255,0.08)'; });
-    item.addEventListener('mouseleave', () => { if (!isSelected) item.style.background = 'transparent'; });
+    const u = _sessionModelUsage[m.id];
+    const tokStr = `${_fmtTok(u ? u.total : 0)} tok`;
+    item.innerHTML = `<span class="cmp-item-id">${_escHtml(m.id)}</span>`
+      + `<span class="cmp-item-meta">`
+      + `<span class="cmp-item-tok" title="Tokens used by this model in the current session">${tokStr}</span>`
+      + (ctxStr ? `<span class="cmp-item-ctx">ctx ${ctxStr}</span>` : '')
+      + `<span class="cmp-item-status"></span>`
+      + `</span>`;
+    item.addEventListener('click', () => _onPickModel(item, m.id));
+    item.addEventListener('mouseenter', () => _renderModelDetail(m));
     _modelPickerList.appendChild(item);
   });
+  // Default the detail to the selected model (or the first row).
+  const def = filtered.find(m => m.id === _currentModelName) || filtered[0];
+  _renderModelDetail(def);
 }
 
+/** Build the curated model list for the footer picker: the enabled models saved
+ *  in App Config → Agent Settings (the multi-providers list whose "Text" box is
+ *  ticked). NOT the full provider catalog, and NOT the agent's stale model. */
 async function _fetchModelsForPicker() {
+  const headers = {};
+  const tok = localStorage.getItem('auth_token');
+  if (tok) headers.Authorization = `Bearer ${tok}`;
+
+  const ids = new Set();
+
+  // App Config → Agent Settings → saved models (the multi-providers list).
+  // Mirror the saved-models table exactly: only models whose "Text" box is
+  // ticked (i.e. enabled !== false) are selectable here. We deliberately do NOT
+  // force-add the agent's configured model or the currently-active model — that
+  // used to leak a stale, no-longer-saved model into the picker. If the active
+  // model isn't in the enabled list, nothing is highlighted, which is correct.
   try {
-    const headers = {};
-    const tok = localStorage.getItem('auth_token');
-    if (tok) headers.Authorization = `Bearer ${tok}`;
-    // Use the same endpoint as the settings panel — reads current provider config
-    const res = await fetch(apiPath('/admin/settings/models'), { headers });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    _allAvailableModels = data.models || [];
-  } catch (e) {
-    _allAvailableModels = [];
-  }
+    const res = await fetch(apiPath('/admin/settings/multi-providers'), { headers });
+    if (res.ok) {
+      const data = await res.json();
+      (data.providers || []).forEach(p => {
+        if (p && p.model && p.enabled !== false) ids.add(p.model);
+      });
+    }
+  } catch (_) { /* best-effort */ }
+
+  _allAvailableModels = Array.from(ids)
+    .sort((a, b) => a.localeCompare(b))
+    .map(id => ({ id, name: id, context: null }));
 }
 
+/** Fill in each curated model's context window, description and cost from the
+ *  lightweight per-model metadata endpoint (best-effort, in parallel). The list
+ *  renders before this resolves, so missing data just shows fewer chips. */
+async function _enrichPickerContext() {
+  const headers = {};
+  const tok = localStorage.getItem('auth_token');
+  if (tok) headers.Authorization = `Bearer ${tok}`;
+  await Promise.all(_allAvailableModels.map(async (m) => {
+    if (m._enriched) return;
+    try {
+      const res = await fetch(apiPath(`/admin/settings/model-info?model=${encodeURIComponent(m.id)}`), { headers });
+      if (res.ok) {
+        const d = await res.json();
+        const info = (d && d.info) || {};
+        if (info.context) m.context = info.context;
+        if (info.description) m.description = info.description;
+        if (info.cost_input != null) m.cost_input = info.cost_input;
+        if (info.cost_output != null) m.cost_output = info.cost_output;
+        m._enriched = true;
+      }
+    } catch (_) { /* best-effort */ }
+  }));
+}
+
+/** Fetch this session's per-model token totals (best-effort). */
+async function _fetchSessionModelUsage() {
+  _sessionModelUsage = {};
+  const sid = app.currentSessionId || '';
+  if (!sid) return;
+  const headers = {};
+  const tok = localStorage.getItem('auth_token');
+  if (tok) headers.Authorization = `Bearer ${tok}`;
+  try {
+    const res = await fetch(apiPath(`/admin/settings/session-model-usage?session_id=${encodeURIComponent(sid)}`), { headers });
+    if (res.ok) {
+      const d = await res.json();
+      _sessionModelUsage = (d && d.usage) || {};
+    }
+  } catch (_) { /* best-effort */ }
+}
+
+/** Persist the chosen model. Returns true on a confirmed save, false otherwise.
+ *  Scope, in order of preference:
+ *    • In a chat session  → saved on the SESSION (sessions.metadata.llm_config),
+ *      so this conversation remembers its own model without touching the agent
+ *      default or other sessions. Resolved app-default → agent → session.
+ *    • Agent but no session → overrides the agent's llm_config.model.
+ *    • Neither → updates the global provider config's model. */
 async function _selectModel(modelId) {
   try {
     const headers = { 'Content-Type': 'application/json' };
     const tok = localStorage.getItem('auth_token');
     if (tok) headers.Authorization = `Bearer ${tok}`;
     const aid = app.currentAgentId || '';
-    if (aid) {
-      // Agent context — save as agent's llm_config override
-      const getRes = await fetch(apiPath(`/api/v1/agents/${encodeURIComponent(aid)}`), { headers });
-      if (getRes.ok) {
-        const agent = await getRes.json();
-        const meta = (agent.agent && agent.agent.metadata) || {};
-        let llmCfg = (typeof meta === 'object' && meta.llm_config) ? { ...meta.llm_config } : {};
-        llmCfg.model = modelId;
-        llmCfg.use_default = false;
-        await fetch(apiPath(`/api/v1/agents/${encodeURIComponent(aid)}`), {
-          method: 'PUT', headers,
-          body: JSON.stringify({ user_id: app.currentUserId || '', llm_config: llmCfg }),
-        });
-      }
+    const sid = app.currentSessionId || '';
+    if (sid) {
+      // Chat session — save as a per-session override (takes effect next turn).
+      const postRes = await fetch(apiPath('/api/v1/chat/session-model'), {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          user_id: app.currentUserId || '',
+          session_id: sid,
+          model: modelId,
+        }),
+      });
+      if (!postRes.ok) return false;
+    } else if (aid) {
+      // Agent context — save as agent's llm_config override. Read the EXPOSED
+      // top-level `llm_config` (the API hides `metadata`), so we preserve any
+      // provider/base_url/api_key the agent already set and only swap the model.
+      // GET /agents/{id} requires user_id as a query param (else 422).
+      const uq = `?user_id=${encodeURIComponent(app.currentUserId || '')}`;
+      const getRes = await fetch(apiPath(`/api/v1/agents/${encodeURIComponent(aid)}${uq}`), { headers });
+      if (!getRes.ok) return false;
+      const agent = await getRes.json();
+      const existing = (agent.agent && agent.agent.llm_config) || {};
+      const llmCfg = { ...existing, model: modelId, use_default: false };
+      const putRes = await fetch(apiPath(`/api/v1/agents/${encodeURIComponent(aid)}`), {
+        method: 'PUT', headers,
+        body: JSON.stringify({ user_id: app.currentUserId || '', llm_config: llmCfg }),
+      });
+      if (!putRes.ok) return false;
     } else {
       // No agent — fetch current provider config, update just the model field
       const getRes = await fetch(apiPath('/admin/settings/provider'), { headers });
-      if (getRes.ok) {
-        const cfg = await getRes.json();
-        await fetch(apiPath('/admin/settings/provider'), {
-          method: 'POST', headers,
-          body: JSON.stringify({
-            provider: cfg.provider,
-            base_url: cfg.base_url || '',
-            api_key: cfg.api_key || '',
-            model: modelId,
-          }),
-        });
-      }
+      if (!getRes.ok) return false;
+      const cfg = await getRes.json();
+      const postRes = await fetch(apiPath('/admin/settings/provider'), {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          provider: cfg.provider,
+          base_url: cfg.base_url || '',
+          api_key: cfg.api_key || '',
+          model: modelId,
+        }),
+      });
+      if (!postRes.ok) return false;
     }
     _currentModelName = modelId;
     refreshModelContext();
+    return true;
   } catch (e) {
     console.warn('Failed to switch model:', e);
+    return false;
   }
 }
 
@@ -407,20 +572,21 @@ function _toggleModelPicker() {
   }
   _buildModelPicker();
 
-  // Anchor above the chat input row (the pill), not the footer
-  const anchor = document.getElementById('chat-input-row') || document.getElementById('chat-footer-row') || footerLeftEl || modelCtxEl;
-  if (!anchor) return;
-  const rect = anchor.getBoundingClientRect();
-  const estH = 220;
-  const top = (rect.top - 4 - estH);
-  const left = Math.max(4, Math.min(rect.left, window.innerWidth - 280));
-
-  if (top < 8) {
-    _modelPickerEl.style.top = (rect.bottom + 4) + 'px';
-  } else {
-    _modelPickerEl.style.top = top + 'px';
-  }
-  _modelPickerEl.style.left = left + 'px';
+  // Vertical anchor: pin the panel's bottom edge just above the context-details
+  // line in the footer, so it grows upward from there.
+  const vAnchor = (modelCtxEl && modelCtxEl.style.display !== 'none' ? modelCtxEl : null)
+    || footerLeftEl
+    || document.getElementById('chat-footer-row')
+    || document.getElementById('chat-input-row');
+  // Horizontal anchor: align the panel's left edge to the chat pill's left edge.
+  const pill = document.getElementById('chat-input-row');
+  const hAnchor = pill || vAnchor;
+  if (!vAnchor || !hAnchor) return;
+  const vRect = vAnchor.getBoundingClientRect();
+  const hRect = hAnchor.getBoundingClientRect();
+  _modelPickerEl.style.top = 'auto';
+  _modelPickerEl.style.bottom = (window.innerHeight - vRect.top + 6) + 'px';
+  _modelPickerEl.style.left = Math.max(4, Math.min(hRect.left, window.innerWidth - 290)) + 'px';
   // Show it after a microtask so the document click handler (set in _buildModelPicker)
   // doesn't fire on this same click event and immediately close it.
   setTimeout(() => {
@@ -428,13 +594,22 @@ function _toggleModelPicker() {
   }, 0);
 
   // Show loading
-  _modelPickerList.innerHTML = '<div style="padding:8px;color:#565f89;font-size:11px;text-align:center;">Loading models…</div>';
+  _modelPickerList.innerHTML = '<div class="cmp-empty">Loading models…</div>';
   _modelPickerInput.value = '';
   _modelPickerInput.focus();
 
-  // Fetch models async, then render
+  // Per-session per-model token totals (independent of the model list).
+  _fetchSessionModelUsage().then(() => {
+    _renderModelPickerList(_modelPickerInput.value.toLowerCase());
+  });
+
+  // Fetch the curated list, render it, then fill in context/description/cost in
+  // the background and re-render so each row shows its chips + detail.
   _fetchModelsForPicker().then(() => {
-    _renderModelPickerList('');
+    _renderModelPickerList(_modelPickerInput.value.toLowerCase());
+    _enrichPickerContext().then(() => {
+      _renderModelPickerList(_modelPickerInput.value.toLowerCase());
+    });
   });
 }
 

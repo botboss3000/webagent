@@ -2,24 +2,98 @@
    Markup: ui/web.html · logic: ui/js/web.js.
    Theme-driven (design-system variables only) so it works in dark + light.
    #tab-web is a .tab-content, which is `display:flex; flex-direction:column`
-   when active, so .web-page just grows to fill it. */
+   when active, so .web-page just grows to fill it.
+
+   PILL-PANEL-LAYOUT: the browser stage fills the panel; the footer (browser-nav
+   chip + chat pill) is an ABSOLUTE OVERLAY pinned to the bottom, floating over
+   the full-height browser — exactly like the Pages page (#autoagent-footer in
+   autoagent.css) and the chat pill over the message list. See
+   docs/claude/ui-guidance.md. */
 
 .web-page {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
+  position: relative;
   background: var(--bg-0);
 }
 
-.web-toolbar {
+/* ── Full-height browser stage (the live streamed page) ── */
+.web-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--bg-2);
+  outline: none;
+}
+.web-frame {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.web-frame.has-frame { display: block; }
+
+.web-empty {
+  position: absolute;
+  max-width: 440px;
+  text-align: center;
+  color: var(--fg-3);
+  font-size: 14px;
+  line-height: 1.55;
+  padding: 24px;
+  pointer-events: none;
+}
+
+/* ── Footer: floating overlay (nav chip above the chat pill) ──
+   pointer-events:none on the overlay + auto on the visible controls lets clicks
+   in the transparent gaps fall through to the browser stage behind it. */
+.web-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  background: transparent;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  pointer-events: none;
+  /* PILL-PANEL-ALIGN: the prompt pill is the bottom child, so this padding-bottom
+     IS the pill's bottom offset from the panel floor — the SAME computed value
+     the Pages pill and the agents builder bar use, so all pills line up. See the
+     note at #autoagent-footer in autoagent.css / #chat-input-area in app1.css. */
+  --chat-area-bottom-inset: 8px;
+  --chat-pill-footer-gap: 6px;
+  --chat-footer-row-h: 18px;
+  padding: 0 20px calc(var(--chat-area-bottom-inset) + var(--chat-pill-footer-gap) + var(--chat-footer-row-h));
+}
+
+/* The browser-nav chip and the chat pill capture clicks; the rest is
+   click-through to the stage behind. */
+.web-nav,
+.web-prompt-row { pointer-events: auto; }
+
+/* ── Browser-nav chip ── */
+.web-nav {
   display: flex;
   gap: 6px;
   align-items: center;
-  padding: 8px;
-  border-bottom: 1px solid var(--border);
+  width: 100%;
+  max-width: 920px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
   background: var(--bg-1);
-  flex: 0 0 auto;
+  box-shadow: var(--shadow-1, 0 2px 10px rgba(0,0,0,0.18));
 }
 
 .web-btn {
@@ -54,6 +128,30 @@
 }
 .web-url:focus { border-color: var(--accent); }
 
+/* Per-tab share toggle: off = private (neutral), on = shared with the agent
+   (accent-filled). Design-system vars only, so it reads correctly in both
+   themes. */
+.web-share {
+  font-size: 12px;
+  white-space: nowrap;
+  gap: 6px;
+}
+.web-share::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-3);
+  flex: 0 0 auto;
+}
+.web-share.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-elev));
+  color: var(--fg-1);
+}
+.web-share.on::before { background: var(--accent); }
+.web-share.on:hover { background: color-mix(in srgb, var(--accent) 26%, var(--bg-elev)); }
+
 .web-status {
   display: flex;
   align-items: center;
@@ -73,34 +171,14 @@
 .web-dot.live { background: var(--success); }
 .web-dot.down { background: var(--danger); }
 
-.web-stage {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  background: var(--bg-2);
-  outline: none;
+/* ── Chat pill wrapper ──
+   CHAT-PILL-SYNC: the pill look/behaviour come from .chat-pill* in app1.css.
+   Only wrapper-specific layout lives here. */
+.web-prompt-bar {
+  width: 100%;
+  max-width: 920px;
 }
-.web-frame {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  display: none;
-  user-select: none;
-  -webkit-user-drag: none;
-}
-.web-frame.has-frame { display: block; }
-
-.web-empty {
-  position: absolute;
-  max-width: 440px;
-  text-align: center;
-  color: var(--fg-3);
-  font-size: 14px;
-  line-height: 1.55;
-  padding: 24px;
-  pointer-events: none;
+.web-prompt-input {
+  min-height: 52px;
+  max-height: 160px;
 }

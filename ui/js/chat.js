@@ -201,6 +201,34 @@ function applyChatGate() {
 window.addEventListener('access-mode-loaded',  applyChatGate);
 window.addEventListener('access-mode-changed', applyChatGate);
 
+/** Format a UTC timestamp string (e.g. "2024-01-15 10:30:00") to an epoch ms. */
+function _parseCreatedAt(str) {
+  if (!str) return Date.now();
+  // Server stores UTC datetime('now') — append Z so JS treats it as UTC.
+  return new Date(str.replace(' ', 'T') + 'Z').getTime();
+}
+
+/** Format an elapsed duration since a given epoch ms into a relative-time label.
+ *  Under 60s → "0m"; 1-59 min → "13m"; 1h+ → "1h 13m". */
+function _formatRelativeTime(createdAtMs) {
+  const elapsed = Date.now() - createdAtMs;
+  const totalMin = Math.floor(elapsed / 60000);
+  if (totalMin < 1) return '0m';
+  if (totalMin < 60) return totalMin + 'm';
+  const hours = Math.floor(totalMin / 60);
+  const mins = totalMin % 60;
+  return hours + 'h ' + mins + 'm';
+}
+
+/** Refresh every `.bubble-time` element in the chat panel so the displayed
+ *  "minutes ago" labels tick forward. Called on a 60s interval. */
+function _refreshAllBubbleTimes() {
+  document.querySelectorAll('.chat-bubble .bubble-time').forEach(el => {
+    const ts = el.getAttribute('data-created-at');
+    if (ts) el.textContent = _formatRelativeTime(Number(ts));
+  });
+}
+
 function escapeHtml(str) {
   return str
     .replace(/&/g, '&amp;')
@@ -585,7 +613,7 @@ function _restoreDraft() {
   } catch (_) { /* non-fatal */ }
 }
 
-function addChatBubble(role, text, extraClass, imageUrl, turnId, msgId) {
+function addChatBubble(role, text, extraClass, imageUrl, turnId, msgId, createdAt) {
   const bubble = document.createElement('div');
   bubble.className = 'chat-bubble ' + role + (extraClass ? ' ' + extraClass : '');
   if (turnId) bubble.setAttribute('data-turn-id', turnId);
@@ -593,6 +621,12 @@ function addChatBubble(role, text, extraClass, imageUrl, turnId, msgId) {
   // multiple sources (local render + WS broadcast + DB reload) so a message
   // never appears twice. Critical for live multi-device viewing.
   if (msgId) bubble.setAttribute('data-msg-id', msgId);
+  // Store the creation timestamp on the bubble so _addBubbleActions can render
+  // a relative "Xm ago" label in the actions row.
+  {
+    const createdAtMs = createdAt ? _parseCreatedAt(createdAt) : Date.now();
+    bubble.setAttribute('data-created-at', createdAtMs);
+  }
   // Show 'You' label for user, omit for agent (already prefixed with agent name in content)
   if (role === 'user') {
     const label = document.createElement('span');
@@ -887,6 +921,16 @@ function _addBubbleActions(bubble) {
 
   const actions = document.createElement('div');
   actions.className = 'bubble-actions';
+
+  // Relative timestamp — leftmost in the actions row, small text
+  const createdAtMs = bubble.getAttribute('data-created-at');
+  if (createdAtMs) {
+    const timeEl = document.createElement('span');
+    timeEl.className = 'bubble-time';
+    timeEl.setAttribute('data-created-at', createdAtMs);
+    timeEl.textContent = _formatRelativeTime(Number(createdAtMs));
+    actions.appendChild(timeEl);
+  }
 
   // Collapse / expand button
   const collapseBtn = document.createElement('button');
@@ -1407,6 +1451,11 @@ function seedStreamingBubble(turnId, content) {
 
 export function initChat() {
   app.addChatBubble = addChatBubble;
+
+  // ── Relative-time ticker ──
+  // Refresh every bubble's "Xm ago" / "1h 13m" label every 60 seconds so it
+  // stays current without the user having to reload the page.
+  setInterval(_refreshAllBubbleTimes, 60000);
   app.updateLastBubble = updateLastBubble;
   app.appendStreamToActiveBubble = appendStreamToActiveBubble;
   app.finalizeAgentResponse = finalizeAgentResponse;

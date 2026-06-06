@@ -1,5 +1,9 @@
 <div id="chat-header">
   <span id="header-user-session">
+    <span class="header-session-nav">
+      <button id="session-prev-btn" class="session-nav-btn" title="Previous pinned session" type="button"><i data-lucide="arrow-big-left" style="width:18px;height:18px;"></i></button>
+      <button id="session-next-btn" class="session-nav-btn" title="Next pinned session" type="button"><i data-lucide="arrow-big-right" style="width:18px;height:18px;"></i></button>
+    </span>
     <span id="session-label">
       <div id="session-dropdown" class="session-dropdown">
         <button id="session-dropdown-trigger" type="button" class="status-select session-dropdown-trigger">
@@ -36,10 +40,6 @@
        silent user-impersonator agent. Tapping a chip fills the pill.
        Positioned above the continue/stop buttons and the tool-call panel. -->
   <div id="chat-suggest-row" class="chat-suggest-row" aria-label="Suggested replies"></div>
-  <!-- Active on-demand skills — populated by ui/js/skills.js. Each chip shows a
-       skill the agent loaded this conversation; the × deactivates it (drops its
-       instructions from the agent's context). Hidden when none are active. -->
-  <div id="chat-skills-row" class="chat-skills-row" aria-label="Active skills" hidden></div>
   <!-- Stop + Continue actions — ALWAYS present (a quiet, resting state); the one
        that's relevant right now glows. Stop glows while the agent is processing;
        Continue glows when the agent is idle and waiting. The whole row hides only
@@ -82,6 +82,12 @@
       </div>
       <div id="chat-model-ctx" class="chat-model-ctx" style="display:none;" title="Active model's context window and max output"></div>
     </div>
-    <button id="chat-mode-btn" class="chat-mode-btn" title="Click to toggle execution mode: Read → Write → Auto → Read">Write</button>
+    <div class="chat-footer-right">
+      <button id="chat-skills-btn" class="chat-skills-btn" title="Skills — click to view and toggle">
+        <i data-lucide="blocks" style="width:16px;height:16px;"></i>
+        <span id="chat-skills-badge" class="csp-badge">0</span>
+      </button>
+      <button id="chat-mode-btn" class="chat-mode-btn" title="Click to toggle execution mode: Read → Write → Auto → Read">Write</button>
+    </div>
   </div>
 </div>

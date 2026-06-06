@@ -351,9 +351,16 @@ async def get_suggestions_config():
     return load_runtime_config()
 
 
-# ── On-demand skills (active list + deactivate) ─────────────────────────────
-# Power the active-skill chips below the chat box. The active list lives in the
-# session's metadata; load_skill adds to it, this endpoint removes from it.
+# ── On-demand skills (active list + activate/deactivate) ───────────────────
+# Power the active-skill chips below the chat box AND the skill-selector panel
+# anchored to the right edge of the chat pill footer. The active list lives in
+# the session's metadata; load_skill adds to it, these endpoints modify it.
+
+class SkillActivateRequest(BaseModel):
+    user_id: str
+    session_id: str
+    name: str
+
 
 class SkillDeactivateRequest(BaseModel):
     user_id: str
@@ -364,26 +371,70 @@ class SkillDeactivateRequest(BaseModel):
 @router.get("/skills")
 async def chat_skills(user_id: str, session_id: str, agent_id: Optional[str] = None):
     """Return the active (loaded) selectable skills for a session, plus the
-    agent's enabled skill catalog when `agent_id` is supplied.
+    agent's full selectable skill catalog (authored + ability-bundled) when
+    `agent_id` is supplied. Each catalog entry carries a display_name for the
+    UI panel and an `active` flag so the panel shows engaged skills.
 
     The active list alone needs no agent (it lives in session metadata), so the
     chat chips work even if agent_id isn't passed; the panel passes agent_id to
-    also get descriptions + modes."""
+    also get descriptions + modes + display_name."""
     db = get_db()
     active = await db.get_session_active_skills(session_id)
-    skills = await db.get_agent_skills(agent_id) if agent_id else []
     active_set = set(active)
+
+    all_skills = []
+
+    # ── 1. Authored skills from the agent's __skills__ slot ──
+    if agent_id:
+        try:
+            all_skills.extend(await db.get_agent_skills(agent_id) or [])
+        except Exception:
+            pass
+
+    # ── 2. Ability-bundled skills — directly scan every ability file ──
+    # Do NOT go through collect_ability_skills (which requires agent connections
+    # and admin config). Instead, scan all ability modules for skill declarations
+    # so the panel shows every discoverable skill regardless of how the agent is
+    # configured. The agent's abilities are already gated by the admin; showing
+    # all ability skills here is OK because the user activates them manually.
+    try:
+        from app.abilities import all_raw, _resolve_skill_body
+        for ability_id, feat in all_raw().items():
+            try:
+                body = _resolve_skill_body(feat, ability_id)
+                if not body:
+                    continue
+                from app.agent.ability_skills import _skill_from_feature
+                skill = _skill_from_feature({**feat, "skill": body}, ability_id)
+                if skill:
+                    all_skills.append(skill)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
     catalog = [
         {
-            "name": s["name"],
+            "name": s.get("handle") or s["name"],
+            "display_name": s.get("display_name") or s.get("source") or s["name"],
             "description": s.get("description", ""),
             "mode": s.get("mode", "selectable"),
-            "active": s["name"] in active_set,
+            "active": (s.get("handle") or s["name"]) in active_set,
         }
-        for s in skills
+        for s in all_skills
         if s.get("enabled", True) and s.get("mode") != "always_on"
     ]
     return {"active": active, "skills": catalog}
+
+
+@router.post("/skills/activate")
+async def chat_skill_activate(req: SkillActivateRequest):
+    """Manually activate a selectable skill from the UI panel. Calls load_skill
+    on behalf of the user so it counts as loaded the same way as if the agent
+    called load_skill itself."""
+    db = get_db()
+    active = await db.set_session_active_skill(req.session_id, req.name, True)
+    return {"active": active, "name": req.name}
 
 
 @router.post("/skills/deactivate")
@@ -398,6 +449,30 @@ async def chat_skill_deactivate(req: SkillDeactivateRequest):
     except Exception as e:
         logger.debug("neutralize_skill_load failed for %s: %s", req.name, e)
     return {"active": active, "name": req.name}
+
+
+# ── Per-session model override ────────────────────────────────────────────────
+# The chat footer model picker saves the chosen model HERE (per session) rather
+# than on the agent, so each conversation remembers its own model. The agent loop
+# layers this over the agent/app default on every turn (app-default → agent →
+# session). An empty model clears the override.
+
+class SessionModelRequest(BaseModel):
+    user_id: str
+    session_id: str
+    model: Optional[str] = None
+
+
+@router.post("/session-model")
+async def set_session_model(req: SessionModelRequest):
+    """Set (or clear, with an empty model) this session's model override. Takes
+    effect on the next turn — the loop re-resolves the effective model per run."""
+    db = get_db()
+    # A brand-new chat has no session row until its first message; create it so a
+    # model picked before sending anything still persists.
+    await _ensure_session(db, req.user_id, req.session_id)
+    cfg = await db.set_session_llm_override(req.session_id, (req.model or "").strip() or None)
+    return {"llm_config": cfg, "model": (cfg or {}).get("model", "")}
 
 
 @router.put("/suggestions/config")

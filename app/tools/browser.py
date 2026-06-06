@@ -34,17 +34,18 @@ logger = logging.getLogger(__name__)
 # ── Globals ──────────────────────────────────────────────────────────────────
 
 _playwright_instance = None
-_browsers: dict[str, Browser] = {}       # session_key -> Browser
-_contexts: dict[str, BrowserContext] = {} # session_key -> BrowserContext
-_pages: dict[str, Page] = {}             # session_key -> Page
+# Keyed by browser_session_id (bs_id) — the id of a row in the browser_sessions
+# table. One persistent tab per id; its own context is its own cookie jar (loaded
+# from / saved to that row's storage_state), so logins survive restarts. The Web
+# tab and the agent's browser_action both address a tab by this id, so they drive
+# the SAME page.
+_browsers: dict[str, Browser] = {}        # bs_id -> Browser
+_contexts: dict[str, BrowserContext] = {} # bs_id -> BrowserContext
+_pages: dict[str, Page] = {}              # bs_id -> Page
 # Keys whose browser is an ATTACHED (CDP) connection to a user-visible window,
 # not a headless instance we launched. Never tear these down — closing them
 # would shut the window the user is looking at; we only disconnect.
 _attached: set[str] = set()
-
-
-def _session_key(user_id: str, session_id: str) -> str:
-    return f"{user_id}:{session_id}"
 
 
 def _cdp_port() -> int:
@@ -76,17 +77,19 @@ def _cdp_endpoint_open(port: int) -> bool:
         s.close()
 
 
-async def _ensure_page(user_id: str, session_id: str) -> Page:
-    """Get or create a page for this user+session.
+async def _ensure_page(bs_id: str) -> Page:
+    """Get or create the live page for a browser session (bs_id).
 
     Order of preference:
-      1. The live page we already hold for this key.
+      1. The live page we already hold for this id.
       2. ATTACH to a user-visible app-mode window if one is open (CDP port up)
          — the agent then drives the window the user is watching.
-      3. Launch our own headless Chromium (default).
+      3. Launch our own headless Chromium (default). The context is seeded with
+         the row's saved storage_state (cookies/localStorage) so a login persists
+         across restarts.
     """
     global _playwright_instance
-    key = _session_key(user_id, session_id)
+    key = bs_id
 
     if key in _pages:
         page = _pages[key]
@@ -146,10 +149,20 @@ async def _ensure_page(user_id: str, session_id: str) -> Page:
 
     context = _contexts.get(key)
     if context is None:
-        context = await browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
+        ctx_kwargs = {
+            "viewport": {"width": 1280, "height": 720},
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        # Seed cookies/localStorage from the saved row so a login persists across
+        # restarts. Best-effort: a missing/invalid blob just starts a clean jar.
+        try:
+            from app.db import browser_sessions_store as _store
+            saved = _store.get_storage_state(bs_id)
+            if saved:
+                ctx_kwargs["storage_state"] = saved
+        except Exception as _se:  # noqa: BLE001
+            logger.debug("storage_state load for %s skipped: %s", bs_id, _se)
+        context = await browser.new_context(**ctx_kwargs)
         _contexts[key] = context
 
     page = await context.new_page()
@@ -157,30 +170,111 @@ async def _ensure_page(user_id: str, session_id: str) -> Page:
     return page
 
 
-async def get_or_create_page(user_id: str, session_id: str) -> Page:
+async def get_or_create_page(bs_id: str) -> Page:
     """Public accessor used by the live Browser panel (app/api/browser_stream.py).
 
-    Returns the live Playwright page for this user+session, creating the
-    browser/context/page on demand. Because it shares the same per-session key
-    as ``browser_action``, the human's Web tab and the agent's ``browser_action``
-    tool drive the **same** page — that is what makes the panel "AI-augmented":
-    whatever one does, the other sees live.
+    Returns the live Playwright page for this browser session, creating the
+    browser/context/page on demand. Because it keys on the same bs_id the agent's
+    ``browser_action`` resolves to, the human's Web tab and the agent drive the
+    **same** page — whatever one does, the other sees live.
     """
-    return await _ensure_page(user_id, session_id)
+    return await _ensure_page(bs_id)
 
 
-def get_existing_page(user_id: str, session_id: str) -> Optional[Page]:
-    """Return the live page for this user+session if one exists, else None.
+def get_existing_page(bs_id: str) -> Optional[Page]:
+    """Return the live page for this browser session if one exists, else None.
 
-    Does NOT create a browser — lets callers check whether the agent has
-    already opened a page before the human's panel forces one.
+    Does NOT create a browser — lets callers check whether a page is already open
+    before forcing one.
     """
-    return _pages.get(_session_key(user_id, session_id))
+    return _pages.get(bs_id)
+
+
+async def persist_state(bs_id: str) -> None:
+    """Snapshot the context's cookies/localStorage back to the row so a login
+    survives a server restart. No-op for attached (user-window) contexts."""
+    if bs_id in _attached:
+        return  # the user's own window — not ours to snapshot
+    ctx = _contexts.get(bs_id)
+    if ctx is None:
+        return
+    try:
+        state = await ctx.storage_state()
+        from app.db import browser_sessions_store as _store
+        _store.set_storage_state(bs_id, state)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("persist_state(%s) failed: %s", bs_id, e)
+
+
+async def close(bs_id: str) -> dict:
+    """Persist login state, then tear down the browser for this session.
+
+    Attached (CDP) connections to a user-visible window are only DISCONNECTED —
+    closing their page/context would shut the window the user is looking at.
+    """
+    key = bs_id
+    await persist_state(bs_id)
+    if key in _attached:
+        _pages.pop(key, None)
+        _contexts.pop(key, None)
+        b = _browsers.pop(key, None)
+        _attached.discard(key)
+        if b is not None:
+            try:
+                await b.close()  # CDP: disconnects; the window stays open
+            except Exception:
+                pass
+        return {"success": True, "result": "Detached from app window", "url": "", "title": ""}
+    if key in _pages:
+        try:
+            await _pages[key].close()
+        except Exception:
+            pass
+        _pages.pop(key, None)
+    if key in _contexts:
+        try:
+            await _contexts[key].close()
+        except Exception:
+            pass
+        _contexts.pop(key, None)
+    if key in _browsers:
+        try:
+            await _browsers[key].close()
+        except Exception:
+            pass
+        _browsers.pop(key, None)
+    return {"success": True, "result": "Browser closed", "url": "", "title": ""}
+
+
+def resolve_agent_session(user_id: str, agent_id: str,
+                          browser_session_id: Optional[str] = None) -> str:
+    """Resolve the browser-session id an agent is allowed to drive — the single
+    enforcement point for the sharing gate.
+
+    Rules: a tab is reachable by the agent only if it is owned by ``user_id``,
+    linked to THIS ``agent_id``, and ``shared``. If ``browser_session_id`` is
+    given it must satisfy that (else PermissionError). Otherwise the agent's first
+    shared tab is used; if it has none, a fresh shared tab linked to the agent is
+    created (so the user sees it as "the agent's tab"). Private and unlinked tabs
+    are invisible here.
+    """
+    from app.db import browser_sessions_store as _store
+    if browser_session_id:
+        row = _store.get(browser_session_id)
+        if not row or row.get("user_id") != user_id:
+            raise PermissionError("browser session not found")
+        if row.get("agent_id") != agent_id or not row.get("shared"):
+            raise PermissionError("browser session is not shared with this agent")
+        return browser_session_id
+    shared = _store.list_shared_for_agent(user_id, agent_id)
+    if shared:
+        return shared[0]["id"]
+    created = _store.create(user_id, agent_id=agent_id, title="Agent browser", shared=True)
+    return created["id"]
 
 
 async def browser_action(
-    user_id: str,
-    session_id: str,
+    bs_id: str,
     action: str,
     selector: Optional[str] = None,
     text: Optional[str] = None,
@@ -190,14 +284,15 @@ async def browser_action(
     full_page: bool = True,
 ) -> dict:
     """
-    Execute a browser automation action.
+    Execute a browser automation action against a browser session (bs_id).
 
-    A persistent headless Chromium is maintained per user+session.
-    Consecutive calls within the same session share the same page.
+    A persistent headless Chromium is maintained per browser session. Consecutive
+    calls with the same bs_id share the same page, and the user's Web tab streams
+    that same page live.
 
     Args:
-        user_id: Injected by the tool loader
-        session_id: Injected by the tool loader
+        bs_id: The browser-session id to drive (resolved by the caller/loader
+            from the agent's sharing-gated session).
         action: One of:
             - "navigate"    → url (required)
             - "click"       → selector (required)
@@ -227,43 +322,29 @@ async def browser_action(
     """
     try:
         if action == "close":
-            key = _session_key(user_id, session_id)
-            if key in _attached:
-                # Attached to a user-visible window — DON'T close the page/context
-                # (that's the user's window). Just disconnect our CDP client.
-                _pages.pop(key, None)
-                _contexts.pop(key, None)
-                b = _browsers.pop(key, None)
-                _attached.discard(key)
-                if b is not None:
-                    try:
-                        await b.close()  # CDP: disconnects; the window stays open
-                    except Exception:
-                        pass
-                return {"success": True, "result": "Detached from app window", "url": "", "title": ""}
-            if key in _pages:
-                await _pages[key].close()
-                del _pages[key]
-            if key in _contexts:
-                await _contexts[key].close()
-                del _contexts[key]
-            if key in _browsers:
-                await _browsers[key].close()
-                del _browsers[key]
-            return {"success": True, "result": "Browser closed", "url": "", "title": ""}
+            return await close(bs_id)
 
-        page = await _ensure_page(user_id, session_id)
+        page = await _ensure_page(bs_id)
 
         if action == "navigate":
             if not url:
                 return {"success": False, "error": "url required for navigate action", "url": "", "title": ""}
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(1000)  # let JS render settle
+            title = await page.title()
+            # Remember where this tab is + snapshot the (now possibly logged-in)
+            # cookie jar so the row survives a restart.
+            try:
+                from app.db import browser_sessions_store as _store
+                _store.update(bs_id, url=page.url, title=title)
+            except Exception:  # noqa: BLE001
+                pass
+            await persist_state(bs_id)
             return {
                 "success": True,
                 "result": f"Navigated to {url}",
                 "url": page.url,
-                "title": await page.title(),
+                "title": title,
             }
 
         elif action == "click":
@@ -389,7 +470,7 @@ async def browser_action(
         logger.error(f"browser_action ({action}) failed: {e}")
         # Try to get current URL/title even on failure
         try:
-            current_url = _pages.get(_session_key(user_id, session_id))
+            current_url = _pages.get(bs_id)
             url_str = current_url.url if current_url else ""
             title_str = await current_url.title() if current_url else ""
         except Exception:

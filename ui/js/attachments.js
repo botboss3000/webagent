@@ -217,7 +217,9 @@ export async function uploadAndPreview(file, opts = {}) {
 }
 
 // ── Shared paste + drag/drop wiring for any chat pill ──────────────────────
-// Drop targets the pill row (= the chat field). Paste targets the input.
+// Both drop and paste target the pill row (= the chat field), so each pill
+// handles only its own clipboard/drag input — a paste lands in the focused
+// pill, never a different page's pill.
 // Caller can route uploads to a custom preview bar / pending list via opts.
 
 function _dragHasFiles(e) {
@@ -228,6 +230,82 @@ function _dragHasFiles(e) {
     if (types[i] === 'Files') return true;
   }
   return false;
+}
+
+// Extract image(s)/file(s) from a paste event and upload them to the given
+// pill. Routes uploads via opts (custom preview bar / pending list).
+async function _processImagePaste(e, opts) {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+
+  // Phase 1: direct File items (Chrome/Edge/Safari)
+  const files = [];
+  for (const item of items) {
+    if (item.kind === 'file') {
+      const f = item.getAsFile();
+      if (f) files.push(f);
+    }
+  }
+  if (files.length > 0) {
+    e.preventDefault();
+    for (const file of files) await uploadAndPreview(file, opts);
+    return;
+  }
+
+  // Phase 2: Firefox - images are in string items
+  const hasImageType = Array.from(items).some(
+    i => i.kind === 'string' && i.type.startsWith('image/')
+  );
+  const hasHtml = Array.from(items).some(
+    i => i.kind === 'string' && i.type === 'text/html'
+  );
+
+  if (!hasImageType && !hasHtml) return;  // plain text paste
+
+  // Prevent default so Firefox doesn't show its error message
+  e.preventDefault();
+
+  // Try async Clipboard API first (works in Firefox with permissions)
+  try {
+    const clipboardItems = await navigator.clipboard.read();
+    const imageFiles = [];
+    for (const ci of clipboardItems) {
+      for (const type of ci.types) {
+        if (type.startsWith('image/')) {
+          const blob = await ci.getType(type);
+          const ext = type.split('/')[1] || 'png';
+          imageFiles.push(new File(
+            [blob],
+            'clipboard-' + Date.now() + '.' + ext,
+            { type }
+          ));
+        }
+      }
+    }
+    if (imageFiles.length > 0) {
+      for (const file of imageFiles) await uploadAndPreview(file, opts);
+      return;
+    }
+  } catch {
+    // Clipboard API not available
+  }
+
+  // Fallback: extract data URL from HTML string items
+  for (const item of items) {
+    if (item.kind === 'string' && item.type === 'text/html') {
+      item.getAsString(function(html) {
+        var re = /src\s*=\s*"(data:image\/[^"]+)"/;
+        var m = html.match(re);
+        if (m && m[1]) {
+          fetch(m[1]).then(function(r) { return r.blob(); }).then(function(blob) {
+            var ext = blob.type.split('/')[1] || 'png';
+            var f = new File([blob], 'clipboard-' + Date.now() + '.' + ext, { type: blob.type });
+            uploadAndPreview(f, opts);
+          });
+        }
+      });
+    }
+  }
 }
 
 export function wireChatPillUploads(rowEl, inputEl, opts = {}) {
@@ -263,83 +341,13 @@ export function wireChatPillUploads(rowEl, inputEl, opts = {}) {
       const files = Array.from(e.dataTransfer.files);
       for (const file of files) await uploadAndPreview(file, opts);
     });
-  }
 
-  if (inputEl && !inputEl.dataset.chatPillPasteWired) {
-    inputEl.dataset.chatPillPasteWired = '1';
-    inputEl.addEventListener('paste', async (e) => {
-      const items = e.clipboardData && e.clipboardData.items;
-      if (!items) return;
-
-      // Phase 1: direct File items (Chrome/Edge/Safari)
-      const files = [];
-      for (const item of items) {
-        if (item.kind === 'file') {
-          const f = item.getAsFile();
-          if (f) files.push(f);
-        }
-      }
-      if (files.length > 0) {
-        e.preventDefault();
-        for (const file of files) await uploadAndPreview(file, opts);
-        return;
-      }
-
-      // Phase 2: Firefox - images are in string items
-      const hasImageType = Array.from(items).some(
-        i => i.kind === 'string' && i.type.startsWith('image/')
-      );
-      const hasHtml = Array.from(items).some(
-        i => i.kind === 'string' && i.type === 'text/html'
-      );
-
-      if (!hasImageType && !hasHtml) return;  // plain text paste
-
-      // Prevent default so Firefox doesn't show its error message
-      e.preventDefault();
-
-      // Try async Clipboard API first (works in Firefox with permissions)
-      try {
-        const clipboardItems = await navigator.clipboard.read();
-        const imageFiles = [];
-        for (const ci of clipboardItems) {
-          for (const type of ci.types) {
-            if (type.startsWith('image/')) {
-              const blob = await ci.getType(type);
-              const ext = type.split('/')[1] || 'png';
-              imageFiles.push(new File(
-                [blob],
-                'clipboard-' + Date.now() + '.' + ext,
-                { type }
-              ));
-            }
-          }
-        }
-        if (imageFiles.length > 0) {
-          for (const file of imageFiles) await uploadAndPreview(file, opts);
-          return;
-        }
-      } catch {
-        // Clipboard API not available
-      }
-
-      // Fallback: extract data URL from HTML string items
-      for (const item of items) {
-        if (item.kind === 'string' && item.type === 'text/html') {
-          item.getAsString(function(html) {
-            var re = /src\s*=\s*"(data:image\/[^"]+)"/;
-            var m = html.match(re);
-            if (m && m[1]) {
-              fetch(m[1]).then(function(r) { return r.blob(); }).then(function(blob) {
-                var ext = blob.type.split('/')[1] || 'png';
-                var f = new File([blob], 'clipboard-' + Date.now() + '.' + ext, { type: blob.type });
-                uploadAndPreview(f, opts);
-              });
-            }
-          });
-        }
-      }
-    });
+    // Paste is scoped to this pill: a paste event fires on the focused element
+    // and bubbles from the text field (or any focused control inside the pill)
+    // up to the row. Binding here — rather than on the document — means the
+    // paste always lands in the pill the user is working in, never a different
+    // page's pill. The focused pill only.
+    rowEl.addEventListener('paste', (e) => _processImagePaste(e, opts));
   }
 }
 

@@ -31,6 +31,15 @@ FEATURE = {
     "color": "#9ece6a",
     "description": "Lets the agent drive a headless Chromium browser and make HTTP requests. No credentials.",
     "simple": True,
+    # Bundled skill: a load-on-demand how-to for driving the browser (the action
+    # loop + the shared/private browser-session model). Body lives in the sibling
+    # file browser_control.skill.md (found by convention). Handle is minted once
+    # and frozen here so a loaded ability-skill keeps matching across restarts.
+    "skill_mode": "selectable",
+    "skill_handle": "browser_control_bz9k3p",
+    "skill_summary": "How to drive a browser: the navigate/read/click/type/"
+                     "screenshot loop, and the shared-vs-private browser-session "
+                     "(tab) sharing gate. Load this before using browser_action.",
 }
 
 
