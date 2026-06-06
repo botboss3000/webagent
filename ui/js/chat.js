@@ -1476,29 +1476,24 @@ export function initChat() {
     });
   }
 
-  // Show the continue button when the agent is idle and selected;
-  // hide it while processing or when no agent is active.
-  // Poll every 500ms to stay in sync with isProcessing / currentAgentId
-  // changes from any module (agents.js, sessions.js, autoagent.js).
-  function _updateContinueBtn() {
-    if (!continueBtn) return;
-    const show = !app.isProcessing && !!app.currentAgentId;
-    continueBtn.style.display = show ? 'flex' : 'none';
-  }
   // ── Stop button (above the pill, left of continue) ──────────────
   const stopBtn = document.getElementById('chat-stop-btn');
-  if (stopBtn) {
-    stopBtn.addEventListener('click', sendStopMessage);
-    // Extend the continue-btn poll to also update stop button visibility.
-    // We wrap the original so the interval picks up the combined function.
-    const origContinue = _updateContinueBtn;
-    _updateContinueBtn = function() {
-      origContinue();
-      stopBtn.style.display = app.isProcessing ? 'flex' : 'none';
-    };
+  if (stopBtn) stopBtn.addEventListener('click', sendStopMessage);
+
+  // Both buttons are ALWAYS visible (a quiet resting state); the relevant one
+  // glows via the `.active` class. Stop is active while the agent is processing,
+  // Continue while it's idle and waiting. The whole row hides only when no agent
+  // is selected. Poll every 500ms to stay in sync with isProcessing /
+  // currentAgentId changes from any module (agents.js, sessions.js, autoagent.js).
+  const actionRow = document.getElementById('chat-action-row');
+  function _updateActionBtns() {
+    const hasAgent = !!app.currentAgentId;
+    if (actionRow) actionRow.classList.toggle('hidden', !hasAgent);
+    if (stopBtn) stopBtn.classList.toggle('active', hasAgent && app.isProcessing);
+    if (continueBtn) continueBtn.classList.toggle('active', hasAgent && !app.isProcessing);
   }
-  setInterval(_updateContinueBtn, 500);
-  _updateContinueBtn();
+  setInterval(_updateActionBtns, 500);
+  _updateActionBtns();
 
   // Apply gating immediately with cached value, then re-apply once mode is loaded
   applyChatGate();

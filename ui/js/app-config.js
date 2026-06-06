@@ -44,6 +44,17 @@ function _fetch(url, opts = {}) {
 
 function _qs(id) { return document.getElementById(id); }
 
+// Show a one-line status message under an integration/config card.
+//   ok:true → green (success), else red (error). autoHide:true clears it after 3s.
+// No-op when `el` is missing, matching the old `if (el) { … }` guards.
+function _setIntStatus(el, msg, { ok = false, autoHide = false } = {}) {
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = ok ? '#9ece6a' : '#f7768e';
+  el.style.display = 'block';
+  if (autoHide) setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
 function _esc(str) {
   const d = document.createElement('div');
   d.appendChild(document.createTextNode(str || ''));
@@ -64,6 +75,8 @@ let _parallelProviders = [];
 let _parallelUidCounter = 0;
 let _modelFetchDebounce = null;
 let _autosaveDebounce = null;
+// Saved-models columns: 'usage' (In/Out/Cost) or 'caps' (Text/In/Out checkboxes).
+let _savedModelsViewMode = 'usage';
 // Capabilities of the currently-configured model, detected from the model
 // catalog (models.dev / OpenRouter). Drives the read-only badges on the Model
 // row and what gets persisted on auto-save / Add — no hand-entered checkboxes.
@@ -742,6 +755,8 @@ function _showLLMStatus(msg, type) {
 
 // ── Parallel providers ──
 async function _loadParallelProviders() {
+  const loader = document.getElementById('ac-model-loader');
+  if (loader) loader.classList.add('show');
   try {
     const res = await _fetch(apiPath('/admin/settings/multi-providers'));
     if (!res.ok) return;
@@ -763,6 +778,8 @@ async function _loadParallelProviders() {
   } catch (e) {
     _parallelProviders = [];
   }
+  const loader = document.getElementById('ac-model-loader');
+  if (loader) loader.classList.remove('show');
 }
 
 async function _saveParallelProviders() {
@@ -896,49 +913,90 @@ async function _loadSavedModelDetail(p, body, statIn, statOut, statCost) {
 }
 
 function _renderParallelRows() {
-  const wrap = _qs('ac-settings-saved-wrap');
-  const list = _qs('ac-settings-saved-list');
+  const list = _qs('ac-model-config');
   if (!list) return;
 
-  if (!_parallelProviders.length) {
-    if (wrap) wrap.style.display = 'none';
-    return;
-  }
-  if (wrap) wrap.style.display = '';
+  // Drop any previously-injected saved rows, leaving the configurator rows intact.
+  list.querySelectorAll('.ac-saved-injected').forEach(n => n.remove());
 
-  list.innerHTML = '';
+  if (!_parallelProviders.length) return;
 
-  // ── Column header: Model · Tokens In · Tokens Out · Cost ──
+  const mode = _savedModelsViewMode; // 'usage' or 'caps'
+
+  // ── Column dimension constants ──
+  // Usage mode: In(85) Out(85) Cost(72); Caps mode: Text(34) In(34) Out(34)
+  const USE_COLS = [85, 85, 72]; const CAP_COLS = [34, 34, 34];
+  const colWidths = mode === 'caps' ? CAP_COLS : USE_COLS;
+  const gridTemplate = `minmax(0, 1fr) ${colWidths[0]}px ${colWidths[1]}px ${colWidths[2]}px 24px 22px`;
+
+  // ── Column header ──
   const head = document.createElement('div');
-  head.className = 'ac-ability-row ac-saved-head';
+  head.className = 'ac-ability-row ac-saved-head ac-saved-row ac-saved-injected';
+  head.style.gridTemplateColumns = gridTemplate;
   const headName = document.createElement('span');
   headName.className = 'ac-ability-label';
   headName.innerHTML = '<span class="ac-saved-th">Model</span>';
   head.appendChild(headName);
-  [
-    ['In',    'Total input tokens consumed'],
-    ['Out',   'Total output tokens consumed'],
-    ['Cost',  'Total provider cost (USD cents)'],
-  ].forEach(([label, tip]) => {
-    const cell = document.createElement('span');
-    cell.className = 'ac-saved-cap';
-    const th = document.createElement('span');
-    th.className = 'ac-saved-th';
-    th.textContent = label;
-    th.title = tip;
-    cell.appendChild(th);
-    head.appendChild(cell);
+
+  if (mode === 'caps') {
+    // Capability columns: Text / In / Out (checkboxes)
+    [
+      ['Text', 'Use for text answers (joins the parallel race)'],
+      ['In',   'Use to read attached images (vision)'],
+      ['Out',  'Use to generate images'],
+    ].forEach(([label, tip]) => {
+      const cell = document.createElement('span');
+      cell.className = 'ac-saved-cap';
+      const th = document.createElement('span');
+      th.className = 'ac-saved-th';
+      th.textContent = label;
+      th.title = tip;
+      cell.appendChild(th);
+      head.appendChild(cell);
+    });
+  } else {
+    // Usage columns: In / Out / Cost
+    [
+      ['In',    'Total input tokens consumed'],
+      ['Out',   'Total output tokens consumed'],
+      ['Cost',  'Total provider cost (USD cents)'],
+    ].forEach(([label, tip]) => {
+      const cell = document.createElement('span');
+      cell.className = 'ac-saved-cap';
+      const th = document.createElement('span');
+      th.className = 'ac-saved-th';
+      th.textContent = label;
+      th.title = tip;
+      cell.appendChild(th);
+      head.appendChild(cell);
+    });
+  }
+
+  const delSpacer = document.createElement('span'); delSpacer.className = 'ac-saved-del-spacer';
+  // ── Toggle button ──
+  const toggleBtn = document.createElement('button');
+  toggleBtn.className = 'ac-saved-col-toggle';
+  toggleBtn.title = mode === 'caps' ? 'Switch to usage columns' : 'Switch to capability columns';
+  toggleBtn.textContent = mode === 'caps' ? '⇄' : '⚙';
+  toggleBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    _savedModelsViewMode = mode === 'caps' ? 'usage' : 'caps';
+    _renderParallelRows();
   });
-  const delSpacer = document.createElement('span'); delSpacer.className = 'ac-saved-del-spacer'; head.appendChild(delSpacer);
+  delSpacer.appendChild(toggleBtn);
+  head.appendChild(delSpacer);
+
   const chevSpacer = document.createElement('span'); chevSpacer.className = 'ac-saved-chev-spacer'; head.appendChild(chevSpacer);
   list.appendChild(head);
 
+  // ── Rows ──
   _parallelProviders.forEach(p => {
     const rowWrap = document.createElement('div');
-    rowWrap.className = 'ac-row';
+    rowWrap.className = 'ac-row ac-saved-injected';
 
     const row = document.createElement('div');
-    row.className = 'ac-ability-row';
+    row.className = 'ac-ability-row ac-saved-row';
+    row.style.gridTemplateColumns = gridTemplate;
 
     const label = document.createElement('span');
     label.className = 'ac-ability-label';
@@ -946,21 +1004,42 @@ function _renderParallelRows() {
       + `<span class="ac-ability-desc">${_esc(_providerPresets[p.provider]?.name || p.provider || 'custom')}</span>`;
     row.appendChild(label);
 
-    // Three stat cells — shown as dashes until expanded.
-    const statIn = document.createElement('span');
-    statIn.className = 'ac-saved-cap ac-saved-stat';
-    statIn.textContent = '—';
-    row.appendChild(statIn);
+    let statIn, statOut, statCost;
 
-    const statOut = document.createElement('span');
-    statOut.className = 'ac-saved-cap ac-saved-stat';
-    statOut.textContent = '—';
-    row.appendChild(statOut);
+    if (mode === 'caps') {
+      // Capability checkboxes
+      row.appendChild(_capCell(
+        p.text_capable !== false, p.enabled,
+        'Use for text answers (joins the parallel race)',
+        v => { p.enabled = v; _saveParallelProviders().then(_renderParallelRows); },
+      ));
+      row.appendChild(_capCell(
+        !!p.image_capable, !!p.use_for_image,
+        'Use to read attached images',
+        v => { p.use_for_image = v; _saveParallelProviders().then(_renderParallelRows); },
+      ));
+      row.appendChild(_capCell(
+        !!p.image_out_capable, !!p.use_for_image_out,
+        'Use to generate images',
+        v => { p.use_for_image_out = v; _saveParallelProviders().then(_renderParallelRows); },
+      ));
+    } else {
+      // Usage stat cells — shown as dashes until expanded.
+      statIn = document.createElement('span');
+      statIn.className = 'ac-saved-cap ac-saved-stat';
+      statIn.textContent = '—';
+      row.appendChild(statIn);
 
-    const statCost = document.createElement('span');
-    statCost.className = 'ac-saved-cap ac-saved-stat';
-    statCost.textContent = '—';
-    row.appendChild(statCost);
+      statOut = document.createElement('span');
+      statOut.className = 'ac-saved-cap ac-saved-stat';
+      statOut.textContent = '—';
+      row.appendChild(statOut);
+
+      statCost = document.createElement('span');
+      statCost.className = 'ac-saved-cap ac-saved-stat';
+      statCost.textContent = '—';
+      row.appendChild(statCost);
+    }
 
     const removeBtn = document.createElement('button');
     removeBtn.textContent = '×';
@@ -985,7 +1064,12 @@ function _renderParallelRows() {
 
     row.addEventListener('click', () => {
       const open = rowWrap.classList.toggle('expanded');
-      if (open) _loadSavedModelDetail(p, body, statIn, statOut, statCost);
+      if (open && mode === 'usage') {
+        _loadSavedModelDetail(p, body, statIn, statOut, statCost);
+      } else if (open) {
+        // Caps mode — show catalog metadata on expand
+        _loadSavedModelDetail(p, body);
+      }
     });
 
     rowWrap.appendChild(row);
@@ -2556,7 +2640,7 @@ async function _loadIntegrations() {
   } catch (e) {
     for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management']) {
       const s = _qs(`ac-int-${p}-status`);
-      if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
+      _setIntStatus(s, `Failed to load: ${e.message}`);
     }
   }
 }
@@ -2607,9 +2691,9 @@ async function _enableChannel(channel) {
     const res = await _fetch(apiPath(`/admin/integrations/channels/${channel}`), { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     _applyChannelStatus(channel, true);
-    if (statusEl) { statusEl.textContent = 'Enabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, 'Enabled.', { ok: true });
   } catch (e) {
-    if (statusEl) { statusEl.textContent = `Failed: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, `Failed: ${e.message}`);
   }
 }
 
@@ -2620,9 +2704,9 @@ async function _disableChannel(channel) {
     const res = await _fetch(apiPath(`/admin/integrations/channels/${channel}`), { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     _applyChannelStatus(channel, false);
-    if (statusEl) { statusEl.textContent = 'Disabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, 'Disabled.', { ok: true });
   } catch (e) {
-    if (statusEl) { statusEl.textContent = `Failed: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, `Failed: ${e.message}`);
   }
 }
 
@@ -2647,9 +2731,9 @@ async function _enableAbility(ability) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     _markAbilityAction(ability);
     _applyAbilityStatus(ability, true);
-    if (statusEl) { statusEl.textContent = 'Enabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, 'Enabled.', { ok: true });
   } catch (e) {
-    if (statusEl) { statusEl.textContent = `Failed: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, `Failed: ${e.message}`);
   }
 }
 
@@ -2669,9 +2753,9 @@ async function _disableAbility(ability) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     _markAbilityAction(ability);
     _applyAbilityStatus(ability, false);
-    if (statusEl) { statusEl.textContent = 'Disabled.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, 'Disabled.', { ok: true });
   } catch (e) {
-    if (statusEl) { statusEl.textContent = `Failed: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, `Failed: ${e.message}`);
   }
 }
 
@@ -2699,7 +2783,7 @@ async function _loadBrowserSessionStatus() {
     _syncRowToggle('browser_session');
   } catch (e) {
     const s = _qs('ac-int-browser_session-status');
-    if (s) { s.textContent = `Failed to load: ${e.message}`; s.style.color = '#f7768e'; s.style.display = 'block'; }
+    _setIntStatus(s, `Failed to load: ${e.message}`);
   }
 }
 
@@ -2738,11 +2822,11 @@ async function _saveScraperConfig() {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     if (keyInput) keyInput.value = '';
-    if (statusEl) { statusEl.textContent = 'Configured successfully.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _setIntStatus(statusEl, 'Configured successfully.', { ok: true, autoHide: true });
     _loadIntegrations();
     _expandCard('scraper');
   } catch (e) {
-    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, `Error: ${e.message}`);
   }
 }
 
@@ -2752,10 +2836,10 @@ async function _unconfigureScraper() {
   try {
     const res = await _fetch(apiPath('/admin/integrations/scraper'), { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    if (statusEl) { statusEl.textContent = 'Removed.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _setIntStatus(statusEl, 'Removed.', { ok: true, autoHide: true });
     _loadIntegrations();
   } catch (e) {
-    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, `Error: ${e.message}`);
   }
 }
 
@@ -2780,11 +2864,11 @@ async function _saveBrowserSession() {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     if (cookiesInput) cookiesInput.value = '';
-    if (statusEl) { statusEl.textContent = 'Session saved.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _setIntStatus(statusEl, 'Session saved.', { ok: true, autoHide: true });
     _loadBrowserSessionStatus();
     _expandCard('browser_session');
   } catch (e) {
-    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, `Error: ${e.message}`);
   }
 }
 
@@ -2793,10 +2877,10 @@ async function _unconfigureBrowserSession() {
   try {
     const res = await _fetch(apiPath('/admin/integrations/browser-session'), { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    if (statusEl) { statusEl.textContent = 'Removed.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _setIntStatus(statusEl, 'Removed.', { ok: true, autoHide: true });
     _loadBrowserSessionStatus();
   } catch (e) {
-    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, `Error: ${e.message}`);
   }
 }
 
@@ -3021,11 +3105,11 @@ async function _saveProviderConfig(provider) {
     }
     cidInput.value = '';
     secInput.value = '';
-    if (statusEl) { statusEl.textContent = 'Configured successfully.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _setIntStatus(statusEl, 'Configured successfully.', { ok: true, autoHide: true });
     _loadIntegrations();
     _expandCard(provider);
   } catch (e) {
-    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, `Error: ${e.message}`);
   }
 }
 
@@ -3035,10 +3119,10 @@ async function _unconfigureProvider(provider) {
   try {
     const res = await _fetch(apiPath(`/admin/integrations/${provider}`), { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    if (statusEl) { statusEl.textContent = 'Unconfigured.'; statusEl.style.color = '#9ece6a'; statusEl.style.display = 'block'; setTimeout(() => { statusEl.style.display = 'none'; }, 3000); }
+    _setIntStatus(statusEl, 'Unconfigured.', { ok: true, autoHide: true });
     _loadIntegrations();
   } catch (e) {
-    if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, `Error: ${e.message}`);
   }
 }
 
@@ -3313,7 +3397,7 @@ async function _saveGitHubToken() {
   const statusEl = _qs('ac-gh-token-status');
   const token    = tokenEl?.value?.trim() || '';
   if (!token) {
-    if (statusEl) { statusEl.textContent = 'Please enter a token'; statusEl.style.color = '#f7768e'; statusEl.style.display = 'block'; }
+    _setIntStatus(statusEl, 'Please enter a token');
     return;
   }
   try {

@@ -729,26 +729,64 @@ body.light-mode .chat-bubble.user.pending .label {
 .md-body tbody tr:nth-child(even) td { background: var(--bg-tint); }
 .md-body img { max-width: 100%; border-radius: 8px; }
 
-/* ── Continue button (above the chat pill) ────────────────────────────────
-   Shown when the agent is waiting for the user to continue (e.g. after a
-   tool result). Clicking it sends a "continue" message. */
-.chat-continue-btn {
-    display: none;
+/* ── Stop + Continue action buttons (above the chat pill) ──────────────────
+   Both buttons are ALWAYS present, sitting in #chat-action-row at the pill's
+   right edge. Their *resting* state is quiet (dimmed, no glow); the one that's
+   relevant right now gets `.active` (full opacity + a breathing glow) from
+   ui/js/chat.js. Stop is active while the agent processes; Continue is active
+   while the agent is idle and waiting. The row itself hides only when no agent
+   is selected. The glow uses currentColor in its box-shadow, so the single
+   keyframe adapts to each button's own colour and to light mode automatically. */
+.chat-action-row {
+    display: flex;
     align-self: flex-end;
-    background: #7dcfff15;
-    border: 1px solid #7dcfff30;
-    color: #7dcfff;
+    align-items: center;
+    gap: 6px;
+  }
+/* Hidden when no agent is selected (toggled by chat.js). */
+.chat-action-row.hidden { display: none; }
+
+.chat-continue-btn,
+.chat-stop-btn {
     font-size: 12px;
     font-weight: 600;
     padding: 4px 14px;
     border-radius: 12px;
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
     line-height: 1.4;
     user-select: none;
     -webkit-user-select: none;
+    font-family: inherit;
+    /* Resting (non-glowing) look — present but de-emphasised. */
+    opacity: 0.5;
+    transition: background 0.15s, border-color 0.15s, opacity 0.2s, box-shadow 0.2s;
+  }
+/* The relevant button: full strength + a breathing glow that matches the
+   chat pill's rhythm. currentColor keeps it tied to each button's own colour. */
+.chat-continue-btn.active,
+.chat-stop-btn.active {
+    opacity: 1;
+    animation: chatActionGlow 1.8s ease-in-out infinite;
+  }
+@keyframes chatActionGlow {
+    0%, 100% {
+      box-shadow: 0 0 0 1px color-mix(in oklab, currentColor 35%, transparent),
+                  0 0 8px -2px color-mix(in oklab, currentColor 55%, transparent);
+    }
+    50% {
+      box-shadow: 0 0 0 1px color-mix(in oklab, currentColor 70%, transparent),
+                  0 0 14px 0   color-mix(in oklab, currentColor 75%, transparent);
+    }
+  }
+
+/* Continue — clicking it sends a "continue" message. */
+.chat-continue-btn {
+    background: #7dcfff15;
+    border: 1px solid #7dcfff30;
+    color: #7dcfff;
   }
 .chat-continue-btn:hover {
+    opacity: 1;
     background: #7dcfff25;
     border-color: #7dcfff60;
   }
@@ -765,25 +803,14 @@ body.light-mode .chat-continue-btn:hover {
     border-color: #ff8c4260;
   }
 
-/* ── Stop button (above the chat pill, left of continue) ────────────────
-   Shown while the agent is processing. Clicking it interrupts the run. */
+/* Stop — clicking it interrupts the run. */
 .chat-stop-btn {
-    display: none;
-    align-self: flex-end;
     background: #f7768e15;
     border: 1px solid #f7768e30;
     color: #f7768e;
-    font-size: 12px;
-    font-weight: 600;
-    padding: 4px 14px;
-    border-radius: 12px;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
-    line-height: 1.4;
-    user-select: none;
-    -webkit-user-select: none;
   }
 .chat-stop-btn:hover {
+    opacity: 1;
     background: #f7768e25;
     border-color: #f7768e60;
   }
@@ -1160,8 +1187,11 @@ body.light-mode .chat-stop-btn:hover {
     align-items: center;
     gap: 6px;
     margin: 0;
-    padding: 3px 9px;
-    border-radius: 11px;
+    /* Matches the continue/stop buttons' size so the row above the pill reads as
+       one set of same-sized controls (padding + radius below; text size on
+       .chat-activity-text). */
+    padding: 4px 14px;
+    border-radius: 12px;
     /* Same faded glass as the chat pill (see index.html "#chat-panel .chat-pill"):
        a 7% tint of the foreground over transparent, a 12% neutral hairline, and
        the same blur+saturate — so the bubble reads as the same surface as the
@@ -1218,8 +1248,10 @@ body.light-mode .chat-stop-btn:hover {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 11px;
-    line-height: 1.35;
+    /* Same text size/weight as the continue/stop buttons (see .chat-continue-btn). */
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
     letter-spacing: 0.01em;
     color: var(--fg-2);   /* muted note — the bar itself inherits fg for its glass */
   }
@@ -1467,6 +1499,11 @@ body.light-mode .chat-stop-btn:hover {
       box-shadow: 0 0 0 1px var(--accent-mid), 0 0 10px -2px var(--accent-mid);
     }
     .chat-activity-dot, .ca-status-running { animation: none; }
+    .chat-continue-btn.active, .chat-stop-btn.active {
+      animation: none;
+      box-shadow: 0 0 0 1px color-mix(in oklab, currentColor 60%, transparent),
+                  0 0 12px -2px color-mix(in oklab, currentColor 70%, transparent);
+    }
   }
 
 	/* ── Preview bar (above input row) ── */

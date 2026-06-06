@@ -96,8 +96,17 @@
               <div class="ac-category-body">
                 <p class="ac-category-desc">Add the models your agents use. Each model's capabilities — text, image-in, image-out — are detected automatically.</p>
 
-                <!-- Configurator — a flush 4-row table; every field auto-saves. -->
-                <div class="ac-list ac-model-config" id="ac-model-config">
+                <!-- ONE unified flush table. The first four rows are the provider /
+                     base-url / key / model configurator (each field auto-saves; the
+                     Model row is two lines — model name on top, detected capabilities
+                     below — with Add / Clear pinned to the right). The saved models are
+                     injected as further rows of this SAME table by _renderParallelRows()
+                     (header + one expandable row per model). -->
+                <div class="ac-model-loader" id="ac-model-loader">
+                    <span class="ac-spinner"></span>
+                    <span>Loading models…</span>
+                  </div>
+                  <div class="ac-list ac-model-config" id="ac-model-config">
                   <div class="ac-ability-row ac-model-cfg-row ac-row-static">
                     <span class="ac-ability-label"><span class="ac-ability-name">Provider</span></span>
                     <span class="ac-model-cfg-control">
@@ -119,34 +128,24 @@
                       <span class="agents-autosave-check" id="ac-cfg-check-key" aria-hidden="true"></span>
                     </span>
                   </div>
+                  <!-- Model row — two lines (name on top, detected capabilities below),
+                       Add / Clear on the right. -->
                   <div class="ac-ability-row ac-model-cfg-row ac-model-cfg-model ac-row-static" id="ac-settings-model-group">
                     <span class="ac-ability-label">
-                      <span class="ac-ability-name">Model</span>
-                      <span class="ac-model-caps" id="ac-settings-detected-caps"></span>
-                    </span>
-                    <span class="ac-model-cfg-control">
                       <span class="ac-model-search-wrap">
                         <input type="text" id="ac-settings-model-search" class="ac-input ac-input-sm" placeholder="Search models…" autocomplete="off">
                         <div id="ac-settings-model-dropdown" class="ac-model-dropdown" style="display:none;"></div>
                       </span>
+                      <span class="ac-model-caps" id="ac-settings-detected-caps"></span>
+                    </span>
+                    <span class="ac-model-cfg-control ac-model-add-control">
+                      <button id="ac-settings-save" class="ac-btn ac-btn-primary ac-btn-sm">Add</button>
+                      <button id="ac-settings-clear" class="ac-btn ac-btn-ghost ac-btn-sm">Clear</button>
                       <span class="agents-autosave-check" id="ac-cfg-check-model" aria-hidden="true"></span>
                     </span>
                   </div>
                 </div>
-                <div id="ac-settings-model-status" class="ac-hint"></div>
-
-                <div class="ac-actions" style="margin-top:10px;">
-                  <button id="ac-settings-save" class="ac-btn ac-btn-primary">Add</button>
-                  <button id="ac-settings-clear" class="ac-btn ac-btn-ghost">Clear</button>
-                  <span id="ac-settings-status" class="ac-status" style="display:none;"></span>
-                </div>
-
-                <!-- Saved models — a bare table on the page (no wrapping card). -->
-                <div id="ac-settings-saved-wrap" style="display:none;margin-top:18px;">
-                  <div class="ac-card-label">Saved Models</div>
-                  <div class="ac-card-sublabel">Each model's real token usage &amp; provider cost. Click a row for details.</div>
-                  <div class="ac-list" id="ac-settings-saved-list" style="margin-top:10px;"></div>
-                </div>
+                <span id="ac-settings-status" class="ac-status" style="display:none;margin-top:8px;"></span>
               </div>
             </details>
 

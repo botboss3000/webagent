@@ -1326,8 +1326,10 @@ live/scheduled) */
    right, plus the shared green auto-save check. overflow:visible so the model
    search dropdown can escape the table. */
 .ac-list.ac-model-config { overflow: visible; }   /* beat .ac-list's overflow:hidden */
-.ac-model-config > .ac-ability-row:first-child { border-top-left-radius: 9px; border-top-right-radius: 9px; }
-.ac-model-config > .ac-ability-row:last-child { border-bottom-left-radius: 9px; border-bottom-right-radius: 9px; }
+/* First/last child round the table corners — the last row may now be an injected
+   saved-model `.ac-row` wrapper, so match any element, not just `.ac-ability-row`. */
+.ac-model-config > :first-child { border-top-left-radius: 9px; border-top-right-radius: 9px; }
+.ac-model-config > :last-child { border-bottom-left-radius: 9px; border-bottom-right-radius: 9px; }
 .ac-model-cfg-row { align-items: center; padding-top: 7px; padding-bottom: 7px; }
 .ac-model-cfg-row > .ac-ability-label { flex: 0 0 84px; }
 .ac-model-cfg-control {
@@ -1344,6 +1346,20 @@ live/scheduled) */
 /* The auto-save check sits at the end of each control row. */
 .ac-model-cfg-control > .agents-autosave-check { flex: 0 0 auto; }
 
+/* ── Model row — two lines (model name on top, detected caps below), with the
+   Add / Clear buttons pinned to the right. ── */
+.ac-model-cfg-model > .ac-ability-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ac-model-cfg-model .ac-model-search-wrap { width: 100%; flex: none; }
+.ac-model-cfg-model .ac-model-caps { margin-top: 0; }
+.ac-model-add-control { flex: 0 0 auto; }
+.ac-btn-sm { padding: 6px 14px; font-size: 12px; }
+
 /* Detected-capability badges (read-only — from the model catalog, not boxes). */
 .ac-model-caps { display: flex; gap: 5px; margin-top: 4px; flex-wrap: wrap; }
 .ac-cap-badge {
@@ -1359,9 +1375,10 @@ live/scheduled) */
 }
 .ac-cap-badge.on { color: var(--accent); border-color: var(--accent); opacity: 1; }
 
-/* ══ Saved Models — expandable table (Model · Tokens In/Out · Cost) ════
-   Rows use a grid so the three stat columns line up under the header. */
-#ac-settings-saved-list .ac-ability-row {
+/* ══ Saved Models — expandable rows injected into the unified model table
+   (Model · Tokens In/Out · Cost). Rows use a grid so the three stat columns
+   line up under the header. */
+.ac-model-config .ac-saved-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 85px 85px 72px 24px 22px;
   align-items: center;
@@ -1389,12 +1406,33 @@ live/scheduled) */
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#ac-settings-saved-list .ac-row-chevron { justify-self: center; margin-left: 0; }
-#ac-settings-saved-list .ac-prov-del { justify-self: center; }
+.ac-model-config .ac-saved-row .ac-row-chevron { justify-self: center; margin-left: 0; }
+.ac-model-config .ac-saved-row .ac-prov-del { justify-self: center; }
 
 body.light-mode .ac-cap-badge { color: #b09580; border-color: #d4c4b4; }
 body.light-mode .ac-cap-badge.on { color: #cc6a28; border-color: #cc6a28; }
 body.light-mode .ac-saved-th { color: #9a7c65; }
+
+/* ── Spinning loader for the models panel ── */
+@keyframes ac-spin { to { transform: rotate(360deg); } }
+.ac-model-loader {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 0;
+  gap: 10px;
+  color: var(--fg-3);
+  font-size: 13px;
+}
+.ac-model-loader.show { display: flex; }
+.ac-model-loader .ac-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ac-spin 0.7s linear infinite;
+}
 
 /* ── Light mode overrides ── */
 body.light-mode #app-config-header { background: transparent; }
