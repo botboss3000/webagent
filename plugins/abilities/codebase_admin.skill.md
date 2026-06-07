@@ -70,25 +70,43 @@ explains the *why* behind each. (And remember tables and other repeated UI: if a
 comment says formatting must be common/shared, it means common everywhere — find
 the canonical block and reuse it, never fork a one-off copy.)
 
-## Leave comments that serve the next reader
+## Comment the destination: leave a signpost when you arrive
 
-As you add or change code, keep the map accurate — that is how this whole system
-keeps working.
+When a user request sends you navigating through the codebase to find a
+specific spot, and you *arrive* at the file + function + line that answers
+the question — leave a comment there. This comment is a signpost for every
+agent that comes after you.
 
-- **Top of a new file:** one line on what it is (and isn't).
-- **Section headers** inside longer files, so the outline reads cleanly.
-- **A new marker** if you create something that has siblings that must stay in
-  sync — name it, say what must match, and point at the other copies.
-- **Update the comment when you change the code it describes.** A stale comment
-  is worse than none — it lies to the next reader (and to `search_comments`).
+Every destination comment must include:
 
-Acceptable vs not:
+1. **What this code does** — one or two lines describing the purpose, not
+   the mechanics.
+2. **The connection path** — how you got here. What files did you read
+   along the way? What calls what? What data flows in/out?
+3. **A searchable tag** — a `WHEN-<TOPIC>` keyword that an agent can find
+   with `search_source` or `search_comments` later. This is the key that
+   ties a future user request to this exact line.
 
-| Good — keep | Noise — don't |
-|---|---|
-| `Retries 3× because the payment API flakes on cold start` | `# loop over the list` (restates the obvious) |
-| `SISTER-PANEL: keep in sync with the agent-card copy in agents.js` | A comment describing behaviour the code no longer has |
-| `# [TOOLS] index — auto-generated, do not hand-edit` | Commented-out dead code left "just in case" |
+Example of a good destination comment:
+
+```python
+# WHEN-CHANGE-CHAT-AREA: This is the spot for chat panel sizing and layout.
+# The user's "chat area" is the right-side panel defined here. It connects
+# from chat.js → app_control_tools.py → this CSS rule. Nav path:
+# user said "chat area" → searched "chat" in ui/ → read chat.js line 42
+# (pill init) → app1.css#L210 (panel layout). Change width/height here.
+```
+
+**Rules of thumb:**
+
+- Only leave one of these when you've *arrived* at the code that directly
+  answers the user's question — not for intermediate stops along the way.
+- The tag `WHEN-<TOPIC>` must use plain terms a future agent might search
+  for (e.g. `WHEN-CHAT-PILL`, `WHEN-AGENT-LIST`, `WHEN-DARK-MODE`).
+- Include the navigation path concisely — enough that the next agent can
+  retrace your steps or understand the connection.
+- If you also changed something at the destination, update the comment to
+  reflect the new behaviour.
 
 ## Before you finish
 

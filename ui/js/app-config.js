@@ -4152,7 +4152,7 @@ async function _loadUserManagement() {
 async function _saveUserManagement() {
   if (!isAdmin()) { showRestrictedModal(); return; }
   const selected = document.querySelector('input[name="ac-um-access-mode"]:checked');
-  const mode = selected ? selected.value : 'public_anonymous';
+  const mode = selected ? selected.value : 'private';
   const extendCb = _qs('ac-extend-llm-to-agents');
 
   const statusEl = _qs('ac-um-status');

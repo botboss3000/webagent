@@ -234,9 +234,34 @@ export function initTabs() {
       plusBtn.addEventListener('auxclick', function (e) {
         if (e.button !== 1) return;
         e.preventDefault();
-        window.open(base, '_blank');
+        // Pass the current agent id so the new tab can start a fresh session
+        // with the same agent instead of loading the existing session.
+        var agentId = (typeof app !== 'undefined' && app.currentAgentId) || '';
+        var params = 'agent=' + encodeURIComponent(agentId) + '&new=1';
+        window.open(base + '?' + params, '_blank');
       });
     }
+  })();
+
+  // ── If this tab was opened with ?agent=X&new=1, start a fresh session ──
+  (function () {
+    try {
+      var p = new URLSearchParams(location.search);
+      var agentId = p.get('agent');
+      if (agentId && p.get('new') === '1') {
+        // Clear localStorage saved session so the new tab doesn't load an old one
+        try { localStorage.removeItem('lastActiveTab'); } catch (_) {}
+        // Wait for the app state to be ready, then switch
+        var _trySwitch = function () {
+          if (typeof app !== 'undefined' && typeof app.switchToAgent === 'function' && app.currentUserId) {
+            app.switchToAgent(agentId, { forceNewSession: true, silent: true });
+          } else {
+            setTimeout(_trySwitch, 100);
+          }
+        };
+        setTimeout(_trySwitch, 0);
+      }
+    } catch (_) {}
   })();
 
   // The spinner was shown in the header during init (pre-paint script

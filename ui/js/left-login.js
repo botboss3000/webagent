@@ -6,7 +6,7 @@
  * that dropdown instead of a full-page modal overlay.
  */
 
-let _accessMode = 'public_anonymous';
+let _accessMode = 'private';
 let _accessModeFetched = false;
 
 /** Read the app's current access_mode (cached). */
@@ -20,7 +20,7 @@ export async function fetchAccessMode() {
     const res = await fetch('/api/v1/auth/access-mode');
     if (res.ok) {
       const data = await res.json();
-      _accessMode = data.access_mode || 'public_anonymous';
+      _accessMode = data.access_mode || 'private';
     }
   } catch (e) { /* keep default */ }
   _accessModeFetched = true;

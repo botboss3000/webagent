@@ -826,7 +826,7 @@ class MetadataSetting(BaseModel):
 
 class AppSettings(BaseModel):
     extend_llm_to_agents: bool = True
-    access_mode: str = "public_anonymous"  # public_anonymous | public_registered | admin_approval | private
+    access_mode: str = "private"  # public_anonymous | public_registered | admin_approval | private
     # Seconds to keep a completed turn's in-memory RunBuffer around for
     # WS-replay on reconnect. 0 = drop immediately. Default 60s gives a
     # smooth refresh-after-completion UX without holding RAM long.
@@ -887,9 +887,9 @@ VALID_ACCESS_MODES = {"public_anonymous", "public_registered", "admin_approval",
 def get_access_mode() -> str:
     """Read just the access_mode flag from app-settings.json."""
     data = _load_app_settings()
-    mode = data.get("access_mode") or "public_anonymous"
+    mode = data.get("access_mode") or "private"
     if mode not in VALID_ACCESS_MODES:
-        mode = "public_anonymous"
+        mode = "private"
     return mode
 
 
@@ -1633,7 +1633,7 @@ async def set_app_settings(request: Request):
     existing = _load_app_settings()
     settings = AppSettings(**{**existing, **body})
     if settings.access_mode not in VALID_ACCESS_MODES:
-        settings.access_mode = "public_anonymous"
+        settings.access_mode = "private"
     # Clamp stream buffer retention to a sane range so a bad value can't
     # exhaust RAM (huge) or break replay-after-reconnect entirely (negative).
     try:
