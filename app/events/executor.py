@@ -133,10 +133,27 @@ async def execute_event_subscription(
         )
         return {"ok": False, "error": "automation ability disabled"}
 
+    from app.automation import runner as _runner
+    from app.automation import delivery as _delivery
+
+    # Guardrails: expiry / daily cap / disabled (shared with the scheduler path).
+    _allowed, _reason = _runner.enforce_guardrails(sub)
+    if not _allowed:
+        await _runner.record_skip(db, sub, "subscription", _reason)
+        return {"ok": False, "skipped": _reason}
+
+    sub_id = sub["id"]
+    run_id = None
+    runner_info: Dict[str, Any] = {"runner_agent_id": agent_id, "is_ephemeral": False}
+
     try:
-        agent = await db.get_agent_by_id(agent_id)
+        # Choose the runner: master (inline) or a clone (fresh / dedicated).
+        runner_info = await _runner.resolve_runner(db, sub, table="subscription", label=label)
+        runner_id = runner_info["runner_agent_id"]
+
+        agent = await db.get_agent_by_id(runner_id)
         if not agent:
-            return {"ok": False, "error": f"agent {agent_id} not found"}
+            return {"ok": False, "error": f"agent {runner_id} not found"}
 
         # When the user subscribed with channel=webchat + channel_recipient=<session_id>,
         # honor it: post the event-triggered reply back into the user's own chat
@@ -167,9 +184,20 @@ async def execute_event_subscription(
                 logger.debug("Session reuse lookup failed for %s: %s", target_recipient, e)
 
         if not session_id:
-            session_id = await _create_session(db, user_id, agent_id, label, event.source)
+            session_id = await _create_session(db, user_id, runner_id, label, event.source)
 
-        resolved_slots = await db.resolve_prompts(agent_id, user_id=user_id)
+        # Open a per-run history row (powers the dashboard + failure visibility).
+        try:
+            run_id = await db.create_automation_run(
+                kind="event", agent_id=agent_id, owner_user_id=user_id,
+                subscription_id=sub_id, run_mode=sub.get("run_mode") or "inline",
+                runner_agent_id=(runner_id if runner_id != agent_id else None),
+                session_id=session_id,
+            )
+        except Exception as e:
+            logger.debug("Could not open automation_run for event sub %s: %s", sub_id, e)
+
+        resolved_slots = await db.resolve_prompts(runner_id, user_id=user_id)
         context_docs = [
             {"id": s["slot_name"], "context_type": s["slot_name"],
              "title": s["slot_name"], "content": s["content"], "tags": []}
@@ -177,17 +205,29 @@ async def execute_event_subscription(
             if (s.get("content") or "").strip() and s.get("slot_name") != "automation"
         ]
 
-        # Prepend the event block + channel overlay as synthetic context.
-        channels = await _available_channels(db, user_id, agent_id)
+        # Prepend the event block + channel overlay (+ memory) as synthetic context.
+        channels = await _available_channels(db, user_id, runner_id)
         overlay_docs = [
             {"id": "_event_trigger", "content": _format_event_block(event)},
             {"id": "_event_channels", "content": _format_channels_overlay(channels, preferred_channel)},
         ]
+        _mem = sub.get("memory") or {}
+        if _mem:
+            try:
+                _mem_str = _mem if isinstance(_mem, str) else json.dumps(_mem)
+            except Exception:
+                _mem_str = str(_mem)
+            if _mem_str and _mem_str not in ("{}", "null", ""):
+                overlay_docs.append({"id": "_automation_memory", "content": (
+                    "[AUTOMATION MEMORY] State remembered from earlier fires of this "
+                    "trigger:\n" + _mem_str[:4000] +
+                    "\nCall remember_automation_state to persist new state (e.g. the "
+                    "last item id you processed) so you don't reprocess it.")})
         system_prompt = await build_system_prompt(
             overlay_docs + context_docs,
             brain_context=None,
             user_id=user_id,
-            agent_id=agent_id,
+            agent_id=runner_id,
         )
 
         # Build the synthetic user message: the parsed prompt plus a pointer to the event block.
@@ -209,7 +249,7 @@ async def execute_event_subscription(
                     "event_type": event.event_type,
                     "external_id": event.external_id,
                 }),
-                sender_id=user_id, receiver_id=agent_id, source="event",
+                sender_id=user_id, receiver_id=runner_id, source="event",
             )
         except Exception as e:
             logger.debug("Could not insert synthetic user interaction: %s", e)
@@ -253,7 +293,7 @@ async def execute_event_subscription(
         from app.agent.runner import run_supervised_turn, RunOutcome
         _relaunch_ctx = {
             "origin": "event", "session_id": session_id, "user_id": user_id,
-            "agent_id": agent_id, "channel": "event", "timeout_seconds": 600,
+            "agent_id": runner_id, "channel": "event", "timeout_seconds": 600,
             "delivery": {
                 "channel": preferred_channel,
                 "recipient": sub.get("channel_recipient"),
@@ -267,7 +307,7 @@ async def execute_event_subscription(
                 session_id=session_id,
                 user_message=user_message,
                 system_prompt=system_prompt,
-                agent_id=agent_id,
+                agent_id=runner_id,
                 history=None,
                 channel="event",
                 timeout_seconds=600,
@@ -279,28 +319,68 @@ async def execute_event_subscription(
             )
             return RunOutcome(status="complete", stop_cause="complete", reply=_reply)
 
-        _outcome = await run_supervised_turn(
-            session_id=session_id, user_id=user_id, agent_id=agent_id,
-            origin="event", channel="event", relaunch_ctx=_relaunch_ctx,
-            build_turn=_build_event_turn, await_result=True, result_timeout=620,
-        )
+        # Bind the memory-write context so remember_automation_state targets this sub.
+        _mem_ctx = _runner.begin_run_context(db, sub_id, "subscription")
+        try:
+            _outcome = await run_supervised_turn(
+                session_id=session_id, user_id=user_id, agent_id=runner_id,
+                origin="event", channel="event", relaunch_ctx=_relaunch_ctx,
+                build_turn=_build_event_turn, await_result=True, result_timeout=620,
+            )
+        finally:
+            _runner.end_run_context(_mem_ctx)
         reply = (_outcome.reply if _outcome else "") or ""
 
-        # The agent itself drives delivery via tool calls (per design: no
-        # implicit channel send). If the user gave a preferred channel AND
-        # the subscription is marked silent=False AND it's not webchat, the
-        # executor still does a fallback send so something visible happens.
+        # Delivery. The agent also drives delivery via tool calls (the
+        # [DELIVERY CHANNELS] overlay). NEW subs carrying a unified delivery
+        # spec fan out through the shared resolver; legacy subs (no
+        # delivery_json) keep the original preferred-channel fallback.
+        outcomes: List[Dict[str, Any]] = []
         delivery_err = None
-        if (
+        _has_unified = (sub.get("delivery_json") or "").strip() not in ("", "{}")
+        if _has_unified:
+            spec = _delivery.parse_spec(
+                sub.get("delivery_json"), legacy_channel=preferred_channel,
+                legacy_recipient=sub.get("channel_recipient"),
+                legacy_silent=bool(sub.get("silent")))
+            resolved = await _delivery.resolve_delivery(
+                db, user_id=user_id, agent_id=agent_id, spec=spec,
+                current_session_id=session_id)
+            if not resolved["silent"] and resolved["external"]:
+                outcomes = await _delivery.deliver_result(
+                    db, user_id=user_id, external=resolved["external"],
+                    text=reply or "",
+                    context={"subscription_id": sub_id, "agent_id": agent_id, "kind": "event"})
+            delivery_err = next((o.get("error") for o in outcomes if o.get("status") == "error"), None)
+        elif (
             preferred_channel
             and preferred_channel not in ("webchat", "silent")
             and not bool(sub.get("silent"))
         ):
             delivery_err = await _fallback_deliver(
-                preferred_channel,
-                sub.get("channel_recipient"),
-                reply or "",
-            )
+                preferred_channel, sub.get("channel_recipient"), reply or "")
+
+        # Close history + record success counters (fire_count, last_event_at, etc.).
+        _final = "delivered" if outcomes and not delivery_err else (
+            "delivery_failed" if delivery_err else "ok")
+        if run_id:
+            try:
+                await db.finish_automation_run(
+                    run_id, status=_final, reply_excerpt=reply or "",
+                    delivery_json={"external": outcomes}, session_id=session_id,
+                    error=delivery_err)
+            except Exception:
+                pass
+        try:
+            await _runner.record_success(db, sub, "subscription", session_id, delivery_err)
+        except Exception as e:
+            logger.debug("record_success failed for sub %s: %s", sub_id, e)
+
+        if runner_info.get("is_ephemeral"):
+            try:
+                await db.delete_clone_agent(runner_info["runner_agent_id"], session_ids=[session_id])
+            except Exception as e:
+                logger.warning("Could not reap ephemeral clone for sub %s: %s", sub_id, e)
 
         return {
             "ok": True,
@@ -310,6 +390,20 @@ async def execute_event_subscription(
 
     except Exception as e:
         logger.exception("Event subscription %s failed: %s", sub.get("id"), e)
+        if run_id:
+            try:
+                await db.finish_automation_run(run_id, status="error", error=str(e))
+            except Exception:
+                pass
+        try:
+            await _runner.record_failure(db, sub, "subscription", str(e))
+        except Exception:
+            pass
+        if runner_info.get("is_ephemeral"):
+            try:
+                await db.delete_clone_agent(runner_info["runner_agent_id"])
+            except Exception:
+                pass
         return {"ok": False, "error": str(e)[:500]}
 
 

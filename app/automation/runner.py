@@ -79,6 +79,20 @@ def current_automation_id() -> Optional[str]:
     return cur[1] if cur else None
 
 
+def begin_run_context(db, row_id: str, table: str):
+    """Set the current-automation context so `remember_automation_state` can write
+    back during a turn the caller runs itself (e.g. the event runtime). Returns a
+    token for `end_run_context`."""
+    return _current.set((db, row_id, table))
+
+
+def end_run_context(token) -> None:
+    try:
+        _current.reset(token)
+    except Exception:
+        pass
+
+
 async def set_automation_memory(data: Any) -> bool:
     """Persist per-automation memory for the row whose run is in progress.
 
@@ -340,6 +354,10 @@ async def _on_success(db, row: Dict[str, Any], table: str, session_id: str,
     else:
         fields["runs_today"] = 1
         fields["runs_today_date"] = today
+    # subscriptions track a lifetime fire_count + last_event timestamp
+    if table == "subscription":
+        fields["fire_count"] = int(row.get("fire_count") or 0) + 1
+        fields["last_event_at"] = _now_iso()
     # scheduling
     if table == "automation":
         if (row.get("schedule_kind") or "cron") == "once":
@@ -508,3 +526,9 @@ async def run_one(
             pass
         await _on_failure(db, row, table, str(e))
         return {"ok": False, "error": str(e)}
+
+
+# Public aliases so the event runtime can share the same bookkeeping.
+record_success = _on_success
+record_failure = _on_failure
+record_skip = _on_skip

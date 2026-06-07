@@ -24,12 +24,14 @@ FEATURE = {
     "display_name": "Automation",
     "category": "ability",
     "status": "beta",
-    "summary": "scheduled tasks + event subscriptions.",
-    # All five event-subscription tools ship via build_tools() below; each seeds
-    # to "discoverable" on enable.
+    "summary": "scheduled tasks, one-shot timers + event subscriptions.",
+    # Tools ship via build_tools() below; each seeds to "discoverable" on enable.
     "tools": [
         "list_event_sources", "list_delivery_channels", "event_subscribe",
         "list_event_subscriptions", "event_unsubscribe",
+        "schedule_task", "remind_me", "list_automations", "update_automation",
+        "pause_automation", "resume_automation", "cancel_automation",
+        "run_automation_now", "remember_automation_state",
     ],
     "group": "core",
     "icon": "clock",
@@ -61,4 +63,7 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
     DESTRUCTIVE.clear()
     DESTRUCTIVE.update(AUTOMATION_DESTRUCTIVE)
 
-    return build_automation_tools(user_id=user_id, agent_id=agent_id, session_id=session_id)
+    return build_automation_tools(
+        user_id=user_id, agent_id=agent_id, session_id=session_id,
+        enabled_providers=enabled_providers,
+    )

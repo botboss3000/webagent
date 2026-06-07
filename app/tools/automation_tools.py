@@ -96,10 +96,148 @@ AUTOMATION_TOOL_SCHEMAS = {
 
 AUTOMATION_DESTRUCTIVE: set = set()
 
+# Shared bits of the delivery/run-mode schema, reused by schedule_task + event_subscribe.
+_DELIVERY_PROP = {
+    "type": "array",
+    "description": (
+        "Where to send the result. A list of targets — each either a channel "
+        "name string, or an object {mode,...}. Modes: "
+        "{mode:'here'} (reply in the current chat), {mode:'new_session'} (a fresh "
+        "sidebar session), {mode:'headless'} (do the work, surface nothing), "
+        "{mode:'channel',channel:'telegram',recipient?:'...'} (a comms channel — "
+        "call list_delivery_channels first), {mode:'webhook',url:'https://...'}, "
+        "{mode:'file',filename:'out.md'}. Omit to default to the current chat. "
+        "Multiple targets fan out (e.g. act silently AND ping me on Telegram)."
+    ),
+    "items": {"type": "object"},
+    "default": [],
+}
+_RUN_MODE_PROP = {
+    "type": "string",
+    "enum": ["inline", "fresh_clone", "dedicated_clone", "headless"],
+    "description": (
+        "Who runs it. 'inline' = this agent (default). 'fresh_clone' = a new "
+        "throwaway clone each run (reaped after). 'dedicated_clone' = one long-lived "
+        "clone owns it. Clone modes need the Agent Orchestration ability enabled — "
+        "otherwise they fall back to inline."
+    ),
+    "default": "inline",
+}
+_GUARDRAIL_PROPS = {
+    "max_per_day": {"type": "integer", "description": "Guardrail: max fires per day (omit = unlimited)."},
+    "disable_after_failures": {"type": "integer", "description": "Auto-disable after this many consecutive failures (omit = never)."},
+    "expires_at": {"type": "string", "description": "ISO timestamp after which the automation stops and disables (omit = never)."},
+    "retry_max": {"type": "integer", "description": "Retry a failed run up to this many times (with backoff) before giving up the occurrence.", "default": 0},
+    "retry_backoff_seconds": {"type": "integer", "description": "Base seconds between retries (grows per attempt).", "default": 0},
+    "clone_abilities": {"type": "array", "items": {"type": "string"}, "description": "Abilities to grant a clone runner (clamped to what this agent already has).", "default": []},
+}
 
-def build_automation_tools(user_id: str, agent_id: str, session_id: str) -> dict:
-    """Return {tool_name: handler} for the event-subscription tools, each closed
-    over the caller's user_id / agent_id / session_id."""
+AUTOMATION_TOOL_SCHEMAS.update({
+    "schedule_task": {
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string", "description": "Instructions to run when the task fires."},
+            "task_label": {"type": "string", "description": "Short human label (shown in the Automation tab).", "default": ""},
+            "schedule_cron": {"type": "string", "description": "Cron expression for a RECURRING task, e.g. '0 9 * * 1-5' (weekdays 9am). Leave empty for a one-shot — then set in_minutes or at.", "default": ""},
+            "in_minutes": {"type": "number", "description": "One-shot: fire this many minutes from now. Ignored if schedule_cron is set.", "default": 0},
+            "at": {"type": "string", "description": "One-shot: ISO timestamp to fire at (e.g. '2026-06-08T15:00:00'). Ignored if schedule_cron is set.", "default": ""},
+            "timezone": {"type": "string", "description": "IANA timezone for the cron expression.", "default": "UTC"},
+            "delivery": _DELIVERY_PROP,
+            "run_mode": _RUN_MODE_PROP,
+            **_GUARDRAIL_PROPS,
+        },
+        "required": ["prompt"],
+    },
+    "remind_me": {
+        "type": "object",
+        "properties": {
+            "note": {"type": "string", "description": "What to remind the user about."},
+            "in_minutes": {"type": "number", "description": "Fire this many minutes from now.", "default": 0},
+            "at": {"type": "string", "description": "Or an ISO timestamp to fire at.", "default": ""},
+        },
+        "required": ["note"],
+    },
+    "list_automations": {"type": "object", "properties": {}, "required": []},
+    "update_automation": {
+        "type": "object",
+        "properties": {
+            "automation_id": {"type": "string", "description": "id from list_automations."},
+            "prompt": {"type": "string"},
+            "task_label": {"type": "string"},
+            "schedule_cron": {"type": "string"},
+            "timezone": {"type": "string"},
+            "enabled": {"type": "boolean"},
+            "delivery": _DELIVERY_PROP,
+            "run_mode": _RUN_MODE_PROP,
+            **_GUARDRAIL_PROPS,
+        },
+        "required": ["automation_id"],
+    },
+    "pause_automation": {"type": "object", "properties": {"automation_id": {"type": "string"}}, "required": ["automation_id"]},
+    "resume_automation": {"type": "object", "properties": {"automation_id": {"type": "string"}}, "required": ["automation_id"]},
+    "cancel_automation": {"type": "object", "properties": {"automation_id": {"type": "string"}}, "required": ["automation_id"]},
+    "run_automation_now": {"type": "object", "properties": {"automation_id": {"type": "string"}}, "required": ["automation_id"]},
+    "remember_automation_state": {
+        "type": "object",
+        "properties": {
+            "state": {"description": "The state to persist for THIS automation (an object or string). Replaces the prior memory."},
+        },
+        "required": ["state"],
+    },
+})
+
+# Add the feature-rich knobs to event_subscribe too.
+AUTOMATION_TOOL_SCHEMAS["event_subscribe"]["properties"].update({
+    "delivery": _DELIVERY_PROP,
+    "run_mode": _RUN_MODE_PROP,
+    **_GUARDRAIL_PROPS,
+})
+
+# Mutating tools confirm-gate at the ToolInfo level.
+AUTOMATION_DESTRUCTIVE.update({"cancel_automation"})
+
+
+def _build_delivery_spec(*, delivery=None, channel=None, recipient=None,
+                         silent: bool = False, default_session_id=None) -> dict:
+    """Build a unified delivery spec from a `delivery` target list, or fall back
+    to simple channel/recipient/silent inputs (legacy-friendly)."""
+    targets = []
+    for t in (delivery or []):
+        if isinstance(t, str) and t.strip():
+            targets.append({"mode": "channel", "channel": t.strip()})
+        elif isinstance(t, dict) and t.get("mode"):
+            targets.append(t)
+    if targets:
+        return {"silent": bool(silent), "targets": targets}
+    from app.automation.delivery import spec_from_legacy
+    return spec_from_legacy(channel, recipient or default_session_id, silent)
+
+
+def _validate_run_mode(run_mode, enabled_providers):
+    rm = (run_mode or "inline").strip()
+    if rm in ("fresh_clone", "dedicated_clone") and "agent_orchestration" not in (enabled_providers or set()):
+        return "inline", ("Clone run modes need the Agent Orchestration ability enabled on "
+                          "this agent — used 'inline' instead.")
+    return rm, None
+
+
+def _parse_at(at: str):
+    """Parse an ISO timestamp into a UTC ISO string (naive = assumed UTC)."""
+    from datetime import datetime, timezone as _tz
+    try:
+        dt = datetime.fromisoformat(at.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_tz.utc)
+        return dt.astimezone(_tz.utc).isoformat()
+    except Exception:
+        return None
+
+
+def build_automation_tools(user_id: str, agent_id: str, session_id: str,
+                           enabled_providers=None) -> dict:
+    """Return {tool_name: handler} for the automation tools, each closed over the
+    caller's user_id / agent_id / session_id. ``enabled_providers`` gates clone
+    run modes (which need the agent_orchestration ability)."""
 
     async def list_event_sources():
         """List the event sources discovered on this server and which event types each supports."""
@@ -146,6 +284,14 @@ def build_automation_tools(user_id: str, agent_id: str, session_id: str) -> dict
         channel: Optional[str] = None,
         channel_recipient: Optional[str] = None,
         silent: bool = False,
+        delivery: Optional[list] = None,
+        run_mode: str = "inline",
+        clone_abilities: Optional[list] = None,
+        max_per_day: Optional[int] = None,
+        disable_after_failures: Optional[int] = None,
+        expires_at: Optional[str] = None,
+        retry_max: int = 0,
+        retry_backoff_seconds: int = 0,
     ):
         """Subscribe this agent to a real-time event: when source/event_type fires, run the prompt."""
         if not agent_id:
@@ -274,6 +420,13 @@ def build_automation_tools(user_id: str, agent_id: str, session_id: str) -> dict
             channel_recipient=effective_recipient,
             silent=silent,
         )
+        # Run mode (clone gating) + unified delivery spec.
+        rm, rm_warn = _validate_run_mode(run_mode, enabled_providers)
+        spec = _build_delivery_spec(
+            delivery=delivery, channel=effective_channel,
+            recipient=effective_recipient, silent=silent,
+            default_session_id=session_id)
+
         db = get_db()
         try:
             row = await db.upsert_event_subscription(
@@ -290,6 +443,15 @@ def build_automation_tools(user_id: str, agent_id: str, session_id: str) -> dict
                 channel_recipient=parsed.channel_recipient,
                 silent=parsed.silent,
                 enabled=True,
+                delivery_json=json.dumps(spec),
+                run_mode=rm,
+                clone_abilities=json.dumps(clone_abilities or []),
+                max_per_day=max_per_day,
+                disable_after_failures=disable_after_failures,
+                expires_at=expires_at or None,
+                retry_max=int(retry_max or 0),
+                retry_backoff_seconds=int(retry_backoff_seconds or 0),
+                origin="tool",
             )
             await _register_event_sub(db, row, parsed)
             row_after = (await db.list_event_subscriptions(
@@ -312,6 +474,7 @@ def build_automation_tools(user_id: str, agent_id: str, session_id: str) -> dict
             return json.dumps({
                 "status": "ok",
                 "subscription": fresh,
+                "warning": rm_warn,
                 "message": (
                     f"Subscribed: when {source}/{event_type} fires, run agent."
                     + (f" Provider-side: {fresh.get('last_status') or 'pending'}." if fresh.get('last_status') else "")
@@ -363,10 +526,209 @@ def build_automation_tools(user_id: str, agent_id: str, session_id: str) -> dict
             "message": f"Subscription {subscription_id} {'removed' if ok else 'delete failed'}",
         })
 
+    # ── Scheduled tasks / one-shot timers ────────────────────────────────
+
+    async def _emit_automation_updated(action: str, automation_id: str):
+        try:
+            from app.api.chat import _emit_to_user_listeners
+            await _emit_to_user_listeners(user_id, {
+                "type": "automation_updated", "agent_id": agent_id,
+                "action": action, "kind": "automation",
+                "automation_id": automation_id,
+            })
+        except Exception:
+            pass
+
+    async def _owned_automation(db, automation_id: str):
+        row = await db.get_automation(automation_id)
+        if not row or row.get("owner_user_id") != user_id:
+            return None
+        return row
+
+    async def schedule_task(
+        prompt: str, task_label: str = "", schedule_cron: str = "",
+        in_minutes: float = 0, at: str = "", timezone: str = "UTC",
+        delivery: Optional[list] = None, channel: Optional[str] = None,
+        channel_recipient: Optional[str] = None, silent: bool = False,
+        run_mode: str = "inline", clone_abilities: Optional[list] = None,
+        max_per_day: Optional[int] = None, disable_after_failures: Optional[int] = None,
+        expires_at: Optional[str] = None, retry_max: int = 0,
+        retry_backoff_seconds: int = 0,
+    ):
+        """Create a recurring (cron) or one-shot scheduled task that runs the prompt."""
+        if not agent_id:
+            return json.dumps({"status": "error", "message": "schedule_task requires an agent context"})
+        from app.db import get_db
+        from app.automation.runner import _compute_next_run
+        db = get_db()
+
+        schedule_kind = "cron"
+        next_run = None
+        if schedule_cron:
+            next_run = _compute_next_run(schedule_cron, timezone)
+            if not next_run:
+                return json.dumps({"status": "error", "message": f"invalid cron expression: {schedule_cron}"})
+        else:
+            schedule_kind = "once"
+            if in_minutes and float(in_minutes) > 0:
+                from datetime import datetime, timezone as _tz, timedelta
+                next_run = (datetime.now(_tz.utc) + timedelta(minutes=float(in_minutes))).isoformat()
+            elif at:
+                next_run = _parse_at(at)
+            if not next_run:
+                return json.dumps({"status": "error", "message": "provide schedule_cron, in_minutes, or at"})
+
+        rm, rm_warn = _validate_run_mode(run_mode, enabled_providers)
+        spec = _build_delivery_spec(delivery=delivery, channel=channel,
+                                    recipient=channel_recipient, silent=silent,
+                                    default_session_id=session_id)
+        try:
+            row = await db.create_automation(
+                agent_id=agent_id, owner_user_id=user_id, prompt=prompt,
+                task_label=task_label or ("Reminder" if schedule_kind == "once" else "Scheduled task"),
+                schedule_cron=schedule_cron, schedule_kind=schedule_kind,
+                timezone=timezone, next_run_at=next_run,
+                delivery_json=json.dumps(spec), run_mode=rm,
+                clone_abilities=json.dumps(clone_abilities or []),
+                max_per_day=max_per_day, disable_after_failures=disable_after_failures,
+                expires_at=expires_at or None, retry_max=int(retry_max or 0),
+                retry_backoff_seconds=int(retry_backoff_seconds or 0), origin="tool",
+            )
+            await _emit_automation_updated("created", row.get("id"))
+            return json.dumps({"status": "ok", "automation": row, "warning": rm_warn,
+                               "message": f"Scheduled ({schedule_kind}); next run {next_run}."})
+        except Exception as e:
+            logger.exception("schedule_task failed")
+            return json.dumps({"status": "error", "message": str(e)})
+
+    async def remind_me(note: str, in_minutes: float = 0, at: str = ""):
+        """Set a one-shot reminder that fires in the current chat (e.g. 'in 1 hour')."""
+        return await schedule_task(
+            prompt=f"Reminder for the user: {note}\n\nDeliver this reminder to them now.",
+            task_label=f"Reminder: {note[:40]}", in_minutes=in_minutes, at=at,
+            run_mode="inline", channel="webchat", channel_recipient=session_id,
+        )
+
+    async def list_automations():
+        """List this agent's scheduled tasks / timers for the current user."""
+        from app.db import get_db
+        db = get_db()
+        rows = await db.list_automations(agent_id=agent_id or None, owner_user_id=user_id)
+        return json.dumps({"status": "ok", "automations": rows, "count": len(rows)})
+
+    async def update_automation(automation_id: str, prompt: Optional[str] = None,
+                                task_label: Optional[str] = None, schedule_cron: Optional[str] = None,
+                                timezone: Optional[str] = None, enabled: Optional[bool] = None,
+                                delivery: Optional[list] = None, run_mode: Optional[str] = None,
+                                clone_abilities: Optional[list] = None, max_per_day: Optional[int] = None,
+                                disable_after_failures: Optional[int] = None, expires_at: Optional[str] = None,
+                                retry_max: Optional[int] = None, retry_backoff_seconds: Optional[int] = None):
+        """Edit one of this agent's scheduled tasks."""
+        from app.db import get_db
+        from app.automation.runner import _compute_next_run
+        db = get_db()
+        row = await _owned_automation(db, automation_id)
+        if not row:
+            return json.dumps({"status": "error", "message": "automation not found"})
+        fields: Dict[str, Any] = {}
+        if prompt is not None: fields["prompt"] = prompt
+        if task_label is not None: fields["task_label"] = task_label
+        if timezone is not None: fields["timezone"] = timezone
+        if enabled is not None: fields["enabled"] = enabled
+        if schedule_cron is not None:
+            fields["schedule_cron"] = schedule_cron
+            fields["next_run_at"] = _compute_next_run(schedule_cron, timezone or row.get("timezone") or "UTC")
+        if run_mode is not None:
+            fields["run_mode"], _ = _validate_run_mode(run_mode, enabled_providers)
+        if delivery is not None:
+            fields["delivery_json"] = json.dumps(_build_delivery_spec(delivery=delivery, default_session_id=session_id))
+        if clone_abilities is not None: fields["clone_abilities"] = json.dumps(clone_abilities)
+        if max_per_day is not None: fields["max_per_day"] = max_per_day
+        if disable_after_failures is not None: fields["disable_after_failures"] = disable_after_failures
+        if expires_at is not None: fields["expires_at"] = expires_at or None
+        if retry_max is not None: fields["retry_max"] = int(retry_max)
+        if retry_backoff_seconds is not None: fields["retry_backoff_seconds"] = int(retry_backoff_seconds)
+        updated = await db.update_automation(automation_id, **fields)
+        await _emit_automation_updated("updated", automation_id)
+        return json.dumps({"status": "ok", "automation": updated})
+
+    async def pause_automation(automation_id: str):
+        """Pause (disable) a scheduled task without deleting it."""
+        from app.db import get_db
+        db = get_db()
+        if not await _owned_automation(db, automation_id):
+            return json.dumps({"status": "error", "message": "automation not found"})
+        await db.update_automation(automation_id, enabled=False)
+        await _emit_automation_updated("paused", automation_id)
+        return json.dumps({"status": "ok", "message": "paused"})
+
+    async def resume_automation(automation_id: str):
+        """Resume (re-enable) a paused scheduled task."""
+        from app.db import get_db
+        from app.automation.runner import _compute_next_run
+        db = get_db()
+        row = await _owned_automation(db, automation_id)
+        if not row:
+            return json.dumps({"status": "error", "message": "automation not found"})
+        fields: Dict[str, Any] = {"enabled": True}
+        if (row.get("schedule_kind") or "cron") != "once" and not row.get("next_run_at"):
+            fields["next_run_at"] = _compute_next_run(row.get("schedule_cron") or "", row.get("timezone") or "UTC")
+        await db.update_automation(automation_id, **fields)
+        await _emit_automation_updated("resumed", automation_id)
+        return json.dumps({"status": "ok", "message": "resumed"})
+
+    async def cancel_automation(automation_id: str):
+        """Delete a scheduled task (and reap its dedicated clone runner if any)."""
+        from app.db import get_db
+        db = get_db()
+        row = await _owned_automation(db, automation_id)
+        if not row:
+            return json.dumps({"status": "error", "message": "automation not found"})
+        runner_id = (row.get("runner_agent_id") or "").strip()
+        ok = await db.delete_automation(automation_id)
+        if runner_id and row.get("run_mode") == "dedicated_clone":
+            try:
+                await db.delete_clone_agent(runner_id)
+            except Exception:
+                pass
+        await _emit_automation_updated("cancelled", automation_id)
+        return json.dumps({"status": "ok" if ok else "error",
+                           "message": "cancelled" if ok else "delete failed"})
+
+    async def run_automation_now(automation_id: str):
+        """Fire a scheduled task immediately (in addition to its schedule)."""
+        from app.db import get_db
+        db = get_db()
+        if not await _owned_automation(db, automation_id):
+            return json.dumps({"status": "error", "message": "automation not found"})
+        try:
+            from app.scheduler import get_scheduler
+            res = await get_scheduler().run_now(automation_id)
+            return json.dumps({"status": "ok", "result": res})
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    async def remember_automation_state(state):
+        """Persist state for the automation whose run is currently in progress."""
+        from app.automation.runner import set_automation_memory, current_automation_id
+        if not current_automation_id():
+            return json.dumps({"status": "error", "message": "no automation run in progress"})
+        ok = await set_automation_memory(state)
+        return json.dumps({"status": "ok" if ok else "error"})
+
     return {
         "list_event_sources": list_event_sources,
         "list_delivery_channels": list_delivery_channels,
         "event_subscribe": event_subscribe,
         "list_event_subscriptions": list_event_subscriptions,
         "event_unsubscribe": event_unsubscribe,
+        "schedule_task": schedule_task,
+        "remind_me": remind_me,
+        "list_automations": list_automations,
+        "update_automation": update_automation,
+        "pause_automation": pause_automation,
+        "resume_automation": resume_automation,
+        "cancel_automation": cancel_automation,
+        "run_automation_now": run_automation_now,
+        "remember_automation_state": remember_automation_state,
     }
