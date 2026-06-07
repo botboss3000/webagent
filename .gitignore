@@ -178,3 +178,4 @@ launcher/build/
 
 # launcher_android runtime bridge file (Browser button host↔proot)
 launcher_android/.browser-bridge
+.git-rewrite/
