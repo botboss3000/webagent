@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ReviewDash — Code Review Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0f172a; font-family: 'Segoe UI', system-ui, sans-serif; color: #e2e8f0; padding: 20px; }
+h1 { font-size: 26px; margin-bottom: 20px; }
+h1 span { color: #38bdf8; }
+.dashboard { display: grid; grid-template-columns: 1fr 320px; gap: 20px; }
+.pr-list { display: flex; flex-direction: column; gap: 12px; }
+.pr-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 16px; display: flex; gap: 16px; align-items: center; transition: 0.2s; }
+.pr-card:hover { border-color: #38bdf8; }
+.pr-card.approved { border-color: #4ade80; background: #1a2e1a; }
+.pr-card.rejected { border-color: #f87171; background: #2e1a1a; }
+.pr-avatar { width: 40px; height: 40px; border-radius: 50%; background: #334155; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; flex-shrink: 0; }
+.pr-info { flex: 1; min-width: 0; }
+.pr-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+.pr-meta { font-size: 12px; color: #94a3b8; display: flex; gap: 12px; flex-wrap: wrap; }
+.pr-meta .tag { background: #334155; padding: 1px 8px; border-radius: 4px; }
+.pr-meta .tag.add { color: #4ade80; } .pr-meta .tag.del { color: #f87171; }
+.pr-actions { display: flex; gap: 6px; }
+.btn { padding: 6px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; transition: 0.15s; }
+.btn-approve { background: #4ade80; color: #000; } .btn-approve:hover { background: #22c55e; }
+.btn-reject { background: #f87171; color: #000; } .btn-reject:hover { background: #ef4444; }
+.btn-comment { background: #334155; color: #e2e8f0; } .btn-comment:hover { background: #475569; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.sidebar { display: flex; flex-direction: column; gap: 16px; }
+.chart-box { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 16px; }
+.chart-box h3 { font-size: 14px; color: #94a3b8; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.filter-btn { background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-size: 12px; transition: 0.15s; }
+.filter-btn:hover { border-color: #38bdf8; color: #e2e8f0; }
+.filter-btn.active { background: #38bdf8; color: #000; border-color: #38bdf8; }
+.stats-row { display: flex; gap: 12px; margin-bottom: 16px; }
+.stat-card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 12px 18px; flex: 1; text-align: center; }
+.stat-card .num { font-size: 28px; font-weight: 700; color: #38bdf8; }
+.stat-card .label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center; }
+.modal-overlay.open { display: flex; }
+.modal { background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 24px; width: 420px; max-width: 90vw; }
+.modal h2 { margin-bottom: 12px; font-size: 18px; }
+.modal textarea { width: 100%; height: 80px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #e2e8f0; padding: 10px; font-size: 13px; resize: vertical; margin-bottom: 12px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<h1>🔍 <span>ReviewDash</span> — Code Review Dashboard</h1>
+<div class="stats-row" id="statsRow"></div>
+<div class="filters" id="filters">
+  <button class="filter-btn active" data-filter="all">All</button>
+  <button class="filter-btn" data-filter="open">Open</button>
+  <button class="filter-btn" data-filter="approved">Approved</button>
+  <button class="filter-btn" data-filter="rejected">Rejected</button>
+</div>
+<div class="dashboard">
+  <div class="pr-list" id="prList"></div>
+  <div class="sidebar">
+    <div class="chart-box"><h3>📊 Burndown — Open Reviews per Reviewer</h3><canvas id="burndownChart"></canvas></div>
+    <div class="chart-box"><h3>📈 PR Status Overview</h3><canvas id="statusChart"></canvas></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <h2 id="modalTitle">Add Comment</h2>
+    <textarea id="modalComment" placeholder="Enter your review comment..."></textarea>
+    <div class="modal-actions">
+      <button class="btn btn-comment" id="modalCancel">Cancel</button>
+      <button class="btn btn-approve" id="modalSubmit">Submit</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const STATUSES = ['open','approved','rejected'];
+const AVATARS = ['👩','👨','🧑','👩‍💻','👨‍💻','🧑‍💻','👩‍🔧','👨‍🔬'];
+const NAMES = ['Alice Chen','Bob Martinez','Charlie Kim','Diana Lopez','Eve Nakamura','Frank Osei','Grace Patel','Henry Davis'];
+const REPOS = ['frontend-app','api-gateway','data-pipeline','auth-service','mobile-sdk','cli-tool','design-system','docs-site'];
+const LOREM = ['Refactored auth middleware','Updated API endpoints','Fixed memory leak in cache layer','Added dark mode support','Optimized bundle size','Fixed race condition in websocket handler','Added unit tests for billing','Reduced Docker image size by 40%'];
+
+const prs = [];
+let prIdCounter = 1;
+let burndownChart = null,
+    statusChart = null;
+let currentFilter = 'all';
+let pendingAction = null;
+
+function randomItem(arr) { return arr[Math.floor(Math.random()*arr.length)]; }
+
+function generatePRs(count) {
+  for (let i = 0; i < count; i++) {
+    const added = Math.floor(Math.random()*500)+10;
+    const removed = Math.floor(Math.random()*300)+5;
+    const reviewerIdx = Math.floor(Math.random()*NAMES.length);
+    prs.push({
+      id: prIdCounter++,
+      title: `${randomItem(LOREM)} (#${Math.floor(Math.random()*9000)+1000})`,
+      author: randomItem(NAMES),
+      repo: randomItem(REPOS),
+      reviewer: NAMES[reviewerIdx],
+      added, removed,
+      files: Math.floor(Math.random()*15)+1,
+      comments: Math.floor(Math.random()*8),
+      status: randomItem(STATUSES),
+      statusChanged: null
+    });
+  }
+}
+generatePRs(12);
+
+function render() {
+  const list = document.getElementById('prList');
+  const filtered = currentFilter === 'all' ? prs : prs.filter(p => p.status === currentFilter);
+  list.innerHTML = filtered.map(pr => {
+    const initial = pr.author.charAt(0);
+    return `<div class="pr-card ${pr.status !== 'open' ? pr.status : ''}">
+      <div class="pr-avatar">${initial}</div>
+      <div class="pr-info">
+        <div class="pr-title">${pr.title}</div>
+        <div class="pr-meta">
+          <span>${pr.author}</span>
+          <span>📁 ${pr.repo}</span>
+          <span>👁 ${pr.reviewer}</span>
+          <span>📄 ${pr.files} files</span>
+          <span class="tag add">+${pr.added}</span>
+          <span class="tag del">-${pr.removed}</span>
+          <span>💬 ${pr.comments}</span>
+          <span style="text-transform:capitalize;color:${pr.status==='open'?'#fbbf24':pr.status==='approved'?'#4ade80':'#f87171'}">● ${pr.status}</span>
+        </div>
+      </div>
+      <div class="pr-actions">
+        ${pr.status === 'open' ? `
+          <button class="btn btn-approve" data-id="${pr.id}" data-action="approve">✓ Approve</button>
+          <button class="btn btn-reject" data-id="${pr.id}" data-action="reject">✗ Reject</button>
+        ` : ''}
+        <button class="btn btn-comment" data-id="${pr.id}" data-action="comment">💬 Comment</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.querySelectorAll('.pr-actions .btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const id = +btn.dataset.id;
+      const action = btn.dataset.action;
+      const pr = prs.find(p => p.id === id);
+      if (!pr) return;
+      if (action === 'approve') {
+        pr.status = 'approved';
+        pr.statusChanged = Date.now();
+        updateCharts(); render(); updateStats();
+      } else if (action === 'reject') {
+        openModal(id, 'reject');
+      } else if (action === 'comment') {
+        openModal(id, 'comment');
+      }
+    });
+  });
+}
+
+function openModal(prId, action) {
+  pendingAction = { prId, action };
+  document.getElementById('modalTitle').textContent = action === 'reject' ? 'Reject with comment' : 'Add review comment';
+  document.getElementById('modalComment').value = '';
+  document.getElementById('modalOverlay').classList.add('open');
+  document.getElementById('modalComment').focus();
+}
+
+document.getElementById('modalCancel').addEventListener('click', () => {
+  document.getElementById('modalOverlay').classList.remove('open');
+  pendingAction = null;
+});
+document.getElementById('modalSubmit').addEventListener('click', () => {
+  if (!pendingAction) return;
+  const { prId, action } = pendingAction;
+  const pr = prs.find(p => p.id === prId);
+  if (pr) {
+    if (action === 'reject') { pr.status = 'rejected'; pr.statusChanged = Date.now(); }
+    pr.comments++;
+    updateCharts(); render(); updateStats();
+  }
+  document.getElementById('modalOverlay').classList.remove('open');
+  pendingAction = null;
+});
+
+document.getElementById('modalOverlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('modalOverlay')) {
+    document.getElementById('modalOverlay').classList.remove('open');
+    pendingAction = null;
+  }
+});
+
+function updateStats() {
+  const total = prs.length;
+  const open = prs.filter(p => p.status==='open').length;
+  const approved = prs.filter(p => p.status==='approved').length;
+  const rejected = prs.filter(p => p.status==='rejected').length;
+  document.getElementById('statsRow').innerHTML = `
+    <div class="stat-card"><div class="num">${total}</div><div class="label">Total PRs</div></div>
+    <div class="stat-card"><div class="num" style="color:#fbbf24">${open}</div><div class="label">Open</div></div>
+    <div class="stat-card"><div class="num" style="color:#4ade80">${approved}</div><div class="label">Approved</div></div>
+    <div class="stat-card"><div class="num" style="color:#f87171">${rejected}</div><div class="label">Rejected</div></div>
+  `;
+}
+
+function updateCharts() {
+  // Burndown chart — open reviews per reviewer
+  const reviewers = [...new Set(prs.map(p => p.reviewer))].sort();
+  const openCounts = reviewers.map(r => prs.filter(p => p.reviewer === r && p.status === 'open').length);
+  if (burndownChart) burndownChart.destroy();
+  burndownChart = new Chart(document.getElementById('burndownChart'), {
+    type: 'bar',
+    data: {
+      labels: reviewers,
+      datasets: [{
+        label: 'Open Reviews',
+        data: openCounts,
+        backgroundColor: openCounts.map(v => v === 0 ? '#4ade8033' : v > 2 ? '#f8717166' : '#38bdf866'),
+        borderColor: openCounts.map(v => v === 0 ? '#4ade80' : v > 2 ? '#f87171' : '#38bdf8'),
+        borderWidth: 2,
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: { duration: 400 },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color:'#94a3b8', maxRotation:45 }, grid: { color:'#334155' } },
+        y: { beginAtZero: true, ticks: { color:'#94a3b8', stepSize:1 }, grid: { color:'#334155' } }
+      }
+    }
+  });
+
+  // Status overview pie
+  const open = prs.filter(p => p.status==='open').length;
+  const approved = prs.filter(p => p.status==='approved').length;
+  const rejected = prs.filter(p => p.status==='rejected').length;
+  if (statusChart) statusChart.destroy();
+  statusChart = new Chart(document.getElementById('statusChart'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Open','Approved','Rejected'],
+      datasets: [{
+        data: [open, approved, rejected],
+        backgroundColor: ['#fbbf24','#4ade80','#f87171'],
+        borderColor: '#1e293b',
+        borderWidth: 3
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: { duration: 500 },
+      plugins: {
+        legend: { position:'bottom', labels: { color:'#94a3b8', padding:12 } }
+      }
+    }
+  });
+}
+
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentFilter = btn.dataset.filter;
+    render();
+  });
+});
+
+updateStats();
+updateCharts();
+render();
+console.log('✅ ReviewDash ready — PRs loaded, filters active, burndown live');
+</script>
+</body>
+</html>

@@ -304,7 +304,8 @@ async def list_agent_templates(
 
 
 @router.get("/agents")
-async def list_agents(user_id: str = Query(...), include_system: bool = Query(False)):
+async def list_agents(user_id: str = Query(...), include_system: bool = Query(False),
+                      view: str = Query("active")):
     """
     List the user's own agents (the agents they added themselves).
 
@@ -314,10 +315,16 @@ async def list_agents(user_id: str = Query(...), include_system: bool = Query(Fa
     source-controller, Agent Manager / agent-builder, etc.) — used by the
     "Show system agents" toggle. Each entry carries ``source`` ('custom' or
     'template') and a derived ``system`` boolean.
+
+    New users with zero custom agents get the ``default`` template auto-provisioned
+    as their first agent on first list, so the agent square appears immediately on
+    the Agents page (matching the same logic the chat pill uses in sessions.js).
     """
     db = get_db()
+    bin_view = (view == "bin")
     is_admin = await db.is_user_admin(user_id)
-    all_agents = await db.list_agents_for_user(user_id, include_admin=is_admin)
+    all_agents = await db.list_agents_for_user(user_id, include_admin=is_admin,
+                                               view=("bin" if bin_view else "active"))
     out = []
     for a in all_agents:
         safe = _safe_agent(a)
@@ -329,6 +336,29 @@ async def list_agents(user_id: str = Query(...), include_system: bool = Query(Fa
         elif include_system and safe.get("system"):
             # Built-in utility templates, only when the toggle is on.
             out.append(safe)
+
+    # ── Auto-provision default agent for new users ──────────────────────────
+    # If the user has zero custom agents (no "out" entries from the custom path
+    # above) and we aren't showing system agents, the Agents page would be
+    # completely empty. Clone the default template same as the chat pill does
+    # in sessions.js (ensureWebagentAgent), so the agent square is present from
+    # the very first visit.
+    if not out and not include_system and not bin_view:
+        try:
+            new_agent = await db.create_custom_agent(
+                user_id=user_id,
+                name="webAgent",
+                description="Your all-purpose webAgent — chat, tools, web, browser, code, pages, and source control.",
+                template_id="default",
+            )
+            if new_agent:
+                safe = _safe_agent(new_agent)
+                # Clear the cached shared data so downstream consumers pick it up
+                safe["is_user_default"] = 1
+                out.append(safe)
+        except Exception as e:
+            logger.warning("Auto-provision default agent for %s failed: %s", user_id, e)
+
     return {"agents": out}
 
 
@@ -1081,13 +1111,37 @@ async def delete_my_prompt(request: Request, agent_id: str, slot_name: str, user
 
 
 @router.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: str, user_id: str = Query(...)):
-    """Delete a custom agent. Cannot delete system agents."""
+async def delete_agent(agent_id: str, user_id: str = Query(...),
+                       permanent: bool = Query(False)):
+    """
+    Recycling-bin delete for a custom agent. Cannot touch system agents.
+
+    Default (``permanent=false``): SOFT delete — the agent moves to the bin
+    (status -> 'trashed') and disappears from the Agents page, but keeps its
+    prompts, sessions and transcripts so it can be restored.
+
+    ``permanent=true``: HARD delete — used by the bin's own trash button. Erases
+    the agent and everything that belongs to it (prompts, sessions, transcripts,
+    connections, abilities). This is irreversible.
+    """
     db = get_db()
-    deleted = await db.delete_custom_agent(agent_id=agent_id, user_id=user_id)
+    if permanent:
+        deleted = await db.delete_custom_agent(agent_id=agent_id, user_id=user_id)
+    else:
+        deleted = await db.trash_custom_agent(agent_id=agent_id, user_id=user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Agent not found, not owned by this user, or is a system agent.")
-    return {"deleted": True, "agent_id": agent_id}
+    return {"deleted": True, "agent_id": agent_id, "permanent": permanent}
+
+
+@router.post("/agents/{agent_id}/restore")
+async def restore_agent(agent_id: str, user_id: str = Query(...)):
+    """Restore a trashed agent from the recycling bin back to the Agents page."""
+    db = get_db()
+    restored = await db.restore_custom_agent(agent_id=agent_id, user_id=user_id)
+    if not restored:
+        raise HTTPException(status_code=404, detail="Agent not found in the bin, or not owned by this user.")
+    return {"restored": True, "agent_id": agent_id}
 
 
 @router.post("/agents/test")

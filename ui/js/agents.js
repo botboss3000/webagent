@@ -235,6 +235,8 @@ export async function initAgents() {
   await Promise.all([_loadProfile(), _loadAgents(), _loadAppSettings()]);
   _renderList();
   _bindSystemToggle();
+  _bindBinToolbar();
+  _updateBinToolbar();
   _restoreViewState();
 }
 
@@ -255,6 +257,185 @@ function _bindSystemToggle() {
     await _loadAgents();
     _renderList();
   });
+}
+
+// ── Recycling bin / multi-select toolbar ─────────────────────────────────────
+// SHARED-DELETE-CONTROL — the header trash button reuses the trash→hazard→spin
+// affordance (ui/js/delete-control.js). On the Agents page: trash with checks
+// selected = move them to the bin; trash with nothing selected = open the bin.
+// In the bin: Restore brings checked agents back; trash deletes them for good.
+
+// Custom-agent ids currently shown in the grid (templates + the New Agent tile
+// are never selectable, so they're excluded).
+function _visibleSelectableIds() {
+  return _agents.filter(a => a.source === 'custom' && !_isMockAgent(a)).map(a => a.id);
+}
+
+// Sync the .selected ring + checkmark on every rendered square to _selectedIds,
+// without a full grid re-render.
+function _syncSelectionVisuals() {
+  document.querySelectorAll('.agents-squares .agent-row').forEach(row => {
+    const id = row.dataset.agentId;
+    const on = _selectedIds.has(id);
+    row.classList.toggle('selected', on);
+    const box = row.querySelector('.agent-select-box');
+    if (box) box.innerHTML = on ? icon('check', { size: '13px' }) : '';
+  });
+}
+
+function _toggleSelect(agentId) {
+  if (_selectedIds.has(agentId)) _selectedIds.delete(agentId);
+  else _selectedIds.add(agentId);
+  _syncSelectionVisuals();
+  const trashBtn = document.getElementById('agents-trash-btn');
+  if (trashBtn) resetDeleteBtn(trashBtn, { size: '16px', title: trashBtn.title });
+  _updateBinToolbar();
+}
+
+// Reflect the current view + selection in the toolbar (title, which buttons
+// show, and enabled/disabled state).
+function _updateBinToolbar() {
+  const selectAll  = document.getElementById('agents-select-all');
+  const deselectAll = document.getElementById('agents-deselect-all');
+  const restoreBtn = document.getElementById('agents-restore-btn');
+  const trashBtn   = document.getElementById('agents-trash-btn');
+  const backBtn    = document.getElementById('agents-back-btn');
+  const title      = document.getElementById('agents-toolbar-title');
+  const sub        = document.getElementById('agents-toolbar-sub');
+
+  const n = _selectedIds.size;
+  const selectable = _visibleSelectableIds().length;
+
+  if (backBtn) backBtn.style.display = _binView ? 'inline-flex' : 'none';
+  if (title) {
+    title.textContent = _binView ? 'Back to Agents' : 'Agents';
+    title.style.cursor = _binView ? 'pointer' : '';
+  }
+  if (sub) sub.textContent = _binView
+    ? ' · Recycling bin'
+    : ' · Agent templates · system prompts · model assignments';
+
+  if (restoreBtn) {
+    restoreBtn.style.display = _binView ? 'inline-flex' : 'none';
+    restoreBtn.disabled = (n === 0);
+  }
+  if (selectAll)   selectAll.disabled = (selectable === 0 || n >= selectable);
+  if (deselectAll) deselectAll.disabled = (n === 0);
+
+  if (trashBtn) {
+    if (_binView) {
+      trashBtn.title = n ? 'Permanently delete selected' : 'Select agents to delete';
+      trashBtn.disabled = (n === 0);
+    } else {
+      trashBtn.title = n ? 'Move selected to the recycling bin' : 'Open recycling bin';
+      trashBtn.disabled = false;
+    }
+  }
+}
+
+// Wire the toolbar actions once. State lives in _binView / _selectedIds.
+function _bindBinToolbar() {
+  const actions = document.getElementById('agents-toolbar-actions');
+  if (!actions || actions._bound) return;
+  actions._bound = true;
+
+  const selectAll   = document.getElementById('agents-select-all');
+  const deselectAll = document.getElementById('agents-deselect-all');
+  const restoreBtn  = document.getElementById('agents-restore-btn');
+  const trashBtn    = document.getElementById('agents-trash-btn');
+  const backBtn     = document.getElementById('agents-back-btn');
+  const title       = document.getElementById('agents-toolbar-title');
+
+  const resetTrash = () => { if (trashBtn) resetDeleteBtn(trashBtn, { size: '16px', title: trashBtn.title }); };
+
+  if (selectAll) selectAll.addEventListener('click', () => {
+    _visibleSelectableIds().forEach(id => _selectedIds.add(id));
+    _syncSelectionVisuals(); resetTrash(); _updateBinToolbar();
+  });
+  if (deselectAll) deselectAll.addEventListener('click', () => {
+    _selectedIds.clear();
+    _syncSelectionVisuals(); resetTrash(); _updateBinToolbar();
+  });
+  if (restoreBtn) restoreBtn.addEventListener('click', () => {
+    if (_selectedIds.size > 0) _restoreSelected();
+  });
+  if (backBtn) backBtn.addEventListener('click', () => _exitBin());
+  if (title) title.addEventListener('click', () => { if (_binView) _exitBin(); });
+
+  if (trashBtn) trashBtn.addEventListener('click', () => {
+    // Agents page, nothing checked → open the bin (no hazard step).
+    if (!_binView && _selectedIds.size === 0) { _enterBin(); return; }
+    if (_selectedIds.size === 0) return; // bin view, nothing checked
+    advanceDeleteBtn(trashBtn, {
+      size: '16px', spinSize: '16px',
+      armTitle: _binView ? 'Click again to permanently delete' : 'Click again to move to the bin',
+      onConfirm: () => (_binView ? _permanentDeleteSelected(trashBtn) : _trashSelected(trashBtn)),
+    });
+  });
+}
+
+async function _enterBin() {
+  if (_binView) return;
+  _binView = true;
+  _selectedIds.clear();
+  _expandedAgents.clear();           // collapse any open card
+  _renderSkeleton();
+  await _loadAgents();
+  _renderList();
+  _updateBinToolbar();
+}
+
+async function _exitBin() {
+  if (!_binView) return;
+  _binView = false;
+  _selectedIds.clear();
+  _expandedAgents.clear();
+  _renderSkeleton();
+  await _loadAgents();
+  _renderList();
+  _updateBinToolbar();
+}
+
+// Move every checked agent to the bin (soft delete), then refresh in place.
+async function _trashSelected(btn) {
+  const ids = [..._selectedIds];
+  await Promise.all(ids.map(id =>
+    fetch(`/api/v1/agents/${id}?user_id=${encodeURIComponent(app.currentUserId)}`, { method: 'DELETE' }).catch(() => {})
+  ));
+  _selectedIds.clear();
+  window.__agentsSharedData = null;
+  await _loadAgents();
+  _renderList();
+  if (btn) resetDeleteBtn(btn, { size: '16px', title: 'Open recycling bin' });
+  _updateBinToolbar();
+  if (typeof app.populateAgentSelect === 'function') { try { await app.populateAgentSelect(app.currentUserId); } catch (_) {} }
+}
+
+// Restore every checked agent from the bin back to the Agents page.
+async function _restoreSelected() {
+  const ids = [..._selectedIds];
+  await Promise.all(ids.map(id =>
+    fetch(`/api/v1/agents/${id}/restore?user_id=${encodeURIComponent(app.currentUserId)}`, { method: 'POST' }).catch(() => {})
+  ));
+  _selectedIds.clear();
+  window.__agentsSharedData = null;
+  await _loadAgents();               // still in the bin → shows what's left
+  _renderList();
+  _updateBinToolbar();
+  if (typeof app.populateAgentSelect === 'function') { try { await app.populateAgentSelect(app.currentUserId); } catch (_) {} }
+}
+
+// Permanently erase every checked agent (only reachable from the bin).
+async function _permanentDeleteSelected(btn) {
+  const ids = [..._selectedIds];
+  await Promise.all(ids.map(id =>
+    fetch(`/api/v1/agents/${id}?user_id=${encodeURIComponent(app.currentUserId)}&permanent=true`, { method: 'DELETE' }).catch(() => {})
+  ));
+  _selectedIds.clear();
+  await _loadAgents();
+  _renderList();
+  if (btn) resetDeleteBtn(btn, { size: '16px', title: 'Select agents to delete' });
+  _updateBinToolbar();
 }
 
 // Placeholder cards shown while the agent list loads. Replaced by _renderList()
@@ -347,11 +528,19 @@ async function _loadProfile() {
 // agents are fetched and shown too (and stay configurable).
 let _showSystem = false;
 
+// ── Recycling bin / multi-select state ──────────────────────────────────────
+// _binView=false → the normal Agents page. _binView=true → the recycling bin
+// (same grid, no "New Agent" tile, title becomes "Back to Agents", Restore shows
+// and the header trash deletes permanently). _selectedIds holds the checked
+// custom-agent ids; checking squares enables the header Trash/Restore actions.
+let _binView = false;
+let _selectedIds = new Set();
+
 async function _loadAgents() {
   try {
     // Use shared data from sessions.js if available — but only for the default
-    // (user-own) view. The system view needs its own fetch with include_system.
-    if (!_showSystem) {
+    // (user-own, non-bin) view. The system + bin views need their own fetch.
+    if (!_showSystem && !_binView) {
       const shared = window.__agentsSharedData;
       if (shared && shared.agents) {
         _agents = shared.agents;
@@ -360,12 +549,13 @@ async function _loadAgents() {
     }
     const params = new URLSearchParams({ user_id: app.currentUserId });
     if (_showSystem) params.set('include_system', 'true');
+    if (_binView) params.set('view', 'bin');
     const res = await fetch(`/api/v1/agents?${params.toString()}`);
     if (res.ok) {
       const data = await res.json();
       _agents = data.agents || [];
-      // Only cache the default view so other modules don't pick up system rows.
-      if (!_showSystem) window.__agentsSharedData = data;
+      // Only cache the default view so other modules don't pick up system/bin rows.
+      if (!_showSystem && !_binView) window.__agentsSharedData = data;
     }
   } catch (e) {
     console.warn('agents: could not load agent list', e);
@@ -438,10 +628,11 @@ function _renderList() {
   wrap.appendChild(squares);
   grid.appendChild(wrap);
 
+  // The "New Agent" tile is hidden in the recycling bin (you can't create there).
   const mockAgent = _createMockAgent();
-  let activeAgent = activeId === MOCK_AGENT_ID ? mockAgent : null;
+  let activeAgent = (!_binView && activeId === MOCK_AGENT_ID) ? mockAgent : null;
 
-  _renderSquare(squares, mockAgent, activeId === MOCK_AGENT_ID);
+  if (!_binView) _renderSquare(squares, mockAgent, activeId === MOCK_AGENT_ID);
 
   // Match the chat-header agent dropdown exactly: the server returns agents in
   // the synced sort_order; sortAgentsForDisplay then floats pinned agents to
@@ -453,6 +644,12 @@ function _renderList() {
       _renderSquare(squares, agent, isActive);
       if (isActive) activeAgent = agent;
     }
+  } else if (_binView) {
+    // Empty recycling bin — nothing has been deleted.
+    const empty = document.createElement('div');
+    empty.className = 'agents-bin-empty';
+    empty.textContent = 'The recycling bin is empty.';
+    squares.appendChild(empty);
   }
 
   // ── Detail region ─────────────────────────────────────────────────────────
@@ -469,6 +666,10 @@ function _renderList() {
   // Wire the carousel edge-fades + chevrons (no-op visually until the row
   // actually overflows in carousel mode).
   _wireSquaresCarousel(wrap);
+
+  // Keep the header actions (Select all / Restore / Trash + title) in sync with
+  // the current view and selection after every grid render.
+  _updateBinToolbar();
 }
 
 // Edge-fade + chevron wiring for the squares carousel. Mirrors _wireTabCarousel
@@ -579,6 +780,24 @@ function _renderSquare(container, agent, isActive) {
   const row = document.createElement('div');
   row.className = 'agent-row';
   row.dataset.agentId = agent.id;
+
+  // Selection checkbox (top-right) — only on trashable custom agents. Templates
+  // and the "New Agent" tile can't be binned, so they get no checkbox. Clicking
+  // it toggles selection without opening the agent.
+  if (!isMock && agent.source === 'custom') {
+    const on = _selectedIds.has(agent.id);
+    if (on) row.classList.add('selected');
+    const box = document.createElement('div');
+    box.className = 'agent-select-box';
+    box.title = 'Select';
+    box.innerHTML = on ? icon('check', { size: '13px' }) : '';
+    box.addEventListener('click', e => {
+      e.stopPropagation();
+      _toggleSelect(agent.id);
+    });
+    card.appendChild(box);
+  }
+
   row.appendChild(card);
   container.appendChild(row);
 }
@@ -7267,17 +7486,22 @@ async function _deleteAgent(agent, btn) {
   }
 
   try {
+    // On the Agents page this MOVES the agent to the recycling bin (soft delete).
+    // Inside the bin the same control erases it for good.
+    const permanent = _binView ? '&permanent=true' : '';
     const res = await fetch(
-      `/api/v1/agents/${agent.id}?user_id=${encodeURIComponent(app.currentUserId)}`,
+      `/api/v1/agents/${agent.id}?user_id=${encodeURIComponent(app.currentUserId)}${permanent}`,
       { method: 'DELETE' }
     );
     if (res.ok) {
       // Surgical: poof the square (fade + shrink), which also tears down the
       // expanded card via _rebuildDetailRegion, then clean up state.
       await _surgicalRemoveSquare(agent.id);
+      _selectedIds.delete(agent.id);
       _saveViewState();
       // Bust the shared agent cache so the chat-header dropdown re-fetches
       window.__agentsSharedData = null;
+      _updateBinToolbar();
       if (typeof app.populateAgentSelect === 'function') {
         try { await app.populateAgentSelect(app.currentUserId); } catch (_) {}
       }

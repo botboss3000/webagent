@@ -85,6 +85,9 @@ TABLES: List[Table] = [
         Column("participants", "TEXT", default="'[]'"),
         Column("pinned", "INTEGER", nullable=False, default="0"),
         Column("sort_order", "INTEGER"),
+        # Recycling-bin lifecycle: 'active' = live, 'recycled' = soft-deleted from
+        # the chat header (hidden, kept until its agent is permanently emptied).
+        Column("status", "TEXT", nullable=False, default="'active'"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),

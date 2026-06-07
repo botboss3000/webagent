@@ -391,12 +391,36 @@ async def delete_user(
 async def delete_session(
     session_id: str,
     db: str = Query("local.db", description="Database filename"),
+    permanent: bool = Query(False, description="Hard-delete instead of recycling"),
 ):
-    """Delete a session and all its interactions/messages."""
+    """Recycle a session (soft delete) or, with ``permanent=true``, erase it.
+
+    Default: the session is moved to the bin (status -> 'recycled') and hidden
+    from the chat dropdown, but its transcript is kept. It is truly erased only
+    when its agent is permanently emptied from the recycling bin (or via an
+    explicit ``permanent=true`` call from the future sessions page).
+    """
     db_path = _get_db_path(db)
     try:
         conn, _dialect = _open(db)
         cur = conn.cursor()
+
+        # ── Soft delete (default): just flip the status, keep everything ──
+        if not permanent:
+            has_status = False
+            try:
+                cur.execute("PRAGMA table_info(sessions)")
+                has_status = "status" in {row[1] for row in cur.fetchall()}
+            except Exception:
+                pass
+            if has_status:
+                cur.execute("UPDATE sessions SET status = 'recycled' WHERE id = ?", (session_id,))
+                recycled = cur.rowcount
+                conn.commit()
+                conn.close()
+                logger.info(f"Recycled session {session_id[:12]}: {recycled} session")
+                return {"success": True, "session_id": session_id, "recycled": recycled}
+            # Fall through to hard delete if the column isn't there yet.
 
         # Delete interactions for this session
         cur.execute('DELETE FROM interactions WHERE session_id = ?', (session_id,))
@@ -425,6 +449,27 @@ async def delete_session(
             "session_deleted": session_deleted,
             "interactions_deleted": interactions_deleted,
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/restore")
+async def restore_session(
+    session_id: str,
+    db: str = Query("local.db", description="Database filename"),
+):
+    """Restore a recycled session back to active status."""
+    db_path = _get_db_path(db)
+    try:
+        conn, _dialect = _open(db)
+        cur = conn.cursor()
+        cur.execute("UPDATE sessions SET status = 'active', updated_at = datetime('now') WHERE id = ? AND status = 'recycled'", (session_id,))
+        restored = cur.rowcount
+        conn.commit()
+        conn.close()
+        return {"success": True, "session_id": session_id, "restored": restored}
     except HTTPException:
         raise
     except Exception as e:
@@ -588,6 +633,7 @@ async def list_sessions(
             has_pinned = "pinned" in sess_cols
             has_sort_order = "sort_order" in sess_cols
             has_read_at = "read_at" in sess_cols
+            has_status = "status" in sess_cols
 
             select_cols = 's.id, s.title, s.created_at, s.user_id, s.participants, s.agent_id, s.updated_at'
             if has_pinned:
@@ -600,6 +646,12 @@ async def list_sessions(
             if agent_id:
                 where_clause = 's.agent_id = ?'
                 params.append(agent_id)
+
+            # Recycling bin: hide sessions soft-deleted from the chat header.
+            # A NULL status counts as live (Postgres adds the column without a
+            # default, so pre-existing rows read back as NULL).
+            if has_status:
+                where_clause = f"({where_clause}) AND (s.status IS NULL OR s.status != 'recycled')"
 
             # Sort by last active time (updated_at), newest first.
             # Pinned sessions come first, then the rest sorted by last active.
@@ -1053,6 +1105,7 @@ async def delete_turn(
 async def session_stats(
     user_id: str = Query(..., description="User ID"),
     db: str = Query("local.db", description="Database filename"),
+    status: str = Query("active", description="Filter by session status: 'active', 'recycled', or 'all'"),
 ):
     """
     Return aggregated usage stats per session for a user.
@@ -1069,11 +1122,17 @@ async def session_stats(
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
-        # Fetch sessions for user
+        # Fetch sessions for user — optionally filtered by status
         try:
+            _status_filter = ""
+            _params = [user_id]
+            if status == "active":
+                _status_filter = " AND (status IS NULL OR status = 'active')"
+            elif status == "recycled":
+                _status_filter = " AND status = 'recycled'"
             cur.execute(
-                'SELECT id, title, created_at FROM sessions WHERE user_id = ? ORDER BY created_at DESC',
-                (user_id,)
+                'SELECT id, title, created_at, status FROM sessions WHERE user_id = ?' + _status_filter + ' ORDER BY updated_at DESC NULLS LAST',
+                _params
             )
             session_rows = cur.fetchall()
         except Exception:
@@ -1181,6 +1240,31 @@ async def session_stats(
                 "total_duration_ms": total_duration_ms,
                 "total_cost": round(total_cost, 6) if has_cost else None,
             }
+            # Enrich with agent_name and run_status if available
+            try:
+                cur.execute('SELECT agent_id FROM sessions WHERE id = ?', (sid,))
+                srow = cur.fetchone()
+                if srow and srow["agent_id"]:
+                    entry["agent_id"] = srow["agent_id"]
+                    cur2 = conn.cursor()
+                    cur2.execute('SELECT name FROM agents WHERE id = ?', (srow["agent_id"],))
+                    arow = cur2.fetchone()
+                    entry["agent_name"] = arow["name"] if arow else ""
+                else:
+                    entry["agent_id"] = None
+                    entry["agent_name"] = ""
+
+                # Run status
+                try:
+                    cur2.execute('SELECT status FROM session_runs WHERE session_id = ?', (sid,))
+                    rrow = cur2.fetchone()
+                    entry["run_status"] = rrow["status"] if rrow else None
+                except Exception:
+                    entry["run_status"] = None
+            except Exception:
+                entry["agent_id"] = None
+                entry["agent_name"] = ""
+                entry["run_status"] = None
             results.append(entry)
 
         # Sort by last_active descending
@@ -1705,3 +1789,6 @@ async def delete_database_file(
 
     logger.info(f"Deleted database files: {removed} (errors: {errors})")
     return {"success": True, "deleted": removed, "errors": errors}
+
+
+

@@ -141,6 +141,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     agent_id TEXT,
     participants TEXT DEFAULT '[]',
     sort_order INTEGER,
+    -- Recycling-bin lifecycle: 'active' = live, 'recycled' = soft-deleted from
+    -- the chat header (hidden, but kept until its agent is permanently emptied).
+    status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -1711,6 +1714,14 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE sessions ADD COLUMN participants TEXT DEFAULT '[]'")
                 conn.commit()
                 logger.info("Added sessions.participants column")
+
+            # ── Migration: add status (recycling-bin) column to sessions ──
+            cursor = conn.execute("PRAGMA table_info(sessions)")
+            sess_cols = {row[1] for row in cursor.fetchall()}
+            if "status" not in sess_cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+                conn.commit()
+                logger.info("Added sessions.status column")
 
             # ── Migration: add template_id column to agents ──
             cursor = conn.execute("PRAGMA table_info(agents)")
@@ -6291,22 +6302,37 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
-    async def list_agents_for_user(self, user_id: str, include_admin: bool = False) -> List[dict]:
+    async def list_agents_for_user(self, user_id: str, include_admin: bool = False,
+                                   view: str = "active") -> List[dict]:
         """
         Return all agents visible to a user:
         - System agent templates (is_pipeline=0), filtered by access_level
         - User's own custom agents (owner_user_id = user_id, is_system=0 equivalent)
         Each item includes a 'source' key: 'template' or 'custom'.
         Custom agents also carry their is_user_default flag.
+
+        `view` controls the recycling-bin filter on CUSTOM agents:
+          'active' (default) — templates + custom agents NOT in the bin
+          'bin'              — only custom agents whose status == 'trashed'
+                               (templates are never trashed, so none appear)
+        A NULL/empty status counts as active (Postgres adds the column without a
+        default, so pre-existing rows read back as NULL).
         """
-        # 1. System templates the user can see
-        templates = await self.list_agent_templates(include_admin=include_admin)
+        bin_view = (view == "bin")
+
+        def _in_view(entry: dict) -> bool:
+            trashed = (entry.get("status") == "trashed")
+            return trashed if bin_view else (not trashed)
+
+        # 1. System templates the user can see (never trashed → hidden in bin view)
         result = []
-        for tpl in templates:
-            entry = dict(tpl)
-            entry["source"] = "template"
-            entry["is_user_default"] = 0
-            result.append(entry)
+        if not bin_view:
+            templates = await self.list_agent_templates(include_admin=include_admin)
+            for tpl in templates:
+                entry = dict(tpl)
+                entry["source"] = "template"
+                entry["is_user_default"] = 0
+                result.append(entry)
 
         # 2. User's agents — both assigned (user_id) and custom-created (owner_user_id)
         seen_ids: set = set()
@@ -6331,6 +6357,8 @@ class LocalBackend(StorageBackend):
                     continue
                 seen_ids.add(entry["id"])
                 entry["source"] = "custom"
+                if not _in_view(entry):
+                    continue
                 result.append(entry)
         finally:
             conn.close()
@@ -6377,6 +6405,8 @@ class LocalBackend(StorageBackend):
                             continue
                         seen_ids.add(entry["id"])
                         entry["source"] = "custom"
+                        if not _in_view(entry):
+                            continue
                         result.append(entry)
                 finally:
                     sconn.close()
@@ -6515,16 +6545,59 @@ class LocalBackend(StorageBackend):
         result["source"] = "custom"
         return result
 
-    async def delete_custom_agent(self, agent_id: str, user_id: str) -> bool:
+    async def trash_custom_agent(self, agent_id: str, user_id: str) -> bool:
         """
-        Delete a custom agent. Caller must be in admin_users.
+        Move a custom agent to the recycling bin (soft delete). Caller must be in
+        admin_users. Nothing is erased: the agent's status flips to 'trashed' so
+        it drops out of the Agents page but keeps its prompts, sessions and
+        transcripts until it is permanently emptied from the bin.
         System agents (template rows) live in agent_templates, not here, and the
         built-in 'default' row carries no admin_users — so the ownership check
-        alone already protects them. We must NOT additionally require
-        is_user_default = 0: a user's own agent is normally their default
-        (is_user_default = 1), so that guard would silently match zero rows and
-        make the delete appear to do nothing.
-        Also drops every agent_prompts row for the agent (admin base + overrides).
+        alone already protects them.
+        Returns True if a row was flipped, False if not found or not owned.
+        """
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                """UPDATE agents SET status = 'trashed'
+                   WHERE id = ?
+                   AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)""",
+                (agent_id, user_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    async def restore_custom_agent(self, agent_id: str, user_id: str) -> bool:
+        """
+        Restore a trashed agent back to the Agents page (status -> 'active').
+        Caller must own it. Returns True if a trashed row was restored.
+        """
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                """UPDATE agents SET status = 'active'
+                   WHERE id = ? AND status = 'trashed'
+                   AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)""",
+                (agent_id, user_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    async def delete_custom_agent(self, agent_id: str, user_id: str) -> bool:
+        """
+        PERMANENTLY delete a custom agent (empty it from the recycling bin).
+        Caller must be in admin_users. This is the ONLY place agent data is truly
+        erased: the agent row, all of its agent_prompts (admin base + overrides),
+        every chat session that belongs to it, and those sessions' interactions /
+        summaries / pipeline events. Connection + ability rows are dropped too so
+        nothing is left orphaned.
+        We must NOT require is_user_default = 0: a user's own agent is normally
+        their default (is_user_default = 1), so that guard would silently match
+        zero rows and make the delete appear to do nothing.
         Returns True if a row was deleted, False if not found or not owned.
         """
         conn = self._get_conn()
@@ -6536,7 +6609,28 @@ class LocalBackend(StorageBackend):
                 (agent_id, user_id),
             )
             if cursor.rowcount > 0:
+                # Children first, then the session rows themselves.
+                conn.execute(
+                    """DELETE FROM interactions
+                       WHERE session_id IN (SELECT id FROM sessions WHERE agent_id = ?)""",
+                    (agent_id,),
+                )
+                for tbl in ("session_summaries", "pipeline_events"):
+                    try:
+                        conn.execute(
+                            f"""DELETE FROM {tbl}
+                               WHERE session_id IN (SELECT id FROM sessions WHERE agent_id = ?)""",
+                            (agent_id,),
+                        )
+                    except Exception:
+                        pass
+                conn.execute("DELETE FROM sessions WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM agent_prompts WHERE agent_id = ?", (agent_id,))
+                for tbl in ("agent_connections", "agent_abilities"):
+                    try:
+                        conn.execute(f"DELETE FROM {tbl} WHERE agent_id = ?", (agent_id,))
+                    except Exception:
+                        pass
             conn.commit()
             return cursor.rowcount > 0
         finally:

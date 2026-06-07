@@ -254,7 +254,7 @@ export function connectAgent() {
           const candidates = app.chatMessages.querySelectorAll('.chat-bubble.user:not([data-msg-id])');
           for (let i = candidates.length - 1; i >= 0; i--) {
             const b = candidates[i];
-            const t = b.textContent.replace(/^You/, '').trim();
+            const t = (b.querySelector('.bubble-body')?.textContent || '').trim();
             if (t === cont.trim()) { b.setAttribute('data-msg-id', String(mid)); break; }
           }
           if (app.chatMessages.querySelector(

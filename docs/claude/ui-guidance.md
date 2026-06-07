@@ -181,3 +181,15 @@ The app pins **Lucide 0.469.0** (loaded as a global in `index.html`). This versi
 2. **For copy *buttons*, use `copyText(text)` from `clipboard.js`** (not `navigator.clipboard.writeText` directly). It falls back to the legacy `execCommand` path so copy buttons also work over a non-secure `http://<ip>` LAN address, where the async Clipboard API is unavailable.
 3. **Terminals are intentionally excluded.** The net bails out for anything inside `.xterm` / `.terminal` / `.terminal-frame` / `[data-terminal]` so Ctrl+C still sends an interrupt and xterm keeps its own copy/paste. If you add a new terminal surface, give it one of those classes (or `data-terminal`) so it's excluded too.
 4. **Cross-document iframes are out of scope** (their key events never reach the parent). The sandboxed page-output preview is fine; a new editable iframe would need its own handling inside that document.
+
+## Recycling-bin toolbar (Agents page, mirrored to Sessions)
+
+The Agents page header (`ui/agents.html` → `#agents-toolbar`, wired in `ui/js/agents.js`) carries a right-side action set that drives a soft-delete **recycling bin**: per-square **checkboxes** (top-right of every *custom* agent tile — templates and the "New Agent" tile get none) plus **Select all / Deselect all / Trash**. The bin is a **view-swap inside the same Agents tab**, NOT a new nav tab — driven entirely by the header:
+
+- **Trash with squares checked** → two-click hazard confirm (the shared `delete-control.js` affordance) → moves the checked agents to the bin (`DELETE /api/v1/agents/{id}`, soft).
+- **Trash with nothing checked** → opens the bin view: the title flips to **"Back to Agents"** (click it or the back arrow to return), a **Restore** button appears, the "New Agent" tile is hidden, and the Trash button now **permanently** deletes the checked agents (`&permanent=true`).
+- **Restore** (bin only) → `POST /api/v1/agents/{id}/restore`, back to the Agents page.
+
+State lives in two module vars in `agents.js` (`_binView`, `_selectedIds`); `_updateBinToolbar()` keeps the header (title, which buttons show, enabled/disabled) in sync after every render. Styling follows the **dark + light** rule (explicit `body.light-mode` overrides in `agents.css`, no hard-coded single-theme colour). 
+
+**HARMONY — keep Agents and Sessions bins mirrored.** The same toolbar/bin pattern is intended for the sessions page; the markup carries a `HARMONY-AGENTS-BIN` marker that pairs with `HARMONY-SESSIONS-BIN`. Any change to the toolbar layout, bin states, or right-side actions on one side must be copied to the other. (Chat-header session delete already soft-recycles via the shared `status` column; the dedicated per-session restore UI is a future sessions page.)

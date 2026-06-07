@@ -27,6 +27,85 @@
   font-weight: 400;
 }
 
+/* ── Recycling-bin toolbar actions (right side) ── */
+#agents-toolbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+#agents-back-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  border: none; border-radius: 7px; cursor: pointer;
+  background: transparent; color: #c0caf5;
+  transition: background .12s ease, color .12s ease;
+}
+#agents-back-btn:hover { background: rgba(192, 202, 245, 0.12); }
+#agents-back-btn > * { pointer-events: none; }
+
+#agents-toolbar-actions {
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.agents-tb-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 28px; padding: 0 10px;
+  font-size: 12px; font-weight: 600;
+  border: 1px solid rgba(192, 202, 245, 0.18); border-radius: 7px;
+  background: rgba(192, 202, 245, 0.04); color: #c0caf5; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease, opacity .12s ease;
+}
+.agents-tb-btn:hover { background: rgba(192, 202, 245, 0.12); border-color: rgba(192, 202, 245, 0.30); }
+.agents-tb-btn:disabled { opacity: 0.4; cursor: default; }
+.agents-tb-btn > * { pointer-events: none; }
+.agents-tb-restore { color: #9ece6a; border-color: rgba(158, 206, 106, 0.30); }
+.agents-tb-restore:hover { background: rgba(158, 206, 106, 0.14); border-color: rgba(158, 206, 106, 0.5); }
+
+/* Header trash button — reuses the shared trash→hazard→spin states. */
+.agents-tb-trash {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  border: 1px solid rgba(247, 118, 142, 0.22); border-radius: 7px;
+  background: rgba(247, 118, 142, 0.05); color: #f7768e; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease, opacity .12s ease;
+}
+.agents-tb-trash:hover { background: rgba(247, 118, 142, 0.14); border-color: rgba(247, 118, 142, 0.45); }
+.agents-tb-trash.warning { color: #e5a83e; border-color: rgba(229, 168, 62, 0.5); background: rgba(229, 168, 62, 0.12); }
+.agents-tb-trash.warning:hover { background: rgba(229, 168, 62, 0.2); color: #f0c050; }
+.agents-tb-trash:disabled { opacity: 0.4; cursor: default; }
+.agents-tb-trash > * { pointer-events: none; }
+
+/* ── Per-square selection checkbox (top-right of every custom-agent tile) ── */
+.agent-select-box {
+  position: absolute; top: 7px; right: 7px; z-index: 5;
+  width: 19px; height: 19px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1.5px solid rgba(192, 202, 245, 0.4); border-radius: 5px;
+  background: rgba(13, 13, 26, 0.55); color: transparent;
+  cursor: pointer; transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.agent-select-box:hover { border-color: var(--accent, #7aa2f7); }
+.agent-select-box > svg { width: 13px; height: 13px; pointer-events: none; }
+.agent-row.selected .agent-select-box {
+  background: var(--accent, #7aa2f7); border-color: var(--accent, #7aa2f7); color: #fff;
+}
+.agent-row.selected .agent-card { border-color: var(--accent, #7aa2f7); }
+
+/* Light-mode overrides */
+body.light-mode #agents-back-btn { color: #3d2c2e; }
+body.light-mode #agents-back-btn:hover { background: rgba(61, 44, 46, 0.08); }
+body.light-mode .agents-tb-btn {
+  color: #3d2c2e; border-color: rgba(61, 44, 46, 0.18); background: rgba(61, 44, 46, 0.03);
+}
+body.light-mode .agents-tb-btn:hover { background: rgba(61, 44, 46, 0.08); border-color: rgba(61, 44, 46, 0.30); }
+body.light-mode .agents-tb-restore { color: #4a8a2a; border-color: rgba(74, 138, 42, 0.35); }
+body.light-mode .agents-tb-restore:hover { background: rgba(74, 138, 42, 0.12); }
+body.light-mode .agents-tb-trash { color: #cc3333; border-color: rgba(204, 51, 51, 0.25); background: rgba(204, 51, 51, 0.04); }
+body.light-mode .agents-tb-trash:hover { background: rgba(204, 51, 51, 0.10); }
+body.light-mode .agents-tb-trash.warning { color: #c8870f; border-color: rgba(200, 135, 15, 0.5); background: rgba(200, 135, 15, 0.12); }
+body.light-mode .agent-select-box { background: rgba(255, 255, 255, 0.75); border-color: rgba(61, 44, 46, 0.35); }
+
+.agents-bin-empty {
+  width: 100%; padding: 40px 20px;
+  font-size: 13px; color: #3a3a5a; text-align: center;
+}
+body.light-mode .agents-bin-empty { color: #b09a92; }
+
 
 /* ── Card grid ──
    Outer shell: a flex column holding the squares strip and (when an agent is
@@ -346,6 +425,7 @@ body.light-mode .agent-builder-eye-btn:hover {
    Collapsed: square showing icon + name only.
    Expanded (active): full-width card with all details. */
 .agent-card {
+  position: relative;
   background: #12122a;
   border: 1px solid #1e1e3a;
   border-radius: 10px;

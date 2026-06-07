@@ -5,7 +5,7 @@ create purpose-built helper agents on demand, hand them self-contained chunks of
 work, hold a real back-and-forth with them, run them blocking or in the background,
 and supervise the background ones with durable timers. It also lets you hand a
 session off entirely (`delegate_to_agent`) or run the prompt optimizer
-(`run_optimizer`). Load this guide before you spawn or delegate.
+(`run_optimizer`).
 
 ## Reach for helpers by default
 
@@ -46,6 +46,10 @@ write-up.**
   like any chat and is visible to the human in the sidebar (badged as a spawn).
 - You stay in charge. Unlike delegating, spawning does **not** replace you — you
   keep running and the helper works alongside you.
+- **Helpers are orchestrators too.** A spawned helper has this same ability, so it
+  can break its own task down and spawn *its own* sub-helpers — recursively, with no
+  depth limit. So when you hand a helper a big chunk, you can trust it to fan the
+  chunk out further itself; you don't have to pre-split everything yourself.
 - Work is **event-driven, not a blocking wait**. You choose per call whether to
   block for the result or fork the helper and be *re-woken* later when it finishes
   or when a timer fires.
@@ -91,8 +95,14 @@ blocking for the single thing you need right now.
   what helpers actually said" below. If the spawn produced nothing, it tells you so
   explicitly.
 - `list_spawns()` — every helper you've spawned this session, with status
-  (`pending` / `running` / `done` / `error` / `stopped`), last result summary, and any
-  pending timer.
+  (`pending` / `queued` / `running` / `done` / `error` / `stopped`), a **`health`**
+  read and a **`stalled`** flag, age fields (`seconds_in_state`,
+  `seconds_since_heartbeat`, `age_seconds`), last result summary, and any pending
+  timer. This is your **liveness check** — use it to tell a healthy in-progress
+  spawn from a dead one. `health` spells out what each status means; `stalled: true`
+  means the helper has gone silent and is effectively dead (being auto-recovered or
+  failed). `queued` = waiting its turn in the run-queue (normal); `running` =
+  actively working; both are in-progress, neither is a result.
 
 **Oversee & stop**
 - `schedule_spawn_check(spawn_id, minutes, note?)` — set a **durable** follow-up
@@ -120,6 +130,15 @@ wait=false)` once per task, each with `check_back_minutes` set. Then **end your 
 (or tell the human what you've set in motion). Each helper runs in the background and
 re-wakes you with its result.
 
+**Spawn as many as you want — they queue, they don't pile up.** There is **no limit
+on how many helpers you may fork**, and helpers may themselves fork their own
+sub-helpers, to any depth. You do **not** need to hold back, batch in small groups,
+or throttle yourself for performance: the system runs a **run-queue** behind the
+scenes that executes a few spawns at a time and holds the rest. So a forked spawn
+moves through statuses **`queued` → `running` → `done`**. `queued` means "waiting its
+turn in the run-queue" — it is **normal and healthy**, not a stall or a failure.
+Just fork everything the work decomposes into and let the queue drain.
+
 **Do NOT busy-poll.** After forking, do *not* sit in a loop calling `list_spawns` /
 `read_spawn` over and over waiting for results — that burns time and tokens and
 delivers nothing. The result comes to *you* as an `[ORCHESTRATION EVENT]` re-wake.
@@ -127,13 +146,14 @@ Trust it. If you want a guaranteed backstop in case a helper is slow or gets
 interrupted, that's exactly what `check_back_minutes` / `schedule_spawn_check` is
 for — set it and stop, don't loop.
 
-> Reliability note: forked work runs in the background and depends on the server
-> staying up while it finishes. **Always attach a `check_back_minutes` timer to forked
-> spawns** so that if one stalls or is interrupted, your safety timer re-wakes you to
-> check on it (`read_spawn` / `list_spawns`) and re-launch if needed — instead of it
-> silently sitting at `running` forever. If you fire many forks at once and several are
-> still `running` long past when they should be done, treat them as stalled: stop them
-> and re-run, rather than waiting indefinitely.
+> Reliability note: forked work runs in the background. If a helper is interrupted
+> (e.g. a server restart), the system **auto-recovers it** — it re-runs the spawn and
+> re-wakes you with the result, or, if it can't recover after retrying, re-wakes you
+> with an `[ORCHESTRATION EVENT]` saying that spawn **FAILED**. So you don't have to
+> babysit forks. Still, **attach a `check_back_minutes` timer** to forks you depend on
+> as a belt-and-braces backstop, and never *block* waiting — act on results as they
+> arrive and treat anything stuck `running` for a long time as failed (see "Report
+> only what helpers actually said").
 
 ## Report only what helpers actually said — verify, never invent
 
@@ -154,7 +174,33 @@ The discipline, every time you report a spawn's result:
 3. **Verify the work is real and complete.** Read the result critically: did the
    helper actually do the task, or did it stall, refuse, go off-track, or answer a
    different question? Check `produced_output` / `spawn_status` — a spawn that is
-   `stopped`, `error`, `running`, or has no answer **did not succeed**.
+   `stopped`, `error`, `running`, or has no answer **did not succeed**. To tell a
+   *live* in-progress spawn from a *dead* one, use **`list_spawns`** and read its
+   **`health`** / **`stalled`** fields: `stalled: true` (or a `health` that says
+   "stalled") means it's gone silent and is effectively dead — don't wait on it and
+   don't report it as anything but failed/unfinished. Don't try to eyeball "has it
+   been too long" yourself — that's exactly what `health` tells you.
+   - **Never narrate a `running` (or `queued`) spawn.** You cannot see what an
+     in-progress helper is "doing" — you only ever see its *finished* output. Do
+     **not** write things like "it's still researching", "adapting well", "digging
+     deeper", "pivoting", "cranking away", or "all the running tests are still
+     churning" about a spawn that hasn't returned. You have no evidence for any of
+     that; it is hallucination. Report a not-yet-finished spawn as exactly that:
+     *not finished yet* — nothing more.
+   - **A spawn's partial transcript is NOT a result.** Even though `read_spawn` lets
+     you peek at a still-running helper's transcript, what you see there is *work in
+     progress*, not a conclusion — the helper may revise, retract, or never finish it.
+     Do **not** present anything from a `running`/`queued` spawn's transcript as a
+     finding or result. Only report a spawn's outcome from **`quote_spawn` on a spawn
+     whose status is `done`**. If it isn't `done`, you have no result to report — say
+     so.
+   - **A spawn stuck `running` for a long time is a failure, not progress.** Helpers
+     finish in well under a couple of minutes of *running* time. `queued` is fine (it's
+     just waiting its turn in the run-queue under load — see below). But if a spawn has
+     been `running` far longer than a normal task, treat it as stalled: re-run it or
+     report it failed. (The system also auto-retries interrupted spawns in the
+     background and will re-wake you if one ultimately fails — but don't *wait* on that;
+     act on what you can see.)
 4. **Retry what failed.** If a helper produced nothing or did the wrong thing, re-run
    it — spawn again with a clearer task, or `message_spawn` to correct it. Give it a
    bounded number of tries.

@@ -65,13 +65,14 @@ FEATURE = {
     ),
     "simple": True,
     # Bundled skill (body in agent_orchestration.skill.md, found by convention).
-    "skill_mode": "selectable",
+    # ALWAYS-ON: the orchestration guidance is injected every turn so the agent
+    # always knows it can (and should) use helpers — no load_skill step required.
+    "skill_mode": "always_on",
     "skill_handle": "agent_orchestration_guide_v1",
     "skill_summary": "How to spawn helper agents (write their prompt or clone "
                      "one), run them blocking or forked, hold a real "
                      "conversation with them, and oversee forked work with "
-                     "durable follow-up timers. Load this before spawning or "
-                     "delegating.",
+                     "durable follow-up timers.",
 }
 
 
@@ -97,6 +98,9 @@ CREATE TABLE IF NOT EXISTS agent_spawns (
     result_summary           TEXT,
     next_check_at            TEXT,
     check_note               TEXT,
+    resume_attempts          INTEGER,
+    heartbeat_at             TEXT,
+    claim_token              TEXT,
     created_at               TEXT,
     updated_at               TEXT
 )
@@ -105,9 +109,11 @@ _INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_agent_spawns_orch ON agent_spawns(orchestrator_session_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_spawns_session ON agent_spawns(spawn_session_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_spawns_check ON agent_spawns(next_check_at)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_spawns_hb ON agent_spawns(status, heartbeat_at)",
 ]
 
-_UPDATABLE = {"name", "task", "status", "result_summary", "next_check_at", "check_note"}
+_UPDATABLE = {"name", "task", "status", "result_summary", "next_check_at",
+              "check_note", "resume_attempts", "heartbeat_at"}
 
 
 def _now_iso() -> str:
@@ -133,6 +139,15 @@ def _ensure_table(conn) -> None:
         try:
             conn.execute(stmt)
         except Exception:  # noqa: BLE001 — index is best-effort
+            pass
+    # Best-effort add of columns introduced after a table's first creation
+    # (older installs created the table without them). ALTER fails if it already
+    # exists — that's fine.
+    for col, decl in (("resume_attempts", "INTEGER"),
+                      ("heartbeat_at", "TEXT"), ("claim_token", "TEXT")):
+        try:
+            conn.execute(f"ALTER TABLE agent_spawns ADD COLUMN {col} {decl}")
+        except Exception:  # noqa: BLE001
             pass
 
 
@@ -226,6 +241,30 @@ def _spawns_update(spawn_id: str, **fields) -> None:
     _retry_write(_do)
 
 
+def _spawns_heartbeat(spawn_id: str, now_iso: Optional[str] = None) -> None:
+    """Stamp a fresh ``heartbeat_at`` to prove this spawn's runner is alive. Called
+    repeatedly by the runner while a spawn is queued/running. Cross-instance, this
+    is the ONLY reliable liveness signal: a stale heartbeat means no live runner on
+    any instance, so the row is safe to recover. Best-effort + quiet (a missed beat
+    just shortens the liveness margin; the cutoff is many beats wide)."""
+    ts = now_iso or _now_iso()
+
+    def _do():
+        conn = _db_conn()
+        if conn is None:
+            return
+        try:
+            conn.execute("UPDATE agent_spawns SET heartbeat_at = ? WHERE id = ?", (ts, spawn_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    try:
+        _retry_write(_do)
+    except Exception:  # noqa: BLE001 — a missed heartbeat is non-fatal
+        pass
+
+
 def _spawns_claim_due(now_iso: Optional[str] = None) -> list:
     """Rows whose follow-up timer elapsed; clear the timer so each fires once."""
     ts = now_iso or _now_iso()
@@ -250,6 +289,123 @@ def _spawns_claim_due(now_iso: Optional[str] = None) -> list:
                 )
             conn.commit()
             return claimed
+        finally:
+            conn.close()
+
+    return _retry_write(_do)
+
+
+def _spawns_claim_orphaned_running(now_iso: str, older_than_seconds: int,
+                                   max_attempts: int, limit: int,
+                                   exclude_ids=()) -> list:
+    """Forked spawns whose runner died (e.g. a server restart) sit at
+    ``status='running'`` (or 'queued', if killed while waiting for a run slot)
+    forever — their in-process task is gone, so they never settle and never
+    re-wake the orchestrator. A live runner proves itself by refreshing
+    ``heartbeat_at`` every ``_HEARTBEAT_INTERVAL``s, so a row whose heartbeat is
+    older than ``older_than_seconds`` has NO live runner on ANY instance.
+
+    MULTI-INSTANCE SAFE: the claim is atomic across processes/instances. We stamp
+    a unique ``claim_token`` in a single guarded UPDATE (``heartbeat_at <= cutoff``
+    re-checked at write time) and bump ``resume_attempts`` + refresh
+    ``heartbeat_at`` in the same statement — so whoever's UPDATE lands first wins
+    the row and every other instance's guard then fails (heartbeat is now fresh).
+    Each instance re-runs only the rows carrying ITS token. ``exclude_ids`` is an
+    extra in-process fast-skip; correctness rests on the token + heartbeat, not on
+    it. Returns the rows this caller won, to be re-initiated."""
+    cutoff = (datetime.fromisoformat(now_iso) - timedelta(seconds=older_than_seconds)).isoformat()
+    excl = set(exclude_ids or ())
+    token = uuid.uuid4().hex
+
+    def _do():
+        conn = _db_conn()
+        if conn is None:
+            return []
+        try:
+            _ensure_table(conn)
+            # 1. Read a bounded batch of candidates (cheap read; not the claim).
+            rows = conn.execute(
+                """SELECT id FROM agent_spawns
+                   WHERE status IN ('running', 'queued')
+                     AND COALESCE(heartbeat_at, updated_at) <= ?
+                     AND COALESCE(resume_attempts, 0) < ?
+                   ORDER BY COALESCE(heartbeat_at, updated_at) ASC""",
+                (cutoff, max_attempts),
+            ).fetchall()
+            ids = [r["id"] for r in rows if r["id"] not in excl][:max(0, int(limit))]
+            if not ids:
+                return []
+            # 2. Atomic claim: only rows STILL stale at write time get our token
+            #    (+ bumped attempts + a fresh heartbeat so no one else re-claims).
+            ph = ",".join(["?"] * len(ids))
+            conn.execute(
+                f"""UPDATE agent_spawns
+                    SET claim_token = ?, resume_attempts = COALESCE(resume_attempts, 0) + 1,
+                        heartbeat_at = ?, updated_at = ?
+                    WHERE id IN ({ph})
+                      AND status IN ('running', 'queued')
+                      AND COALESCE(heartbeat_at, updated_at) <= ?
+                      AND COALESCE(resume_attempts, 0) < ?""",
+                (token, now_iso, now_iso, *ids, cutoff, max_attempts),
+            )
+            conn.commit()
+            # 3. Fetch only what WE won (our token).
+            won = conn.execute(
+                "SELECT * FROM agent_spawns WHERE claim_token = ?", (token,)
+            ).fetchall()
+            return [dict(r) for r in won]
+        finally:
+            conn.close()
+
+    return _retry_write(_do)
+
+
+def _spawns_fail_exhausted(now_iso: str, older_than_seconds: int, max_attempts: int,
+                           exclude_ids=()) -> list:
+    """Give up on spawns still stuck 'running'/'queued' (stale heartbeat) after
+    exhausting their resume budget: flip them to 'error' so they don't sit
+    unfinished forever. MULTI-INSTANCE SAFE via the same token pattern — the
+    status→'error' flip is itself the guard (other instances' WHERE no longer
+    matches), and the token tells us which rows WE failed (to notify their
+    orchestrator). ``exclude_ids`` is an extra in-process fast-skip."""
+    cutoff = (datetime.fromisoformat(now_iso) - timedelta(seconds=older_than_seconds)).isoformat()
+    excl = set(exclude_ids or ())
+    token = uuid.uuid4().hex
+
+    def _do():
+        conn = _db_conn()
+        if conn is None:
+            return []
+        try:
+            _ensure_table(conn)
+            rows = conn.execute(
+                """SELECT id FROM agent_spawns
+                   WHERE status IN ('running', 'queued')
+                     AND COALESCE(heartbeat_at, updated_at) <= ?
+                     AND COALESCE(resume_attempts, 0) >= ?""",
+                (cutoff, max_attempts),
+            ).fetchall()
+            ids = [r["id"] for r in rows if r["id"] not in excl]
+            if not ids:
+                return []
+            ph = ",".join(["?"] * len(ids))
+            conn.execute(
+                f"""UPDATE agent_spawns
+                    SET status = 'error', claim_token = ?, result_summary = ?, updated_at = ?
+                    WHERE id IN ({ph})
+                      AND status IN ('running', 'queued')
+                      AND COALESCE(heartbeat_at, updated_at) <= ?
+                      AND COALESCE(resume_attempts, 0) >= ?""",
+                (token,
+                 "Auto-recovery gave up: this spawn was interrupted (likely a server "
+                 "restart) and did not finish after retrying. Re-run it if still needed.",
+                 now_iso, *ids, cutoff, max_attempts),
+            )
+            conn.commit()
+            failed = conn.execute(
+                "SELECT * FROM agent_spawns WHERE claim_token = ? AND status = 'error'", (token,)
+            ).fetchall()
+            return [dict(r) for r in failed]
         finally:
             conn.close()
 
@@ -317,6 +473,48 @@ def _iso_minutes_from_now(minutes: float) -> str:
     return (datetime.now(timezone.utc) + timedelta(minutes=max(0.0, minutes))).isoformat()
 
 
+def _age_seconds(now_dt: datetime, iso: Optional[str]) -> Optional[int]:
+    """Whole seconds between an ISO timestamp and now (None if unparseable)."""
+    if not iso:
+        return None
+    try:
+        return max(0, int((now_dt - datetime.fromisoformat(iso)).total_seconds()))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _spawn_health(status: Optional[str], since_heartbeat: Optional[int]) -> tuple:
+    """Map (status, seconds-since-last-heartbeat) → (stalled?, human health line).
+
+    `stalled` is True when a spawn that should have a live runner ('running' or
+    'queued') has gone silent past the orphan window — i.e. no heartbeat from ANY
+    instance — so it is almost certainly interrupted/dead, not progressing. The
+    background recovery will re-run or fail it; meanwhile the orchestrator should
+    treat it as NOT a result."""
+    st = status or "unknown"
+    stale = st in ("running", "queued") and since_heartbeat is not None and \
+        since_heartbeat >= _ORPHAN_RUNNING_SECONDS
+    if st == "done":
+        return False, "done — finished; call quote_spawn for its actual result"
+    if st == "error":
+        return False, "failed — did not complete; there is no result to report"
+    if st == "stopped":
+        return False, "stopped — you halted it; transcript kept, no completed result"
+    if st == "pending":
+        return False, "pending — created but not started yet"
+    if st == "queued":
+        if stale:
+            return True, (f"stalled — queued but no heartbeat for {since_heartbeat}s; its runner "
+                          "is likely dead. Being auto-recovered/failed. NOT a result.")
+        return False, "queued — waiting for a run slot (normal under load); not a result yet"
+    if st == "running":
+        if stale:
+            return True, (f"stalled — 'running' but silent for {since_heartbeat}s; treat as "
+                          "interrupted/failed, NOT progress. Being auto-recovered/failed.")
+        return False, "running — actively working; not finished, not a result yet"
+    return False, st
+
+
 async def _create_spawn(*, user_id, orchestrator_session_id, orchestrator_agent_id,
                         task, name="", system_prompt="", from_agent="") -> dict:
     """Materialize a helper agent + its own tagged session + an agent_spawns row."""
@@ -381,14 +579,35 @@ async def _rewake_orchestrator(user_id: str, orchestrator_session_id: str, note:
                        orchestrator_session_id, e)
 
 
+async def _heartbeat_loop(spawn_id: str) -> None:
+    """Refresh a spawn's heartbeat every _HEARTBEAT_INTERVAL while its runner is
+    alive (covers the whole life of the runner coroutine: queue-wait + run), so a
+    live spawn is never recovered as 'dead' — on this OR any other instance."""
+    try:
+        while True:
+            _spawns_heartbeat(spawn_id)
+            await asyncio.sleep(_HEARTBEAT_INTERVAL)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.debug("heartbeat loop for spawn %s stopped: %s", spawn_id, e)
+
+
 async def _run_spawn_turn(*, user_id, spawn_id, spawn_session_id, message, wait,
                          notify_on_done=True, wait_timeout=300.0) -> dict:
-    """WAIT: await the turn, return the reply. FORK: return immediately; a
-    background task settles the spawn and (if notify_on_done) re-wakes the
-    orchestrator with the result."""
-    _spawns_update(spawn_id, status="running")
-
+    """WAIT: await the turn inline (bypasses the run-queue — see _run_slots),
+    return the reply. FORK: return immediately as 'queued'; a background task
+    waits for a run slot, executes the turn, settles the spawn, and (if
+    notify_on_done) re-wakes the orchestrator with the result."""
     if wait:
+        # Blocking runs execute inline under the caller and do NOT take a run
+        # slot: they don't multiply concurrency, and throttling them would
+        # deadlock a deep blocking chain. Tracked as live so recovery won't
+        # double-run a legitimately long one.
+        _spawns_update(spawn_id, status="running")
+        _LIVE_RUNS.add(spawn_id)
+        _spawns_heartbeat(spawn_id)
+        hb = asyncio.create_task(_heartbeat_loop(spawn_id))
         try:
             reply = await _post_chat(user_id, spawn_session_id, message, wait_timeout)
             _spawns_update(spawn_id, status="done", result_summary=(reply or "")[:2000])
@@ -397,14 +616,35 @@ async def _run_spawn_turn(*, user_id, spawn_id, spawn_session_id, message, wait,
             logger.warning("Spawn %s wait-run failed: %s", spawn_id, e)
             _spawns_update(spawn_id, status="error", result_summary=str(e)[:2000])
             return {"status": "error", "error": str(e)}
+        finally:
+            hb.cancel()
+            try:
+                await hb
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            _LIVE_RUNS.discard(spawn_id)
 
     spawn = _spawns_get(spawn_id) or {}
     orch_session = spawn.get("orchestrator_session_id")
     spawn_name = spawn.get("name") or spawn_id
 
+    # Mark queued up-front: it has a live runner (below) but may sit waiting for a
+    # run slot under heavy fan-out. 'queued' (not 'running') keeps the orphan
+    # sweep from mistaking a slot-waiting spawn for a dead one.
+    _spawns_update(spawn_id, status="queued")
+
     async def _bg():
+        _LIVE_RUNS.add(spawn_id)
+        _spawns_heartbeat(spawn_id)  # prove life immediately, even while queued
+        hb = asyncio.create_task(_heartbeat_loop(spawn_id))
         try:
-            reply = await _post_chat(user_id, spawn_session_id, message, wait_timeout)
+            # Drain through the global run-queue: unlimited spawns may be queued,
+            # but only _MAX_CONCURRENT_SPAWN_RUNS execute their (heavy) loop at
+            # once. The slot is held ONLY for the spawn's own turn — released
+            # before the re-wake so the orchestrator's reaction isn't gated by it.
+            async with _run_slots():
+                _spawns_update(spawn_id, status="running")
+                reply = await _post_chat(user_id, spawn_session_id, message, wait_timeout)
             _spawns_update(spawn_id, status="done", result_summary=(reply or "")[:2000])
             if notify_on_done and orch_session:
                 await _rewake_orchestrator(user_id, orch_session, (
@@ -421,9 +661,16 @@ async def _run_spawn_turn(*, user_id, spawn_id, spawn_session_id, message, wait,
                     user_id, orch_session,
                     f"[ORCHESTRATION EVENT] Spawn '{spawn_name}' (id {spawn_id}) errored: {e}",
                 )
+        finally:
+            hb.cancel()
+            try:
+                await hb
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            _LIVE_RUNS.discard(spawn_id)
 
     asyncio.create_task(_bg())
-    return {"status": "running"}
+    return {"status": "queued"}
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -434,12 +681,104 @@ async def _run_spawn_turn(*, user_id, spawn_id, spawn_session_id, message, wait,
 # ════════════════════════════════════════════════════════════════════════════
 
 _POLL_INTERVAL = 20
+
+# ── Spawn self-healing tunables ──────────────────────────────────────────────
+# The core run self-healing (session_runs + boot resume) does NOT cover spawn
+# turns: forked spawns run via the plain /api/v1/chat path and never register a
+# session_runs row, so a restart orphans them with no recovery. This ability
+# therefore heals its OWN forked spawns from the same poller. A spawn left at
+# 'running' with a stale updated_at (no live runner is touching it) is treated as
+# orphaned and re-initiated; we re-run a few per tick (not all at once) to avoid a
+# thundering-herd reload right after a restart, and cap retries per spawn.
+_ORPHAN_RUNNING_SECONDS = 180   # 'running'/'queued' + idle this long ⇒ runner is dead
+_MAX_SPAWN_RESUME = 2           # retry budget per spawn before giving up (→ error)
+_RECOVER_PER_TICK = 3           # re-initiate at most this many orphans per tick
+
+# ── Spawn run-queue (concurrency throttle) ───────────────────────────────────
+# Spawns can spawn — self-orchestration is unlimited in DEPTH and BREADTH (an
+# agent may fork as many helpers as it likes, and those helpers may fork their
+# own). What is bounded is how many forked spawn loops EXECUTE at once. Each
+# forked spawn runs a full agent loop (its own LLM calls + parallel tool batches)
+# via a loopback into this same server process; letting dozens run simultaneously
+# exhausts memory and hard-kills the process (observed: ~6 crashes/16min under a
+# heavy fan-out). So forked execution drains through a global semaphore: requests
+# are never capped, but only this many run concurrently — the rest sit 'queued'
+# and start as slots free up. Blocking (wait=True) spawns BYPASS the semaphore:
+# they run inline under their caller, so they don't multiply concurrency, and
+# throttling them would deadlock a deep blocking chain (each level would hold a
+# slot waiting for a deeper level that can't get one). Tune via env.
+_MAX_CONCURRENT_SPAWN_RUNS = max(1, int(os.environ.get("WEBAGENT_SPAWN_CONCURRENCY", "3") or 3))
+_RUN_SLOTS: Optional[asyncio.Semaphore] = None
+# How often a live runner refreshes its heartbeat. Must be comfortably smaller
+# than _ORPHAN_RUNNING_SECONDS so a healthy spawn beats several times within the
+# window and is never mistaken for dead.
+_HEARTBEAT_INTERVAL = max(5, int(os.environ.get("WEBAGENT_SPAWN_HEARTBEAT", "20") or 20))
+# spawn_ids whose runner coroutine is alive THIS process (queued-and-waiting or
+# actively running). Recovery skips these: a spawn that's stuck 'running'/'queued'
+# but NOT in this set has no live runner (e.g. a restart killed it) ⇒ orphaned.
+# This also prevents wrongly re-running a legitimately long live spawn.
+_LIVE_RUNS: set = set()
+
+
+def _run_slots() -> asyncio.Semaphore:
+    """Lazily create the run-queue semaphore so it binds to the running loop."""
+    global _RUN_SLOTS
+    if _RUN_SLOTS is None:
+        _RUN_SLOTS = asyncio.Semaphore(_MAX_CONCURRENT_SPAWN_RUNS)
+    return _RUN_SLOTS
+
+
 _poll_task: Optional[asyncio.Task] = None
 _poll_running = False
 
 
+async def _resume_orphaned_spawns(now_iso: str) -> None:
+    """Self-heal forked spawns whose runner died (server restart, crash). Give up
+    on any that exhausted their retry budget (→ error + notify), then re-initiate
+    a few of the rest by re-running their original task; completion re-wakes the
+    orchestrator exactly like a normal fork finish."""
+    live = set(_LIVE_RUNS)
+    try:
+        for dead in _spawns_fail_exhausted(now_iso, _ORPHAN_RUNNING_SECONDS,
+                                           _MAX_SPAWN_RESUME, exclude_ids=live):
+            orch = dead.get("orchestrator_session_id")
+            if orch:
+                await _rewake_orchestrator(dead.get("user_id"), orch, (
+                    f"[ORCHESTRATION EVENT] Spawn '{dead.get('name') or dead.get('id')}' "
+                    f"(id {dead.get('id')}) FAILED to complete — it was interrupted (likely a "
+                    "server restart) and could not be recovered after retrying. Re-spawn it if "
+                    "you still need it, or report it as failed. Do not invent its result."))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("exhausted-spawn sweep failed: %s", e)
+
+    try:
+        orphans = _spawns_claim_orphaned_running(
+            now_iso, _ORPHAN_RUNNING_SECONDS, _MAX_SPAWN_RESUME, _RECOVER_PER_TICK,
+            exclude_ids=live)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("orphan claim failed: %s", e)
+        return
+    for spawn in orphans:
+        try:
+            msg = (spawn.get("task") or "").strip() or "Continue and complete your task."
+            logger.info("Re-initiating orphaned spawn %s '%s' (attempt %s/%s)",
+                        spawn.get("id"), spawn.get("name"),
+                        spawn.get("resume_attempts"), _MAX_SPAWN_RESUME)
+            await _run_spawn_turn(
+                user_id=spawn.get("user_id"), spawn_id=spawn.get("id"),
+                spawn_session_id=spawn.get("spawn_session_id"),
+                message=msg, wait=False, notify_on_done=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Re-initiating spawn %s failed: %s", spawn.get("id"), e)
+
+
 async def _poll_tick() -> None:
     now = _now_iso()
+    # Self-heal forked spawns orphaned by a dead runner (e.g. a server restart).
+    try:
+        await _resume_orphaned_spawns(now)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("orphaned-spawn recovery failed: %s", e)
     try:
         due = _spawns_claim_due(now_iso=now)
     except Exception as e:  # noqa: BLE001
@@ -524,11 +863,15 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
                 agent_template_id: Optional[str] = None, **_ctx):
     """Return {tool_name: handler} for the spawn-and-oversee tools.
 
-    Recursion guard (the ability owns its own gating): returns {} inside a
-    helper's own session (id prefix `spawn-`) so a helper can't spawn more
-    helpers and cascade, and {} for optimizer pipeline sub-agents.
+    Self-orchestration is UNLIMITED: a helper (its own session id is prefixed
+    `spawn-`) gets the full spawn toolset too, so it can spawn its own
+    sub-helpers, to any depth and breadth. Run-away cascades are prevented not by
+    forbidding nesting but by the global run-queue (see _run_slots): unlimited
+    spawns may be requested/queued, but only a few execute their heavy loop at
+    once, so a deep/wide tree drains safely instead of crashing the process.
+    Optimizer pipeline sub-agents are still excluded (they aren't orchestrators).
     """
-    if not session_id or session_id.startswith("spawn-"):
+    if not session_id:
         return {}
     if agent_template_id in _PIPELINE_TEMPLATES:
         return {}
@@ -584,8 +927,11 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
             if result.get("status") == "error":
                 out["error"] = result.get("error")
         else:
-            out["note"] = ("Spawn is running on its own. You'll be re-woken with its result "
-                           "when it finishes. Check anytime with read_spawn / list_spawns.")
+            out["note"] = ("Spawn forked — it's queued in the run-queue and will run on its "
+                           "own (status goes queued → running → done). You'll be re-woken with "
+                           "its result when it finishes; no need to wait or poll. 'queued' just "
+                           "means it's waiting its turn under load — that's normal, not a "
+                           "failure. Check anytime with list_spawns.")
         return json.dumps(out)
 
     async def message_spawn(spawn_id: str, message: str, wait: bool = False) -> str:
@@ -693,16 +1039,38 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
 
     async def list_spawns() -> str:
         """List the helper agents you've spawned in this session, with status,
-        last result summary, and any pending follow-up timer."""
+        a health read (is it alive / stalled / done?), age, last result summary,
+        and any pending follow-up timer."""
         try:
             rows = _spawns_list(session_id)
         except Exception as e:  # noqa: BLE001
             return _err(f"Could not list spawns: {e}")
-        spawns = [{"spawn_id": r.get("id"), "name": r.get("name"), "status": r.get("status"),
-                   "task": (r.get("task") or "")[:200],
-                   "result_summary": (r.get("result_summary") or "")[:400],
-                   "next_check_at": r.get("next_check_at")} for r in rows]
-        return json.dumps({"status": "ok", "count": len(spawns), "spawns": spawns})
+        now_dt = datetime.now(timezone.utc)
+        spawns = []
+        for r in rows:
+            status = r.get("status")
+            # Prefer the heartbeat (refreshed during a run); fall back to updated_at
+            # for legacy rows with no heartbeat — same basis the recovery uses.
+            since_hb = _age_seconds(now_dt, r.get("heartbeat_at") or r.get("updated_at"))
+            stalled, health = _spawn_health(status, since_hb)
+            spawns.append({
+                "spawn_id": r.get("id"), "name": r.get("name"), "status": status,
+                "health": health, "stalled": stalled,
+                "seconds_since_heartbeat": since_hb,
+                "seconds_in_state": _age_seconds(now_dt, r.get("updated_at")),
+                "age_seconds": _age_seconds(now_dt, r.get("created_at")),
+                "task": (r.get("task") or "")[:200],
+                "result_summary": (r.get("result_summary") or "")[:400],
+                "next_check_at": r.get("next_check_at"),
+            })
+        return json.dumps({
+            "status": "ok", "count": len(spawns), "spawns": spawns,
+            "guidance": ("`health`/`stalled` tell you a spawn's liveness. Only a 'done' spawn "
+                         "has a result (read it with quote_spawn). 'running'/'queued' are "
+                         "in-progress — never report them as results or narrate what they're "
+                         "'doing'. A 'stalled' spawn is effectively dead — it's being "
+                         "auto-recovered or failed; don't wait on it, and don't invent its output."),
+        })
 
     async def stop_spawn(spawn_id: str) -> str:
         """Interrupt a running spawn and mark it stopped (transcript is kept)."""
@@ -747,7 +1115,12 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
     }
 
 
-DESTRUCTIVE = {"spawn_agent", "message_spawn", "stop_spawn"}
+# No host-side confirmation on the orchestration tools themselves: creating /
+# messaging / stopping helpers is frictionless. Anything risky a HELPER does runs
+# inside that helper's own session, where that agent's own tool gating asks for
+# confirmation — so the guard sits where the real side effect happens, not on the
+# act of spawning.
+DESTRUCTIVE: set = set()
 
 TOOL_SCHEMAS = {
     "spawn_agent": {

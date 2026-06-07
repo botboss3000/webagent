@@ -242,9 +242,13 @@ webAgent/
 │   ├── agents/             # Agent template JSON — seeded into agent_templates (reverse-export: scripts/export_agent_templates.py)
 │   ├── config/             # App config JSON: provider.json, app-settings.json, scheduler_config.json, optimizer.json, remote_access.json
 │   ├── db/                 # Runtime databases (gitignored): local.db (user data), logs.db, recordings.db, vault.db (credentials), optimizer scratch
-│   ├── uploads/            # User-uploaded files (mounted at /uploads; gitignored)
-│   ├── visuals/            # Generated per-user pages + images (mounted at /visuals; gitignored)
-│   └── screenshots/        # Browser-tool screenshots (mounted at /screenshots)
+│   ├── screenshots/        # Browser-tool screenshots — legacy/fallback pile only (mounted at /screenshots; gitignored)
+│   └── user_data/          # Per-user home (gitignored), mounted at /user_data (auth-gated):
+│                           #   data/user_data/<user_id>/{uploads,visuals,pages,screenshots,files}
+│                           #   — inbound attachments, generated images, AutoAgent page bodies,
+│                           #   browser screenshots, and general agent outputs. Written via the
+│                           #   attachment store, image-gen, pages store, and the User Files ability.
+│                           #   (Old data/uploads & data/visuals are retired — no longer written.)
 ├── docs/                   # Operator docs (events-setup.md, remote-access-setup.md) + claude/ agent guides
 ├── tests/                  # e.g. test_session_history.py (unittest)
 ├── sw.js                   # PWA service worker (must be at root scope for coverage)
@@ -299,6 +303,8 @@ cp .env.example .env          # Windows (cmd): copy .env.example .env
 | `AGENT_MAX_STALL_STRIKES` | Stall guard: how many blocked-loop strikes accumulate before the agent stops cleanly with a "I was repeating myself" message (default `4`). |
 | `AGENT_MAX_WALL_SECONDS` | Stall guard / backstop: wall-clock cap on a whole agent response (all turns); on exceed the loop ends **gracefully** with a message instead of running until the request times out. This is the real safety net when an agent's turn count is **unlimited** (`0`). Default `600`; per-agent override via the agent's `max_wall_seconds` field; set `0` to disable. |
 | `AGENT_RUN_HEARTBEAT_INTERVAL` | Self-healing: how often (seconds) the live loop advances `session_runs.heartbeat_at` to prove liveness for the watchdog (default `5`). |
+| `WEBAGENT_SPAWN_CONCURRENCY` | Agent Orchestration ability — how many **forked** spawned-helper turns may execute their (heavy) agent loop **at once** (default `3`, min `1`). Agents may request/fork unlimited helpers (and helpers may spawn their own, recursively); excess sit `queued` in a run-queue and start as slots free up. This bounds concurrent loopback agent loops so a wide/deep fan-out can't exhaust memory and hard-kill the process. Blocking (`wait=true`) spawns run inline and bypass this. |
+| `WEBAGENT_SPAWN_HEARTBEAT` | Agent Orchestration — how often (seconds) a live spawn runner refreshes its `agent_spawns.heartbeat_at` to prove liveness (default `20`, min `5`). The self-healing sweep treats a spawn with no heartbeat for ~180s as dead and **fails it (never auto-re-runs it)** — re-running would re-execute everything the spawn already did, *including re-spawning the sub-helpers it created*, snowballing one restart into an exploding fan-out; instead the orchestrator is re-woken to re-spawn deliberately if it still needs the work. Keep this well under that window. The heartbeat is what makes recovery **multi-instance safe** (a stale heartbeat = no live runner on *any* instance), alongside an atomic token-based claim so two instances can't fail the same spawn twice. |
 | `WEBAGENT_BROWSER_CDP_PORT` | Remote-debugging port the `browser_action` tool looks for a visible **App Window** on to attach to (default `9222`). When nothing is listening there (no window, or a headless server), the browser stays headless. Set automatically by the launcher's App Window button; rarely needs changing. |
 | `OPENROUTER_REFERER` | Optional Referer header for OpenRouter |
 | `OPENROUTER_TITLE` | Optional app title for OpenRouter |
@@ -460,8 +466,8 @@ The installer (`TUI/install-termux.sh`) installs Python + git, the TUI and its t
 | `http://localhost:8080/privacy` | Privacy Policy page (`ui/privacy.html`, public, no auth) |
 | `http://localhost:8080/tos` | Terms of Service page (`ui/tos.html`, public, no auth) |
 | `https://webagent.live/termux` (also `/termux.sh`) | One-line Termux installer for the standalone webAgent TUI — serves `TUI/install-termux.sh` (LF-normalised); `curl -fsSL https://webagent.live/termux \| bash` |
-| `http://localhost:8080/uploads/` | Served uploaded files directory |
-| `http://localhost:8080/visuals/users/<uid>/<slug>.html` | Served AutoAgent page output (ephemeral) |
+| `http://localhost:8080/user_data/<uid>/<room>/<file>` | Per-user data home (auth-gated): **uploads**, generated **visuals**, browser **screenshots**, and general agent outputs (**files**). Written by the attachment store, image-gen, browser tool, and the **User Files** ability (`save_file`) — see `app/user_workspace.py`. (Replaces the retired `/uploads` and `/visuals` mounts.) |
+| `http://localhost:8080/api/v1/pages/<uid>/<slug>/html` | Served AutoAgent page body (bodies stored at `data/user_data/<uid>/pages/`) |
 | `http://localhost:8080/api/v1/pages?user_id=...` | AutoAgent pages REST API |
 | `http://localhost:8080/api/v1/wiki` | Company-wide Wiki REST API — list / `search?q=` (hybrid) / `{slug}` CRUD |
 | `http://localhost:8080/api/v1/diagnostics` | Diagnostic flight-recorder — recent records (admin only; filters: `levels`, `categories`, `session_id`, `agent_id`, `search`, `since_minutes`, `limit`) |
@@ -554,6 +560,17 @@ The seeder runs at **app startup** (manifest-gated, almost always a no-op). To r
 - **`PUT /api/v1/agents/{agent_id}/my-prompts`** — any caller writes their own override rows for unlocked slots; locked or unknown slot_names are rejected per item.
 - **`DELETE /api/v1/agents/{agent_id}/my-prompts/{slot_name}?user_id=...`** — clears one user's override for a slot.
 
+### Recycling bin (soft delete)
+
+Agents and chat sessions are never hard-deleted from the normal UI — they go to a recycling bin first. Lifecycle is tracked by a `status` column: agents are `active` ↔ `trashed`, sessions are `active` ↔ `recycled`. Child rows (agent_prompts, interactions) carry no flag of their own; they follow their parent and are erased only on a permanent delete. (`agents.status` already existed and was extended; `sessions.status` was added — see `app/db/schema/tables.py` and the `local.py` SCHEMA_SQL + ALTER-TABLE migration; Postgres picks it up via column reconcile.)
+
+- **`GET /api/v1/agents?user_id=...&view=bin`** — lists only the caller's trashed agents (the Agents-page bin view). Default `view=active` lists live agents + visible templates.
+- **`DELETE /api/v1/agents/{agent_id}?user_id=...`** — SOFT delete: moves the agent to the bin (`status='trashed'`). Add **`&permanent=true`** to erase it for good (agent + prompts + its sessions + their transcripts/summaries + connections/abilities) — used by the bin's own trash button.
+- **`POST /api/v1/agents/{agent_id}/restore?user_id=...`** — restores a trashed agent back to the Agents page.
+- **`DELETE /api/v1/db/sessions/{session_id}?db=local.db`** — SOFT delete: recycles the session (`status='recycled'`, hidden from the chat dropdown but kept). Add **`&permanent=true`** to erase it. A recycled session is truly removed only when its agent is permanently emptied from the bin.
+
+The Agents-page header (`ui/agents.html` + `ui/js/agents.js`) renders the bin controls — per-square checkboxes plus **Select all / Deselect all / Trash** (and **Back to Agents / Restore** inside the bin). The trash button moves checked agents to the bin, or — with nothing checked — opens the bin view (a view-swap inside the same Agents tab, not a new nav tab).
+
 ### In-chat self-modification
 
 The agent's in-chat prompt-refinement flow uses the same admin/user split: admin callers may write to admin-base rows, members and anonymous visitors can only write to their own override rows. Locked slots are refused with a user-visible message.
@@ -619,6 +636,7 @@ webAgent is designed to run on Cloud Run. The `Dockerfile` is Cloud Run-ready (`
 | `aiomysql` + `sqlglot` available | Required for per-agent external data source connectors. `aiomysql` powers the `sql_mysql` connector; `sqlglot` is used by SQL connectors to parse statement type and referenced tables before sending to the customer DB. Both are pinned in `requirements.txt`. |
 | Automation scheduler set to a remote backend on Cloud Run | The default `LocalScheduler` in **`app/scheduler/local.py`** is in-process — it does not survive container recycles and will not fire across multiple instances. For Cloud Run deployments switch the provider to `google` under **App Config → Automation** (the `GoogleScheduler` is currently stubbed; finish the integration before relying on scheduled tasks in production). |
 | Event-trigger poll + renewer loops are in-process | The loops in **`app/events/poller.py`** and **`app/events/renewer.py`** share the same Cloud Run limitation as the local scheduler — they only run while the container is warm. Push-based event sources (Gmail / Outlook / Calendar / Drive / Dropbox / Shopify / comms bridges) work fine on Cloud Run because providers POST directly to **`/api/v1/events/{source}`** and wake the container; poll-only sources (Twitter, Reddit) need a long-running host (the GCE VM) or an external scheduler that hits the poll endpoints. Subscription renewal also needs a warm instance — if you scale to zero, set `min_instances=1` or invoke a refresh from Cloud Scheduler. |
+| Agent Orchestration spawns rely on background work | Forked spawned-helper runners and the orchestration recovery poller (**`plugins/abilities/agent_orchestration.py`**) are in-process background tasks. They need **CPU always allocated** (not request-scoped — otherwise a forked helper is frozen after its request returns) and **`min_instances=1`** (so a poller is always alive to recover spawns orphaned by a recycle; with scale-to-zero, orphans wait until the next request). Recovery **is** multi-instance safe (heartbeat liveness + atomic token claim, so two instances can't re-run the same spawn), but the loopback that runs a spawn always targets the same instance that fired it. Blocking (`wait=true`) spawn chains run inside one request — keep them under the Cloud Run request timeout; prefer forks for long work. Tune throughput with `WEBAGENT_SPAWN_CONCURRENCY`. |
 | `doc_store` connector uses Supabase Storage in cloud mode | The local-filesystem variant relies on a writable container path that survives between requests. In Cloud Run that path is ephemeral, so the data-source admin UI hides the `local` backend option when `WEBAGENT_CONFIG_SOURCE=env`. Use `backend: supabase_storage` instead, and apply **`migrations/014_data_sources.sql`** to add the `data_sources`, `agent_data_sources`, and `doc_chunks` tables (plus pgvector + the `doc_chunks_hybrid_search` RPC) before attaching any sources. |
 
 **Deploy (manual):**

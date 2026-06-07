@@ -1,0 +1,306 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# CI/CD Pipeline — Build → Test → Docker Build & Push (ECR) → Deploy (ECS Fargate)
+# ──────────────────────────────────────────────────────────────────────────────
+# Triggered on pushes to main/release branches or manually via workflow_dispatch.
+# Uses OIDC (no long-lived AWS keys) — the IAM role is assumed at runtime.
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Deploy to ECS Fargate
+
+on:
+  push:
+    branches:
+      - main
+      - release/*
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (staging / production)'
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+
+# ── Environment variables shared across all jobs ───────────────────────────
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: my-app-repo                    # ← CHANGE ME
+  ECS_CLUSTER: my-app-cluster                    # ← CHANGE ME
+  ECS_SERVICE: my-app-service                    # ← CHANGE ME
+  CONTAINER_NAME: app                            # ← CHANGE ME — matches container definition in task-def.json
+
+# ── Permissions (required for OIDC and reading repo contents) ──────────────
+permissions:
+  id-token: write        # Needed for aws-actions/configure-aws-credentials
+  contents: read         # Needed to check out the repo
+
+jobs:
+  # ══════════════════════════════════════════════════════════════════════════
+  # 1. BUILD & TEST
+  # ══════════════════════════════════════════════════════════════════════════
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov  # test runner
+
+      - name: Run static analysis (lint + type check)
+        run: |
+          pip install ruff mypy
+          ruff check . --output-format=github
+          mypy app --ignore-missing-imports || true
+
+      - name: Run tests with coverage
+        run: |
+          pytest tests/ \
+            --cov=app \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            -v
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 7
+
+      # ── Build the application (Python wheel / Node / etc.) ──────────────
+      - name: Build application artifact
+        run: |
+          python -m build --wheel --outdir dist/
+          echo "✅ Build complete — $(ls dist/)"
+
+      - name: Upload build artifact (for Docker job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-dist
+          path: dist/
+          retention-days: 1
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # 2. DOCKER BUILD & PUSH TO ECR
+  # ══════════════════════════════════════════════════════════════════════════
+  docker-build-and-push:
+    name: Docker Build & Push (ECR)
+    runs-on: ubuntu-latest
+    needs: build-and-test  # only run if tests pass
+
+    outputs:
+      image_tag: ${{ steps.image-tag.outputs.tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-dist
+          path: dist/
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-ecr-role  # ← CHANGE ME
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate image tag
+        id: image-tag
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          SAFE_BRANCH="${GITHUB_REF_NAME//\//-}"
+          TAG="${SAFE_BRANCH}-${SHORT_SHA}-$(date +%s)"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "📦 Image tag: ${TAG}"
+
+      - name: Build Docker image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
+        run: |
+          docker build \
+            --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+            --build-arg VERSION=${IMAGE_TAG} \
+            --build-arg GIT_SHA=${GITHUB_SHA} \
+            -t ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG} \
+            -t ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest \
+            .
+          echo "✅ Docker build complete"
+
+      - name: Run security scan (Trivy)
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image-tag.outputs.tag }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '1'  # fail the build on critical/high findings
+
+      - name: Upload Trivy scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-scan
+          path: trivy-results.sarif
+          retention-days: 7
+
+      - name: Push Docker image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
+        run: |
+          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+          echo "🚀 Pushed: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          echo "🚀 Pushed: ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
+
+      - name: Generate imagedefinitions.json (for ECS deploy)
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
+        run: |
+          cat <<EOF > imagedefinitions.json
+          [
+            {
+              "name": "${CONTAINER_NAME}",
+              "imageUri": "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+            }
+          ]
+          EOF
+          echo "📄 imagedefinitions.json:"
+          cat imagedefinitions.json
+
+      - name: Upload imagedefinitions.json (artifact for deploy job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: imagedefinitions
+          path: imagedefinitions.json
+          retention-days: 1
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # 3. DEPLOY TO ECS FARGATE
+  # ══════════════════════════════════════════════════════════════════════════
+  deploy:
+    name: Deploy to ECS Fargate
+    runs-on: ubuntu-latest
+    needs: docker-build-and-push  # only deploy if Docker push succeeded
+    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'staging' }}
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-ecs-role  # ← CHANGE ME
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download imagedefinitions.json
+        uses: actions/download-artifact@v4
+        with:
+          name: imagedefinitions
+          path: .
+
+      - name: Verify imagedefinitions.json
+        run: |
+          if [ ! -f imagedefinitions.json ]; then
+            echo "❌ imagedefinitions.json not found!"
+            exit 1
+          fi
+          echo "📄 imagedefinitions.json contents:"
+          cat imagedefinitions.json
+
+      # ── Render the ECS task-definition template ───────────────────────
+      #   Looks for task-definition.json (in repo root). You can also use
+      #   aws-cli to fetch the current active revision and patch it.
+      - name: Fill in the new image URI in the task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json     # ← Must exist in repo root
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ fromJSON(fromFiles('imagedefinitions.json'))[0].imageUri }}
+
+      # ── Deploy the updated task definition to ECS ─────────────────────
+      - name: Deploy to Amazon ECS service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true   # blocks until deploy is healthy
+          wait-for-minutes: 15               # timeout (default 10, raised to 15)
+
+      # ── Post-deploy smoke test ────────────────────────────────────────
+      - name: Run post-deploy smoke test
+        env:
+          ECS_SERVICE: ${{ env.ECS_SERVICE }}
+          ECS_CLUSTER: ${{ env.ECS_CLUSTER }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: |
+          echo "🔍 Verifying ECS service stability..."
+          aws ecs describe-services \
+            --cluster ${ECS_CLUSTER} \
+            --services ${ECS_SERVICE} \
+            --region ${AWS_REGION} \
+            --query "services[0].{status: status, running: runningCount, desired: desiredCount, deployments: deployments[?status=='PRIMARY'].{id: id, roll: rolloutState}}" \
+            --output table
+
+          DEPLOYMENTS=$(aws ecs describe-services \
+            --cluster ${ECS_CLUSTER} \
+            --services ${ECS_SERVICE} \
+            --region ${AWS_REGION} \
+            --query "services[0].deployments[?status=='PRIMARY'].rolloutState" \
+            --output text)
+
+          if echo "$DEPLOYMENTS" | grep -q "COMPLETED"; then
+            echo "✅ Deployment rollout completed successfully!"
+          else
+            echo "⚠️  Deployment state: $DEPLOYMENTS"
+            echo "   Check the ECS console for details."
+          fi
+
+      # ── Notify (Slack / email / etc.) ─────────────────────────────────
+      - name: Send deployment notification
+        if: always()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_DEPLOY_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*${{ job.status == 'success' && '✅' || '❌' }} Deploy to ECS* — `${{ env.ECS_SERVICE }}` on `${{ env.ECS_CLUSTER }}`\n• *Branch:* `${{ github.ref_name }}`\n• *Commit:* `${{ github.sha }}`\n• *Status:* `${{ job.status }}`\n• *Workflow:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
+                  }
+                }
+              ]
+            }
+        continue-on-error: true  # don't fail the deploy if Slack is flaky
