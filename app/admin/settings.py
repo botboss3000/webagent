@@ -826,7 +826,7 @@ class MetadataSetting(BaseModel):
 
 class AppSettings(BaseModel):
     extend_llm_to_agents: bool = True
-    access_mode: str = "private"  # public_anonymous | public_registered | admin_approval | private
+    access_mode: str = "admin_approval"  # public_anonymous | public_registered | admin_approval | private
     # Seconds to keep a completed turn's in-memory RunBuffer around for
     # WS-replay on reconnect. 0 = drop immediately. Default 60s gives a
     # smooth refresh-after-completion UX without holding RAM long.

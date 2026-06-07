@@ -56,6 +56,7 @@ temp/
 .server.pid
 # Ad-hoc prompt-slot dumps written to the project root (scratch; belong in temp/)
 /tmp_*.txt
+_envdump.txt
 
 # ── Runtime databases (now under data/db/) ──────────────────────────────────
 # All runtime DB *files* live in data/db/ (the app's stored state); the DB *code*

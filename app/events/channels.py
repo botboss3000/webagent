@@ -80,6 +80,7 @@ async def list_available_channels(
                 "channel": plugin.name,
                 "label": plugin.name.capitalize(),
                 "recipient_hint": recipient or "ask the user for their address",
+                "recipient": recipient,  # raw recipient for engine-side delivery (None = ask)
                 "available": True,
             })
     except Exception as e:

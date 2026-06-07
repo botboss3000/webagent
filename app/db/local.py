@@ -563,6 +563,22 @@ CREATE TABLE IF NOT EXISTS agent_automations (
     fire_token          TEXT,
     external_job_id     TEXT,
     external_provider   TEXT,
+    schedule_kind       TEXT NOT NULL DEFAULT 'cron',
+    delivery_json       TEXT NOT NULL DEFAULT '{}',
+    run_mode            TEXT NOT NULL DEFAULT 'inline',
+    runner_agent_id     TEXT,
+    clone_abilities     TEXT NOT NULL DEFAULT '[]',
+    max_per_day         INTEGER,
+    runs_today          INTEGER NOT NULL DEFAULT 0,
+    runs_today_date     TEXT,
+    fail_count          INTEGER NOT NULL DEFAULT 0,
+    disable_after_failures INTEGER,
+    expires_at          TEXT,
+    retry_max           INTEGER NOT NULL DEFAULT 0,
+    retry_backoff_seconds INTEGER NOT NULL DEFAULT 0,
+    next_retry_at       TEXT,
+    memory_json         TEXT NOT NULL DEFAULT '{}',
+    origin              TEXT NOT NULL DEFAULT 'slot',
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -606,6 +622,21 @@ CREATE TABLE IF NOT EXISTS agent_event_subscriptions (
     last_session_id             TEXT,
     fire_count                  INTEGER NOT NULL DEFAULT 0,
     source_hash                 TEXT NOT NULL DEFAULT '',
+    delivery_json               TEXT NOT NULL DEFAULT '{}',
+    run_mode                    TEXT NOT NULL DEFAULT 'inline',
+    runner_agent_id             TEXT,
+    clone_abilities             TEXT NOT NULL DEFAULT '[]',
+    max_per_day                 INTEGER,
+    runs_today                  INTEGER NOT NULL DEFAULT 0,
+    runs_today_date             TEXT,
+    fail_count                  INTEGER NOT NULL DEFAULT 0,
+    disable_after_failures      INTEGER,
+    expires_at                  TEXT,
+    retry_max                   INTEGER NOT NULL DEFAULT 0,
+    retry_backoff_seconds       INTEGER NOT NULL DEFAULT 0,
+    next_retry_at               TEXT,
+    memory_json                 TEXT NOT NULL DEFAULT '{}',
+    origin                      TEXT NOT NULL DEFAULT 'slot',
     created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -638,6 +669,35 @@ CREATE INDEX IF NOT EXISTS idx_evt_del_sub ON event_deliveries(subscription_id);
 CREATE INDEX IF NOT EXISTS idx_evt_del_dedup
     ON event_deliveries(subscription_id, event_external_id);
 CREATE INDEX IF NOT EXISTS idx_evt_del_created ON event_deliveries(created_at DESC);
+
+-- ============================================================
+-- automation_runs: per-run history for cron tasks, one-shot
+-- timers, and event subscriptions. Powers the dashboard's run
+-- history + failure visibility. See migration 029.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS automation_runs (
+    id                  TEXT PRIMARY KEY,
+    kind                TEXT NOT NULL DEFAULT 'schedule',
+    automation_id       TEXT,
+    subscription_id     TEXT,
+    agent_id            TEXT NOT NULL,
+    owner_user_id       TEXT NOT NULL,
+    runner_agent_id     TEXT,
+    run_mode            TEXT NOT NULL DEFAULT 'inline',
+    session_id          TEXT,
+    status              TEXT NOT NULL DEFAULT 'running',
+    started_at          TEXT,
+    finished_at         TEXT,
+    reply_excerpt       TEXT,
+    delivery_json       TEXT NOT NULL DEFAULT '{}',
+    error               TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_automation_runs_auto  ON automation_runs(automation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_sub   ON automation_runs(subscription_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_owner ON automation_runs(owner_user_id, created_at DESC);
 
 -- ============================================================
 -- Memory System: core knowledge brain
@@ -1695,6 +1755,43 @@ class LocalBackend(StorageBackend):
                     conn.commit()
             except Exception as _e:
                 logger.warning("agent_automations migration failed: %s", _e)
+
+            # ── Migration 029: feature-rich automation columns on both trigger tables ──
+            try:
+                _auto_extra = [
+                    ("schedule_kind", "TEXT NOT NULL DEFAULT 'cron'"),
+                    ("delivery_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("run_mode", "TEXT NOT NULL DEFAULT 'inline'"),
+                    ("runner_agent_id", "TEXT"),
+                    ("clone_abilities", "TEXT NOT NULL DEFAULT '[]'"),
+                    ("max_per_day", "INTEGER"),
+                    ("runs_today", "INTEGER NOT NULL DEFAULT 0"),
+                    ("runs_today_date", "TEXT"),
+                    ("fail_count", "INTEGER NOT NULL DEFAULT 0"),
+                    ("disable_after_failures", "INTEGER"),
+                    ("expires_at", "TEXT"),
+                    ("retry_max", "INTEGER NOT NULL DEFAULT 0"),
+                    ("retry_backoff_seconds", "INTEGER NOT NULL DEFAULT 0"),
+                    ("next_retry_at", "TEXT"),
+                    ("memory_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("origin", "TEXT NOT NULL DEFAULT 'slot'"),
+                ]
+                # agent_event_subscriptions gets the same set minus schedule_kind (cron-only).
+                _sub_extra = [c for c in _auto_extra if c[0] != "schedule_kind"]
+                for _tbl, _cols in (
+                    ("agent_automations", _auto_extra),
+                    ("agent_event_subscriptions", _sub_extra),
+                ):
+                    cur = conn.execute(f"PRAGMA table_info({_tbl})")
+                    have = {row[1] for row in cur.fetchall()}
+                    if not have:
+                        continue
+                    for _name, _ddl in _cols:
+                        if _name not in have:
+                            conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_name} {_ddl}")
+                conn.commit()
+            except Exception as _e:
+                logger.warning("automation 029 migration failed: %s", _e)
 
             # ── Migration: backfill 'automation' admin-base slot for every agent ──
             try:
@@ -6697,6 +6794,41 @@ class LocalBackend(StorageBackend):
         result["source"] = "clone"
         return result
 
+    async def delete_clone_agent(self, agent_id: str, *, session_ids: Optional[List[str]] = None) -> bool:
+        """Hard-delete a CLONE agent (status='clone' only) and its transcripts.
+
+        Used by the automation run engine to reap an ephemeral fresh-clone runner
+        after its run. Refuses to touch a real fleet agent (status != 'clone').
+        Pass the run session_ids to also purge their interactions/sessions.
+        """
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                for sid in (session_ids or []):
+                    if not sid:
+                        continue
+                    conn.execute("DELETE FROM interactions WHERE session_id = ?", (sid,))
+                    for tbl in ("session_summaries", "pipeline_events"):
+                        try:
+                            conn.execute(f"DELETE FROM {tbl} WHERE session_id = ?", (sid,))
+                        except Exception:  # noqa: BLE001
+                            pass
+                    conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+                cur = conn.execute(
+                    "DELETE FROM agents WHERE id = ? AND status = 'clone'", (agent_id,))
+                removed = bool(cur.rowcount and cur.rowcount > 0)
+                if removed:
+                    conn.execute("DELETE FROM agent_prompts WHERE agent_id = ?", (agent_id,))
+                    for tbl in ("agent_connections", "agent_abilities"):
+                        try:
+                            conn.execute(f"DELETE FROM {tbl} WHERE agent_id = ?", (agent_id,))
+                        except Exception:  # noqa: BLE001
+                            pass
+                conn.commit()
+                return removed
+            finally:
+                conn.close()
+
     async def trash_custom_agent(self, agent_id: str, user_id: str) -> bool:
         """
         Move a custom agent to the recycling bin (soft delete). Caller must be in
@@ -7735,6 +7867,18 @@ class LocalBackend(StorageBackend):
         d = dict(row)
         d["silent"] = bool(d.get("silent"))
         d["enabled"] = bool(d.get("enabled"))
+        # Parse JSON convenience fields (raw strings kept alongside).
+        for raw_key, parsed_key, default in (
+            ("delivery_json", "delivery", {}),
+            ("clone_abilities", "clone_abilities_list", []),
+            ("memory_json", "memory", {}),
+        ):
+            try:
+                d[parsed_key] = json.loads(d.get(raw_key) or "null")
+                if d[parsed_key] is None:
+                    d[parsed_key] = default
+            except Exception:
+                d[parsed_key] = default
         return d
 
     async def list_automations(
@@ -7849,6 +7993,76 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
+    async def create_automation(
+        self,
+        *,
+        agent_id: str,
+        owner_user_id: str,
+        prompt: str,
+        task_label: str = "",
+        schedule_cron: str = "",
+        schedule_natural: str = "",
+        schedule_kind: str = "cron",
+        timezone: str = "UTC",
+        next_run_at: Optional[str] = None,
+        delivery_json: str = "{}",
+        run_mode: str = "inline",
+        runner_agent_id: Optional[str] = None,
+        clone_abilities: str = "[]",
+        max_per_day: Optional[int] = None,
+        disable_after_failures: Optional[int] = None,
+        expires_at: Optional[str] = None,
+        retry_max: int = 0,
+        retry_backoff_seconds: int = 0,
+        memory_json: str = "{}",
+        origin: str = "tool",
+        enabled: bool = True,
+    ) -> dict:
+        """Create an imperative automation (tool / dashboard / timer).
+
+        Unlike ``upsert_automation`` (slot reconciliation, keyed by source_hash),
+        this always inserts a fresh row with a unique synthetic source_hash so it
+        is NEVER touched by slot sync (which only deletes ``origin='slot'`` rows).
+        """
+        row_id = _uuid()
+        source_hash = f"{origin}:{row_id}"
+        now = _now_iso()
+        if not isinstance(delivery_json, str):
+            delivery_json = json.dumps(delivery_json)
+        if not isinstance(clone_abilities, str):
+            clone_abilities = json.dumps(clone_abilities)
+        if not isinstance(memory_json, str):
+            memory_json = json.dumps(memory_json)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT INTO agent_automations
+                       (id, agent_id, owner_user_id, task_label, prompt,
+                        schedule_cron, schedule_natural, schedule_kind, timezone,
+                        silent, enabled, next_run_at, source_hash,
+                        delivery_json, run_mode, runner_agent_id, clone_abilities,
+                        max_per_day, disable_after_failures, expires_at,
+                        retry_max, retry_backoff_seconds, memory_json, origin,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?,
+                               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (row_id, agent_id, owner_user_id, task_label, prompt,
+                     schedule_cron, schedule_natural, schedule_kind, timezone,
+                     1 if enabled else 0, next_run_at, source_hash,
+                     delivery_json, run_mode, runner_agent_id, clone_abilities,
+                     max_per_day, disable_after_failures, expires_at,
+                     retry_max, retry_backoff_seconds, memory_json, origin,
+                     now, now),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM agent_automations WHERE id = ?", (row_id,),
+                ).fetchone()
+                return self._automation_row_to_dict(row)
+            finally:
+                conn.close()
+
     async def update_automation(
         self,
         automation_id: str,
@@ -7862,7 +8076,15 @@ class LocalBackend(StorageBackend):
             "enabled", "next_run_at", "last_run_at", "last_status",
             "last_error", "last_session_id",
             "fire_token", "external_job_id", "external_provider",
+            # ── feature-rich automation ──
+            "schedule_kind", "delivery_json", "run_mode", "runner_agent_id",
+            "clone_abilities", "max_per_day", "runs_today", "runs_today_date",
+            "fail_count", "disable_after_failures", "expires_at",
+            "retry_max", "retry_backoff_seconds", "next_retry_at",
+            "memory_json", "origin",
         }
+        # JSON-encode dict/list values destined for *_json / clone_abilities columns.
+        _json_cols = {"delivery_json", "memory_json", "clone_abilities"}
         sets = []
         params: List[Any] = []
         for k, v in fields.items():
@@ -7870,6 +8092,8 @@ class LocalBackend(StorageBackend):
                 continue
             if k in ("silent", "enabled"):
                 v = 1 if v else 0
+            elif k in _json_cols and not isinstance(v, str):
+                v = json.dumps(v)
             sets.append(f"{k} = ?")
             params.append(v)
         if not sets:
@@ -7908,7 +8132,11 @@ class LocalBackend(StorageBackend):
         owner_user_id: str,
         keep_hashes: List[str],
     ) -> int:
-        """Remove rows whose source_hash is not in keep_hashes for this owner/agent."""
+        """Remove SLOT-managed rows whose source_hash is not in keep_hashes.
+
+        Scoped to ``origin='slot'`` so imperative automations (created via tools
+        or the dashboard) survive prompt-slot reconciliation.
+        """
         async with self._write_lock:
             conn = self._get_conn()
             try:
@@ -7917,13 +8145,15 @@ class LocalBackend(StorageBackend):
                     cur = conn.execute(
                         f"""DELETE FROM agent_automations
                             WHERE agent_id = ? AND owner_user_id = ?
+                              AND origin = 'slot'
                               AND source_hash NOT IN ({placeholders})""",
                         [agent_id, owner_user_id, *keep_hashes],
                     )
                 else:
                     cur = conn.execute(
                         """DELETE FROM agent_automations
-                           WHERE agent_id = ? AND owner_user_id = ?""",
+                           WHERE agent_id = ? AND owner_user_id = ?
+                             AND origin = 'slot'""",
                         (agent_id, owner_user_id),
                     )
                 conn.commit()
@@ -7943,19 +8173,147 @@ class LocalBackend(StorageBackend):
                 conn.close()
 
     async def claim_due_automations(self, now_iso: Optional[str] = None) -> List[dict]:
-        """Return enabled automation rows whose next_run_at has elapsed."""
+        """Return enabled automation rows due to run now.
+
+        Due = a scheduled time (next_run_at) has elapsed OR a pending retry
+        (next_retry_at) has elapsed. Expired rows (expires_at in the past) are
+        excluded so the engine never fires them.
+        """
         ts = now_iso or _now_iso()
         conn = self._get_conn()
         try:
             rows = conn.execute(
                 """SELECT * FROM agent_automations
                    WHERE enabled = 1
-                     AND next_run_at IS NOT NULL
-                     AND next_run_at <= ?
-                   ORDER BY next_run_at ASC""",
-                (ts,),
+                     AND (expires_at IS NULL OR expires_at > ?)
+                     AND (
+                           (next_run_at   IS NOT NULL AND next_run_at   <= ?)
+                        OR (next_retry_at IS NOT NULL AND next_retry_at <= ?)
+                     )
+                   ORDER BY COALESCE(next_retry_at, next_run_at) ASC""",
+                (ts, ts, ts),
             ).fetchall()
             return [self._automation_row_to_dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    # ─── Automation run history ─────────────────────────────────────────
+
+    async def create_automation_run(
+        self,
+        *,
+        kind: str,
+        agent_id: str,
+        owner_user_id: str,
+        automation_id: Optional[str] = None,
+        subscription_id: Optional[str] = None,
+        runner_agent_id: Optional[str] = None,
+        run_mode: str = "inline",
+        session_id: Optional[str] = None,
+        status: str = "running",
+    ) -> str:
+        """Open a run-history row; returns its id. Close it with finish_automation_run."""
+        run_id = _uuid()
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT INTO automation_runs
+                       (id, kind, automation_id, subscription_id, agent_id, owner_user_id,
+                        runner_agent_id, run_mode, session_id, status, started_at, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (run_id, kind, automation_id, subscription_id, agent_id, owner_user_id,
+                     runner_agent_id, run_mode, session_id, status, now, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return run_id
+
+    async def finish_automation_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        reply_excerpt: Optional[str] = None,
+        delivery_json: Optional[Any] = None,
+        error: Optional[str] = None,
+        session_id: Optional[str] = None,
+        runner_agent_id: Optional[str] = None,
+    ) -> None:
+        sets = ["status = ?", "finished_at = ?"]
+        params: List[Any] = [status, _now_iso()]
+        if reply_excerpt is not None:
+            sets.append("reply_excerpt = ?"); params.append(reply_excerpt[:2000])
+        if delivery_json is not None:
+            sets.append("delivery_json = ?")
+            params.append(delivery_json if isinstance(delivery_json, str) else json.dumps(delivery_json))
+        if error is not None:
+            sets.append("error = ?"); params.append(str(error)[:1000])
+        if session_id is not None:
+            sets.append("session_id = ?"); params.append(session_id)
+        if runner_agent_id is not None:
+            sets.append("runner_agent_id = ?"); params.append(runner_agent_id)
+        params.append(run_id)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    f"UPDATE automation_runs SET {', '.join(sets)} WHERE id = ?", params,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def list_automation_runs(
+        self,
+        *,
+        automation_id: Optional[str] = None,
+        subscription_id: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            clauses, params = [], []
+            if automation_id:
+                clauses.append("automation_id = ?"); params.append(automation_id)
+            if subscription_id:
+                clauses.append("subscription_id = ?"); params.append(subscription_id)
+            if owner_user_id:
+                clauses.append("owner_user_id = ?"); params.append(owner_user_id)
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.append(int(limit))
+            rows = conn.execute(
+                f"SELECT * FROM automation_runs {where} ORDER BY created_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def list_clone_agents(self, owner_user_id: str) -> List[dict]:
+        """Return clone agents owned by this user (status='clone'), each annotated
+        with its master id parsed from metadata.clone_of."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM agents WHERE status = 'clone' ORDER BY created_at DESC",
+            ).fetchall()
+            out: List[dict] = []
+            for r in rows:
+                d = dict(r)
+                meta = {}
+                try:
+                    meta = json.loads(d.get("metadata") or "{}")
+                except Exception:
+                    meta = {}
+                if (meta.get("owner_user_id") or "") != owner_user_id:
+                    continue
+                d["clone_of"] = meta.get("clone_of")
+                out.append(d)
+            return out
         finally:
             conn.close()
 
@@ -7975,6 +8333,18 @@ class LocalBackend(StorageBackend):
         # Expose `filter` as the parsed dict; keep `filter_json` for raw access.
         if "filter" not in d:
             d["filter"] = {}
+        # Parse feature-rich JSON convenience fields (present after migration 029).
+        for raw_key, parsed_key, default in (
+            ("delivery_json", "delivery", {}),
+            ("clone_abilities", "clone_abilities_list", []),
+            ("memory_json", "memory", {}),
+        ):
+            try:
+                d[parsed_key] = json.loads(d.get(raw_key) or "null")
+                if d[parsed_key] is None:
+                    d[parsed_key] = default
+            except Exception:
+                d[parsed_key] = default
         return d
 
     async def list_event_subscriptions(
@@ -8053,9 +8423,22 @@ class LocalBackend(StorageBackend):
         channel_recipient: Optional[str] = None,
         silent: bool = False,
         enabled: bool = True,
+        delivery_json: str = "{}",
+        run_mode: str = "inline",
+        clone_abilities: str = "[]",
+        max_per_day: Optional[int] = None,
+        disable_after_failures: Optional[int] = None,
+        expires_at: Optional[str] = None,
+        retry_max: int = 0,
+        retry_backoff_seconds: int = 0,
+        origin: str = "slot",
     ) -> dict:
         now = _now_iso()
         filter_json = json.dumps(filter_dict or {}, sort_keys=True)
+        if not isinstance(delivery_json, str):
+            delivery_json = json.dumps(delivery_json)
+        if not isinstance(clone_abilities, str):
+            clone_abilities = json.dumps(clone_abilities)
         async with self._write_lock:
             conn = self._get_conn()
             try:
@@ -8071,12 +8454,19 @@ class LocalBackend(StorageBackend):
                               source = ?, event_type = ?, filter_json = ?,
                               task_label = ?, prompt = ?, trigger_natural = ?,
                               channel = ?, channel_recipient = ?,
-                              silent = ?, enabled = ?, updated_at = ?
+                              silent = ?, enabled = ?,
+                              delivery_json = ?, run_mode = ?, clone_abilities = ?,
+                              max_per_day = ?, disable_after_failures = ?, expires_at = ?,
+                              retry_max = ?, retry_backoff_seconds = ?, origin = ?,
+                              updated_at = ?
                            WHERE id = ?""",
                         (source, event_type, filter_json,
                          task_label, prompt, trigger_natural,
                          channel, channel_recipient,
                          1 if silent else 0, 1 if enabled else 0,
+                         delivery_json, run_mode, clone_abilities,
+                         max_per_day, disable_after_failures, expires_at,
+                         retry_max, retry_backoff_seconds, origin,
                          now, row_id),
                     )
                 else:
@@ -8085,12 +8475,20 @@ class LocalBackend(StorageBackend):
                         """INSERT INTO agent_event_subscriptions
                            (id, agent_id, owner_user_id, source, event_type, filter_json,
                             task_label, prompt, trigger_natural, channel, channel_recipient,
-                            silent, enabled, source_hash, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            silent, enabled, source_hash,
+                            delivery_json, run_mode, clone_abilities,
+                            max_per_day, disable_after_failures, expires_at,
+                            retry_max, retry_backoff_seconds, origin,
+                            created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (row_id, agent_id, owner_user_id, source, event_type, filter_json,
                          task_label, prompt, trigger_natural, channel, channel_recipient,
-                         1 if silent else 0, 1 if enabled else 0,
-                         source_hash, now, now),
+                         1 if silent else 0, 1 if enabled else 0, source_hash,
+                         delivery_json, run_mode, clone_abilities,
+                         max_per_day, disable_after_failures, expires_at,
+                         retry_max, retry_backoff_seconds, origin,
+                         now, now),
                     )
                 conn.commit()
                 row = conn.execute(
@@ -8113,6 +8511,11 @@ class LocalBackend(StorageBackend):
             "last_event_at", "last_event_external_id",
             "last_status", "last_error", "last_session_id",
             "fire_count",
+            # ── feature-rich automation ──
+            "delivery_json", "run_mode", "runner_agent_id", "clone_abilities",
+            "max_per_day", "runs_today", "runs_today_date", "fail_count",
+            "disable_after_failures", "expires_at", "retry_max",
+            "retry_backoff_seconds", "next_retry_at", "memory_json", "origin",
         }
         sets, params = [], []
         for k, v in fields.items():
@@ -8122,6 +8525,8 @@ class LocalBackend(StorageBackend):
                 v = 1 if v else 0
             if k in ("filter_json", "external_metadata") and isinstance(v, dict):
                 v = json.dumps(v, sort_keys=True)
+            if k in ("delivery_json", "memory_json", "clone_abilities") and not isinstance(v, str):
+                v = json.dumps(v)
             sets.append(f"{k} = ?"); params.append(v)
         if not sets:
             return await self.get_event_subscription(sub_id)
@@ -8183,8 +8588,12 @@ class LocalBackend(StorageBackend):
         owner_user_id: str,
         keep_hashes: List[str],
     ) -> List[dict]:
-        """Remove rows whose source_hash is not in keep_hashes; return the removed rows
-        so the caller can unregister provider-side watches."""
+        """Remove SLOT-managed rows whose source_hash is not in keep_hashes; return the
+        removed rows so the caller can unregister provider-side watches.
+
+        Scoped to ``origin='slot'`` so imperative subscriptions (tool/dashboard)
+        survive prompt-slot reconciliation.
+        """
         async with self._write_lock:
             conn = self._get_conn()
             try:
@@ -8193,24 +8602,26 @@ class LocalBackend(StorageBackend):
                     to_remove = conn.execute(
                         f"""SELECT * FROM agent_event_subscriptions
                             WHERE agent_id = ? AND owner_user_id = ?
+                              AND origin = 'slot'
                               AND source_hash NOT IN ({placeholders})""",
                         [agent_id, owner_user_id, *keep_hashes],
                     ).fetchall()
                     conn.execute(
                         f"""DELETE FROM agent_event_subscriptions
                             WHERE agent_id = ? AND owner_user_id = ?
+                              AND origin = 'slot'
                               AND source_hash NOT IN ({placeholders})""",
                         [agent_id, owner_user_id, *keep_hashes],
                     )
                 else:
                     to_remove = conn.execute(
                         """SELECT * FROM agent_event_subscriptions
-                           WHERE agent_id = ? AND owner_user_id = ?""",
+                           WHERE agent_id = ? AND owner_user_id = ? AND origin = 'slot'""",
                         (agent_id, owner_user_id),
                     ).fetchall()
                     conn.execute(
                         """DELETE FROM agent_event_subscriptions
-                           WHERE agent_id = ? AND owner_user_id = ?""",
+                           WHERE agent_id = ? AND owner_user_id = ? AND origin = 'slot'""",
                         (agent_id, owner_user_id),
                     )
                 conn.commit()

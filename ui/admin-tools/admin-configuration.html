@@ -2054,31 +2054,24 @@
               <div id="ac-um-access-body" style="margin-top:12px;">
                 <div id="ac-um-mode-group" style="display:flex;flex-direction:column;gap:10px;">
                   <label class="ac-um-radio">
-                    <input type="radio" name="ac-um-access-mode" value="public_anonymous">
+                    <input type="radio" name="ac-um-access-mode" value="admin_approval" checked>
                     <div>
-                      <div class="ac-um-radio-title">Open — anonymous users allowed</div>
-                      <div class="ac-um-radio-desc">Anyone can join. Visitors can chat without signing in.</div>
+                      <div class="ac-um-radio-title">Private (Admin approval required)</div>
+                      <div class="ac-um-radio-desc">New users register but cannot sign in until an admin approves them. <em>(default)</em></div>
                     </div>
                   </label>
                   <label class="ac-um-radio">
                     <input type="radio" name="ac-um-access-mode" value="public_registered">
                     <div>
-                      <div class="ac-um-radio-title">Open — registered users only</div>
-                      <div class="ac-um-radio-desc">Anyone can register, but chat requires a signed-in account.</div>
+                      <div class="ac-um-radio-title">Open Registration</div>
+                      <div class="ac-um-radio-desc">Anyone can join. Anonymous user permissions are controlled per-agent, not at the app level.</div>
                     </div>
                   </label>
                   <label class="ac-um-radio">
-                    <input type="radio" name="ac-um-access-mode" value="admin_approval">
+                    <input type="radio" name="ac-um-access-mode" value="public_anonymous">
                     <div>
-                      <div class="ac-um-radio-title">Admin approval required</div>
-                      <div class="ac-um-radio-desc">New users register but cannot sign in until an admin approves them.</div>
-                    </div>
-                  </label>
-                  <label class="ac-um-radio">
-                    <input type="radio" name="ac-um-access-mode" value="private" checked>
-                    <div>
-                      <div class="ac-um-radio-title">Private</div>
-                      <div class="ac-um-radio-desc">Registration is disabled. Only existing accounts can sign in. <em>(default)</em></div>
+                      <div class="ac-um-radio-title">Open</div>
+                      <div class="ac-um-radio-desc">Default admin account is auto-logged in. Recommended for local use only.</div>
                     </div>
                   </label>
                 </div>
@@ -2209,6 +2202,22 @@
                   Choose which pages appear in the header and in what order. Admin Tools is always visible.
                 </p>
                 <div id="ac-main-panel-list" class="ac-main-panel-list ac-list" style="margin-top:10px;"></div>
+              </div>
+            </details>
+
+            <!-- ── Admin Panel Pages (sidebar view visibility + order) — shared collapsible pattern ── -->
+            <details class="ac-category-group" id="ac-admin-panel-card">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="panel-left" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Admin Panel Pages</span>
+                <span class="ac-category-count">Drag to reorder, toggle visibility</span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">
+                  Choose which admin sidebar pages appear and in what order. Admin Configuration is always visible.
+                </p>
+                <div id="ac-admin-panel-list" class="ac-main-panel-list ac-list" style="margin-top:10px;"></div>
               </div>
             </details>
 

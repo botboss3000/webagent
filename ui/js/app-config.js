@@ -3497,6 +3497,7 @@ function _initAppSettings() {
   _wireBootRow('ac-boot-anim-row', 'ac-boot-animation');
   _wireBootRow('ac-boot-mobile-row', 'ac-boot-mobile-mode');
   _initMainPanelPages();
+  _initAdminPanelPages();
   _initPluginPages();
 }
 
@@ -3729,6 +3730,205 @@ function _initMainPanelPages() {
   _renderMainPanelList();
   _applyMainPanelOrder();
 }
+
+// ── Admin Panel Pages (sidebar view visibility + order) ─────────────────────
+// Controls which admin sidebar strip buttons appear and in what order.
+// Mirrors the Main Panel Pages pattern: drag-to-reorder, toggle visibility,
+// localStorage persistence, and a locked "Admin Configuration" entry.
+
+const _ADMIN_PANEL_PAGES = [
+  { id: 'settings',       label: 'Admin Configuration', icon: 'settings',        locked: true },
+  { id: 'database',       label: 'Data Management',     icon: 'database' },
+  { id: 'explorer',       label: 'File Manager',        icon: 'folder-tree' },
+  { id: 'terminal',       label: 'Terminal Launcher',   icon: 'terminal' },
+  { id: 'git',            label: 'Source Control',      icon: 'git-branch' },
+  { id: 'interactions',   label: 'Interactions',        icon: 'square-menu' },
+  { id: 'runtime-loop',   label: 'Runtime Loop',        icon: 'repeat' },
+  { id: 'diagnostics',    label: 'Diagnostics',         icon: 'stethoscope' },
+];
+
+const _LS_ADMIN_PANEL_ORDER = 'adminPanelOrder';
+const _LS_ADMIN_PANEL_HIDDEN = 'adminPanelHidden';
+
+function _getAdminPanelOrder() {
+  try {
+    const saved = localStorage.getItem(_LS_ADMIN_PANEL_ORDER);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      const allIds = _ADMIN_PANEL_PAGES.map(p => p.id);
+      const hasAll = allIds.every(id => parsed.includes(id));
+      if (hasAll && parsed.length === allIds.length) return parsed;
+    }
+  } catch (_) {}
+  return _ADMIN_PANEL_PAGES.map(p => p.id);
+}
+
+function _getAdminPanelHidden() {
+  try {
+    const saved = localStorage.getItem(_LS_ADMIN_PANEL_HIDDEN);
+    if (saved) return JSON.parse(saved);
+  } catch (_) {}
+  return [];
+}
+
+function _saveAdminPanelOrder(order) {
+  try { localStorage.setItem(_LS_ADMIN_PANEL_ORDER, JSON.stringify(order)); } catch (_) {}
+}
+
+function _saveAdminPanelHidden(hidden) {
+  try { localStorage.setItem(_LS_ADMIN_PANEL_HIDDEN, JSON.stringify(hidden)); } catch (_) {}
+}
+
+function _renderAdminPanelList() {
+  const list = _qs('ac-admin-panel-list');
+  if (!list) return;
+
+  const order = _getAdminPanelOrder();
+  const hidden = _getAdminPanelHidden();
+
+  list.innerHTML = '';
+
+  order.forEach((id, index) => {
+    const page = _ADMIN_PANEL_PAGES.find(p => p.id === id);
+    if (!page) return;
+
+    const isHidden = hidden.includes(id);
+    const isLocked = page.locked;
+
+    const item = document.createElement('div');
+    item.className = 'ac-main-panel-item ac-ability-row' + (isLocked ? ' ac-mp-locked' : '');
+    item.draggable = true;
+    item.dataset.pageId = id;
+    item.dataset.index = index;
+
+    const handle = document.createElement('span');
+    handle.className = 'ac-mp-drag-handle';
+    handle.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="18" x2="16" y2="18"/></svg>';
+
+    const iconWrap = document.createElement('span');
+    iconWrap.className = 'ac-ability-icon';
+    iconWrap.innerHTML = `<i data-lucide="${page.icon}" class="lucide-icon" style="width:18px;height:18px;"></i>`;
+
+    const label = document.createElement('div');
+    label.className = 'ac-ability-label';
+    label.innerHTML = `<div class="ac-ability-name">${_esc(page.label)}</div>`;
+
+    const toggle = document.createElement('button');
+    toggle.className = 'ac-mp-toggle' + (isHidden ? '' : ' active');
+    toggle.type = 'button';
+    toggle.title = isLocked ? 'Admin Configuration is always visible' : (isHidden ? 'Show in sidebar' : 'Hide from sidebar');
+    toggle.disabled = isLocked;
+    toggle.addEventListener('click', () => {
+      if (isLocked) return;
+      const currentHidden = _getAdminPanelHidden();
+      const idx = currentHidden.indexOf(id);
+      if (idx >= 0) {
+        currentHidden.splice(idx, 1);
+        toggle.classList.add('active');
+        toggle.title = 'Hide from sidebar';
+      } else {
+        currentHidden.push(id);
+        toggle.classList.remove('active');
+        toggle.title = 'Show in sidebar';
+      }
+      _saveAdminPanelHidden(currentHidden);
+      _applyAdminPanelOrder();
+    });
+
+    item.appendChild(handle);
+    item.appendChild(iconWrap);
+    item.appendChild(label);
+    item.appendChild(toggle);
+
+    // Drag events
+    item.addEventListener('dragstart', (e) => {
+      item.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', id);
+    });
+
+    item.addEventListener('dragend', () => {
+      item.classList.remove('dragging');
+      list.querySelectorAll('.ac-main-panel-item').forEach(el => el.classList.remove('drag-over'));
+    });
+
+    item.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      list.querySelectorAll('.ac-main-panel-item').forEach(el => el.classList.remove('drag-over'));
+      item.classList.add('drag-over');
+    });
+
+    item.addEventListener('dragleave', () => {
+      item.classList.remove('drag-over');
+    });
+
+    item.addEventListener('drop', (e) => {
+      e.preventDefault();
+      item.classList.remove('drag-over');
+      const fromId = e.dataTransfer.getData('text/plain');
+      const toId = id;
+      if (fromId === toId) return;
+
+      const currentOrder = _getAdminPanelOrder();
+      const fromIdx = currentOrder.indexOf(fromId);
+      const toIdx = currentOrder.indexOf(toId);
+      if (fromIdx < 0 || toIdx < 0) return;
+
+      currentOrder.splice(fromIdx, 1);
+      const newToIdx = currentOrder.indexOf(toId);
+      currentOrder.splice(newToIdx + (fromIdx < toIdx ? 0 : 0), 0, fromId);
+
+      _saveAdminPanelOrder(currentOrder);
+      _renderAdminPanelList();
+      _applyAdminPanelOrder();
+    });
+
+    list.appendChild(item);
+  });
+
+  if (window.lucide) {
+    try { lucide.createIcons(); } catch (_) {}
+  }
+}
+
+function _applyAdminPanelOrder() {
+  const order = _getAdminPanelOrder();
+  const hidden = _getAdminPanelHidden();
+
+  // Reorder + show/hide the admin sidebar strip buttons.
+  // Nodes stay in the DOM (display toggled) so a later un-hide restores them live.
+  const sidebar = document.getElementById('files-sidebar');
+  if (!sidebar) return;
+
+  const strip = sidebar.querySelector('.files-sidebar-strip');
+  if (!strip) return;
+
+  // Build a map of strip buttons by data-view
+  const buttons = {};
+  strip.querySelectorAll('.files-strip-view').forEach(btn => {
+    const id = btn.dataset.view;
+    if (id) buttons[id] = btn;
+  });
+
+  // Reorder according to preference, hiding disabled views
+  order.forEach(id => {
+    const btn = buttons[id];
+    if (!btn) return;
+    const hide = id !== 'settings' && hidden.includes(id);
+    btn.style.display = hide ? 'none' : '';
+    strip.appendChild(btn); // moves to correct position
+  });
+}
+
+function _initAdminPanelPages() {
+  _renderAdminPanelList();
+  _applyAdminPanelOrder();
+}
+
+// Expose the apply function globally so files.js can call it from initFiles()
+// after the sidebar strip buttons are initialized.
+window.__applyAdminPanelOrder = _applyAdminPanelOrder;
 
 // ── Plugin Pages (dynamic header tabs from prompts.json) ────────────────────
 
@@ -4133,7 +4333,7 @@ async function _loadUserManagement() {
     const res = await _fetch(apiPath('/admin/settings/app'));
     if (res.ok) {
       const data = await res.json();
-      const mode = data.access_mode || 'private';
+      const mode = data.access_mode || 'admin_approval';
       const radio = document.querySelector(`input[name="ac-um-access-mode"][value="${mode}"]`);
       if (radio) radio.checked = true;
     }

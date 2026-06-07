@@ -791,6 +791,23 @@ TABLES: List[Table] = [
         Column("fire_token", "TEXT"),
         Column("external_job_id", "TEXT"),
         Column("external_provider", "TEXT"),
+        # ── Feature-rich automation (see migration 029) ──
+        Column("schedule_kind", "TEXT", nullable=False, default="'cron'"),   # cron | once
+        Column("delivery_json", "TEXT", nullable=False, default="'{}'"),     # unified delivery spec
+        Column("run_mode", "TEXT", nullable=False, default="'inline'"),      # inline|fresh_clone|dedicated_clone|headless
+        Column("runner_agent_id", "TEXT"),                                   # dedicated clone id
+        Column("clone_abilities", "TEXT", nullable=False, default="'[]'"),   # abilities to grant a clone runner
+        Column("max_per_day", "INTEGER"),                                    # guardrail: max fires per day
+        Column("runs_today", "INTEGER", nullable=False, default="0"),
+        Column("runs_today_date", "TEXT"),                                   # YYYY-MM-DD the counter is for
+        Column("fail_count", "INTEGER", nullable=False, default="0"),        # consecutive failures
+        Column("disable_after_failures", "INTEGER"),                         # auto-disable threshold
+        Column("expires_at", "TEXT"),                                        # ISO; past = stop
+        Column("retry_max", "INTEGER", nullable=False, default="0"),
+        Column("retry_backoff_seconds", "INTEGER", nullable=False, default="0"),
+        Column("next_retry_at", "TEXT"),
+        Column("memory_json", "TEXT", nullable=False, default="'{}'"),       # per-automation persistent state
+        Column("origin", "TEXT", nullable=False, default="'slot'"),          # slot | tool | dashboard | timer
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
@@ -823,8 +840,43 @@ TABLES: List[Table] = [
         Column("last_session_id", "TEXT"),
         Column("fire_count", "INTEGER", nullable=False, default="0"),
         Column("source_hash", "TEXT", nullable=False, default="''"),
+        # ── Feature-rich automation (see migration 029) ──
+        Column("delivery_json", "TEXT", nullable=False, default="'{}'"),     # unified delivery spec
+        Column("run_mode", "TEXT", nullable=False, default="'inline'"),      # inline|fresh_clone|dedicated_clone|headless
+        Column("runner_agent_id", "TEXT"),                                   # dedicated clone id
+        Column("clone_abilities", "TEXT", nullable=False, default="'[]'"),   # abilities to grant a clone runner
+        Column("max_per_day", "INTEGER"),
+        Column("runs_today", "INTEGER", nullable=False, default="0"),
+        Column("runs_today_date", "TEXT"),
+        Column("fail_count", "INTEGER", nullable=False, default="0"),
+        Column("disable_after_failures", "INTEGER"),
+        Column("expires_at", "TEXT"),
+        Column("retry_max", "INTEGER", nullable=False, default="0"),
+        Column("retry_backoff_seconds", "INTEGER", nullable=False, default="0"),
+        Column("next_retry_at", "TEXT"),
+        Column("memory_json", "TEXT", nullable=False, default="'{}'"),
+        Column("origin", "TEXT", nullable=False, default="'slot'"),          # slot | tool | dashboard
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
+    Table("automation_runs", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("kind", "TEXT", nullable=False, default="'schedule'"),        # schedule|event|timer|manual
+        Column("automation_id", "TEXT"),                                     # set for cron/once/timer/manual
+        Column("subscription_id", "TEXT"),                                   # set for event runs
+        Column("agent_id", "TEXT", nullable=False),
+        Column("owner_user_id", "TEXT", nullable=False),
+        Column("runner_agent_id", "TEXT"),                                   # clone id if a clone ran it
+        Column("run_mode", "TEXT", nullable=False, default="'inline'"),
+        Column("session_id", "TEXT"),
+        Column("status", "TEXT", nullable=False, default="'running'"),       # running|ok|error|delivered|delivery_failed
+        Column("started_at", "TEXT"),
+        Column("finished_at", "TEXT"),
+        Column("reply_excerpt", "TEXT"),
+        Column("delivery_json", "TEXT", nullable=False, default="'{}'"),     # attempts + per-target results
+        Column("error", "TEXT"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
     Table("event_deliveries", [
@@ -950,6 +1002,9 @@ INDEXES: List[Index] = [
     Index("idx_evt_del_sub", "event_deliveries", "subscription_id"),
     Index("idx_evt_del_dedup", "event_deliveries", "subscription_id, event_external_id"),
     Index("idx_evt_del_created", "event_deliveries", "created_at DESC"),
+    Index("idx_automation_runs_auto", "automation_runs", "automation_id, created_at DESC"),
+    Index("idx_automation_runs_sub", "automation_runs", "subscription_id, created_at DESC"),
+    Index("idx_automation_runs_owner", "automation_runs", "owner_user_id, created_at DESC"),
     Index("idx_pages_user", "pages", "user_id"),
 ]
 

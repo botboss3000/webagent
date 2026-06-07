@@ -2369,6 +2369,10 @@ export function initFiles() {
   initTerminalTabSwipe();
   installFilesDropGuard();
   initSidebarViewSwitcher();
+  // Apply admin panel page order/hidden preferences to the sidebar strip.
+  // This reorders and hides strip buttons according to the Admin Panel Pages
+  // settings in App Configuration. Exposed by app-config.js.
+  if (window.__applyAdminPanelOrder) window.__applyAdminPanelOrder();
   initSettingsToggle();
   initSidebarMaximize();
   initFilesTerminalButton();

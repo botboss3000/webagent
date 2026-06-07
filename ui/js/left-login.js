@@ -20,7 +20,7 @@ export async function fetchAccessMode() {
     const res = await fetch('/api/v1/auth/access-mode');
     if (res.ok) {
       const data = await res.json();
-      _accessMode = data.access_mode || 'private';
+      _accessMode = data.access_mode || 'admin_approval';
     }
   } catch (e) { /* keep default */ }
   _accessModeFetched = true;
