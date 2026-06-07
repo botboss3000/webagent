@@ -364,16 +364,16 @@ body.light-mode .settings-menu-item:hover {
   color: var(--fg-1);
 }
 
-/* ── 11. User dropdown — rounded popover ────────────────────── */
+/* ── 11. User dropdown — rounded popover ──────────────────────
+   All dropdown panels (user menu, feedback view, login) MUST share the same
+   visual dimensions: 360px wide, 12px border-radius, #1a1a2e background,
+   1px solid #2a2a4a border, box-shadow 0 8px 32px rgba(0,0,0,0.5).
+   Keep these values in sync with app1.css. */
 .user-dropdown-menu {
-  border-radius: 16px;
-  border: 1px solid rgba(255,255,255,0.06);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0)),
-    var(--bg-elev);
-  box-shadow:
-    0 14px 40px -12px rgba(0,0,0,0.6),
-    0 1px 0 rgba(255,255,255,0.04) inset;
+  border-radius: 12px;
+  border: 1px solid #2a2a4a;
+  background: #1a1a2e;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
   animation: pop-in 0.18s ease;
 }
 

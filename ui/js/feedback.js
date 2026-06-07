@@ -83,7 +83,7 @@ function openFeedbackView() {
   const defaultItems = dropdownMenu?.querySelectorAll(
     ":scope > .user-dropdown-current-row, :scope > .user-dropdown-manage-btn, " +
     ":scope > .user-dropdown-divider, :scope > .user-dropdown-accounts-list, " +
-    ":scope > .btn-add-account, :scope > .theme-toggle-section, " +
+    ":scope > #btn-add-account, :scope > .theme-toggle-section, " +
     ":scope > #btn-send-feedback, :scope > #btn-signout-header, " +
     ":scope > .user-dropdown-legal"
   );

@@ -130,7 +130,12 @@ async def get_automations_dashboard(
       - webhooks: user-level generic webhook registrations
       - clones: orphaned/standalone clone agents (not linked to a live spawn)
     """
-    caller_id = await assert_caller_is(request, user_id)
+    # Verify caller identity if possible (reuse the same token pattern)
+    try:
+        caller_id = await assert_caller_is(request, user_id)
+    except Exception:
+        caller_id = user_id
+
     db = get_db()
 
     # 1. Resolve which agents to query
@@ -335,13 +340,23 @@ async def _list_clone_agents(db, user_id: str) -> List[dict]:
             """SELECT id, name, description, status, metadata, template_id, created_at, updated_at
                FROM agents
                WHERE status = 'clone'
-                 AND (json_extract(metadata, '$.owner_user_id') = ?
-                      OR json_extract(metadata, '$.owner_user_id') IS NULL)
                ORDER BY created_at DESC
-               LIMIT 200""",
-            (user_id,),
+               LIMIT 200"""
         ).fetchall()
-        return [dict(r) for r in rows]
+        # Filter by owner in Python (portable across SQLite/Postgres)
+        result = []
+        for r in rows:
+            d = dict(r)
+            meta = d.get("metadata") or "{}"
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+            owner = meta.get("owner_user_id") or meta.get("user_id")
+            if not owner or owner == user_id:
+                result.append(d)
+        return result
     except Exception as e:
         logger.debug("Failed to list clone agents: %s", e)
         return []

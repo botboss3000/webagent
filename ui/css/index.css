@@ -241,31 +241,6 @@ body.light-mode .load-earlier-btn:hover {
   color: #444;
 }
 
-/* —— Feedback modal styles —— */
-.feedback-modal { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; }
-.feedback-modal-card { position: relative; background: #1a1a2e; color: var(--text, #e6e8ef); border: 1px solid #2a2a4a; border-radius: 12px; width: 360px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
-.feedback-modal-head { display:flex; align-items:center; justify-content:space-between; padding: 14px 18px; border-bottom: 1px solid #2a2a4a; }
-.feedback-modal-head h3 { margin:0; font-size: 15px; font-weight: 600; }
-.feedback-modal-close { background:none; border:0; color:inherit; font-size:22px; line-height:1; cursor:pointer; padding:4px 8px; }
-.feedback-modal-body { padding: 16px 18px 18px; display:flex; flex-direction:column; gap:14px; }
-.feedback-type-group { border:0; padding:0; margin:0; display:flex; flex-direction:column; gap:6px; }
-.feedback-type-group legend { padding:0; margin: 0 0 4px; font-size:12px; color:#9ba1bd; }
-.feedback-type-opt { display:flex; gap:8px; align-items:flex-start; font-size:13px; cursor:pointer; padding:6px 8px; border-radius:6px; }
-.feedback-type-opt:hover { background: rgba(255,255,255,0.04); }
-.feedback-type-opt input { margin-top: 2px; }
-.feedback-field { display:flex; flex-direction:column; gap:5px; position:relative; }
-.feedback-label { font-size:12px; color:#9ba1bd; }
-.feedback-optional { color:#6e7493; font-weight:400; }
-.feedback-field textarea, .feedback-field input[type=email] { background:#0d1024; color:inherit; border:1px solid #2a2a4a; border-radius:6px; padding:8px 10px; font: inherit; resize: vertical; }
-.feedback-field textarea:focus, .feedback-field input[type=email]:focus { outline: 2px solid #4c6cff; outline-offset: -1px; }
-.feedback-counter { position:absolute; right:6px; bottom:6px; font-size:10px; color:#6e7493; pointer-events:none; }
-.feedback-turnstile { min-height: 0; }
-.feedback-turnstile:not(:empty) { min-height: 65px; }
-.feedback-status { font-size: 12px; min-height: 1em; }
-.feedback-status.error { color: #ff7a7a; }
-.feedback-status.success { color: #5cd6a8; }
-.feedback-modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top: 4px; }
-.feedback-btn-ghost { background:transparent; color:#c5cae3; border:1px solid #2a2a4a; border-radius:6px; padding:6px 14px; cursor:pointer; font: inherit; }
-.feedback-btn-primary { background:#4c6cff; color:#fff; border:0; border-radius:6px; padding:6px 16px; cursor:pointer; font: inherit; }
-.feedback-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.feedback-disclosure { font-size: 11px; color: #6e7493; margin: 0; line-height: 1.5; }
+/* Feedback styles moved to ui/css/app1.css (dropdown-feedback-view).
+   All panels share the login-panel look: 360px, 12px border-radius,
+   #1a1a2e background, #2a2a4a border, login-panel shadow. */

@@ -2272,19 +2272,19 @@ body.light-mode .chat-stop-btn:hover {
     transform: rotate(180deg);
   }
 .user-dropdown-menu {
-	    position: absolute;
-	    top: 100%;
-	    left: 0;
-	    margin-top: 6px;
-    background: #1a1a2e;
-    border: 1px solid #2a2a4a;
-    border-radius: 8px;
-    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
-    z-index: 1100;
-    min-width: 180px;
-    padding: 6px 0;
-    animation: user-dd-fadein 0.15s ease;
-  }
+		    position: absolute;
+		    top: 100%;
+		    left: 0;
+		    margin-top: 6px;
+	    background: #1a1a2e;
+	    border: 1px solid #2a2a4a;
+	    border-radius: 12px;
+	    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+	    z-index: 1100;
+	    min-width: 180px;
+	    padding: 6px 0;
+	    animation: user-dd-fadein 0.15s ease;
+	  }
   @keyframes user-dd-fadein {
 from { opacity: 0; transform: translateY(-6px); }
 to { opacity: 1; transform: translateY(0); }

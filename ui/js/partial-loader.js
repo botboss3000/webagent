@@ -17,6 +17,7 @@ const TOP_LEVEL = [
   { url: './ui/sessions.html', mount: '#tab-sessions' },
   { url: './ui/web.html', mount: '#tab-web' },
   { url: './ui/wiki.html', mount: '#tab-wiki' },
+  { url: './ui/automations.html', mount: '#tab-automations' },
   { url: './ui/admin-tools.html', mount: '#tab-admin-tools' },
   { url: './ui/chat.html', mount: '#chat-panel' },
 ];
