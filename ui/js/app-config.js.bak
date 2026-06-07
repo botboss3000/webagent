@@ -390,6 +390,25 @@ function _initLLM() {
       if (dd) dd.style.display = 'none';
     }
   });
+
+  _initSuggestionsCheckbox();
+
+  // Persist Models section collapse state
+  _persistCollapse('ac-cat-models');
+}
+
+/** Save/restore a <details> element's open state to localStorage. */
+function _persistCollapse(id) {
+  const el = _qs(id);
+  if (!el) return;
+  const key = 'ac-collapse-' + id;
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved === 'closed') el.removeAttribute('open');
+  } catch (_) {}
+  el.addEventListener('toggle', () => {
+    try { localStorage.setItem(key, el.open ? 'open' : 'closed'); } catch (_) {}
+  });
 }
 
 // ── AI Message Suggestions checkbox ─────────────────────────────────────────
@@ -2666,8 +2685,11 @@ async function _loadIntegrations() {
     _applyAbilityFromLoad('visualizer',       data.visualizer_configured);
     _applyAbilityFromLoad('agent_orchestration', data.agent_orchestration_configured);
     _applyAbilityFromLoad('diagnostics',         data.diagnostics_configured);
-    _applyAbilityFromLoad('agent_management',    data.agent_management_configured);
-    _applyAbilityFromLoad('wiki_control',        data.wiki_control_configured);
+_applyAbilityFromLoad('agent_management',    data.agent_management_configured);
+	    _applyAbilityFromLoad('app_control',         data.app_control_configured);
+	    _applyAbilityFromLoad('wiki_control',        data.wiki_control_configured);
+	    _applyAbilityFromLoad('image_vision',        data.image_vision_configured);
+	    _applyAbilityFromLoad('session_titler',      data.session_titler_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
     // Reflect each provider/channel's configured state onto its unified row toggle.

@@ -24,6 +24,7 @@ tools (those handlers remain in core — this file only declares their names).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -42,7 +43,7 @@ FEATURE = {
     "summary": "spawn, converse with & oversee helper agents; delegate; run the optimizer.",
     "tools": [
         # Spawn-and-oversee (handlers ship in THIS file via build_tools).
-        "spawn_agent", "message_spawn", "read_spawn", "list_spawns",
+        "spawn_agent", "message_spawn", "read_spawn", "quote_spawn", "list_spawns",
         "stop_spawn", "schedule_spawn_check",
         # Hand off the whole session to another agent (handler in core).
         "delegate_to_agent", "list_delegatable_agents",
@@ -259,7 +260,9 @@ def _spawns_claim_due(now_iso: Optional[str] = None) -> list:
 # Runtime — create helper agents, run them (wait/fork), re-wake the orchestrator.
 # A helper is "run" by POSTing to the local /api/v1/chat for its session, exactly
 # like the optimizer's _kickstart_planner. Because the helper's session is bound
-# to its own agent, chat.py routes the message to that agent.
+# to its own agent, chat.py routes the message to that agent. The loopback POST
+# must carry a JWT (see _internal_auth_headers) or chat.py's assert_caller_is
+# rejects it 401 -> 500.
 # ════════════════════════════════════════════════════════════════════════════
 
 _SPAWN_PREAMBLE = (
@@ -276,12 +279,31 @@ def _chat_url() -> str:
     return f"http://127.0.0.1:{os.environ.get('PORT', '8080')}/api/v1/chat"
 
 
+def _internal_auth_headers(user_id: str) -> dict:
+    """Mint a short-lived JWT so this loopback POST passes the chat endpoint's
+    caller-identity check (`assert_caller_is`). Without it the request carries no
+    token and is rejected as 401 "Not authenticated", which the chat handler then
+    surfaces as a 500 — silently killing every spawn/re-wake. We act strictly on
+    behalf of the session's own user, so minting that user's own token here is
+    legitimate. Applies to BOTH agent types we drive: spawned worker sessions
+    (via _run_spawn_turn) and the orchestrator's own session (via
+    _rewake_orchestrator)."""
+    try:
+        from app.auth.jwt import create_access_token
+        token = create_access_token(username=user_id, user_id=user_id)
+        return {"Authorization": f"Bearer {token}"}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not mint internal auth token for %s: %s", user_id, e)
+        return {}
+
+
 async def _post_chat(user_id: str, session_id: str, message: str, timeout: float) -> str:
     import httpx
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
             _chat_url(),
             json={"message": message, "user_id": user_id, "session_id": session_id},
+            headers=_internal_auth_headers(user_id),
         )
         resp.raise_for_status()
         try:
@@ -611,6 +633,64 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         return json.dumps({"status": "ok", "spawn_id": spawn_id, "name": spawn.get("name"),
                            "spawn_status": spawn.get("status"), "transcript": transcript})
 
+    async def quote_spawn(spawn_id: str, max_chars: int = 8000) -> str:
+        """Return the helper's ACTUAL final answer, verbatim and untouched.
+
+        Use this — never your memory — to report what a spawn produced. It pulls
+        the helper's last real reply straight from its saved session and returns
+        it word-for-word, plus a content fingerprint and the session id so the
+        result is verifiable and can't be silently embellished. If the spawn
+        produced nothing (stalled / interrupted / stopped), it says so explicitly
+        so you don't invent a result.
+        """
+        spawn = await _owned_spawn(spawn_id)
+        if not spawn:
+            return _err(f"No spawn '{spawn_id}' owned by this session.")
+        from app.db import get_db
+        db = get_db()
+        try:
+            records = await db.fetch_interactions(user_id, spawn["spawn_session_id"])
+        except Exception as e:  # noqa: BLE001
+            return _err(f"Could not read spawn output: {e}")
+
+        answers = [(getattr(r, "content", "") or "") for r in records
+                   if getattr(r, "role", "") == "assistant"
+                   and (getattr(r, "content", "") or "").strip()]
+        spawn_status = spawn.get("status")
+        if not answers:
+            return json.dumps({
+                "status": "ok", "spawn_id": spawn_id, "name": spawn.get("name"),
+                "spawn_status": spawn_status, "produced_output": False,
+                "spawn_session_id": spawn["spawn_session_id"], "final_answer": "",
+                "guidance": ("This helper produced NO answer (it likely stalled, was "
+                             "interrupted, or was stopped). Do NOT invent, summarize, "
+                             "or guess a result for it. Re-run it (spawn again or "
+                             "message_spawn) or report this spawn to the human as "
+                             "FAILED / no output."),
+            })
+
+        final = answers[-1]
+        try:
+            cap = max(500, min(int(max_chars), 16000))
+        except (TypeError, ValueError):
+            cap = 8000
+        full_len = len(final)
+        body = final if full_len <= cap else (
+            final[:cap] + f"\n\n[TRUNCATED — {full_len - cap} more characters. "
+            "Open spawn_session_id to read the rest verbatim.]")
+        fp = hashlib.sha256(final.encode("utf-8")).hexdigest()[:12]
+        return json.dumps({
+            "status": "ok", "spawn_id": spawn_id, "name": spawn.get("name"),
+            "spawn_status": spawn_status, "produced_output": True,
+            "spawn_session_id": spawn["spawn_session_id"], "answer_count": len(answers),
+            "final_answer": body, "char_count": full_len, "fingerprint": f"sha256:{fp}",
+            "guidance": ("This is the helper's ACTUAL words. When you report its result "
+                         "to the human, quote from THIS text verbatim and attribute it "
+                         "to the helper — do not paraphrase its numbers, counts, names, "
+                         "severities, or claims from memory. The human can open "
+                         "spawn_session_id to verify what you quote."),
+        })
+
     async def list_spawns() -> str:
         """List the helper agents you've spawned in this session, with status,
         last result summary, and any pending follow-up timer."""
@@ -660,6 +740,7 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         "spawn_agent": spawn_agent,
         "message_spawn": message_spawn,
         "read_spawn": read_spawn,
+        "quote_spawn": quote_spawn,
         "list_spawns": list_spawns,
         "stop_spawn": stop_spawn,
         "schedule_spawn_check": schedule_spawn_check,
@@ -695,6 +776,14 @@ TOOL_SCHEMAS = {
         "properties": {
             "spawn_id": {"type": "string", "description": "The spawn whose transcript to read."},
             "limit": {"type": "integer", "description": "How many recent messages to return (default 20, max 40)."},
+        },
+        "required": ["spawn_id"],
+    },
+    "quote_spawn": {
+        "type": "object",
+        "properties": {
+            "spawn_id": {"type": "string", "description": "The spawn whose actual final answer you want, verbatim."},
+            "max_chars": {"type": "integer", "description": "Max characters of the answer to return (default 8000, max 16000; longer answers are marked truncated)."},
         },
         "required": ["spawn_id"],
     },

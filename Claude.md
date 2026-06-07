@@ -30,6 +30,7 @@ These hold the full rules. Open the one that matches your task **before** making
 | Deploy config, OAuth / secure-context APIs, or any **file the app writes at runtime** (gitignore rules) | [docs/claude/deployment.md](docs/claude/deployment.md) |
 | Docs upkeep (README + folder `.md`), where to put scratch/temp files, console-log cleanup, git push rules | [docs/claude/repo-conventions.md](docs/claude/repo-conventions.md) |
 | **Editions** / production-path, drop-in plugin discovery, the **feature catalog** (`FEATURE` headers), ability-bundled skills | [docs/claude/production-editions.md](docs/claude/production-editions.md) |
+| **Diagnosing a chat session** — why an agent run failed/misbehaved: pull the `interactions` transcript from `local.db`, the real traceback from `logs.db` `diagnostics`, and `tool_executions` | [docs/claude/diagnosing-sessions.md](docs/claude/diagnosing-sessions.md) |
 
 > **Updating these docs — touch the expanded files, not this one.** This `CLAUDE.md` is a deliberately small at-a-glance index. When a rule changes or a new convention is added, **put the detail in the relevant `docs/claude/*.md` file** (or create a new one and add a row above). Only edit `CLAUDE.md` itself for genuinely minor, index-level changes — fixing a routing row, adding a new guide link, or tweaking a one-line essential below. If you find yourself writing more than a line or two here, it belongs in an expanded file.
 

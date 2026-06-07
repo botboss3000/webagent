@@ -21,8 +21,9 @@ import { icon } from './icons.js';
  * call site — call advanceDeleteBtn()/resetDeleteBtn() instead.
  *
  * Interaction (driven by the button's data-state attribute):
- *   "trash"   --click-->  "warning"  : swap to a hazard icon, mark .warning
- *   "warning" --click-->  "deleting" : swap to a spinner, run onConfirm()
+ *   "trash"   --click-->  "arming"   : spinner for 1s (clicks ignored)
+ *   "arming"  --auto--->  "warning"  : swap to hazard icon, mark .warning
+ *   "warning" --click-->  "deleting" : swap to spinner, run onConfirm()
  *   any reset (menu open/close, a sibling arming, a timeout, a failed delete)
  *             ------------ "trash"   : back to the trash icon
  *
@@ -35,12 +36,16 @@ import { icon } from './icons.js';
 const TRASH = 'trash';
 const WARN  = 'warning';
 const BUSY  = 'deleting';
+const ARMING = 'arming';
+
+const ARM_DELAY_MS = 1000; // spinner duration before arming
 
 /**
  * Return a button to its resting trash state. Safe to call on any state.
  */
 export function resetDeleteBtn(btn, { size = '14px', title = 'Delete' } = {}) {
   if (!btn) return;
+  clearTimeout(btn._armTimer);
   btn.dataset.state = TRASH;
   btn.classList.remove('warning', 'deleting');
   btn.title = title;
@@ -49,7 +54,8 @@ export function resetDeleteBtn(btn, { size = '14px', title = 'Delete' } = {}) {
 
 /**
  * Advance a delete button by one click. Returns the NEW state string:
- *   'warning'  — first click: armed, showing the hazard icon
+ *   'arming'   — first click: spinner shown for 1s, clicks ignored
+ *   'warning'  — after 1s: armed, showing the hazard icon
  *   'deleting' — second click: confirmed; the spinner is shown and onConfirm()
  *                has been scheduled (microtask, so the spinner paints first)
  *   'trash'    — no-op (the button was already mid-delete)
@@ -59,15 +65,15 @@ export function resetDeleteBtn(btn, { size = '14px', title = 'Delete' } = {}) {
  *   spinSize  icon size for the spinner       (default matches `size`)
  *   armTitle  tooltip while armed
  *   busyTitle tooltip while deleting
- *   onArm(btn)     fired when the button arms — use it to reset siblings / set
- *                  an auto-revert timeout
+ *   onArm(btn)     fired after the 1s arming delay, when the button shows the hazard
+ *                  icon — use it to reset siblings / set an auto-revert timeout
  *   onConfirm(btn) fired (async) when the delete is confirmed
  */
 export function advanceDeleteBtn(btn, {
   size = '14px',
   spinSize = null,
-  armTitle = 'Click again to confirm delete',
-  busyTitle = 'Deleting…',
+  armTitle = 'Click again to delete permanently',
+  busyTitle = 'Deleting\u2026',
   onArm = null,
   onConfirm = null,
 } = {}) {
@@ -76,13 +82,29 @@ export function advanceDeleteBtn(btn, {
   const state = btn.dataset.state || TRASH;
 
   if (state === TRASH) {
-    btn.dataset.state = WARN;
-    btn.classList.add('warning');
-    btn.classList.remove('deleting');
-    btn.title = armTitle;
-    btn.innerHTML = icon('alert-triangle', { size });
-    if (onArm) onArm(btn);
-    return WARN;
+    // --- ARMING phase: show spinner for ARM_DELAY_MS, clicks ignored ---
+    btn.dataset.state = ARMING;
+    btn.classList.remove('warning', 'deleting');
+    btn.title = 'Arming\u2026';
+    btn.innerHTML =
+      '<span class="session-status-running" style="display:inline-flex;width:' +
+      spin + ';height:' + spin + ';">' +
+      icon('loader-2', { size: spin }) + '</span>';
+    clearTimeout(btn._armTimer);
+    btn._armTimer = setTimeout(() => {
+      if (btn.dataset.state !== ARMING) return; // was reset in the meantime
+      btn.dataset.state = WARN;
+      btn.classList.add('warning');
+      btn.classList.remove('deleting');
+      btn.title = armTitle;
+      btn.innerHTML = icon('alert-triangle', { size });
+      if (onArm) onArm(btn);
+    }, ARM_DELAY_MS);
+    return ARMING;
+  }
+
+  if (state === ARMING) {
+    return ARMING; // still arming — ignore clicks
   }
 
   if (state === WARN) {

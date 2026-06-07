@@ -392,6 +392,23 @@ function _initLLM() {
   });
 
   _initSuggestionsCheckbox();
+
+  // Persist Models section collapse state
+  _persistCollapse('ac-cat-models');
+}
+
+/** Save/restore a <details> element's open state to localStorage. */
+function _persistCollapse(id) {
+  const el = _qs(id);
+  if (!el) return;
+  const key = 'ac-collapse-' + id;
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved === 'closed') el.removeAttribute('open');
+  } catch (_) {}
+  el.addEventListener('toggle', () => {
+    try { localStorage.setItem(key, el.open ? 'open' : 'closed'); } catch (_) {}
+  });
 }
 
 // ── AI Message Suggestions checkbox ─────────────────────────────────────────
@@ -2669,7 +2686,10 @@ async function _loadIntegrations() {
     _applyAbilityFromLoad('agent_orchestration', data.agent_orchestration_configured);
     _applyAbilityFromLoad('diagnostics',         data.diagnostics_configured);
     _applyAbilityFromLoad('agent_management',    data.agent_management_configured);
+    _applyAbilityFromLoad('app_control',         data.app_control_configured);
     _applyAbilityFromLoad('wiki_control',        data.wiki_control_configured);
+    _applyAbilityFromLoad('image_vision',        data.image_vision_configured);
+    _applyAbilityFromLoad('session_titler',      data.session_titler_configured);
     // Browser session is per-user — fetched from a separate endpoint.
     _loadBrowserSessionStatus();
     // Reflect each provider/channel's configured state onto its unified row toggle.
@@ -2677,7 +2697,7 @@ async function _loadIntegrations() {
     // Reflect ability states onto each group's 3-position toggle.
     _syncAllGroupToggles();
   } catch (e) {
-    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management']) {
+    for (const p of ['google', 'microsoft', 'yahoo', 'dropbox', 'meta', 'twitter', 'linkedin', 'tiktok', 'pinterest', 'reddit', 'snapchat', 'twitch', 'ebay', 'etsy', 'shopify', 'amazon', 'scraper', 'browser_session', 'telegram', 'codebase_admin', 'create_tools', 'automation', 'web_access', 'browser_control', 'image_generation', 'visualizer', 'agent_orchestration', 'diagnostics', 'agent_management', 'app_control', 'wiki_control', 'image_vision', 'session_titler']) {
       const s = _qs(`ac-int-${p}-status`);
       _setIntStatus(s, `Failed to load: ${e.message}`);
     }

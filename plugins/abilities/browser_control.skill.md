@@ -29,13 +29,21 @@ unit you act on and the unit the user can watch.
 
 - You normally don't pass anything: omit `browser_session_id` and `browser_action`
   uses (or auto-creates) **your own shared tab** — the one linked to you and marked
-  shared, so the user can see it in their **Web** tab and watch you drive it live.
+  shared. This is the tab the user watches: when they open the **Web** tab it
+  **automatically opens this same tab** (it resolves to your shared tab the same way
+  you do), so they see exactly what you're driving live — no manual "Share with
+  agent" step is needed.
+- Because of that, just navigate. When the user says "use the integrated web
+  browser to go to X" or "show me X in the browser", the right move is a plain
+  `browser_action` `navigate` with no id — that *is* the panel they're looking at.
+  Don't fall back to `http_request` or `web_search` to "look the site up" instead;
+  drive the actual page so it appears in their Web tab.
 - To act on a specific tab, pass its `browser_session_id`. **The sharing gate only
   lets you reach a tab that is linked to you AND marked shared.** A user's private
   tab is invisible to you — a `browser_action` against it is denied. That's by
   design; don't try to work around it.
-- Same session id ⇒ same live page. When a tab is shared, you and the user are
-  looking at the *same* page, not two copies.
+- Same session id ⇒ same live page. You and the user are looking at the *same*
+  page, not two copies.
 
 ## The loop
 

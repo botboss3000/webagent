@@ -116,11 +116,14 @@ async def read_attachment(attachment_id: str) -> str:
             "size": size_str,
             "content": (
                 f"[Image file: {att['original_name']} ({mime}, {size_str})]\n"
-                f"The image is accessible at: {public_url}\n"
-                "If this image was attached to the most recent user message, it "
-                "has already been included with that message as a vision content "
-                "part — you can describe it directly. For images attached to "
-                "earlier turns, only metadata is available here."
+                f"The image is at: {public_url}\n"
+                "This tool returns metadata only — it does NOT let you see the image. "
+                "If your model can see images, an image attached to the latest message "
+                "is already provided to you as a vision part. If your model cannot see "
+                "images, look for a folded-in '[Attached image — ...]: <description>' "
+                "in the user message, or call process_image (Image Vision ability) to "
+                "ask a vision model about it. Do NOT guess the image's contents from "
+                "this metadata."
             ),
         }, indent=2)
 

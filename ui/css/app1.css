@@ -705,7 +705,9 @@ body.light-mode .chat-mode-btn:hover {
      re-engages auto-scroll. */
   #chat-scroll-bottom-btn {
     position: absolute;
-    bottom: calc(100% + 4px);
+    /* Float above the pill's top edge, centered. The pill has position:relative
+       so 100% = pill's full height; bottom: 100% + gap puts it just above. */
+    bottom: calc(100% + 6px);
     left: 50%;
     transform: translateX(-50%);
     z-index: 10;
@@ -1483,7 +1485,7 @@ body.light-mode .chat-stop-btn:hover {
     bottom: calc(100% + 6px);
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
+    align-items: center;
     gap: 4px;
     pointer-events: none;
     opacity: 0;
@@ -1529,6 +1531,8 @@ body.light-mode .chat-stop-btn:hover {
     font-size: 12px;
     line-height: 1.4;
     text-align: left;
+    user-select: none;
+    -webkit-user-select: none;
     cursor: default;
     transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   }
@@ -1826,14 +1830,22 @@ body.light-mode .chat-stop-btn:hover {
     }
   }
 
-	/* ── Preview bar (above input row) ── */
+	/* ── Preview bar (absolute, sits above the pill, overlaps action row at higher z) ── */
   #chat-preview-bar {
     display: none;
     gap: 6px;
     flex-wrap: wrap;
     padding: 4px 2px;
-    flex-shrink: 0;
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    /* Pin the bar's bottom to the pill's top edge — extends upward into the
+       action-row / activity zone. Higher z-index makes it visually overlay them. */
+    bottom: 100%;
+    z-index: 7;
+    pointer-events: none;
   }
+  #chat-preview-bar .chat-attachment-pill { pointer-events: auto; }
 #chat-preview-bar:not(:empty) {
     display: flex;
   }

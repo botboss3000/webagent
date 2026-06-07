@@ -25,6 +25,14 @@ FEATURE = {
     "color": "#bb9af7",
     "description": "Lets the agent generate images from text prompts. Requires a provider + model config.",
     "simple": False,
+    # Bundled guidance skill (body in image_generation.skill.md, found by convention).
+    "skill_mode": "selectable",
+    "skill_handle": "image_generation_guide_v1",
+    "skill_summary": (
+        "How to make images: generate_image delegates to the configured image-out "
+        "model even if your own model can't draw; re-prompt to refine; switch only to "
+        "a text+image-out model."
+    ),
 }
 
 

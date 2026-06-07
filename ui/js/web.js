@@ -202,9 +202,23 @@ async function apiJson(path, opts = {}) {
   return r.status === 204 ? null : r.json();
 }
 
-// Pick the user's first browser session, creating a private one if they have
-// none. Returns the row {id, shared, agent_id, …}.
+// Resolve the tab to stream. With an active agent, ask the backend for the SAME
+// tab the agent's `browser_action` resolves to (its shared+linked tab, auto-
+// created if none) — so the Web panel shows exactly what the agent is driving,
+// with no manual "Share with agent" step. Without an agent, fall back to the
+// user's first tab (a private one is created if they have none). Returns the row
+// {id, shared, agent_id, …}.
 async function ensureBrowserSession() {
+  const agentId = app.currentAgentId;
+  if (agentId) {
+    try {
+      const row = await apiJson('/api/v1/browser/sessions/resolve', {
+        method: 'POST',
+        body: JSON.stringify({ agent_id: agentId }),
+      });
+      if (row && row.id) return row;
+    } catch (_) { /* fall through to the no-agent path */ }
+  }
   let list = [];
   try {
     const d = await apiJson('/api/v1/browser/sessions');

@@ -139,6 +139,9 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
             "status": "ok",
             "model": vision.get("model", ""),
             "attachment": att.get("original_name") or att.get("id"),
+            # Surface the exact prompt sent to the vision worker + its reply so the
+            # tool call is fully inspectable in the UI.
+            "prompt": {"system": sys_line, "question": question},
             "answer": answer,
         })
 
@@ -148,7 +151,10 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         Persists for the session until changed; takes effect on the next turn."""
         import json
         from app.db import get_db
-        from app.admin.settings import load_llm_capabilities_for_user
+        from app.admin.settings import (
+            load_llm_capabilities_for_user, media_routing,
+            model_sees_images, _is_tool_capable,
+        )
 
         db = get_db()
         target = (model or "").strip()
@@ -158,37 +164,52 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
             await db.set_session_llm_override(session_id, None)
             return json.dumps({"status": "ok", "model": "", "message": "Reverted to the agent's default model."})
 
-        # Only allow enabled models, and only ones that can be the brain (do tools).
+        # Warm the catalog so the capability guards have data.
+        try:
+            from app import model_catalog
+            await model_catalog.ensure_fresh()
+        except Exception:
+            pass
         try:
             caps = await load_llm_capabilities_for_user(user_id)
         except Exception as e:
             return json.dumps({"status": "error", "message": f"Could not read model config: {e}"})
-        enabled = []
+        routing = media_routing(caps)
+
+        # Only allow enabled models.
         d = caps.get("default") or {}
-        if d.get("model"):
-            enabled.append(d["model"])
-        enabled += [r["model"] for r in (caps.get("racers") or [])
-                    if r.get("enabled") and r.get("model")]
+        enabled_entries = ([d] if d.get("model") else []) + [
+            r for r in (caps.get("racers") or []) if r.get("enabled") and r.get("model")
+        ]
+        enabled = [e["model"] for e in enabled_entries]
         if target not in enabled:
             return json.dumps({
                 "status": "error",
                 "message": f"'{target}' isn't an enabled model. Enabled: {', '.join(sorted(set(enabled))) or '(none)'}.",
             })
-        # Reject tool-less (image-only) models as the brain — use process_image instead.
-        try:
-            from app import model_catalog
-            await model_catalog.ensure_fresh()
-            meta = model_catalog.lookup(target)
-            if meta and meta.get("tool_call") is False:
-                return json.dumps({
-                    "status": "error",
-                    "code": "no_tool_support",
-                    "message": (f"'{target}' is an image-only model that can't run tools, so it "
-                                "can't be the agent's model. Use process_image to delegate image "
-                                "questions to it instead, or switch to a text+image model."),
-                })
-        except Exception:
-            pass  # catalog unavailable → allow; the runtime fallback still guards us
+
+        # Taking over for image work requires a model that can BE the brain (text +
+        # tools) AND actually see images. Reject anything that can't — and steer to
+        # process_image when there's nothing valid to switch to.
+        if target not in (routing.get("vision_switch_targets") or []):
+            entry = next((e for e in enabled_entries if e.get("model") == target), {})
+            valid = sorted(set(routing.get("vision_switch_targets") or []))
+            if not _is_tool_capable(entry) or not entry.get("text_capable"):
+                why = (f"'{target}' is configured image-only (no text/tools), so it can't be the "
+                       "agent's model — it can only work as a delegate. Use process_image to send "
+                       "image questions to it instead.")
+            elif not model_sees_images(entry):
+                why = (f"'{target}' can run as the brain but can't see images, so switching to it "
+                       "won't help with image work.")
+            else:
+                why = f"'{target}' isn't a valid text+image model to switch to."
+            tail = (f" Models you can switch to for vision: {', '.join(valid)}."
+                    if valid else
+                    " No text+image model is configured, so switching isn't possible — keep using "
+                    "process_image to delegate image questions (or ask an admin to enable a "
+                    "text+image model in App Config → Models).")
+            return json.dumps({"status": "error", "code": "not_vision_switchable",
+                               "message": why + tail})
 
         await db.set_session_llm_override(session_id, target)
         return json.dumps({

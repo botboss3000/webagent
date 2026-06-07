@@ -101,6 +101,22 @@ Acceptable vs not:
 - **Promote to main:** finish by pushing with `git push origin HEAD:main` — or
   use the `commit_and_push` tool — don't stop at a feature branch.
 
+## Opening folders on the user's machine
+
+When you want the user to browse a local directory in their OS file manager, don't
+just print the path — **ask if they want it opened**, then use `run_python` to
+call the platform-native opener:
+
+| Platform | Python code |
+|---|---|
+| **Windows** | `os.startfile(r"C:\path\to\folder")` |
+| **macOS** | `import subprocess; subprocess.run(["open", "/path/to/folder"])` |
+| **Linux** | `import subprocess; subprocess.run(["xdg-open", "/path/to/folder"])` |
+
+Always resolve relative paths to absolute first, and **always ask permission**
+before opening anything on the user's machine. When they say yes, call
+`run_python` with the appropriate one-liner.
+
 ## Repo map: where to find things
 
 When the user asks about a specific UI feature, page, or backend component, use

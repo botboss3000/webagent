@@ -247,6 +247,53 @@ def background_service_hooks() -> List[Dict[str, Any]]:
     return hooks
 
 
+# ---- Turn-lifecycle hooks ----
+# An ability can export a module-level TURN_HOOK async callable that fires
+# after every chat turn (best-effort, fire-and-forget). The dispatch lives in
+# app/api/chat.py's _run_turn_background. This keeps post-turn behaviour
+# (naming, logging, analytics, etc.) as swappable abilities - a completely
+# different naming strategy is another drop-in file with a different TURN_HOOK.
+async def turn_hooks_for_agent(agent_id: str) -> list:
+    """Discover abilities enabled for this agent that export a TURN_HOOK.
+
+    Uses the agent_abilities table (the UI toggle) to find which abilities are
+    enabled, then checks each for a module-level ``TURN_HOOK`` callable.
+
+    Returns a list of async callables with the signature::
+
+        async hook(db, user_id, session_id, emit)
+
+    Called after each chat turn completes (best-effort, fire-and-forget).
+    Fully guarded - a missing ability module is silently skipped.
+    """
+    if not agent_id:
+        return []
+    # Ensure ability modules are discovered and cached.
+    _load()
+    try:
+        from app.db import get_db
+        db = get_db()
+        if not hasattr(db, "get_agent_abilities"):
+            return []
+        rows = await db.get_agent_abilities(agent_id)
+        enabled = {r["ability_id"] for r in rows if r.get("enabled")}
+    except Exception:
+        return []
+
+    hooks = []
+    for aid in enabled:
+        mod = _MODULE_CACHE.get(aid)
+        if mod is None:
+            continue
+        hook = getattr(mod, "TURN_HOOK", None)
+        if callable(hook):
+            hooks.append(hook)
+    return hooks
+
+
+# ---- Ability-bundled skills ----
+
+
 # ── Ability-bundled skills ───────────────────────────────────────────────────
 # An ability can carry a skill — a knowledge pack folded into the agent's
 # `# [SKILLS]` catalog whenever the ability is enabled (load-on-demand by

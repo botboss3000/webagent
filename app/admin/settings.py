@@ -454,11 +454,61 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
             "image_out_capable": bool(p.get("image_out_capable", False)),
             "use_for_image_out": bool(p.get("use_for_image_out", False)),
         })
+
+    # Reconcile the top-level "default" modality flags with the matching saved row.
+    # The top-level fields are a legacy summary that drifts (e.g. they can read
+    # image_capable=True left over from an image model even though the active text
+    # model's own row correctly says False). The per-model row in multi_providers is
+    # the source of truth, so when the default model id matches a row, take that
+    # row's modality flags. Prevents a stale summary from routing an image to a
+    # blind model. (grep RECONCILE-DEFAULT-MODALITY)
+    if default.get("model"):
+        match = next((r for r in racers if r.get("model") == default["model"]), None)
+        if match:
+            for k in ("text_capable", "image_capable",
+                      "image_out_capable", "use_for_image_out"):
+                if k in match:
+                    default[k] = match[k]
+
     return {
         "default": default,
         "racers": racers,
         "parallel_mode": bool(cfg.get("parallel_mode", False)),
     }
+
+
+def model_sees_images(entry: dict) -> bool:
+    """Can this configured model accept image INPUT? Combines the saved flag with
+    the model-catalog guard: a catalog "no image input" overrides a stale True;
+    catalog unknown/True trusts the configured flag. Mirrors the _ok() guard in
+    pick_vision_model so every caller agrees on what 'can see' means."""
+    if not (entry and entry.get("image_capable") and entry.get("model")):
+        return False
+    return _catalog_modality(entry["model"], entry.get("provider", ""), "in") is not False
+
+
+def model_makes_images(entry: dict) -> bool:
+    """Can this configured model produce image OUTPUT? Catalog-guarded, like
+    model_sees_images but for the output modality."""
+    if not (entry and entry.get("image_out_capable") and entry.get("model")):
+        return False
+    return _catalog_modality(entry["model"], entry.get("provider", ""), "out") is not False
+
+
+def _is_tool_capable(entry: dict) -> bool:
+    """True unless the catalog DEFINITELY says the model can't call tools. Unknown
+    or True both pass (we don't second-guess) — mirrors _ensure_tool_capable."""
+    model = (entry or {}).get("model", "")
+    if not model:
+        return False
+    try:
+        from app import model_catalog
+        meta = model_catalog.lookup(model, provider_hint=entry.get("provider", ""))
+    except Exception:
+        meta = None
+    if not meta:
+        return True
+    return meta.get("tool_call") is not False
 
 
 def turn_models_image_capable(caps: dict) -> bool:
@@ -470,8 +520,11 @@ def turn_models_image_capable(caps: dict) -> bool:
     racers = caps.get("racers") or []
     enabled = [r for r in racers if r.get("enabled")]
     if caps.get("parallel_mode") and len(enabled) >= 2:
-        return any(r.get("image_capable") for r in enabled)
-    return bool((caps.get("default") or {}).get("image_capable"))
+        return any(model_sees_images(r) for r in enabled)
+    # Catalog-guarded: a stale image_capable=True on a text-only model can no
+    # longer fool the describe step into skipping (the original bug). (grep
+    # RECONCILE-DEFAULT-MODALITY)
+    return model_sees_images(caps.get("default") or {})
 
 
 def pick_describer(caps: dict) -> Optional[dict]:
@@ -557,6 +610,62 @@ def pick_image_generator(caps: dict) -> Optional[dict]:
                     "base_url": e.get("base_url", ""), "api_key": e.get("api_key", ""),
                     "api_shape": _infer_api_shape(e.get("base_url", ""), e.get("provider", ""))}
     return None
+
+
+def media_routing(caps: dict) -> dict:
+    """The single capability-routing picture, computed once and reused by the
+    attachment type-router, the image_vision tools, and their guidance messages.
+
+    Encodes the "enforce a decision" rule: if the turn model can't see/make images
+    and there is NO valid model to switch to, the only path is delegating to a
+    one-shot worker (``must_delegate_*``). A *switch target* must be configured
+    text + image (catalog-guarded) AND tool-capable — so an image-in/out model with
+    text turned off is excluded (it can only be a worker, never the brain).
+
+    Returns::
+
+        {
+          "sees_natively":  bool,           # the turn model can read images
+          "makes_natively": bool,           # the turn model can output images
+          "describer":      dict | None,    # one-shot vision worker (read)
+          "generator":      dict | None,    # one-shot image-out worker (make)
+          "vision_switch_targets": [str],   # enabled text+image+tools models
+          "gen_switch_targets":    [str],   # enabled text+image-out+tools models
+          "must_delegate_vision":  bool,    # can't see & nothing to switch to
+          "must_delegate_gen":     bool,    # can't make & nothing to switch to
+        }
+    """
+    caps = caps or {}
+    sees = turn_models_image_capable(caps)
+    default = caps.get("default") or {}
+    makes = model_makes_images(default)
+
+    describer = pick_describer(caps) or pick_vision_model(caps)
+    generator = pick_image_generator(caps)
+
+    enabled = [r for r in (caps.get("racers") or []) if r.get("enabled")]
+    # The default model is always a candidate brain.
+    brains = [default] + enabled
+    vision_switch = sorted({
+        b["model"] for b in brains
+        if b.get("model") and b.get("text_capable")
+        and model_sees_images(b) and _is_tool_capable(b)
+    })
+    gen_switch = sorted({
+        b["model"] for b in brains
+        if b.get("model") and b.get("text_capable")
+        and model_makes_images(b) and _is_tool_capable(b)
+    })
+    return {
+        "sees_natively": sees,
+        "makes_natively": makes,
+        "describer": describer,
+        "generator": generator,
+        "vision_switch_targets": vision_switch,
+        "gen_switch_targets": gen_switch,
+        "must_delegate_vision": (not sees) and (not vision_switch),
+        "must_delegate_gen": (not makes) and (not gen_switch),
+    }
 
 
 def pick_vision_model(caps: dict) -> Optional[dict]:

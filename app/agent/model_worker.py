@@ -33,6 +33,72 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _completion_is_empty(resp) -> tuple:
+    """Return (is_empty, finish_reason) for a chat completion. A reasoning model
+    can return a 200 with NO visible text (it spent the whole token budget on
+    hidden reasoning) — that must be treated as a failure, not a blank answer."""
+    try:
+        ch = resp.choices[0] if (resp and resp.choices) else None
+        if ch is None:
+            return True, None
+        content = getattr(ch.message, "content", None) or ""
+        return (not content.strip()), getattr(ch, "finish_reason", None)
+    except Exception:
+        return False, None  # don't second-guess an unexpected shape
+
+
+async def safe_chat_completion(client, **kwargs):
+    """``client.chat.completions.create`` with graceful fallback for models that
+    reject common params OR return an empty reply.
+
+    Robustness layers (a one-shot worker must not be silently defeated by a model
+    quirk):
+      • Some newer models (OpenAI GPT-5 family on OpenRouter) reject
+        ``temperature``; others want ``max_completion_tokens`` instead of
+        ``max_tokens`` — on such a 400 we drop/swap the param and retry.
+      • Reasoning models spend completion tokens on hidden reasoning first; if
+        that eats the whole budget the visible content comes back EMPTY. So we
+        ask for LOW reasoning effort by default (budget goes to the answer), and
+        if a reply still arrives empty because the budget was exhausted
+        (finish_reason 'length'), we retry once with a much larger budget.
+      • Any param the provider doesn't understand (e.g. the reasoning hint on a
+        non-reasoning model) is dropped and the call retried, never raised blindly.
+    """
+    # Keep "thinking" cheap so a describe/answer worker spends its tokens on the
+    # visible reply. Caller can override by passing reasoning/extra_body itself.
+    if "extra_body" not in kwargs and "reasoning_effort" not in kwargs:
+        kwargs["extra_body"] = {"reasoning": {"effort": "low"}}
+    bumped = False
+    last = None
+    for _ in range(6):
+        try:
+            resp = await client.chat.completions.create(**kwargs)
+        except Exception as e:
+            last = e
+            msg = str(e).lower()
+            if "temperature" in kwargs and "temperature" in msg \
+                    and ("not supported" in msg or "unsupported" in msg):
+                kwargs.pop("temperature", None)
+                continue
+            if "max_tokens" in kwargs and "max_completion_tokens" in msg:
+                kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+                continue
+            if "extra_body" in kwargs:  # provider may not accept the reasoning hint
+                kwargs.pop("extra_body", None)
+                continue
+            raise
+        # 200 but empty because reasoning exhausted the budget → retry bigger once.
+        empty, finish = _completion_is_empty(resp)
+        if empty and finish == "length" and not bumped:
+            bumped = True
+            for key in ("max_tokens", "max_completion_tokens"):
+                if key in kwargs:
+                    kwargs[key] = max(int(kwargs[key]) * 3, 3000)
+            continue
+        return resp
+    raise last if last else RuntimeError("safe_chat_completion: retries exhausted")
+
+
 async def ask_model(
     model_cfg: Dict[str, Any],
     system_prompt: str,
@@ -85,7 +151,8 @@ async def ask_model(
 
     try:
         client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
-        resp = await client.chat.completions.create(
+        resp = await safe_chat_completion(
+            client,
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},

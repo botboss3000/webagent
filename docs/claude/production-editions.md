@@ -122,6 +122,27 @@ This co-locates the **"what" (tools)** with the **"how" (skill)** so they can
 never drift apart, and means exploring an ability teaches the agent everything
 about it.
 
+## Companion `<ability>.json` — attachment-handling abilities
+
+An ability that handles **uploaded files** ships a third package file beside its
+`.py` and `.skill.md`: a companion **`<ability>.json`** (e.g.
+`plugins/abilities/image_vision.json`). It declares, as pure data:
+
+- `handles` — the mime-types / categories it routes (`"image/png"`, `"image/*"`,
+  or a bare category like `"image"`);
+- `worker_system` (+ optional `worker_instruction`) — the system prompt for the
+  one-shot worker that reads the file, with `{context}` / `{request}` placeholders
+  so the description is tailored to the conversation;
+- `guidance` — the copy folded into the user turn: `switch_available` /
+  `describe_only` (when the file was handled) and `not_enabled` (the
+  anti-hallucination fallback when the ability is off or unconfigured).
+
+The **attachment type-router** (`app/agent/attachment_router.py`) scans these JSONs
+and maps each upload to its owning ability by mime-type — so adding a new file-type
+ability (document, video, audio …) is **drop-in**: ship the `.py` + `.skill.md` +
+`.json`, with **no** edit to the router or the `attachment_describe` loop node. See
+[agent-loop.md](agent-loop.md) for the node's routing logic.
+
 ### Skill ids (collision-proof + stable)
 
 - **Agent-authored skills** keep using the **name** as their identity. The save

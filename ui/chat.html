@@ -32,9 +32,6 @@
   </div>
 </div>
 <div id="chat-input-area">
-  <button id="chat-scroll-bottom-btn" class="chat-scroll-bottom-btn" title="Scroll to latest message" aria-label="Scroll to latest message" hidden>
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
-  </button>
   <!-- Suggested-reply chips — populated by ui/js/suggestions.js from the
        silent user-impersonator agent. Tapping a chip fills the pill.
        Positioned above the continue/stop buttons and the tool-call panel. -->
@@ -47,11 +44,14 @@
     <button id="chat-stop-btn" class="chat-stop-btn" title="Stop generation">🛑 Stop</button>
     <button id="chat-continue-btn" class="chat-continue-btn" title="Send 'continue' to resume the agent">Continue</button>
   </div>
-  <div id="chat-preview-bar" style="display:none;"></div>
   <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #ac-int-admin-chat-input-row,
        #agent-builder-bar-row, #autoagent-prompt-row. Style rules live in
        ui/css/app1.css under the "Chat-pill" block. -->
   <div id="chat-input-row" class="chat-pill">
+    <div id="chat-preview-bar" style="display:none;"></div>
+    <button id="chat-scroll-bottom-btn" class="chat-scroll-bottom-btn" title="Scroll to latest message" aria-label="Scroll to latest message" hidden>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
+    </button>
     <!-- Activity ("thinking") indicator — floats just above the pill while
          the agent works; the bar ticks through each interaction, and is
          clickable to expand the panel listing every tool call this turn,

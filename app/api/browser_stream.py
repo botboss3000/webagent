@@ -330,6 +330,10 @@ class _PatchBrowserSession(BaseModel):
     position: Optional[int] = None
 
 
+class _ResolveBrowserSession(BaseModel):
+    agent_id: Optional[str] = None
+
+
 @router.get("/api/v1/browser/sessions")
 async def list_browser_sessions(request: Request):
     from app.auth.identity import assert_caller_is
@@ -350,6 +354,38 @@ async def create_browser_session(request: Request, body: _CreateBrowserSession):
         agent_id=body.agent_id,
         shared=body.shared,
     )
+    return _public(row)
+
+
+@router.post("/api/v1/browser/sessions/resolve")
+async def resolve_browser_session(request: Request, body: _ResolveBrowserSession):
+    """Resolve the tab the Web panel should open so it MATCHES what the agent drives.
+
+    With an ``agent_id``, this returns the SAME tab ``browser_action`` resolves to
+    via ``resolve_agent_session`` — the agent's shared+linked tab, auto-created (and
+    linked + shared) if it has none. So opening the Web tab shows exactly the page
+    the agent is driving, with no manual "Share with agent" step. Without an agent
+    (or if resolution fails) it falls back to the user's first tab, creating a
+    private one if they have none — the old behaviour.
+    """
+    from app.auth.identity import assert_caller_is
+    from app.db import browser_sessions_store as store
+    user_id = await assert_caller_is(request, None)
+    if body.agent_id:
+        from app.tools.browser import resolve_agent_session
+        try:
+            bs_id = resolve_agent_session(user_id, body.agent_id, None)
+        except PermissionError:
+            bs_id = None
+        if bs_id:
+            row = store.get(bs_id)
+            if row:
+                return _public(row)
+    # No agent / resolution failed → the user's first tab (private one if none).
+    bs_id = _resolve_user_bs_id(user_id, None)
+    row = store.get(bs_id) if bs_id else None
+    if not row:
+        raise HTTPException(status_code=404, detail="Browser session not found")
     return _public(row)
 
 

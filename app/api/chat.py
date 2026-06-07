@@ -433,6 +433,7 @@ async def chat_skill_activate(req: SkillActivateRequest):
     on behalf of the user so it counts as loaded the same way as if the agent
     called load_skill itself."""
     db = get_db()
+    await _ensure_session(db, req.user_id, req.session_id)
     active = await db.set_session_active_skill(req.session_id, req.name, True)
     return {"active": active, "name": req.name}
 
@@ -443,6 +444,7 @@ async def chat_skill_deactivate(req: SkillDeactivateRequest):
     active list and neutralize its stored load result so the body leaves the
     model's context on the next turn."""
     db = get_db()
+    await _ensure_session(db, req.user_id, req.session_id)
     active = await db.set_session_active_skill(req.session_id, req.name, False)
     try:
         await db.neutralize_skill_load(req.session_id, req.name)
@@ -799,6 +801,7 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         async for _dev in _maybe_describe_images(
             db, request.user_id, request.message, user_interaction_id,
             loop_config, attachment_docs, _desc_out,
+            agent_id=agent["id"], session_id=request.session_id,
         ):
             await _emit_to_visualizers(request.session_id, _dev)
         user_message_content = await build_user_message_content(
@@ -910,23 +913,6 @@ async def chat(request: ChatRequest, fastapi_request: Request):
             await get_run_buffer_registry().end_turn(request.session_id)
         except Exception as _eb:
             logger.debug("end_turn failed (buffered) for session %s: %s", request.session_id, _eb)
-
-        # ── Background: auto-name the session from its first few user turns ──
-        # Fire-and-forget like the memory save above. The titler summarizes the
-        # opening user messages into a short name, refining over the first 3
-        # turns then locking it, and pushes a live "session_title" event so the
-        # chat-panel header swaps in the name (with a spinner while it thinks).
-        # Skip the special optimizer/closer/slash sessions, which are named by
-        # their own flows.
-        if not request.session_id.startswith(("optimizer-", "closer-", "slash-")):
-            try:
-                from app.agent.session_titler import maybe_title_session
-                asyncio.create_task(maybe_title_session(
-                    db, request.user_id, request.session_id,
-                    lambda ev: _emit_to_user_listeners(request.user_id, ev),
-                ))
-            except Exception as _tt:
-                logger.debug("session titler dispatch failed: %s", _tt)
 
         return ChatResponse(
             reply=assistant_reply,
@@ -1330,6 +1316,7 @@ async def _run_turn_background(
         async for _dev in _maybe_describe_images(
             db, request.user_id, request.message, user_interaction_id,
             loop_config, attachment_docs, _desc_out,
+            agent_id=agent["id"], session_id=session_id,
         ):
             await event_callback(_dev)
         user_message_content = await build_user_message_content(
@@ -1419,6 +1406,19 @@ async def _run_turn_background(
             ))
             await event_callback({"type": "pipeline", "level": "pipeline",
                                   "step": "memory_save_start", "slug": f"chat/{request.session_id[:8]}"})
+
+        # ── Background turn-lifecycle hooks (ability TURN_HOOK) ──
+        # Fire-and-forget after every turn. The primary consumer is the session
+        # titler ability which auto-names the session from its first few turns.
+        try:
+            from app.abilities import turn_hooks_for_agent
+            for _hook in await turn_hooks_for_agent(agent.get("id", "")):
+                asyncio.create_task(_hook(
+                    db, request.user_id, request.session_id,
+                    lambda ev: _emit_to_user_listeners(request.user_id, ev),
+                ))
+        except Exception as _th:
+            logger.debug("turn hooks dispatch failed: %s", _th)
     except asyncio.CancelledError:
         # Hard-cancelled (replace grace timeout, or watchdog frozen-cancel). Mark
         # interrupted so it isn't wrongly recorded 'complete'; the stop_cause was
@@ -1894,22 +1894,29 @@ def unregister_visualizer_listener(session_id: str, websocket: Any):
 
 
 async def _maybe_describe_images(db, user_id, message, user_interaction_id,
-                                 loop_config, attachment_docs, out):
-    """Attachment Description step (async generator).
+                                 loop_config, attachment_docs, out,
+                                 agent_id="", session_id=""):
+    """Attachment type-router step (async generator).
 
-    When an image is attached and the model(s) that will handle this turn cannot
-    see images, describe each image once via a separately-configured vision model
-    and fold the description into the user message as text — and persist it into
-    the user row so later turns retain it (the image itself is never stored).
+    Routes each attached image by the agent's actual model capability (see
+    app/agent/attachment_router.py + plugins/abilities/image_vision.json):
 
-    Yields pipeline event dicts for the caller to emit on its own transport
-    (``await _emit_to_visualizers`` on the buffered path, ``yield`` on SSE) and
+      • inline     — the turn model can see images → leave them inlined.
+      • describe   — blind brain + Image Vision enabled + a vision worker exists →
+                     describe each image once via a one-shot vision model with a
+                     context-tailored prompt, fold the description + guidance into
+                     the user message, cache it on the attachment row.
+      • unreadable — Image Vision off or no vision model configured → fold an
+                     anti-hallucination note ("you can't read this; tell the user")
+                     and DO NOT inline the image to the blind model.
+
+    Yields pipeline event dicts for the caller to emit on its own transport, and
     writes results into ``out``:
       out["message_text"]  → text to send as the user message
       out["inline_docs"]   → attachments to pass to build_user_message_content
-                             (images removed when described, so nothing re-inlines)
     """
     from app.agent.prompts import _VISION_INLINE_MIMES, describe_image_attachment
+    from app.agent.attachment_router import plan_image_attachments
 
     out["message_text"] = message
     out["inline_docs"] = attachment_docs
@@ -1919,39 +1926,62 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
     if not image_atts or not loop_config.is_enabled("attachment_describe"):
         return
 
-    from app.admin.settings import (
-        load_llm_capabilities_for_user, turn_models_image_capable, pick_describer,
-    )
+    from app.admin.settings import load_llm_capabilities_for_user, media_routing
     try:
         caps = await load_llm_capabilities_for_user(user_id)
     except Exception as e:
-        logger.warning("attachment_describe: capability read failed: %s", e)
+        logger.warning("attachment route: capability read failed: %s", e)
         return
-    if turn_models_image_capable(caps):
+    routing = media_routing(caps)
+
+    # Short conversation tail so the worker can tailor the description to context.
+    context = ""
+    if session_id:
+        try:
+            recs = await db.fetch_interactions(user_id, session_id)
+            tail = [r for r in recs if getattr(r, "role", "") in ("user", "assistant")][-6:]
+            context = "\n".join(
+                f"{getattr(r, 'role', '')}: {(getattr(r, 'content', '') or '')[:500]}"
+                for r in tail
+            )
+        except Exception:
+            context = ""
+
+    plan = await plan_image_attachments(
+        agent_id=agent_id, user_id=user_id, image_atts=image_atts,
+        caps=caps, routing=routing, context=context, request=message or "",
+    )
+    mode = plan.get("mode")
+    if mode == "inline":
         return  # a turn model can see the image natively → leave it inlined
 
-    # Images are removed from native inlining; non-image attachments pass through.
+    # From here the image is NOT inlined to the (blind) brain; other types pass through.
     out["inline_docs"] = [a for a in (attachment_docs or [])
                           if (a.get("mime_type") or "").lower() not in _VISION_INLINE_MIMES]
-
-    describer = pick_describer(caps)
     parts = [message] if message else []
+    guidance = plan.get("guidance") or ""
 
-    if not describer:
-        for a in image_atts:
-            parts.append(
-                f"\n\n[Attached image — '{a.get('original_name', 'image')}']:\n"
-                "(An image was attached but no vision-capable model is configured to describe it.)"
-            )
+    if mode == "unreadable":
+        # The directive is an instruction to the AGENT, not content the user wrote.
+        # Surface it as an inspectable tool row (foldable, like process_image) and
+        # deliver it to the model for THIS turn via message_text — but DO NOT write
+        # it into the user's interaction row, so it never shows in the chat bubble.
+        names = ", ".join(a.get("original_name", "image") for a in image_atts) or "an image"
+        reason = plan.get("reason") or "unreadable"
+        yield {"type": "tool_call", "level": "agent", "tool": "route_attachment",
+               "args": {"attachment": names, "decision": "unreadable", "reason": reason},
+               "turn": 1}
+        yield {"type": "tool_result", "level": "agent", "tool": "route_attachment",
+               "result": guidance or "(no guidance)", "error": True, "turn": 1}
+        if guidance:
+            parts.append(f"\n\n{guidance}")
         out["message_text"] = "".join(parts).strip() or (message or "")
-        try:
-            await db.update_interaction_content(user_interaction_id, out["message_text"])
-        except Exception as e:
-            logger.debug("attachment_describe: persist (no_describer) failed: %s", e)
         yield {"type": "pipeline", "level": "pipeline", "step": "attachment_describe_end",
-               "image_count": len(image_atts), "status": "no_describer"}
+               "image_count": len(image_atts), "status": "unreadable", "reason": reason}
         return
 
+    # mode == "describe"
+    describer = plan.get("describer") or {}
     import time as _t
     from datetime import datetime, timezone
     yield {"type": "pipeline", "level": "pipeline", "step": "attachment_describe_start",
@@ -1967,13 +1997,30 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
                 meta = json.loads(meta)
             except Exception:
                 meta = {}
+        # Surface the vision-worker call as an inspectable tool call so the user
+        # can expand it to see the EXACT prompt we generated and the worker's
+        # response. Tagged turn=1 so it attaches to this exchange's reply bubble.
+        tool_args = {
+            "attachment": name,
+            "vision_model": describer.get("model", ""),
+            "system_prompt": plan.get("worker_system") or "(built-in default vision-describe prompt)",
+            "instruction": plan.get("worker_instruction") or "Describe this image in detail.",
+            "user_message": message or "",
+        }
+        yield {"type": "tool_call", "level": "agent", "tool": "process_image",
+               "args": tool_args, "turn": 1}
+        _img_start = _t.time()
         desc = None
         if isinstance(meta, dict) and meta.get("vision_description") \
                 and meta.get("vision_describer_model") == describer.get("model"):
             desc = meta.get("vision_description")
             cached += 1
         if not desc:
-            desc = await describe_image_attachment(a, describer, user_text_hint=message)
+            desc = await describe_image_attachment(
+                a, describer, user_text_hint=message,
+                system_prompt=plan.get("worker_system") or None,
+                instruction=plan.get("worker_instruction"),
+            )
             if desc:
                 described += 1
                 try:
@@ -1983,17 +2030,28 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
                         "vision_described_at": datetime.now(timezone.utc).isoformat(),
                     })
                 except Exception as e:
-                    logger.debug("attachment_describe: metadata cache failed: %s", e)
+                    logger.debug("attachment route: metadata cache failed: %s", e)
+        yield {"type": "tool_result", "level": "agent", "tool": "process_image",
+               "result": desc or "(the vision model could not describe this image)",
+               "duration_ms": int((_t.time() - _img_start) * 1000),
+               "error": not bool(desc), "turn": 1}
         if desc:
             parts.append(f"\n\n[Attached image — '{name}']:\n{desc}")
         else:
             parts.append(f"\n\n[Attached image — '{name}']:\n(Image could not be described.)")
 
-    out["message_text"] = "".join(parts).strip() or (message or "")
+    # Persist the user turn with the image DESCRIPTION folded in (so the model keeps
+    # it across turns) but NOT the guidance NOTE — the note is an instruction to the
+    # agent, not user content, so it stays out of the chat bubble. The model still
+    # receives the note this turn via message_text below.
+    persisted = "".join(parts).strip() or (message or "")
     try:
-        await db.update_interaction_content(user_interaction_id, out["message_text"])
+        await db.update_interaction_content(user_interaction_id, persisted)
     except Exception as e:
-        logger.debug("attachment_describe: persist failed: %s", e)
+        logger.debug("attachment route: persist failed: %s", e)
+    if guidance:
+        parts.append(f"\n\n{guidance}")
+    out["message_text"] = "".join(parts).strip() or (message or "")
 
     yield {"type": "pipeline", "level": "pipeline", "step": "attachment_describe_end",
            "image_count": len(image_atts), "vision_model": describer.get("model", ""),

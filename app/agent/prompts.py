@@ -276,6 +276,8 @@ async def describe_image_attachment(
     att: Dict,
     describer_cfg: Dict[str, Any],
     user_text_hint: str = "",
+    system_prompt: Optional[str] = None,
+    instruction: Optional[str] = None,
 ) -> Optional[str]:
     """Call a configured vision model ONCE to describe a single image attachment.
 
@@ -283,6 +285,10 @@ async def describe_image_attachment(
     describer config is incomplete, or the call fails. This is a single
     in-process completion — no session, no agent loop, no HTTP self-call.
     Generic by design: future voice/video describers follow the same shape.
+
+    ``system_prompt`` / ``instruction`` let the attachment type-router supply a
+    context-tailored prompt (from the ability's companion JSON) so the description
+    is shaped to what the conversation needs; both fall back to a generic default.
     """
     url = await _attachment_to_image_data_url(att)
     if not url:
@@ -298,7 +304,7 @@ async def describe_image_attachment(
     except ImportError:
         from app.openai_compat import AsyncOpenAI
 
-    sys_line = (
+    sys_line = (system_prompt or "").strip() or (
         "You are an image-description assistant. Describe the attached image in "
         "thorough, faithful detail so that another AI model which cannot see the "
         "image can fully understand it. Include any visible text verbatim, plus "
@@ -310,12 +316,15 @@ async def describe_image_attachment(
     if hint:
         user_parts.append({"type": "text",
                            "text": f"The user's message accompanying this image: {hint}"})
-    user_parts.append({"type": "text", "text": "Describe this image in detail."})
+    user_parts.append({"type": "text",
+                       "text": (instruction or "").strip() or "Describe this image in detail."})
     user_parts.append({"type": "image_url", "image_url": {"url": url}})
 
     try:
+        from app.agent.model_worker import safe_chat_completion
         client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=30.0)
-        resp = await client.chat.completions.create(
+        resp = await safe_chat_completion(
+            client,
             model=model,
             messages=[
                 {"role": "system", "content": sys_line},

@@ -1902,6 +1902,8 @@ _ABILITY_CONFIG_KEY: dict[str, str] = {
     # everyone sees, so it's OFF by default (not in _ALWAYS_ON_ABILITIES) and
     # must be turned on at the app level then per-agent, like terminal_control.
     "wiki_control":        "ability_wiki_control",
+    "image_vision":        "ability_image_vision",
+    "session_titler":      "ability_session_titler",
 }
 
 # Abilities that are ON by default at the app level: available to the per-agent
@@ -1918,6 +1920,8 @@ _ALWAYS_ON_ABILITIES: set[str] = {
     "git_control",
     "ui_admin",
     "app_control",
+    "image_vision",
+    "session_titler",
 }
 
 
@@ -2231,6 +2235,8 @@ async def get_integration_config(
         "agent_management_configured":    ability_enabled.get("agent_management", False),
         "app_control_configured":         ability_enabled.get("app_control", False),
         "wiki_control_configured":         ability_enabled.get("wiki_control", False),
+        "image_vision_configured":         ability_enabled.get("image_vision", False),
+        "session_titler_configured":       ability_enabled.get("session_titler", False),
     }
 
 

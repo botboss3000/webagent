@@ -550,11 +550,6 @@ function _setTriggerLabel() {
   const agentIcon = _agentIconFor(agentId);
   labelEl.textContent = (agentIcon ? agentIcon + ' ' : '') + _truncate(title, 22);
   labelEl.title = ((found && found.id) || sid || '');
-  // Click the label to re-enter rename mode
-  labelEl.addEventListener('click', (e) => {
-    e.stopPropagation();
-    _headerRenameSession();
-  });
   // Mark the session dropdown as loaded (removes shimmer + re-enables trigger)
   const sessionDropdown = document.getElementById('session-dropdown');
   if (sessionDropdown) sessionDropdown.dataset.loaded = 'true';
@@ -2076,6 +2071,11 @@ export function initSessions() {
     autoAgentSessionChanged();
     chatActivitySessionChanged();
     _setAgentTriggerLabel();
+    // Refresh the skill-selector panel for the new session so the user can
+    // see and toggle skills immediately (rather than after the first reply).
+    if (typeof app.refreshActiveSkills === 'function') {
+      try { app.refreshActiveSkills(); } catch (_) { /* best-effort */ }
+    }
     // Focus the input after creating a new session so the user can start
     // typing immediately (especially important on mobile).
     if (app.chatInput) {
