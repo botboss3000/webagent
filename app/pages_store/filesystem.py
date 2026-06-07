@@ -1,9 +1,9 @@
 """Filesystem-backed PageStore — default.
 
-Stores pages per-user at visuals/users/{user_id}/{slug}.html, with a
+Stores pages per-user at data/user_data/{user_id}/pages/{slug}.html, with a
 pages.json manifest in the same directory. Simple, fast, hand-editable on
-disk, and easy to git-commit. Loses pages on container restart in stateless
-deploys (e.g. Cloud Run) — for those use the database or hybrid backends.
+disk. Loses pages on container restart in stateless deploys (e.g. Cloud Run) —
+for those use the database or hybrid backends.
 """
 
 import json
@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 
 from app.pages_store.interface import PageStore
 from app.pages_store.common import (
-    USERS_DIR,
+    user_pages_dir,
     blank_page_html,
     default_agent_context,
     home_agent_context,
@@ -28,7 +28,7 @@ class FilesystemPageStore(PageStore):
     # ── Path helpers ─────────────────────────────────────────────────────
 
     def _user_dir(self, user_id: str) -> str:
-        return os.path.join(USERS_DIR, safe(user_id))
+        return user_pages_dir(user_id)
 
     def _manifest_path(self, user_id: str) -> str:
         return os.path.join(self._user_dir(user_id), "pages.json")

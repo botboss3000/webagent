@@ -2,13 +2,20 @@
 
 import re
 
-VISUALS_DIR = "data/visuals"
-USERS_DIR = f"{VISUALS_DIR}/users"
+from app import user_workspace as _ws
 
 
 def safe(name: str) -> str:
     """Sanitize a string for safe use as a directory / file / slug segment."""
     return re.sub(r"[^\w\-]", "_", name)
+
+
+def user_pages_dir(user_id: str) -> str:
+    """On-disk dir holding a user's AutoAgent pages.
+
+    Lives in the user's data home: ``data/user_data/<user_id>/pages/`` (see
+    app/user_workspace.py). Created if missing."""
+    return str(_ws.user_dir(user_id, "pages"))
 
 
 def page_url(user_id: str, slug: str) -> str:

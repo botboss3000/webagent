@@ -95,19 +95,19 @@ body {
 #chat-header {
     display: flex;
     align-items: center;
-    padding: 8px 12px;
+    padding: 10px 14px;
     border-bottom: 1px solid #2a2a4a;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
     color: #c0caf5;
     flex-shrink: 0;
-    gap: 8px;
+    gap: 10px;
   }
 #header-user-session { display: flex; flex-direction: row; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; }
-#chat-header .sub { color: #565f89; font-weight: 400; font-size: 11px; }
+#chat-header .sub { color: #565f89; font-weight: 400; font-size: 12px; }
 #chat-header .actions { display: flex; gap: 8px; }
 #chat-header button {
-    background: none; border: none; color: #565f89; cursor: pointer; font-size: 13px;
+    background: none; border: none; color: #565f89; cursor: pointer; font-size: 14px;
   }
 #chat-header button:hover { color: #7dcfff; }
 
@@ -235,9 +235,9 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
 .chat-token-bar {
     display: flex;
     align-items: center;
-    gap: 5px;
-    padding: 2px 0;
-    font-size: 10px;
+    gap: 6px;
+    padding: 3px 0;
+    font-size: 11px;
     font-family: 'JetBrains Mono', monospace;
     color: #565f89;
     pointer-events: none;
@@ -253,11 +253,11 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
     color: #3b4261;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    font-size: 9px;
+    font-size: 10px;
   }
 .chat-token-value {
     color: #565f89;
-    min-width: 20px;
+    min-width: 24px;
     text-align: center;
     font-variant-numeric: tabular-nums;
   }
@@ -267,7 +267,7 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
 .chat-footer-left {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 14px;
     min-width: 0;
   }
 /* Right side of the chat footer row: skill button + mode button, kept on the
@@ -277,7 +277,7 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
 .chat-footer-right {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     margin-left: auto;
     flex-shrink: 0;
   }
@@ -286,8 +286,8 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
 .chat-model-ctx {
     display: flex;
     align-items: center;
-    gap: 5px;
-    font-size: 10px;
+    gap: 6px;
+    font-size: 11px;
     font-family: 'JetBrains Mono', monospace;
     color: var(--fg-3, #565f89);
     user-select: none;
@@ -307,8 +307,8 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
    otherwise it sits still as a small dot. */
 .chat-token-spinner {
     display: inline-block;
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
     border: 1.5px solid #565f89;
     border-radius: 2px;
     transform: rotate(45deg);
@@ -599,8 +599,8 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     border: none;
     border-radius: 6px;
     background: transparent;
@@ -610,8 +610,8 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
     flex-shrink: 0;
   }
 .chat-skills-btn svg {
-    width: 16px;
-    height: 16px;
+    width: 20px;
+    height: 20px;
   }
 .chat-skills-btn:hover {
     background: var(--accent-soft);
@@ -619,16 +619,16 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
   }
 .chat-skills-btn .csp-badge {
     position: absolute;
-    top: -3px;
-    right: -3px;
+    top: -4px;
+    right: -4px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 16px;
-    height: 16px;
-    border-radius: 8px;
-    padding: 0 4px;
-    font-size: 9px;
+    min-width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    padding: 0 5px;
+    font-size: 10px;
     font-weight: 700;
     line-height: 1;
     background: var(--accent);
@@ -649,13 +649,13 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
     background: #7dcfff15;
     border: 1px solid #7dcfff30;
     color: #7dcfff;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
-    padding: 4px 14px;
-    border-radius: 12px;
+    padding: 5px 16px;
+    border-radius: 14px;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
-    line-height: 1.4;
+    line-height: 1.5;
     user-select: none;
     -webkit-user-select: none;
     font-family: inherit;
@@ -938,11 +938,11 @@ body.light-mode .chat-loading-wrap {
     font-family: monospace;
   }
 .chat-bubble .label {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     color: #565f89;
     display: block;
-    margin-bottom: 4px;
+    margin-bottom: 5px;
   }
 /* Collapsed bubble — hides the message body but keeps the action footer visible. */
 .chat-bubble.collapsed {
@@ -1125,12 +1125,12 @@ body.light-mode .chat-bubble.user.pending .label {
 
 .chat-continue-btn,
 .chat-stop-btn {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
-    padding: 4px 14px;
-    border-radius: 12px;
+    padding: 5px 16px;
+    border-radius: 14px;
     cursor: pointer;
-    line-height: 1.4;
+    line-height: 1.5;
     user-select: none;
     -webkit-user-select: none;
     font-family: inherit;
@@ -1212,7 +1212,7 @@ body.light-mode .chat-stop-btn:hover {
     flex-wrap: wrap;
     gap: 4px 14px;
     align-self: stretch;
-    margin-bottom: 3px;
+    margin-bottom: 4px;
     padding: 0 6px;
   }
 .chat-suggest-row:empty {
@@ -1224,10 +1224,10 @@ body.light-mode .chat-stop-btn:hover {
     max-width: 100%;
     background: none;
     border: none;
-    padding: 2px 0;
+    padding: 3px 0;
     color: var(--fg-4);
-    font-size: 12.5px;
-    line-height: 1.35;
+    font-size: 13px;
+    line-height: 1.4;
     cursor: pointer;
     white-space: nowrap;
     overflow: hidden;
@@ -1300,7 +1300,7 @@ body.light-mode .chat-stop-btn:hover {
     width: 100%;
     background: #0d0d1a;
     border: 1px solid #2a2a4a;
-    border-radius: 18px;
+    border-radius: 20px;
     /* Extra left padding so the caret/text sits visually inside the pill
        and leaves room for the scroll-position indicator on the left. */
     padding: 4px 4px 4px 14px;
@@ -1342,21 +1342,19 @@ body.light-mode .chat-stop-btn:hover {
     background: transparent;
     border: none;
     border-radius: 0;
-    padding: 12px 6px 12px 0;
+    padding: 14px 8px 14px 0;
     color: #c0caf5;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 700;
     /* Explicit line-height so the JS auto-resize and the min/max heights
        below all line up. 1 line of content = 18px. */
-    line-height: 18px;
-    /* Default pill is a 2-row textarea: 18*2 content + 12+12 padding = 60px.
-       The 72px voice/send buttons in the right column need more room
-       so the pill is 96px when empty. */
+    line-height: 22px;
+    /* Default pill is a 2-row textarea: 22*2 content + 14+14 padding = 72px. */
     min-height: 96px;
-    /* 6 visible content lines: 18px * 6 = 108px, plus 8px+8px vertical
-       padding = 124px. JS toggles overflow-y to 'auto' when content
+    /* 6 visible content lines: 22px * 6 = 132px, plus 14px+14px vertical
+       padding = 160px. JS toggles overflow-y to 'auto' when content
        exceeds this. */
-    max-height: 124px;
+    max-height: 160px;
     overflow-y: hidden;
     outline: none;
     font-family: inherit;
@@ -1371,7 +1369,7 @@ body.light-mode .chat-stop-btn:hover {
   }
 .chat-pill-input::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .chat-pill-input:focus { border: none; outline: none; box-shadow: none; }
-.chat-pill-input::placeholder { color: #3b4261; }
+.chat-pill-input::placeholder { color: #3b4261; font-size: 14px; }
 
 /* Send / mic swap driven by .has-text on the row */
 .chat-pill .chat-pill-send  { display: none; }
@@ -1387,8 +1385,8 @@ body.light-mode .chat-stop-btn:hover {
     border: none;
     color: #565f89;
     cursor: pointer;
-    width: 33px;
-    height: 33px;
+    width: 38px;
+    height: 38px;
     padding: 0;
     border-radius: 50%;
     transition: 0.15s;
@@ -1403,8 +1401,8 @@ body.light-mode .chat-stop-btn:hover {
     border: none;
     color: #565f89;
     cursor: pointer;
-    width: 57px;
-    height: 57px;
+    width: 62px;
+    height: 62px;
     padding: 0;
     border-radius: 50%;
     transition: 0.15s;
@@ -1444,13 +1442,13 @@ body.light-mode .chat-stop-btn:hover {
    Targets <svg> because Lucide replaces <i data-lucide> with an inline SVG
    and copies the inline style attribute to it. !important beats that. */
 .chat-pill-attach svg {
-    width: 21px !important;
-    height: 21px !important;
+    width: 24px !important;
+    height: 24px !important;
   }
 .chat-pill-voice svg,
 .chat-pill-send svg {
-    width: 41px !important;
-    height: 41px !important;
+    width: 44px !important;
+    height: 44px !important;
   }
 .chat-pill-send:disabled { opacity: 0.4; cursor: default; }
 .chat-pill-voice.recording {
@@ -1507,8 +1505,8 @@ body.light-mode .chat-stop-btn:hover {
     /* Matches the continue/stop buttons' size so the row above the pill reads as
        one set of same-sized controls (padding + radius below; text size on
        .chat-activity-text). */
-    padding: 4px 14px;
-    border-radius: 12px;
+    padding: 5px 16px;
+    border-radius: 14px;
     /* Same faded glass as the chat pill (see index.html "#chat-panel .chat-pill"):
        a 7% tint of the foreground over transparent, a 12% neutral hairline, and
        the same blur+saturate — so the bubble reads as the same surface as the
@@ -1528,8 +1526,8 @@ body.light-mode .chat-stop-btn:hover {
     /* SIBLING-BTN-COHESION: explicit size + line-height so the box math
        matches the Continue/Stop buttons. font:inherit above would give us
        the browser default ~16px, making this ~2px taller. */
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: 13px;
+    line-height: 1.5;
     text-align: left;
     user-select: none;
     -webkit-user-select: none;
@@ -1554,30 +1552,21 @@ body.light-mode .chat-stop-btn:hover {
     50%      { box-shadow: 0 0 0 1px var(--accent-mid),  0 0 13px 0   var(--accent-line); }
   }
 .chat-activity-dot {
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    background: var(--accent);
-    flex: 0 0 auto;
-    animation: chatActivityPulse 1s ease-in-out infinite;
-  }
-.chat-activity.resting .chat-activity-dot { animation: none; opacity: 0.5; }
-@keyframes chatActivityPulse {
-    0%, 100% { opacity: 0.35; transform: scale(0.8); }
-    50%      { opacity: 1;    transform: scale(1); }
+    background: currentColor;
+    opacity: .5;
+    flex-shrink: 0;
   }
 .chat-activity-text {
-    min-width: 0;
-    flex: 0 1 auto;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--fg-4);
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-    /* Same text size/weight as the continue/stop buttons (see .chat-continue-btn). */
-    font-size: 12px;
-    font-weight: 600;
-    line-height: 1.4;
     letter-spacing: 0.01em;
-    color: var(--fg-2);   /* muted note — the bar itself inherits fg for its glass */
   }
 .chat-activity-chevron {
     flex: 0 0 auto;
@@ -1944,6 +1933,127 @@ body.light-mode .chat-stop-btn:hover {
     background: #7dcfff20;
     text-decoration: underline;
   }
+
+/* Clickable previews (chips + history images) — hint that they expand. */
+  .chat-attachment-pill.clickable,
+  .chat-attachment-img.clickable,
+  .chat-attachment-link.clickable { cursor: zoom-in; }
+  .chat-attachment-img.clickable:hover { filter: brightness(1.08); }
+
+/* ── Full-screen attachment viewer (lightbox) ── */
+  .attachment-viewer-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10001;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(8, 8, 18, 0.82);
+    backdrop-filter: blur(3px);
+    padding: 32px;
+    animation: attViewerFade 0.12s ease-out;
+  }
+@keyframes attViewerFade { from { opacity: 0; } to { opacity: 1; } }
+  .attachment-viewer-frame {
+    display: flex;
+    flex-direction: column;
+    max-width: min(1100px, 92vw);
+    max-height: 90vh;
+    background: #14141f;
+    border: 1px solid #2a2a4a;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  }
+.attachment-viewer-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid #2a2a4a;
+    flex-shrink: 0;
+  }
+.attachment-viewer-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: #a9b1d6;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+.attachment-viewer-close {
+    background: none;
+    border: none;
+    color: #565f89;
+    cursor: pointer;
+    display: inline-flex;
+    padding: 2px;
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
+.attachment-viewer-close:hover { color: #f7768e; background: #f7768e1a; }
+  .attachment-viewer-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+.attachment-viewer-img {
+    max-width: 100%;
+    max-height: calc(90vh - 60px);
+    object-fit: contain;
+    border-radius: 6px;
+  }
+.attachment-viewer-video {
+    max-width: 100%;
+    max-height: calc(90vh - 60px);
+    border-radius: 6px;
+  }
+.attachment-viewer-audio { width: min(560px, 80vw); }
+  .attachment-viewer-pdf {
+    width: min(1000px, 88vw);
+    height: calc(90vh - 60px);
+    border: none;
+    background: #fff;
+    border-radius: 6px;
+  }
+.attachment-viewer-text {
+    align-self: stretch;
+    width: 100%;
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #c0caf5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+.attachment-viewer-md {
+    white-space: normal;
+    font-family: inherit;
+  }
+.attachment-viewer-download {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #7dcfff;
+    text-decoration: none;
+    font-size: 14px;
+    padding: 10px 16px;
+    background: #7dcfff14;
+    border-radius: 8px;
+  }
+.attachment-viewer-download:hover { background: #7dcfff24; }
+  .attachment-viewer-loading {
+    display: inline-flex;
+    color: #565f89;
+    animation: spin 1s linear infinite;
+  }
+.attachment-viewer-missing { color: #f7768e; font-size: 14px; }
 
 /* ── Main header ── */
   #main-header {
@@ -2540,6 +2650,25 @@ body.light-mode .chat-attachment-link {
   }
 body.light-mode .chat-attachment-link:hover { background: #ffe4cc; }
 
+body.light-mode .attachment-viewer-backdrop { background: rgba(60, 40, 30, 0.55); }
+body.light-mode .attachment-viewer-frame {
+    background: #fffaf5;
+    border-color: #ffdec4;
+    box-shadow: 0 20px 60px rgba(120, 80, 50, 0.28);
+  }
+body.light-mode .attachment-viewer-head { border-bottom-color: #ffdec4; }
+body.light-mode .attachment-viewer-title { color: #5c4a4a; }
+body.light-mode .attachment-viewer-close { color: #b09580; }
+body.light-mode .attachment-viewer-close:hover { color: #d44848; background: #d448481a; }
+body.light-mode .attachment-viewer-text { color: #4a3f3f; }
+body.light-mode .attachment-viewer-download {
+    color: #cc6a28;
+    background: #ffeee0;
+  }
+body.light-mode .attachment-viewer-download:hover { background: #ffe4cc; }
+body.light-mode .attachment-viewer-loading { color: #b09580; }
+body.light-mode .attachment-viewer-missing { color: #cc4444; }
+
 body.light-mode #cell-modal-header { border-bottom-color: #ffdec4; }
 body.light-mode #cell-modal-editor,
 body.light-mode #cell-modal-viewer {
@@ -2747,8 +2876,8 @@ buttons pinned right via .header-actions ── */
     border: none;
     color: #565f89;
     cursor: pointer;
-    font-size: 18px;
-    padding: 4px 6px;
+    font-size: 20px;
+    padding: 6px 8px;
     vertical-align: middle;
     display: inline-flex;
     align-items: center;
@@ -2774,7 +2903,7 @@ buttons pinned right via .header-actions ── */
   border: none;
   color: #565f89;
   cursor: pointer;
-  padding: 4px 2px;
+  padding: 6px 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2803,9 +2932,9 @@ body.light-mode .session-nav-btn:hover {
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    width: 14px;
-    height: 14px;
-    margin-right: 2px;
+    width: 16px;
+    height: 16px;
+    margin-right: 4px;
   }
 .session-dropdown-status.session-status-running,
 .agent-dropdown-status.session-status-running {
@@ -2882,13 +3011,13 @@ body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label 
     display: inline-flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px;
+    gap: 8px;
     width: 100%;
     max-width: 100%;
     min-width: 0;
     cursor: pointer;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 13px;
   }
 /* Icons inside the trigger and row buttons must not swallow clicks (lucide SVG quirk). */
   .session-dropdown-trigger > *,

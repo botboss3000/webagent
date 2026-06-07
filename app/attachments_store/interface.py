@@ -5,7 +5,7 @@ An AttachmentStore owns the persistence of file bytes for the `attachments`
 table — chat images, voice recordings, dropped documents.
 
 Implementations:
-  - LocalAttachmentStore     uploads/{user_id}/{uuid}.ext on disk (default)
+  - LocalAttachmentStore     data/user_data/{user_id}/uploads/{uuid}.ext on disk (default)
   - BrowserAttachmentStore   server records metadata only; bytes live in the
                              user's browser IndexedDB. Multi-device users
                              will not see each other's attachments.

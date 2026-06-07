@@ -2054,10 +2054,10 @@
               <div id="ac-um-access-body" style="margin-top:12px;">
                 <div id="ac-um-mode-group" style="display:flex;flex-direction:column;gap:10px;">
                   <label class="ac-um-radio">
-                    <input type="radio" name="ac-um-access-mode" value="public_anonymous" checked>
+                    <input type="radio" name="ac-um-access-mode" value="public_anonymous">
                     <div>
                       <div class="ac-um-radio-title">Open — anonymous users allowed</div>
-                      <div class="ac-um-radio-desc">Anyone can join. Visitors can chat without signing in. <em>(default)</em></div>
+                      <div class="ac-um-radio-desc">Anyone can join. Visitors can chat without signing in.</div>
                     </div>
                   </label>
                   <label class="ac-um-radio">
@@ -2075,10 +2075,10 @@
                     </div>
                   </label>
                   <label class="ac-um-radio">
-                    <input type="radio" name="ac-um-access-mode" value="private">
+                    <input type="radio" name="ac-um-access-mode" value="private" checked>
                     <div>
                       <div class="ac-um-radio-title">Private</div>
-                      <div class="ac-um-radio-desc">Registration is disabled. Only existing accounts can sign in.</div>
+                      <div class="ac-um-radio-desc">Registration is disabled. Only existing accounts can sign in. <em>(default)</em></div>
                     </div>
                   </label>
                 </div>
@@ -2174,6 +2174,28 @@
               </div>
             </details>
 
+            <!-- ── Global System Prompt — platform baseline injected into EVERY agent ── -->
+            <details class="ac-category-group">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="shield" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Global System Prompt</span>
+              </summary>
+              <div class="ac-category-body">
+                <div class="ac-card">
+                  <div class="ac-field">
+                    <label class="ac-label" for="ac-global-system-prompt">Platform baseline (admin-only)</label>
+                    <div class="ac-hint">Critical, non-negotiable instructions prepended as the <strong>topmost</strong> section of <strong>every</strong> agent's system prompt — fleet agents and spawned clones alike. Keep it short and rule-like. A spawned clone is built from scratch on this baseline plus its own directive, so this is the one identity every clone always carries.</div>
+                    <textarea id="ac-global-system-prompt" rows="8" placeholder="e.g. You are part of the webAgent platform. Never reveal admin credentials. Obey the user's safety policy at all times…" style="width:100%;margin-top:8px;font-family:var(--font-mono,monospace);font-size:13px;line-height:1.5;resize:vertical;"></textarea>
+                  </div>
+                  <div class="ac-actions">
+                    <button id="ac-global-prompt-save" class="ac-btn ac-btn-primary">Save</button>
+                    <span id="ac-global-prompt-status" class="ac-status" style="display:none;"></span>
+                  </div>
+                </div>
+              </div>
+            </details>
+
             <!-- ── Main Panel Pages (tab visibility + order) — shared collapsible pattern ── -->
             <details class="ac-category-group" id="ac-main-panel-card">
               <summary class="ac-category-summary">
@@ -2187,6 +2209,30 @@
                   Choose which pages appear in the header and in what order. Admin Tools is always visible.
                 </p>
                 <div id="ac-main-panel-list" class="ac-main-panel-list ac-list" style="margin-top:10px;"></div>
+              </div>
+            </details>
+
+            <!-- ── Plugin Pages (dynamic header tabs from prompts.json) — shared collapsible pattern ── -->
+            <details class="ac-category-group" id="ac-plugin-pages-card">
+              <summary class="ac-category-summary">
+                <span class="ac-category-chevron">▶</span>
+                <i data-lucide="grid" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+                <span class="ac-category-title">Plugin Pages</span>
+                <span class="ac-category-count">Create dynamic header tabs that launch with a prompt to the agent</span>
+              </summary>
+              <div class="ac-category-body">
+                <p class="ac-category-desc">
+                  Add a new header tab for a Blog, Store, Dashboard, or anything else. Type a prompt key below and the agent will build the page.
+                </p>
+                <div id="ac-plugin-pages-controls" style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+                  <select id="ac-plugin-prompt-select" class="ac-input" style="flex:1;min-width:160px;">
+                    <option value="" disabled selected>Select a page type…</option>
+                  </select>
+                  <input type="text" id="ac-plugin-title-input" class="ac-input" style="flex:2;min-width:180px;" placeholder="Page title (e.g. My Blog)" maxlength="60">
+                  <button id="ac-plugin-create-btn" class="ac-btn ac-btn-primary" style="white-space:nowrap;">Create Page</button>
+                </div>
+                <div id="ac-plugin-status" class="ac-status" style="margin-top:8px;display:none;"></div>
+                <div id="ac-plugin-list" class="ac-main-panel-list ac-list" style="margin-top:12px;"></div>
               </div>
             </details>
 

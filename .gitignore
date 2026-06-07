@@ -149,6 +149,14 @@ data/uploads/*
 !data/uploads/.gitkeep
 data/visuals/
 
+# Per-user data home — agent outputs + screenshots saved per user at runtime
+# (data/user_data/<user_id>/{files,screenshots,...}). Never tracked.
+data/user_data/
+
+# Browser-tool screenshots — runtime output (legacy/fallback pile). The per-user
+# home above is the new destination; this dir stays only as a fallback. Never tracked.
+data/screenshots/
+
 # Scratch / backup / PID files — kept on disk, never tracked
 .source-backups/
 tmp/

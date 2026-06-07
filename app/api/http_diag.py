@@ -34,7 +34,7 @@ _STATIC_404_EXT = (
     ".js", ".css", ".map", ".ico", ".svg", ".png", ".jpg", ".jpeg", ".gif",
     ".webp", ".woff", ".woff2", ".ttf", ".txt",
 )
-_STATIC_404_PREFIX = ("/ui/", "/screenshots/", "/visuals/", "/web-terminal", "/static", "/assets")
+_STATIC_404_PREFIX = ("/ui/", "/screenshots/", "/visuals/", "/user_data/", "/web-terminal", "/static", "/assets")
 
 
 def _should_record(path: str, status: int) -> bool:

@@ -6,7 +6,7 @@ Mode + provider config are stored in `attachments_store_config.json` alongside
 the app's primary target is local-hosted use.
 
 Available backends:
-  - "local"      uploads/ on disk (default)
+  - "local"      data/user_data/<uid>/uploads/ on disk (default)
   - "browser"    bytes live in the user's browser IndexedDB; server stores
                  only metadata. Multi-device users won't share files.
   - "supabase"   Supabase Storage bucket

@@ -44,7 +44,7 @@ FEATURE = {
     "tools": [
         # Spawn-and-oversee (handlers ship in THIS file via build_tools).
         "spawn_agent", "message_spawn", "read_spawn", "quote_spawn", "list_spawns",
-        "stop_spawn", "schedule_spawn_check",
+        "stop_spawn", "schedule_spawn_check", "list_abilities", "promote_spawn",
         # Hand off the whole session to another agent (handler in core).
         "delegate_to_agent", "list_delegatable_agents",
         # Run the prompt optimizer (handler in core).
@@ -295,27 +295,35 @@ def _spawns_claim_due(now_iso: Optional[str] = None) -> list:
     return _retry_write(_do)
 
 
-def _spawns_claim_orphaned_running(now_iso: str, older_than_seconds: int,
-                                   max_attempts: int, limit: int,
-                                   exclude_ids=()) -> list:
-    """Forked spawns whose runner died (e.g. a server restart) sit at
-    ``status='running'`` (or 'queued', if killed while waiting for a run slot)
-    forever — their in-process task is gone, so they never settle and never
-    re-wake the orchestrator. A live runner proves itself by refreshing
-    ``heartbeat_at`` every ``_HEARTBEAT_INTERVAL``s, so a row whose heartbeat is
-    older than ``older_than_seconds`` has NO live runner on ANY instance.
+def _spawns_fail_orphans(now_iso: str, older_than_seconds: int, limit: int,
+                         exclude_ids=()) -> list:
+    """Fail — never re-run — forked spawns whose runner has died (e.g. a server
+    restart/crash left them stuck 'running'/'queued'). A live runner proves itself
+    by refreshing ``heartbeat_at`` every ``_HEARTBEAT_INTERVAL``s, so a row whose
+    heartbeat is older than ``older_than_seconds`` has NO live runner on ANY
+    instance and will never settle on its own.
 
-    MULTI-INSTANCE SAFE: the claim is atomic across processes/instances. We stamp
-    a unique ``claim_token`` in a single guarded UPDATE (``heartbeat_at <= cutoff``
-    re-checked at write time) and bump ``resume_attempts`` + refresh
-    ``heartbeat_at`` in the same statement — so whoever's UPDATE lands first wins
-    the row and every other instance's guard then fails (heartbeat is now fresh).
-    Each instance re-runs only the rows carrying ITS token. ``exclude_ids`` is an
-    extra in-process fast-skip; correctness rests on the token + heartbeat, not on
-    it. Returns the rows this caller won, to be re-initiated."""
+    We deliberately flip such orphans to 'error' rather than re-executing their
+    task: a re-run re-does everything the spawn already did, INCLUDING re-spawning
+    the sub-helpers it created, so auto-re-running a self-orchestrating tree
+    snowballs one restart into an exploding fan-out. The caller re-wakes the
+    orchestrator instead, which can deliberately re-spawn anything it still needs.
+
+    MULTI-INSTANCE SAFE: the flip is an atomic guarded UPDATE stamping a unique
+    ``claim_token`` (``heartbeat_at <= cutoff`` re-checked at write time, and the
+    status→'error' transition is itself the guard). Whoever's UPDATE lands first
+    wins the row; every other instance's WHERE then misses. The token tells us
+    which rows WE failed, so only we notify their orchestrator. ``exclude_ids`` is
+    an extra in-process fast-skip for spawns with a live runner here; correctness
+    rests on heartbeat + token. ``limit`` caps how many we fail per tick so a
+    post-restart sweep doesn't fire a notification storm all at once."""
     cutoff = (datetime.fromisoformat(now_iso) - timedelta(seconds=older_than_seconds)).isoformat()
     excl = set(exclude_ids or ())
     token = uuid.uuid4().hex
+    msg = ("This spawn was interrupted (most likely a server restart or crash) and "
+           "did not finish. It was NOT automatically re-run, to avoid duplicating "
+           "work it had already started. Re-spawn it if you still need the result; "
+           "do not invent its output.")
 
     def _do():
         conn = _db_conn()
@@ -323,85 +331,29 @@ def _spawns_claim_orphaned_running(now_iso: str, older_than_seconds: int,
             return []
         try:
             _ensure_table(conn)
-            # 1. Read a bounded batch of candidates (cheap read; not the claim).
+            # 1. Read a bounded batch of dead-runner candidates (cheap read).
             rows = conn.execute(
                 """SELECT id FROM agent_spawns
                    WHERE status IN ('running', 'queued')
                      AND COALESCE(heartbeat_at, updated_at) <= ?
-                     AND COALESCE(resume_attempts, 0) < ?
                    ORDER BY COALESCE(heartbeat_at, updated_at) ASC""",
-                (cutoff, max_attempts),
+                (cutoff,),
             ).fetchall()
             ids = [r["id"] for r in rows if r["id"] not in excl][:max(0, int(limit))]
             if not ids:
                 return []
-            # 2. Atomic claim: only rows STILL stale at write time get our token
-            #    (+ bumped attempts + a fresh heartbeat so no one else re-claims).
-            ph = ",".join(["?"] * len(ids))
-            conn.execute(
-                f"""UPDATE agent_spawns
-                    SET claim_token = ?, resume_attempts = COALESCE(resume_attempts, 0) + 1,
-                        heartbeat_at = ?, updated_at = ?
-                    WHERE id IN ({ph})
-                      AND status IN ('running', 'queued')
-                      AND COALESCE(heartbeat_at, updated_at) <= ?
-                      AND COALESCE(resume_attempts, 0) < ?""",
-                (token, now_iso, now_iso, *ids, cutoff, max_attempts),
-            )
-            conn.commit()
-            # 3. Fetch only what WE won (our token).
-            won = conn.execute(
-                "SELECT * FROM agent_spawns WHERE claim_token = ?", (token,)
-            ).fetchall()
-            return [dict(r) for r in won]
-        finally:
-            conn.close()
-
-    return _retry_write(_do)
-
-
-def _spawns_fail_exhausted(now_iso: str, older_than_seconds: int, max_attempts: int,
-                           exclude_ids=()) -> list:
-    """Give up on spawns still stuck 'running'/'queued' (stale heartbeat) after
-    exhausting their resume budget: flip them to 'error' so they don't sit
-    unfinished forever. MULTI-INSTANCE SAFE via the same token pattern — the
-    status→'error' flip is itself the guard (other instances' WHERE no longer
-    matches), and the token tells us which rows WE failed (to notify their
-    orchestrator). ``exclude_ids`` is an extra in-process fast-skip."""
-    cutoff = (datetime.fromisoformat(now_iso) - timedelta(seconds=older_than_seconds)).isoformat()
-    excl = set(exclude_ids or ())
-    token = uuid.uuid4().hex
-
-    def _do():
-        conn = _db_conn()
-        if conn is None:
-            return []
-        try:
-            _ensure_table(conn)
-            rows = conn.execute(
-                """SELECT id FROM agent_spawns
-                   WHERE status IN ('running', 'queued')
-                     AND COALESCE(heartbeat_at, updated_at) <= ?
-                     AND COALESCE(resume_attempts, 0) >= ?""",
-                (cutoff, max_attempts),
-            ).fetchall()
-            ids = [r["id"] for r in rows if r["id"] not in excl]
-            if not ids:
-                return []
+            # 2. Atomic fail-out: only rows STILL stale at write time get our token.
             ph = ",".join(["?"] * len(ids))
             conn.execute(
                 f"""UPDATE agent_spawns
                     SET status = 'error', claim_token = ?, result_summary = ?, updated_at = ?
                     WHERE id IN ({ph})
                       AND status IN ('running', 'queued')
-                      AND COALESCE(heartbeat_at, updated_at) <= ?
-                      AND COALESCE(resume_attempts, 0) >= ?""",
-                (token,
-                 "Auto-recovery gave up: this spawn was interrupted (likely a server "
-                 "restart) and did not finish after retrying. Re-run it if still needed.",
-                 now_iso, *ids, cutoff, max_attempts),
+                      AND COALESCE(heartbeat_at, updated_at) <= ?""",
+                (token, msg, now_iso, *ids, cutoff),
             )
             conn.commit()
+            # 3. Fetch only what WE failed (our token).
             failed = conn.execute(
                 "SELECT * FROM agent_spawns WHERE claim_token = ? AND status = 'error'", (token,)
             ).fetchall()
@@ -429,6 +381,98 @@ _SPAWN_PREAMBLE = (
     "act on them. If you need a decision or more detail, ask in your reply.\n\n"
     "## Your task / directive\n"
 )
+
+# Tools that are inherently destructive regardless of an agent's own policy —
+# mirror of app/agent/loop.py DESTRUCTIVE_TOOLS. Imported when available so the
+# ceiling tracks core; the literal is the fallback if the import path changes.
+try:  # pragma: no cover - import-shape guard
+    from app.agent.loop import DESTRUCTIVE_TOOLS as _CORE_DESTRUCTIVE
+    _HARDCODED_DESTRUCTIVE = set(_CORE_DESTRUCTIVE)
+except Exception:  # noqa: BLE001
+    _HARDCODED_DESTRUCTIVE = {"run_command", "restart_server"}
+
+
+def _parse_json_list(raw) -> list:
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            v = json.loads(raw)
+            return v if isinstance(v, list) else []
+        except Exception:  # noqa: BLE001
+            return []
+    return []
+
+
+async def _compute_clone_grants(master_agent_id: str, requested_abilities, allow_destructive):
+    """Compute what a clone is allowed, clamped so it can NEVER be looser than its
+    master — the ceiling. Returns (granted_abilities, deny_tools, ask_tools).
+
+    Two axes:
+      • Ability axis — a clone only gets abilities the master itself has enabled;
+        the requested list is intersected with the master's enabled abilities.
+        Recursion is therefore opt-in: a clone gets the spawn tools only if the
+        orchestrator explicitly lists 'agent_orchestration' (and has it itself).
+      • Per-tool permission axis — for every tool the clone might run, its level is
+        at most the master's level on the deny < ask < auto scale. A tool the
+        master must CONFIRM (ask) can never be auto for the clone: it is blocked
+        outright unless the orchestrator explicitly opts it in via allow_destructive
+        (and even then it stays ask, never auto). A tool the master has blocked
+        (deny) is blocked for the clone too. This is also the unattended-destructive
+        policy: a clone runs with no human to confirm, so confirm-tools are off by
+        default.
+    """
+    from app.db import get_db
+    db = get_db()
+    requested = {a.strip() for a in (requested_abilities or []) if isinstance(a, str) and a.strip()}
+    opted_in = {t.strip() for t in (allow_destructive or []) if isinstance(t, str) and t.strip()}
+
+    master = await db.get_agent_by_id(master_agent_id) or {}
+    try:
+        conns = await db.get_agent_connections(master_agent_id)
+    except Exception:  # noqa: BLE001
+        conns = []
+    master_abilities = {
+        c.get("connection_type") for c in conns
+        if c.get("section") == "ability" and c.get("enabled")
+    }
+    granted = sorted(requested & master_abilities)
+
+    master_deny = set(_parse_json_list(master.get("allowed_tools")))
+    sp = master.get("safety_policy")
+    if isinstance(sp, str):
+        try:
+            sp = json.loads(sp or "{}")
+        except Exception:  # noqa: BLE001
+            sp = {}
+    master_ask = set(_parse_json_list((sp or {}).get("destructive_tools"))) | set(_HARDCODED_DESTRUCTIVE)
+
+    clone_deny = sorted(master_deny | (master_ask - opted_in))
+    clone_ask = sorted(master_ask & opted_in)
+    return granted, clone_deny, clone_ask
+
+
+async def _borrowed_prompt(from_agent: str) -> str:
+    """Best-effort: assemble another agent/template's prompt text so the
+    orchestrator can SEE and reuse it inside the clone's directive. Returns '' on
+    any failure (the borrow is optional, never fatal)."""
+    src = (from_agent or "").strip()
+    if not src:
+        return ""
+    from app.db import get_db
+    db = get_db()
+    try:
+        slots = await db.resolve_prompts(src, user_id=None)
+    except Exception:  # noqa: BLE001
+        return ""
+    parts = []
+    for s in slots or []:
+        if s.get("slot_name") == "__skills__":
+            continue
+        c = (s.get("content") or "").strip()
+        if c:
+            parts.append(c)
+    return "\n\n".join(parts).strip()
 
 
 def _chat_url() -> str:
@@ -516,27 +560,56 @@ def _spawn_health(status: Optional[str], since_heartbeat: Optional[int]) -> tupl
 
 
 async def _create_spawn(*, user_id, orchestrator_session_id, orchestrator_agent_id,
-                        task, name="", system_prompt="", from_agent="") -> dict:
-    """Materialize a helper agent + its own tagged session + an agent_spawns row."""
+                        task, name="", system_prompt="", from_agent="",
+                        abilities=None, allow_destructive=None, output_contract="") -> dict:
+    """Materialize a CLONE helper + its own tagged session + an agent_spawns row.
+
+    The helper is an ephemeral clone of the orchestrator (built from scratch on
+    the app-global baseline), with abilities OFF except those explicitly granted
+    and clamped to the orchestrator's own ceiling (see _compute_clone_grants)."""
     from app.db import get_db
     db = get_db()
 
-    template_id = (from_agent or "").strip() or "default"
     spawn_name = (name or "").strip() or (task[:40].strip() if task else "Helper")
 
-    agent = await db.create_custom_agent(
-        user_id=user_id, name=spawn_name,
-        description=f"Spawned helper for orchestrator session {orchestrator_session_id[:12]}",
-        template_id=template_id,
+    # Ceiling: clamp requested abilities + tool permissions to the orchestrator's.
+    granted, clone_deny, clone_ask = ([], [], [])
+    if orchestrator_agent_id:
+        try:
+            granted, clone_deny, clone_ask = await _compute_clone_grants(
+                orchestrator_agent_id, abilities, allow_destructive)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Clone grant computation failed (defaulting to no abilities): %s", e)
+
+    agent = await db.create_clone_agent(
+        user_id=user_id, master_agent_id=orchestrator_agent_id or "",
+        name=spawn_name,
+        description=f"Clone helper for orchestrator session {orchestrator_session_id[:12]}",
+        abilities=granted, allowed_tools=clone_deny, destructive_ask=clone_ask,
     )
     spawn_agent_id = agent["id"]
 
+    # Build the clone's directive slot from (optional) borrowed prompt text, the
+    # orchestrator's custom system_prompt, and an optional output contract. A
+    # fire-and-forget worker with none of these gets no slot — it runs on the
+    # app-global baseline + the task message alone.
+    directive_parts = []
+    borrowed = await _borrowed_prompt(from_agent) if (from_agent or "").strip() else ""
+    if borrowed:
+        directive_parts.append(
+            f"## Reference identity borrowed from '{from_agent.strip()}'\n{borrowed}")
     if (system_prompt or "").strip():
+        directive_parts.append(system_prompt.strip())
+    if (output_contract or "").strip():
+        directive_parts.append(
+            "## Required output shape\n"
+            "Return your result in exactly this shape/length:\n" + output_contract.strip())
+    if directive_parts:
         try:
             await db.upsert_slot(
                 agent_id=spawn_agent_id, slot_name="orchestrator_directive",
                 order_index=0, lock=True, merge_mode="replace",
-                content=_SPAWN_PREAMBLE + system_prompt.strip(), updated_by="orchestrator",
+                content=_SPAWN_PREAMBLE + "\n\n".join(directive_parts), updated_by="orchestrator",
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not set spawn directive prompt: %s", e)
@@ -563,11 +636,15 @@ async def _create_spawn(*, user_id, orchestrator_session_id, orchestrator_agent_
     except Exception:  # noqa: BLE001
         pass
 
-    return _spawns_create(
+    row = _spawns_create(
         user_id=user_id, orchestrator_session_id=orchestrator_session_id,
         orchestrator_agent_id=orchestrator_agent_id, spawn_session_id=spawn_session_id,
         spawn_agent_id=spawn_agent_id, name=spawn_name, task=task or "", status="pending",
     )
+    # Echo the (clamped) grants so the orchestrator can see what the ceiling allowed.
+    row["granted_abilities"] = granted
+    row["confirm_tools"] = clone_ask
+    return row
 
 
 async def _rewake_orchestrator(user_id: str, orchestrator_session_id: str, note: str) -> None:
@@ -686,13 +763,15 @@ _POLL_INTERVAL = 20
 # The core run self-healing (session_runs + boot resume) does NOT cover spawn
 # turns: forked spawns run via the plain /api/v1/chat path and never register a
 # session_runs row, so a restart orphans them with no recovery. This ability
-# therefore heals its OWN forked spawns from the same poller. A spawn left at
-# 'running' with a stale updated_at (no live runner is touching it) is treated as
-# orphaned and re-initiated; we re-run a few per tick (not all at once) to avoid a
-# thundering-herd reload right after a restart, and cap retries per spawn.
-_ORPHAN_RUNNING_SECONDS = 180   # 'running'/'queued' + idle this long ⇒ runner is dead
-_MAX_SPAWN_RESUME = 2           # retry budget per spawn before giving up (→ error)
-_RECOVER_PER_TICK = 3           # re-initiate at most this many orphans per tick
+# therefore recovers its OWN forked spawns from the same poller — but recovery
+# here means FAIL-AND-NOTIFY, never re-run. A spawn proven dead (a stale heartbeat
+# ⇒ no live runner on any instance) is flipped to 'error' and its orchestrator is
+# re-woken so it can deliberately re-spawn the work. We never re-execute the task
+# automatically: a re-run re-does everything the spawn already did, INCLUDING
+# re-spawning the sub-helpers it created, so auto-re-running a self-orchestrating
+# tree snowballs one restart into an exploding fan-out (observed: 6 → 120+ spawns).
+_ORPHAN_RUNNING_SECONDS = 180   # 'running'/'queued' + heartbeat idle this long ⇒ runner is dead
+_RECOVER_PER_TICK = 3           # fail at most this many orphans per tick (avoid a notify storm)
 
 # ── Spawn run-queue (concurrency throttle) ───────────────────────────────────
 # Spawns can spawn — self-orchestration is unlimited in DEPTH and BREADTH (an
@@ -733,43 +812,33 @@ _poll_running = False
 
 
 async def _resume_orphaned_spawns(now_iso: str) -> None:
-    """Self-heal forked spawns whose runner died (server restart, crash). Give up
-    on any that exhausted their retry budget (→ error + notify), then re-initiate
-    a few of the rest by re-running their original task; completion re-wakes the
-    orchestrator exactly like a normal fork finish."""
+    """Recover forked spawns whose runner died (server restart, crash): they sit at
+    'running'/'queued' with a stale heartbeat and no live coroutine. We FAIL them
+    honestly and re-wake their orchestrator — we never re-run the task, because a
+    re-run re-does everything the spawn already did (including re-spawning its
+    sub-helpers), which snowballs one restart into an exploding fan-out. The
+    orchestrator can deliberately re-spawn anything it still needs."""
     live = set(_LIVE_RUNS)
     try:
-        for dead in _spawns_fail_exhausted(now_iso, _ORPHAN_RUNNING_SECONDS,
-                                           _MAX_SPAWN_RESUME, exclude_ids=live):
-            orch = dead.get("orchestrator_session_id")
-            if orch:
-                await _rewake_orchestrator(dead.get("user_id"), orch, (
-                    f"[ORCHESTRATION EVENT] Spawn '{dead.get('name') or dead.get('id')}' "
-                    f"(id {dead.get('id')}) FAILED to complete — it was interrupted (likely a "
-                    "server restart) and could not be recovered after retrying. Re-spawn it if "
-                    "you still need it, or report it as failed. Do not invent its result."))
+        failed = _spawns_fail_orphans(now_iso, _ORPHAN_RUNNING_SECONDS,
+                                      _RECOVER_PER_TICK, exclude_ids=live)
     except Exception as e:  # noqa: BLE001
-        logger.debug("exhausted-spawn sweep failed: %s", e)
-
-    try:
-        orphans = _spawns_claim_orphaned_running(
-            now_iso, _ORPHAN_RUNNING_SECONDS, _MAX_SPAWN_RESUME, _RECOVER_PER_TICK,
-            exclude_ids=live)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("orphan claim failed: %s", e)
+        logger.debug("orphan fail-out sweep failed: %s", e)
         return
-    for spawn in orphans:
+    for dead in failed:
+        orch = dead.get("orchestrator_session_id")
+        logger.info("Failed orphaned spawn %s '%s' (interrupted; not re-run)",
+                    dead.get("id"), dead.get("name"))
+        if not orch:
+            continue
         try:
-            msg = (spawn.get("task") or "").strip() or "Continue and complete your task."
-            logger.info("Re-initiating orphaned spawn %s '%s' (attempt %s/%s)",
-                        spawn.get("id"), spawn.get("name"),
-                        spawn.get("resume_attempts"), _MAX_SPAWN_RESUME)
-            await _run_spawn_turn(
-                user_id=spawn.get("user_id"), spawn_id=spawn.get("id"),
-                spawn_session_id=spawn.get("spawn_session_id"),
-                message=msg, wait=False, notify_on_done=True)
+            await _rewake_orchestrator(dead.get("user_id"), orch, (
+                f"[ORCHESTRATION EVENT] Spawn '{dead.get('name') or dead.get('id')}' "
+                f"(id {dead.get('id')}) FAILED to complete — it was interrupted (likely a "
+                "server restart) and was NOT automatically re-run. Re-spawn it if you still "
+                "need it, or report it as failed. Do not invent its result."))
         except Exception as e:  # noqa: BLE001
-            logger.warning("Re-initiating spawn %s failed: %s", spawn.get("id"), e)
+            logger.warning("Re-wake after fail-out failed for spawn %s: %s", dead.get("id"), e)
 
 
 async def _poll_tick() -> None:
@@ -884,16 +953,35 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
 
     async def spawn_agent(task: str, name: str = "", system_prompt: str = "",
                           from_agent: str = "", wait: bool = False,
-                          check_back_minutes: float = 0) -> str:
-        """Create a brand-new helper agent and set it to work on a task.
+                          check_back_minutes: float = 0, abilities: Optional[list] = None,
+                          allow_destructive: Optional[list] = None,
+                          output_contract: str = "") -> str:
+        """Spawn a fresh CLONE of yourself to work on a task.
 
-        Give it an identity by writing ``system_prompt`` yourself, or cloning an
-        existing agent via ``from_agent`` (a template id from
-        list_delegatable_agents). The helper gets its OWN saved session (visible
-        in the sidebar) and the whole exchange is recorded like any chat.
-        wait=True blocks and returns the reply; wait=False forks it and you're
-        re-woken with the result when it finishes. check_back_minutes>0 also sets
-        a follow-up timer. Returns the spawn_id.
+        A clone is built FROM SCRATCH — it does NOT inherit your persona. It runs
+        on the platform's app-global baseline plus whatever directive you give it
+        here, and it starts with EVERY ability OFF.
+
+        - ``system_prompt`` — the clone's identity/directive, written by you. Leave
+          blank for a bare fire-and-forget worker (baseline + task only).
+        - ``abilities`` — a list of ability ids to switch ON for the clone (see
+          ``list_abilities``). You MUST pick deliberately; nothing is on by default.
+          A clone can only spawn its OWN sub-helpers if you include
+          ``"agent_orchestration"`` here. You can never grant an ability you don't
+          have yourself (the ceiling).
+        - ``allow_destructive`` — list of tool names the clone may use even though
+          they normally require confirmation. Off by default: a clone has no human
+          to confirm, so confirm-tools are blocked unless you opt them in here. You
+          can never give a clone looser permission on a tool than you have.
+        - ``output_contract`` — optional: the exact shape/length you want the
+          result in, so it comes back small and uniform.
+        - ``from_agent`` — optional: another agent/template id whose prompt text is
+          pulled in for the clone to reuse as reference identity. (To hand the whole
+          chat to a real other agent instead, use delegate_to_agent.)
+        - ``wait=True`` blocks and returns the reply; ``wait=False`` (default) forks
+          and re-wakes you with the result. ``check_back_minutes>0`` sets a timer.
+
+        Returns the spawn_id.
         """
         if not (task or "").strip() and not (system_prompt or "").strip():
             return _err("Provide a task (and/or a system_prompt) for the spawn.")
@@ -902,6 +990,8 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
                 user_id=user_id, orchestrator_session_id=session_id,
                 orchestrator_agent_id=agent_id or None, task=task or "",
                 name=name or "", system_prompt=system_prompt or "", from_agent=from_agent or "",
+                abilities=abilities or [], allow_destructive=allow_destructive or [],
+                output_contract=output_contract or "",
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("spawn_agent create failed: %s", e)
@@ -921,6 +1011,8 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
                                        message=first_message, wait=bool(wait))
         out = {"status": "ok", "spawn_id": spawn_id, "name": spawn["name"],
                "spawn_session_id": spawn["spawn_session_id"],
+               "granted_abilities": spawn.get("granted_abilities", []),
+               "confirm_tools": spawn.get("confirm_tools", []),
                "mode": "wait" if wait else "fork", "run_status": result.get("status")}
         if wait:
             out["reply"] = result.get("reply", "")
@@ -1104,6 +1196,89 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         return json.dumps({"status": "ok", "spawn_id": spawn_id, "check_in_minutes": mins,
                            "note": "You'll be re-woken to check on this spawn when the timer elapses."})
 
+    async def promote_spawn(spawn_id: str, name: str = "", description: str = "") -> str:
+        """Promote a throwaway clone into a PERMANENT agent so it survives the
+        cleanup that normally reaps clones with this session. Use it when a clone
+        you spawned turned out genuinely reusable and you want to keep its prompt +
+        abilities as a real fleet agent. Keeps the clone's directive, granted
+        abilities and transcript; flips it out of 'clone' status so it appears in
+        the agent roster and is no longer cascade-deleted."""
+        spawn = await _owned_spawn(spawn_id)
+        if not spawn:
+            return _err(f"No spawn '{spawn_id}' owned by this session.")
+        spawn_agent_id = spawn.get("spawn_agent_id")
+        if not spawn_agent_id:
+            return _err("This spawn has no agent to promote.")
+        from app.db import get_db
+        db = get_db()
+        try:
+            agent = await db.get_agent_by_id(spawn_agent_id) or {}
+            if agent.get("status") != "clone":
+                return _err("That spawn's agent is not a clone (already promoted or gone).")
+            try:
+                meta = json.loads(agent.get("metadata") or "{}")
+            except Exception:  # noqa: BLE001
+                meta = {}
+            meta["kind"] = "promoted_clone"  # keep clone_of for lineage
+            meta["owner_user_id"] = user_id
+            new_name = (name or "").strip() or (spawn.get("name") or agent.get("name") or "Promoted clone")
+            new_desc = (description or "").strip() or "Promoted from a spawned clone."
+            conn = _db_conn()
+            if conn is None:
+                return _err("Backend unavailable.")
+            try:
+                conn.execute(
+                    "UPDATE agents SET status='active', name=?, description=?, metadata=?, updated_at=? "
+                    "WHERE id=? AND status='clone'",
+                    (new_name, new_desc, json.dumps(meta), _now_iso(), spawn_agent_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("promote_spawn failed: %s", e)
+            return _err(f"Could not promote spawn: {e}")
+        return json.dumps({"status": "ok", "spawn_id": spawn_id, "agent_id": spawn_agent_id,
+                           "name": new_name,
+                           "note": "Clone promoted to a permanent agent — it now appears in the "
+                                   "roster and will NOT be reaped when this session is deleted."})
+
+    async def list_abilities() -> str:
+        """List the abilities you can switch on for a clone — the ones YOU have
+        enabled (your ceiling). A clone starts with everything OFF; pass the ids
+        you need in spawn_agent(abilities=[...]). You can't grant what you lack."""
+        from app.db import get_db
+        db = get_db()
+        try:
+            conns = await db.get_agent_connections(agent_id) if agent_id else []
+        except Exception:  # noqa: BLE001
+            conns = []
+        mine = {c.get("connection_type") for c in conns
+                if c.get("section") == "ability" and c.get("enabled")}
+        try:
+            from app.abilities import ui_catalog
+            cat = ui_catalog() or {}
+        except Exception:  # noqa: BLE001
+            cat = {}
+        meta_map = cat.get("abilities") or {}
+        out = []
+        for aid in sorted(mine):
+            meta = meta_map.get(aid) or {}
+            out.append({
+                "id": aid,
+                "display_name": meta.get("display_name") or aid,
+                "description": (meta.get("description") or meta.get("summary") or "")[:300],
+                "tools": meta.get("tools") or [],
+            })
+        return json.dumps({
+            "status": "ok", "count": len(out), "grantable_abilities": out,
+            "guidance": ("These are the only abilities you can switch on for a clone — you "
+                         "can't grant what you don't have. Pass the ids you need in "
+                         "spawn_agent(abilities=[...]); everything is OFF unless you list it. "
+                         "Include 'agent_orchestration' ONLY if the clone must spawn its own "
+                         "sub-helpers (recursion is opt-in)."),
+        })
+
     return {
         "spawn_agent": spawn_agent,
         "message_spawn": message_spawn,
@@ -1112,6 +1287,8 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         "list_spawns": list_spawns,
         "stop_spawn": stop_spawn,
         "schedule_spawn_check": schedule_spawn_check,
+        "list_abilities": list_abilities,
+        "promote_spawn": promote_spawn,
     }
 
 
@@ -1128,12 +1305,25 @@ TOOL_SCHEMAS = {
         "properties": {
             "task": {"type": "string", "description": "What the helper should do."},
             "name": {"type": "string", "description": "Optional short label for the helper/session."},
-            "system_prompt": {"type": "string", "description": "Optional: the helper's full directive/identity, written by you. Leave blank to use a default general agent or clone via from_agent."},
-            "from_agent": {"type": "string", "description": "Optional: template id of an existing agent to clone (see list_delegatable_agents). Ignored if system_prompt is given."},
+            "system_prompt": {"type": "string", "description": "Optional: the clone's directive/identity, written by you. Leave blank for a bare fire-and-forget worker (runs on the app-global baseline + the task only)."},
+            "abilities": {"type": "array", "items": {"type": "string"}, "description": "Ability ids to switch ON for the clone (see list_abilities). EVERYTHING is OFF unless listed. Clamped to abilities you have yourself. Include 'agent_orchestration' only if the clone must spawn its own sub-helpers."},
+            "allow_destructive": {"type": "array", "items": {"type": "string"}, "description": "Tool names the clone may use even though they normally require confirmation. Off by default (a clone has no human to confirm). Can never exceed your own permission for a tool."},
+            "output_contract": {"type": "string", "description": "Optional: the exact shape/length you want the result in, so it returns small and uniform."},
+            "from_agent": {"type": "string", "description": "Optional: another agent/template id whose prompt text is pulled in as reference identity for the clone. To hand the whole chat to a real agent instead, use delegate_to_agent."},
             "wait": {"type": "boolean", "description": "True = block and return the helper's reply now. False (default) = fork and be re-woken when it finishes."},
             "check_back_minutes": {"type": "number", "description": "Optional: also set a follow-up timer (minutes) to re-check the helper even if still running."},
         },
         "required": ["task"],
+    },
+    "list_abilities": {"type": "object", "properties": {}, "required": []},
+    "promote_spawn": {
+        "type": "object",
+        "properties": {
+            "spawn_id": {"type": "string", "description": "The spawn whose clone agent to keep permanently."},
+            "name": {"type": "string", "description": "Optional name for the promoted agent (defaults to the spawn's name)."},
+            "description": {"type": "string", "description": "Optional description for the promoted agent."},
+        },
+        "required": ["spawn_id"],
     },
     "message_spawn": {
         "type": "object",

@@ -2,7 +2,7 @@
 
 Metadata (slug, title, agent_context, timestamps) lives in the `pages`
 table via the active StorageBackend; the HTML body lives on disk at
-visuals/users/{uid}/{slug}.html.
+data/user_data/{uid}/pages/{slug}.html.
 
 Trade-off: page index survives container restarts and is queryable across
 backends, but HTML bodies remain hand-editable on disk and serve from a
@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 from app.db import get_db
 from app.pages_store.interface import PageStore
 from app.pages_store.common import (
-    USERS_DIR,
+    user_pages_dir,
     blank_page_html,
     default_agent_context,
     home_agent_context,
@@ -41,10 +41,10 @@ class HybridPageStore(PageStore):
     name = "hybrid"
 
     def _page_path(self, user_id: str, slug: str) -> str:
-        return os.path.join(USERS_DIR, safe(user_id), f"{safe(slug)}.html")
+        return os.path.join(user_pages_dir(user_id), f"{safe(slug)}.html")
 
     def _ensure_user_dir(self, user_id: str) -> str:
-        d = os.path.join(USERS_DIR, safe(user_id))
+        d = user_pages_dir(user_id)
         os.makedirs(d, exist_ok=True)
         return d
 

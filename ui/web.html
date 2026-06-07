@@ -27,12 +27,18 @@
       <button class="web-btn" data-act="reload" title="Reload" aria-label="Reload">&#8635;</button>
       <input class="web-url" type="text" spellcheck="false" autocomplete="off" placeholder="Enter a URL or search&hellip;" />
       <button class="web-btn web-go" data-act="go">Go</button>
+      <button class="web-btn web-sessions-toggle" data-act="sessions" title="Switch browser session">Sessions</button>
+      <button class="web-btn web-new-session" data-act="new-session" title="New browser session">+</button>
       <button class="web-btn web-share" data-act="share" aria-pressed="false"
               title="Share this tab with the agent">Private</button>
       <span class="web-status">
         <span class="web-dot" aria-hidden="true"></span>
         <span class="web-status-text">idle</span>
       </span>
+      <!-- Sessions popover -->
+      <div class="web-sessions-popover" style="display:none;">
+        <div class="web-sessions-list"></div>
+      </div>
     </div>
 
     <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #chat-input-row,

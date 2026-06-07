@@ -226,6 +226,14 @@ keeps **both** running:
 - **the web server** — if `/health` stops answering and a checkout is linked, it
   relaunches `run.py` from the checkout's venv (clearing a zombie port first, with
   a crash-loop cap);
+- **one server only** — once the server is healthy, it kills any **other** webAgent
+  `run.py` tree on the machine besides the one actually serving port 8080. This
+  stops a second launcher (e.g. a stray `webAgent.bat`) from leaving a duplicate
+  server running its own background loops against the same database — which is what
+  let a single test fan-out balloon into 120+ runaway spawns. The guardian **adopts
+  whichever process is serving** (it seeds from the live listener, so it can never
+  kill the live server) and reaps the rest. *Corollary: pick one launch path — let
+  the guardian own the server; don't also run `webAgent.bat` alongside it.*
 - **the TUI itself** — if the TUI process vanishes **without** a clean-quit marker
   (i.e. it crashed or its window was closed), it relaunches the TUI in a fresh
   console window.
@@ -240,6 +248,11 @@ It's **on by default** and designed to be invisible:
 - **Clean quit vs crash.** Only a deliberate quit (**Ctrl+Q**, or the self-update
   restart) writes `tui.clean_exit`; the guardian then leaves the TUI closed.
   Anything else (crash, window-X) has no marker → the TUI is revived.
+- **Restart cycles the guardian.** A **Ctrl+Q** quit leaves the guardian running
+  (so it keeps the server alive while you're away). A deliberate **restart** (the
+  self-update flow) instead retires the old guardian on the way out, so the
+  relaunched TUI spawns a **fresh** one — this is how a self-update's new guardian
+  code actually takes over instead of an old long-lived process lingering.
 - **Off switch.** **Admin ▸ `[Keep-alive: ON/OFF]`** flips it. **OFF** terminates
   the guardian but **leaves the running server and window untouched** — it only
   stops auto-reviving them. The state lives in `guardian.json` and **persists

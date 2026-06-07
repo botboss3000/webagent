@@ -17,8 +17,9 @@ the generated image comes back as a data URL in `message.images[]`. Hitting the
 OpenAI route on OpenRouter returns its website's 404 HTML page, so an OpenRouter
 image model MUST take the `openrouter` shape.
 
-Generated images are persisted under `visuals/users/{user_id}/` and a relative
-URL is returned so the chat UI can render the result inline.
+Generated images are persisted in the user's data home under
+`data/user_data/{user_id}/visuals/` and a relative `/user_data/...` URL is
+returned so the chat UI can render the result inline.
 """
 
 import base64
@@ -30,10 +31,11 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from app import user_workspace as ws
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-VISUALS_ROOT = PROJECT_ROOT / "data" / "visuals" / "users"
 
 # Provider presets known to support image generation. Mirrors the LLM
 # PROVIDER_PRESETS shape so the UI can offer a familiar dropdown.
@@ -81,10 +83,8 @@ IMAGE_PROVIDER_PRESETS = {
 
 
 def _user_visuals_dir(user_id: str) -> Path:
-    safe = "".join(c for c in user_id if c.isalnum() or c in "-_:") or "anonymous"
-    d = VISUALS_ROOT / safe
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    """The user's 'visuals' room in their data home (data/user_data/<uid>/visuals/)."""
+    return ws.user_dir(user_id, "visuals")
 
 
 async def load_image_provider_for_user(user_id: str) -> Optional[dict]:
@@ -221,8 +221,7 @@ def _save_png_bytes(user_id: str, raw: bytes, ext: str = "png") -> str:
     path = out_dir / fname
     with open(path, "wb") as f:
         f.write(raw)
-    rel = f"/visuals/users/{out_dir.name}/{fname}"
-    return rel
+    return ws.public_url(user_id, "visuals", fname)
 
 
 def _save_from_url(user_id: str, url: str, http_client) -> Optional[str]:

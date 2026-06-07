@@ -100,6 +100,69 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
+def cascade_delete_clones(conn, root_session_ids) -> int:
+    """Permanently delete the CLONE agents (and their sessions + transcripts)
+    spawned under the given orchestrator session ids — recursively, so a clone's
+    own sub-clones go too.
+
+    Generic + best-effort, so it stays decoupled from the orchestration plugin:
+      • Keys off the plugin-owned ``agent_spawns`` ledger
+        (orchestrator_session_id → spawn_session_id / spawn_agent_id) WHEN it
+        exists; if the table is absent (orchestration ability never used) it
+        simply no-ops.
+      • Only ever deletes agent rows whose ``status='clone'`` — a real fleet agent
+        can never be caught by this sweep even if its id appears in the ledger.
+
+    Operates on the caller's open DBAPI connection (does NOT commit). Returns the
+    number of clone agents removed."""
+    removed = 0
+    seen: set = set()
+    queue = [s for s in (root_session_ids or []) if s]
+    while queue:
+        sid = queue.pop()
+        if sid in seen:
+            continue
+        seen.add(sid)
+        try:
+            rows = conn.execute(
+                "SELECT spawn_session_id, spawn_agent_id FROM agent_spawns "
+                "WHERE orchestrator_session_id = ?",
+                (sid,),
+            ).fetchall()
+        except Exception:  # noqa: BLE001 — ledger table absent → nothing to cascade
+            return removed
+        for r in rows:
+            spawn_sid, spawn_aid = r[0], r[1]
+            if spawn_sid:
+                conn.execute("DELETE FROM interactions WHERE session_id = ?", (spawn_sid,))
+                for tbl in ("session_summaries", "pipeline_events"):
+                    try:
+                        conn.execute(f"DELETE FROM {tbl} WHERE session_id = ?", (spawn_sid,))
+                    except Exception:  # noqa: BLE001
+                        pass
+                conn.execute("DELETE FROM sessions WHERE id = ?", (spawn_sid,))
+                queue.append(spawn_sid)  # this clone may have orchestrated sub-clones
+            if spawn_aid:
+                cur = conn.execute(
+                    "DELETE FROM agents WHERE id = ? AND status = 'clone'", (spawn_aid,))
+                try:
+                    if cur.rowcount and cur.rowcount > 0:
+                        removed += cur.rowcount
+                except Exception:  # noqa: BLE001
+                    pass
+                conn.execute("DELETE FROM agent_prompts WHERE agent_id = ?", (spawn_aid,))
+                for tbl in ("agent_connections", "agent_abilities"):
+                    try:
+                        conn.execute(f"DELETE FROM {tbl} WHERE agent_id = ?", (spawn_aid,))
+                    except Exception:  # noqa: BLE001
+                        pass
+        try:
+            conn.execute("DELETE FROM agent_spawns WHERE orchestrator_session_id = ?", (sid,))
+        except Exception:  # noqa: BLE001
+            pass
+    return removed
+
+
 # FTS5 MATCH treats AND/OR/NOT/NEAR, quotes, and parens as syntax — never pass raw chat text.
 _FTS5_QUERY_OPS = frozenset({"AND", "OR", "NOT", "NEAR"})
 
@@ -6321,6 +6384,11 @@ class LocalBackend(StorageBackend):
         bin_view = (view == "bin")
 
         def _in_view(entry: dict) -> bool:
+            # Ephemeral clones are never part of the fleet roster — not in the
+            # active list, not in the recycling bin. They live and die with their
+            # orchestrator session (see cascade_delete_clones).
+            if entry.get("status") == "clone":
+                return False
             trashed = (entry.get("status") == "trashed")
             return trashed if bin_view else (not trashed)
 
@@ -6545,6 +6613,90 @@ class LocalBackend(StorageBackend):
         result["source"] = "custom"
         return result
 
+    async def create_clone_agent(
+        self, *, user_id: str, master_agent_id: str, name: str,
+        description: str = "", abilities: Optional[List[str]] = None,
+        allowed_tools: Optional[List[str]] = None,
+        destructive_ask: Optional[List[str]] = None,
+    ) -> dict:
+        """Create an ephemeral CLONE agent for an orchestrator's spawn.
+
+        Unlike ``create_custom_agent``, a clone is built FROM SCRATCH:
+          • ``status='clone'`` → hidden from the fleet roster AND the recycling
+            bin; reaped by the cascade when its orchestrator session is deleted.
+          • ``metadata.kind='clone'`` + ``metadata.clone_of=<master id>`` → every
+            clone is traceable home to a stable master agent id.
+          • Inherits ONLY the master's mechanical runtime (model / provider /
+            temperature / max_tokens) — NOT its persona. The caller sets the
+            clone's directive in a single ``orchestrator_directive`` slot; the
+            app-global baseline supplies the mandatory identity.
+          • NO template slots cloned and NO pre-enabled connections. Abilities
+            start fully OFF; only the explicitly ``abilities`` granted are enabled
+            (the caller has already clamped them to the master's — the ceiling).
+            ``allowed_tools`` (deny list) and ``destructive_ask`` (confirm list)
+            are the caller's already-clamped per-tool permissions.
+        """
+        import uuid as _uuid_mod
+        abilities = [a for a in (abilities or []) if isinstance(a, str) and a.strip()]
+        allowed_tools = [t for t in (allowed_tools or []) if isinstance(t, str) and t.strip()]
+        destructive_ask = [t for t in (destructive_ask or []) if isinstance(t, str) and t.strip()]
+
+        master = await self.get_agent_by_id(master_agent_id) or {}
+        agent_id = str(_uuid_mod.uuid4())
+        now = _now_iso()
+        safety_policy = json.dumps({"destructive_tools": sorted(set(destructive_ask))}) \
+            if destructive_ask else "{}"
+        metadata = json.dumps({
+            "owner_user_id": user_id,
+            "kind": "clone",
+            "clone_of": master_agent_id,
+        })
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO agents
+                   (id, name, description, status,
+                    max_turn_count, max_wall_seconds,
+                    max_identical_tool_calls, max_stall_strikes,
+                    model, provider, temperature, max_tokens, metadata,
+                    template_id, is_user_default,
+                    allowed_tools, custom_tool_ids,
+                    trigger_type, trigger_key, loop_logic,
+                    safety_policy, is_admin_agent, admin_users,
+                    created_at, updated_at)
+                   VALUES (?,?,?, 'clone', ?,?,?,?,?,?,?,?,?,?,0,?,'[]','user_input',NULL,'[]',?,0,?,?,?)""",
+                (
+                    agent_id, name or "Clone", description,
+                    9999, master.get("max_wall_seconds"),
+                    master.get("max_identical_tool_calls", 0),
+                    master.get("max_stall_strikes", 0),
+                    master.get("model", ""), master.get("provider", ""),
+                    master.get("temperature", 0.7), master.get("max_tokens", 4096),
+                    metadata,
+                    master.get("template_id") or "default",
+                    json.dumps(sorted(set(allowed_tools))),
+                    safety_policy,
+                    json.dumps([user_id]),
+                    now, now,
+                ),
+            )
+            # Enable ONLY the granted abilities (everything else stays off).
+            for ability_id in sorted(set(abilities)):
+                conn.execute(
+                    """INSERT INTO agent_connections
+                           (id, agent_id, connection_type, section, enabled, config, created_at, updated_at)
+                       VALUES (?, ?, ?, 'ability', 1, '{}', ?, ?)""",
+                    (str(_uuid_mod.uuid4()), agent_id, ability_id, now, now),
+                )
+            conn.commit()
+            row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        finally:
+            conn.close()
+
+        result = dict(row) if row else {"id": agent_id}
+        result["source"] = "clone"
+        return result
+
     async def trash_custom_agent(self, agent_id: str, user_id: str) -> bool:
         """
         Move a custom agent to the recycling bin (soft delete). Caller must be in
@@ -6609,6 +6761,16 @@ class LocalBackend(StorageBackend):
                 (agent_id, user_id),
             )
             if cursor.rowcount > 0:
+                # Cascade: if this agent orchestrated any clones (in its sessions),
+                # reap them too — clone agents, their sessions + transcripts — before
+                # we drop this agent's own sessions. Best-effort; status='clone' only.
+                try:
+                    orch_sids = [row[0] for row in conn.execute(
+                        "SELECT id FROM sessions WHERE agent_id = ?", (agent_id,)).fetchall()]
+                    if orch_sids:
+                        cascade_delete_clones(conn, orch_sids)
+                except Exception:  # noqa: BLE001
+                    pass
                 # Children first, then the session rows themselves.
                 conn.execute(
                     """DELETE FROM interactions

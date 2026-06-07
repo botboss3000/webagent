@@ -224,8 +224,14 @@ export async function uploadAndPreview(file, opts = {}) {
     }
 
     // Replace chip with success preview
-    chip.className = 'chat-attachment-pill';
+    chip.className = 'chat-attachment-pill clickable';
+    chip.title = 'Click to expand';
     chip.innerHTML = '';
+    // Click the chip body (but not the ✕) to expand it in the viewer.
+    chip.addEventListener('click', (e) => {
+      if (e.target.closest('.chat-attachment-remove')) return;
+      openAttachmentViewer(data);
+    });
 
     // Thumbnail for images
     if (data.mime_type.startsWith('image/')) {
@@ -559,11 +565,11 @@ function _isBrowserStored(att) {
 function _resolveAttachmentUrl(att) {
   // Returns a thenable; null indicates "no resolvable URL". For browser-stored
   // attachments we mint an object URL from IndexedDB; otherwise we use the
-  // server-provided URL or fall back to the local /uploads route.
+  // server-provided URL or fall back to the local /user_data route.
   if (_isBrowserStored(att) && att.attachment_id) {
     return getObjectUrl(att.attachment_id);
   }
-  return Promise.resolve(att.url || (att.storage_path ? `/uploads/${att.storage_path}` : ''));
+  return Promise.resolve(att.url || (att.storage_path ? `/user_data/${att.storage_path}` : ''));
 }
 
 function _setSrcAsync(el, attrName, att, missingClass) {
@@ -582,6 +588,127 @@ function _setSrcAsync(el, attrName, att, missingClass) {
   });
 }
 
+// ── Full-screen attachment viewer (lightbox) ───────────────────────────────
+// Shared "expand" used by both the composer preview chips and the attachments
+// rendered in the chat history. Clicking a preview opens a dimmed full-screen
+// overlay showing the file large: images full-size, audio/video with players,
+// PDFs embedded, and text/markdown/CSV/JSON content read inline. Only one is
+// open at a time; it closes on Esc, a backdrop click, or the ✕ button.
+let _viewerOpen = false;
+
+export function openAttachmentViewer(att) {
+  if (!att || _viewerOpen) return;
+  _viewerOpen = true;
+  const mime = att.mime_type || '';
+  const name = att.original_name || 'attachment';
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'attachment-viewer-backdrop';
+
+  const frame = document.createElement('div');
+  frame.className = 'attachment-viewer-frame';
+
+  const head = document.createElement('div');
+  head.className = 'attachment-viewer-head';
+  const title = document.createElement('span');
+  title.className = 'attachment-viewer-title';
+  title.textContent = name;
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'attachment-viewer-close';
+  closeBtn.innerHTML = icon('x', { size: '18px' });
+  closeBtn.title = 'Close (Esc)';
+  head.appendChild(title);
+  head.appendChild(closeBtn);
+
+  const body = document.createElement('div');
+  body.className = 'attachment-viewer-body';
+  body.innerHTML = `<div class="attachment-viewer-loading">${icon('loader-2', { size: '20px' })}</div>`;
+
+  frame.appendChild(head);
+  frame.appendChild(body);
+  backdrop.appendChild(frame);
+  document.body.appendChild(backdrop);
+
+  function close() {
+    if (!_viewerOpen) return;
+    _viewerOpen = false;
+    document.removeEventListener('keydown', onKey, true);
+    backdrop.remove();
+  }
+  function onKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+  }
+  document.addEventListener('keydown', onKey, true);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  closeBtn.addEventListener('click', close);
+
+  _renderViewerBody(body, att, mime, name);
+}
+
+function _renderViewerBody(body, att, mime, name) {
+  const fail = (msg) => { body.innerHTML = `<div class="attachment-viewer-missing">${msg}</div>`; };
+  const withUrl = (cb) => _resolveAttachmentUrl(att)
+    .then(url => { if (!url) return fail(`Couldn't load "${name}".`); body.innerHTML = ''; cb(url); })
+    .catch(() => fail(`Couldn't load "${name}".`));
+
+  if (mime.startsWith('image/')) {
+    return withUrl(url => {
+      const img = document.createElement('img');
+      img.src = url; img.alt = name; img.className = 'attachment-viewer-img';
+      body.appendChild(img);
+    });
+  }
+  if (mime.startsWith('video/')) {
+    return withUrl(url => {
+      const v = document.createElement('video');
+      v.src = url; v.controls = true; v.autoplay = true; v.className = 'attachment-viewer-video';
+      body.appendChild(v);
+    });
+  }
+  if (mime.startsWith('audio/')) {
+    return withUrl(url => {
+      const a = document.createElement('audio');
+      a.src = url; a.controls = true; a.autoplay = true; a.className = 'attachment-viewer-audio';
+      body.appendChild(a);
+    });
+  }
+  if (mime === 'application/pdf' || /\.pdf$/i.test(name)) {
+    return withUrl(url => {
+      const f = document.createElement('iframe');
+      f.src = url; f.className = 'attachment-viewer-pdf';
+      body.appendChild(f);
+    });
+  }
+  const isText = mime.startsWith('text/') || mime === 'application/json'
+    || /\.(md|markdown|csv|txt|json|log|tsv|xml|yaml|yml)$/i.test(name);
+  if (isText) {
+    return withUrl(url => {
+      fetch(url).then(r => r.text()).then(text => {
+        const isMd = mime === 'text/markdown' || /\.(md|markdown)$/i.test(name);
+        if (isMd && window.marked) {
+          const div = document.createElement('div');
+          div.className = 'attachment-viewer-text attachment-viewer-md';
+          try { div.innerHTML = window.marked.parse(text); } catch { div.textContent = text; }
+          body.appendChild(div);
+        } else {
+          const pre = document.createElement('pre');
+          pre.className = 'attachment-viewer-text';
+          pre.textContent = text;
+          body.appendChild(pre);
+        }
+      }).catch(() => fail(`Couldn't read "${name}".`));
+    });
+  }
+  // Anything else: offer to open in a new tab.
+  return withUrl(url => {
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener';
+    a.className = 'attachment-viewer-download';
+    a.innerHTML = `${icon('external-link', { size: '16px' })} Open "${name}" in a new tab`;
+    body.appendChild(a);
+  });
+}
+
 export function renderAttachmentElement(att) {
   const mime = att.mime_type || '';
 
@@ -589,8 +716,10 @@ export function renderAttachmentElement(att) {
   if (mime.startsWith('image/')) {
     const img = document.createElement('img');
     img.alt = att.original_name || 'attachment';
-    img.className = 'chat-attachment-img';
+    img.className = 'chat-attachment-img clickable';
     img.loading = 'lazy';
+    img.title = 'Click to expand';
+    img.addEventListener('click', () => openAttachmentViewer(att));
     _setSrcAsync(img, 'src', att, 'chat-attachment-missing');
     return img;
   }
@@ -622,12 +751,16 @@ export function renderAttachmentElement(att) {
     return video;
   }
 
-  // Default: download link
+  // Default (PDF, text, anything else): open the in-app viewer on click. We
+  // keep the resolved URL on href too, so middle-click / "open in new tab"
+  // still works as a fallback.
   const link = document.createElement('a');
-  link.innerHTML = `${icon('paperclip', { size: '12px' })} ${att.original_name || 'Download attachment'}`;
-  link.className = 'chat-attachment-link';
+  link.innerHTML = `${icon('paperclip', { size: '12px' })} ${att.original_name || 'Attachment'}`;
+  link.className = 'chat-attachment-link clickable';
   link.target = '_blank';
   link.rel = 'noopener';
+  link.title = 'Click to expand';
+  link.addEventListener('click', (e) => { e.preventDefault(); openAttachmentViewer(att); });
   _setSrcAsync(link, 'href', att);
   return link;
 }

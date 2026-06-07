@@ -409,15 +409,30 @@ async def browser_action(
             }
 
         elif action == "screenshot":
-            # Determine screenshots directory (project root / screenshots)
-            screenshots_dir = Path(__file__).resolve().parent.parent.parent / "data" / "screenshots"
-            screenshots_dir.mkdir(parents=True, exist_ok=True)
-
             filename = f"{uuid.uuid4().hex}.png"
-            filepath = screenshots_dir / filename
-            await page.screenshot(path=str(filepath), full_page=full_page)
-
-            uri = f"/screenshots/{filename}"
+            # Land the screenshot in the OWNING user's home so each user's files
+            # stay separate. Resolve the owner from the browser-session row; if
+            # that can't be found, fall back to the legacy flat data/screenshots
+            # pile so a screenshot never fails to save.
+            uri = None
+            try:
+                from app.db import browser_sessions_store as _bstore
+                from app import user_workspace as _ws
+                row = _bstore.get(bs_id) or {}
+                owner = row.get("user_id")
+                if owner:
+                    shots_dir = _ws.user_dir(owner, "screenshots")
+                    filepath = shots_dir / filename
+                    await page.screenshot(path=str(filepath), full_page=full_page)
+                    uri = _ws.public_url(owner, "screenshots", filename)
+            except Exception as _e:  # noqa: BLE001
+                logger.debug("per-user screenshot path failed (%s); using legacy dir", _e)
+            if uri is None:
+                screenshots_dir = Path(__file__).resolve().parent.parent.parent / "data" / "screenshots"
+                screenshots_dir.mkdir(parents=True, exist_ok=True)
+                filepath = screenshots_dir / filename
+                await page.screenshot(path=str(filepath), full_page=full_page)
+                uri = f"/screenshots/{filename}"
             return {
                 "success": True,
                 "result": uri,

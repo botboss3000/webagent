@@ -38,7 +38,7 @@ const WARN  = 'warning';
 const BUSY  = 'deleting';
 const ARMING = 'arming';
 
-const ARM_DELAY_MS = 1000; // spinner duration before arming
+const ARM_DELAY_MS = 400; // spinner duration before arming
 
 /**
  * Return a button to its resting trash state. Safe to call on any state.

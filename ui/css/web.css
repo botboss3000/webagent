@@ -84,6 +84,7 @@
 
 /* ── Browser-nav chip ── */
 .web-nav {
+  position: relative;
   display: flex;
   gap: 6px;
   align-items: center;
@@ -151,6 +152,76 @@
 }
 .web-share.on::before { background: var(--accent); }
 .web-share.on:hover { background: color-mix(in srgb, var(--accent) 26%, var(--bg-elev)); }
+
+/* Sessions toggle button */
+.web-sessions-toggle {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* New-session "+" button */
+.web-new-session {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Sessions popover — drops below the nav bar */
+.web-sessions-popover {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 300px;
+  max-height: 340px;
+  overflow-y: auto;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-2, 0 8px 30px rgba(0,0,0,0.25));
+  z-index: 100;
+  padding: 6px 0;
+}
+.web-sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.web-session-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  border-radius: 6px;
+  margin: 0 4px;
+  transition: background 0.12s;
+}
+.web-session-item:hover { background: var(--bg-elev-2); }
+.web-session-item.active {
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-elev));
+  border-left: 3px solid var(--accent);
+}
+.web-session-icon {
+  font-size: 16px;
+  flex: 0 0 auto;
+  width: 22px;
+  text-align: center;
+}
+.web-session-label {
+  flex: 1 1 auto;
+  font-size: 13px;
+  color: var(--fg-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.web-session-meta {
+  font-size: 11px;
+  color: var(--fg-3);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 
 .web-status {
   display: flex;

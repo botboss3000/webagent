@@ -5,7 +5,7 @@ A PageStore owns the persistence of AutoAgent pages — the per-user HTML
 documents rendered into the Pages tab iframe and edited via the page-builder.
 
 Implementations:
-  - FilesystemPageStore   files on disk at visuals/users/{uid}/{slug}.html
+  - FilesystemPageStore   files on disk at data/user_data/{uid}/pages/{slug}.html
                           plus a pages.json manifest (default)
   - DatabasePageStore     full HTML + metadata in the `pages` table
   - HybridPageStore       metadata in the `pages` table, body on disk

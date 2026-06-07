@@ -55,10 +55,11 @@ function _setIntStatus(el, msg, { ok = false, autoHide = false } = {}) {
   if (autoHide) setTimeout(() => { el.style.display = 'none'; }, 3000);
 }
 
+// Single standardized HTML escaping function
 function _esc(str) {
-  const d = document.createElement('div');
-  d.appendChild(document.createTextNode(str || ''));
-  return d.innerHTML;
+  return String(str == null ? '' : str).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
 }
 
 // ── Module state ──────────────────────────────────────────────────────────
@@ -137,11 +138,8 @@ const _FEATURE_CAT_LABEL = {
 };
 const _FEATURE_CAT_ORDER = ['integration', 'event_source', 'channel', 'connector', 'scheduler', 'encryption', 'payment', 'secrets', 'storage', 'tool', 'ability'];
 
-function _featEsc(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ));
-}
+// Alias kept for compatibility (remove after verifying no calls remain)
+function _featEsc(s) { return _esc(s); }
 
 function _featChip(label, n, color) {
   return `<span style="border:1px solid var(--border);border-radius:10px;padding:2px 9px;color:var(--fg-2);">` +
@@ -3490,6 +3488,8 @@ async function _saveGitHubToken() {
 function _initAppSettings() {
   const saveBtn = _qs('ac-app-settings-save');
   if (saveBtn) saveBtn.addEventListener('click', _saveAppSettings);
+  const gpBtn = _qs('ac-global-prompt-save');
+  if (gpBtn) gpBtn.addEventListener('click', _saveGlobalPrompt);
   _initBootAnimation();
   _initBootMobileMode();
   // Startup & Boot settings live in expandable compact rows: the collapsed line
@@ -3497,6 +3497,7 @@ function _initAppSettings() {
   _wireBootRow('ac-boot-anim-row', 'ac-boot-animation');
   _wireBootRow('ac-boot-mobile-row', 'ac-boot-mobile-mode');
   _initMainPanelPages();
+  _initPluginPages();
 }
 
 // Wire one Startup & Boot row: clicking the head expands/collapses it, and the
@@ -3524,6 +3525,7 @@ function _wireBootRow(rowId, selectId) {
 const _MAIN_PANEL_PAGES = [
   { id: 'admin-tools', label: 'Admin Tools', icon: 'wrench', locked: true },
   { id: 'agents',      label: 'Agents',      icon: 'bot' },
+  { id: 'sessions',    label: 'Sessions',    icon: 'list' },
   { id: 'autoagent',   label: 'Pages',       icon: 'files' },
   { id: 'web',         label: 'Web',         icon: 'globe' },
   { id: 'terminal',    label: 'Terminal',    icon: 'terminal' },
@@ -3543,7 +3545,7 @@ function _getMainPanelOrder() {
       if (hasAll && parsed.length === allIds.length) return parsed;
     }
   } catch (_) {}
-  return ['admin-tools', 'agents', 'autoagent', 'web', 'terminal', 'wiki'];
+  return ['admin-tools', 'agents', 'sessions', 'autoagent', 'web', 'terminal', 'wiki'];
 }
 
 function _getMainPanelHidden() {
@@ -3728,6 +3730,288 @@ function _initMainPanelPages() {
   _applyMainPanelOrder();
 }
 
+// ── Plugin Pages (dynamic header tabs from prompts.json) ────────────────────
+
+const _LS_PLUGIN_PAGES = 'pluginPages';
+const _API_PLUGIN_PROMPTS = '/api/v1/plugin-pages/prompts';
+
+function _getPluginPages() {
+  try {
+    const saved = localStorage.getItem(_LS_PLUGIN_PAGES);
+    if (saved) return JSON.parse(saved);
+  } catch (_) {}
+  return [];
+}
+
+function _savePluginPages(pages) {
+  try { localStorage.setItem(_LS_PLUGIN_PAGES, JSON.stringify(pages)); } catch (_) {}
+}
+
+function _renderPluginList() {
+  const list = _qs('ac-plugin-list');
+  if (!list) return;
+  const plugins = _getPluginPages();
+  if (!plugins.length) {
+    list.innerHTML = '<div class="ac-hint" style="padding:12px 0;color:var(--fg-muted);">No plugin pages yet. Pick a type above and give it a title, then click "Create Page".</div>';
+    return;
+  }
+  list.innerHTML = '';
+  plugins.forEach((p, idx) => {
+    const item = document.createElement('div');
+    item.className = 'ac-main-panel-item ac-ability-row';
+    // Drag handle
+    const handle = document.createElement('span');
+    handle.className = 'ac-mp-drag-handle';
+    handle.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="18" x2="16" y2="18"/></svg>';
+    // Icon
+    const iconWrap = document.createElement('span');
+    iconWrap.className = 'ac-ability-icon';
+    const iconName = p.icon || 'file-text';
+    iconWrap.innerHTML = `<i data-lucide="${iconName}" class="lucide-icon" style="width:18px;height:18px;"></i>`;
+    // Label
+    const label = document.createElement('div');
+    label.className = 'ac-ability-label';
+    label.innerHTML = `<div class="ac-ability-name">${_esc(p.title)}
+      <span style="font-weight:400;font-size:11px;color:var(--fg-muted);margin-left:6px;">/${p.slug}</span>
+    </div>
+    <div class="ac-ability-desc">Type: ${p.prompt_id}</div>`;
+    // Delete button
+    const delBtn = document.createElement('button');
+    delBtn.className = 'ac-mp-toggle';
+    delBtn.type = 'button';
+    delBtn.title = 'Remove plugin page tab';
+    delBtn.innerHTML = '<i data-lucide="x" style="width:14px;height:14px;"></i>';
+    delBtn.style.cssText = 'background:none;border:1px solid rgba(247,54,76,0.4);border-radius:6px;color:#f7364c;cursor:pointer;padding:4px 8px;';
+    delBtn.addEventListener('click', () => {
+      _removePluginPageBySlug(p.slug);
+    });
+    item.appendChild(handle);
+    item.appendChild(iconWrap);
+    item.appendChild(label);
+    item.appendChild(delBtn);
+    list.appendChild(item);
+  });
+  if (window.lucide) { try { lucide.createIcons(); } catch (_) {} }
+}
+
+function _removePluginPageBySlug(slug) {
+  const plugins = _getPluginPages();
+  const idx = plugins.findIndex(p => p.slug === slug);
+  if (idx < 0) return;
+  plugins.splice(idx, 1);
+  _savePluginPages(plugins);
+  _syncPluginTabs();
+  _renderPluginList();
+}
+
+function _setPluginStatus(msg, isError) {
+  const el = _qs('ac-plugin-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = 'block';
+  el.style.color = isError ? '#f7768e' : '#9ece6a';
+  if (!isError) {
+    setTimeout(() => { el.style.display = 'none'; }, 4000);
+  }
+}
+
+async function _createPluginPage() {
+  const select = _qs('ac-plugin-prompt-select');
+  const input = _qs('ac-plugin-title-input');
+  const btn = _qs('ac-plugin-create-btn');
+  if (!select || !input || !btn) return;
+
+  const promptId = select.value;
+  const title = input.value.trim();
+  if (!promptId) { _setPluginStatus('Please select a page type.', true); return; }
+  if (!title) { _setPluginStatus('Please enter a page title.', true); return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+
+  try {
+    // 1. Call the backend to create the placeholder file
+    const res = await _fetch(apiPath('/api/v1/plugin-pages/create'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt_id: promptId, title }),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    if (data.status !== 'ok') throw new Error(data.detail || 'Unknown error');
+
+    const page = data.page;
+
+    // 2. Add to the plugin pages registry
+    const plugins = _getPluginPages();
+    // Avoid duplicates
+    if (!plugins.find(p => p.slug === page.slug)) {
+      plugins.push({
+        slug: page.slug,
+        title: page.title,
+        icon: page.icon || 'file-text',
+        prompt_id: page.prompt_id,
+      });
+      _savePluginPages(plugins);
+    }
+
+    // 3. Sync the header tabs (add the DOM elements)
+    _syncPluginTabs();
+
+    // 4. Render the plugin list
+    _renderPluginList();
+
+    // 5. Start a chat with the default agent using the prompt
+    _startAgentForPluginPage(page);
+
+    _setPluginStatus(`"${page.title}" tab created! Check the header and chat.`);
+    input.value = '';
+    select.value = '';
+  } catch (e) {
+    _setPluginStatus(`Error: ${e.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create Page';
+  }
+}
+
+function _startAgentForPluginPage(page) {
+  // Tag the prompt so the agent knows what page it's building
+  const taggedPrompt = `[Plugin Page: "${page.title}" (${page.slug})]: ${page.prompt}`;
+
+  // Use the main chat input to start a session with the agent
+  if (app.chatInput && app.chatSend) {
+    // Make sure a session is active
+    app.startWebagentSession().catch(() => {});
+    app.chatInput.value = taggedPrompt;
+    app.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    // Small delay to let the session start, then send
+    setTimeout(() => {
+      app.chatSend.click();
+    }, 300);
+  }
+}
+
+function _syncPluginTabs() {
+  const plugins = _getPluginPages();
+  const bar = document.getElementById('main-tabs');
+  const select = document.getElementById('main-tab-select');
+  const mainPanel = document.getElementById('main-panel');
+  if (!bar || !select || !mainPanel) return;
+
+  // Collect slugs we still want
+  const wantedSlugs = new Set(plugins.map(p => p.slug));
+
+  // Remove DOM elements for plugin pages that no longer exist
+  bar.querySelectorAll('.main-tab[data-value^="plugin-"]').forEach(el => {
+    const slug = el.dataset.value.replace('plugin-', '');
+    if (!wantedSlugs.has(slug)) {
+      el.remove();
+    }
+  });
+  select.querySelectorAll('option[value^="plugin-"]').forEach(opt => {
+    const slug = opt.value.replace('plugin-', '');
+    if (!wantedSlugs.has(slug)) {
+      opt.remove();
+    }
+  });
+  mainPanel.querySelectorAll('div[id^="tab-plugin-"]').forEach(el => {
+    const slug = el.id.replace('tab-plugin-', '');
+    if (!wantedSlugs.has(slug)) {
+      el.remove();
+    }
+  });
+
+  // Add DOM elements for new plugin pages
+  plugins.forEach(p => {
+    const tabId = 'plugin-' + p.slug;
+
+    // Skip if already exists
+    if (bar.querySelector('.main-tab[data-value="' + tabId.replace(/"/g, '\\"') + '"]')) return;
+
+    // Add tab button
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'main-tab';
+    btn.dataset.value = tabId;
+    btn.setAttribute('role', 'tab');
+    const iconName = p.icon || 'file-text';
+    btn.innerHTML = '<i data-lucide="' + iconName.replace(/"/g, '&quot;') + '" class="lucide-icon"></i>' + _esc(p.title);
+    bar.appendChild(btn);
+
+    // Add select option
+    const opt = document.createElement('option');
+    opt.value = tabId;
+    opt.textContent = p.title;
+    select.appendChild(opt);
+
+    // Add tab content with iframe
+    const contentId = 'tab-plugin-' + p.slug;
+    if (!document.getElementById(contentId)) {
+      const tabDiv = document.createElement('div');
+      tabDiv.id = contentId;
+      tabDiv.className = 'tab-content';
+      const iframe = document.createElement('iframe');
+      iframe.className = 'terminal-frame';
+      iframe.style.cssText = 'width:100%;height:100%;border:none;background:#0d0d1a;';
+      iframe.title = p.title;
+      iframe.loading = 'lazy';
+      iframe.src = '/plugins/pages/' + encodeURIComponent(p.slug) + '.html?_t=' + Date.now();
+      tabDiv.appendChild(iframe);
+      mainPanel.appendChild(tabDiv);
+    }
+  });
+
+  // Re-run lucide for new icons
+  if (window.lucide) { try { lucide.createIcons(); } catch (_) {} }
+}
+
+async function _loadPluginPrompts() {
+  const select = _qs('ac-plugin-prompt-select');
+  if (!select) return;
+
+  try {
+    const res = await _fetch(apiPath(_API_PLUGIN_PROMPTS));
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.status !== 'ok' || !Array.isArray(data.prompts)) return;
+
+    // Clear existing options except the placeholder
+    select.innerHTML = '<option value="" disabled selected>Select a page type…</option>';
+    data.prompts.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.label + (p.default_title ? ` (${p.default_title})` : '');
+      select.appendChild(opt);
+    });
+  } catch (e) {
+    console.warn('Failed to load plugin prompts:', e);
+  }
+}
+
+function _initPluginPages() {
+  _loadPluginPrompts();
+  _renderPluginList();
+  _syncPluginTabs();
+
+  // Wire the create button
+  const btn = _qs('ac-plugin-create-btn');
+  if (btn) btn.addEventListener('click', _createPluginPage);
+
+  // Wire Enter key in title input
+  const input = _qs('ac-plugin-title-input');
+  if (input) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); _createPluginPage(); }
+    });
+  }
+}
+
+
+
 const _BOOT_ANIM_ALLOWED = ['chat-slide-right', 'page-slide-in', 'crossfade'];
 
 function _initBootAnimation() {
@@ -3763,8 +4047,36 @@ async function _loadAppSettings() {
     const data = await res.json();
     const cb = _qs('ac-extend-llm-to-agents');
     if (cb) cb.checked = data.extend_llm_to_agents !== false;
+    const gp = _qs('ac-global-system-prompt');
+    if (gp) gp.value = data.global_system_prompt || '';
   } catch (e) {
     console.warn('app-config: could not load app settings', e);
+  }
+}
+
+async function _saveGlobalPrompt() {
+  if (!isAdmin()) { showRestrictedModal(); return; }
+  const ta = _qs('ac-global-system-prompt');
+  const statusEl = _qs('ac-global-prompt-status');
+  try {
+    const res = await _fetch(apiPath('/admin/settings/app'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ global_system_prompt: ta ? ta.value : '' }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (statusEl) {
+      statusEl.textContent = 'Saved';
+      statusEl.style.color = '#9ece6a';
+      statusEl.style.display = 'block';
+      setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
+    }
+  } catch (e) {
+    if (statusEl) {
+      statusEl.textContent = `Error: ${e.message}`;
+      statusEl.style.color = '#f7768e';
+      statusEl.style.display = 'block';
+    }
   }
 }
 
@@ -3821,7 +4133,7 @@ async function _loadUserManagement() {
     const res = await _fetch(apiPath('/admin/settings/app'));
     if (res.ok) {
       const data = await res.json();
-      const mode = data.access_mode || 'public_anonymous';
+      const mode = data.access_mode || 'private';
       const radio = document.querySelector(`input[name="ac-um-access-mode"][value="${mode}"]`);
       if (radio) radio.checked = true;
     }

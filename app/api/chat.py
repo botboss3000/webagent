@@ -126,6 +126,7 @@ async def _ensure_session(db, user_id: str, session_id: str, title: str = None) 
                 "id": session_id,
                 "user_id": user_id,
                 "title": title or "New Session",
+                "pinned": 1,
             }).execute()
             logger.info(f"Created session {session_id[:12]} for user {user_id[:12]}")
         except Exception as create_err:

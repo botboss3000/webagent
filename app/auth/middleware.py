@@ -28,7 +28,7 @@ PUBLIC_PATHS = {
 }
 
 # Static asset prefixes (CSS, JS, images — always public)
-PUBLIC_PREFIXES = ("/ui/", "/web-terminal", "/uploads/", "/screenshots/")
+PUBLIC_PREFIXES = ("/ui/", "/web-terminal", "/screenshots/")
 
 # UUID pattern for public agent URLs (/{agent_id})
 _UUID_RE = re.compile(

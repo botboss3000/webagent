@@ -716,6 +716,7 @@ body.light-mode .main-tabs-chev:hover { color: var(--accent); }
 /* ── Agents tab — transparent bg,
 card-aware borders ────────── */
 #tab-agents { background: transparent; }
+#tab-sessions { background: transparent; }
 #agents-list-panel { border-right-color: rgba(255,255,255,0.05); }
 #agents-list-header { border-bottom-color: rgba(255,255,255,0.05); }
 #agents-detail-panel { background: transparent; }

@@ -1672,27 +1672,6 @@ body.light-mode .ac-comm-badge-active { background: rgba(40,167,69,0.12); color:
 body.light-mode .ac-comm-badge-inactive { background: rgba(220,53,69,0.1); color: #dc3545; }
 body.light-mode .ac-comm-badge-unconfigured { background: rgba(107,82,64,0.1); color: #9a7c65; }
 
-/* ── Login / Register overlays (light mode) ── */
-body.light-mode #left-login-overlay { background: rgba(250, 247, 244, 0.92) !important; }
-body.light-mode #left-login-overlay > div { background: #ffffff !important; border-color: #e8ddd0 !important; box-shadow: 0 12px 32px rgba(0,0,0,0.10) !important; }
-body.light-mode #left-login-overlay h2 { color: #cc6a28 !important; }
-body.light-mode #left-login-overlay p,
-body.light-mode #left-login-overlay label { color: #6b5240 !important; }
-body.light-mode #left-login-overlay input[type="email"],
-body.light-mode #left-login-overlay input[type="password"],
-body.light-mode #left-login-overlay input[type="text"] { background: #faf7f4 !important; border-color: #d4c4b4 !important; color: #2d1f14 !important; }
-body.light-mode #left-login-overlay input[type="email"]:focus,
-body.light-mode #left-login-overlay input[type="password"]:focus,
-body.light-mode #left-login-overlay input[type="text"]:focus { border-color: #cc6a28 !important; }
-body.light-mode #left-login-overlay input[type="checkbox"] { accent-color: #cc6a28 !important; }
-body.light-mode #left-login-btn { background: #cc6a28 !important; color: #ffffff !important; }
-body.light-mode #left-reg-btn { background: #1a7c31 !important; color: #ffffff !important; }
-body.light-mode #left-login-register-link,
-body.light-mode #left-login-overlay #left-register-form > div:last-child { color: #9a7c65 !important; }
-body.light-mode #left-login-overlay a { color: #cc6a28 !important; }
-body.light-mode #left-login-loading,
-body.light-mode #left-reg-loading { color: #9a7c65 !important; }
-
 /* ── Inline dropdown login form (light mode) ── */
 body.light-mode #dd-login-email,
 body.light-mode #dd-login-pass { background: #faf7f4 !important; border-color: #d4c4b4 !important; color: #2d1f14 !important; }

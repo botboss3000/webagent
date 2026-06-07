@@ -176,7 +176,7 @@ async def _unhandled_exception_handler(request: Request, exc: Exception):
 # in the dedicated logs.db, so the flight recorder shows the full HTTP timeline,
 # not just errors. Static asset GETs are skipped to keep the log signal-rich.
 _ACCESS_SKIP_PREFIXES = ("/ui/", "/static", "/assets", "/screenshots/",
-                         "/visuals/", "/favicon", "/web-terminal")
+                         "/visuals/", "/user_data/", "/favicon", "/web-terminal")
 _ACCESS_SKIP_EXT = (".js", ".css", ".map", ".ico", ".svg", ".png", ".jpg",
                     ".jpeg", ".gif", ".webp", ".woff", ".woff2", ".ttf")
 
@@ -403,6 +403,15 @@ app.include_router(pages_router)
 # Register the company-wide Wiki router
 app.include_router(wiki_router)
 
+# ── Plugin pages (suggestions + serving) ──
+from app.api.plugin_pages import router as plugin_pages_router
+app.include_router(plugin_pages_router)
+
+# Mount the plugins/pages directory for serving plugin page HTML files
+_PLUGIN_PAGES_DIR = _APP_DIR.parent / "plugins" / "pages"
+_PLUGIN_PAGES_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/plugins/pages", StaticFiles(directory=str(_PLUGIN_PAGES_DIR), html=True), name="plugin-pages")
+
 # ── Restart endpoint ──
 # POST /api/v1/restart shuts down the server process.
 # Works with webAgent.bat which loops uvicorn in a :restart cycle.
@@ -428,22 +437,21 @@ _SCREENSHOTS_DIR = _APP_DIR.parent / "data" / "screenshots"
 _SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/screenshots", StaticFiles(directory=str(_SCREENSHOTS_DIR)), name="screenshots")
 
-_UPLOAD_DIR = _APP_DIR.parent / "data" / "uploads"
-_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+# Uploads, generated images (visuals), and AutoAgent page bodies now all live in
+# the per-user data home (data/user_data/<uid>/{uploads,visuals,pages}) and serve
+# from the /user_data mount below — so the old top-level /uploads and /visuals
+# mounts are retired. (Pages are served via the /api/v1/pages route, not a mount.)
 
+# Per-user data home (data/user_data/<user_id>/…) — uploads, generated images,
+# page bodies, agent outputs, and screenshots. See app/user_workspace.py.
 try:
-    app.mount("/uploads", StaticFiles(directory=str(_UPLOAD_DIR)), name="uploads")
-    logger.info("Uploads directory mounted at /uploads")
+    from app.user_workspace import base_dir as _user_data_base
+    _USER_DATA_DIR = _user_data_base()
+    _USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount("/user_data", StaticFiles(directory=str(_USER_DATA_DIR)), name="user_data")
+    logger.info("User data directory mounted at /user_data")
 except Exception as e:
-    logger.warning("Could not mount /uploads: %s", e)
-
-_VISUALS_DIR = _APP_DIR.parent / "data" / "visuals"
-_VISUALS_DIR.mkdir(parents=True, exist_ok=True)
-try:
-    app.mount("/visuals", StaticFiles(directory=str(_VISUALS_DIR)), name="visuals")
-    logger.info("Visuals directory mounted at /visuals")
-except Exception as e:
-    logger.warning("Could not mount /visuals: %s", e)
+    logger.warning("Could not mount /user_data: %s", e)
 
 _UI_DIR = _APP_DIR.parent / "ui"
 app.mount("/ui", StaticFiles(directory=str(_UI_DIR)), name="ui")

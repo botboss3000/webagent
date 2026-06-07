@@ -68,6 +68,7 @@
 <link rel="stylesheet" href="./ui/css/loop-visual.css">
 <link rel="stylesheet" href="./ui/css/autoagent.css">
 <link rel="stylesheet" href="./ui/css/agents.css">
+<link rel="stylesheet" href="./ui/css/sessions.css">
 <link rel="stylesheet" href="./ui/css/files.css">
 <link rel="stylesheet" href="./ui/css/web.css">
 <link rel="stylesheet" href="./ui/css/wiki.css">
@@ -296,10 +297,13 @@
     <option value="admin-tools">Admin Tools</option>
     <option value="autoagent">Pages</option>
     <option value="agents">Agents</option>
+    <option value="sessions">Sessions</option>
     <option value="web">Web</option>
     <option value="terminal">Terminal</option>
     <option value="wiki">Wiki</option>
     <option value="account">Manage Account</option>
+    <!-- Plugin pages injected dynamically by JS -- they get <option> elements
+         created on-the-fly from localStorage["pluginPages"]. -->
   </select>
 
   <!-- Horizontal tab strip with chevron-scroll carousel -->
@@ -382,6 +386,9 @@
       <button type="button" class="main-tab" data-value="agents" role="tab">
         <i data-lucide="bot" class="lucide-icon"></i>Agents
       </button>
+      <button type="button" class="main-tab" data-value="sessions" role="tab">
+        <i data-lucide="list" class="lucide-icon"></i>Sessions
+      </button>
       <button type="button" class="main-tab" data-value="web" role="tab">
         <i data-lucide="globe" class="lucide-icon"></i>Web
       </button>
@@ -406,7 +413,7 @@
   <script>
   (function () {
     try {
-      var DEFAULT_ORDER = ['admin-tools', 'agents', 'autoagent', 'web', 'terminal', 'wiki'];
+      var DEFAULT_ORDER = ['admin-tools', 'agents', 'sessions', 'autoagent', 'web', 'terminal', 'wiki'];
       var bar = document.getElementById('main-tabs');
       if (!bar) return;
 
@@ -450,6 +457,66 @@
   })();
   </script>
 
+  <!-- Pre-paint injection of plugin pages from the plugin registry.
+       Plugin pages are stored in localStorage["pluginPages"] as a JSON array:
+       [{ slug, title, icon }]. They create header tab buttons + select options
+       + tab content iframes dynamically. The source of truth is
+       ui/js/app-config.js (_PLUGIN_PAGES). -->
+  <script>
+  (function () {
+    try {
+      var plugins = JSON.parse(localStorage.getItem('pluginPages') || '[]');
+      if (!Array.isArray(plugins) || plugins.length === 0) return;
+
+      var bar = document.getElementById('main-tabs');
+      var select = document.getElementById('main-tab-select');
+      var mainPanel = document.getElementById('main-panel');
+      if (!bar || !select || !mainPanel) return;
+
+      plugins.forEach(function (p, i) {
+        // Create tab button
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'main-tab';
+        btn.dataset.value = 'plugin-' + p.slug;
+        btn.setAttribute('role', 'tab');
+        var iconName = p.icon || 'file-text';
+        btn.innerHTML = '<i data-lucide="' + iconName + '" class="lucide-icon"></i>' + _esc(p.title);
+        bar.appendChild(btn);
+
+        // Create select option (hidden native select for tabs.js compat)
+        var opt = document.createElement('option');
+        opt.value = 'plugin-' + p.slug;
+        opt.textContent = p.title;
+        select.appendChild(opt);
+
+        // Create tab-content div with an iframe, if one doesn't already exist
+        var contentId = 'tab-plugin-' + p.slug;
+        if (!document.getElementById(contentId)) {
+          var tabDiv = document.createElement('div');
+          tabDiv.id = contentId;
+          tabDiv.className = 'tab-content';
+          var iframe = document.createElement('iframe');
+          iframe.className = 'terminal-frame';
+          iframe.style.cssText = 'width:100%;height:100%;border:none;background:#0d0d1a;';
+          iframe.title = p.title;
+          iframe.loading = 'lazy';
+          iframe.src = '/plugins/pages/' + encodeURIComponent(p.slug) + '.html?_t=' + Date.now();
+          tabDiv.appendChild(iframe);
+          mainPanel.appendChild(tabDiv);
+        }
+      });
+
+      // Re-run lucide for the new icons
+      if (window.lucide) { try { lucide.createIcons(); } catch (_) {} }
+    } catch (e) {}
+    function _esc(s) {
+      if (typeof s !== 'string') return '';
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+  })();
+  </script>
+
   <!-- User menu (right side) -->
   <span id="status-right">
     <span id="header-notifications">
@@ -477,6 +544,7 @@
     <!-- Tab content -->
     <div id="tab-autoagent" class="tab-content"></div>
     <div id="tab-agents" class="tab-content"></div>
+    <div id="tab-sessions" class="tab-content"></div>
     <div id="tab-web" class="tab-content"></div>
     <div id="tab-terminal" class="tab-content">
       <iframe src="/web-terminal/" class="terminal-frame" title="Terminal" loading="lazy"></iframe>
@@ -484,6 +552,11 @@
     <div id="tab-wiki" class="tab-content"></div>
     <div id="tab-account" class="tab-content"></div>
     <div id="tab-admin-tools" class="tab-content"></div>
+
+    <!-- Plugin pages: rendered in an iframe, similar to terminal tab -->
+    <div id="tab-plugin" class="tab-content">
+      <iframe id="plugin-page-iframe" class="terminal-frame" title="Plugin Page" loading="lazy" style="width:100%;height:100%;border:none;background:#0d0d1a;"></iframe>
+    </div>
 
   </div>
 
@@ -645,7 +718,6 @@
 
 <!-- ── Feedback modal (rendered hidden; opened by ui/js/feedback.js) ── -->
 <div id="feedback-modal" class="feedback-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="feedback-modal-title">
-  <div class="feedback-modal-backdrop" data-feedback-close></div>
   <div class="feedback-modal-card">
     <div class="feedback-modal-head">
       <h3 id="feedback-modal-title">Send feedback</h3>

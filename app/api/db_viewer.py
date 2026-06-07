@@ -439,15 +439,27 @@ async def delete_session(
         cur.execute('DELETE FROM sessions WHERE id = ?', (session_id,))
         session_deleted = cur.rowcount
 
+        # Cascade: an orchestrator session takes its spawned CLONES with it —
+        # their agents, sessions and transcripts (recursively). Best-effort; only
+        # touches status='clone' agents, so a real agent is never caught.
+        clones_deleted = 0
+        try:
+            from app.db.local import cascade_delete_clones
+            clones_deleted = cascade_delete_clones(conn, [session_id])
+        except Exception as _ce:  # noqa: BLE001
+            logger.debug("clone cascade on session delete failed: %s", _ce)
+
         conn.commit()
         conn.close()
 
-        logger.info(f"Deleted session {session_id[:12]}: {session_deleted} session, {interactions_deleted} interactions")
+        logger.info(f"Deleted session {session_id[:12]}: {session_deleted} session, "
+                    f"{interactions_deleted} interactions, {clones_deleted} clones")
         return {
             "success": True,
             "session_id": session_id,
             "session_deleted": session_deleted,
             "interactions_deleted": interactions_deleted,
+            "clones_deleted": clones_deleted,
         }
     except HTTPException:
         raise
@@ -652,6 +664,11 @@ async def list_sessions(
             # default, so pre-existing rows read back as NULL).
             if has_status:
                 where_clause = f"({where_clause}) AND (s.status IS NULL OR s.status != 'recycled')"
+
+            # Hide spawned-clone sessions from the sidebar: they belong to
+            # ephemeral clone agents and live/die with their orchestrator (see
+            # cascade_delete_clones). Their ids are always prefixed 'spawn-'.
+            where_clause = f"({where_clause}) AND (s.id NOT LIKE 'spawn-%')"
 
             # Sort by last active time (updated_at), newest first.
             # Pinned sessions come first, then the rest sorted by last active.

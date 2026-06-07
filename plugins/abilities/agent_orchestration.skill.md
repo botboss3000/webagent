@@ -41,17 +41,27 @@ write-up.**
 
 ## The mental model
 
-- A **spawn** is a *helper agent in its own saved session*. You sit in that
-  session's "user" seat, so your whole conversation with the helper is recorded
-  like any chat and is visible to the human in the sidebar (badged as a spawn).
+- A **spawn is an ephemeral CLONE of you** — not a brand-new fleet agent. It is
+  built **from scratch**: it runs on the platform's app-global baseline plus
+  whatever directive you give it, and it inherits **none** of your persona and
+  **none** of your abilities. It gets its own working session, but that session is
+  **hidden** from the human's sidebar and the clone is **hidden** from the agent
+  roster — clones are throwaway workers, not permanent agents.
+- **Abilities start fully OFF.** A clone can do nothing but think and talk until
+  you deliberately switch abilities on for it (see "Abilities & permissions"
+  below). This keeps each worker scoped to exactly what its task needs.
+- **Clones are reaped with you.** When this orchestrator session is deleted, every
+  clone you spawned — its agent, its session, its transcript — is deleted too. So
+  the clone's long working transcript never lingers as clutter; only the concise
+  result you keep survives.
 - You stay in charge. Unlike delegating, spawning does **not** replace you — you
-  keep running and the helper works alongside you.
-- **Helpers are orchestrators too.** A spawned helper has this same ability, so it
-  can break its own task down and spawn *its own* sub-helpers — recursively, with no
-  depth limit. So when you hand a helper a big chunk, you can trust it to fan the
-  chunk out further itself; you don't have to pre-split everything yourself.
+  keep running and the clone works alongside you.
+- **Clones can orchestrate too — but only if you let them.** A clone can spawn its
+  own sub-helpers **only if you grant it the `agent_orchestration` ability**. By
+  default a clone is a leaf worker. Grant recursion when you want a clone to fan its
+  big chunk out further itself.
 - Work is **event-driven, not a blocking wait**. You choose per call whether to
-  block for the result or fork the helper and be *re-woken* later when it finishes
+  block for the result or fork the clone and be *re-woken* later when it finishes
   or when a timer fires.
 
 ## Choosing the right orchestration type
@@ -61,28 +71,63 @@ write-up.**
 | One bounded sub-task, you need the answer **before you can continue** | **spawn (blocking)** | `spawn_agent(..., wait=true)` — returns the reply |
 | **Several independent tasks**, or long-running work, or you want to keep going | **fork (parallel/background)** | one `spawn_agent(..., wait=false, check_back_minutes=N)` per task |
 | You need to **iterate** with a helper (refine, follow up, correct) | **converse** | `spawn_agent`, then `message_spawn(spawn_id, ...)` |
-| A **fitting specialist agent already exists** | **clone** | `spawn_agent(..., from_agent=<template_id>)` (ids from `list_delegatable_agents`) |
-| Another agent should **own the rest of this chat** | **delegate** | `delegate_to_agent(...)` — this *replaces you* |
+| You want to **reuse another agent's prompt** as a starting identity | **borrow** | `spawn_agent(..., from_agent=<id>)` — pulls that agent's prompt text in as reference for the clone |
+| Another agent should **own the rest of this chat** | **delegate** | `delegate_to_agent(...)` — this *replaces you* (use this for handing off to a real, persistent agent) |
 | You want to **improve this session's own prompt** | **optimize** | `run_optimizer(...)` |
 
 When in doubt between blocking and fork: if you have **two or more** independent
 tasks, **fork them all** so they run together — that's the whole point. Reserve
 blocking for the single thing you need right now.
 
+## Abilities & permissions — pick deliberately
+
+A clone is born able to do **nothing but think and talk**. You decide what powers it
+gets, and you can never hand it more than you have yourself (the *ceiling*):
+
+1. **See what you can grant.** Call `list_abilities()` — it returns exactly the
+   abilities you hold, each with a description and the tools it unlocks.
+2. **Grant only what the task needs.** Pass those ids in
+   `spawn_agent(abilities=[...])`. A research worker might get `["web_access"]`; a
+   writer might get nothing at all. Don't grant broadly "just in case" — a tightly
+   scoped clone is safer and cheaper.
+3. **Recursion is opt-in.** A clone can spawn its *own* sub-helpers only if you
+   include `"agent_orchestration"` in its abilities. Leave it out for leaf workers.
+4. **Destructive tools are blocked by default.** Anything that would normally pause to
+   ask a human first is off in a clone (no human is watching it). If a clone genuinely
+   needs one, opt it in with `allow_destructive=["tool_name"]` — but you can never make
+   a tool *looser* for the clone than it is for you. If you must confirm a tool, the
+   clone at most must confirm it too; it can never run it unattended.
+
+The `spawn_agent` result echoes `granted_abilities` and `confirm_tools` so you can
+confirm what the ceiling actually allowed — if something you asked for was dropped, it's
+because you don't have it yourself.
+
 ## The tools
 
 **Spawn & run**
-- `spawn_agent(task, name?, system_prompt?, from_agent?, wait?, check_back_minutes?)`
-  — create a new helper and set it to work. Give it an identity **one** of two ways:
-  - write `system_prompt` — a plain directive describing who the helper is (you write
-    this on the spot); **or**
-  - pass `from_agent` — a template id to clone an existing agent (ids from
-    `list_delegatable_agents`).
-  - `wait=true` → block and get the helper's reply back now.
-  - `wait=false` (default) → **fork**: you get a `spawn_id` immediately and carry on;
-    you'll be re-woken with the result when the helper finishes.
-  - `check_back_minutes>0` → also set a follow-up safety timer (see oversight below).
-  Returns the `spawn_id` you use for every other tool.
+- `spawn_agent(task, name?, system_prompt?, abilities?, allow_destructive?, output_contract?, from_agent?, wait?, check_back_minutes?)`
+  — create a fresh clone of yourself and set it to work.
+  - `system_prompt` — the clone's directive/identity, written by you. Leave blank for
+    a bare fire-and-forget worker (it runs on the app-global baseline + the task only).
+  - `abilities` — the list of ability ids to switch **ON** for the clone (see
+    `list_abilities`). **Everything is off unless you list it.** You can only grant
+    abilities you have yourself. Add `"agent_orchestration"` only if the clone must
+    spawn its own sub-helpers.
+  - `allow_destructive` — tool names the clone may use even though they normally need
+    confirmation. **Off by default** — a clone has no human to confirm, so confirm-tools
+    are blocked unless you opt them in here, and never looser than your own permission.
+  - `output_contract` — optional: the exact shape/length you want the result in, so it
+    comes back small and uniform.
+  - `from_agent` — optional: another agent/template id whose prompt text is pulled in as
+    a reference identity for the clone. (To hand the whole chat to a real agent instead,
+    use `delegate_to_agent`.)
+  - `wait=true` → block and get the clone's reply now; `wait=false` (default) → **fork**
+    and be re-woken with the result. `check_back_minutes>0` → also set a follow-up timer.
+  Returns the `spawn_id` (plus `granted_abilities` / `confirm_tools` so you can see
+  exactly what the ceiling allowed).
+- `list_abilities()` — the abilities you can switch on for a clone (the ones you have
+  yourself — your ceiling), each with a description and the tools it gates. Pick from
+  these for `spawn_agent(abilities=[...])`.
 
 **Converse & inspect**
 - `message_spawn(spawn_id, message, wait?)` — send another message into a helper's
@@ -100,8 +145,8 @@ blocking for the single thing you need right now.
   `seconds_since_heartbeat`, `age_seconds`), last result summary, and any pending
   timer. This is your **liveness check** — use it to tell a healthy in-progress
   spawn from a dead one. `health` spells out what each status means; `stalled: true`
-  means the helper has gone silent and is effectively dead (being auto-recovered or
-  failed). `queued` = waiting its turn in the run-queue (normal); `running` =
+  means the helper has gone silent and is effectively dead (it will be failed out and
+  you'll get a FAILED event to re-spawn from). `queued` = waiting its turn in the run-queue (normal); `running` =
   actively working; both are in-progress, neither is a result.
 
 **Oversee & stop**
@@ -111,6 +156,10 @@ blocking for the single thing you need right now.
   any pending timer for that spawn.
 - `stop_spawn(spawn_id)` — interrupt a helper's current run and mark it stopped
   (its session and transcript are kept).
+- `promote_spawn(spawn_id, name?, description?)` — **keep a clone permanently.** Clones
+  are normally reaped when this session is deleted; if one turned out genuinely
+  reusable, promote it to a real fleet agent (keeps its directive, granted abilities and
+  transcript). Use sparingly — most clones are meant to be throwaway.
 
 **Hand off / optimize**
 - `list_delegatable_agents()` — the agents you can delegate to or clone, with each
@@ -131,8 +180,8 @@ wait=false)` once per task, each with `check_back_minutes` set. Then **end your 
 re-wakes you with its result.
 
 **Spawn as many as you want — they queue, they don't pile up.** There is **no limit
-on how many helpers you may fork**, and helpers may themselves fork their own
-sub-helpers, to any depth. You do **not** need to hold back, batch in small groups,
+on how many clones you may fork**, and clones you grant `agent_orchestration` may
+themselves fork their own sub-helpers, to any depth. You do **not** need to hold back, batch in small groups,
 or throttle yourself for performance: the system runs a **run-queue** behind the
 scenes that executes a few spawns at a time and holds the rest. So a forked spawn
 moves through statuses **`queued` → `running` → `done`**. `queued` means "waiting its
@@ -147,13 +196,16 @@ interrupted, that's exactly what `check_back_minutes` / `schedule_spawn_check` i
 for — set it and stop, don't loop.
 
 > Reliability note: forked work runs in the background. If a helper is interrupted
-> (e.g. a server restart), the system **auto-recovers it** — it re-runs the spawn and
-> re-wakes you with the result, or, if it can't recover after retrying, re-wakes you
-> with an `[ORCHESTRATION EVENT]` saying that spawn **FAILED**. So you don't have to
-> babysit forks. Still, **attach a `check_back_minutes` timer** to forks you depend on
-> as a belt-and-braces backstop, and never *block* waiting — act on results as they
-> arrive and treat anything stuck `running` for a long time as failed (see "Report
-> only what helpers actually said").
+> (e.g. a server restart), the system re-wakes you with an `[ORCHESTRATION EVENT]`
+> saying that spawn **FAILED** — it deliberately does **not** silently re-run it for
+> you (auto-re-running a helper that itself delegated would rebuild its entire
+> sub-tree and snowball). **You** are the one who decides recovery: when you get a
+> FAILED event for work you still need, **re-spawn it** — call `spawn_agent` again
+> with the same task. That is how the task gets completed after an interruption.
+> Always **attach a `check_back_minutes` timer** to forks you depend on as a
+> belt-and-braces backstop, and never *block* waiting — act on results as they arrive
+> and treat anything stuck `running` for a long time as failed (see "Report only what
+> helpers actually said").
 
 ## Report only what helpers actually said — verify, never invent
 
@@ -197,10 +249,10 @@ The discipline, every time you report a spawn's result:
    - **A spawn stuck `running` for a long time is a failure, not progress.** Helpers
      finish in well under a couple of minutes of *running* time. `queued` is fine (it's
      just waiting its turn in the run-queue under load — see below). But if a spawn has
-     been `running` far longer than a normal task, treat it as stalled: re-run it or
-     report it failed. (The system also auto-retries interrupted spawns in the
-     background and will re-wake you if one ultimately fails — but don't *wait* on that;
-     act on what you can see.)
+     been `running` far longer than a normal task, treat it as stalled: re-spawn it or
+     report it failed. (If the server interrupted it, you'll also get a FAILED
+     `[ORCHESTRATION EVENT]` — re-spawn from there if you still need the work. The
+     system does **not** auto-re-run it for you, so don't *wait* on a silent retry.)
 4. **Retry what failed.** If a helper produced nothing or did the wrong thing, re-run
    it — spawn again with a clearer task, or `message_spawn` to correct it. Give it a
    bounded number of tries.
@@ -247,10 +299,11 @@ not as the human talking:
 - **Keep the prompt lean and non-redundant.** Put the helper's durable identity in
   `system_prompt` (who it is, its standards) and the specific request plus the desired
   **output shape/length** in `task`. Don't repeat the persona in both.
-- **Name your spawns** so `list_spawns` and the sidebar are readable.
-- **Prefer cloning (`from_agent`) when a fitting agent exists** — it inherits that
-  agent's tools and configuration. Write a fresh `system_prompt` only for one-off
-  helpers with no good match.
+- **Name your spawns** so `list_spawns` is readable.
+- **Grant abilities deliberately, never broadly.** Start from nothing and add only what
+  the task needs (`list_abilities` shows your options). A leaner clone is safer, cheaper,
+  and faster. Reach for `from_agent` only to *borrow* an existing agent's prompt wording
+  as a starting point — it does not carry that agent's powers.
 - **Don't fork-and-forget.** Every fork gets a finish event or a `check_back_minutes`
   timer — never leave forked work untracked, but never busy-poll it either.
 - **spawn vs delegate:** spawn = a helper you supervise and stay above; delegate = you

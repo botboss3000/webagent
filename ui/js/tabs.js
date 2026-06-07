@@ -7,6 +7,7 @@ import { startAccount } from './account.js';
 import { startAdminTools, stopAdminTools } from './files.js';
 import { startWeb, stopWeb } from './web.js';
 import { startWiki, stopWiki } from './wiki.js';
+import { startSessions, stopSessions } from './sessions-page.js';
 import { refreshTutorial } from './tutorial.js';
 import { initAppConfig } from './app-config.js';
 import { initDbViewer } from './db/index.js';
@@ -100,12 +101,14 @@ export function initTabs() {
       stopAdminTools();
       stopWeb();
       stopWiki();
+      stopSessions();
       startAutoAgent();
     } else if (tabValue === 'agents') {
       stopAutoAgent();
       stopAdminTools();
       stopWeb();
       stopWiki();
+      stopSessions();
       startAgents();
     } else if (tabValue === 'account') {
       stopAutoAgent();
@@ -113,19 +116,29 @@ export function initTabs() {
       stopAdminTools();
       stopWeb();
       stopWiki();
+      stopSessions();
       startAccount();
     } else if (tabValue === 'admin-tools') {
       stopAutoAgent();
       stopAgents();
       stopWeb();
       stopWiki();
-      _ensureAdminInit();   // build the Admin Tools sub-panels on first open
+      stopSessions();
+      _ensureAdminInit();
       startAdminTools();
+    } else if (tabValue === 'sessions') {
+      stopAutoAgent();
+      stopAgents();
+      stopAdminTools();
+      stopWeb();
+      stopWiki();
+      startSessions();
     } else if (tabValue === 'web') {
       stopAutoAgent();
       stopAgents();
       stopAdminTools();
       stopWiki();
+      stopSessions();
       startWeb();
     } else if (tabValue === 'terminal') {
       stopAutoAgent();
@@ -133,18 +146,41 @@ export function initTabs() {
       stopAdminTools();
       stopWeb();
       stopWiki();
+      stopSessions();
     } else if (tabValue === 'wiki') {
       stopAutoAgent();
       stopAgents();
       stopAdminTools();
       stopWeb();
+      stopSessions();
       startWiki();
+    } else if (tabValue.startsWith('plugin-')) {
+      // Plugin pages: stop everything, show the iframe (already in DOM)
+      stopAutoAgent();
+      stopAgents();
+      stopAdminTools();
+      stopWeb();
+      stopWiki();
+      stopSessions();
     }
 
     // Re-render tutorial hint badges for the newly active tab. Defer a tick
     // so the tab's start*() routine has populated dynamic content first.
     try { refreshTutorial(tabValue); } catch (_) {}
   }
+
+  // On load: if ?tab=<tabValue> is in the URL, activate that tab.
+  // This is used when middle-clicking a header button opens a new window.
+  (function () {
+    try {
+      var p = new URLSearchParams(location.search);
+      var t = p.get('tab');
+      if (t && tabSelect.querySelector('option[value="' + t + '"]')) {
+        tabSelect.value = t;
+        activateTab(t, true);
+      }
+    } catch (_) {}
+  })();
 
   // Programmatic view switch for the App-control ability (agent-driven, via a
   // `ui_command` WebSocket event). Mirrors a user picking from the dropdown:
@@ -177,6 +213,31 @@ export function initTabs() {
   }
 
   activateTab(tabSelect.value);
+
+  // ── Middle-click on header buttons opens a new tab ──
+  // Middle-clicking a .main-tab opens the same page at that tab in a new window.
+  // Middle-clicking the + button opens a fresh session in a new window.
+  (function () {
+    var base = location.pathname.replace(/\/+$/, '') || '/';
+    document.querySelectorAll('#main-tabs .main-tab').forEach(function (btn) {
+      btn.addEventListener('auxclick', function (e) {
+        if (e.button !== 1) return;  // middle-click only
+        e.preventDefault();
+        var val = btn.dataset.value;
+        if (val) {
+          window.open(base + '?tab=' + encodeURIComponent(val), '_blank');
+        }
+      });
+    });
+    var plusBtn = document.getElementById('session-new-header-btn');
+    if (plusBtn) {
+      plusBtn.addEventListener('auxclick', function (e) {
+        if (e.button !== 1) return;
+        e.preventDefault();
+        window.open(base, '_blank');
+      });
+    }
+  })();
 
   // The spinner was shown in the header during init (pre-paint script
   // set body.is-booting). Now that the tab content is mounted, clear

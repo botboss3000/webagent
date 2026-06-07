@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Header, Query
+from fastapi import APIRouter, Header, Query, Request
 from pydantic import BaseModel
 
 from app.auth.jwt import decode_token
@@ -870,6 +870,15 @@ class AppSettings(BaseModel):
     # knobs (intervals, thresholds, per-signal toggles) live as raw
     # render_recording_* keys in app-settings.json (see render_recorder.py).
     render_recording_enabled: bool = False
+    # ── App-global system prompt (app/agent/prompts.py) ──
+    # A single admin-only block of CRITICAL, non-negotiable instructions injected
+    # as the TOPMOST section of EVERY agent's system prompt (fleet agents and
+    # spawned clones alike). This is the platform baseline — the bare minimum
+    # every agent must obey regardless of its own prompt. Clones are built "from
+    # scratch" on top of this (global baseline + their custom directive only), so
+    # this is the only inherited identity a fire-and-forget clone carries. Keep it
+    # short and rule-like; it is prepended verbatim, ahead of any agent slot.
+    global_system_prompt: str = ""
 
 
 VALID_ACCESS_MODES = {"public_anonymous", "public_registered", "admin_approval", "private"}
@@ -882,6 +891,16 @@ def get_access_mode() -> str:
     if mode not in VALID_ACCESS_MODES:
         mode = "public_anonymous"
     return mode
+
+
+def get_global_system_prompt() -> str:
+    """Read the app-global system prompt (the platform baseline injected at the
+    top of every agent's prompt). Sync — called from build_system_prompt each
+    turn. Returns '' when unset, so callers can prepend unconditionally."""
+    try:
+        return (str(_load_app_settings().get("global_system_prompt") or "")).strip()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def get_self_heal_config() -> dict:
@@ -1597,8 +1616,22 @@ async def get_app_settings():
 
 
 @router.post("/app", response_model=AppSettings)
-async def set_app_settings(settings: AppSettings):
-    """Save app-wide feature flags."""
+async def set_app_settings(request: Request):
+    """Save app-wide feature flags.
+
+    MERGES the posted fields onto the existing settings rather than replacing the
+    whole object, so a form that submits just one or two flags can't silently reset
+    every other setting (e.g. the global_system_prompt) back to its default. Unknown
+    raw keys already in the file (e.g. render_recording_* capture knobs) are
+    preserved too."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    existing = _load_app_settings()
+    settings = AppSettings(**{**existing, **body})
     if settings.access_mode not in VALID_ACCESS_MODES:
         settings.access_mode = "public_anonymous"
     # Clamp stream buffer retention to a sane range so a bad value can't
@@ -1612,5 +1645,7 @@ async def set_app_settings(settings: AppSettings):
     if sb > 3600:
         sb = 3600
     settings.stream_buffer_retention_seconds = sb
-    _save_app_settings(settings.model_dump())
+    # Preserve any unknown raw keys already in the file while writing the merged
+    # validated settings on top.
+    _save_app_settings({**existing, **settings.model_dump()})
     return settings

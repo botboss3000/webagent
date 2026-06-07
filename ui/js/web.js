@@ -41,6 +41,10 @@ function mount() {
     dot: root.querySelector('.web-dot'),
     statusText: root.querySelector('.web-status-text'),
     share: root.querySelector('.web-share'),
+    sessionsToggle: root.querySelector('.web-sessions-toggle'),
+    newSessionBtn: root.querySelector('.web-new-session'),
+    sessionsPopover: root.querySelector('.web-sessions-popover'),
+    sessionsList: root.querySelector('.web-sessions-list'),
     promptRow: root.querySelector('.web-prompt-row'),
     promptInput: root.querySelector('.web-prompt-input'),
     send: root.querySelector('.web-send'),
@@ -160,12 +164,14 @@ function wireInput() {
   });
 
   els.root.querySelectorAll('.web-btn').forEach((b) => {
-    b.addEventListener('click', () => {
+    b.addEventListener('click', (e) => {
       const act = b.dataset.act;
       if (act === 'go') navigate();
       else if (act === 'back') send({ action: 'back' });
       else if (act === 'forward') send({ action: 'forward' });
       else if (act === 'reload') send({ action: 'reload' });
+      else if (act === 'sessions') toggleSessionsPopover(e);
+      else if (act === 'new-session') openNewSession();
       else if (act === 'share') toggleShare();
     });
   });
@@ -242,6 +248,115 @@ function updateShareUi() {
     : 'This tab is private — click to share it with the agent';
 }
 
+// ── Sessions popover: list / create / switch browser tabs ───────────────────
+async function refreshSessionsPopover() {
+  if (!els || !els.sessionsList) return;
+  let sessions = [];
+  try {
+    const d = await apiJson('/api/v1/browser/sessions');
+    sessions = (d && d.sessions) || [];
+  } catch (_) {}
+  // Sort: "No Agent" first, then by updated_at desc
+  const noAgent = sessions.filter(s => !s.agent_id);
+  const withAgent = sessions.filter(s => s.agent_id);
+  const sortByDate = (a, b) => (b.updated_at || '').localeCompare(a.updated_at || '');
+  const sorted = [...noAgent.sort(sortByDate), ...withAgent.sort(sortByDate)];
+  const top = sorted.slice(0, 10);
+
+  els.sessionsList.innerHTML = '';
+  // "No Agent" pseudo-entry (the user's private session without an agent)
+  const noAgentItem = document.createElement('div');
+  noAgentItem.className = 'web-session-item' + (!currentBs || !currentBs.agent_id ? ' active' : '');
+  noAgentItem.innerHTML = `<span class="web-session-icon">&#128274;</span><span class="web-session-label">No Agent</span><span class="web-session-meta">private</span>`;
+  noAgentItem.addEventListener('click', () => switchSession(null));
+  els.sessionsList.appendChild(noAgentItem);
+
+  for (const s of top) {
+    const isActive = currentBs && currentBs.id === s.id;
+    const item = document.createElement('div');
+    item.className = 'web-session-item' + (isActive ? ' active' : '');
+    const agentLabel = s.agent_id ? '(' + (s.title || s.agent_id.slice(0, 8) + '…') + ')' : '';
+    item.innerHTML = `<span class="web-session-icon">${s.shared ? '&#128101;' : '&#128274;'}</span>` +
+      `<span class="web-session-label">${s.title || 'Untitled'}</span>` +
+      `<span class="web-session-meta">${s.agent_id ? s.agent_id.slice(0, 6) + '…' : 'private'}</span>`;
+    item.addEventListener('click', () => switchSession(s.id));
+    els.sessionsList.appendChild(item);
+  }
+}
+
+async function switchSession(bsId) {
+  if (els.sessionsPopover) els.sessionsPopover.style.display = 'none';
+  if (bsId && currentBs && currentBs.id === bsId) return; // already on it
+  // Disconnect current WS
+  disconnect();
+  if (bsId) {
+    // Use the target session directly — look it up from the popover data or
+    // fetch it fresh. We bypass ensureBrowserSession and connect the WS to
+    // this specific session.
+    currentBs = await ensureSessionById(bsId) || { id: bsId };
+  } else {
+    // "No Agent" — get the user's first private tab, or create one
+    try {
+      const d = await apiJson('/api/v1/browser/sessions');
+      const list = (d && d.sessions) || [];
+      const first = list.find(s => !s.agent_id);
+      if (first) currentBs = first;
+      else currentBs = null;
+    } catch (_) { currentBs = null; }
+  }
+  connectedBs = null;
+  // Connect directly — don't re-resolve via ensureBrowserSession
+  doConnect();
+}
+
+async function ensureSessionById(bsId) {
+  // Pull the session list and find our id
+  try {
+    const d = await apiJson('/api/v1/browser/sessions');
+    const list = (d && d.sessions) || [];
+    return list.find(s => s.id === bsId) || null;
+  } catch (_) { return null; }
+}
+
+async function openNewSession() {
+  // Create a fresh private session, then switch to it
+  try {
+    const row = await apiJson('/api/v1/browser/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'New tab' }),
+    });
+    if (row && row.id) {
+      if (els.sessionsPopover) els.sessionsPopover.style.display = 'none';
+      disconnect();
+      currentBs = row;
+      connectedBs = null;
+      doConnect();
+    }
+  } catch (_) {}
+}
+
+function toggleSessionsPopover(e) {
+  e.stopPropagation();
+  if (!els || !els.sessionsPopover) return;
+  const showing = els.sessionsPopover.style.display !== 'none';
+  if (showing) {
+    els.sessionsPopover.style.display = 'none';
+  } else {
+    refreshSessionsPopover();
+    els.sessionsPopover.style.display = 'block';
+  }
+}
+
+// Close the popover on outside click
+document.addEventListener('click', (e) => {
+  if (els && els.sessionsPopover && els.sessionsPopover.style.display !== 'none') {
+    if (!els.sessionsPopover.contains(e.target) &&
+        els.sessionsToggle && !els.sessionsToggle.contains(e.target)) {
+      els.sessionsPopover.style.display = 'none';
+    }
+  }
+});
+
 async function toggleShare() {
   if (!currentBs || !currentBs.id) return;
   const next = !currentBs.shared;
@@ -261,21 +376,10 @@ async function toggleShare() {
   updateShareUi();
 }
 
-async function connect() {
-  if (!app.currentUserId) {
-    setStatus('down', 'sign in to browse');
-    return;
-  }
-  clearTimeout(reconnectTimer);
-  setStatus('idle', 'connecting…');
-  try {
-    currentBs = await ensureBrowserSession();
-  } catch (_) {
-    setStatus('down', 'connection failed');
-    return;
-  }
+// Connect to a specific browser session already set in currentBs.
+function doConnect() {
   if (!currentBs || !currentBs.id) {
-    setStatus('down', 'connection failed');
+    setStatus('down', 'no session');
     return;
   }
   connectedBs = currentBs.id;
@@ -312,6 +416,26 @@ async function connect() {
     if (active) reconnectTimer = setTimeout(() => { if (active) connect(); }, 1500);
   };
   ws.onerror = () => setStatus('down', 'error');
+}
+
+async function connect() {
+  if (!app.currentUserId) {
+    setStatus('down', 'sign in to browse');
+    return;
+  }
+  clearTimeout(reconnectTimer);
+  setStatus('idle', 'connecting…');
+  try {
+    currentBs = await ensureBrowserSession();
+  } catch (_) {
+    setStatus('down', 'connection failed');
+    return;
+  }
+  if (!currentBs || !currentBs.id) {
+    setStatus('down', 'connection failed');
+    return;
+  }
+  doConnect();
 }
 
 function disconnect() {

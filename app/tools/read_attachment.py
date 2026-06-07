@@ -79,7 +79,7 @@ async def read_attachment(attachment_id: str) -> str:
             "message": f"File not found on storage ({storage_provider}): {storage_path}",
         })
 
-    public_url = public_url_for(storage_path, storage_provider=storage_provider) or f"/uploads/{storage_path}"
+    public_url = public_url_for(storage_path, storage_provider=storage_provider) or f"/user_data/{storage_path}"
 
     # ── Text files ──
     if mime in ("text/plain", "text/markdown", "text/csv", "text/html", "application/json"):

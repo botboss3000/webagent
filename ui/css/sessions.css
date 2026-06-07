@@ -1,0 +1,402 @@
+/* ── Sessions Panel ──────────────────────────────────────────────── */
+/* ---- HARMONY: toolbar action styles (sessions-tb-btn, sessions-tb-trash,
+       sessions-tb-restore, sessions-back-btn) mirror the agents page's
+       agents-tb-* rules in ui/css/agents.css. Keep them in sync. */
+
+#tab-sessions {
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  position: relative;
+}
+
+/* ── Toolbar ── */
+#sessions-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px 12px;
+  flex-shrink: 0;
+}
+#sessions-toolbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+#sessions-toolbar-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--fg-1);
+}
+#sessions-toolbar-sub {
+  font-size: 12px;
+  color: var(--fg-4);
+  font-weight: 400;
+}
+#sessions-back-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  border: none; border-radius: 7px; cursor: pointer;
+  background: transparent; color: var(--fg-1);
+  transition: background .12s ease, color .12s ease;
+}
+#sessions-back-btn:hover { background: rgba(192,202,245,0.12); }
+#sessions-back-btn > * { pointer-events: none; }
+
+#sessions-toolbar-actions {
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.sessions-tb-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 28px; padding: 0 10px;
+  font-size: 12px; font-weight: 600;
+  border: 1px solid rgba(192,202,245,0.18); border-radius: 7px;
+  background: rgba(192,202,245,0.04); color: var(--fg-1); cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease, opacity .12s ease;
+}
+.sessions-tb-btn:hover { background: rgba(192,202,245,0.12); border-color: rgba(192,202,245,0.30); }
+.sessions-tb-btn:disabled { opacity: 0.4; cursor: default; }
+.sessions-tb-btn > * { pointer-events: none; }
+.sessions-tb-restore { color: #9ece6a; border-color: rgba(158,206,106,0.30); }
+.sessions-tb-restore:hover { background: rgba(158,206,106,0.14); border-color: rgba(158,206,106,0.5); }
+
+/* Header trash button — reuses the shared trash→hazard→spin states */
+.sessions-tb-trash {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  border: 1px solid rgba(247,118,142,0.22); border-radius: 7px;
+  background: rgba(247,118,142,0.05); color: #f7768e; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease, opacity .12s ease;
+}
+.sessions-tb-trash:hover { background: rgba(247,118,142,0.14); border-color: rgba(247,118,142,0.45); }
+.sessions-tb-trash.warning { color: #e5a83e; border-color: rgba(229,168,62,0.5); background: rgba(229,168,62,0.12); }
+.sessions-tb-trash.warning:hover { background: rgba(229,168,62,0.2); color: #f0c050; }
+.sessions-tb-trash:disabled { opacity: 0.4; cursor: default; }
+.sessions-tb-trash > * { pointer-events: none; }
+
+body.light-mode .sessions-tb-btn { color: #5c4a30; border-color: rgba(180,140,90,0.18); background: rgba(180,140,90,0.04); }
+body.light-mode .sessions-tb-btn:hover { background: rgba(180,140,90,0.1); border-color: rgba(180,140,90,0.25); }
+body.light-mode .sessions-tb-restore { color: #4a9a3a; border-color: rgba(80,160,60,0.3); }
+body.light-mode .sessions-tb-restore:hover { background: rgba(80,160,60,0.1); }
+body.light-mode .sessions-tb-trash { border-color: rgba(200,60,80,0.22); color: #c04050; }
+body.light-mode .sessions-tb-trash:hover { background: rgba(200,60,80,0.1); }
+body.light-mode .sessions-tb-trash.warning { color: #c09020; border-color: rgba(200,150,40,0.5); }
+body.light-mode .sessions-back-btn { color: #5c4a30; }
+body.light-mode .sessions-back-btn:hover { background: rgba(180,140,90,0.1); }
+
+/* ── Scrollable table area ── */
+#sessions-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb, #2a2a4a) transparent;
+  padding: 0 16px 80px;
+}
+#sessions-table-wrap::-webkit-scrollbar { width: 5px; height: 5px; }
+#sessions-table-wrap::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, #2a2a4a); border-radius: 3px; }
+#sessions-table-wrap::-webkit-scrollbar-track { background: transparent; }
+
+#sessions-table-inner {
+  min-width: 780px;
+}
+
+/* ── Table ── */
+#sessions-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  table-layout: fixed;
+}
+#sessions-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-1);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-4);
+  padding: 8px 6px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+  position: relative;
+}
+#sessions-table thead th.col-cost { text-align: right; }
+#sessions-table thead th.col-tokens-in,
+#sessions-table thead th.col-tokens-out,
+#sessions-table thead th.col-msgs,
+#sessions-table thead th.col-duration {
+  text-align: right;
+}
+#sessions-table thead th.col-check {
+  width: 32px;
+  min-width: 32px;
+  padding: 8px 0 8px 6px;
+}
+#sessions-table thead th.col-updated { width: 100px; }
+
+/* ── Resizable column handle ── */
+.col-resizable {
+  position: relative;
+}
+.col-resizable::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 4px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+  background: transparent;
+}
+.col-resizable:last-child::after { display: none; }
+.col-resizable.resizing::after {
+  background: var(--accent);
+  opacity: 0.3;
+}
+
+/* ── Checkbox cell ── */
+.sessions-check-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  border: 1.5px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  transition: background .1s, border-color .1s;
+  color: transparent;
+}
+.sessions-check-cell:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.sessions-check-cell.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+#sessions-table tbody tr {
+  transition: background 0.1s;
+  cursor: default;
+}
+#sessions-table tbody tr:hover {
+  background: var(--accent-soft);
+}
+#sessions-table tbody tr.selected {
+  background: var(--accent-soft);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+#sessions-table tbody td {
+  padding: 7px 6px;
+  color: var(--fg-2);
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#sessions-table tbody td.col-cost,
+#sessions-table tbody td.col-tokens-in,
+#sessions-table tbody td.col-tokens-out,
+#sessions-table tbody td.col-msgs,
+#sessions-table tbody td.col-duration {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+#sessions-table tbody td.col-title {
+  max-width: 220px;
+}
+#sessions-table tbody td.col-check {
+  width: 32px;
+  padding: 7px 0 7px 6px;
+}
+
+/* ── Status badges ── */
+.sess-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+.sess-status.complete {
+  background: rgba(158,206,106,0.12);
+  color: #9ece6a;
+  border: 1px solid rgba(158,206,106,0.25);
+}
+.sess-status.running {
+  background: rgba(122,162,247,0.12);
+  color: #7aa2f7;
+  border: 1px solid rgba(122,162,247,0.25);
+}
+.sess-status.interrupted,
+.sess-status.error {
+  background: rgba(247,118,142,0.12);
+  color: #f7768e;
+  border: 1px solid rgba(247,118,142,0.25);
+}
+.sess-status.stopped {
+  background: rgba(247,199,118,0.12);
+  color: #f7c776;
+  border: 1px solid rgba(247,199,118,0.25);
+}
+.sess-status.needs_manual_resume {
+  background: rgba(255,158,100,0.12);
+  color: #ff9e64;
+  border: 1px solid rgba(255,158,100,0.25);
+}
+.sess-status.unknown {
+  background: rgba(86,95,137,0.12);
+  color: #565f89;
+  border: 1px solid rgba(86,95,137,0.25);
+}
+body.light-mode .sess-status.complete {
+  background: rgba(80,160,60,0.08);
+  color: #3a8a2a;
+  border-color: rgba(80,160,60,0.2);
+}
+body.light-mode .sess-status.running {
+  background: rgba(50,120,220,0.08);
+  color: #2a6ac0;
+  border-color: rgba(50,120,220,0.2);
+}
+body.light-mode .sess-status.interrupted,
+body.light-mode .sess-status.error {
+  background: rgba(200,60,80,0.08);
+  color: #b03040;
+  border-color: rgba(200,60,80,0.2);
+}
+body.light-mode .sess-status.stopped {
+  background: rgba(200,150,40,0.08);
+  color: #a07820;
+  border-color: rgba(200,150,40,0.2);
+}
+body.light-mode .sess-status.needs_manual_resume {
+  background: rgba(220,130,40,0.08);
+  color: #b06a20;
+  border-color: rgba(220,130,40,0.2);
+}
+body.light-mode .sess-status.unknown {
+  background: rgba(100,100,120,0.08);
+  color: #6a6a80;
+  border-color: rgba(100,100,120,0.2);
+}
+
+/* ── Agent badge in table ── */
+.sess-agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-2);
+  padding: 2px 8px;
+  background: var(--bg-2);
+  border-radius: 6px;
+  border: 1px solid var(--border-soft);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sess-agent-badge i {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+/* ── Empty state ── */
+.sessions-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+}
+.sessions-empty-icon {
+  color: var(--fg-4);
+  opacity: 0.3;
+  margin-bottom: 12px;
+}
+.sessions-empty-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-3);
+  margin-bottom: 4px;
+}
+.sessions-empty-hint {
+  font-size: 11px;
+  color: var(--fg-4);
+}
+
+/* ── Loading state ── */
+.sessions-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 20px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+@keyframes lucide-spin {
+  to { transform: rotate(360deg); }
+}
+.lucide-spin {
+  animation: lucide-spin 1s linear infinite;
+}
+
+/* ── Floating pill bar (mirrors #agent-builder-bar) ── */
+#sessions-builder-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  padding: 0;
+  pointer-events: none;
+}
+#sessions-builder-bar > .chat-pill {
+  pointer-events: auto;
+  margin: 0 12px 0;
+  width: calc(100% - 24px);
+}
+#sessions-builder-bar-input {
+  max-height: 160px;
+}
+
+#sessions-builder-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 12px;
+  height: 18px;
+  margin: 6px 0 8px 0;
+  overflow: visible;
+}
+
+/* ── Light mode overrides ── */
+body.light-mode #sessions-table thead th {
+  background: var(--bg-1);
+  border-bottom-color: var(--border);
+}
+body.light-mode #sessions-table tbody td {
+  border-bottom-color: var(--border-soft);
+}
+body.light-mode .sess-agent-badge {
+  background: var(--bg-2);
+  border-color: var(--border-soft);
+}

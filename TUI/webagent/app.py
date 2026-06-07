@@ -570,6 +570,9 @@ class ServerManagerApp(App):
         self._supervise = True       # spawn/refresh the external keep-alive guardian (tests disable)
         self._user_quit = False      # set True ONLY on a deliberate quit → writes the clean-exit
                                      # marker in on_unmount so the guardian doesn't relaunch us
+        self._restart_guardian_on_exit = False  # set True on a self-restart → cycle the
+                                     # guardian so the relaunched TUI brings up a FRESH one
+                                     # (picks up new code; never orphans a stale supervisor)
         self._watchdog = None        # the autonomous monitor loop (started in on_mount)
         self._dot = None             # the server-status widget, updated in place by the poll
         self._anim = None            # the animated logo banner (collapses once chat starts)
@@ -1444,6 +1447,10 @@ class ServerManagerApp(App):
         # Deliberate close (the self-update flow relaunches us itself) — mark it so
         # the guardian doesn't ALSO relaunch the TUI on top of the staged restart.
         self._user_quit = True
+        # A restart should also refresh the guardian (so a self-update's new code is
+        # actually supervised, not by the old long-lived guardian process). on_unmount
+        # stops the old guardian; the relaunched TUI's _ensure_guardian spawns a fresh one.
+        self._restart_guardian_on_exit = True
         self._tui_log.stop()
         self.set_timer(1.2, self.exit)
 
@@ -4086,6 +4093,15 @@ class ServerManagerApp(App):
         # ``_supervise`` so tests never touch the shared marker file.
         if self._supervise and self._user_quit:
             guardian.write_clean_exit()
+            # On a self-restart, also retire the old guardian so the relaunched TUI
+            # starts a fresh one (new code). The server keeps running untouched in the
+            # gap; the new guardian re-adopts it. (Plain Ctrl+Q does NOT do this — the
+            # guardian must outlive the TUI to keep the server alive.)
+            if self._restart_guardian_on_exit:
+                try:
+                    guardian.stop_guardian()
+                except Exception:
+                    pass
         try:
             await self._webapp.stop()
         except Exception:

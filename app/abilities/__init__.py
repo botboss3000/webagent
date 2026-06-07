@@ -273,10 +273,11 @@ async def turn_hooks_for_agent(agent_id: str) -> list:
     try:
         from app.db import get_db
         db = get_db()
-        if not hasattr(db, "get_agent_abilities"):
+        if not hasattr(db, "get_agent_connections"):
             return []
-        rows = await db.get_agent_abilities(agent_id)
-        enabled = {r["ability_id"] for r in rows if r.get("enabled")}
+        rows = await db.get_agent_connections(agent_id)
+        enabled = {r["connection_type"] for r in rows
+                   if r.get("section") == "ability" and r.get("enabled")}
     except Exception:
         return []
 

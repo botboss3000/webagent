@@ -9,6 +9,11 @@ it launched is most likely to fall over too. This module is the answer — a
 
 * **the web server** — if ``/health`` stops answering and a checkout is linked,
   relaunch ``run.py`` from the *project's* venv (with crash-loop backoff);
+* **one server only** — when the server is healthy, kill any *other* webAgent
+  ``run.py`` tree on the machine besides the one actually serving port 8080, so a
+  second launcher (e.g. a stray ``webAgent.bat``) can't leave a duplicate server
+  running its own background loops against the same database. The guardian adopts
+  whichever process is serving (it never kills the live one);
 * **the TUI itself** — if the TUI process vanishes WITHOUT a clean-quit marker
   (i.e. it crashed or its window was closed), relaunch it in a fresh console.
 
@@ -197,6 +202,101 @@ def _pids_on_port(port: int = PORT) -> set[int]:
     return pids
 
 
+def _proc_table() -> list[tuple[int, int, str]]:
+    """Best-effort ``[(pid, ppid, cmdline)]`` for every process (windowless).
+    Used to identify duplicate webAgent server trees. Returns ``[]`` on failure —
+    callers MUST treat an empty table as "don't know" and reap nothing."""
+    rows: list[tuple[int, int, str]] = []
+    try:
+        if _IS_WIN:
+            ps = ("Get-CimInstance Win32_Process | ForEach-Object { "
+                  "\"$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.CommandLine)\" }")
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True, text=True, timeout=15, creationflags=_NO_WINDOW,
+            ).stdout or ""
+            for ln in out.splitlines():
+                pid_s, _, rest = ln.partition("\t")
+                ppid_s, _, cmd = rest.partition("\t")
+                if pid_s.strip().isdigit():
+                    rows.append((int(pid_s), int(ppid_s) if ppid_s.strip().isdigit() else 0,
+                                 cmd.strip()))
+        else:
+            proc_root = Path("/proc")
+            if proc_root.is_dir():
+                for d in proc_root.iterdir():
+                    if not d.name.isdigit():
+                        continue
+                    try:
+                        cmd = (d / "cmdline").read_bytes().replace(b"\x00", b" ").decode(
+                            "utf-8", "replace").strip()
+                        # /proc/<pid>/stat: ppid is field 4, but comm (field 2) may
+                        # contain spaces/parens — split on the last ')' to be safe.
+                        stat = (d / "stat").read_text()
+                        after = stat.rsplit(")", 1)[1].split()
+                        ppid = int(after[1]) if len(after) > 1 else 0
+                    except (OSError, ValueError, IndexError):
+                        continue
+                    rows.append((int(d.name), ppid, cmd))
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return rows
+
+
+def _is_server_proc(cmdline: str) -> bool:
+    """True if a command line looks like a webAgent **web server** (``run.py`` /
+    ``app.main``) — and NOT the TUI/guardian or a scanner shell. Deliberately
+    conservative: a false positive here could kill the wrong process."""
+    c = (cmdline or "").lower()
+    if not c:
+        return False
+    if "webagent.guardian" in c or "-m webagent" in c:   # the supervisor / the TUI
+        return False
+    if "powershell" in c or "get-ciminstance" in c or "tasklist" in c:  # scanners
+        return False
+    return ("run.py" in c) or ("app.main" in c)
+
+
+def _server_tree(listener_pids: set[int], runpy_pids: set[int],
+                 parents: dict[int, int]) -> set[int]:
+    """The set of webAgent server pids that make up the **serving** tree: start
+    from whoever is LISTENING on the port and walk up to run.py ancestors and down
+    to run.py children (through run.py nodes only). That tree is "our own" server —
+    everything else in ``runpy_pids`` is a duplicate. Seeding from the live listener
+    (not a remembered pid) means we adopt whatever is actually serving and can never
+    pick the live server as the thing to kill."""
+    own: set[int] = set()
+    children: dict[int, set[int]] = {}
+    for pid in runpy_pids:
+        ppid = parents.get(pid, 0)
+        if ppid in runpy_pids:
+            children.setdefault(ppid, set()).add(pid)
+    work = [p for p in listener_pids if p in runpy_pids]
+    while work:
+        pid = work.pop()
+        if pid in own:
+            continue
+        own.add(pid)
+        ppid = parents.get(pid, 0)                 # up: run.py parent
+        if ppid in runpy_pids and ppid not in own:
+            work.append(ppid)
+        for child in children.get(pid, ()):        # down: run.py children
+            if child not in own:
+                work.append(child)
+    return own
+
+
+def _foreign_server_pids(listener_pids: set[int], runpy_pids: set[int],
+                         parents: dict[int, int]) -> set[int]:
+    """Server pids that are NOT part of the serving tree → duplicates to reap.
+    Fail-safe: if we can't identify the serving tree (no listener among the server
+    procs), return an empty set so the guardian kills nothing."""
+    own = _server_tree(listener_pids, runpy_pids, parents)
+    if not own:
+        return set()
+    return set(runpy_pids) - own
+
+
 def _is_healthy() -> bool:
     """True if /health answers with any non-5xx status (urllib — no httpx dep)."""
     try:
@@ -337,6 +437,7 @@ class Guardian:
         self._srv_pause_logged = 0.0
         self._last_tui_relaunch = 0.0
         self._consecutive_fails = 0
+        self._last_reap = 0.0
 
     # ── singleton ─────────────────────────────────────────────────────────
     def _claim_singleton(self) -> bool:
@@ -417,6 +518,56 @@ class Guardian:
                 _log(f"giving up after {self._consecutive_fails} consecutive launch failures")
                 raise SystemExit(1)                    # exit the guardian
 
+    # ── sole-authority over port 8080 ─────────────────────────────────────
+    REAP_INTERVAL = 30.0     # how often to scan for duplicate server trees
+
+    def _reap_foreign_servers(self) -> None:
+        """Enforce "one server, and it's the one I supervise": kill any *other*
+        webAgent ``run.py`` tree besides whichever one is actually serving 8080.
+
+        Runs ONLY when the server is healthy and past its boot-settle window, so
+        the serving tree is stable — a still-booting server (not yet listening)
+        is never mistaken for a duplicate. We adopt whatever is serving (seed from
+        the live listener), so this can never kill the live server, and it converges
+        even if some other launcher started it. Fail-safe at every step: any missing
+        signal → reap nothing."""
+        now = time.monotonic()
+        if now - self._last_reap < self.REAP_INTERVAL:
+            return
+        if now - self._srv_launched_at < SERVER_SETTLE:
+            return                                     # our own launch is still booting
+        if not _is_healthy():
+            return                                     # no stable serving tree to anchor on
+        self._last_reap = now
+        listeners = _pids_on_port(PORT)
+        if not listeners:
+            return
+        table = _proc_table()
+        if not table:
+            return                                     # can't see processes → don't guess
+        parents = {pid: ppid for pid, ppid, _ in table}
+        runpy = {pid for pid, _, cmd in table if _is_server_proc(cmd)}
+        runpy.discard(os.getpid())                     # never count ourselves
+        foreign = _foreign_server_pids(listeners, runpy, parents)
+        if not foreign:
+            return
+        for pid in sorted(foreign):
+            if _terminate(pid):
+                _log(f"reaped duplicate web-server process (pid {pid}) — not the one serving :{PORT}")
+        # Adopt the serving tree as the tracked server so the TUI's status/stop
+        # follow the real one: record its top-most run.py ancestor.
+        own = _server_tree(listeners, runpy, parents)
+        root = None
+        for pid in own:
+            if parents.get(pid, 0) not in own:         # the tree's run.py root
+                root = pid
+                break
+        if root:
+            cur = _read_pid(_server_pid_file())
+            if cur != root:
+                _write_json_atomic(_server_pid_file(),
+                                   {"pid": root, "port": PORT, "adopted": True})
+
     def _spawn_server(self, py: Path, root: Path) -> int:
         try:
             logf: object = open(_server_log_file(), "ab")
@@ -492,6 +643,7 @@ class Guardian:
                 try:
                     root = TuiConfig.load().project_dir()
                     self._supervise_server(root)
+                    self._reap_foreign_servers()       # one server only — kill rival trees
                     self._supervise_tui()
                 except Exception as e:                  # one bad tick must never kill the guardian
                     _log(f"tick error: {type(e).__name__}: {e}")

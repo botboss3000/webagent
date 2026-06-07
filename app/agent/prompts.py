@@ -48,6 +48,19 @@ async def build_system_prompt(
     `# [DATA SOURCES]` section.
     """
     sections: List[str] = []
+
+    # App-global baseline — admin-only CRITICAL instructions prepended verbatim
+    # ahead of every agent's own slots (fleet agents and spawned clones alike).
+    # This is the one piece of identity a from-scratch clone always inherits.
+    try:
+        from app.admin.settings import get_global_system_prompt
+        _baseline = get_global_system_prompt()
+        if _baseline:
+            sections.append(_baseline)
+    except Exception:  # noqa: BLE001 — baseline is best-effort, never fatal
+        pass
+
+    doc_sections = 0
     for doc in docs:
         # The `__skills__` slot holds skills as raw JSON — never dump it into the
         # prompt; it's rendered separately by append_skills_section().
@@ -56,12 +69,14 @@ async def build_system_prompt(
         content = _row_content(doc)
         if content:
             sections.append(content)
+            doc_sections += 1
 
     fr = get_prompt_fragments()
 
     # If no docs supplied a tools list and we have no caller, inject the
     # fallback tool list so anonymous endpoints still see something useful.
-    has_any_content = any(s.strip() for s in sections)
+    # Keyed on DOC content only — the global baseline alone must not suppress it.
+    has_any_content = doc_sections > 0
     if not has_any_content and not user_id:
         fallback = format_tool_subheadings_markdown(fr.get("fallback_tools") or "")
         if fallback:

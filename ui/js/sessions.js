@@ -1269,12 +1269,21 @@ function _createBubble(role, text, extraClass, imageUrl, turnId, msgId, createdA
 }
 
 /**
- * Show a debug bubble with agentId + sessionId for admin users.
- * Only shown when the user is authenticated (not anonymous).
+ * Show the welcome placeholder bubble — the same "Terminal agent ready" message
+ * that appears in the static HTML on first page load. Used when an empty session
+ * is loaded from cache or API.
+ */
+function _renderWelcomeBubble() {
+  app.addChatBubble('agent', 'Terminal agent ready. Ask me anything — I\'ll show tool calls in the terminal log.');
+}
+
+/**
+ * Show a debug bubble with agentId + sessionId for admin users only.
+ * Only shown when the user is an admin (is_admin flag from cached profile).
  */
 function _showDebugBubble(sessionId) {
-  const token = localStorage.getItem('auth_token');
-  if (!token) return; // only for authenticated users
+  const profile = window.__agentsProfileData;
+  if (!profile || !profile.is_admin) return;
   const agentId = app.currentAgentId || '—';
   const text = `🔍 **Debug** — Agent: \`${agentId}\` · Session: \`${sessionId}\``;
   app.addChatBubble('agent', text, 'debug-info');
@@ -1308,6 +1317,12 @@ export async function loadSessionChat(sessionId) {
 
       // Debug bubble: show agentId + sessionId for admin users
       _showDebugBubble(sessionId);
+
+      if (cached.messages.length === 0) {
+        _renderWelcomeBubble();
+        _installVirtualScroll();
+        return;
+      }
 
       for (const msg of cached.messages) {
         if (msg.role === 'user') {
@@ -1405,10 +1420,7 @@ export async function loadSessionChat(sessionId) {
     }
 
     if (msgs.length === 0) {
-      app.addChatBubble(
-        'agent',
-        'Session loaded. No messages yet \u2014 start typing below.',
-      );
+      _renderWelcomeBubble();
       // Reset ctx to 0 for fresh session
       if (typeof app.setContextFromMessages === 'function') {
         app.setContextFromMessages([]);

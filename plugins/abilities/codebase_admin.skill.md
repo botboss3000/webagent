@@ -96,8 +96,15 @@ Acceptable vs not:
   usage → update `README.md` **and** the relevant folder `.md` in the same work.
   Read a folder's `.md` *before* you change the folder. (CLAUDE.md →
   repo-conventions.)
-- **Scratch / temp files** go under `temp/`, and `temp/` is never a source of
-  truth.
+- **Only write to the repo what *is* the program.** Source code, program docs
+  that live with the code (`README.md`, `CLAUDE.md`, files under `docs/`), and the
+  real test suite (`tests/`) belong in the repo. **Everything else you produce —
+  ad-hoc test scripts, scratch Python, analysis notes, supporting `.md` write-ups,
+  reports, exports — is *not* part of the codebase: save it to the user's files
+  with `save_file`** (the User Files ability), not into the project tree. Don't
+  leave working files scattered in the root. (In-repo throwaway tied to a code
+  change you're mid-way through may use `temp/`, which is never a source of truth —
+  but a deliverable or supporting artifact for the user goes to `save_file`.)
 - **Promote to main:** finish by pushing with `git push origin HEAD:main` — or
   use the `commit_and_push` tool — don't stop at a feature branch.
 
