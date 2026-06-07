@@ -7,6 +7,7 @@ import { startAccount } from './account.js';
 import { startAdminTools, stopAdminTools } from './files.js';
 import { startWeb, stopWeb } from './web.js';
 import { startWiki, stopWiki } from './wiki.js';
+import { startAutomations, stopAutomations } from './automations.js';
 import { startSessions, stopSessions } from './sessions-page.js';
 import { refreshTutorial } from './tutorial.js';
 import { initAppConfig } from './app-config.js';
@@ -153,7 +154,16 @@ export function initTabs() {
       stopAdminTools();
       stopWeb();
       stopSessions();
+      stopAutomations();
       startWiki();
+    } else if (tabValue === 'automations') {
+      stopAutoAgent();
+      stopAgents();
+      stopAdminTools();
+      stopWeb();
+      stopWiki();
+      stopSessions();
+      startAutomations();
     } else if (tabValue.startsWith('plugin-')) {
       // Plugin pages: stop everything, show the iframe (already in DOM)
       stopAutoAgent();
@@ -234,9 +244,10 @@ export function initTabs() {
       plusBtn.addEventListener('auxclick', function (e) {
         if (e.button !== 1) return;
         e.preventDefault();
-        // Pass the current agent id so the new tab can start a fresh session
-        // with the same agent instead of loading the existing session.
-        var agentId = (typeof app !== 'undefined' && app.currentAgentId) || '';
+        // Pass the current agent id (from localStorage — reliable sync value)
+        // so the new tab can start a fresh session with the same agent.
+        var agentId = '';
+        try { agentId = localStorage.getItem('selectedAgentId') || ''; } catch (_) {}
         var params = 'agent=' + encodeURIComponent(agentId) + '&new=1';
         window.open(base + '?' + params, '_blank');
       });

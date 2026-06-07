@@ -59,6 +59,7 @@ from app.api.uploads import router as uploads_router
 from app.api.db_viewer import router as db_viewer_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.recordings import router as recordings_router
+from app.api.automations_dashboard import router as automations_dashboard_router
 from app.api.features import router as features_router
 try:
     from app.admin.review import router as admin_router
@@ -69,6 +70,7 @@ except ImportError:
 from app.api.webhooks import router as webhooks_router
 from app.api.webhooks_generic import router as webhooks_generic_router
 from app.api.events import router as events_router
+from app.api.automations import router as automations_router
 from app.api.remote_access import router as remote_access_router
 try:
     from app.admin.remote_access import router as admin_remote_access_router
@@ -128,6 +130,7 @@ except ImportError:
     optimizer_router = None
 from app.api.pages import router as pages_router
 from app.api.wiki import router as wiki_router
+from app.api.ability_delete import router as ability_delete_router
 
 # Configure logging
 logging.basicConfig(
@@ -346,6 +349,7 @@ app.include_router(db_viewer_router)
 app.include_router(diagnostics_router)
 app.include_router(recordings_router)
 app.include_router(features_router)
+app.include_router(automations_dashboard_router)
 for _admin_r in (admin_router, admin_db_router, admin_storage_router):
     if _admin_r is not None:
         app.include_router(_admin_r)
@@ -379,6 +383,7 @@ app.include_router(webhooks_router)
 
 # Register event trigger intake (Gmail Pub/Sub, Graph subscriptions, etc.)
 app.include_router(events_router)
+app.include_router(automations_router)
 
 # Register Remote Access (signpost endpoints + admin config API)
 app.include_router(remote_access_router)
@@ -399,6 +404,9 @@ if optimizer_router is not None:
 
 # Register AutoAgent pages router
 app.include_router(pages_router)
+
+# Register ability deletion API
+app.include_router(ability_delete_router)
 
 # Register the company-wide Wiki router
 app.include_router(wiki_router)

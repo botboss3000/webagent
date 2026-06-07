@@ -420,10 +420,10 @@ async def chat_skills(user_id: str, session_id: str, agent_id: Optional[str] = N
             "display_name": s.get("display_name") or s.get("source") or s["name"],
             "description": s.get("description", ""),
             "mode": s.get("mode", "selectable"),
-            "active": (s.get("handle") or s["name"]) in active_set,
+            "active": True if s.get("mode") == "always_on" else (s.get("handle") or s["name"]) in active_set,
         }
         for s in all_skills
-        if s.get("enabled", True) and s.get("mode") != "always_on"
+        if s.get("enabled", True)
     ]
     return {"active": active, "skills": catalog}
 

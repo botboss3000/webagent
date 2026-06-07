@@ -1517,10 +1517,10 @@ function _markAbilityAction(ability) {
   _abilityLastActionAt[ability] = (typeof performance !== 'undefined' ? performance.now() : Date.now());
 }
 
-// Build one always-visible ability row (icon + name + desc + toggle). Used as a
-// member row inside a group body. The change handler matches the legacy flat
-// list: simple abilities toggle directly; complex ones (need a config panel)
-// expand their card and warn until configured.
+// Build one always-visible ability row (icon + name + desc + toggle + delete).
+// Used as a member row inside a group body. The delete button uses a long-press
+// (hold 1.5s) to prevent accidental deletion — it fills a progress ring then
+// fires the delete API on completion.
 function _buildAbilityRow(id, meta) {
   const row = document.createElement('div');
   row.className = 'ac-ability-row';
@@ -1538,6 +1538,13 @@ function _buildAbilityRow(id, meta) {
   label.querySelector('.ac-ability-name').textContent = _ABILITY_NAMES[id] || id;
   label.querySelector('.ac-ability-desc').textContent = meta.desc;
 
+  // ── Status label ──
+  const statusEl = document.createElement('span');
+  statusEl.className = 'ac-status ac-ability-status';
+  statusEl.id = `ac-ability-status-${id}`;
+  statusEl.style.display = 'none';
+
+  // ── Toggle ──
   const toggleWrap = document.createElement('label');
   toggleWrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
   toggleWrap.title = 'Enable';
@@ -1551,14 +1558,87 @@ function _buildAbilityRow(id, meta) {
   toggleWrap.appendChild(toggle);
   toggleWrap.appendChild(track);
 
-  const statusEl = document.createElement('span');
-  statusEl.className = 'ac-status ac-ability-status';
-  statusEl.id = `ac-ability-status-${id}`;
-  statusEl.style.display = 'none';
+  // ── Delete button (long-press to activate) ──
+  const delBtn = document.createElement('button');
+  delBtn.className = 'ac-ability-delete-btn';
+  delBtn.type = 'button';
+  delBtn.title = 'Hold 1.5s to delete this ability';
+  delBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+  delBtn.style.cssText = 'background:none;border:1px solid rgba(247,54,76,0.25);border-radius:6px;color:rgba(247,54,76,0.5);cursor:pointer;padding:4px 6px;margin-right:4px;transition:all 0.3s;position:relative;overflow:hidden;flex-shrink:0;';
+  // Progress ring overlay (fills on long-press)
+  const progress = document.createElement('span');
+  progress.className = 'ac-del-progress';
+  progress.style.cssText = 'position:absolute;inset:0;background:rgba(247,54,76,0.15);width:0%;border-radius:5px;transition:width 0.1s linear;pointer-events:none;';
+  delBtn.appendChild(progress);
 
+  let _holdTimer = null;
+  let _holdStart = 0;
+  const _HOLD_MS = 1500;
+
+  function _clearHold() {
+    if (_holdTimer) { clearTimeout(_holdTimer); _holdTimer = null; }
+    _holdStart = 0;
+    progress.style.width = '0%';
+    delBtn.style.borderColor = 'rgba(247,54,76,0.25)';
+    delBtn.style.color = 'rgba(247,54,76,0.5)';
+    delBtn.title = 'Hold 1.5s to delete this ability';
+  }
+
+  delBtn.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    _holdStart = Date.now();
+    delBtn.style.borderColor = 'rgba(247,54,76,0.7)';
+    delBtn.style.color = '#f7364c';
+    delBtn.title = 'Release to cancel';
+    // Fill the progress bar over 1.5s
+    const step = () => {
+      if (!_holdStart) return;
+      const elapsed = Date.now() - _holdStart;
+      const pct = Math.min(100, (elapsed / _HOLD_MS) * 100);
+      progress.style.width = pct + '%';
+      if (pct < 100) {
+        _holdTimer = setTimeout(step, 50);
+      } else {
+        // Long-press complete — confirm & delete
+        _clearHold();
+        _confirmDeleteAbility(id, row);
+      }
+    };
+    _holdTimer = setTimeout(step, 50);
+  });
+
+  // Cancel on any release
+  const _cancel = (e) => { if (_holdStart) _clearHold(); };
+  delBtn.addEventListener('mouseup', _cancel);
+  delBtn.addEventListener('mouseleave', _cancel);
+  // Touch support
+  delBtn.addEventListener('touchstart', (e) => {
+    _holdStart = Date.now();
+    delBtn.style.borderColor = 'rgba(247,54,76,0.7)';
+    delBtn.style.color = '#f7364c';
+    delBtn.title = 'Release to cancel';
+    const step = () => {
+      if (!_holdStart) return;
+      const elapsed = Date.now() - _holdStart;
+      const pct = Math.min(100, (elapsed / _HOLD_MS) * 100);
+      progress.style.width = pct + '%';
+      if (pct < 100) {
+        _holdTimer = setTimeout(step, 50);
+      } else {
+        _clearHold();
+        _confirmDeleteAbility(id, row);
+      }
+    };
+    _holdTimer = setTimeout(step, 50);
+  }, { passive: true });
+  delBtn.addEventListener('touchend', _cancel, { passive: true });
+  delBtn.addEventListener('touchcancel', _cancel, { passive: true });
+
+  // ── Assemble row ──
   row.appendChild(iconWrap);
   row.appendChild(label);
   row.appendChild(statusEl);
+  row.appendChild(delBtn);
   row.appendChild(toggleWrap);
 
   toggle.addEventListener('change', () => {
@@ -1580,6 +1660,91 @@ function _buildAbilityRow(id, meta) {
   });
 
   return row;
+}
+
+// ── Ability deletion (long-press → confirm → API call) ─────────────────────
+
+function _confirmDeleteAbility(abilityId, row) {
+  // Fetch delete info first to show what will be deleted
+  _fetch(apiPath(`/api/v1/abilities/${abilityId}/delete-info`))
+    .then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then(info => {
+      if (info.status !== 'ok') throw new Error(info.detail || 'Unknown error');
+      const ab = info.ability;
+      if (!info.deletable) {
+        _showDeleteError(row, `${ab.display_name} is ${ab.status} — it cannot be deleted through the UI. Delete the file manually from plugins/abilities/.`);
+        return;
+      }
+
+      const fileList = ab.files.map(f => '  • ' + f.path).join('\n');
+      const agentMsg = ab.agent_count > 0
+        ? `\n\n⚠ ${ab.agent_count} agent(s) have this ability enabled and will have it disabled.`
+        : '';
+
+      const msg = `Delete "${ab.display_name}"?\n\nThis will permanently delete:\n${fileList}${agentMsg}\n\n${info.warning}\n\nThis cannot be undone. Type DELETE to confirm.`;
+      const confirmText = prompt(msg, '');
+      if (confirmText !== 'DELETE') {
+        _showDeleteError(row, 'Deletion cancelled — type DELETE to confirm.');
+        return;
+      }
+
+      // Proceed with deletion
+      return _fetch(apiPath(`/api/v1/abilities/${abilityId}`), {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true }),
+      });
+    })
+    .then(res => {
+      if (!res) return; // cancelled
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then(data => {
+      if (!data) return;
+      if (data.status === 'ok') {
+        _showDeleteSuccess(row, `"${data.deleted_files?.[0]?.replace('.py','') || abilityId}" deleted. Files removed from ${data.disabled_on_agents || 0} agent(s). Restart the server to fully clear.`);
+        // Fade out the row
+        row.style.transition = 'opacity 0.5s, height 0.5s, margin 0.5s';
+        row.style.opacity = '0';
+        row.style.height = '0';
+        row.style.margin = '0';
+        row.style.padding = '0';
+        row.style.overflow = 'hidden';
+        setTimeout(() => {
+          if (row.parentNode) row.parentNode.removeChild(row);
+        }, 600);
+      } else {
+        _showDeleteError(row, data.message || 'Deletion failed');
+      }
+    })
+    .catch(err => {
+      _showDeleteError(row, `Error: ${err.message}`);
+    });
+}
+
+function _showDeleteError(row, msg) {
+  const statusEl = row.querySelector('.ac-ability-status') || row.querySelector('.ac-status');
+  if (statusEl) {
+    statusEl.textContent = '⚠ ' + msg;
+    statusEl.style.color = '#f7768e';
+    statusEl.style.display = 'block';
+    statusEl.style.whiteSpace = 'pre-wrap';
+    setTimeout(() => { statusEl.style.display = 'none'; }, 8000);
+  }
+}
+
+function _showDeleteSuccess(row, msg) {
+  const statusEl = row.querySelector('.ac-ability-status') || row.querySelector('.ac-status');
+  if (statusEl) {
+    statusEl.textContent = '✓ ' + msg;
+    statusEl.style.color = '#9ece6a';
+    statusEl.style.display = 'block';
+    statusEl.style.whiteSpace = 'pre-wrap';
+  }
 }
 
 function _initAbilitiesCompact() {

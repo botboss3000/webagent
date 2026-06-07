@@ -1,13 +1,15 @@
 /**
- * In-app feedback form.
+ * In-app feedback form — lives INSIDE the user dropdown panel.
+ *
+ * When "Send feedback" is clicked, the dropdown swaps from the default view
+ * to the feedback sub-view (same panel, same position/size). "Cancel" or
+ * the back arrow returns to the default dropdown view.
  *
  *   1. On load, fetch /api/v1/feedback/config to learn whether feedback is
- *      enabled on this deployment and what the Turnstile site key is.
+ *      enabled and what the Turnstile site key is.
  *   2. If enabled, reveal the "Send feedback" item in the user dropdown.
- *   3. When opened, lazy-load the Turnstile script (if a site key is
- *      configured) and render an invisible widget.
- *   4. On submit, POST {type, body, email, turnstile_token} to
- *      /api/v1/feedback. The FastAPI route forwards to the Cloudflare relay.
+ *   3. When opened, lazy-load the Turnstile script and render an invisible widget.
+ *   4. On submit, POST {type, body, email, turnstile_token} to /api/v1/feedback.
  */
 
 const CONFIG_URL = "/api/v1/feedback/config";
@@ -71,13 +73,30 @@ function setStatus(msg, kind) {
   const el = $("feedback-status");
   if (!el) return;
   el.textContent = msg || "";
-  el.className = "feedback-status" + (kind ? " " + kind : "");
+  el.className = "dropdown-feedback-status" + (kind ? " " + kind : "");
 }
 
-function openModal() {
-  const m = $("feedback-modal");
-  if (!m) return;
-  m.style.display = "flex";
+/** Show the feedback sub-view, hide the default dropdown contents. */
+function openFeedbackView() {
+  const dropdownMenu = $("user-dropdown-menu");
+  const feedbackView = $("dropdown-feedback-view");
+  const defaultItems = dropdownMenu?.querySelectorAll(
+    ":scope > .user-dropdown-current-row, :scope > .user-dropdown-manage-btn, " +
+    ":scope > .user-dropdown-divider, :scope > .user-dropdown-accounts-list, " +
+    ":scope > .btn-add-account, :scope > .theme-toggle-section, " +
+    ":scope > #btn-send-feedback, :scope > #btn-signout-header, " +
+    ":scope > .user-dropdown-legal"
+  );
+  if (!dropdownMenu || !feedbackView) return;
+
+  // Hide default items
+  defaultItems?.forEach(el => el.style.display = "none");
+
+  // Position: make the dropdown wide enough for the feedback form
+  dropdownMenu.style.width = "360px";
+
+  // Show feedback view
+  feedbackView.style.display = "flex";
   setStatus("");
   loadConfig().then((cfg) => {
     if (cfg.turnstile_site_key) ensureTurnstileWidget(cfg.turnstile_site_key).catch(() => {});
@@ -85,10 +104,28 @@ function openModal() {
   setTimeout(() => { $("feedback-body")?.focus(); }, 50);
 }
 
-function closeModal() {
-  const m = $("feedback-modal");
-  if (!m) return;
-  m.style.display = "none";
+/** Return to the default dropdown view. */
+function closeFeedbackView() {
+  const dropdownMenu = $("user-dropdown-menu");
+  const feedbackView = $("dropdown-feedback-view");
+  const defaultItems = dropdownMenu?.querySelectorAll(
+    ":scope > .user-dropdown-current-row, :scope > .user-dropdown-manage-btn, " +
+    ":scope > .user-dropdown-divider, :scope > .user-dropdown-accounts-list, " +
+    ":scope > .btn-add-account, :scope > .theme-toggle-section, " +
+    ":scope > #btn-send-feedback, :scope > #btn-signout-header, " +
+    ":scope > .user-dropdown-legal"
+  );
+  if (!dropdownMenu || !feedbackView) return;
+
+  feedbackView.style.display = "none";
+  defaultItems?.forEach(el => el.style.display = "");
+  dropdownMenu.style.width = ""; // reset to default
+
+  // Reset the form
+  $("feedback-form")?.reset();
+  resetTurnstile();
+  setStatus("");
+  turnstileWidgetId = null;
 }
 
 async function handleSubmit(e) {
@@ -138,16 +175,11 @@ async function handleSubmit(e) {
       resetTurnstile();
       return;
     }
-    const data = await r.json().catch(() => ({}));
-    setStatus(
-      data.issue_url
-        ? "Thanks — your feedback was received."
-        : "Thanks — your feedback was received.",
-      "success",
-    );
+    await r.json().catch(() => ({}));
+    setStatus("Thanks — your feedback was received.", "success");
     $("feedback-form")?.reset();
     resetTurnstile();
-    setTimeout(closeModal, 1400);
+    setTimeout(closeFeedbackView, 1400);
   } catch (_) {
     setStatus("Network error. Please try again.", "error");
     resetTurnstile();
@@ -162,27 +194,48 @@ function wireUp() {
   const bodyEl = $("feedback-body");
   const countEl = $("feedback-body-count");
 
+  // Open: "Send feedback" in the dropdown
   if (openBtn) {
-    openBtn.addEventListener("click", () => {
-      // Close the user dropdown if it's open.
-      const dd = $("user-dropdown-menu");
-      if (dd) dd.style.display = "none";
-      openModal();
+    openBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openFeedbackView();
     });
   }
 
+  // Back arrow and Cancel button
+  const backBtn = $("btn-feedback-back");
+  const cancelBtn = $("btn-feedback-cancel");
+  const closeX = $("btn-feedback-close-x");
+  const close = () => { closeFeedbackView(); };
+  if (backBtn) backBtn.addEventListener("click", close);
+  if (cancelBtn) cancelBtn.addEventListener("click", close);
+  if (closeX) closeX.addEventListener("click", close);
+
+  // 3-way segmented toggle
+  const segEl = $("feedback-segmented");
+  if (segEl) {
+    segEl.addEventListener("click", (e) => {
+      const btn = e.target.closest(".fb-seg-opt");
+      if (!btn) return;
+      const val = btn.dataset.value;
+      segEl.querySelectorAll(".fb-seg-opt").forEach(b => {
+        b.classList.remove("active");
+        b.setAttribute("aria-checked", "false");
+      });
+      btn.classList.add("active");
+      btn.setAttribute("aria-checked", "true");
+      const radio = $(`fb-type-${val}`);
+      if (radio) radio.checked = true;
+    });
+  }
+
+  // Form submit
   if (form) form.addEventListener("submit", handleSubmit);
+
+  // Char counter
   if (bodyEl && countEl) {
     bodyEl.addEventListener("input", () => { countEl.textContent = String(bodyEl.value.length); });
   }
-
-  document.querySelectorAll("[data-feedback-close]").forEach((el) => {
-    el.addEventListener("click", closeModal);
-  });
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && $("feedback-modal")?.style.display !== "none") closeModal();
-  });
 
   // Reveal the button only if feedback is enabled on this deployment.
   loadConfig().then((cfg) => {

@@ -548,6 +548,8 @@ body.light-mode .header-notif-badge.header-notif-running:hover {
   }
 .chat-skill-picker .csp-item:hover { background: var(--accent-soft); }
 .chat-skill-picker .csp-item.csp-active { background: var(--accent-mid); }
+.chat-skill-picker .csp-item.csp-always-on { cursor: default; opacity: 0.9; }
+.chat-skill-picker .csp-item.csp-always-on:hover { background: var(--accent-mid); }
 .chat-skill-picker .csp-item.csp-idle {
     color: var(--fg-3);
     opacity: 0.7;
@@ -2351,6 +2353,173 @@ to { opacity: 1; transform: translateY(0); }
     user-select: none;
   }
 
+/* ── Feedback sub-view inside the user dropdown ──
+   Replaces the default dropdown contents when "Send feedback" is clicked.
+   Shares the same panel dimensions (360px, 12px border-radius, same
+   background/border/shadow) — keep it consistent. */
+  .dropdown-feedback-view {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+  .dropdown-feedback-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px 10px;
+    border-bottom: 1px solid #2a2a4a;
+    font-size: 14px;
+    font-weight: 600;
+    color: #c0caf5;
+  }
+  .dropdown-feedback-back,
+  .dropdown-feedback-close {
+    background: none;
+    border: none;
+    color: #a9b1d6;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background 0.15s;
+  }
+  .dropdown-feedback-back:hover,
+  .dropdown-feedback-close:hover {
+    background: rgba(255,255,255,0.06);
+  }
+  .dropdown-feedback-body {
+    padding: 12px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  /* 3-way segmented toggle */
+  .feedback-segmented-wrap {
+    display: flex;
+  }
+  .feedback-segmented {
+    display: flex;
+    width: 100%;
+    background: #0d0d1a;
+    border-radius: 8px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .fb-seg-opt {
+    flex: 1;
+    text-align: center;
+    padding: 7px 6px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: inherit;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: #6e7493;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .fb-seg-opt.active {
+    background: #2a2a4a;
+    color: #c0caf5;
+  }
+  .fb-seg-opt:hover:not(.active) {
+    color: #a9b1d6;
+  }
+
+  /* Form fields (same style as login panel inputs) */
+  .dropdown-feedback-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    position: relative;
+  }
+  .dropdown-feedback-label {
+    font-size: 12px;
+    color: #9ba1bd;
+  }
+  .dropdown-feedback-optional {
+    color: #6e7493;
+    font-weight: 400;
+  }
+  .dropdown-feedback-field textarea,
+  .dropdown-feedback-field input[type="email"] {
+    width: 100%;
+    background: #0d0d1a;
+    color: #c0caf5;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font: inherit;
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.2s;
+    box-sizing: border-box;
+  }
+  .dropdown-feedback-field textarea:focus,
+  .dropdown-feedback-field input[type="email"]:focus {
+    border-color: #7dcfff;
+  }
+  .dropdown-feedback-field textarea::placeholder,
+  .dropdown-feedback-field input::placeholder {
+    color: #3b4261;
+  }
+  .dropdown-feedback-counter {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    font-size: 10px;
+    color: #6e7493;
+    pointer-events: none;
+  }
+  .dropdown-feedback-turnstile {
+    min-height: 0;
+  }
+  .dropdown-feedback-turnstile:not(:empty) {
+    min-height: 65px;
+  }
+  .dropdown-feedback-status {
+    font-size: 12px;
+    min-height: 1em;
+  }
+  .dropdown-feedback-status.error { color: #ff7a7a; }
+  .dropdown-feedback-status.success { color: #5cd6a8; }
+  .dropdown-feedback-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 2px;
+  }
+  .dropdown-feedback-cancel {
+    background: transparent;
+    color: #a9b1d6;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    padding: 6px 14px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 13px;
+    transition: background 0.15s;
+  }
+  .dropdown-feedback-cancel:hover {
+    background: rgba(255,255,255,0.04);
+  }
+  .dropdown-feedback-send {
+    background: #4c6cff;
+    color: #fff;
+    border: 0;
+    border-radius: 6px;
+    padding: 6px 16px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 13px;
+  }
+  .dropdown-feedback-send:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
 /* ── Theme toggle in user dropdown ── */
   .theme-toggle-section {
     padding: 4px 14px 8px;
@@ -3348,11 +3517,22 @@ body.light-mode .user-avatar {
    position:fixed (not absolute) so the popover escapes the overflow clip of
    its scrolling ancestor #main-tabs; sessions.js anchors top/left to the
    trigger on open. ID+class specificity overrides the base .user-dropdown-menu
-   rule's position:absolute. */
+   rule's position:absolute.
+
+   ── PANEL COHESION ──
+   All dropdown panels (user menu, feedback view, login) MUST share the same
+   visual dimensions: 360px wide, 12px border-radius, #1a1a2e background,
+   1px solid #2a2a4a border, box-shadow 0 8px 32px rgba(0,0,0,0.5).
+   This keeps the UI consistent — never change one without the others. */
   #user-dropdown-menu.user-dropdown-menu {
     position: fixed;
     min-width: 280px;
+    width: 360px;
     padding: 8px 0 6px;
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
   }
 
 /* Current user row */

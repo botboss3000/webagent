@@ -113,27 +113,30 @@ function _renderPickerList() {
     return;
   }
 
-  catalog.forEach(s => {
-    const item = document.createElement('div');
-    const isActive = s.active;
-    item.className = 'csp-item' + (isActive ? ' csp-active' : ' csp-idle');
-    item.dataset.skillName = s.name;
+catalog.forEach(s => {
+	const item = document.createElement('div');
+	const isAlwaysOn = s.mode === 'always_on';
+	const isActive = s.active;
+	item.className = 'csp-item' + (isActive ? ' csp-active' : ' csp-idle') + (isAlwaysOn ? ' csp-always-on' : '');
+	item.dataset.skillName = s.name;
 
-    // Indicator dot: filled green when active, empty grey circle when idle
-    const ind = document.createElement('span');
-    ind.className = 'csp-item-indicator';
-    ind.textContent = isActive ? '✓' : '';
-    item.appendChild(ind);
+	// Indicator dot: filled green when active, empty grey circle when idle
+	const ind = document.createElement('span');
+	ind.className = 'csp-item-indicator';
+	ind.textContent = isActive ? '✓' : '';
+	item.appendChild(ind);
 
-    const nameSpan = document.createElement('span');
-    nameSpan.className = 'csp-item-name';
-    nameSpan.textContent = s.display_name || s.name;
-    item.appendChild(nameSpan);
+	const nameSpan = document.createElement('span');
+	nameSpan.className = 'csp-item-name';
+	nameSpan.textContent = s.display_name || s.name;
+	item.appendChild(nameSpan);
 
-    item.title = s.description || (isActive ? 'Active — click to deactivate' : 'Inactive — click to activate');
-    item.addEventListener('click', () => _onToggleSkill(s.name, isActive, item));
-    _pickerList.appendChild(item);
-  });
+	item.title = isAlwaysOn ? 'Always loaded — built into the agent' : (s.description || (isActive ? 'Active — click to deactivate' : 'Inactive — click to activate'));
+	if (!isAlwaysOn) {
+	  item.addEventListener('click', () => _onToggleSkill(s.name, isActive, item));
+	}
+	_pickerList.appendChild(item);
+      });
 }
 
 async function _onToggleSkill(name, currentlyActive, itemEl) {

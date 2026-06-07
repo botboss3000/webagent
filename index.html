@@ -163,6 +163,14 @@
     try {
       document.body.classList.add('is-booting');
     } catch (_) {}
+    // If this tab was opened with ?new=1 (middle-click on the + button),
+    // wipe the saved session id BEFORE state.js reads it, so a fresh
+    // session UUID is generated instead of resuming the old session.
+    try {
+      if (location.search.indexOf('new=1') >= 0) {
+        localStorage.removeItem('terminalSessionId');
+      }
+    } catch (_) {}
   })();
 </script>
 <script>
@@ -300,6 +308,7 @@
     <option value="sessions">Sessions</option>
     <option value="web">Web</option>
     <option value="terminal">Terminal</option>
+    <option value="automations">Automations</option>
     <option value="wiki">Wiki</option>
     <option value="account">Manage Account</option>
     <!-- Plugin pages injected dynamically by JS -- they get <option> elements
@@ -357,6 +366,53 @@
 
           <div class="user-dropdown-divider"></div>
 
+          <!-- ── Feedback sub-view ──
+               Toggled by ui/js/feedback.js. Matches the dropdown panel dimensions.
+               The disclosure footer text was deliberately removed — do not add it
+               back without checking with the user first.
+          -->
+          <div id="dropdown-feedback-view" class="dropdown-feedback-view" style="display:none;">
+            <div class="dropdown-feedback-head">
+              <button class="dropdown-feedback-back" id="btn-feedback-back" aria-label="Back">&larr;</button>
+              <span>Send feedback</span>
+              <button class="dropdown-feedback-close" id="btn-feedback-close-x" aria-label="Close">&times;</button>
+            </div>
+            <div class="dropdown-feedback-body">
+              <form id="feedback-form" class="feedback-form-inline">
+                <!-- 3-way segmented toggle: Bug | Feature | Message -->
+                <div class="feedback-segmented-wrap">
+                  <div class="feedback-segmented" id="feedback-segmented" role="radiogroup" aria-label="What kind of feedback?">
+                    <input type="radio" name="feedback-type" value="bug" id="fb-type-bug" checked hidden>
+                    <input type="radio" name="feedback-type" value="feature" id="fb-type-feature" hidden>
+                    <input type="radio" name="feedback-type" value="message" id="fb-type-message" hidden>
+                    <button type="button" class="fb-seg-opt active" data-value="bug" role="radio" aria-checked="true">Bug</button>
+                    <button type="button" class="fb-seg-opt" data-value="feature" role="radio" aria-checked="false">Feature</button>
+                    <button type="button" class="fb-seg-opt" data-value="message" role="radio" aria-checked="false">Message</button>
+                  </div>
+                </div>
+
+                <label class="dropdown-feedback-field">
+                  <span class="dropdown-feedback-label">Details</span>
+                  <textarea id="feedback-body" name="body" rows="4" required maxlength="8000" placeholder="Describe what happened, what you expected, and any steps to reproduce."></textarea>
+                  <span class="dropdown-feedback-counter"><span id="feedback-body-count">0</span> / 8000</span>
+                </label>
+
+                <label class="dropdown-feedback-field">
+                  <span class="dropdown-feedback-label">Your email <span class="dropdown-feedback-optional">(optional, only if you want a reply)</span></span>
+                  <input id="feedback-email" name="email" type="email" maxlength="254" placeholder="you@example.com" autocomplete="email">
+                </label>
+
+                <div id="feedback-turnstile" class="dropdown-feedback-turnstile"></div>
+                <div id="feedback-status" class="dropdown-feedback-status" aria-live="polite"></div>
+
+                <div class="dropdown-feedback-actions">
+                  <button type="button" class="dropdown-feedback-cancel" id="btn-feedback-cancel">Cancel</button>
+                  <button type="submit" id="feedback-submit-btn" class="dropdown-feedback-send">Send</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
           <button id="btn-send-feedback" class="user-dropdown-action" style="display:none;">
             <i data-lucide="message-circle" class="lucide-icon" style="width:15px;height:15px;"></i>
             Send feedback
@@ -395,6 +451,9 @@
       <button type="button" class="main-tab" data-value="terminal" role="tab">
         <i data-lucide="terminal" class="lucide-icon"></i>Terminal
       </button>
+      <button type="button" class="main-tab" data-value="automations" role="tab">
+        <i data-lucide="settings-2" class="lucide-icon"></i>Automations
+      </button>
       <button type="button" class="main-tab" data-value="wiki" role="tab">
         <i data-lucide="book-open" class="lucide-icon"></i>Wiki
       </button>
@@ -413,7 +472,7 @@
   <script>
   (function () {
     try {
-      var DEFAULT_ORDER = ['admin-tools', 'agents', 'sessions', 'autoagent', 'web', 'terminal', 'wiki'];
+      var DEFAULT_ORDER = ['admin-tools', 'agents', 'sessions', 'autoagent', 'web', 'terminal', 'automations', 'wiki'];
       var bar = document.getElementById('main-tabs');
       if (!bar) return;
 
@@ -549,6 +608,7 @@
     <div id="tab-terminal" class="tab-content">
       <iframe src="/web-terminal/" class="terminal-frame" title="Terminal" loading="lazy"></iframe>
     </div>
+    <div id="tab-automations" class="tab-content"></div>
     <div id="tab-wiki" class="tab-content"></div>
     <div id="tab-account" class="tab-content"></div>
     <div id="tab-admin-tools" class="tab-content"></div>
@@ -716,56 +776,12 @@
 </script>
 <script src="./ui/js/stargaze.js"></script>
 
-<!-- ── Feedback modal (rendered hidden; opened by ui/js/feedback.js) ── -->
-<div id="feedback-modal" class="feedback-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="feedback-modal-title">
-  <div class="feedback-modal-card">
-    <div class="feedback-modal-head">
-      <h3 id="feedback-modal-title">Send feedback</h3>
-      <button class="feedback-modal-close" data-feedback-close aria-label="Close">&times;</button>
-    </div>
-    <form id="feedback-form" class="feedback-modal-body">
-      <fieldset class="feedback-type-group">
-        <legend>What kind of feedback?</legend>
-        <label class="feedback-type-opt">
-          <input type="radio" name="feedback-type" value="bug" checked>
-          <span><strong>Bug report</strong> — something is broken</span>
-        </label>
-        <label class="feedback-type-opt">
-          <input type="radio" name="feedback-type" value="feature">
-          <span><strong>Feature request</strong> — an idea or improvement</span>
-        </label>
-        <label class="feedback-type-opt">
-          <input type="radio" name="feedback-type" value="message">
-          <span><strong>Message to admin</strong> — anything else</span>
-        </label>
-      </fieldset>
-
-      <label class="feedback-field">
-        <span class="feedback-label">Details</span>
-        <textarea id="feedback-body" name="body" rows="6" required maxlength="8000" placeholder="Describe what happened, what you expected, and any steps to reproduce."></textarea>
-        <span class="feedback-counter"><span id="feedback-body-count">0</span> / 8000</span>
-      </label>
-
-      <label class="feedback-field">
-        <span class="feedback-label">Your email <span class="feedback-optional">(optional, only if you want a reply)</span></span>
-        <input id="feedback-email" name="email" type="email" maxlength="254" placeholder="you@example.com" autocomplete="email">
-      </label>
-
-      <div id="feedback-turnstile" class="feedback-turnstile"></div>
-
-      <div id="feedback-status" class="feedback-status" aria-live="polite"></div>
-
-      <div class="feedback-modal-actions">
-        <button type="button" class="feedback-btn-ghost" data-feedback-close>Cancel</button>
-        <button type="submit" id="feedback-submit-btn" class="feedback-btn-primary">Send</button>
-      </div>
-
-      <p class="feedback-disclosure">
-        Submissions create a GitHub issue in the webAgent feedback repo. Don't include passwords or other secrets. Your email, if provided, is stored in the issue body so the admin can reply.
-      </p>
-    </form>
-  </div>
-</div>
+<!-- ── Feedback sub-view inside the user dropdown (toggled by ui/js/feedback.js) ── -->
+<!--
+  This feedback form lives INSIDE #user-dropdown-menu to keep it the same panel
+  style and size as the rest of the dropdown. DO NOT turn it into a separate
+  full-screen modal — that diverges from the login-panel look used everywhere.
+-->
 
 
 
