@@ -257,6 +257,125 @@ async def get_automations_dashboard(
     }
 
 
+# ── Manage endpoints (run history + pause/resume/edit/delete/run-now) ──────
+# The /dashboard route above is read-only aggregation. These add the
+# per-run history view and the mutations the dashboard's row controls call.
+# Routes use distinct paths from /dashboard, so both coexist on the same prefix.
+
+async def _find_row(db, row_id: str):
+    """Return (row, table) for an id across both trigger tables, else (None, None)."""
+    row = await db.get_automation(row_id)
+    if row:
+        return row, "automation"
+    row = await db.get_event_subscription(row_id)
+    if row:
+        return row, "subscription"
+    return None, None
+
+
+async def _owns(row: dict, caller_id: str) -> bool:
+    return bool(row) and row.get("owner_user_id") == caller_id
+
+
+@router.get("/{automation_id}/runs")
+async def automation_runs(request: Request, automation_id: str,
+                          user_id: str = Query(...), limit: int = Query(default=50)):
+    """Per-run history for one automation or event subscription the caller owns."""
+    caller_id = await assert_caller_is(request, user_id)
+    db = get_db()
+    row, table = await _find_row(db, automation_id)
+    if not await _owns(row, caller_id):
+        raise HTTPException(status_code=404, detail="automation not found")
+    if table == "subscription":
+        runs = await db.list_automation_runs(subscription_id=automation_id, limit=limit)
+    else:
+        runs = await db.list_automation_runs(automation_id=automation_id, limit=limit)
+    return {"runs": runs, "count": len(runs)}
+
+
+@router.patch("/{automation_id}")
+async def patch_automation(request: Request, automation_id: str, user_id: str = Query(...)):
+    """Edit / pause / resume. Body is a JSON object of fields to set."""
+    caller_id = await assert_caller_is(request, user_id)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from app.automation.runner import _compute_next_run
+    db = get_db()
+    row, table = await _find_row(db, automation_id)
+    if not await _owns(row, caller_id):
+        raise HTTPException(status_code=404, detail="automation not found")
+
+    common = {"task_label", "prompt", "enabled", "delivery_json", "run_mode",
+              "clone_abilities", "max_per_day", "disable_after_failures",
+              "expires_at", "retry_max", "retry_backoff_seconds"}
+    fields: Dict[str, Any] = {k: v for k, v in body.items() if k in common}
+    if table == "automation":
+        if "schedule_cron" in body:
+            fields["schedule_cron"] = body["schedule_cron"]
+            fields["next_run_at"] = _compute_next_run(
+                body["schedule_cron"], body.get("timezone") or row.get("timezone") or "UTC")
+        if "timezone" in body:
+            fields["timezone"] = body["timezone"]
+        if body.get("enabled") and (row.get("schedule_kind") or "cron") != "once" and not row.get("next_run_at"):
+            fields.setdefault("next_run_at", _compute_next_run(
+                fields.get("schedule_cron") or row.get("schedule_cron") or "",
+                fields.get("timezone") or row.get("timezone") or "UTC"))
+        updated = await db.update_automation(automation_id, **fields)
+    else:
+        if "filter" in body:
+            fields["filter_json"] = body["filter"]
+        updated = await db.update_event_subscription(automation_id, **fields)
+    return {"status": "ok", "automation": updated}
+
+
+@router.delete("/{automation_id}")
+async def delete_automation(request: Request, automation_id: str, user_id: str = Query(...)):
+    """Delete an automation/subscription; reap a dedicated clone runner if any."""
+    caller_id = await assert_caller_is(request, user_id)
+    db = get_db()
+    row, table = await _find_row(db, automation_id)
+    if not await _owns(row, caller_id):
+        raise HTTPException(status_code=404, detail="automation not found")
+
+    runner_id = (row.get("runner_agent_id") or "").strip()
+    if table == "automation":
+        ok = await db.delete_automation(automation_id)
+    else:
+        try:
+            from app.automation.sync import _unregister_event_sub
+            await _unregister_event_sub(row)
+        except Exception:
+            pass
+        ok = await db.delete_event_subscription(automation_id)
+    if runner_id and row.get("run_mode") == "dedicated_clone":
+        try:
+            await db.delete_clone_agent(runner_id)
+        except Exception:
+            pass
+    return {"status": "ok" if ok else "error"}
+
+
+@router.post("/{automation_id}/run-now")
+async def run_now(request: Request, automation_id: str, user_id: str = Query(...)):
+    """Fire a scheduled automation immediately (not applicable to event subscriptions)."""
+    caller_id = await assert_caller_is(request, user_id)
+    db = get_db()
+    row, table = await _find_row(db, automation_id)
+    if not await _owns(row, caller_id):
+        raise HTTPException(status_code=404, detail="automation not found")
+    if table != "automation":
+        raise HTTPException(status_code=400, detail="run-now applies to scheduled tasks only")
+    try:
+        from app.scheduler import get_scheduler
+        res = await get_scheduler().run_now(automation_id)
+        return {"status": "ok", "result": res}
+    except Exception as e:
+        logger.exception("run-now failed for %s", automation_id)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Helper: list spawns by orchestrator agent id ──────────────────────────
 # The agent_spawns table lives in the agent_orchestration plugin, not in the
 # core schema. We query it via the raw connection (same pattern as the

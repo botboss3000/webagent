@@ -70,7 +70,6 @@ except ImportError:
 from app.api.webhooks import router as webhooks_router
 from app.api.webhooks_generic import router as webhooks_generic_router
 from app.api.events import router as events_router
-from app.api.automations import router as automations_router
 from app.api.remote_access import router as remote_access_router
 try:
     from app.admin.remote_access import router as admin_remote_access_router
@@ -383,7 +382,6 @@ app.include_router(webhooks_router)
 
 # Register event trigger intake (Gmail Pub/Sub, Graph subscriptions, etc.)
 app.include_router(events_router)
-app.include_router(automations_router)
 
 # Register Remote Access (signpost endpoints + admin config API)
 app.include_router(remote_access_router)
