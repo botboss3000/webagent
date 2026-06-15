@@ -196,6 +196,8 @@ body.light-mode {
   background: var(--files-bg-sidebar);
   border-right: 1px solid var(--files-border);
   flex: 0 0 38px;
+  overflow-y: auto;            /* don't clip view icons on short viewports */
+  overflow-x: hidden;
 }
 .files-sidebar-strip[hidden] { display: none; }
 
