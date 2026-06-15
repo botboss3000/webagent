@@ -19,7 +19,7 @@ import { app } from './state.js';
 import { startLoop, stopLoop, renderInteractionsSidebar } from './loop.js';
 import { startLoopVisual, stopLoopVisual, renderRuntimeLoopSidebar } from './loop-logic.js';
 import { startDiagnostics, stopDiagnostics, renderDiagnosticsSidebar } from './diagnostics.js';
-import { startUpdateSync, stopUpdateSync, renderUpdateSidebar } from './update-sync.js';
+import { dropinAdminPages } from './admin-pages.js';
 import { startDataManagement } from './data-management.js';
 import { startRemoteAccess } from './remote-access.js';
 import { startStorageUi } from './storage.js';
@@ -2977,7 +2977,6 @@ const VIEW_TITLE = {
   interactions: 'Interactions',
   'runtime-loop': 'Runtime Loop',
   diagnostics: 'Diagnostics',
-  update: 'Update',
 };
 const VIEW_SWITCH = {
   explorer: 'file manager',
@@ -2988,7 +2987,6 @@ const VIEW_SWITCH = {
   interactions: 'interactions',
   'runtime-loop': 'runtime loop',
   diagnostics: 'diagnostics',
-  update: 'update',
 };
 
 // Each sidebar view has a dedicated <main> on the right side. Switching
@@ -3003,8 +3001,16 @@ const VIEW_MAIN_ID = {
   interactions:   'files-interactions-main',
   'runtime-loop': 'files-runtime-loop-main',
   diagnostics:    'files-diagnostics-main',
-  update:         'files-update-main',
 };
+
+// Fold in drop-in admin-tools pages (ui/admin-tools/<dir>/), discovered + loaded
+// by admin-pages.js before this module runs. Each contributes its view's main
+// id, title and switch label so view-switching treats it like a built-in.
+for (const [view, p] of dropinAdminPages) {
+  VIEW_MAIN_ID[view] = p.mainId;
+  VIEW_TITLE[view]   = p.title;
+  VIEW_SWITCH[view]  = p.switchLabel;
+}
 
 function applySidebarView(view) {
   const sidebar = document.getElementById('files-sidebar');
@@ -3095,11 +3101,14 @@ function applySidebarView(view) {
   } else {
     try { stopDiagnostics(); } catch (_) {}
   }
-  if (view === 'update') {
-    try { startUpdateSync(); } catch (_) {}
-    try { renderUpdateSidebar(); } catch (_) {}
-  } else {
-    try { stopUpdateSync(); } catch (_) {}
+  // Drop-in admin pages: drive each one's lifecycle generically.
+  for (const [pview, p] of dropinAdminPages) {
+    if (view === pview) {
+      if (p.start) { try { p.start(); } catch (_) {} }
+      if (p.renderSidebar) { try { p.renderSidebar(); } catch (_) {} }
+    } else if (p.stop) {
+      try { p.stop(); } catch (_) {}
+    }
   }
   if (view === 'git') {
     try { renderGitMain(); } catch (_) {}
@@ -3565,5 +3574,7 @@ export function stopAdminTools() {
   try { stopLoop(); } catch (_) {}
   try { stopLoopVisual(); } catch (_) {}
   try { stopDiagnostics(); } catch (_) {}
-  try { stopUpdateSync(); } catch (_) {}
+  for (const [, p] of dropinAdminPages) {
+    if (p.stop) { try { p.stop(); } catch (_) {} }
+  }
 }

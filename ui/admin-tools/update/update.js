@@ -1,16 +1,17 @@
-// Update / Selective-Sync sub-page (Admin Tools → Update).
+// Update / Selective-Sync drop-in admin page.
 //
-// Lets a fork pull changes from the upstream public repo, but only for the
-// folders the operator tracks. Talks to plugins/admin/update_sync.py
-// (/api/v1/update/*). Clean 3-way merges apply automatically; conflicts are
-// left in the working tree with markers and handed to the web agent
-// (git_control: resolve_conflict / commit_and_push) via the chat composer.
+// Lives in its own folder (ui/admin-tools/update/) alongside page.json,
+// panel.html and update.css. Discovered + wired by ui/js/admin-pages.js, which
+// calls the exported lifecycle hooks (start / stop / renderSidebar) when the
+// "update" view is shown/hidden — no edits to files.js are needed to add this.
 //
-// Mirrors the Diagnostics / Interactions sub-page lifecycle (start / stop /
-// renderSidebar) wired in files.js.
+// Talks to plugins/admin/update_sync.py (/api/v1/update/*). Clean 3-way merges
+// apply automatically; conflicts are left in the working tree with markers and
+// handed to the web agent (git_control: resolve_conflict / commit_and_push) via
+// the chat composer.
 
-import { apiPath } from './config.js';
-import { app } from './state.js';
+import { apiPath } from '../../js/config.js';
+import { app } from '../../js/state.js';
 
 function _qs(id) { return document.getElementById(id); }
 
@@ -52,18 +53,17 @@ function _toast(text) {
   if (el) el.textContent = text;
 }
 
-// ── Lifecycle ──────────────────────────────────────────────────────────────
+// ── Lifecycle (called by admin-pages.js) ─────────────────────────────────────
 
-export function startUpdateSync() {
+export function start() {
   _wireMain();
   refreshStatus();
 }
 
-export function stopUpdateSync() { /* no polling — nothing to tear down */ }
+export function stop() { /* no polling — nothing to tear down */ }
 
-export function renderUpdateSidebar() {
+export function renderSidebar() {
   _wireSidebar();
-  // status refresh (re)renders the folder checklist + config inputs.
   if (!state.status) refreshStatus();
 }
 
@@ -350,7 +350,6 @@ function _handToAgent() {
     try { app.chatInput.focus(); } catch (_) {}
     _toast('Prompt loaded into chat — review and send to the web agent.');
   } else {
-    // No composer on screen (e.g. mobile with chat hidden): show the prompt.
     alert('Send this to the web agent (Git Control ability must be enabled):\n\n' + prompt);
   }
 }

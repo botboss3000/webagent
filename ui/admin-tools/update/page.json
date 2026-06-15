@@ -1,0 +1,11 @@
+{
+  "id": "update",
+  "view": "update",
+  "title": "Update",
+  "switch": "update",
+  "icon": "cloud-download",
+  "order": 100,
+  "html": "panel.html",
+  "css": "update.css",
+  "js": "update.js"
+}

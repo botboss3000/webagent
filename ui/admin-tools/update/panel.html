@@ -1,7 +1,9 @@
+<!-- Drop-in admin-tools page: Update / Selective Sync.
+     Discovered by GET /api/v1/admin-tools/pages (scans ui/admin-tools/<dir>/page.json)
+     and wired by ui/js/admin-pages.js — no edits to files.js / partial-loader.js
+     needed to add or remove this page. The strip icon is injected from page.json;
+     this file only provides the two slot blocks. -->
 <template data-slot="#files-sidebar">
-  <!-- Update panel: upstream repo config, the tracked-folder checklist
-       (auto-detected, manually overridable) and a Fetch button.
-       update-sync.js drives the list + the main diff area. -->
   <div class="files-sidebar-panel" id="files-panel-update" data-view="update" hidden>
     <div class="files-sidebar-header">
       <div class="files-sidebar-actions">
@@ -29,8 +31,6 @@
 </template>
 
 <template data-slot="#admin-tools">
-  <!-- Update main: per-folder diff cards with select checkboxes, an Apply
-       action, and a conflict-resolution hand-off to the web agent. -->
   <main class="files-main" id="files-update-main" data-view="update" hidden>
     <div id="upd-container">
       <div id="upd-toolbar">

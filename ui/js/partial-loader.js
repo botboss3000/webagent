@@ -11,6 +11,8 @@
 // the DOM, after which the bootstrap in index.html dynamically imports the
 // main JS modules so every getElementById call still resolves.
 
+import { loadDropinAdminPages } from './admin-pages.js';
+
 const TOP_LEVEL = [
   { url: './ui/pages.html', mount: '#tab-autoagent' },
   { url: './ui/agents.html', mount: '#tab-agents' },
@@ -31,7 +33,6 @@ const ADMIN_SUB_PAGES = [
   './ui/admin-tools/interactions.html',
   './ui/admin-tools/runtime.html',
   './ui/admin-tools/diagnostics.html',
-  './ui/admin-tools/update.html',
 ];
 
 async function fetchHtml(url) {
@@ -72,6 +73,10 @@ export const partialsReady = (async () => {
   // Phase 2: load admin sub-pages in parallel (slots now exist).
   const subHtml = await Promise.all(ADMIN_SUB_PAGES.map(fetchHtml));
   ADMIN_SUB_PAGES.forEach((url, i) => injectSlotsFromHtml(subHtml[i], url));
+
+  // Phase 3: load drop-in admin-tools page folders (ui/admin-tools/<dir>/),
+  // discovered server-side. Each injects its own strip icon + slots + css + js.
+  await loadDropinAdminPages();
 
   // Render lucide icons for the freshly injected DOM.
   if (window.lucide && typeof window.lucide.createIcons === 'function') {

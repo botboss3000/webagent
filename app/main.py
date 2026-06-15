@@ -253,6 +253,38 @@ async def pwa_manifest():
     )
 
 
+@app.get("/api/v1/admin-tools/pages", include_in_schema=False)
+async def admin_tools_pages():
+    """Discover drop-in admin-tools pages.
+
+    Scans ``ui/admin-tools/<dir>/page.json`` and returns each manifest so the
+    frontend (ui/js/admin-pages.js) can inject the strip icon, load the HTML
+    partial + CSS, and import the page's JS — making a page truly drop-in:
+    add a folder with a page.json, it appears; delete the folder, it's gone.
+    No central registry edit needed.
+    """
+    import json as _json
+    base = _APP_DIR.parent / "ui" / "admin-tools"
+    pages = []
+    if base.is_dir():
+        for child in sorted(base.iterdir()):
+            manifest = child / "page.json"
+            if not (child.is_dir() and manifest.is_file()):
+                continue
+            try:
+                data = _json.loads(manifest.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning("admin-tools page %s has invalid page.json: %s", child.name, e)
+                continue
+            data.setdefault("dir", child.name)
+            data.setdefault("view", data.get("id", child.name))
+            data.setdefault("html", "panel.html")
+            pages.append(data)
+    pages.sort(key=lambda p: (p.get("order", 1000), p.get("title", "")))
+    return JSONResponse(pages, headers={"Cache-Control": "no-store"})
+
+
+
 # CORS middleware (adjust origins as needed)
 app.add_middleware(
     CORSMiddleware,
