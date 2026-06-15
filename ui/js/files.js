@@ -19,6 +19,7 @@ import { app } from './state.js';
 import { startLoop, stopLoop, renderInteractionsSidebar } from './loop.js';
 import { startLoopVisual, stopLoopVisual, renderRuntimeLoopSidebar } from './loop-logic.js';
 import { startDiagnostics, stopDiagnostics, renderDiagnosticsSidebar } from './diagnostics.js';
+import { startUpdateSync, stopUpdateSync, renderUpdateSidebar } from './update-sync.js';
 import { startDataManagement } from './data-management.js';
 import { startRemoteAccess } from './remote-access.js';
 import { startStorageUi } from './storage.js';
@@ -2976,6 +2977,7 @@ const VIEW_TITLE = {
   interactions: 'Interactions',
   'runtime-loop': 'Runtime Loop',
   diagnostics: 'Diagnostics',
+  update: 'Update',
 };
 const VIEW_SWITCH = {
   explorer: 'file manager',
@@ -2986,6 +2988,7 @@ const VIEW_SWITCH = {
   interactions: 'interactions',
   'runtime-loop': 'runtime loop',
   diagnostics: 'diagnostics',
+  update: 'update',
 };
 
 // Each sidebar view has a dedicated <main> on the right side. Switching
@@ -3000,6 +3003,7 @@ const VIEW_MAIN_ID = {
   interactions:   'files-interactions-main',
   'runtime-loop': 'files-runtime-loop-main',
   diagnostics:    'files-diagnostics-main',
+  update:         'files-update-main',
 };
 
 function applySidebarView(view) {
@@ -3090,6 +3094,12 @@ function applySidebarView(view) {
     try { renderDiagnosticsSidebar(); } catch (_) {}
   } else {
     try { stopDiagnostics(); } catch (_) {}
+  }
+  if (view === 'update') {
+    try { startUpdateSync(); } catch (_) {}
+    try { renderUpdateSidebar(); } catch (_) {}
+  } else {
+    try { stopUpdateSync(); } catch (_) {}
   }
   if (view === 'git') {
     try { renderGitMain(); } catch (_) {}
@@ -3555,4 +3565,5 @@ export function stopAdminTools() {
   try { stopLoop(); } catch (_) {}
   try { stopLoopVisual(); } catch (_) {}
   try { stopDiagnostics(); } catch (_) {}
+  try { stopUpdateSync(); } catch (_) {}
 }

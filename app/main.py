@@ -83,6 +83,13 @@ except ImportError:
     admin_source_router = None
 
 try:
+    from plugins.admin.update_sync import router as admin_update_router
+    _HAS_UPDATE_SYNC = True
+except ImportError:
+    _HAS_UPDATE_SYNC = False
+    admin_update_router = None
+
+try:
     from app.admin.settings import router as admin_settings_router
     _HAS_SETTINGS = True
 except ImportError:
@@ -354,6 +361,8 @@ for _admin_r in (admin_router, admin_db_router, admin_storage_router):
         app.include_router(_admin_r)
 if _HAS_SOURCE_TOOLS and admin_source_router is not None:
     app.include_router(admin_source_router)
+if _HAS_UPDATE_SYNC and admin_update_router is not None:
+    app.include_router(admin_update_router)
 
 if _HAS_SETTINGS and admin_settings_router is not None:
     app.include_router(admin_settings_router)
