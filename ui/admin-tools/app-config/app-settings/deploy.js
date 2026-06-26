@@ -224,7 +224,7 @@ const _TX_STEPS = [
   'The first run takes a few minutes while it installs everything (on a phone it also sets up a small Ubuntu environment).',
   'When it finishes, open http://localhost:8080 on that device, or http://DEVICE-IP:8080 from another device on the same network (the script prints the address).',
 ];
-const _TX_NOTE = 'On a phone the command installs webAgent inside a small Ubuntu environment (the reliable way to run the full app on Android); on a Linux computer it installs straight onto the system. Either way it keeps running in the background and restarts itself if it stops. On a phone it also installs the Server Manager — type webagent in Termux to inspect, restart or diagnose the install. To stop it later: on a phone paste “proot-distro login ubuntu -- pkill -f run.py”, on Linux paste “pkill -f run.py”.';
+const _TX_NOTE = 'On a phone the command installs webAgent inside a small Ubuntu environment (the reliable way to run the full app on Android); on a Linux computer it installs straight onto the system. Either way it keeps running in the background and restarts itself if it stops. On a Linux computer it also restarts automatically after a reboot; on a phone, install the free Termux:Boot add-on to start it on boot. On a phone it also installs the Server Manager — type webagent in Termux to inspect, restart or diagnose the install. To stop it later: on a phone paste “proot-distro login ubuntu -- pkill -f run.py”, on Linux paste “pkill -f run.py”.';
 
 function _txHasBad(s, bad) { for (const c of bad) if (s.indexOf(c) >= 0) return true; return false; }
 function _txStripScheme(u) { return u.replace(/^https?:\/\//, ''); }

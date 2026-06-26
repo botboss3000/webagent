@@ -12,11 +12,13 @@ two things:
   relative folders that never ship), and the last-release record.
 - **The release engine**, in two composable halves so the work can run as one
   click *or* split into two:
-  - :func:`copy_events` (the "Copy to production" step) — list the dev project's
-    real files via ``git ls-files`` (so ``.gitignore`` is honoured automatically
-    and no runtime junk/secrets leak), drop the excluded folders, mirror what's
-    left into the production repo (wiping everything but its ``.git`` first so
-    *deletions* propagate), secret-scan the staged diff, then **commit locally**.
+  - :func:`copy_events` (the "Sync to production" step) — a one-way sync: list the
+    dev project's real files via ``git ls-files`` (so ``.gitignore`` is honoured
+    automatically and no runtime junk/secrets leak), drop the excluded folders,
+    mirror what's left into the production repo (wiping everything but its ``.git``
+    first so *deletions* propagate), secret-scan the staged diff, then **commit
+    locally**. :func:`diff_status` previews that same comparison read-only, so the
+    UI can show whether dev and production differ before the sync runs.
   - :func:`push_events` (the "Push to GitHub" step) — push that local commit to
     the production remote and record the release.
   - :func:`release_events` (the Git page's one-click "Release") — simply runs
@@ -31,6 +33,7 @@ admin-tools extension that reuses the editions trim philosophy.
 
 from __future__ import annotations
 
+import filecmp
 import logging
 import os
 import re
@@ -133,6 +136,24 @@ def default_prod_folder() -> str:
     return str((_PROJECT_ROOT.parent / prod_name).resolve()).replace("\\", "/")
 
 
+def _normalize_remote_url(url: str) -> str:
+    """Accept the friendly ``owner/repo`` shorthand admins type in the Production
+    repo field and expand it to a full GitHub HTTPS URL; leave an already-complete
+    URL (``https://…`` or ``git@…``) untouched. Trailing slashes are trimmed and a
+    ``.git`` suffix is added to the shorthand so the engine always gets a clonable
+    URL (e.g. ``botboss3000/webagent`` → ``https://github.com/botboss3000/webagent.git``)."""
+    u = (url or "").strip().rstrip("/")
+    if not u:
+        return ""
+    if "://" in u or u.startswith("git@"):
+        return u
+    if re.match(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$", u):
+        if not u.endswith(".git"):
+            u += ".git"
+        return f"https://github.com/{u}"
+    return u
+
+
 def load_config() -> dict:
     """Read the production-mirror config, filling in defaults. Never raises."""
     data = read_json(_CONFIG_PATH, {}) or {}
@@ -154,6 +175,9 @@ def save_config(updates: dict) -> dict:
     cfg.update({k: v for k, v in updates.items() if v is not None})
     if "exclude_paths" in updates and updates["exclude_paths"] is not None:
         cfg["exclude_paths"] = sorted({_norm_rel(p) for p in updates["exclude_paths"] if _norm_rel(p)})
+    # Expand an owner/repo shorthand to a full URL whenever the remote is set.
+    if "prod_remote_url" in updates and updates["prod_remote_url"] is not None:
+        cfg["prod_remote_url"] = _normalize_remote_url(updates["prod_remote_url"])
     safe_write_json(_CONFIG_PATH, cfg)
     return cfg
 
@@ -298,6 +322,77 @@ def production_status() -> dict:
         "last_release": last or None,
         "has_changes": bool(has_changes),
     }
+
+
+def diff_status() -> dict:
+    """Read-only comparison of the dev **shipping set** against the production
+    folder's current contents — exactly what a one-way *Sync* would change, but
+    without touching anything. Powers the File Explorer's More-menu line that
+    tells the admin whether dev and production differ before they sync.
+
+    Returns counts of files that would be **added** (shipped from dev, missing in
+    production), **updated** (present in both but different bytes) and **removed**
+    (in production but no longer shipped). ``in_sync`` is true when all three are
+    zero. ``first_sync`` is true when production hasn't been built yet (no repo
+    there), in which case every shipping file counts as an addition.
+    """
+    cfg = load_config()
+    dest = Path(cfg["prod_folder"]) if cfg.get("prod_folder") else None
+    remote_url = (cfg.get("prod_remote_url") or "").strip()
+    excludes = set(cfg["exclude_paths"])
+
+    all_files = _list_project_files()
+    keep = [f for f in all_files if not _is_under_excluded(f, excludes)]
+    keep_set = set(keep)
+    base = {
+        "configured": bool(remote_url),
+        "prod_folder": cfg["prod_folder"],
+        "shipping_count": len(keep),
+        "excluded_count": len(all_files) - len(keep),
+    }
+
+    is_repo = bool(dest and (dest / ".git").exists())
+    folder_exists = bool(dest and dest.exists())
+    if not dest or not folder_exists or not is_repo:
+        # Nothing materialized yet → the first sync writes the whole shipping set.
+        return {**base, "folder_exists": folder_exists, "is_repo": is_repo,
+                "first_sync": True, "in_sync": False,
+                "added": len(keep), "updated": 0, "removed": 0,
+                "total_changes": len(keep)}
+
+    # Current production files (everything but the .git folder).
+    prod_files: set[str] = set()
+    for root, dirs, files in os.walk(dest):
+        if Path(root) == dest and ".git" in dirs:
+            dirs.remove(".git")
+        for fn in files:
+            rel = str((Path(root) / fn).relative_to(dest)).replace("\\", "/")
+            prod_files.add(rel)
+
+    added = updated = 0
+    for rel in keep_set:
+        if rel not in prod_files:
+            added += 1
+            continue
+        src = str(_PROJECT_ROOT / rel)
+        dst = str(dest / rel)
+        try:
+            # Fast path: matching size + mtime (a one-way sync copies with
+            # ``copy2``, preserving mtime) means identical — skip the read. Only
+            # when the stat signatures differ do we read both files to confirm a
+            # real content change, so a stat-only mismatch (e.g. a freshly cloned
+            # prod tree) isn't miscounted as an update.
+            if filecmp.cmp(src, dst, shallow=True):
+                continue
+            if not filecmp.cmp(src, dst, shallow=False):
+                updated += 1
+        except Exception:  # noqa: BLE001
+            updated += 1
+    removed = len(prod_files - keep_set)
+    total = added + updated + removed
+    return {**base, "folder_exists": True, "is_repo": True, "first_sync": False,
+            "in_sync": total == 0, "added": added, "updated": updated,
+            "removed": removed, "total_changes": total}
 
 
 # ── The release engine ──────────────────────────────────────────────────────
@@ -527,7 +622,7 @@ async def copy_events(message: str = ""):
     status_out, _, _ = await _to_thread(lambda: _git(["status", "--porcelain"], cwd=dest, timeout=60))
     if not status_out.strip():
         yield {"phase": "done", "result": {"status": "nothing",
-               "message": "Production folder already matches dev — nothing new to copy."}}
+               "message": "Production folder already matches dev — nothing to sync."}}
         return
 
     # ── Commit (locally only — no push) ──
@@ -548,7 +643,7 @@ async def copy_events(message: str = ""):
 
     yield {"phase": "done", "result": {
         "status": "copied",
-        "message": (f"Copied {copied} files to the production folder "
+        "message": (f"Synced {copied} files to the production folder "
                     f"({dropped} excluded) and committed locally. Push to publish."),
         "dev_commit": dev_short,
         "files": copied,

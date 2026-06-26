@@ -169,7 +169,9 @@ class TermuxProvider(BaseDeployProvider):
             "On a phone the command installs webAgent inside a small Ubuntu environment (the reliable "
             "way to run the full app on Android); on a Linux computer it installs straight onto the "
             "system. Either way it keeps running in the background and restarts itself if it stops. On "
-            "a phone it also installs the Server Manager — type 'webagent' in Termux to inspect, "
+            "a Linux computer it also restarts automatically after a reboot; on a phone, install the free "
+            "Termux:Boot add-on to start it on boot. On a phone it also installs the Server Manager — "
+            "type 'webagent' in Termux to inspect, "
             "restart or diagnose the install. To stop it later: on a phone paste 'proot-distro login "
             "ubuntu -- pkill -f run.py', on Linux paste 'pkill -f run.py'.")
         reach_note = "http://localhost:8080 on the device · http://DEVICE-IP:8080 on the same network"

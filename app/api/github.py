@@ -13,6 +13,7 @@ Unlike LLM keys, it's NOT per-user — stored in provider.json only.
 """
 
 import asyncio
+import base64
 import logging
 import os
 import re
@@ -106,19 +107,37 @@ def _pin_to_project_root() -> None:
 
 def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
     """Run a git command in the active repo (the project root by default).
-    Returns (stdout, stderr, returncode). Uses cached token for HTTPS auth if
-    available.
+    Returns (stdout, stderr, returncode).
+
+    Auth is injected DIRECTLY: the stored GitHub token is carried as an HTTP
+    Basic-auth header (`-c http.extraHeader=…`) and the machine credential helper
+    is disabled for this call (`-c credential.helper=`). This is the fix for the
+    "commit & push stuck on Starting…" hang. The old code set GIT_USERNAME /
+    GIT_PASSWORD, **which git does not read** — so a push fell through to whatever
+    credential helper the host has (on Windows, Git Credential Manager). From this
+    headless server process (no interactive desktop) that helper tries to pop a
+    prompt nobody can answer, so `git push`/`pull` HANGS until the timeout and the
+    UI sits forever on "Starting…". Injecting the header + clearing the helper
+    means git authenticates with OUR token and, on a bad/again-missing token,
+    fails INSTANTLY with a readable error instead of blocking. GIT_TERMINAL_PROMPT
+    stays 0 as a second backstop against any interactive prompt.
     """
     env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    config_args: list[str] = []
     token = _TOKEN_CACHE or _get_token()
     if token:
-        env["GIT_USERNAME"] = "token"
-        env["GIT_PASSWORD"] = token
-        env["GIT_ASKPASS"] = ""
-        env["GIT_TERMINAL_PROMPT"] = "0"
+        # An empty credential.helper value is git's documented way to reset the
+        # helper list (so the host's Credential Manager is bypassed); the token
+        # then rides as a one-shot Basic header — never persisted to .git/config.
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        config_args = [
+            "-c", "credential.helper=",
+            "-c", f"http.extraHeader=Authorization: Basic {basic}",
+        ]
     try:
         proc = subprocess.run(
-            ["git"] + args,
+            ["git"] + config_args + args,
             cwd=str(_ACTIVE_REPO),
             capture_output=True,
             text=True,
@@ -155,6 +174,43 @@ def _git_push(timeout: int = 120) -> tuple[str, str, int]:
                 ["push", "--set-upstream", "origin", branch], timeout=timeout
             )
     return out, err, code
+
+
+def _push_failure_hint(stderr: str, stdout: str) -> str:
+    """Turn a raw ``git push`` failure into an actionable, plain-language message.
+
+    The raw git error ("remote: Write access to repository not granted", "fatal:
+    Authentication failed", "git command timed out", …) is accurate but doesn't
+    tell a non-git user WHAT to do. We keep the raw text (nothing hidden) and
+    append a specific next step based on which failure it is — so a push that
+    can't succeed says so immediately and clearly instead of leaving the button
+    spinning. Matched newest-cause-first so the most specific hint wins."""
+    raw = (stderr or stdout or "").strip()
+    low = raw.lower()
+    if not (_TOKEN_CACHE or _get_token()):
+        hint = ("No GitHub token is set for this repository. Add one in the "
+                "source-control sidebar, then try again.")
+    elif "timed out" in low:
+        hint = ("Couldn't reach GitHub in time. Check your connection and that "
+                "the GitHub token in the source-control sidebar is still valid.")
+    elif ("write access" in low or "not granted" in low or "403" in low
+          or ("permission" in low and "denied" in low)):
+        hint = ("Your saved GitHub token doesn't have WRITE access to this "
+                "repository. On GitHub, grant the token 'Contents: Read and "
+                "write' for this repo (or paste a token that has it in the "
+                "source-control sidebar).")
+    elif ("authentication failed" in low or "could not read" in low
+          or "invalid username or password" in low or "401" in low):
+        hint = ("GitHub rejected the token. Update the GitHub token in the "
+                "source-control sidebar.")
+    elif "repository not found" in low or "not found" in low or "404" in low:
+        hint = ("The remote repository wasn't found, or your token can't see it. "
+                "Check the remote URL and the token's repository access.")
+    else:
+        hint = ""
+    if hint:
+        return f"{raw}\n\n{hint}" if raw else hint
+    return raw or "git push failed"
 
 
 # ── Request models ──
@@ -235,6 +291,9 @@ class ProdReleaseRequest(BaseModel):
     # action always uses the freshest folder even if the field's debounced
     # auto-save hasn't landed yet.
     prod_folder: str | None = Field(None, max_length=1000)
+    # Same backstop for the production repo (GitHub remote) field — an owner/repo
+    # shorthand the engine expands to a full URL on save.
+    prod_remote_url: str | None = Field(None, max_length=500)
 
 
 # Multi-repo registry request models (the Source Control "repo selector").
@@ -718,10 +777,7 @@ async def push_to_remote(request: Request):
 
     stdout, stderr, rc = _git_push(timeout=30)
     if rc != 0:
-        detail = stderr.strip()
-        if "Authentication failed" in stderr or "could not read" in stderr:
-            detail += "\n\nSet your GitHub token in the File Manager sidebar (source-control view)."
-        raise HTTPException(status_code=500, detail=detail)
+        raise HTTPException(status_code=500, detail=_push_failure_hint(stderr, stdout))
 
     return {
         "status": "pushed",
@@ -1068,11 +1124,9 @@ async def _commit_and_push_events(message: str = "", *, skip_push: bool = False,
         yield {"phase": "pushing"}
         await asyncio.sleep(0)
         push_out, push_err, push_code = await asyncio.to_thread(_git_push, timeout=120)
-        detail = (push_err or push_out).strip()
-        if push_code != 0 and ("Authentication failed" in push_err or "could not read" in push_err):
-            detail += "\n\nSet your GitHub token in the source-control sidebar."
         push = {"attempted": True, "ok": push_code == 0,
-                "detail": "Push successful." if push_code == 0 else detail}
+                "detail": "Push successful." if push_code == 0
+                else _push_failure_hint(push_err, push_out)}
 
     yield {"phase": "done", "result": {
         "status": "committed",
@@ -1598,6 +1652,17 @@ async def get_production_status(request: Request):
     return production_mirror.production_status()
 
 
+@router.get("/production/diff")
+async def get_production_diff(request: Request):
+    """How dev and the production folder differ right now — the added/updated/
+    removed counts a one-way Sync would apply. Read-only; powers the File
+    Explorer's More-menu 'in sync / N changes' line. Walks + byte-compares the
+    shipping set, so it runs in a worker thread to keep the event loop free."""
+    _require_admin(request)
+    import asyncio
+    return await asyncio.to_thread(production_mirror.diff_status)
+
+
 @router.post("/production/release")
 async def release_to_production(req: ProdReleaseRequest, request: Request):
     """Regenerate the trimmed copy in the production folder, commit, and push it
@@ -1627,14 +1692,26 @@ async def release_to_production(req: ProdReleaseRequest, request: Request):
     return result
 
 
+def _persist_prod_overrides(req: "ProdReleaseRequest") -> None:
+    """Persist the folder + remote a Sync/Push request carries (the File
+    Explorer's More-menu fields) before the action runs, so it always uses the
+    freshest values even if the field's debounced auto-save hasn't landed yet."""
+    overrides = {}
+    if req.prod_folder:
+        overrides["prod_folder"] = req.prod_folder
+    if req.prod_remote_url:
+        overrides["prod_remote_url"] = req.prod_remote_url
+    if overrides:
+        production_mirror.save_config(overrides)
+
+
 @router.post("/production/copy")
 async def copy_to_production(req: ProdReleaseRequest, request: Request):
     """First half of a release: build the trimmed copy in the production folder
-    and commit it there LOCALLY (no push). The File Explorer's "Copy to
+    and commit it there LOCALLY (no push). The File Explorer's "Sync to
     production" calls this. Streams NDJSON progress when stream=true."""
     _require_admin(request)
-    if req.prod_folder:
-        production_mirror.save_config({"prod_folder": req.prod_folder})
+    _persist_prod_overrides(req)
 
     if req.stream:
         async def _event_stream():
@@ -1665,8 +1742,7 @@ async def push_to_production(req: ProdReleaseRequest, request: Request):
     GitHub remote. The File Explorer's "Push to GitHub" calls this. Streams NDJSON
     progress when stream=true. (The request's ``message`` is ignored here.)"""
     _require_admin(request)
-    if req.prod_folder:
-        production_mirror.save_config({"prod_folder": req.prod_folder})
+    _persist_prod_overrides(req)
 
     if req.stream:
         async def _event_stream():

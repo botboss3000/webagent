@@ -1013,6 +1013,17 @@ body {
 }
 .files-tab-menu-field input:focus { border-color: var(--files-link); }
 
+/* Non-interactive info line inside the floating menu (e.g. the production
+   sync-diff summary). Muted, sized to match the field rows; theme-correct. */
+.files-tab-menu-info {
+  padding: 5px 10px 6px;
+  min-width: 248px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--files-text);
+  opacity: 0.85;
+}
+
 /* ── Word-wrap toggle for the editor ─────────────────────── */
 
 .files-textarea.wrap,

@@ -65,14 +65,17 @@ let projectRoot = '';          // absolute path of the project root (server-repo
 // (shared with the Git page) and mirrored here as absolute paths so tree rows
 // can show a "Dev" badge; the production-preview toggle reveals the per-row
 // checkboxes. The toolbar "More" button (#files-more-btn) opens a popover with
-// that toggle plus the two release halves — "Copy to production" (build the
-// trimmed tree in the sister repo + commit locally) and "Push to GitHub" — the
-// same engine the Git page's one-click Release runs, just split in two.
+// that toggle, the production repo (GitHub remote) + folder fields, a live
+// "in sync / N changes" line, and the two release halves — "Sync to production"
+// (one-way sync the trimmed tree into the sister repo + commit locally) and
+// "Push to GitHub" — the same engine the Git page's one-click Release runs.
 let prodExcluded = new Set();  // absolute paths of dev-only folders
 let prodViewMode = 'dev';      // 'dev' | 'prod' (production preview hides them)
-let _prodActionBusy = false;   // guards against a double-fire while copying/pushing
+let _prodActionBusy = false;   // guards against a double-fire while syncing/pushing
 let _prodFolder = '';          // cached destination folder (editable in the More menu)
 let _prodFolderDefault = '';   // backend's suggested default (placeholder when unset)
+let _prodRemote = '';          // cached production GitHub remote (editable in the More menu)
+let _prodRemoteDefault = '';   // backend's stored remote (for blank-field repopulation)
 
 // Persisted state (across tab switches and reloads)
 const LS_SIDEBAR_WIDTH    = 'files.sidebarWidth';
@@ -197,6 +200,8 @@ async function loadProdConfig() {
     const cfg = await apiFetch('/api/v1/github/production/config');
     _prodFolder = String(cfg.prod_folder || '');
     _prodFolderDefault = _prodFolder;
+    _prodRemote = String(cfg.prod_remote_url || '');
+    _prodRemoteDefault = _prodRemote;
   } catch (_) {
     // Non-fatal — the field just starts blank with its placeholder.
   }
@@ -213,8 +218,32 @@ async function saveProdFolder(value) {
       body: JSON.stringify({ prod_folder: folder }),
     });
   } catch (_) {
-    // Non-fatal — copy/push also send the folder in their payload as a backstop.
+    // Non-fatal — sync/push also send the folder in their payload as a backstop.
   }
+}
+
+// Persist the production GitHub remote to the shared config (field blur/Enter).
+// Accepts a friendly owner/repo shorthand; the backend expands it to a full URL.
+async function saveProdRemote(value) {
+  const remote = String(value || '').trim();
+  _prodRemote = remote;              // keep the cache current immediately
+  try {
+    await apiFetch('/api/v1/github/production/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prod_remote_url: remote }),
+    });
+  } catch (_) {
+    // Non-fatal — sync/push also send the remote in their payload as a backstop.
+  }
+}
+
+// Friendly display of a GitHub remote: a standard https://github.com/owner/repo(.git)
+// collapses to "owner/repo"; anything else (SSH, self-hosted) shows in full.
+function _shortRemote(url) {
+  const u = String(url || '').trim();
+  const m = u.match(/^https?:\/\/github\.com\/(.+?)(?:\.git)?\/?$/i);
+  return m ? m[1] : u;
 }
 
 // This EXACT path was marked dev-only (folder OR file — both are supported).
@@ -389,6 +418,31 @@ function toggleProdView() {
   applyProdViewClass();
 }
 
+// Fetch how dev and the production folder differ and write a one-line summary
+// into the More menu's diff row (#files-prod-diff). Read-only; called when the
+// menu opens. The backend walks + byte-compares the shipping set, so this is a
+// touch slower than the other reads — the row shows "Checking…" until it lands.
+async function loadProdDiff() {
+  const set = (txt) => {
+    const el = document.getElementById('files-prod-diff');
+    if (el) el.textContent = txt;
+  };
+  try {
+    const d = await apiFetch('/api/v1/github/production/diff');
+    if (!d) { set('Could not compare with production.'); return; }
+    if (d.configured === false) { set('Set a production repo to compare.'); return; }
+    if (d.first_sync) { set(`Not synced yet — ${d.shipping_count} files would be sent.`); return; }
+    if (d.in_sync) { set('In sync — production matches dev.'); return; }
+    const parts = [];
+    if (d.added)   parts.push(`${d.added} to add`);
+    if (d.updated) parts.push(`${d.updated} to update`);
+    if (d.removed) parts.push(`${d.removed} to remove`);
+    set(parts.length ? `Differs: ${parts.join(', ')}.` : 'Differences found.');
+  } catch (_) {
+    set('Could not compare with production.');
+  }
+}
+
 // Write the header status line under the toolbar (tones: info/success/error).
 function setProdStatus(text, tone) {
   const el = document.getElementById('files-prod-status');
@@ -416,7 +470,7 @@ async function _runProdAction(streamFn, confirmMsg, okStatuses) {
     // Send the current destination folder so the backend uses the freshest value
     // even if the field's auto-save is still in flight. The backend also auto-
     // generates the commit message. The stream helper adds {stream:true}.
-    await streamFn({ prod_folder: _prodFolder || undefined }, (ev) => {
+    await streamFn({ prod_folder: _prodFolder || undefined, prod_remote_url: _prodRemote || undefined }, (ev) => {
       if (ev.phase === 'done') { result = ev.result || {}; return; }
       // The first copy clones the existing repo (~20s) — say so instead of a
       // generic "Building…" label that looks frozen.
@@ -448,14 +502,15 @@ async function _runProdAction(streamFn, confirmMsg, okStatuses) {
   }
 }
 
-// "Copy to production": build the shipping set (every file NOT marked dev-only)
-// in the sister production folder and commit it there LOCALLY — no push. Lands
+// "Sync to production": one-way sync the shipping set (every file NOT marked
+// dev-only) from dev into the sister production folder — adds new/changed files
+// and drops files no longer shipped — then commit there LOCALLY (no push). Lands
 // the files so they can be reviewed before publishing. The backend's secret-scan
 // still guards the commit.
-function copyToProduction() {
+function syncToProduction() {
   return _runProdAction(
     streamCopy,
-    'Copy to production?\n\nThis builds the shipping set (every file NOT marked dev-only) in the production folder and commits it there locally. Nothing is pushed to GitHub yet.',
+    'Sync to production?\n\nThis one-way syncs the shipping set (every file NOT marked dev-only) from dev into the production folder — adding changed files and removing files no longer shipped — then commits there locally. Nothing is pushed to GitHub yet.',
     ['copied'],
   );
 }
@@ -470,7 +525,8 @@ function pushToProduction() {
   );
 }
 
-// The toolbar "More" popover: the production-preview toggle + the two release
+// The toolbar "More" popover: the production-preview toggle, the production repo
+// (GitHub remote) + folder fields, a live in-sync/diff line, and the two release
 // halves. Reuses the shared floating-menu builder so it matches the tab/context
 // menus; the eye row shows a ✓ while production-preview is on.
 function openProductionMenu(anchorBtn) {
@@ -480,22 +536,35 @@ function openProductionMenu(anchorBtn) {
     { icon: previewing ? 'eye-off' : 'eye', label: 'Show dev checkboxes',
       checked: previewing, action: toggleProdView },
     { separator: true },
-    // Destination folder field (above Copy). Updates the cache per keystroke and
-    // persists on blur/Enter; Copy/Push also send it as a backstop.
+    // Production GitHub remote (owner/repo shorthand accepted). Persists on blur;
+    // Sync/Push also send it as a backstop.
+    { field: true, label: 'Production repo', value: _shortRemote(_prodRemote),
+      placeholder: 'owner/repo',
+      onInput: (v) => { _prodRemote = v.trim(); },
+      onSave: (v) => saveProdRemote(v) },
+    // Destination folder field. Updates the cache per keystroke and persists on
+    // blur/Enter; Sync/Push also send it as a backstop.
     { field: true, label: 'Production folder', value: _prodFolder,
       placeholder: _prodFolderDefault || '…/your-repo-prod',
       onInput: (v) => { _prodFolder = v.trim(); },
       onSave: (v) => saveProdFolder(v) },
-    { icon: 'copy',         label: 'Copy to production', disabled: _prodActionBusy, action: copyToProduction },
+    { separator: true },
+    // Live diff line (filled in by loadProdDiff once the menu is up).
+    { info: true, id: 'files-prod-diff', label: 'Checking for changes…' },
+    { icon: 'refresh-cw',   label: 'Sync to production', disabled: _prodActionBusy, action: syncToProduction },
     { icon: 'upload-cloud', label: 'Push to GitHub',     disabled: _prodActionBusy, action: pushToProduction },
   ];
   _openFloatingMenu(items, rect.bottom + 2, rect.right - 240);
-  // Refresh the folder from the backend in case it changed elsewhere; update the
-  // open field in place if it arrives while the menu is still up and untouched.
+  loadProdDiff();
+  // Refresh the folder + remote from the backend in case they changed elsewhere;
+  // update an untouched, still-blank field in place if the value arrives while the
+  // menu is up. fields[0] = repo, fields[1] = folder (in DOM order).
   loadProdConfig().then(() => {
     const menu = document.getElementById('files-floating-menu');
-    const inp = menu && menu.querySelector('.files-tab-menu-field input');
-    if (inp && document.activeElement !== inp && !inp.value) inp.value = _prodFolder;
+    if (!menu) return;
+    const fields = menu.querySelectorAll('.files-tab-menu-field input');
+    if (fields[0] && document.activeElement !== fields[0] && !fields[0].value) fields[0].value = _shortRemote(_prodRemote);
+    if (fields[1] && document.activeElement !== fields[1] && !fields[1].value) fields[1].value = _prodFolder;
   });
 }
 
@@ -1077,6 +1146,16 @@ function _openFloatingMenu(items, top, left) {
       const hr = document.createElement('div');
       hr.className = 'files-tab-menu-sep';
       menu.appendChild(hr);
+      continue;
+    }
+    // A non-interactive info line (e.g. the production sync-diff summary).
+    // Carries an optional id so callers can update its text asynchronously.
+    if (item.info) {
+      const row = document.createElement('div');
+      row.className = 'files-tab-menu-info';
+      if (item.id) row.id = item.id;
+      row.textContent = item.label || '';
+      menu.appendChild(row);
       continue;
     }
     // A text field row (e.g. the production folder path). Lives inside the menu
