@@ -219,12 +219,12 @@ const _TX_BRANCH = 'main';
 const _TX_BAD_URL = "'\";\n\r\\ &|`$(){}<>";
 const _TX_BAD_TOKEN = "'\";\n\r\\ &|`$(){}<>@/ ";
 const _TX_STEPS = [
-  'Install the free Termux app on the phone (from F-Droid, not the Play Store).',
-  'Open Termux and either scan the QR code or paste the command, then press Enter.',
-  'First run takes a few minutes — it downloads Ubuntu and the dependencies.',
-  'When it finishes, open http://localhost:8080 on the phone, or http://PHONE-IP:8080 from another device on the same Wi-Fi (the script prints the phone’s IP).',
+  'On a phone: install the free Termux app, then open it. On a Linux computer: open a terminal.',
+  'Scan the QR code or paste the command, then press Enter.',
+  'The first run takes a few minutes while it installs everything (on a phone it also sets up a small Ubuntu environment).',
+  'When it finishes, open http://localhost:8080 on that device, or http://DEVICE-IP:8080 from another device on the same network (the script prints the address).',
 ];
-const _TX_NOTE = 'The command installs webAgent inside an Ubuntu environment on the phone (the reliable way to run the full app on Android), then keeps it running in the background with a wake-lock and restarts it if it ever stops. To stop it later, paste in Termux: proot-distro login ubuntu -- pkill -f run.py';
+const _TX_NOTE = 'On a phone the command installs webAgent inside a small Ubuntu environment (the reliable way to run the full app on Android); on a Linux computer it installs straight onto the system. Either way it keeps running in the background and restarts itself if it stops. On a phone it also installs the Server Manager — type webagent in Termux to inspect, restart or diagnose the install. To stop it later: on a phone paste “proot-distro login ubuntu -- pkill -f run.py”, on Linux paste “pkill -f run.py”.';
 
 function _txHasBad(s, bad) { for (const c of bad) if (s.indexOf(c) >= 0) return true; return false; }
 function _txStripScheme(u) { return u.replace(/^https?:\/\//, ''); }
@@ -241,7 +241,16 @@ function _txBuild(inp) {
     if (!tok) { tok = _TX_PLACEHOLDER_TOKEN; placeholderToken = true; }
     clone = 'https://' + tok + '@' + _txStripScheme(repo);
   }
-  const command = 'pkg update -y && pkg install -y git proot-distro && '
+  // ONE command for both Termux and plain Linux (mirror of termux.build_command):
+  // install git with whatever package manager is present (Termux `pkg`, or
+  // apt/dnf/pacman with sudo on a Linux box), clone, then hand off to the setup
+  // script which detects Termux vs Linux. Keep BYTE-IDENTICAL to the Python side.
+  const command = 'SUDO=; [ "$(id -u 2>/dev/null)" = 0 ] || SUDO=sudo; '
+    + 'if command -v git >/dev/null 2>&1; then :; '
+    + 'elif command -v pkg >/dev/null 2>&1; then pkg install -y git; '
+    + 'elif command -v apt-get >/dev/null 2>&1; then $SUDO apt-get update && $SUDO apt-get install -y git; '
+    + 'elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y git; '
+    + 'elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm git; fi; '
     + '{ [ -d "$HOME/webagent/.git" ] || git clone --depth 1 --branch ' + _TX_BRANCH + ' ' + clone + ' "$HOME/webagent"; } && '
     + 'bash "$HOME/webagent/deploy/termux-setup.sh"';
   return { command, placeholderRepo, placeholderToken, warning };
@@ -389,6 +398,19 @@ function _txPlaceQr(panel, anchor) {
   panel.style.top = Math.round(top) + 'px';
 }
 
+// Turn every `data-tip` label in the phone row into a circled "?" help badge,
+// the same affordance the cloud row's fields get (via _buildField). Bespoke here
+// because the phone row is hand-written markup, not built from field descriptors.
+// Idempotent — a `wired` flag stops re-runs from stacking badges.
+function _wirePhoneTips() {
+  document.querySelectorAll('#ac-deploy-phone-row .ac-label[data-tip]').forEach(lab => {
+    if (lab.dataset.tipWired) return;
+    lab.dataset.tipWired = '1';
+    const badge = _tipBadge(lab.dataset.tip);
+    if (badge) lab.appendChild(badge);
+  });
+}
+
 function _initPhone() {
   const url = _qs('ac-tx-url');
   const vis = _qs('ac-tx-visibility');
@@ -413,6 +435,7 @@ function _initPhone() {
     qrBtn.dataset.wired = '1';
     qrBtn.addEventListener('click', () => _txToggleQr(qrBtn));
   }
+  _wirePhoneTips();             // circled "?" help badges on the row's labels
 }
 
 // ── Field-help popover ───────────────────────────────────────────────────────

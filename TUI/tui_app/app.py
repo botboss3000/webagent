@@ -725,8 +725,17 @@ class ServerManagerApp(App):
         self._self_info = gather()            # how THIS manager runs (source/exe); static, cached
         self._self_update_state = "manager update: checking…"  # refreshed by a startup probe
         self._server_state = "n/a"   # cached server health for the status-bar dot
-        self._do_autostart = True    # auto-start the managed server on open (tests disable)
-        self._supervise = True       # spawn/refresh the external keep-alive guardian (tests disable)
+        # By default the manager OWNS the server lifecycle: it auto-starts the
+        # managed server on open and spawns the external keep-alive guardian. But
+        # when the manager is installed ALONGSIDE an existing supervisor — a cloud
+        # box's systemd unit, or the Termux keep-alive loop (start_server_termux.sh)
+        # the in-app Deploy flow sets up — those two would fight over the same
+        # server. Setting WEBAGENT_TUI_NO_SUPERVISE=1 (the deploy launchers do)
+        # opens the manager in observe/manage-only mode: it never auto-launches or
+        # keeps-alive a competing server, it just inspects / restarts on request.
+        _ext_supervised = os.environ.get("WEBAGENT_TUI_NO_SUPERVISE", "").strip().lower() in ("1", "true", "yes", "on")
+        self._do_autostart = not _ext_supervised   # auto-start the managed server on open (tests disable)
+        self._supervise = not _ext_supervised       # spawn/refresh the external keep-alive guardian (tests disable)
         self._user_quit = False      # set True ONLY on a deliberate quit → writes the clean-exit
                                      # marker in on_unmount so the guardian doesn't relaunch us
         self._restart_guardian_on_exit = False  # set True on a self-restart → cycle the

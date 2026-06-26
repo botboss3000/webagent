@@ -1146,21 +1146,26 @@ function _openFloatingMenu(items, top, left) {
 
   _refreshLucideIcons(menu);
 
+  // Dismiss handlers. These check the LIVE menu element (by id), not this call's
+  // `menu` closure: a prior open's handler that never fired still sits on the
+  // document, and if it tested its own (now-detached) menu it would wrongly close
+  // a freshly-reopened menu the moment you click inside it — which broke typing in
+  // the folder field on the 2nd+ open. Testing the live menu makes stale handlers
+  // self-heal (they detach when no menu is present) and keeps clicks inside the
+  // current menu (its buttons OR field) from dismissing it.
+  const cleanup = () => {
+    document.removeEventListener('mousedown', outside, true);
+    document.removeEventListener('contextmenu', outside, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
   const outside = (ev) => {
-    if (!menu.contains(ev.target)) {
-      closeFloatingMenu();
-      document.removeEventListener('mousedown', outside, true);
-      document.removeEventListener('contextmenu', outside, true);
-      document.removeEventListener('keydown', onKey, true);
-    }
+    const cur = document.getElementById('files-floating-menu');
+    if (!cur) { cleanup(); return; }            // stale handler — detach self
+    if (!cur.contains(ev.target)) { closeFloatingMenu(); cleanup(); }
   };
   const onKey = (ev) => {
-    if (ev.key === 'Escape') {
-      closeFloatingMenu();
-      document.removeEventListener('mousedown', outside, true);
-      document.removeEventListener('contextmenu', outside, true);
-      document.removeEventListener('keydown', onKey, true);
-    }
+    if (!document.getElementById('files-floating-menu')) { cleanup(); return; }
+    if (ev.key === 'Escape') { closeFloatingMenu(); cleanup(); }
   };
   setTimeout(() => {
     document.addEventListener('mousedown', outside, true);
