@@ -1,8 +1,8 @@
 """Abstract scheduler interface.
 
 Implementations either run jobs in-process (``LocalScheduler``) or push them
-to an external service (``GoogleScheduler`` stub). Callers go through
-``app.scheduler.get_scheduler()``.
+to an external service (the ``google_cloud`` provider, ``GoogleCloudScheduler``).
+Callers go through ``app.scheduler.get_scheduler()``.
 """
 
 from __future__ import annotations

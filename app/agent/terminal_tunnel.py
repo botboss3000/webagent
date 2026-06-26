@@ -1,6 +1,7 @@
 """Terminal tunnel — let the USER drive a terminal program through chat.
 
-Terminal *control* (app/tools/terminal_tools.py) lets the agent drive a terminal.
+Terminal *control* (plugins/abilities/Administrator/terminal_control.py) lets the
+agent drive a terminal.
 This is the mirror image: a **tunnel** binds a chat session to a live terminal so
 the human's chat messages become keystrokes for that program and the program's
 output streams back into the chat. While a tunnel is active the agent steps

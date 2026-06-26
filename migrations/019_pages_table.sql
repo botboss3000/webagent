@@ -1,6 +1,6 @@
 -- 019_pages_table.sql
 --
--- Adds the `pages` table backing the AutoAgent page-builder workspace.
+-- Adds the `pages` table backing the Canvas page-builder workspace.
 -- Used by DatabasePageStore (full HTML in `html`) and HybridPageStore
 -- (metadata-only rows, `html` stays NULL — body lives on disk).
 --

@@ -14,6 +14,12 @@
       "port": 8090
     },
     {
+      "name": "webagent-preview",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8091"],
+      "port": 8091
+    },
+    {
       "name": "web-terminal",
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "7654", "--directory", "app/web-terminal"],

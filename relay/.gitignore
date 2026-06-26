@@ -1,0 +1,9 @@
+# Cloudflare Worker build/deps
+node_modules/
+.wrangler/
+
+# Local/throwaway secrets — NEVER commit these.
+# Real secrets live only in Cloudflare's encrypted store (wrangler secret put).
+.dev.vars
+.gh_token.txt
+*.token.txt

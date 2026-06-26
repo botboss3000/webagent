@@ -12,14 +12,19 @@ Note: the GitHub token is a single shared credential (the repo is shared).
 Unlike LLM keys, it's NOT per-user — stored in provider.json only.
 """
 
+import asyncio
 import logging
 import os
+import re
 import subprocess
 import json
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from app.auth.jwt import decode_token
+from app.auth.identity import request_user_id
+from app import production_mirror
+from app import git_repos
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +70,44 @@ def _cache_token(token: str) -> None:
     _TOKEN_CACHE = token
 
 
+# ── Active repo (which folder the Git page operates on) ──
+# The Source Control page can point at OTHER local repos besides this app's own —
+# see app/git_repos.py. `_ACTIVE_REPO` is the folder every git call below runs in;
+# it is re-resolved from the saved selection at the top of each UI request via
+# `_use_active_repo()` and defaults to this app's own root. The agent's Git Control
+# ability pins it back here (`_pin_to_project_root`) so an agent never follows the
+# page's selection. Same single-process global convention as `_TOKEN_CACHE`.
+_ACTIVE_REPO: Path = _PROJECT_ROOT
+
+
+def _use_active_repo() -> None:
+    """Point subsequent git calls at the user's currently selected repo + key.
+    Call at the top of each UI endpoint (replaces the old `_cache_token` line).
+    Falls back to this app's repo + shared token on any error so the page never
+    breaks if the registry is missing or a folder went away."""
+    global _ACTIVE_REPO
+    try:
+        root, token = git_repos.resolve_active()
+        _ACTIVE_REPO = root if (root and root.exists()) else _PROJECT_ROOT
+        _cache_token(token or _get_token())
+    except Exception:  # noqa: BLE001
+        _ACTIVE_REPO = _PROJECT_ROOT
+        _cache_token(_get_token())
+
+
+def _pin_to_project_root() -> None:
+    """Force subsequent git calls back to this app's own repo + shared key. Used by
+    the agent Git Control ability so agent git is never re-pointed by whatever repo
+    the user has selected on the Source Control page."""
+    global _ACTIVE_REPO
+    _ACTIVE_REPO = _PROJECT_ROOT
+    _cache_token(_get_token())
+
+
 def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
-    """Run a git command in the project root. Returns (stdout, stderr, returncode).
-    Uses cached token for HTTPS auth if available.
+    """Run a git command in the active repo (the project root by default).
+    Returns (stdout, stderr, returncode). Uses cached token for HTTPS auth if
+    available.
     """
     env = os.environ.copy()
     token = _TOKEN_CACHE or _get_token()
@@ -79,7 +119,7 @@ def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
     try:
         proc = subprocess.run(
             ["git"] + args,
-            cwd=str(_PROJECT_ROOT),
+            cwd=str(_ACTIVE_REPO),
             capture_output=True,
             text=True,
             env=env,
@@ -94,23 +134,46 @@ def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
         return "", str(e), -1
 
 
+def _git_push(timeout: int = 120) -> tuple[str, str, int]:
+    """Push the current branch, self-healing a missing upstream link.
+
+    A plain `git push` fails when the local branch has no upstream set —
+    e.g. after a history rewrite / force-push drops the tracking link —
+    reporting "has no upstream branch". When that's the failure we retry
+    once with `--set-upstream origin <branch>`, so the push lands AND the
+    link is restored for next time. This is the same effect as the git
+    config `push.autoSetupRemote=true`, but applied in-code so it works
+    regardless of the user's global git settings. Returns the
+    (stdout, stderr, returncode) of whichever push actually ran.
+    """
+    out, err, code = _run_git(["push"], timeout=timeout)
+    if code != 0 and "no upstream branch" in (err or "").lower():
+        branch_out, _, br_code = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=5)
+        branch = branch_out.strip()
+        if br_code == 0 and branch and branch != "HEAD":
+            out, err, code = _run_git(
+                ["push", "--set-upstream", "origin", branch], timeout=timeout
+            )
+    return out, err, code
+
+
 # ── Request models ──
 
 # ── Admin access control ──
 # AuthMiddleware not active in main.py, so we read Authorization header directly.
 
-_ADMIN_USER_ID = "admin_default"
+_ADMIN_USER_ID = "admin"
 
 
 def _get_user_id_from_request(request: Request) -> str:
-    """Extract user_id from the Authorization header (JWT). Returns empty if not auth'd."""
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        token = auth[7:]
-        payload = decode_token(token)
-        if payload:
-            return payload.get("user_id", "")
-    return ""
+    """Extract the caller's user_id (JWT, else open-mode bootstrap admin).
+
+    Delegates to the shared request-based chokepoint so Source Control
+    (commit/push, etc.) works over a Cloudflare Tunnel — where the browser can't
+    mint a JWT — via the same open-mode fallback every other admin gate uses.
+    See app.auth.identity.request_user_id.
+    """
+    return request_user_id(request)
 
 
 def _require_admin(request: Request):
@@ -125,16 +188,72 @@ def _require_admin(request: Request):
 
 # ── Request models ──
 
-class CommitRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=200)
+class CommitPushRequest(BaseModel):
+    # All optional: a blank message means "auto-write one from the diff".
+    message: str = Field("", max_length=2000)
+    skip_push: bool = False
+    include_untracked: bool = True
+    # When true the endpoint streams granular progress events (NDJSON) instead of
+    # returning a single result dict — drives the ⭐ button's live step display.
+    stream: bool = False
 
 
 class TokenRequest(BaseModel):
     token: str = Field(..., min_length=1)
 
 
+class RemoteUrlRequest(BaseModel):
+    url: str = Field(..., min_length=1, max_length=500)
+
+
 class BranchRequest(BaseModel):
     branch: str = Field(..., min_length=1, max_length=200)
+
+
+# Production-mirror request models (the "Release to production" flow).
+class ProdConfigRequest(BaseModel):
+    prod_folder: str | None = Field(None, max_length=1000)
+    prod_remote_url: str | None = Field(None, max_length=500)
+    auto_release_on_push: bool | None = None
+
+
+class ProdExcludeRequest(BaseModel):
+    path: str = Field(..., min_length=1, max_length=1000)
+    excluded: bool = True
+
+
+class ProdExcludeBulkRequest(BaseModel):
+    add: list[str] = Field(default_factory=list, max_length=5000)
+    remove: list[str] = Field(default_factory=list, max_length=5000)
+
+
+class ProdReleaseRequest(BaseModel):
+    message: str = Field("", max_length=2000)
+    stream: bool = False
+    # Optional destination override sent by the File Explorer's folder field. When
+    # present it is persisted to the config before the copy/push runs, so the
+    # action always uses the freshest folder even if the field's debounced
+    # auto-save hasn't landed yet.
+    prod_folder: str | None = Field(None, max_length=1000)
+
+
+# Multi-repo registry request models (the Source Control "repo selector").
+class RepoAddRequest(BaseModel):
+    label: str = Field("", max_length=200)
+    folder: str = Field(..., min_length=1, max_length=1000)
+    remote_url: str = Field("", max_length=500)
+    token: str = Field("", max_length=500)
+
+
+class RepoUpdateRequest(BaseModel):
+    label: str | None = Field(None, max_length=200)
+    folder: str | None = Field(None, max_length=1000)
+    remote_url: str | None = Field(None, max_length=500)
+    token: str | None = Field(None, max_length=500)
+
+
+class RepoSelectRequest(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
 
 
 # ── Endpoints ──
@@ -147,17 +266,26 @@ async def check_access(request: Request):
 
 
 @router.get("/status")
-async def get_status(request: Request):
-    """Return repo status: branch, remote, file status, ahead/behind info."""
-    # Cache token before running git commands
-    _cache_token(_get_token())
+async def get_status(request: Request, fetch: bool = True):
+    """Return repo status: branch, remote, file status, ahead/behind info.
+
+    `fetch=1` (default) refreshes remote refs from origin first so ahead/behind
+    is accurate, at the cost of a network round-trip. `fetch=0` skips that and
+    returns the last-known local state instantly — used for the fast first paint
+    of the Source Control panel, which then refreshes with `fetch=1` in the
+    background.
+    """
+    # Point git at the user's selected repo (+ its key) before running commands
+    _use_active_repo()
 
     # 0. Refresh remote refs so ahead/behind reflects what's actually on origin.
     # Without this, the cached refs are whatever was last fetched/pulled on this
     # machine, so the page reports "in sync" even when origin has new commits.
     # `--quiet` suppresses transcript noise; failures (offline, auth issue) are
-    # tolerated — we fall through to whatever cached state we have.
-    _run_git(["fetch", "--quiet", "origin"], timeout=20)
+    # tolerated — we fall through to whatever cached state we have. Skipped when
+    # the caller asks for a local-only fast read (fetch=0).
+    if fetch:
+        _run_git(["fetch", "--quiet", "origin"], timeout=20)
 
     # 1. Branch name
     branch_out, _, rc = _run_git(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -291,7 +419,7 @@ async def get_status(request: Request):
 
 
 @router.get("/log-graph")
-async def get_log_graph(request: Request, limit: int = 80):
+async def get_log_graph(request: Request, limit: int = 80, fetch: bool = True):
     """Return a commit graph across **all** local + remote branches.
 
     Output is shaped so the frontend can draw a VS Code style graph:
@@ -305,11 +433,17 @@ async def get_log_graph(request: Request, limit: int = 80):
     The endpoint is read-only and shows commits from every ref, including
     branches that aren't `main`, so users can see merges and side branches
     just like the VS Code Source Control graph.
+
+    `fetch=1` (default) refreshes remote refs first so origin/* tips are live;
+    `fetch=0` skips the network round-trip and graphs the last-known local refs
+    instantly (used for the panel's fast first paint).
     """
-    _cache_token(_get_token())
+    _use_active_repo()
 
     # Refresh remote refs so origin/* branch tips reflect what's on GitHub.
-    _run_git(["fetch", "--quiet", "--all"], timeout=20)
+    # Skipped on a local-only fast read (fetch=0).
+    if fetch:
+        _run_git(["fetch", "--quiet", "--all"], timeout=20)
 
     # Clamp limit to a sane window — big graphs become unreadable anyway.
     try:
@@ -375,6 +509,20 @@ async def get_log_graph(request: Request, limit: int = 80):
         if pull_rc == 0 and pull_out.strip():
             pullable_set = {h.strip() for h in pull_out.strip().split("\n") if h.strip()}
 
+    # 2c. Commits committed locally but NOT yet on the remote — reachable from
+    # HEAD but not from origin/<current-branch>. These are the "ahead" commits a
+    # push would send; the frontend draws them with a dotted connector + green
+    # halo so they read as not-yet-on-origin. If origin/<branch> doesn't resolve
+    # (no upstream yet), the rev-list fails and we mark nothing — a safe default.
+    unpushed_set: set[str] = set()
+    if cur_branch and cur_branch != "HEAD":
+        ahead_out, _, ahead_rc = _run_git(
+            ["rev-list", "-300", "HEAD", f"^origin/{cur_branch}"],
+            timeout=10,
+        )
+        if ahead_rc == 0 and ahead_out.strip():
+            unpushed_set = {h.strip() for h in ahead_out.strip().split("\n") if h.strip()}
+
     # 3. Compute lanes (column positions) for the graph.
     # `active_lanes[i]` holds the hash of the commit expected to land in
     # lane `i` next (placed there by a child commit above). Walking the
@@ -423,11 +571,23 @@ async def get_log_graph(request: Request, limit: int = 80):
         parent_lanes: list[int] = []
         for idx, p in enumerate(c["parents"]):
             existing = _first_index(p)
-            if existing >= 0:
-                parent_lanes.append(existing)
-            elif idx == 0 and active_lanes[lane] is None:
+            if idx == 0 and active_lanes[lane] is None and (existing < 0 or existing > lane):
+                # First parent = the trunk continuing straight down. Keep it in
+                # this commit's OWN lane. If a side-branch row above already
+                # parked the parent in a HIGHER lane (existing > lane), leave
+                # that reservation in place too: the higher lane then carries a
+                # merge line that bends into the parent's own row, while the
+                # trunk stays put instead of veering right into the side
+                # branch's column. Without this, the leftmost (e.g. main) trunk
+                # would kink into a side lane the moment they share an ancestor.
+                # (active_lanes[lane] is always free here — the dot's lane was
+                # vacated just above.) A parent already sitting in a LOWER lane
+                # (existing < lane) is the trunk we merge back into, so we fall
+                # through and bend left toward it.
                 active_lanes[lane] = p
                 parent_lanes.append(lane)
+            elif existing >= 0:
+                parent_lanes.append(existing)
             else:
                 slot = _open_empty_slot()
                 active_lanes[slot] = p
@@ -463,6 +623,7 @@ async def get_log_graph(request: Request, limit: int = 80):
             "is_head": c["full_hash"] == head_hash,
             "is_pulled": c["full_hash"] in pulled_set,
             "is_pullable": c["full_hash"] in pullable_set,
+            "is_unpushed": c["full_hash"] in unpushed_set,
         })
 
     # 4. Map every ref name to its short hash for branch-tip badges.
@@ -495,7 +656,7 @@ async def get_commit_detail(commit_hash: str, request: Request):
     if not commit_hash or len(commit_hash) > 64 or not all(c in "0123456789abcdefABCDEF" for c in commit_hash):
         raise HTTPException(status_code=400, detail="Invalid commit hash")
 
-    _cache_token(_get_token())
+    _use_active_repo()
 
     # Metadata + full body
     _SEP = "\x1f"
@@ -549,38 +710,13 @@ async def get_commit_detail(commit_hash: str, request: Request):
     }
 
 
-@router.post("/commit")
-async def create_commit(req: CommitRequest, request: Request):
-    """Stage all changes and commit with a message."""
-    _require_admin(request)
-    _cache_token(_get_token())
-
-    stdout, stderr, rc = _run_git(["add", "-A"], timeout=10)
-    if rc != 0:
-        raise HTTPException(status_code=500, detail=f"Stage failed: {stderr}")
-
-    diff_cached, _, rc_check = _run_git(["diff", "--cached", "--quiet"], timeout=5)
-    if rc_check == 0:
-        return {"status": "nothing_to_commit", "message": "No changes to commit."}
-
-    stdout, stderr, rc = _run_git(["commit", "-m", req.message], timeout=10)
-    if rc != 0:
-        raise HTTPException(status_code=500, detail=f"Commit failed: {stderr}")
-
-    return {
-        "status": "committed",
-        "message": f"Committed: {req.message}",
-        "output": stdout.strip(),
-    }
-
-
 @router.post("/push")
 async def push_to_remote(request: Request):
     """Push commits to the remote."""
     _require_admin(request)
-    _cache_token(_get_token())
+    _use_active_repo()
 
-    stdout, stderr, rc = _run_git(["push"], timeout=30)
+    stdout, stderr, rc = _git_push(timeout=30)
     if rc != 0:
         detail = stderr.strip()
         if "Authentication failed" in stderr or "could not read" in stderr:
@@ -592,6 +728,435 @@ async def push_to_remote(request: Request):
         "message": "Push successful.",
         "output": stdout.strip(),
     }
+
+
+# ── One-shot: stage → (auto-write message) → commit → push ──────────────────
+#
+# Shared core for the Source-Control ⭐ button (POST /commit-and-push below) AND
+# the Git Control ability's `commit_and_push` agent tool (plugins/admin/
+# source_tools.py delegates here). One source of truth so the instant UI path
+# and the agent path can never drift in safety checks, message style, or flow.
+
+# Obvious secret shapes we refuse to commit. Not exhaustive — a backstop, not a
+# substitute for .gitignore / pre-commit scanning.
+_SECRET_PATTERNS = [
+    (r'ghp_[A-Za-z0-9]{36}', 'GitHub personal access token'),
+    (r'sk-or-v1-[A-Za-z0-9]{32,}', 'OpenRouter/OpenAI API key'),
+    (r'sk-[A-Za-z0-9]{32,}', 'API key pattern'),
+    (r'AKIA[0-9A-Z]{16}', 'AWS access key'),
+    (r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----', 'Private key'),
+]
+
+
+# How long we'll wait for the auto commit-message before giving up and using a
+# generic fallback note. Kept short on purpose: the ⭐ button must feel instant,
+# and the message is a nice-to-have (the user can always type their own).
+_COMMIT_LLM_TIMEOUT = 20.0
+
+
+def _commit_llm_client():
+    """Lazy LLM client for commit-message writing — same provider config the
+    chat/compaction path uses (LLM_BASE_URL / LLM_API_KEY, OpenRouter default).
+
+    Bounded for responsiveness: a short timeout and **no automatic client-side
+    retries**. The openai client retries twice by default with backoff, which
+    turned a single slow/flaky call into a 90s+ stall — the real reason the ⭐
+    button appeared to hang. With max_retries=0 a bad call fails once and
+    returns immediately; the caller (`_generate_commit_message`) bounds the whole
+    sub-call with asyncio.wait_for and drops to a deterministic fallback on any
+    failure, so flakiness never re-introduces the stall."""
+    base_url = (
+        os.environ.get("LLM_BASE_URL")
+        or os.environ.get("OPENROUTER_BASE_URL")
+        or "https://openrouter.ai/api/v1"
+    )
+    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or ""
+    try:
+        from openai import AsyncOpenAI
+        return AsyncOpenAI(base_url=base_url, api_key=api_key,
+                           timeout=_COMMIT_LLM_TIMEOUT, max_retries=0)
+    except ImportError:  # pragma: no cover
+        from app.openai_compat import AsyncOpenAI
+        return AsyncOpenAI(base_url=base_url, api_key=api_key,
+                           timeout=_COMMIT_LLM_TIMEOUT)
+
+
+def _changed_files(stat_out: str, untracked: list[str]) -> list[str]:
+    """Pull the changed-file paths out of a `git diff --stat` block (each file
+    line is ` path | N +++/---`; the trailing ` N files changed …` summary line
+    has no `|` so it's skipped) and append the untracked paths, de-duplicated and
+    order-preserving."""
+    files: list[str] = []
+    for ln in (stat_out or "").splitlines():
+        if "|" in ln:
+            path = ln.split("|", 1)[0].strip()
+            if path:
+                files.append(path)
+    files.extend(untracked or [])
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for f in files:
+        if f not in seen:
+            seen.add(f)
+            uniq.append(f)
+    return uniq
+
+
+def _top_level_groups(files: list[str]) -> list[str]:
+    """The top-level *area* for each path — the first path segment, or the bare
+    filename for a root-level file — de-duplicated and order-preserving. Lets a
+    many-file fallback name the areas that changed (`app, ui, docs`) when the
+    individual paths are too long to list inside a 72-char title."""
+    groups: list[str] = []
+    seen: set[str] = set()
+    for f in files:
+        norm = f.replace("\\", "/").strip("/")
+        head = norm.split("/", 1)[0] if "/" in norm else norm
+        if head and head not in seen:
+            seen.add(head)
+            groups.append(head)
+    return groups
+
+
+def _fallback_commit_message(stat_out: str, untracked: list[str]) -> str:
+    """A deterministic, *informative* commit message used whenever the LLM
+    sub-call can't produce one (empty reply, timeout, API error).
+
+    The title degrades gracefully so it stays meaningful instead of collapsing
+    straight to a content-free count (the bug the user hit, where 3 long paths
+    overflowed 72 chars and the title became a bare 'chore: update N files'):
+      1. name the first few files outright (3 → 2), if they fit;
+      2. else summarise by area — top-level dir/file — e.g. 'app, ui, docs';
+      3. only as an absolute last resort, the bare count.
+    The body always lists the actual files regardless of which title was chosen.
+    """
+    files = _changed_files(stat_out, untracked)
+    if not files:
+        return "chore: staged changes"
+    if len(files) == 1:
+        return f"chore: update {files[0]}"
+
+    title = ""
+    # 1) Name the first few files outright, if they fit the 72-char title.
+    for n in (3, 2):
+        if n > len(files):
+            continue
+        shown = ", ".join(files[:n])
+        extra = len(files) - n
+        candidate = f"chore: update {shown}"
+        if extra > 0:
+            candidate += f" and {extra} more file{'s' if extra != 1 else ''}"
+        if len(candidate) <= 72:
+            title = candidate
+            break
+    # 2) Paths too long to name — summarise by area instead of a bare count.
+    if not title:
+        groups = _top_level_groups(files)
+        for g in (3, 2, 1):
+            shown = ", ".join(groups[:g])
+            candidate = f"chore: update {shown} ({len(files)} files)"
+            if len(candidate) <= 72:
+                title = candidate
+                break
+    # 3) Absolute last resort.
+    if not title:
+        title = f"chore: update {len(files)} files"
+
+    body_files = files[:20]
+    body = "\n".join(f"- {f}" for f in body_files)
+    if len(files) > len(body_files):
+        body += f"\n- ... and {len(files) - len(body_files)} more"
+    return f"{title}\n\n{body}"
+
+
+async def _generate_commit_message(stat_out: str, full_diff: str,
+                                   untracked: list[str]) -> tuple[str, str, str]:
+    """Write a conventional-commit message from the diff via a lightweight LLM
+    sub-call. Returns ``(message, source, detail)``: ``source`` is ``"llm"`` when
+    the model produced the note, or ``"fallback"`` (with ``detail`` = why) when it
+    dropped to the deterministic file-list summary. The fallback is still a real,
+    informative message — ``source`` just lets the caller TELL the user the
+    auto-writer was skipped (the ⭐ progress UI shows "auto-message unavailable")."""
+    fallback = _fallback_commit_message(stat_out, untracked)
+    model = (
+        os.environ.get("LLM_MODEL")
+        or os.environ.get("OPENROUTER_MODEL")
+        or "deepseek/deepseek-v4-flash"
+    )
+    diff_window = full_diff[:6000] if full_diff else "(no diff)"
+    if full_diff and len(full_diff) > 6000:
+        diff_window += f"\n... (truncated, {len(full_diff)} total bytes)"
+    summary = (
+        f"Changed files:\n{stat_out.strip() or 'N/A'}\n\n"
+        "Untracked:\n"
+        + ("\n".join(f"  {f}" for f in untracked) if untracked else "  (none)")
+        + f"\n\nDiff:\n{diff_window}"
+    )
+    # One bounded attempt. The ⭐ button must feel instant, so the whole sub-call
+    # is capped with asyncio.wait_for and we fall straight through to the
+    # deterministic file-list fallback on ANY failure — timeout, empty reply, or a
+    # connection blip. (No retry loop: retrying risks the very stall the timeout
+    # exists to prevent, and the fallback is already a real, informative message.)
+    try:
+        client = _commit_llm_client()
+        resp = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": (
+                        "You generate concise git commit messages from a diff. "
+                        "Output ONLY:\n"
+                        "Line 1: conventional commit title (max 72 chars)\n"
+                        "Line 2: blank\n"
+                        "Line 3+: brief bullet-point body\n"
+                        "Types: feat, fix, chore, refactor, docs, style, test, perf, ci"
+                    )},
+                    {"role": "user", "content": f"Generate a commit message for:\n\n{summary}"},
+                ],
+                max_tokens=300,
+                temperature=0.3,
+            ),
+            timeout=_COMMIT_LLM_TIMEOUT,
+        )
+        try:
+            _u = getattr(resp, "usage", None)
+            if _u:
+                from plugins.billing.usage import record_background_usage
+                await record_background_usage(
+                    model=model,
+                    input_tokens=getattr(_u, "prompt_tokens", 0) or 0,
+                    output_tokens=getattr(_u, "completion_tokens", 0) or 0,
+                    label="commit",
+                )
+        except Exception:
+            pass
+        content = (resp.choices[0].message.content or "").strip()
+        if content:
+            return content, "llm", ""
+        logger.warning("LLM commit-message: empty reply (model=%s) — using file-list fallback", model)
+        return fallback, "fallback", "empty reply"
+    except Exception as e:
+        reason = str(e) or type(e).__name__
+        logger.warning("LLM commit-message sub-call failed (%s) — using file-list fallback", reason)
+        return fallback, "fallback", reason
+
+
+async def _commit_and_push_events(message: str = "", *, skip_push: bool = False,
+                                  include_untracked: bool = True):
+    """Run the one-shot stage → commit → push and **yield a progress event before
+    each phase**, so the UI can show granular, *honest* status (analysing →
+    safety-check → writing message → committing → pushing) rather than one opaque
+    spinner.
+
+    Each event is a dict with a ``phase`` key; the FINAL event is always
+    ``{"phase": "done", "result": <dict>}`` carrying the same structured result
+    (status one of committed / nothing_to_commit / blocked / error) that callers
+    expect. Phase labels are deliberately generic — the frontend owns the
+    user-facing wording.
+
+    This is the single source of truth: ``commit_and_push_repo`` (the agent tool +
+    non-streaming endpoint) just drains it for the final result, and the streaming
+    endpoint forwards every event — so the ⭐ button and the agent can't drift.
+
+    The caller MUST point git at the right repo first: the UI route calls
+    `_use_active_repo()` (the user's selected repo + key), the agent ability calls
+    `_pin_to_project_root()` (always this app). We deliberately don't reset the
+    token here so a non-default repo's key isn't clobbered back to the shared one.
+    """
+    # Every git step below runs through `asyncio.to_thread` so the blocking
+    # `subprocess.run` happens on a worker thread, NOT the event loop. This is what
+    # makes the NDJSON progress actually STREAM: a yielded phase event is only
+    # flushed to the client when the loop gets a turn, and a synchronous git call
+    # on the loop would hold it hostage for the whole commit+push — so the user saw
+    # "Starting…" and then nothing until the (often slow) push finished. Running git
+    # off-loop lets each step's event reach the browser the moment it's produced.
+    async def _git(args, timeout=15):
+        return await asyncio.to_thread(_run_git, args, timeout=timeout)
+
+    # 1. Repo state — bail early if clean.
+    yield {"phase": "analyzing"}
+    await asyncio.sleep(0)  # hand the loop a turn so the event flushes now
+    status_out, status_err, status_code = await _git(["status", "--porcelain"], timeout=30)
+    if status_code != 0:
+        yield {"phase": "done", "result": {
+            "status": "error", "message": f"git status failed: {status_err.strip()}"}}
+        return
+    if not status_out.strip():
+        yield {"phase": "done", "result": {
+            "status": "nothing_to_commit",
+            "message": "Nothing to commit — working tree is clean."}}
+        return
+
+    # 2. Diffs (stat for the summary, full diff for the secret scan + LLM).
+    #    Diff against HEAD, not the bare working tree, so ALREADY-STAGED changes
+    #    are included — otherwise a pre-staged tree looks empty here and the
+    #    auto-message/secret-scan see "(no diff)" while the commit below still
+    #    captures everything. Fall back to the working-tree diff if there is no
+    #    HEAD yet (brand-new repo with no commits).
+    stat_out, _, stat_rc = await _git(["diff", "HEAD", "--stat"], timeout=30)
+    full_diff, _, diff_rc = await _git(["diff", "HEAD"], timeout=30)
+    if stat_rc != 0:
+        stat_out, _, _ = await _git(["diff", "--stat"], timeout=30)
+    if diff_rc != 0:
+        full_diff, _, _ = await _git(["diff"], timeout=30)
+    untracked = [ln.strip()[3:] for ln in status_out.strip().splitlines()
+                 if ln.strip().startswith("?? ")]
+    file_count = len(status_out.strip().splitlines())
+
+    # 3. Safety: refuse to commit obvious secrets.
+    yield {"phase": "scanning", "file_count": file_count}
+    await asyncio.sleep(0)
+    for pattern, label in _SECRET_PATTERNS:
+        if re.search(pattern, full_diff or ""):
+            yield {"phase": "done", "result": {
+                "status": "blocked",
+                "message": (f"Possible {label} found in the diff — commit aborted. "
+                            "Remove it from the working tree and retry.")}}
+            return
+
+    # 4. Commit message: use the caller's, else auto-write one.
+    if message and message.strip():
+        commit_msg = message.strip()
+        yield {"phase": "message", "source": "user",
+               "title": commit_msg.split("\n")[0].strip()}
+        await asyncio.sleep(0)
+    else:
+        yield {"phase": "message", "source": "auto"}
+        await asyncio.sleep(0)
+        commit_msg, msg_source, msg_detail = await _generate_commit_message(
+            stat_out, full_diff, untracked)
+        title = commit_msg.split("\n")[0].strip()
+        if msg_source == "fallback":
+            # Non-fatal: the LLM auto-writer couldn't produce a note, so we used
+            # the deterministic file-list summary. Tell the user what happened.
+            yield {"phase": "message_fallback", "title": title, "detail": msg_detail}
+        else:
+            yield {"phase": "message_ready", "title": title}
+        await asyncio.sleep(0)
+
+    # 5. Stage.
+    yield {"phase": "committing"}
+    await asyncio.sleep(0)
+    _, add_err, add_code = await _git(["add", "-A" if include_untracked else "-u"], timeout=30)
+    if add_code != 0:
+        yield {"phase": "done", "result": {
+            "status": "error", "message": f"git add failed: {add_err.strip()}"}}
+        return
+
+    # 6. Commit (via -F file so a multi-line body survives).
+    msg_file = _PROJECT_ROOT / "data" / "tmp" / "_commit_msg.txt"
+    msg_file.parent.mkdir(parents=True, exist_ok=True)
+    msg_file.write_text(commit_msg, encoding="utf-8")
+    _, commit_err, commit_code = await _git(["commit", "-F", str(msg_file)], timeout=30)
+    try:
+        msg_file.unlink()
+    except OSError:
+        pass
+    if commit_code != 0:
+        yield {"phase": "done", "result": {
+            "status": "error", "message": f"git commit failed: {commit_err.strip()}"}}
+        return
+
+    head_out, _, _ = await _git(["rev-parse", "HEAD"], timeout=10)
+    commit_hash = head_out.strip()[:12]
+    commit_title = commit_msg.split("\n")[0].strip()
+
+    # 7. Push (unless asked to hold off).
+    if skip_push:
+        push = {"attempted": False, "ok": None, "detail": "Skipped (commit only)."}
+    else:
+        yield {"phase": "pushing"}
+        await asyncio.sleep(0)
+        push_out, push_err, push_code = await asyncio.to_thread(_git_push, timeout=120)
+        detail = (push_err or push_out).strip()
+        if push_code != 0 and ("Authentication failed" in push_err or "could not read" in push_err):
+            detail += "\n\nSet your GitHub token in the source-control sidebar."
+        push = {"attempted": True, "ok": push_code == 0,
+                "detail": "Push successful." if push_code == 0 else detail}
+
+    yield {"phase": "done", "result": {
+        "status": "committed",
+        "message_used": commit_msg,
+        "title": commit_title,
+        "hash": commit_hash,
+        "push": push,
+        "stat": stat_out.strip(),
+        "file_count": file_count,
+    }}
+
+
+async def commit_and_push_repo(message: str = "", *, skip_push: bool = False,
+                               include_untracked: bool = True) -> dict:
+    """Stage all → (auto-write message if blank) → commit → push, in one shot.
+
+    Returns a structured dict (status one of: committed / nothing_to_commit /
+    blocked / error). Never raises for ordinary git failures — the caller decides
+    how to surface them. Thin drain over ``_commit_and_push_events`` (the single
+    source of truth): used by the Git Control agent tool and the non-streaming
+    endpoint; the streaming endpoint forwards the generator's events directly.
+    """
+    result = {"status": "error", "message": "commit+push produced no result"}
+    async for ev in _commit_and_push_events(
+            message, skip_push=skip_push, include_untracked=include_untracked):
+        if ev.get("phase") == "done":
+            result = ev.get("result", result)
+    return result
+
+
+@router.post("/commit-and-push")
+async def commit_and_push(req: CommitPushRequest, request: Request):
+    """One-shot: stage all → auto-write a commit message (unless one is supplied)
+    → commit → push. Backs the Source-Control ⭐ button so a click commits and
+    pushes immediately instead of handing the job to a chat agent.
+
+    With ``stream: true`` it returns a newline-delimited JSON (NDJSON) stream of
+    progress events — ``{"phase": "analyzing"|"scanning"|"message"|"committing"|
+    "pushing", …}`` and a final ``{"phase": "done", "result": {…}}`` — so the ⭐
+    button can show granular live status. Without it, it runs to completion and
+    returns the single result dict (back-compat; also the agent-tool behaviour).
+    Errors in the streaming path arrive INSIDE the final ``done`` event (the UI
+    shows them inline) rather than as an HTTP error code.
+    """
+    _require_admin(request)
+    # Commit + push the repo the user currently has selected (with its own key).
+    _use_active_repo()
+
+    if req.stream:
+        async def _event_stream():
+            try:
+                async for ev in _commit_and_push_events(
+                        req.message or "",
+                        skip_push=req.skip_push,
+                        include_untracked=req.include_untracked):
+                    yield json.dumps(ev) + "\n"
+            except Exception as e:  # never leave the client's reader hanging
+                logger.exception("commit-and-push stream crashed")
+                yield json.dumps({"phase": "done", "result": {
+                    "status": "error",
+                    "message": str(e) or "commit+push failed"}}) + "\n"
+        # no-cache + X-Accel-Buffering tell intermediaries (nginx, tunnels) NOT to
+        # buffer the response, so the per-phase NDJSON lines arrive live instead of
+        # all-at-once at the end.
+        return StreamingResponse(
+            _event_stream(),
+            media_type="application/x-ndjson",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    result = await commit_and_push_repo(
+        req.message or "",
+        skip_push=req.skip_push,
+        include_untracked=req.include_untracked,
+    )
+    status = result.get("status")
+    if status == "blocked":
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    if status == "error":
+        raise HTTPException(status_code=500, detail=result.get("message"))
+    return result
 
 
 def _is_backend_file(path: str) -> bool:
@@ -634,7 +1199,7 @@ async def pull_from_remote(request: Request):
     caller can decide to restart the server.
     """
     _require_admin(request)
-    _cache_token(_get_token())
+    _use_active_repo()
 
     before = _head_hash()
     stdout, stderr, rc = _run_git(["pull"], timeout=30)
@@ -723,7 +1288,7 @@ async def checkout_branch(req: BranchRequest, request: Request):
     tracking branch from origin/<name>.
     """
     _require_admin(request)
-    _cache_token(_get_token())
+    _use_active_repo()
 
     branch = req.branch.strip()
     if not branch:
@@ -778,7 +1343,7 @@ async def merge_branch(req: BranchRequest, request: Request):
     conflicting files so the caller can show them.
     """
     _require_admin(request)
-    _cache_token(_get_token())
+    _use_active_repo()
 
     branch = req.branch.strip()
     if not branch:
@@ -860,3 +1425,267 @@ async def token_status():
         "configured": bool(token),
         "masked": f"{token[:4]}****" if len(token) > 8 else ("****" if token else ""),
     }
+
+
+@router.post("/remote-url")
+# WHEN-REMOTE-URL-EDIT: Sets the git remote origin URL. Called from source
+# control sidebar when the user double-clicks or long-presses the remote URL
+# display and submits a new value. Runs `git remote set-url origin <url>`.
+# Nav: ui/js/files-git.js wireEvents() → commitEditRemote() → POST this endpoint.
+async def set_remote_url(req: RemoteUrlRequest, request: Request):
+    """Change the git remote URL for origin (on the active repo)."""
+    _require_admin(request)
+    _use_active_repo()
+    stdout, stderr, rc = _run_git(["remote", "set-url", "origin", req.url], timeout=10)
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=stderr.strip() or "Failed to set remote URL")
+    # Keep the registry's stored remote in sync when a non-built-in repo is active,
+    # so the saved entry and the repo's git config don't drift apart.
+    try:
+        active = git_repos.get_active_full()
+        if not active.get("builtin"):
+            git_repos.update_repo(active["id"], remote_url=req.url)
+    except Exception:  # noqa: BLE001
+        pass
+    logger.info("Remote origin URL changed to %s", req.url)
+    return {"status": "ok", "message": "Remote URL updated.", "remote_url": req.url}
+
+
+# ── Repositories (the Source Control multi-repo selector) ────────────────────
+# The Git page can manage MORE than this app's own repo: point it at any local git
+# folder paired with its own GitHub remote + key, and the Changes list + commit
+# graph reflect THAT repo. The built-in webAgent entry is always present and can't
+# be removed; selecting it behaves exactly like before. Heavy lifting lives in
+# app/git_repos.py. Selecting a repo re-points every git action on the page via
+# `_use_active_repo()` (above). Route order matters: the literal `/repos/select`
+# must precede the `/repos/{repo_id}` param route so "select" isn't swallowed as an id.
+
+@router.get("/repos")
+async def list_git_repos(request: Request):
+    """All configured repos (webAgent first), each with active/builtin flags. The
+    raw key is never returned — only a ``has_token`` flag."""
+    _require_admin(request)
+    return {"repos": git_repos.list_repos()}
+
+
+@router.get("/repos/validate")
+async def validate_git_repo(request: Request, path: str = ""):
+    """Check a folder is a git repo; return its branch + origin so the Add form can
+    pre-fill them and warn early on a non-repo folder."""
+    _require_admin(request)
+    return git_repos.validate_folder(path)
+
+
+@router.post("/repos")
+async def add_git_repo(req: RepoAddRequest, request: Request):
+    """Register a new local repo (folder + GitHub remote + key)."""
+    _require_admin(request)
+    try:
+        entry = git_repos.add_repo(
+            label=req.label, folder=req.folder,
+            remote_url=req.remote_url, token=req.token,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "ok", "repo": entry, "repos": git_repos.list_repos()}
+
+
+@router.post("/repos/select")
+async def select_git_repo(req: RepoSelectRequest, request: Request):
+    """Choose which repo the Git page operates on."""
+    _require_admin(request)
+    try:
+        git_repos.set_active(req.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # Re-point immediately so a follow-up status/graph call uses the new repo.
+    _use_active_repo()
+    return {"status": "ok", "repos": git_repos.list_repos()}
+
+
+@router.post("/repos/{repo_id}")
+async def update_git_repo(repo_id: str, req: RepoUpdateRequest, request: Request):
+    """Edit a registered repo. A blank token keeps the existing key."""
+    _require_admin(request)
+    try:
+        entry = git_repos.update_repo(
+            repo_id, label=req.label, folder=req.folder,
+            remote_url=req.remote_url, token=req.token,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "ok", "repo": entry, "repos": git_repos.list_repos()}
+
+
+@router.delete("/repos/{repo_id}")
+async def delete_git_repo(repo_id: str, request: Request):
+    """Forget a registered repo (the built-in webAgent repo can't be removed)."""
+    _require_admin(request)
+    try:
+        git_repos.remove_repo(repo_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _use_active_repo()
+    return {"status": "ok", "repos": git_repos.list_repos()}
+
+
+# ── Production mirror (dual-repo "Release to production") ────────────────────
+# This dev repo can publish a TRIMMED copy of itself — everything except the
+# folders an admin marked dev-only in the File Explorer — to a SEPARATE sibling
+# production repo with its own GitHub remote. Git can't push "everything except
+# folder X" (a commit carries the whole tree), so production is its own repo with
+# its own history, regenerated on demand. The heavy lifting lives in
+# app/production_mirror.py; these endpoints are the thin admin surface. The File
+# Explorer reads/writes the exclude list through the same endpoints, so the Git
+# page and the explorer share one source of truth.
+
+@router.get("/production/config")
+async def get_production_config(request: Request):
+    """Production folder path, remote URL, exclude list, last-release record."""
+    _require_admin(request)
+    return production_mirror.load_config()
+
+
+@router.post("/production/config")
+async def set_production_config(req: ProdConfigRequest, request: Request):
+    """Update the production folder path / remote URL / auto-release toggle."""
+    _require_admin(request)
+    cfg = production_mirror.save_config({
+        "prod_folder": req.prod_folder,
+        "prod_remote_url": req.prod_remote_url,
+        "auto_release_on_push": req.auto_release_on_push,
+    })
+    return {"status": "ok", "config": cfg}
+
+
+@router.get("/production/exclude")
+async def get_production_exclude(request: Request):
+    """The exclude list (repo-relative folders) + the project root, so the File
+    Explorer can map them to the absolute paths its rows carry."""
+    _require_admin(request)
+    cfg = production_mirror.load_config()
+    return {
+        "exclude_paths": cfg["exclude_paths"],
+        "project_root": str(_PROJECT_ROOT).replace("\\", "/"),
+    }
+
+
+@router.post("/production/exclude")
+async def set_production_exclude(req: ProdExcludeRequest, request: Request):
+    """Mark one folder dev-only (or include it again). Shared by both pages."""
+    _require_admin(request)
+    try:
+        cfg = production_mirror.set_excluded(req.path, req.excluded)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "ok", "exclude_paths": cfg["exclude_paths"]}
+
+
+@router.post("/production/exclude-bulk")
+async def set_production_exclude_bulk(req: ProdExcludeBulkRequest, request: Request):
+    """Apply many exclude-list changes at once (add + remove). Used by the File
+    Explorer's tri-state folder checkbox to include/exclude a whole subtree in a
+    single atomic write."""
+    _require_admin(request)
+    cfg = production_mirror.set_excluded_bulk(add=req.add, remove=req.remove)
+    return {"status": "ok", "exclude_paths": cfg["exclude_paths"]}
+
+
+@router.get("/production/status")
+async def get_production_status(request: Request):
+    """Lightweight status for the Production section of the Git page."""
+    _require_admin(request)
+    return production_mirror.production_status()
+
+
+@router.post("/production/release")
+async def release_to_production(req: ProdReleaseRequest, request: Request):
+    """Regenerate the trimmed copy in the production folder, commit, and push it
+    to the production GitHub remote. Streams NDJSON progress when stream=true."""
+    _require_admin(request)
+
+    if req.stream:
+        async def _event_stream():
+            try:
+                async for ev in production_mirror.release_events(req.message or ""):
+                    yield json.dumps(ev) + "\n"
+            except Exception as e:  # noqa: BLE001
+                logger.exception("release-to-production stream crashed")
+                yield json.dumps({"phase": "done", "result": {
+                    "status": "error",
+                    "message": str(e) or "release failed"}}) + "\n"
+        return StreamingResponse(
+            _event_stream(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        )
+
+    result = {"status": "error", "message": "release produced no result"}
+    async for ev in production_mirror.release_events(req.message or ""):
+        if ev.get("phase") == "done":
+            result = ev.get("result", result)
+    return result
+
+
+@router.post("/production/copy")
+async def copy_to_production(req: ProdReleaseRequest, request: Request):
+    """First half of a release: build the trimmed copy in the production folder
+    and commit it there LOCALLY (no push). The File Explorer's "Copy to
+    production" calls this. Streams NDJSON progress when stream=true."""
+    _require_admin(request)
+    if req.prod_folder:
+        production_mirror.save_config({"prod_folder": req.prod_folder})
+
+    if req.stream:
+        async def _event_stream():
+            try:
+                async for ev in production_mirror.copy_events(req.message or ""):
+                    yield json.dumps(ev) + "\n"
+            except Exception as e:  # noqa: BLE001
+                logger.exception("copy-to-production stream crashed")
+                yield json.dumps({"phase": "done", "result": {
+                    "status": "error",
+                    "message": str(e) or "copy failed"}}) + "\n"
+        return StreamingResponse(
+            _event_stream(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        )
+
+    result = {"status": "error", "message": "copy produced no result"}
+    async for ev in production_mirror.copy_events(req.message or ""):
+        if ev.get("phase") == "done":
+            result = ev.get("result", result)
+    return result
+
+
+@router.post("/production/push")
+async def push_to_production(req: ProdReleaseRequest, request: Request):
+    """Second half of a release: push the production folder's local commit to its
+    GitHub remote. The File Explorer's "Push to GitHub" calls this. Streams NDJSON
+    progress when stream=true. (The request's ``message`` is ignored here.)"""
+    _require_admin(request)
+    if req.prod_folder:
+        production_mirror.save_config({"prod_folder": req.prod_folder})
+
+    if req.stream:
+        async def _event_stream():
+            try:
+                async for ev in production_mirror.push_events():
+                    yield json.dumps(ev) + "\n"
+            except Exception as e:  # noqa: BLE001
+                logger.exception("push-to-production stream crashed")
+                yield json.dumps({"phase": "done", "result": {
+                    "status": "error",
+                    "message": str(e) or "push failed"}}) + "\n"
+        return StreamingResponse(
+            _event_stream(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        )
+
+    result = {"status": "error", "message": "push produced no result"}
+    async for ev in production_mirror.push_events():
+        if ev.get("phase") == "done":
+            result = ev.get("result", result)
+    return result

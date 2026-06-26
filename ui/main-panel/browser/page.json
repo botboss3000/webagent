@@ -1,0 +1,12 @@
+{
+  "id": "browser",
+  "label": "Browser",
+  "icon": "globe",
+  "order": 4,
+  "html": "browser.html",
+  "mount": "#tab-browser",
+  "entry": "ui/main-panel/browser/js/browser.js",
+  "start": "startBrowser",
+  "stop": "stopBrowser",
+  "css": ["browser.css"]
+}

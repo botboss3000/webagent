@@ -7,9 +7,53 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from typing import Optional
+
 from app.db import get_db
 
 logger = logging.getLogger(__name__)
+
+
+async def resolve_session_agent_id(user_id: str, session_id: str) -> Optional[str]:
+    """Best-effort: the agent whose *base prompts* represent this session.
+
+    The optimizer reuses the same starting point the orchestrator ability uses
+    when it spawns a helper — an agent's resolved base prompt slots (via
+    ``db.resolve_prompts``). This finds the right agent id to resolve:
+      1. the agent bound to the target session (sessions.agent_id), if any;
+      2. else the user's default agent (is_user_default);
+      3. else the 'default' template resolved for the user.
+    Returns ``None`` if nothing resolves (caller then skips agent context).
+    """
+    db = get_db()
+    raw = getattr(db, "_get_conn", None)
+    if raw:
+        try:
+            conn = raw()
+            try:
+                row = conn.execute(
+                    "SELECT agent_id FROM sessions WHERE id=?", (session_id,)
+                ).fetchone()
+            finally:
+                conn.close()
+            if row and row[0]:
+                return row[0]
+        except Exception:
+            pass
+    try:
+        agents = await db.list_agents_for_user(user_id, include_admin=True)
+        for a in agents:
+            if a.get("is_user_default") and a.get("id"):
+                return a.get("id")
+    except Exception:
+        pass
+    try:
+        agent = await db.resolve_agent(user_id, "default")
+        if agent and agent.get("id"):
+            return agent.get("id")
+    except Exception:
+        pass
+    return None
 
 
 async def prefilter(user_id: str, session_id: str) -> Dict[str, Any]:
@@ -72,24 +116,29 @@ async def prefilter(user_id: str, session_id: str) -> Dict[str, Any]:
                 # tools table may have different schema in some DBs
                 pass
 
-        # Get context from agent context columns
+        # Get context from the agent's resolved BASE PROMPTS. The legacy
+        # per-column agents.*_prompt schema was dropped (migration 021); prompts
+        # now live as slot rows, resolved by db.resolve_prompts — the same base
+        # prompts the orchestrator uses as the starting point when it spawns a
+        # helper. Isolated in its own try so a context-lookup miss can never zero
+        # out the transcript / turn / token stats (the bug this replaces, where a
+        # stale column query crashed the whole prefilter back to {turns:0}).
         context_docs = []
-        agent_row = conn.execute(
-            "SELECT agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt FROM agents WHERE user_id=? LIMIT 1",
-            (user_id,)
-        ).fetchone()
-        if agent_row:
-            col_map = [
-                ("agent_prompt", "agent", "Agent Identity"),
-                ("user_prompt", "user", "User"),
-                ("skills_prompt", "skills", "Core Skills"),
-                ("tasks_prompt", "tasks", "Common Tasks"),
-                ("misc_prompt", "misc", "Misc"),
-            ]
-            for col, ct, title in col_map:
-                content = agent_row[col] or ""
-                if content.strip():
-                    context_docs.append({"type": ct, "title": title, "excerpt": content[:300]})
+        try:
+            agent_id = await resolve_session_agent_id(user_id, session_id)
+            if agent_id:
+                slot_titles = {
+                    "agent": "Agent Identity", "user": "User",
+                    "skills": "Core Skills", "tasks": "Common Tasks", "misc": "Misc",
+                }
+                for s in await get_db().resolve_prompts(agent_id, user_id=user_id):
+                    title = slot_titles.get(s.get("slot_name"))
+                    content = s.get("content") or ""
+                    if title and content.strip():
+                        context_docs.append({"type": s["slot_name"], "title": title,
+                                             "excerpt": content[:300]})
+        except Exception as e:
+            logger.debug("prefilter: agent base-prompt context unavailable: %s", e)
 
         conn.close()
         return {

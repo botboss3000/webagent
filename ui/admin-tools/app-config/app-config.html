@@ -1,0 +1,107 @@
+<template data-slot="#admin-tools">
+  <main class="files-main files-settings-main" id="files-settings-main" data-view="settings" hidden></main>
+</template>
+
+<template data-slot="#main-panel">
+    <div id="app-config-container" hidden>
+
+        <!-- Header -->
+        <header id="app-config-header">
+          <div class="ac-page-title">App Configuration</div>
+        </header>
+
+        <!-- Tab strip with chevron-scroll carousel -->
+        <div id="app-config-tabs-wrap">
+          <button type="button" id="app-config-tabs-chev-left" class="ac-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button>
+          <div id="app-config-tabs" role="tablist">
+            <button type="button" class="ac-tab" data-section="app-settings" role="tab">
+              <i data-lucide="settings-2" class="lucide-icon ac-tab-icon"></i>App Settings
+            </button>
+            <button type="button" class="ac-tab" data-section="agent-settings" role="tab">
+              <i data-lucide="bot" class="lucide-icon ac-tab-icon"></i>Agent Settings
+            </button>
+            <button type="button" class="ac-tab" data-section="user-management" role="tab">
+              <i data-lucide="users" class="lucide-icon ac-tab-icon"></i>Users
+            </button>
+            <button type="button" class="ac-tab" data-section="database" role="tab">
+              <i data-lucide="database" class="lucide-icon ac-tab-icon"></i>Data Management
+            </button>
+            <button type="button" class="ac-tab" data-section="optimizer" role="tab">
+              <i data-lucide="zap" class="lucide-icon ac-tab-icon"></i>Optimizer Runs
+            </button>
+            <!-- Automation + Event Sources tabs removed: both engine panels now
+                 live under Agent Settings → "Automation Engine". -->
+            <button type="button" class="ac-tab" data-section="features" role="tab">
+              <i data-lucide="layers" class="lucide-icon ac-tab-icon"></i>Features
+            </button>
+          </div>
+          <button type="button" id="app-config-tabs-chev-right" class="ac-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
+        </div>
+
+        <!-- Non-scrolling wrapper that is the query CONTAINER sizing the App
+             Settings tab's rounded scroll-corner mask (see #app-config-scroll-wrap
+             in app3.css + the `.rounded-scroll-corners` standard in design-system.css).
+             It takes the scroller's flex:1 role; the scroller keeps its side margins
+             inside it, so the scroller's box is unchanged. -->
+        <div id="app-config-scroll-wrap">
+        <!-- Scrollable content (.rounded-scroll-corners → pinned rounded corners,
+             switched on only for the centred-column tabs — App Settings, Agent
+             Settings, and Data Management — see app3.css) -->
+        <div id="app-config-content" class="rounded-scroll-corners">
+          <div id="ac-section-slot-agent-settings"></div>
+          <div id="ac-section-slot-database"></div>
+          <div id="ac-section-slot-optimizer"></div>
+          <div id="ac-section-slot-features"></div>
+          <div id="ac-section-slot-user-management"></div>
+          <div id="ac-section-slot-app-settings"></div>
+        </div><!-- /app-config-content -->
+        </div><!-- /app-config-scroll-wrap -->
+
+        <!-- ════════════════════════════════════════════════════════════════
+             PAGE-ASSISTANT CHAT PILL (App Settings only) — deliberately a
+             SIBLING of the scroller, not a child of it. #app-config-container is
+             a flex column, so #app-config-content (flex:1) shrinks to sit ABOVE
+             this pill: the scroll viewport ends above the pill, so page rows can
+             never scroll behind it, and the transparent gap around the pill lets
+             the page background gradient show through (no opaque fill needed).
+             Hidden on every other tab and shown only while App Settings is the
+             active section via the `:has()` rule on #ac-pa-bar in app3.css.
+             CHAT-PILL-SYNC: shares .chat-pill* geometry with #chat-input-row etc.
+             (geometry in app1.css; floating-glass skin in index.css). Wired in
+             ui/admin-tools/app-config/app-settings/app-settings.js
+             (_initPageAssistant — finds these by id); placeholders + prompts in
+             data/config/app-prompts.json → page_assistants.app_settings. -->
+        <div id="ac-pa-bar">
+          <div id="ac-pa-preview-bar" class="ac-pa-preview-bar" style="display:none;"></div>
+          <div id="ac-pa-bar-row" class="chat-pill chat-pill-1line">
+            <button type="button" id="ac-pa-attach" class="chat-pill-attach" title="Attach files">
+              <i data-lucide="plus" style="width:18px;height:18px;"></i>
+            </button>
+            <textarea id="ac-pa-input" class="chat-pill-input" rows="1"
+              placeholder="Tell webAgent what to change on this page…"
+              autocomplete="off"></textarea>
+            <button type="button" id="ac-pa-voice" class="chat-pill-voice" title="Record voice">
+              <i data-lucide="mic" style="width:18px;height:18px;"></i>
+            </button>
+            <button type="button" id="ac-pa-send" class="chat-pill-send" title="Send to webAgent">
+              <i data-lucide="send" style="width:16px;height:16px;"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- ════════════════════════════════════════════════════════════════
+             PAGE-ASSISTANT CHAT PILL (Agent Settings only) — same deliberate
+             SIBLING-of-the-scroller layout as #ac-pa-bar above, but for the
+             Agent Settings tab. Empty here: agent-settings.js injects the shared
+             hybrid SEARCH/CHAT pill (buildAbilitySearchPill) into it after the
+             ability table builds, so typing live-filters the tree and send chats
+             with webAgent. Like #ac-pa-bar it is hidden by default and revealed
+             only while Agent Settings is the active section via the `:has()` rule
+             on #ac-as-pa-bar in app3.css; the floating bar layout is shared with
+             #ac-pa-bar (also app3.css). Context-awareness (placeholder + prompt
+             per hovered section) + the prompt catalog live in
+             data/config/app-prompts.json → page_assistants.agent_settings, wired
+             by createPageAssistant in ui/admin-tools/app-config/page-assistant.js. -->
+        <div id="ac-as-pa-bar"></div>
+    </div><!-- /app-config-container -->
+</template>

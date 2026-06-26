@@ -1,0 +1,12 @@
+{
+  "display_name": "Etsy",
+  "kind": "oauth",
+  "icon": "heart",
+  "color": "#e0af68",
+  "description": "Etsy shop and listing management.",
+  "note": "Free API — an Etsy app, reviewed before production use.",
+  "simple": false,
+  "placeholder": false,
+  "tools": [],
+  "order": 2
+}

@@ -93,13 +93,21 @@ def _truncate(s: Optional[str], n: int) -> Optional[str]:
 
 
 def _read_settings() -> Dict[str, Any]:
+    s: Dict[str, Any] = {}
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f) or {}
+                s = json.load(f) or {}
     except Exception:
         pass
-    return {}
+    # data/config/debug-config.json overrides win — lets an operator force the
+    # render recorder on/off from the single consolidated debug file.
+    try:
+        from app.admin.debug_config import debug_overrides
+        s = {**s, **debug_overrides()}
+    except Exception:
+        pass
+    return s
 
 
 # ── Recorder ──────────────────────────────────────────────────────────────────

@@ -1,0 +1,7 @@
+{
+  "name": "Web",
+  "icon": "globe",
+  "color": "#7aa2f7",
+  "desc": "Reach the open web — search, a headless browser, third-party scraping, and authenticated cookie sessions.",
+  "order": 3
+}

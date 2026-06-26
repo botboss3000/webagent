@@ -8,7 +8,7 @@ Supports:
 Provider configs are stored per user_id in provider.json:
   {
     "__anonymous__": { ... config ... },
-    "admin_default": { ... config ... },
+    "admin": { ... config ... },
     ...
   }
 """
@@ -20,10 +20,11 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Header, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.auth.jwt import decode_token
+from app.util.config_io import safe_write_json, set_config_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/settings", tags=["admin"])
@@ -41,7 +42,6 @@ DEFAULT_PROVIDER = {
     "api_key": "",
     "model": "",
     "providers": {},
-    "parallel_mode": False,
     "multi_providers": [],
 }
 
@@ -137,10 +137,9 @@ def _load_all_providers() -> dict:
 
 
 def _save_all_providers(data: dict) -> None:
-    """Save the full provider.json."""
+    """Save the full provider.json (creates data/config/ on demand)."""
     try:
-        with open(PROVIDER_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        safe_write_json(PROVIDER_FILE, data)
     except Exception as e:
         logger.warning("Failed to save provider.json: %s", e)
 
@@ -152,7 +151,7 @@ def _load_provider(user_id: str) -> dict:
     if config:
         return dict(config)
     # Fall back to admin user's config (so anonymous users get a working LLM)
-    config = all_configs.get("admin_default")
+    config = all_configs.get("admin")
     if config:
         return dict(config)
     # Fall back to anonymous config
@@ -163,15 +162,20 @@ def _load_provider(user_id: str) -> dict:
 
 
 def _save_provider(user_id: str, config: dict) -> None:
-    """Save provider config for a specific user."""
+    """Save provider config for a specific user.
+
+    Writes only this user's key into provider.json (every other user's config is
+    preserved and data/config/ is created on demand), then applies it to the env.
+    """
     # Fill in base_url from preset if missing
     provider = config.get("provider", "")
     if not config.get("base_url") and provider in PROVIDER_PRESETS:
         config["base_url"] = PROVIDER_PRESETS[provider]["base_url"]
 
-    all_configs = _load_all_providers()
-    all_configs[user_id] = config
-    _save_all_providers(all_configs)
+    try:
+        set_config_key(PROVIDER_FILE, user_id, config)
+    except Exception as e:
+        logger.warning("Failed to save provider.json: %s", e)
 
     # Apply this config as the active env vars (current user's session)
     _apply_config_to_env(config)
@@ -191,7 +195,7 @@ async def _resolve_user_config(user_id: str) -> dict:
         elem = await db.auth_element_get(user_id, "llm", "default")
         if not elem:
             # Fall back to admin user's config (anonymous visitors get a working LLM)
-            elem = await db.auth_element_get("admin_default", "llm", "default")
+            elem = await db.auth_element_get("admin", "llm", "default")
         if elem:
             cfg = json.loads(elem.get("config", "{}"))
             cfg["api_key"] = elem.get("secret_ref", "")
@@ -204,9 +208,11 @@ async def _resolve_user_config(user_id: str) -> dict:
 def _agent_llm_override(agent_rec: Optional[dict]) -> Optional[dict]:
     """Return an agent's custom LLM config IF it overrides the default.
 
-    Agents store ``{use_default, provider, base_url, api_key, model, …}`` in
-    ``metadata['llm_config']``. Only an explicit ``use_default=False`` carrying a
-    model counts as an override; anything else means "use the app default".
+    Agents store ``{use_default, provider, base_url, api_key, model,
+    multi_providers, …}`` in ``metadata['llm_config']``. Only an explicit
+    ``use_default=False`` counts as an override, and it must carry either a single
+    ``model`` (the chosen default) OR a non-empty ``multi_providers`` roster (the
+    agent's own saved models); anything else means "use the app default".
     """
     if not agent_rec:
         return None
@@ -223,24 +229,106 @@ def _agent_llm_override(agent_rec: Optional[dict]) -> Optional[dict]:
         return None
     if cfg.get("use_default") is not False:
         return None
-    if not cfg.get("model"):
+    mp = cfg.get("multi_providers")
+    has_roster = isinstance(mp, list) and any(
+        isinstance(p, dict) and p.get("model") for p in mp
+    )
+    # A bare inherited-model opt-out (no own model / roster) still counts as an
+    # override: the agent is narrowing which app-default models / capabilities it
+    # uses, which must reach _merge_agent_override to take effect at runtime.
+    inh = cfg.get("inherited_overrides")
+    has_inh = isinstance(inh, dict) and len(inh) > 0
+    if not cfg.get("model") and not has_roster and not has_inh:
         return None
     return cfg
 
 
 def _merge_agent_override(base: dict, override: dict) -> dict:
-    """Layer an agent's non-empty override fields over the user's base config.
-    Preserves the user's api_key / base_url when the agent didn't set its own
-    (e.g. an agent that only swaps the model on the same provider + key). A
-    per-agent custom model is single-provider, so race/parallel is forced off.
+    """Layer an agent's (or session's) non-empty override fields over the base.
+    Preserves the user's api_key / base_url when the override didn't set its own
+    (e.g. an agent that only swaps the model on the same provider + key).
+
+    The override's top-level provider/base_url/api_key/model IS the chosen default
+    brain (set by the model table's "Default" radio, or the per-chat switcher).
+    When the override also carries its own ``multi_providers`` roster it becomes
+    the UNION of inherited (app-default) + own models. That roster is NOT raced —
+    parallel racing was removed; it only supplies the candidate list for the chat
+    model-switcher and the vision / image-out worker picks. If the override set no
+    top-level model, the first roster entry is mirrored up so there's always a
+    concrete default to run / report.
+
+    The override may also carry ``inherited_overrides`` — a per-model map (keyed
+    ``provider|base_url|model``) of the agent's chosen capability subset for the
+    app-default models. Each flag is clamped to the admin's stored ceiling (an agent
+    can only narrow, never widen), and an inherited model the agent turned fully off
+    is dropped from the union.
     """
     merged = dict(base or {})
     for k in ("provider", "base_url", "api_key", "model"):
         v = override.get(k)
         if v:
             merged[k] = v
-    merged["parallel_mode"] = False
-    merged["multi_providers"] = []
+    mp = override.get("multi_providers")
+    own = [p for p in mp if isinstance(p, dict) and p.get("model")] if isinstance(mp, list) else []
+    inh_ovr = override.get("inherited_overrides")
+    inh_ovr = inh_ovr if isinstance(inh_ovr, dict) else {}
+    # When "Extend default LLM to agents" is on, the agent's candidate models are the
+    # UNION of the app-default roster (inherited) + its own — matching the per-agent
+    # UI, which shows the defaults as inherited rows plus the agent's own. When off,
+    # only its own. (For a session-level override `base` is the already-merged agent
+    # config, so this same union simply PRESERVES the agent's candidate list while the
+    # session pins its chosen model.)
+    try:
+        extend_on = _load_app_settings().get("extend_llm_to_agents", True) is not False
+    except Exception:
+        extend_on = True
+    inherited_raw = [p for p in (base.get("multi_providers") or [])
+                     if isinstance(p, dict) and p.get("model")] if extend_on else []
+    # Apply this agent's per-model opt-outs. The admin's stored flags are the
+    # CEILING; the agent's choice can only narrow them, never widen. A model the
+    # agent turned fully off (no Text / In / Out / Eff left) is dropped entirely.
+    inherited = []
+    for p in inherited_raw:
+        key = f"{p.get('provider') or ''}|{p.get('base_url') or ''}|{p.get('model') or ''}"
+        ov = inh_ovr.get(key)
+        if not ov:
+            inherited.append(p)
+            continue
+        q = dict(p)
+        q["enabled"] = (p.get("enabled") is not False) and (ov.get("enabled") is not False)
+        q["use_for_image"] = bool(p.get("use_for_image")) and bool(ov.get("use_for_image"))
+        q["use_for_image_out"] = bool(p.get("use_for_image_out")) and bool(ov.get("use_for_image_out"))
+        q["high_effort_capable"] = bool(p.get("high_effort_capable")) and bool(ov.get("high_effort_capable"))
+        if not (q["enabled"] or q["use_for_image"] or q["use_for_image_out"] or q["high_effort_capable"]):
+            continue   # agent opted out of this inherited model completely
+        inherited.append(q)
+    # Build the union whenever there's anything to offer — the agent's own roster,
+    # an opt-out map, OR inherited candidates (so pinning an inherited model as the
+    # default still leaves the rest of the app defaults switchable).
+    if own or inh_ovr or inherited:
+        seen, union = set(), []
+        for p in inherited + own:
+            key = (p.get("provider"), p.get("model"), p.get("base_url"))
+            if key in seen:
+                continue
+            seen.add(key)
+            union.append(p)
+        merged["multi_providers"] = union
+        if union:
+            first = union[0]
+            for k in ("provider", "base_url", "api_key", "model"):
+                if first.get(k) and not override.get(k):
+                    merged[k] = first[k]
+            # If the resolved default brain was itself opted out (no longer in the
+            # union), repoint it to the first surviving candidate so the agent still
+            # runs a valid model instead of a dropped one.
+            union_models = {p.get("model") for p in union}
+            if merged.get("model") not in union_models:
+                for k in ("provider", "base_url", "api_key", "model"):
+                    if first.get(k):
+                        merged[k] = first[k]
+    else:
+        merged["multi_providers"] = []
     return merged
 
 
@@ -258,6 +346,38 @@ def _session_llm_override(cfg: Optional[dict]) -> Optional[dict]:
     if not cfg.get("model"):
         return None
     return cfg
+
+
+# The reasoning-effort scale we expose in the chat footer picker and the Model
+# Switcher ability. "default" = send no hint (today's behaviour). The rest map to
+# the provider's normalised reasoning.effort levels; providers that don't support
+# a given level (e.g. some ignore "minimal") just drop it and the call retries.
+REASONING_EFFORT_LEVELS = ["default", "minimal", "low", "medium", "high"]
+
+
+def _resolve_session_effort(session_override: Optional[dict], model: Optional[str]) -> Optional[str]:
+    """The reasoning-effort level stored for ``model`` on this session, or None.
+
+    Read straight from the raw session override's ``model_effort`` map — NOT gated
+    on a model override, so an effort applies even when the chat runs the agent's
+    default model. ``"default"`` (or unknown) resolves to None (no hint sent)."""
+    if not isinstance(session_override, dict) or not model:
+        return None
+    effort_map = session_override.get("model_effort")
+    if not isinstance(effort_map, dict):
+        return None
+    level = (effort_map.get(model) or "").strip().lower()
+    if level in ("", "default") or level not in REASONING_EFFORT_LEVELS:
+        return None
+    return level
+
+
+def _apply_effort_to_env(level: Optional[str]) -> None:
+    """Stash the resolved reasoning-effort level for the loop to read, or clear it."""
+    if level:
+        os.environ["LLM_REASONING_EFFORT"] = level
+    else:
+        os.environ.pop("LLM_REASONING_EFFORT", None)
 
 
 def _effective_config(
@@ -312,6 +432,11 @@ async def apply_provider_for_run(
     effective = _effective_config(await _resolve_user_config(user_id), agent_rec, session_override)
     effective = await _ensure_tool_capable(effective, user_id)
     _apply_config_to_env(effective)
+    # Per-session reasoning-effort for the resolved model (footer picker / Model
+    # Switcher ability). Decoupled from the model override so an effort can apply
+    # even when the chat runs on the agent's default model. The loop reads
+    # LLM_REASONING_EFFORT and passes it as the provider reasoning hint.
+    _apply_effort_to_env(_resolve_session_effort(session_override, effective.get("model")))
     return effective
 
 
@@ -329,7 +454,42 @@ async def resolve_active_model(
     effective = await _ensure_tool_capable(effective, user_id)
     provider = effective.get("provider", "") or ""
     base_url = effective.get("base_url") or (PROVIDER_PRESETS.get(provider, {}) or {}).get("base_url", "")
-    return {"model": effective.get("model", "") or "", "provider": provider, "base_url": base_url}
+    effort = _resolve_session_effort(session_override, effective.get("model"))
+    return {"model": effective.get("model", "") or "", "provider": provider,
+            "base_url": base_url, "reasoning_effort": effort or "default"}
+
+
+async def resolve_agent_models(
+    user_id: str,
+    agent_rec: Optional[dict] = None,
+    session_id: Optional[str] = None,
+) -> dict:
+    """Return the Text-capable candidate models a chat user can switch between for
+    this agent — the SAME union the run would consider (app default(s) + the
+    agent's own roster, per the extend-to-agents setting) — plus the model
+    currently active for this chat. Powers the chat footer model switcher.
+
+    Returns ``{"models": [{"id", "provider"}], "active": "<model id>"}``.
+    """
+    session_override = await _load_session_override(session_id)
+    effective = _effective_config(await _resolve_user_config(user_id), agent_rec, session_override)
+    active = (effective.get("model") or "").strip()
+    models, seen = [], set()
+    for p in (effective.get("multi_providers") or []):
+        mid = (p.get("model") or "").strip()
+        if not mid or mid in seen:
+            continue
+        if p.get("text_capable") is False:   # workers (vision / image-out only) aren't brains
+            continue
+        seen.add(mid)
+        models.append({"id": mid, "provider": p.get("provider", "") or ""})
+    # The active/default model is always offered, even if it isn't in the roster.
+    if active and active not in seen:
+        models.insert(0, {"id": active, "provider": effective.get("provider", "") or ""})
+    # Per-model reasoning-effort the chat has chosen (footer picker shows it per row).
+    effort_map = (session_override or {}).get("model_effort")
+    effort_map = effort_map if isinstance(effort_map, dict) else {}
+    return {"models": models, "active": active, "model_effort": effort_map}
 
 
 def apply_provider_config() -> None:
@@ -339,8 +499,8 @@ def apply_provider_config() -> None:
 
 
 def _apply_config_to_env(config: dict) -> None:
-    """Apply provider config dict to environment variables.
-    Also sets MULTI_PROVIDERS and PARALLEL_MODE for the race engine.
+    """Apply provider config dict to environment variables — the single resolved
+    model the run will use (provider/base_url/api_key/model).
     """
     provider = config.get("provider", "")
     base_url = config.get("base_url")
@@ -369,32 +529,14 @@ def _apply_config_to_env(config: dict) -> None:
         os.environ.pop("LLM_MODEL", None)
         os.environ.pop("OPENROUTER_MODEL", None)
 
-    # Multi-provider env vars for the race engine
-    parallel_mode = config.get("parallel_mode", False)
-    multi_providers = config.get("multi_providers", [])
-    os.environ["PARALLEL_MODE"] = "true" if parallel_mode and len(multi_providers) >= 2 else "false"
-    if parallel_mode and multi_providers:
-            # Sanitize: ensure each entry has required fields, strip None
-        # Only include enabled providers
-        cleaned = []
-        for p in multi_providers:
-            if p.get("enabled", True) and p.get("api_key") and p.get("base_url"):
-                cleaned.append({
-                    "provider": p.get("provider", "custom"),
-                    "base_url": p["base_url"],
-                    "api_key": p["api_key"],
-                    "model": p.get("model", ""),
-                    "rating": p.get("rating", 0),
-                    # carried so the loop's race can keep only image-capable racers
-                    "image_capable": p.get("image_capable", False),
-                })
-        os.environ["MULTI_PROVIDERS"] = json.dumps(cleaned)
-    else:
-        os.environ.pop("MULTI_PROVIDERS", None)
+    # Parallel model racing was removed — clear any stale race-engine env so an
+    # old process value can never re-trigger the deleted code path.
+    os.environ.pop("PARALLEL_MODE", None)
+    os.environ.pop("MULTI_PROVIDERS", None)
 
 
 async def load_llm_capabilities_for_user(user_id: str) -> dict:
-    """Read the user's LLM config (own → admin_default) and return media-capability
+    """Read the user's LLM config (own → admin) and return media-capability
     info WITHOUT touching env vars.
 
     Used by chat.py at attachment-resolution time to decide whether an attached
@@ -405,18 +547,23 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
     Shape:
       {
         "default": {model, provider, base_url, api_key, text_capable,
-                    image_capable, image_out_capable, use_for_image_out},
+                    image_capable, image_out_capable, use_for_image_out,
+                    high_effort_capable},
         "racers":  [{model, provider, base_url, api_key, enabled,
                      text_capable, image_capable, use_for_image,
-                     image_out_capable, use_for_image_out}, ...],
-        "parallel_mode": bool,
+                     image_out_capable, use_for_image_out,
+                     high_effort_capable}, ...],
       }
+
+    ("racers" is the saved-model roster — kept for the worker picks below and the
+    chat model-switcher list; the models are NOT raced, parallel racing was
+    removed. Exactly one model — "default" — is the brain per run.)
     """
     cfg = None
     try:
         from app.db import get_db
         db = get_db()
-        for uid in (user_id, "admin_default"):
+        for uid in (user_id, "admin"):
             elem = await db.auth_element_get(uid, "llm", "default")
             if elem:
                 c = elem.get("config") or {}
@@ -439,6 +586,7 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
         "image_capable": bool(cfg.get("image_capable", False)),
         "image_out_capable": bool(cfg.get("image_out_capable", False)),
         "use_for_image_out": bool(cfg.get("use_for_image_out", False)),
+        "high_effort_capable": bool(cfg.get("high_effort_capable", False)),
     }
     racers = []
     for p in (cfg.get("multi_providers") or []):
@@ -453,6 +601,7 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
             "use_for_image": bool(p.get("use_for_image", False)),
             "image_out_capable": bool(p.get("image_out_capable", False)),
             "use_for_image_out": bool(p.get("use_for_image_out", False)),
+            "high_effort_capable": bool(p.get("high_effort_capable", False)),
         })
 
     # Reconcile the top-level "default" modality flags with the matching saved row.
@@ -466,14 +615,14 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
         match = next((r for r in racers if r.get("model") == default["model"]), None)
         if match:
             for k in ("text_capable", "image_capable",
-                      "image_out_capable", "use_for_image_out"):
+                      "image_out_capable", "use_for_image_out",
+                      "high_effort_capable"):
                 if k in match:
                     default[k] = match[k]
 
     return {
         "default": default,
         "racers": racers,
-        "parallel_mode": bool(cfg.get("parallel_mode", False)),
     }
 
 
@@ -512,18 +661,11 @@ def _is_tool_capable(entry: dict) -> bool:
 
 
 def turn_models_image_capable(caps: dict) -> bool:
-    """Will the model(s) that actually handle this turn be able to see images?
-
-    Parallel mode with ≥2 enabled racers → true iff any enabled racer is
-    image-capable. Otherwise → the single default model's capability.
+    """Can the single model that handles this turn (the default / active model)
+    see images? Catalog-guarded: a stale image_capable=True on a text-only model
+    can no longer fool the describe step into skipping (the original bug). (grep
+    RECONCILE-DEFAULT-MODALITY)
     """
-    racers = caps.get("racers") or []
-    enabled = [r for r in racers if r.get("enabled")]
-    if caps.get("parallel_mode") and len(enabled) >= 2:
-        return any(model_sees_images(r) for r in enabled)
-    # Catalog-guarded: a stale image_capable=True on a text-only model can no
-    # longer fool the describe step into skipping (the original bug). (grep
-    # RECONCILE-DEFAULT-MODALITY)
     return model_sees_images(caps.get("default") or {})
 
 
@@ -548,7 +690,7 @@ def pick_describer(caps: dict) -> Optional[dict]:
 def _infer_api_shape(base_url: str, provider: str = "") -> str:
     """Infer the image-generation API style from a model's base URL.
 
-    Mirrors IMAGE_PROVIDER_PRESETS in app/tools/image_generation.py:
+    Mirrors IMAGE_PROVIDER_PRESETS in plugins/abilities/Core/image_generation.py:
       api.stability.ai                    → stability
       generativelanguage.googleapis.com   → gemini
       openrouter.ai                       → openrouter (chat-completions image out;
@@ -668,6 +810,30 @@ def media_routing(caps: dict) -> dict:
     }
 
 
+def high_effort_targets(caps: dict) -> list:
+    """The enabled models an admin flagged "high-effort" that can actually be the
+    agent's brain (text + tool-capable). These are the models the Model Control
+    ability may upgrade ONTO for a hard task. Catalog-guarded via ``_is_tool_capable``
+    so a mis-ticked tool-less model is excluded. Returns a sorted list of model ids.
+    """
+    caps = caps or {}
+    default = caps.get("default") or {}
+    enabled = [r for r in (caps.get("racers") or []) if r.get("enabled")]
+    brains = [default] + enabled
+    return sorted({
+        b["model"] for b in brains
+        if b.get("model") and b.get("text_capable")
+        and b.get("high_effort_capable") and _is_tool_capable(b)
+    })
+
+
+def is_high_effort_model(caps: dict, model: str) -> bool:
+    """True when ``model`` is one of the configured high-effort brain models."""
+    if not model:
+        return False
+    return model in high_effort_targets(caps)
+
+
 def pick_vision_model(caps: dict) -> Optional[dict]:
     """Choose the model that READS images for the ``process_image`` delegate tool.
 
@@ -770,18 +936,12 @@ def _load_app_settings() -> dict:
 
 def _save_app_settings(data: dict) -> None:
     try:
-        with open(APP_SETTINGS_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        safe_write_json(APP_SETTINGS_FILE, data)
     except Exception as e:
         logger.warning("Failed to save app-settings.json: %s", e)
 
 
 def _is_metadata_enabled() -> bool:
-    return METADATA_FLAG.exists()
-
-
-async def is_metadata_enabled() -> bool:
-    """Check if metadata logging is enabled."""
     return METADATA_FLAG.exists()
 
 
@@ -798,6 +958,7 @@ class ProviderConfig(BaseModel):
     image_capable: bool = False
     image_out_capable: bool = False   # can generate images
     use_for_image_out: bool = False   # this model is the image generator
+    high_effort_capable: bool = False  # admin-marked "premium" tier the agent may upgrade ONTO
 
 
 class MultiProviderEntry(BaseModel):
@@ -805,18 +966,17 @@ class MultiProviderEntry(BaseModel):
     base_url: str = ""
     api_key: str = ""
     model: str = ""
-    enabled: bool = True          # "use for text" — joins the response race
-    rating: int = 0
+    enabled: bool = True          # "use for text" — selectable as the chat/brain model
     # Media-capability (detected on save, user-overridable) + image routing roles.
     text_capable: bool = True
     image_capable: bool = False
     use_for_image: bool = False   # eligible to describe images for text-only models
     image_out_capable: bool = False  # can generate images
     use_for_image_out: bool = False  # the image generator for the generate_image tool
+    high_effort_capable: bool = False  # admin-marked "premium" tier the agent may upgrade ONTO
 
 
 class MultiProvidersRequest(BaseModel):
-    parallel_mode: bool = False
     providers: list[MultiProviderEntry] = []
 
 
@@ -826,7 +986,30 @@ class MetadataSetting(BaseModel):
 
 class AppSettings(BaseModel):
     extend_llm_to_agents: bool = True
-    access_mode: str = "admin_approval"  # public_anonymous | public_registered | admin_approval | private
+    access_mode: str = "admin_approval"  # admin_approval | public_registered
+    # ── Startup: welcome landing page (ui/splash/splash-page) ──
+    # Master on/off for the welcome landing page, app-wide. When True, app/main.py
+    # serves the crawlable landing page at the front door (/) to new visitors and
+    # routes the app to /app; when False, / serves the app directly and the
+    # per-device "show welcome screen" preference is moot. Served to every visitor
+    # via the public /api/v1/auth/ui-config endpoint.
+    splash_enabled: bool = True
+    # ── Startup: in-app tour / hint bubbles (ui/tutorials) ──
+    # Master on/off for the numbered hint popovers, app-wide. When False the tour
+    # never renders for anyone, and the per-user "show app tour" preference is
+    # moot. Served via the public /api/v1/auth/ui-config endpoint; the tutorial
+    # module reads it (cached, reconciled) and the account page hides its toggle.
+    hints_enabled: bool = True
+    # ── Appearance: allow per-user theme overrides ──
+    # When True, every signed-in user gets a "My appearance" editor on their
+    # account page (ui/shared/js/account.js) that writes a sparse theme override
+    # to their profile (user_profiles.appearance). /api/v1/auth/ui-config layers
+    # that override on top of the global appearance for the signed-in caller, so
+    # anything they don't customise still follows the global theme. When False,
+    # the editor is hidden and any saved per-user overrides are ignored. Served
+    # via the public /api/v1/auth/ui-config endpoint so the account page can gate
+    # its editor on it.
+    allow_user_appearance: bool = False
     # Seconds to keep a completed turn's in-memory RunBuffer around for
     # WS-replay on reconnect. 0 = drop immediately. Default 60s gives a
     # smooth refresh-after-completion UX without holding RAM long.
@@ -879,18 +1062,330 @@ class AppSettings(BaseModel):
     # this is the only inherited identity a fire-and-forget clone carries. Keep it
     # short and rule-like; it is prepended verbatim, ahead of any agent slot.
     global_system_prompt: str = ""
+    # ── Appearance: animated background (app/ui_backgrounds + ui/background/) ──
+    # Which animated background renders, chosen separately per theme. Values are
+    # background ids from the catalog (GET /admin/settings/backgrounds) or the
+    # built-in "none" (plain themed background). Applied app-wide for every
+    # visitor through the public /api/v1/auth/ui-config endpoint, so the admin's
+    # pick is what everyone sees. Dark defaults to the classic starfield; light
+    # to the mouse-reactive bullet grid.
+    background_dark: str = "stargaze"
+    background_light: str = "bullet-grid"
+    # ── Appearance: global border + typography (ui/shared/js/appearance.js) ──
+    # The single edit-here surface for the app's neutral border and fonts.
+    # Served app-wide through the public /api/v1/auth/ui-config endpoint and
+    # injected at boot as CSS-variable overrides on top of design-system.css, so
+    # editing these values (then reloading) recolours / resizes every container,
+    # table and divider border and swaps the UI font for every visitor — no
+    # server restart, no CSS edit.
+    #   border_color_*  — the neutral border hue, separate per theme (the dark
+    #                     and light palettes use different border colours).
+    #   border_width    — line weight shared by every neutral border; "0" turns
+    #                     them ALL off (accent/status/focus borders are untouched).
+    #   font_sans/_mono — the CSS font-family stacks for body text / monospace.
+    # A blank value falls back to the design-system.css default for that token.
+    border_color_dark: str = "#3a2c1e"
+    border_color_light: str = "#cfe6f2"
+    border_width: str = "1px"
+    font_sans: str = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+    font_mono: str = "'JetBrains Mono', 'Fira Code', Menlo, ui-monospace, monospace"
+    # ── Appearance: full theme palette (ui/shared/js/appearance.js) ──────────
+    # The raw palette hues + neutral surfaces + text shades, chosen separately
+    # per theme, mirroring the two palette blocks in design-system.css (:root =
+    # dark, body.light-mode = light). Each is a #rrggbb value; appearance.js
+    # injects it as the matching CSS variable under that theme's selector and
+    # also derives the `-rgb` triple (so every rgba(var(--x-rgb), a) tint
+    # follows). A blank value falls back to the design-system.css default.
+    # The Appearance panel (App Settings) edits these as per-theme swatches +
+    # one-click presets; they can also be hand-edited here. Keys come in
+    # _dark / _light pairs:
+    #   accent        → --brand (+ --brand-strong, --brand-rgb)
+    #   secondary     → --purple (+ --purple-strong, --purple-rgb)
+    #   success/warning/danger → the status hues (+ their -rgb)
+    #   surface_bg    → --bg-0   (the page base surface)
+    #   surface_panel → --bg-elev (cards / panels)
+    #   surface_tint  → --bg-tint (tinted insets)
+    #   text          → --fg-1   (primary text)
+    #   text_muted    → --fg-3   (muted text)
+    #   ambient       → --ambient-2-rgb (the page-background glow, stored as hex)
+    accent_dark: str = "#e0a35e"
+    accent_light: str = "#1f8fbf"
+    secondary_dark: str = "#c8915a"
+    secondary_light: str = "#3b6ea5"
+    success_dark: str = "#9ece6a"
+    success_light: str = "#5a8a4a"
+    warning_dark: str = "#e0af68"
+    warning_light: str = "#d4873a"
+    danger_dark: str = "#f7768e"
+    danger_light: str = "#d44848"
+    surface_bg_dark: str = "#16100b"
+    surface_bg_light: str = "#f5fafd"
+    surface_panel_dark: str = "#241a12"
+    surface_panel_light: str = "#e9f3fa"
+    surface_tint_dark: str = "#36281c"
+    surface_tint_light: str = "#dbeaf5"
+    text_dark: str = "#ece0d2"
+    text_light: str = "#163040"
+    text_muted_dark: str = "#9a8266"
+    text_muted_light: str = "#5a7589"
+    ambient_dark: str = "#7a5636"
+    ambient_light: str = "#9fd6ec"
+    # Chat bubbles — optional per-theme overrides for the user / agent message
+    # bubble fill. Blank = follow the theme-derived default in design-system.css.
+    # Stored as #rrggbb or #rrggbbaa (trailing aa = opacity; 00 = transparent).
+    user_bubble_dark: str = ""
+    user_bubble_light: str = ""
+    agent_bubble_dark: str = ""
+    agent_bubble_light: str = ""
+    # Chat composer pill fill — same shape as the bubbles. Blank = follow the
+    # theme-derived default (the shared panel tint, so it matches the bubbles).
+    chat_pill_bg_dark: str = ""
+    chat_pill_bg_light: str = ""
+    # ── Appearance: theme-independent style knobs (JSON-only; no UI control) ──
+    # Edit these in app-settings.json (or via a POST) and reload — ui/shared/js/
+    # appearance.js injects them app-wide. Each default is "no change" so they're
+    # inert until edited. Stored as strings (the whole appearance pipeline is
+    # string-valued). Shared across both themes.
+    #   radius_scale    — corner roundness multiplier (0 = square … 2 = round)
+    #   shadow_strength — drop-shadow depth multiplier (0 = flat … 2 = heavy)
+    #   ui_scale        — overall UI zoom (1 = normal; e.g. 1.1 = 110%)
+    #   reduce_motion   — "on" collapses animations/transitions (accessibility)
+    #   cursor_glow     — "off" hides the pointer glow (ui/shared/js/cursor-effects.js)
+    # ── TALL chat-composer (#chat-input-row) geometry + button knobs. Each is a
+    #    CSS length injected app-wide by appearance.js as the matching
+    #    --chat-pill-* variable (see app1.css CHAT-PILL-VARS); the compact 1-line
+    #    bars keep their own fixed sizing.
+    #   chat_pill_max_width   — composer width cap (e.g. "500px")
+    #   chat_pill_radius      — corner roundness
+    #   chat_pill_padding     — outer padding (CSS shorthand)
+    #   chat_pill_min_height  — resting text-area height
+    #   chat_pill_max_height  — grow cap before scrolling
+    #   chat_pill_font_size   — input + placeholder text size
+    #   chat_pill_attach_size — attach (+) button box
+    #   chat_pill_attach_icon — attach (+) glyph
+    #   chat_pill_button_size — mic / send button box
+    #   chat_pill_button_icon — mic / send glyph
+    radius_scale: str = "1"
+    shadow_strength: str = "1"
+    ui_scale: str = "1"
+    reduce_motion: str = "off"
+    cursor_glow: str = "on"
+    chat_pill_max_width: str = "500px"
+    chat_pill_radius: str = "20px"
+    chat_pill_padding: str = "4px 4px 4px 14px"
+    chat_pill_min_height: str = "96px"
+    chat_pill_max_height: str = "160px"
+    chat_pill_font_size: str = "14px"
+    chat_pill_attach_size: str = "38px"
+    chat_pill_attach_icon: str = "24px"
+    chat_pill_button_size: str = "62px"
+    chat_pill_button_icon: str = "44px"
+    # ── Chat panel layout (app-wide defaults; ui/shared/js/appearance.js) ──
+    #   chat_position         — which side the chat side-panel sits on the desktop
+    #                           split: "right" (default) or "left". Injected as a
+    #                           #stage flex-direction rule; the resize handle
+    #                           detects the side automatically.
+    #   chat_default_visible  — whether the chat panel is shown for a FIRST-TIME
+    #                           visitor on desktop: "visible" (default) or
+    #                           "hidden". Once a visitor toggles the chat their own
+    #                           per-browser choice wins; this only seeds the default.
+    chat_position: str = "right"
+    chat_default_visible: str = "visible"
+    # User-saved custom themes — a JSON array string of
+    # [{id, name, dark:{<token>:val,…}, light:{…}}], managed by the Appearance
+    # panel's "Add theme" button. Admin-only editor; not served via ui-config
+    # (visitors only need the resolved palette, not the preset list).
+    custom_themes: str = "[]"
 
 
-VALID_ACCESS_MODES = {"public_anonymous", "public_registered", "admin_approval", "private"}
+# The two canonical access levels surfaced in User Management:
+#   admin_approval   — Private: register, then wait for an admin to approve
+#   public_registered — Open Registration: anyone joins, must sign in
+VALID_ACCESS_MODES = {"admin_approval", "public_registered"}
+
+# Legacy stored values are migrated on read/write so old configs keep working:
+#   open             → public_registered (the no-sign-in auto-admin mode was
+#                       retired; that convenience is now covered by "Remember me".
+#                       Dormant `== "open"` branches survive but never match.)
+#   public_anonymous → public_registered (the old anonymous-chat mode)
+#   private          → admin_approval (fully-disabled registration was removed)
+_LEGACY_ACCESS_MODES = {
+    "open": "public_registered",
+    "public_anonymous": "public_registered",
+    "private": "admin_approval",
+}
+
+
+def normalize_access_mode(raw: str | None) -> str:
+    """Map any stored/posted access_mode to one of the two canonical modes.
+
+    Unknown or empty values fall back to the default (admin_approval), so a
+    corrupted setting can never leave the app in an undefined access state.
+    """
+    val = (raw or "").strip()
+    val = _LEGACY_ACCESS_MODES.get(val, val)
+    return val if val in VALID_ACCESS_MODES else "admin_approval"
+
+_DEFAULT_BACKGROUNDS = {"dark": "stargaze", "light": "bullet-grid"}
+
+
+def get_background_config() -> dict:
+    """Read the per-theme background choice, validated against what's installed.
+
+    Returns ``{"dark": <id>, "light": <id>}``. A stored id whose folder was
+    deleted falls back to the default (or "none" if even that is gone), so a
+    removed background never leaves the page pointing at a missing plugin.
+    """
+    data = _load_app_settings()
+    try:
+        from app.ui_backgrounds import valid_ids
+        allowed = valid_ids() | {"none"}
+    except Exception:  # noqa: BLE001
+        allowed = None
+
+    def pick(key: str, default: str) -> str:
+        val = data.get(key) or default
+        if allowed is not None and val not in allowed:
+            val = default if default in allowed else "none"
+        return val
+
+    return {
+        "dark": pick("background_dark", _DEFAULT_BACKGROUNDS["dark"]),
+        "light": pick("background_light", _DEFAULT_BACKGROUNDS["light"]),
+    }
+
+
+# Defaults mirror the design-system.css palette (dark :root + body.light-mode).
+# These are the values shipped in design-system.css; the appearance config
+# overrides them app-wide when the admin edits app-settings.json.
+_DEFAULT_APPEARANCE = {
+    "border_color_dark": "#3a2c1e",
+    "border_color_light": "#cfe6f2",
+    "border_width": "1px",
+    "font_sans": "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    "font_mono": "'JetBrains Mono', 'Fira Code', Menlo, ui-monospace, monospace",
+    # Full theme palette (per theme). Mirror of the design-system.css palette
+    # blocks; kept in sync with the AppSettings fields + ui/shared/js/appearance.js
+    # DEFAULTS. get_appearance_config() iterates this dict, so adding a key here
+    # automatically carries it through the public /api/v1/auth/ui-config endpoint.
+    "accent_dark": "#e0a35e",
+    "accent_light": "#1f8fbf",
+    "secondary_dark": "#c8915a",
+    "secondary_light": "#3b6ea5",
+    "success_dark": "#9ece6a",
+    "success_light": "#5a8a4a",
+    "warning_dark": "#e0af68",
+    "warning_light": "#d4873a",
+    "danger_dark": "#f7768e",
+    "danger_light": "#d44848",
+    "surface_bg_dark": "#16100b",
+    "surface_bg_light": "#f5fafd",
+    "surface_panel_dark": "#241a12",
+    "surface_panel_light": "#e9f3fa",
+    "surface_tint_dark": "#36281c",
+    "surface_tint_light": "#dbeaf5",
+    "text_dark": "#ece0d2",
+    "text_light": "#163040",
+    "text_muted_dark": "#9a8266",
+    "text_muted_light": "#5a7589",
+    "ambient_dark": "#7a5636",
+    "ambient_light": "#9fd6ec",
+    # Chat bubble overrides (blank = follow the theme default). #rrggbb[aa].
+    "user_bubble_dark": "",
+    "user_bubble_light": "",
+    "agent_bubble_dark": "",
+    "agent_bubble_light": "",
+    # Chat composer pill fill (blank = follow the theme default; #rrggbb[aa]).
+    "chat_pill_bg_dark": "",
+    "chat_pill_bg_light": "",
+    # Theme-independent style knobs (JSON-only; see the AppSettings fields).
+    "radius_scale": "1",
+    "shadow_strength": "1",
+    "ui_scale": "1",
+    "reduce_motion": "off",
+    "cursor_glow": "on",
+    # Chat-composer geometry + button knobs (see the AppSettings fields).
+    "chat_pill_max_width": "500px",
+    "chat_pill_radius": "20px",
+    "chat_pill_padding": "4px 4px 4px 14px",
+    "chat_pill_min_height": "96px",
+    "chat_pill_max_height": "160px",
+    "chat_pill_font_size": "14px",
+    "chat_pill_attach_size": "38px",
+    "chat_pill_attach_icon": "24px",
+    "chat_pill_button_size": "62px",
+    "chat_pill_button_icon": "44px",
+    # Chat panel layout (see the AppSettings fields). Served via ui-config and
+    # applied app-wide by ui/shared/js/appearance.js.
+    "chat_position": "right",
+    "chat_default_visible": "visible",
+}
+
+
+def get_appearance_config() -> dict:
+    """Read the global border + font knobs from app-settings.json, falling back
+    to the design-system.css defaults for any missing/blank value.
+
+    Returns ``{border_color_dark, border_color_light, border_width, font_sans,
+    font_mono}`` — every value concrete (never blank), so the public
+    ``/api/v1/auth/ui-config`` endpoint always carries a usable token and the
+    boot-time applier (ui/shared/js/appearance.js) can inject it directly. This
+    is the server side of the "edit the JSON, reload, the whole app follows"
+    flow; the file is re-read on every call, so no server restart is needed."""
+    data = _load_app_settings()
+    out = {}
+    for key, default in _DEFAULT_APPEARANCE.items():
+        val = data.get(key)
+        out[key] = val.strip() if isinstance(val, str) and val.strip() else default
+    return out
+
+
+def get_splash_enabled() -> bool:
+    """Master on/off for the welcome landing page (app-wide), read live from
+    app-settings.json. When True, app/main.py serves the landing at the front door
+    (/); served via /api/v1/auth/ui-config too. Defaults to True when unset/blank."""
+    return _load_app_settings().get("splash_enabled", True) is not False
+
+
+def get_hints_enabled() -> bool:
+    """Master on/off for the in-app tour / hint bubbles (app-wide), read live from
+    app-settings.json. Served via /api/v1/auth/ui-config so the tutorial module
+    can gate on it; defaults to True (shown) when unset/blank."""
+    return _load_app_settings().get("hints_enabled", True) is not False
+
+
+def get_allow_user_appearance() -> bool:
+    """Whether signed-in users may set their own theme (per-user appearance),
+    read live from app-settings.json. Served via /api/v1/auth/ui-config so the
+    account page can show/hide its "My appearance" editor and the same endpoint
+    knows whether to layer a caller's saved overrides on top of the global
+    theme. Defaults to False (off) when unset/blank."""
+    return _load_app_settings().get("allow_user_appearance", False) is True
+
+
+def valid_background(val: str | None, fallback: str) -> str:
+    """Return ``val`` if it names an installed background (or "none"), else
+    ``fallback``. Used to sanitise a per-user background choice the same way
+    get_background_config validates the global one, so a stale/removed id can
+    never leave the page pointing at a missing plugin."""
+    v = (val or "").strip()
+    try:
+        from app.ui_backgrounds import valid_ids
+        allowed = valid_ids() | {"none"}
+    except Exception:  # noqa: BLE001
+        return v or fallback
+    if v and v in allowed:
+        return v
+    return fallback if fallback in allowed else "none"
 
 
 def get_access_mode() -> str:
-    """Read just the access_mode flag from app-settings.json."""
-    data = _load_app_settings()
-    mode = data.get("access_mode") or "private"
-    if mode not in VALID_ACCESS_MODES:
-        mode = "private"
-    return mode
+    """Read just the access_mode flag from app-settings.json.
+
+    Legacy stored values (public_anonymous, private) are normalized to the
+    current three-mode vocabulary so an upgraded config keeps working.
+    """
+    return normalize_access_mode(_load_app_settings().get("access_mode"))
 
 
 def get_global_system_prompt() -> str:
@@ -908,8 +1403,18 @@ def get_self_heal_config() -> dict:
     (sync — used by the watchdog each tick and by the runner for defaults).
     Falls back to the AppSettings defaults for any missing/invalid value."""
     s = AppSettings(**_load_app_settings())
+    # data/config/debug-config.json can force the watchdog on/off, overriding the
+    # App Settings value.
+    _watchdog_enabled = bool(s.run_watchdog_enabled)
+    try:
+        from app.admin.debug_config import debug_overrides
+        _ov = debug_overrides()
+        if "run_watchdog_enabled" in _ov:
+            _watchdog_enabled = bool(_ov["run_watchdog_enabled"])
+    except Exception:
+        pass
     return {
-        "watchdog_enabled": bool(s.run_watchdog_enabled),
+        "watchdog_enabled": _watchdog_enabled,
         "poll_seconds": max(5, int(s.run_watchdog_poll_seconds)),
         "frozen_threshold_seconds": max(15, int(s.run_frozen_threshold_seconds)),
         "zombie_grace_seconds": max(10, int(s.run_zombie_grace_seconds)),
@@ -937,29 +1442,8 @@ async def get_provider(
     """
     user_id = _resolve_user_id(authorization or "", token or "")
 
-    # Try DB first (auth_elements table) — own config, then admin fallback
-    config = None
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(user_id, "llm", "default")
-        if elem:
-            cfg = json.loads(elem.get("config", "{}"))
-            cfg["api_key"] = elem.get("secret_ref", "")
-            config = cfg
-        else:
-            # Fall back to admin user's config (so anonymous visitors see working LLM in settings)
-            elem = await db.auth_element_get("admin_default", "llm", "default")
-            if elem:
-                cfg = json.loads(elem.get("config", "{}"))
-                cfg["api_key"] = elem.get("secret_ref", "")
-                config = cfg
-    except Exception:
-        pass
-
-    # Fall back to provider.json
-    if config is None:
-        config = _load_provider(user_id)
+    # Resolve own config → admin fallback → provider.json (shared resolver).
+    config = await _resolve_user_config(user_id)
 
     # Ensure providers dict exists
     if "providers" not in config:
@@ -1015,9 +1499,9 @@ async def set_provider(
         "image_capable": config.image_capable,
         "image_out_capable": config.image_out_capable,
         "use_for_image_out": config.use_for_image_out,
-        # Preserve the saved racer list / parallel flag — saving the default
-        # model must not wipe the Models grid (auth_element_set fully replaces).
-        "parallel_mode": existing.get("parallel_mode", False),
+        "high_effort_capable": config.high_effort_capable,
+        # Preserve the saved roster — saving the default model must not wipe the
+        # Models grid (auth_element_set fully replaces).
         "multi_providers": existing.get("multi_providers", []),
     }
 
@@ -1037,8 +1521,8 @@ async def set_provider(
                 "image_capable": config.image_capable,
                 "image_out_capable": config.image_out_capable,
                 "use_for_image_out": config.use_for_image_out,
-                # Preserve racers/parallel flag (full-replace write).
-                "parallel_mode": existing.get("parallel_mode", False),
+                "high_effort_capable": config.high_effort_capable,
+                # Preserve the saved roster (full-replace write).
                 "multi_providers": existing.get("multi_providers", []),
             },
             secret_ref=current_key,
@@ -1066,105 +1550,21 @@ async def clear_provider(
     return {"status": "ok", "message": "Provider settings cleared", "user": user_id}
 
 
-async def update_multi_provider_rating(user_id: str, provider: str, model: str, delta: int):
-    """Update a specific parallel provider's rating in the dedicated DB table. If rating < -5, auto-disable in config."""
-    try:
-        from app.db import get_db
-        db = get_db()
-        new_rating = await db.update_provider_rating(user_id, provider, model, delta)
-    except Exception as e:
-        logger.warning(f"Failed to update provider rating table: {e}")
-        new_rating = None
-
-    if new_rating is not None and new_rating < -5:
-        # Actually disable them in the flat config structure
-        existing = _load_provider(user_id)
-        multi = existing.get("multi_providers", [])
-        changed = False
-        
-        for p in multi:
-            if p.get("provider") == provider and p.get("model") == model:
-                if p.get("enabled", True):
-                    p["enabled"] = False
-                    logger.info(f"Auto-disabled provider {provider} {model} due to rating {new_rating}")
-                    changed = True
-                break
-                
-        if changed:
-            try:
-                db_config = {
-                    "provider": existing.get("provider", ""),
-                    "base_url": existing.get("base_url", ""),
-                    "model": existing.get("model", ""),
-                    "providers": existing.get("providers", {}),
-                    "parallel_mode": existing.get("parallel_mode", False),
-                    "multi_providers": multi,
-                }
-                await db.auth_element_set(
-                    user_id=user_id,
-                    service="llm",
-                    config=db_config,
-                    secret_ref=existing.get("api_key", ""),
-                    label="default",
-                )
-            except Exception:
-                pass
-            _save_provider(user_id, existing)
-
 @router.get("/multi-providers")
 async def get_multi_providers(
     authorization: Optional[str] = Header(None),
     token: Optional[str] = Query(None),
 ):
-    """Get multi-provider parallel config for the requesting user.
-    Returns parallel_mode flag and list of provider entries.
+    """Get the saved-model roster for the requesting user (the candidate models
+    for the chat switcher + vision/image workers). Returns a list of entries.
     """
     user_id = _resolve_user_id(authorization or "", token or "")
-    config = None
 
-    # Try DB first
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(user_id, "llm", "default")
-        if elem:
-            cfg = json.loads(elem.get("config", "{}"))
-            cfg["api_key"] = elem.get("secret_ref", "")
-            config = cfg
-        else:
-            elem = await db.auth_element_get("admin_default", "llm", "default")
-            if elem:
-                cfg = json.loads(elem.get("config", "{}"))
-                cfg["api_key"] = elem.get("secret_ref", "")
-                config = cfg
-    except Exception:
-        pass
-
-    if config is None:
-        config = _load_provider(user_id)
-
-    parallel_mode = config.get("parallel_mode", False)
-    raw_providers = config.get("multi_providers", [])
-
-    # Fetch dedicated ratings
-    ratings_map = {}
-    try:
-        from app.db import get_db
-        db = get_db()
-        ratings_map = await db.get_provider_ratings(user_id)
-    except Exception as e:
-        logger.warning(f"Failed to fetch DB ratings: {e}")
-
-    result_providers = []
-    for p in raw_providers:
-        entry = dict(p)
-        db_rating = ratings_map.get((entry.get("provider"), entry.get("model")), 0)
-        entry["rating"] = db_rating
-        result_providers.append(entry)
+    # Resolve own config → admin fallback → provider.json (shared resolver).
+    config = await _resolve_user_config(user_id)
 
     return {
-        "parallel_mode": parallel_mode,
-        "providers": result_providers,
+        "providers": config.get("multi_providers", []),
     }
 
 
@@ -1174,20 +1574,21 @@ async def set_multi_providers(
     authorization: Optional[str] = Header(None),
     token: Optional[str] = Query(None),
 ):
-    """Set multi-provider parallel config for the requesting user.
-    Saves to both DB auth_elements and provider.json.
-    When parallel_mode is off or providers has < 2 entries,
-    system falls back to the existing single-provider path.
+    """Save the user's saved-model roster (the candidate models for the chat
+    switcher + vision/image workers) to both DB auth_elements and provider.json.
+    The default brain model is owned separately by POST /provider (the "Default"
+    radio) and is NOT changed here unless none is set yet.
     """
     user_id = _resolve_user_id(authorization or "", token or "")
     existing = _load_provider(user_id)
 
     merged = dict(existing)
-    merged["parallel_mode"] = body.parallel_mode
     merged["multi_providers"] = [p.model_dump() for p in body.providers]
 
-    # Also mirror the first provider's key up to root for backward compat
-    if body.providers:
+    # Mirror the first provider up to the root default slots ONLY when no default
+    # model is set yet. The explicit "Default" radio (POST /provider) owns the
+    # default — re-saving the roster (e.g. a capability toggle) must not clobber it.
+    if body.providers and not merged.get("model"):
         first = body.providers[0]
         merged["provider"] = first.provider
         if first.base_url:
@@ -1206,13 +1607,13 @@ async def set_multi_providers(
             "base_url": merged.get("base_url", ""),
             "model": merged.get("model", ""),
             "providers": merged.get("providers", {}),
-            "parallel_mode": merged.get("parallel_mode", False),
             "multi_providers": merged.get("multi_providers", []),
             # preserve the default model's detected capabilities across edits
             "text_capable": merged.get("text_capable", True),
             "image_capable": merged.get("image_capable", False),
             "image_out_capable": merged.get("image_out_capable", False),
             "use_for_image_out": merged.get("use_for_image_out", False),
+            "high_effort_capable": merged.get("high_effort_capable", False),
         }
         await db.auth_element_set(
             user_id=user_id,
@@ -1228,13 +1629,11 @@ async def set_multi_providers(
     _save_provider(user_id, merged)
 
     count = len(body.providers)
-    mode = "parallel" if body.parallel_mode and count >= 2 else "single"
-    logger.info("Multi-provider config saved for user %s: mode=%s, count=%d", user_id[:12], mode, count)
+    logger.info("Saved-model roster saved for user %s: count=%d", user_id[:12], count)
     return {
         "status": "ok",
-        "mode": mode,
         "count": count,
-        "message": f"Multi-provider config saved. Mode: {mode}, {count} provider(s).",
+        "message": f"Saved-model roster saved. {count} model(s).",
     }
 
 
@@ -1406,57 +1805,295 @@ async def refresh_model_catalog():
         return {"error": str(e), "fetched_at": 0, "count": 0, "stale": True}
 
 
+async def _is_admin(db, user_id: str) -> bool:
+    """True when this user may see cross-user (global) usage totals."""
+    if not user_id:
+        return False
+    if user_id == "admin":
+        return True
+    try:
+        prof = await db.get_user_profile(user_id)
+        return bool(prof and prof.get("is_admin"))
+    except Exception:
+        return False
+
+
 @router.get("/model-usage")
 async def get_model_usage(
     model: str = Query(""),
     provider: str = Query(""),
+    scope: str = Query("user"),
     authorization: Optional[str] = Header(None),
     token: Optional[str] = Query(None),
 ):
-    """Aggregate real token usage and provider cost for one model+provider combo,
-    scoped to the current user."""
+    """Aggregate real token usage and cost for one model+provider combo.
+
+    scope='user' (default) sums only the current user's calls. scope='global'
+    (admin only) sums every agent, every user, and background tasks (git commit
+    messages, placeholder/suggestion text, compaction, embeddings) for a true
+    app-wide model total. cost_usd is the canonical published-price figure;
+    total_cost_cents stays as the secondary provider-billed figure."""
     user_id = _resolve_user_id(authorization or "", token or "")
     if not user_id:
-        return {"error": "not_authenticated", "total_input_tokens": 0, "total_output_tokens": 0, "total_cost_cents": 0}
+        return {"error": "not_authenticated", "total_input_tokens": 0,
+                "total_output_tokens": 0, "total_cost_cents": 0, "total_cost_usd": 0.0}
 
     try:
         from app.db import get_db
         db = get_db()
+        want_global = (scope == "global") and await _is_admin(db, user_id)
         total_in = 0
         total_out = 0
         total_cost_cents = 0
+        total_cost_usd = 0.0
+
+        if hasattr(db, "_get_conn"):
+            conn = db._get_conn()
+            try:
+                # Global sums every provider for this model (the same model can be
+                # billed via different provider strings, and background rows carry
+                # their own); user-scope keeps the provider filter for precision,
+                # but a blank provider means "any provider".
+                cols = ("SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), "
+                        "COALESCE(SUM(provider_cost_cents),0), COALESCE(SUM(cost_usd),0) "
+                        "FROM usage_events WHERE ")
+                if want_global:
+                    sql = cols + "model=?"
+                    params = [model]
+                else:
+                    sql = cols + "user_id=? AND model=?"
+                    params = [user_id, model]
+                if provider:
+                    sql += " AND provider=?"
+                    params.append(provider)
+                rows = conn.execute(sql, tuple(params)).fetchall()
+                if rows:
+                    total_in, total_out = int(rows[0][0]), int(rows[0][1])
+                    total_cost_cents = int(rows[0][2])
+                    total_cost_usd = float(rows[0][3] or 0)
+            finally:
+                conn.close()
+        elif hasattr(db, "get_raw_client"):
+            q = db.get_raw_client().table("usage_events") \
+                .select("input_tokens, output_tokens, provider_cost_cents, cost_usd") \
+                .eq("model", model)
+            if provider:
+                q = q.eq("provider", provider)
+            if not want_global:
+                q = q.eq("user_id", user_id)
+            resp = q.execute()
+            for row in resp.data:
+                total_in += row.get("input_tokens", 0)
+                total_out += row.get("output_tokens", 0)
+                total_cost_cents += row.get("provider_cost_cents", 0)
+                total_cost_usd += row.get("cost_usd", 0) or 0
+
+        return {
+            "error": None,
+            "scope": "global" if want_global else "user",
+            "total_input_tokens": total_in,
+            "total_output_tokens": total_out,
+            "total_cost_cents": total_cost_cents,
+            "total_cost_usd": round(total_cost_usd, 6),
+        }
+    except Exception as e:
+        return {"error": str(e), "total_input_tokens": 0, "total_output_tokens": 0,
+                "total_cost_cents": 0, "total_cost_usd": 0.0}
+
+
+@router.get("/session-cost")
+async def get_session_cost(
+    session_id: str = Query(""),
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Authoritative session cost: sum of the locked-in per-call cost_usd for one
+    session, plus a per-model breakdown. Stays correct across model switches
+    because each call already carries its own model's price. The chat footer
+    reconciles its live running total against this on session load."""
+    user_id = _resolve_user_id(authorization or "", token or "")
+    if not user_id:
+        return {"error": "not_authenticated", "total_cost_usd": 0.0, "by_model": {}}
+    if not session_id:
+        return {"error": None, "total_cost_usd": 0.0, "by_model": {}}
+
+    try:
+        from app.db import get_db
+        db = get_db()
+        by_model: dict = {}
+        total = 0.0
 
         if hasattr(db, "_get_conn"):
             conn = db._get_conn()
             try:
                 rows = conn.execute(
-                    "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), "
-                    "COALESCE(SUM(provider_cost_cents),0) FROM usage_events "
-                    "WHERE user_id=? AND model=? AND provider=?",
-                    (user_id, model, provider),
+                    "SELECT model, COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), "
+                    "COALESCE(SUM(cost_usd),0) FROM usage_events "
+                    "WHERE user_id=? AND session_id=? GROUP BY model",
+                    (user_id, session_id),
                 ).fetchall()
-                if rows:
-                    total_in, total_out, total_cost_cents = int(rows[0][0]), int(rows[0][1]), int(rows[0][2])
+                for r in rows or []:
+                    m = r[0] or ""
+                    inp, out, cost = int(r[1] or 0), int(r[2] or 0), float(r[3] or 0)
+                    if m:
+                        by_model[m] = {"input": inp, "output": out,
+                                       "total": inp + out, "cost_usd": round(cost, 6)}
+                    total += cost
             finally:
                 conn.close()
         elif hasattr(db, "get_raw_client"):
             resp = db.get_raw_client().table("usage_events") \
-                .select("input_tokens, output_tokens, provider_cost_cents") \
-                .eq("user_id", user_id).eq("model", model).eq("provider", provider) \
-                .execute()
-            for row in resp.data:
-                total_in += row.get("input_tokens", 0)
-                total_out += row.get("output_tokens", 0)
-                total_cost_cents += row.get("provider_cost_cents", 0)
+                .select("model, input_tokens, output_tokens, cost_usd") \
+                .eq("user_id", user_id).eq("session_id", session_id).execute()
+            for row in resp.data or []:
+                m = row.get("model") or ""
+                inp = row.get("input_tokens", 0) or 0
+                out = row.get("output_tokens", 0) or 0
+                cost = row.get("cost_usd", 0) or 0
+                if m:
+                    cur = by_model.setdefault(m, {"input": 0, "output": 0, "total": 0, "cost_usd": 0.0})
+                    cur["input"] += inp
+                    cur["output"] += out
+                    cur["total"] += inp + out
+                    cur["cost_usd"] = round(cur["cost_usd"] + cost, 6)
+                total += cost
+
+        return {"error": None, "total_cost_usd": round(total, 6), "by_model": by_model}
+    except Exception as e:
+        return {"error": str(e), "total_cost_usd": 0.0, "by_model": {}}
+
+
+@router.get("/agent-usage")
+async def get_agent_usage(
+    agent_id: str = Query(""),
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Usage the CURRENT user has accrued with one agent: a grand total
+    (tokens + cost_usd) plus a per-model breakdown, scoped to this (user, agent)
+    pair only — not the agent's all-users total, not the user's all-agents total.
+    Powers the cumulative cost figure in the agent's configuration tab, so each
+    viewer sees what they personally spent with this agent."""
+    user_id = _resolve_user_id(authorization or "", token or "")
+    if not user_id:
+        return {"error": "not_authenticated", "total_cost_usd": 0.0,
+                "total_input_tokens": 0, "total_output_tokens": 0, "by_model": {}}
+    if not agent_id:
+        return {"error": None, "total_cost_usd": 0.0,
+                "total_input_tokens": 0, "total_output_tokens": 0, "by_model": {}}
+
+    try:
+        from app.db import get_db
+        db = get_db()
+        by_model: dict = {}
+        total_cost = 0.0
+        total_in = 0
+        total_out = 0
+
+        if hasattr(db, "_get_conn"):
+            conn = db._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT model, COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), "
+                    "COALESCE(SUM(cost_usd),0) FROM usage_events "
+                    "WHERE agent_id=? AND user_id=? GROUP BY model",
+                    (agent_id, user_id),
+                ).fetchall()
+                for r in rows or []:
+                    m = r[0] or ""
+                    inp, out, cost = int(r[1] or 0), int(r[2] or 0), float(r[3] or 0)
+                    total_in += inp
+                    total_out += out
+                    total_cost += cost
+                    if m:
+                        by_model[m] = {"input": inp, "output": out,
+                                       "total": inp + out, "cost_usd": round(cost, 6)}
+            finally:
+                conn.close()
+        elif hasattr(db, "get_raw_client"):
+            resp = db.get_raw_client().table("usage_events") \
+                .select("model, input_tokens, output_tokens, cost_usd") \
+                .eq("agent_id", agent_id).eq("user_id", user_id).execute()
+            for row in resp.data or []:
+                m = row.get("model") or ""
+                inp = row.get("input_tokens", 0) or 0
+                out = row.get("output_tokens", 0) or 0
+                cost = row.get("cost_usd", 0) or 0
+                total_in += inp
+                total_out += out
+                total_cost += cost
+                if m:
+                    cur = by_model.setdefault(m, {"input": 0, "output": 0, "total": 0, "cost_usd": 0.0})
+                    cur["input"] += inp
+                    cur["output"] += out
+                    cur["total"] += inp + out
+                    cur["cost_usd"] = round(cur["cost_usd"] + cost, 6)
 
         return {
             "error": None,
+            "total_cost_usd": round(total_cost, 6),
             "total_input_tokens": total_in,
             "total_output_tokens": total_out,
-            "total_cost_cents": total_cost_cents,
+            "by_model": by_model,
         }
     except Exception as e:
-        return {"error": str(e), "total_input_tokens": 0, "total_output_tokens": 0, "total_cost_cents": 0}
+        return {"error": str(e), "total_cost_usd": 0.0,
+                "total_input_tokens": 0, "total_output_tokens": 0, "by_model": {}}
+
+
+@router.post("/agent-usage/reset")
+async def reset_agent_usage(
+    agent_id: str = Query(""),
+    scope: str = Query("all"),
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Reset the CURRENT user's usage counters for one agent. scope = 'all'
+    (delete every row), 'input' / 'output' / 'cost' (zero only that column).
+    Scoped to this (user, agent) pair to match the user-scoped figure shown in
+    the agent's configuration tab — it never touches other users' usage rows."""
+    user_id = _resolve_user_id(authorization or "", token or "")
+    if not user_id:
+        return {"error": "not_authenticated"}
+    if not agent_id:
+        return {"error": "agent_id required"}
+
+    try:
+        from app.db import get_db
+        db = get_db()
+        if hasattr(db, "_get_conn"):
+            conn = db._get_conn()
+            try:
+                if scope == "all":
+                    conn.execute("DELETE FROM usage_events WHERE agent_id=? AND user_id=?", (agent_id, user_id))
+                elif scope == "input":
+                    conn.execute("UPDATE usage_events SET input_tokens=0 WHERE agent_id=? AND user_id=?", (agent_id, user_id))
+                elif scope == "output":
+                    conn.execute("UPDATE usage_events SET output_tokens=0 WHERE agent_id=? AND user_id=?", (agent_id, user_id))
+                elif scope == "cost":
+                    conn.execute("UPDATE usage_events SET cost_usd=0 WHERE agent_id=? AND user_id=?", (agent_id, user_id))
+                else:
+                    return {"error": f"invalid scope: {scope}"}
+                conn.commit()
+            finally:
+                conn.close()
+        elif hasattr(db, "get_raw_client"):
+            client = db.get_raw_client()
+            if scope == "all":
+                client.table("usage_events").delete().eq("agent_id", agent_id).eq("user_id", user_id).execute()
+            elif scope == "input":
+                client.table("usage_events").update({"input_tokens": 0}).eq("agent_id", agent_id).eq("user_id", user_id).execute()
+            elif scope == "output":
+                client.table("usage_events").update({"output_tokens": 0}).eq("agent_id", agent_id).eq("user_id", user_id).execute()
+            elif scope == "cost":
+                client.table("usage_events").update({"cost_usd": 0}).eq("agent_id", agent_id).eq("user_id", user_id).execute()
+            else:
+                return {"error": f"invalid scope: {scope}"}
+        else:
+            return {"error": "unsupported database"}
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @router.get("/session-model-usage")
@@ -1487,7 +2124,7 @@ async def get_session_model_usage(
             try:
                 rows = conn.execute(
                     "SELECT ue.model, COALESCE(SUM(ue.input_tokens),0), "
-                    "COALESCE(SUM(ue.output_tokens),0) "
+                    "COALESCE(SUM(ue.output_tokens),0), COALESCE(SUM(ue.cost_usd),0) "
                     "FROM usage_events ue "
                     "JOIN interactions i ON ue.interaction_id = i.id "
                     "WHERE ue.user_id=? AND i.session_id=? "
@@ -1499,7 +2136,8 @@ async def get_session_model_usage(
                     if not model:
                         continue
                     inp, out = int(r[1] or 0), int(r[2] or 0)
-                    usage[model] = {"input": inp, "output": out, "total": inp + out}
+                    usage[model] = {"input": inp, "output": out, "total": inp + out,
+                                    "cost_usd": round(float(r[3] or 0), 6)}
             finally:
                 conn.close()
         elif hasattr(db, "get_raw_client"):
@@ -1511,7 +2149,7 @@ async def get_session_model_usage(
             iids = [row["id"] for row in (irows.data or []) if row.get("id")]
             if iids:
                 resp = client.table("usage_events") \
-                    .select("model, input_tokens, output_tokens, interaction_id") \
+                    .select("model, input_tokens, output_tokens, cost_usd, interaction_id") \
                     .eq("user_id", user_id).in_("interaction_id", iids).execute()
                 for row in resp.data or []:
                     model = row.get("model") or ""
@@ -1519,10 +2157,12 @@ async def get_session_model_usage(
                         continue
                     inp = row.get("input_tokens", 0) or 0
                     out = row.get("output_tokens", 0) or 0
-                    cur = usage.setdefault(model, {"input": 0, "output": 0, "total": 0})
+                    cost = row.get("cost_usd", 0) or 0
+                    cur = usage.setdefault(model, {"input": 0, "output": 0, "total": 0, "cost_usd": 0.0})
                     cur["input"] += inp
                     cur["output"] += out
                     cur["total"] += inp + out
+                    cur["cost_usd"] = round(cur["cost_usd"] + cost, 6)
 
         return {"error": None, "usage": usage}
     except Exception as e:
@@ -1539,6 +2179,25 @@ async def get_model_info(model: str = Query("", alias="model")):
         return {"error": None, "found": meta is not None, "info": meta or model_catalog.enrich(model)}
     except Exception as e:
         return {"error": str(e), "found": False, "info": None}
+
+
+def _claude_model_window(model: str):
+    """Best-effort context window (in tokens) for a Claude Code model id.
+
+    The local `claude` CLI isn't served through the app's OpenRouter catalog, so
+    we can't look its window up there (and OpenRouter under-reports Anthropic at
+    200K anyway). Map by family instead: current Opus/Sonnet run a 1M window;
+    Haiku is 200K. Returns None for a blank/unknown id (e.g. "Claude's default"),
+    which the footer fills in live once the run reports its real model.
+    """
+    m = (model or "").lower()
+    if not m:
+        return None
+    if "haiku" in m:
+        return 200_000
+    if "opus" in m or "sonnet" in m or "fable" in m or "mythos" in m:
+        return 1_000_000
+    return None
 
 
 @router.get("/current-model-info")
@@ -1572,9 +2231,46 @@ async def get_current_model_info(
     model = active.get("model", "")
     provider = active.get("provider", "")
 
+    # Alternate-engine agents (e.g. Local Claude Code) don't run on the app's own
+    # model, so the resolved model/context/cost above describe a model they never
+    # use. Surface the engine id so the footer can drop the inapplicable price
+    # while keeping the (real) token counters. Mirrors loop.py's engine lookup.
+    engine = ""
+    cc_meta: dict = {}
+    try:
+        _eng_meta = agent_rec.get("metadata") if agent_rec else None
+        if isinstance(_eng_meta, str):
+            import json as _json
+            _eng_meta = _json.loads(_eng_meta or "{}")
+        if isinstance(_eng_meta, dict):
+            engine = str(_eng_meta.get("engine") or "").strip()
+            _cc = _eng_meta.get("claude_code")
+            cc_meta = _cc if isinstance(_cc, dict) else {}
+    except Exception:
+        engine = ""
+
+    # Local Claude Code: the footer must describe the model the *local* claude
+    # program runs, not the app's default LLM. Use the agent's configured model
+    # (blank ⇒ "Claude's default", which the engine fills in live from the model
+    # the run actually reports), and the real Claude context window for it — never
+    # the app default's price (which doesn't apply here). See _claude_model_window.
+    if engine == "claude_code":
+        cc_model = str(cc_meta.get("model") or "").strip()
+        return {
+            "error": None, "model": cc_model, "provider": "anthropic",
+            "engine": engine, "found": bool(cc_model),
+            "context": _claude_model_window(cc_model), "max_output": None,
+            "cost_input": None, "cost_output": None,
+            "reasoning_effort": "default", "reasoning": None,
+        }
+
     result = {
         "error": None, "model": model, "provider": provider, "found": False,
+        "engine": engine,
         "context": None, "max_output": None, "cost_input": None, "cost_output": None,
+        # The reasoning-effort level this chat is running the active model at, and
+        # whether the model supports reasoning at all (gates the footer effort UI).
+        "reasoning_effort": active.get("reasoning_effort", "default"), "reasoning": None,
     }
     if not model:
         return result
@@ -1589,10 +2285,38 @@ async def get_current_model_info(
                 "max_output": meta.get("max_output"),
                 "cost_input": meta.get("cost_input"),
                 "cost_output": meta.get("cost_output"),
+                "reasoning": meta.get("reasoning"),
             })
     except Exception as e:
         result["error"] = str(e)
     return result
+
+
+@router.get("/agent-models")
+async def get_agent_models(
+    agent_id: str = Query("", alias="agent_id"),
+    session_id: str = Query("", alias="session_id"),
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """List the Text-capable models a chat user can switch between for this agent
+    (app default(s) + the agent's own roster — the exact union the run considers),
+    plus the model currently active for this chat. Used by the chat footer model
+    switcher so it shows ALL of the agent's models, not just the admin defaults.
+    """
+    user_id = _resolve_user_id(authorization or "", token or "")
+    agent_rec = None
+    if agent_id:
+        try:
+            from app.db import get_db
+            agent_rec = await get_db().get_agent_by_id(agent_id)
+        except Exception:
+            agent_rec = None
+    try:
+        return await resolve_agent_models(user_id, agent_rec, session_id or None)
+    except Exception as e:
+        logger.warning("get_agent_models failed: %s", e)
+        return {"models": [], "active": "", "error": str(e)}
 
 
 @router.get("/metadata", response_model=MetadataSetting)
@@ -1607,6 +2331,18 @@ async def set_metadata_setting(setting: MetadataSetting):
     else:
         METADATA_FLAG.unlink() if METADATA_FLAG.exists() else None
     return MetadataSetting(enabled=_is_metadata_enabled())
+
+
+@router.get("/backgrounds")
+async def list_backgrounds():
+    """Drop-in animated-background catalog for the Appearance selector.
+
+    Scans ui/background/<id>/<id>.json fresh each call so a folder dropped in
+    (or removed) shows up without a server restart. The built-in "none" option
+    is added by the selector UI, not listed here."""
+    from app.ui_backgrounds import catalog as _bg_catalog, reload as _bg_reload
+    _bg_reload()
+    return {"backgrounds": _bg_catalog()}
 
 
 @router.get("/app", response_model=AppSettings)
@@ -1624,6 +2360,19 @@ async def set_app_settings(request: Request):
     every other setting (e.g. the global_system_prompt) back to its default. Unknown
     raw keys already in the file (e.g. render_recording_* capture knobs) are
     preserved too."""
+    # Admin-only. These are app-WIDE controls (access mode, global system
+    # prompt, watchdog tunables, …) so a non-admin must never be able to flip
+    # them. There is no global auth middleware, so the gate lives here: resolve
+    # the caller from the JWT and require is_admin. The matching GET stays open
+    # because non-admin clients read these flags at boot.
+    from app.db import get_db
+    caller_id = _resolve_user_id(
+        request.headers.get("Authorization", "") or "",
+        request.query_params.get("token", "") or "",
+    )
+    if not await get_db().is_user_admin(caller_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -1632,8 +2381,7 @@ async def set_app_settings(request: Request):
         body = {}
     existing = _load_app_settings()
     settings = AppSettings(**{**existing, **body})
-    if settings.access_mode not in VALID_ACCESS_MODES:
-        settings.access_mode = "private"
+    settings.access_mode = normalize_access_mode(settings.access_mode)
     # Clamp stream buffer retention to a sane range so a bad value can't
     # exhaust RAM (huge) or break replay-after-reconnect entirely (negative).
     try:

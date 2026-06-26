@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.util.config_io import safe_write_json
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -63,8 +65,7 @@ def _load_config() -> Dict[str, Any]:
 
 def _save_config(data: Dict[str, Any]) -> None:
     try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        safe_write_json(CONFIG_FILE, data)
     except Exception as e:
         logger.warning("Failed to save scheduler_config.json: %s", e)
 

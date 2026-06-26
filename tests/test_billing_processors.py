@@ -18,13 +18,13 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from app.billing.processors import _REGISTRY, get_processor, list_processors
-from app.billing.processors.base import PaymentProcessor
+from plugins.billing.processors import _REGISTRY, get_processor, list_processors
+from plugins.billing.processors.base import PaymentProcessor
 
 
 REQUIRED_METHODS = [
     "create_checkout", "create_subscription", "onboard_payee",
-    "verify_webhook", "refund", "is_configured", "supported_features",
+    "verify_webhook", "is_configured", "supported_features",
 ]
 
 

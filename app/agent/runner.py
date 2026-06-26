@@ -538,7 +538,7 @@ async def _generic_background_resume(rc: Dict[str, Any], replaced: bool) -> RunO
     automation / event / inbound / webhook origins (no UI attached)."""
     from app.db import get_db
     from app.agent.prompts import build_system_prompt
-    from app.agent.session_history import build_openai_history_from_session
+    from app.agent.session_history import build_openai_history_from_session, trim_history_for_resume
     from app.agent.loop import run_agent_loop_buffered
 
     db = get_db()
@@ -576,7 +576,9 @@ async def _generic_background_resume(rc: Dict[str, Any], replaced: bool) -> RunO
     system_prompt = await build_system_prompt(
         context_docs, brain_context=None, user_id=user_id, agent_id=agent_id)
 
+    # Bounded checkpoint, not the full transcript — see trim_history_for_resume.
     history = await build_openai_history_from_session(db, user_id, sid, agent_id=agent_id)
+    history = trim_history_for_resume(history)
 
     raw_allowed = agent.get("allowed_tools", [])
     if isinstance(raw_allowed, str):

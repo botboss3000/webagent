@@ -10,7 +10,7 @@
 #
 #   git  :  pkg install -y git \
 #             && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent \
-#             && bash ~/webagent/webagent/install-termux.sh
+#             && bash ~/webagent/TUI/install-termux.sh
 #
 #   curl :  pkg install -y curl && curl -fsSL https://webagent.live/termux | bash
 #
@@ -36,7 +36,7 @@ die()  { printf '\033[1;31m[webagent] %s\033[0m\n' "$*" >&2; exit 1; }
 
 # ── 0. Sanity: this is a Termux-only installer ───────────────────────────────
 if [ -z "${PREFIX:-}" ] || ! command -v pkg >/dev/null 2>&1; then
-  die "This installer is for Termux on Android (no 'pkg'/\$PREFIX found). On desktop use webagent/run.bat or 'pip install -e .'."
+  die "This installer is for Termux on Android (no 'pkg'/\$PREFIX found). On desktop use TUI/run.bat or 'pip install -e .'."
 fi
 
 # ── 1. Base packages ─────────────────────────────────────────────────────────
@@ -55,12 +55,12 @@ REPO=""
 SRC="${BASH_SOURCE[0]:-$0}"
 if [ -f "$SRC" ]; then
   CAND="$(cd "$(dirname "$SRC")/.." 2>/dev/null && pwd)"
-  if [ -n "$CAND" ] && [ -f "$CAND/run.py" ] && [ -d "$CAND/webagent" ]; then
+  if [ -n "$CAND" ] && [ -f "$CAND/run.py" ] && [ -d "$CAND/TUI" ]; then
     REPO="$CAND"
   fi
 fi
 if [ -z "$REPO" ]; then
-  if [ -f "$TARGET_DEFAULT/run.py" ] && [ -d "$TARGET_DEFAULT/webagent" ]; then
+  if [ -f "$TARGET_DEFAULT/run.py" ] && [ -d "$TARGET_DEFAULT/TUI" ]; then
     REPO="$TARGET_DEFAULT"
     say "Updating existing checkout at $REPO…"
     git -C "$REPO" pull --ff-only >/dev/null 2>&1 \
@@ -73,8 +73,8 @@ if [ -z "$REPO" ]; then
     REPO="$TARGET_DEFAULT"
   fi
 fi
-TUI_DIR="$REPO/webagent"
-[ -d "$TUI_DIR" ] || die "No webagent/ found in $REPO."
+TUI_DIR="$REPO/TUI"
+[ -d "$TUI_DIR" ] || die "No TUI/ found in $REPO."
 
 # ── 3. Install the TUI ───────────────────────────────────────────────────────
 PYVER="$(python -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo '?')"

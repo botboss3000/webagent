@@ -1,0 +1,12 @@
+{
+  "display_name": "Google Sheets",
+  "kind": "placeholder",
+  "icon": "sheet",
+  "color": "#4285F4",
+  "description": "Read and write spreadsheet data.",
+  "note": "Free OAuth — part of Google Cloud; read/write spreadsheets.",
+  "simple": false,
+  "placeholder": true,
+  "tools": [],
+  "order": 8
+}

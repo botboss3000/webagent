@@ -7,8 +7,16 @@
                 <button class="files-icon-btn" id="files-new-folder" title="New folder"><i data-lucide="folder-plus" class="lucide-icon"></i></button>
                 <button class="files-icon-btn" id="files-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
                 <button class="files-icon-btn" id="files-collapse-all" title="Collapse all"><i data-lucide="chevrons-down-up" class="lucide-icon"></i></button>
+                <!-- "More" — opens a small popover with the production tools:
+                     • Show dev checkboxes (production-preview toggle — tick what ships)
+                     • Copy to production (build the trimmed tree in the sister repo + commit locally)
+                     • Push to GitHub (publish what was copied)
+                     Copy + Push are the split halves of the Git page's one-click Release. -->
+                <button class="files-icon-btn" id="files-more-btn" title="More — production tools" aria-label="More" aria-haspopup="true" aria-expanded="false"><i data-lucide="more-horizontal" class="lucide-icon"></i></button>
               </div>
             </div>
+            <!-- Live publish progress / result (hidden until a publish runs in prod-view). -->
+            <div id="files-prod-status" class="files-prod-status" role="status" aria-live="polite"></div>
             <div id="files-breadcrumb" class="files-breadcrumb" aria-label="Current path">
               <button class="files-breadcrumb-up" id="files-breadcrumb-up" title="Go to parent directory"><i data-lucide="arrow-up" class="lucide-icon"></i></button>
               <button class="files-breadcrumb-home" id="files-breadcrumb-home" title="Back to project root"><i data-lucide="home" class="lucide-icon"></i></button>

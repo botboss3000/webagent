@@ -22,6 +22,37 @@ logger = logging.getLogger(__name__)
 
 BASE = "http://localhost:8080"
 
+# ── Write/exec tools that must pause for the user's confirmation ───────────────
+# THE single hard-coded source of truth for which admin tools are "destructive"
+# (they write, delete, or execute with side-effects). The admin abilities that
+# inject these tools — Codebase Admin (inject_source_tools) and UI Admin
+# (inject_ui_tools) — build off the ToolInfo objects created here, so they
+# inherit the same gating with no per-ability list to keep in sync. (Git Control
+# defines its OWN git tools in its ability file and stamps them confirm-gated
+# there.) Setting both flags makes the agent loop treat them as confirmation-
+# gated: it pauses for the user's go-ahead in BOTH Ask and Plan execution modes
+# (the read-only tools left out below — read_source, search_*, read_directory —
+# keep running without a pause). One tool in the set is DUAL-USE — run_command
+# both reads and writes — and the agent loop exempts its read-only invocations at
+# runtime (safe shell commands like `git status`, `ls`, … via
+# _is_safe_shell_command) so a broad set doesn't gate routine reads.
+_CONFIRM_TOOLS = frozenset({
+    "write_source", "edit_source", "patch_source", "delete_source",
+    "run_command", "run_python", "restart_server",
+})
+
+
+def _apply_confirm_flags(tools: dict) -> None:
+    """Mark every write/exec tool in ``tools`` confirmation-gated (see
+    ``_CONFIRM_TOOLS``). Mutates the ToolInfo objects in place so the flags flow
+    through ``adapter.extract_injected`` into each ability's DESTRUCTIVE set."""
+    for _name in _CONFIRM_TOOLS:
+        _ti = tools.get(_name)
+        if _ti is not None:
+            _ti.destructive = True
+            _ti.requires_confirmation = True
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # app/../
@@ -72,6 +103,106 @@ def _run_subprocess(cmd: List[str], timeout: int = 30) -> dict:
         return {"stdout": "", "stderr": f"Command not found: {cmd[0]}", "exit_code": -1}
     except Exception as e:
         return {"stdout": "", "stderr": str(e), "exit_code": -1}
+
+
+def _leading_width(line: str, tabsize: int = 4) -> int:
+    """Visual column width of a line's leading whitespace (tabs expanded)."""
+    w = 0
+    for ch in line:
+        if ch == " ":
+            w += 1
+        elif ch == "\t":
+            w += tabsize
+        else:
+            break
+    return w
+
+
+def _leading_ws(line: str) -> str:
+    """The literal leading-whitespace prefix of a line."""
+    return line[: len(line) - len(line.lstrip(" \t"))]
+
+
+def _file_indent_uses_tabs(text: str) -> bool:
+    """True if the file predominantly indents with tabs rather than spaces."""
+    tabs = spaces = 0
+    for line in text.split("\n"):
+        if not line[:1].strip(" \t") and line.strip():  # has leading ws + content
+            if line[0] == "\t":
+                tabs += 1
+            elif line[0] == " ":
+                spaces += 1
+    return tabs > spaces
+
+
+def _rebase_block_indent(block: str, base_indent: str, use_tabs: bool) -> str:
+    """Re-indent a replacement block so its outermost level sits at
+    ``base_indent`` and inner levels follow the file's indent style.
+
+    The model frequently supplies replacement text with tab/space-mismatched
+    or wrongly-based indentation (e.g. tabs pasted into a spaces file). When a
+    patch is located by IGNORING whitespace we must not splice that text in
+    verbatim — this rewrites only the LEADING whitespace of every line so it
+    matches the surrounding file; the content of each line is untouched. For a
+    block that is already correctly indented this is a no-op."""
+    lines = block.split("\n")
+    nonblank = [l for l in lines if l.strip()]
+    if not nonblank:
+        return block
+    min_w = min(_leading_width(l) for l in nonblank)
+    out = []
+    for line in lines:
+        if not line.strip():
+            out.append("")
+            continue
+        rel = _leading_width(line) - min_w  # extra columns beyond the block base
+        if use_tabs:
+            indent = base_indent + "\t" * (rel // 4)
+        else:
+            indent = base_indent + " " * rel
+        out.append(indent + line.lstrip(" \t"))
+    return "\n".join(out)
+
+
+def _py_parses(text: str) -> bool:
+    """True if ``text`` compiles as Python (or isn't broken by a SyntaxError)."""
+    try:
+        compile(text, "<patch>", "exec")
+        return True
+    except SyntaxError:
+        return False
+    except Exception:
+        return True  # non-syntax errors aren't this tool's concern
+
+
+def _has_mixed_indent(text: str) -> bool:
+    """True if any line's leading whitespace mixes both tabs and spaces."""
+    for line in text.split("\n"):
+        lead = _leading_ws(line)
+        if "\t" in lead and " " in lead:
+            return True
+    return False
+
+
+def _patch_sanity_warning(path: Path, before: str, after: str) -> str:
+    """Return a prominent warning if a patch likely broke the file: a Python
+    file that parsed before but not after, or newly-introduced mixed
+    tab/space indentation. Empty string when the result looks clean. This is
+    the safety net for the fuzzy match strategies — a patch must never report
+    a bare 'success' when it has silently corrupted the file."""
+    warns = []
+    if path.suffix == ".py" and _py_parses(before) and not _py_parses(after):
+        warns.append("the file no longer parses as valid Python")
+    if _has_mixed_indent(after) and not _has_mixed_indent(before):
+        warns.append("mixed tabs/spaces indentation was introduced")
+    if not warns:
+        return ""
+    return (
+        "\n\n[WARNING] " + "; ".join(warns) + ". The match was not exact, so the "
+        "replacement may have landed with the wrong whitespace. Re-read the region "
+        "(read_source with offset/limit) and fix it — or write_source the whole "
+        "file — before moving on. Do NOT assume this patch was clean."
+    )
 
 
 def _write_file_direct(path: Path, content: str) -> str:
@@ -246,6 +377,12 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
           4. Unique-line match (single unique line from old_string)
           5. Context-anchored match (first + last lines)
           6-9. Progressive character truncation from the end
+
+        When a match is found by IGNORING whitespace (strategy 2+), the
+        replacement text's own indentation is untrusted: it is rebased onto the
+        matched region's indent and the file's tab/space style rather than
+        spliced in verbatim. Any patch that still leaves the file unparseable or
+        with mixed tabs/spaces returns a loud warning instead of a bare success.
         """
         safe = _safe_path(path)
         if not safe:
@@ -255,12 +392,21 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         current = safe.read_text(encoding="utf-8")
         old_stripped = old_string.strip()
         new_stripped = new_string.strip()
+        use_tabs = _file_indent_uses_tabs(current)
 
-        # Strategy 1: exact match
+        def _finish(result: str, label: str) -> str:
+            """Write the result and report, appending a loud warning if the
+            (non-exact) match left the file broken. Every success path goes
+            through here so a fuzzy match can never report a bare 'success'."""
+            _write_file_direct(safe, result)
+            warn = _patch_sanity_warning(safe, current, result)
+            return f"Patched ({label}) — {path}\n\n{_mini_diff(current, result, path)}{warn}"
+
+        # Strategy 1: exact match (replacement text is taken verbatim — the
+        # caller matched exactly, so its whitespace is trusted as-is)
         if old_string in current:
             result = current.replace(old_string, new_string, 1)
-            _write_file_direct(safe, result)
-            return f"Patched (exact match) — {path}\n\n{_mini_diff(current, result, path)}"
+            return _finish(result, "exact match")
 
         # Strategy 2: whitespace-normalized match
         def _norm(s):
@@ -292,12 +438,17 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
                         leading = '\n'.join(lines[:i])
                         trailing = '\n'.join(lines[i + len(old_lines):])
                         sep = '\n' if leading and trailing else ''
-                        result = leading + sep + new_string + sep + trailing
+                        # The match ignored whitespace, so new_string's own
+                        # indentation is untrusted — rebase it onto the matched
+                        # region's indent + the file's tab/space style instead
+                        # of splicing it in verbatim (the old bug).
+                        base_indent = _leading_ws(lines[i])
+                        rebased = _rebase_block_indent(new_string, base_indent, use_tabs)
+                        result = leading + sep + rebased + sep + trailing
                         found = True
                         break
                 if found:
-                    _write_file_direct(safe, result)
-                    return f"Patched (fuzzy whitespace match) — {path}\n\n{_mini_diff(current, result, path)}"
+                    return _finish(result, "fuzzy whitespace match")
 
         # Strategy 3: truncated old_string (remove trailing context)
         for truncate_to in range(len(old_string) - 1, len(old_string) // 2, -1):
@@ -306,8 +457,7 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
                 # Replace the first occurrence of the truncated string
                 result = current.replace(truncated, new_string, 1)
                 if result != current:
-                    _write_file_direct(safe, result)
-                    return f"Patched (truncated match to {truncate_to} chars) — {path}\n\n{_mini_diff(current, result, path)}"
+                    return _finish(result, f"truncated match to {truncate_to} chars")
 
         # Strategy 4: unique-line match
         old_lines = old_string.strip().split('\n')
@@ -316,8 +466,7 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
             if ul in current:
                 result = current.replace(ul, new_string, 1)
                 if result != current:
-                    _write_file_direct(safe, result)
-                    return f"Patched (unique-line match: '{ul[:50]}...') — {path}\n\n{_mini_diff(current, result, path)}"
+                    return _finish(result, f"unique-line match: '{ul[:50]}...'")
 
         return (f"Error: could not find a match for old_string in {path}. "
                 "Two-strike rule: do NOT retry patch_source with another variant. "
@@ -738,309 +887,10 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         },
     )
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # GIT OPERATIONS
-    # ═══════════════════════════════════════════════════════════════════════
-
-    # ── git_tool: structured git operations ──
-    async def _git_tool(operation: str, args: str = "") -> str:
-        """Run a structured git operation. Read-only by default; mutating needs confirmation."""
-        safe_ops = {"status", "log", "diff", "show", "branch", "stash", "remote",
-                    "config", "ls-files", "rev-parse", "blame", "describe",
-                    "for-each-ref", "reflog", "cat-file", "fsck", "shortlog",
-                    "name-rev", "tag", "worktree"}
-        mutating_ops = {"add", "commit", "push", "pull", "fetch", "reset",
-                        "checkout", "restore", "switch", "merge", "rebase",
-                        "cherry-pick", "revert", "stash apply", "stash pop",
-                        "stash drop", "clean", "mv", "rm", "apply"}
-
-        op = operation.lower().strip()
-        if op not in safe_ops and op not in mutating_ops:
-            known = ', '.join(sorted(safe_ops | mutating_ops))
-            return f"Error: unknown git operation '{operation}'. Known: {known}"
-
-        git_args = op.split()  # supports "stash apply", "stash pop", etc.
-        if args:
-            import shlex
-            git_args.extend(shlex.split(args))
-
-        # Run through the same helper the Source Control UI's commit/push buttons
-        # use, so the agent authenticates identically (GitHub token injected for
-        # network ops) and always runs in the project root. Fall back to a plain
-        # subprocess if the github module can't be imported.
-        try:
-            from app.api.github import _run_git, _get_token, _cache_token
-            _cache_token(_get_token())
-            stdout, stderr, exit_code = _run_git(git_args, timeout=60)
-        except Exception:
-            result = _run_subprocess(["git"] + git_args, timeout=60)
-            stdout, stderr, exit_code = result["stdout"], result["stderr"], result["exit_code"]
-
-        output = stdout or stderr
-        if exit_code != 0 and not output:
-            output = f"Command failed (exit {exit_code})"
-
-        return f"[Git {op}] " + (output.strip() or "(no output)")
-
-    tools["git_tool"] = ToolInfo(
-        name="git_tool",
-        handler=_git_tool,
-        parameters={
-            "type": "object",
-            "properties": {
-                "operation": {
-                    "type": "string",
-                    "description": (
-                        "Git operation. Read-only (no confirm): status, log, diff, show, "
-                        "branch, stash, remote, config, ls-files, rev-parse, blame, "
-                        "reflog, tag, describe. Mutating: add, commit, push, pull, fetch, "
-                        "reset, checkout, restore, switch, merge, rebase, cherry-pick, "
-                        "revert, stash apply/pop/drop, clean. "
-                        "For continue/abort on conflicts pass via args (e.g. operation='cherry-pick', args='--continue')."
-                    ),
-                },
-                "args": {"type": "string", "description": "Additional arguments (e.g. '--oneline -5' for log, '--continue' for cherry-pick)", "default": ""},
-            },
-            "required": ["operation"],
-        },
-    )
-
-    # ── resolve_conflict: strip merge markers and keep chosen side ──
-    _CONFLICT_RE = re.compile(
-        r"^<{7} .*?\n(.*?)^={7}\n(.*?)^>{7} .*?\n",
-        re.DOTALL | re.MULTILINE,
-    )
-
-    async def _resolve_conflict(path: str, choice: str = "ours") -> str:
-        """Resolve all conflict markers in a file by keeping one side.
-
-        choice: 'ours' (keep <<<<<<< side), 'theirs' (keep >>>>>>> side),
-        or 'both' (keep both sides concatenated, markers removed)."""
-        safe = _safe_path(path)
-        if not safe:
-            return "Error: path is outside the project root"
-        if not safe.exists():
-            return f"Error: file not found: {path}"
-        text = safe.read_text(encoding="utf-8")
-
-        choice = choice.lower().strip()
-        if choice not in {"ours", "theirs", "both"}:
-            return "Error: choice must be 'ours', 'theirs', or 'both'"
-
-        count = 0
-
-        def _sub(match):
-            nonlocal count
-            count += 1
-            ours, theirs = match.group(1), match.group(2)
-            if choice == "ours":
-                return ours
-            if choice == "theirs":
-                return theirs
-            return ours + theirs
-
-        new_text = _CONFLICT_RE.sub(_sub, text)
-        if count == 0:
-            return f"No conflict markers found in {path}."
-        _write_file_direct(safe, new_text)
-        return f"Resolved {count} conflict block(s) in {path} — kept '{choice}'."
-
-    tools["resolve_conflict"] = ToolInfo(
-        name="resolve_conflict",
-        handler=_resolve_conflict,
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path to the conflicted file"},
-                "choice": {
-                    "type": "string",
-                    "enum": ["ours", "theirs", "both"],
-                    "description": "Which side of every conflict block to keep. 'ours'=HEAD/current, 'theirs'=incoming, 'both'=concatenate.",
-                    "default": "ours",
-                },
-            },
-            "required": ["path"],
-        },
-    )
-
-    # ── commit_and_push: one-shot stage → commit → push ──
-    _SECRET_PATTERNS = [
-        (re.compile(r'ghp_[A-Za-z0-9]{36}'), 'GitHub personal access token'),
-        (re.compile(r'sk-or-v1-[A-Za-z0-9]{32,}'), 'OpenRouter/OpenAI API key'),
-        (re.compile(r'sk-[A-Za-z0-9]{32,}'), 'API key pattern'),
-        (re.compile(r'AKIA[0-9A-Z]{16}'), 'AWS access key'),
-        (re.compile(r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----'), 'Private key'),
-    ]
-
-    async def _commit_and_push(message: str = "", skip_push: bool = False, include_untracked: bool = True) -> str:
-        """Stage all changes, generate a commit message via lightweight LLM sub-call, commit, and push — all in one tool call."""
-        import asyncio, json
-
-        # Helper: run git with auth, same as _git_tool
-        def _git(args, timeout=60):
-            try:
-                from app.api.github import _run_git, _get_token, _cache_token
-                _cache_token(_get_token())
-                return _run_git(args, timeout=timeout)
-            except Exception:
-                result = _run_subprocess(["git"] + args, timeout=timeout)
-                return result["stdout"], result["stderr"], result["exit_code"]
-
-        # ── 1. Check repo state ──
-        status_out, status_err, status_code = _git(["status", "--porcelain"], timeout=30)
-        if status_code != 0:
-            return f"Error: git status failed (exit {status_code}): {status_err}"
-        if not status_out.strip():
-            return "Nothing to commit — working tree is clean."
-
-        # ── 2. Gather diffs ──
-        stat_out, _, _ = _git(["diff", "--stat"], timeout=30)
-        full_diff, _, _ = _git(["diff"], timeout=30)
-
-        untracked = []
-        for line in status_out.strip().splitlines():
-            if line.strip().startswith("?? "):
-                untracked.append(line.strip()[3:])
-
-        # ── 3. Safety checks ──
-        diff_text = full_diff or ""
-        warnings = []
-        for pattern, label in _SECRET_PATTERNS:
-            if pattern.findall(diff_text):
-                warnings.append(f"⚠️  Possible {label} found in diff — ABORTED")
-                break
-        if warnings:
-            return (
-                "❌ **Commit BLOCKED by safety checks**\n\n"
-                + "\n".join(warnings)
-                + "\n\nRemove the secrets from the working tree and retry."
-            )
-
-        # ── 4. Generate commit message via lightweight LLM sub-call ──
-        if message:
-            commit_msg = message
-        else:
-            llm_base = os.environ.get("LLM_BASE_URL") or "https://openrouter.ai/api/v1"
-            llm_key = os.environ.get("LLM_API_KEY") or ""
-            llm_model = os.environ.get("LLM_MODEL") or "deepseek/deepseek-v4-flash"
-
-            diff_window = full_diff[:6000] if full_diff else "(no diff)"
-            if full_diff and len(full_diff) > 6000:
-                diff_window += f"\n... (truncated, {len(full_diff)} total bytes)"
-
-            summary = (
-                f"Changed files:\n{stat_out.strip() or 'N/A'}\n\n"
-                f"Untracked:\n" + ("\n".join(f"  {f}" for f in untracked) if untracked else "  (none)") + "\n\n"
-                f"Diff:\n{diff_window}"
-            )
-            try:
-                client = AsyncOpenAI(base_url=llm_base, api_key=llm_key, timeout=30.0)
-                resp = await client.chat.completions.create(
-                    model=llm_model,
-                    messages=[
-                        {"role": "system", "content": (
-                            "You generate concise git commit messages from a diff. "
-                            "Output ONLY:\n"
-                            "Line 1: conventional commit title (max 72 chars)\n"
-                            "Line 2: blank\n"
-                            "Line 3+: brief bullet-point body\n"
-                            "Types: feat, fix, chore, refactor, docs, style, test, perf, ci"
-                        )},
-                        {"role": "user", "content": f"Generate a commit message for:\n\n{summary}"}
-                    ],
-                    max_tokens=300,
-                    temperature=0.3,
-                )
-                commit_msg = resp.choices[0].message.content.strip()
-            except Exception as e:
-                logger.warning("LLM sub-call for commit message failed: %s", e)
-                commit_msg = "chore: staged changes"
-
-        # ── 5. Stage ──
-        if include_untracked:
-            _, stderr_add, code_add = _git(["add", "-A"], timeout=30)
-        else:
-            _, stderr_add, code_add = _git(["add", "-u"], timeout=30)
-        if code_add != 0:
-            return f"Error: git add failed: {stderr_add}"
-
-        # ── 6. Commit ──
-        msg_file = _PROJECT_ROOT / "data" / "tmp" / "_commit_msg.txt"
-        msg_file.parent.mkdir(parents=True, exist_ok=True)
-        msg_file.write_text(commit_msg, encoding="utf-8")
-        _, stderr_commit, code_commit = _git(["commit", "-F", str(msg_file)], timeout=30)
-        msg_file.unlink(missing_ok=True)
-        if code_commit != 0:
-            return f"Error: git commit failed: {stderr_commit}"
-
-        hash_out, _, _ = _git(["rev-parse", "HEAD"], timeout=10)
-        commit_hash = hash_out.strip()[:12]
-        commit_title = commit_msg.split('\n')[0].strip()
-
-        # ── 7. Push ──
-        push_result = "⏭️  Skipped (skip_push=True)"
-        if not skip_push:
-            push_out, push_err, push_code = _git(["push"], timeout=120)
-            push_result = f"❌ Push FAILED: {push_err or push_out}" if push_code != 0 else "✅ Push successful"
-
-        lines_count = len(status_out.strip().splitlines())
-        return (
-            f"## ✅ Commit + Push\n\n"
-            f"**Message:** `{commit_title}`\n"
-            f"**Hash:**   `{commit_hash}`\n"
-            f"**Push:**   {push_result}\n"
-            f"**Files:**  {lines_count} file(s) affected\n\n"
-            f"```\n{stat_out.strip()}\n```"
-        )
-
-    tools["commit_and_push"] = ToolInfo(
-        name="commit_and_push",
-        handler=_commit_and_push,
-        parameters={
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "description": "Optional commit message. Auto-generated from diff via lightweight LLM if empty.",
-                    "default": "",
-                },
-                "skip_push": {
-                    "type": "boolean",
-                    "description": "If true, commit locally but skip push.",
-                    "default": False,
-                },
-                "include_untracked": {
-                    "type": "boolean",
-                    "description": "If true, include untracked files (git add -A). If false, modified only (git add -u).",
-                    "default": True,
-                },
-            },
-            "required": [],
-        },
-    )
+    # Flag the write/exec tools confirmation-gated (single source of truth above).
+    _apply_confirm_flags(tools)
 
     logger.info(
-        "Injected admin tools: read/write/edit/patch/delete/run/run_python/restart/search/dir/git/resolve_conflict/commit_and_push (%d tools)",
+        "Injected admin tools: read/write/edit/patch/delete/run/run_python/restart/search/dir (%d tools)",
         len(tools),
     )
-
-
-def inject_git_tools(tools: dict, user_id: str) -> None:
-    """Inject ONLY the structured git tools (no shell / file / python access).
-
-    Backs the standalone "Git Control" ability: an agent can run version-control
-    operations (status / log / diff / commit / push / branch + resolve_conflict)
-    without the full Codebase Admin toolset. Reuses the existing `git_tool`
-    handler by building the source tools into a throwaway dict and copying just
-    the git entries. `setdefault` so that when Codebase Admin is also enabled its
-    (identical) git_tool is left in place rather than double-registered.
-    """
-    tmp: dict = {}
-    try:
-        inject_source_tools(tmp, user_id)
-    except Exception as e:  # pragma: no cover
-        logger.warning("Git Control: could not build base source tools: %s", e)
-        return
-    for name in ("git_tool", "commit_and_push", "resolve_conflict"):
-        if name in tmp:
-            tools.setdefault(name, tmp[name])

@@ -24,15 +24,38 @@ from app.agent.prompts import (
 
 from app.agent.loop import run_agent_loop_buffered, stream_agent_events
 from app.agent.loop_executor import LoopConfig
-from app.agent.session_history import build_openai_history_from_session
+from app.agent.session_history import build_openai_history_from_session, trim_history_for_resume
 from app.agent.run_buffer import get_registry as get_run_buffer_registry
 from app.agent.run_manager import get_run_manager
 from app.optimizer.runner import run_optimizer_async
 from app.agent import trigger_index
-from app.billing.enforcement import check_access as billing_check_access
+from plugins.billing.enforcement import check_access as billing_check_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
+
+# ── Fire-and-forget background tasks ──
+# asyncio only keeps a WEAK reference to a bare ``create_task`` result, so a task
+# whose handle isn't stored can be garbage-collected before it runs — silently.
+# Keep a strong reference for the task's lifetime and drop it (logging any
+# exception) when it finishes, so post-turn work (e.g. the Session Namer turn
+# hook) actually executes instead of vanishing.
+_BG_TASKS: set = set()
+
+
+def _spawn_bg(coro, *, label: str = "bg") -> None:
+    task = asyncio.ensure_future(coro)
+    _BG_TASKS.add(task)
+
+    def _done(t: "asyncio.Task") -> None:
+        _BG_TASKS.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.warning("background task %r failed: %s", label, exc, exc_info=exc)
+
+    task.add_done_callback(_done)
 
 # ── Memory skip gate ──
 # Skip memory_search for trivial messages (greetings, affirmations, commands).
@@ -50,6 +73,19 @@ def _should_skip_memory(message: str) -> bool:
     """Return True if message is trivial and doesn't need brain context."""
     stripped = (message or "").strip()
     return bool(not stripped or _SKIP_MEMORY_PATTERN.match(stripped))
+
+
+def _should_skip_vector(message: str) -> bool:
+    """Return True for short messages that should use keyword-only memory search.
+
+    These still get a memory lookup (unlike _should_skip_memory), but skip the
+    remote query-embedding round-trip and rely on the porter-stemmed FTS index.
+    Short follow-ups ("who offered?", "what's the floor?", "and the bike?") match
+    fine on keywords, so paying for an embedding just adds latency to the turn.
+    Longer, more semantic prompts keep the full hybrid (FTS + vector) search.
+    """
+    stripped = (message or "").strip()
+    return len(stripped.split()) <= 4
 
 
 def _session_title_from_message(message: str, max_words: int = 6) -> str:
@@ -140,6 +176,30 @@ async def _ensure_session(db, user_id: str, session_id: str, title: str = None) 
         finally:
             conn.close()
 
+
+# Canonical Ask/Plan/Auto, accepting the legacy Read/Write names (mirrors
+# loop.py's _MODE_ALIASES) so saved DB values and the TUI bridge stay valid.
+_CHAT_MODE_ALIASES = {'read': 'plan', 'write': 'ask', 'plan': 'plan', 'ask': 'ask', 'auto': 'auto'}
+
+
+async def _record_session_execution_mode(db, session_id: str, raw_mode) -> None:
+    """Stamp the mode each message actually runs in onto the session.
+
+    The chat pill (Ask/Plan/Auto) is the user's per-message control, but it
+    lives in the browser. Recording the mode server-side makes the SESSION the
+    source of truth, so the pill can be restored correctly on any device / after
+    a reload (db_viewer.get_session_messages returns it; the chat panel applies
+    it on load) — closing the "pill says Ask but the run went Auto" desync. The
+    agent's own set_execution_mode writes the same field, so last-run-wins stays
+    correct. Best-effort: a failure here must never block the send.
+    """
+    try:
+        mode = _CHAT_MODE_ALIASES.get(str(raw_mode or '').strip().lower(), 'ask')
+        await db.set_session_execution_mode(session_id, mode)
+    except Exception as _mode_err:
+        logger.debug("record session execution mode failed for %s: %s", session_id, _mode_err)
+
+
 class InterruptRequest(BaseModel):
     session_id: str
 
@@ -158,13 +218,16 @@ def _match_slash_command(message: str):
         return None
     slash_cmds = trigger_index.get_slash_commands()
     for trigger_key, template_id in slash_cmds.items():
+        # Require the command to be followed by whitespace or end-of-string, so a
+        # longer word can't partial-match a shorter command (e.g. "/optimizer"
+        # must NOT match "/optimize" and silently pass the trailing "r" as an arg).
         pattern = re.compile(
-            r"^" + re.escape(trigger_key) + r"\s*(.*)$",
+            r"^" + re.escape(trigger_key) + r"(?:\s+(.*))?$",
             re.IGNORECASE | re.DOTALL,
         )
         m = pattern.match(stripped)
         if m:
-            return trigger_key, m.group(1).strip(), template_id
+            return trigger_key, (m.group(1) or "").strip(), template_id
     return None
 
 
@@ -214,18 +277,39 @@ async def _handle_optimize_command(
     feedback is the text after the slash command (may be empty).
     Returns a user-facing message."""
 
-    # Find the user's most recent real session (not optimizer-*)
+    # Target THIS session — the one the user typed /optimize in — provided it is a
+    # real chat (not itself an optimizer/worker/closer session). This is what the
+    # user means by "optimize this conversation". Only when the command is run from
+    # a non-real session (or an unknown id) do we fall back to the user's most
+    # recent real session.
+    def _is_real_session(sid: str) -> bool:
+        return bool(sid) and not (
+            sid.startswith('optimizer-') or sid.startswith('worker-') or sid.startswith('closer-')
+        )
+
+    target_session = ""
     try:
         from app.db import get_db as _get_db
         conn = _get_db()._get_conn()
-        row = conn.execute(
-            "SELECT id FROM sessions WHERE user_id=? AND id NOT LIKE 'optimizer-%' AND id NOT LIKE 'worker-%' AND id NOT LIKE 'closer-%' ORDER BY created_at DESC LIMIT 1",
-            (user_id,)
-        ).fetchone()
-        target_session = row[0] if row else ""
-        conn.close()
+        try:
+            if _is_real_session(session_id):
+                exists = conn.execute(
+                    "SELECT 1 FROM sessions WHERE id=? LIMIT 1", (session_id,)
+                ).fetchone()
+                if exists:
+                    target_session = session_id
+            if not target_session:
+                row = conn.execute(
+                    "SELECT id FROM sessions WHERE user_id=? AND id NOT LIKE 'optimizer-%' "
+                    "AND id NOT LIKE 'worker-%' AND id NOT LIKE 'closer-%' "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (user_id,)
+                ).fetchone()
+                target_session = row[0] if row else ""
+        finally:
+            conn.close()
     except Exception:
-        target_session = ""
+        target_session = session_id if _is_real_session(session_id) else ""
 
     if not target_session:
         return "No chat session found to optimize. Send a few messages first, then try /optimize."
@@ -245,6 +329,70 @@ async def _handle_optimize_command(
     msg += f"• Feedback: {feedback}\n" if feedback else ""
     msg += f"\nOpen the optimizer session in the UI to review the analysis and discuss changes with the Planner."
     return msg
+
+
+def _is_compact_command(message: str) -> bool:
+    """True if the message is the built-in ``/compact`` command (args ignored).
+
+    ``/compact`` is a *system* command, not an agent — it is handled directly
+    here rather than through the template-driven trigger index, so it works in any
+    chat session without registering an agent. Matches ``/compact`` alone or
+    followed by whitespace+text, but not ``/compactfoo``."""
+    s = (message or "").strip()
+    return bool(re.match(r"^/compact(?:\s+.*)?$", s, re.IGNORECASE | re.DOTALL))
+
+
+async def _handle_compact_command(user_id: str, session_id: str, db) -> str:
+    """Force a compaction of the CURRENT session now (the ``/compact`` command).
+
+    Deterministic, user-driven sibling of the agent's ``compact_context`` tool: it
+    folds everything older than the verbatim 'hot tail' (Keep Verbatim) into frozen
+    summary parts immediately — regardless of how full the context is — honouring
+    the agent's Context Control settings (part size etc.). Nothing is deleted; the
+    raw turns stay searchable. Failure-safe: returns a user-facing message either
+    way, never raising into the chat."""
+    try:
+        agent_id = await db.get_session_agent_id(session_id)
+    except Exception:
+        agent_id = None
+    if not agent_id:
+        # No agent is bound to this session yet (e.g. nothing has run in it). This is
+        # NOT the same as "nothing old enough to fold" — say so honestly so the user
+        # isn't told to send messages they may already have sent.
+        return (
+            "Couldn't compact — this session isn't linked to an agent yet, so there's "
+            "nothing to summarise. Send a message to the agent first, then run "
+            "`/compact`."
+        )
+    try:
+        from app.agent.context_control import get_context_settings
+        from app.agent.compaction import maybe_compact
+        settings = await get_context_settings(db, agent_id, session_id, user_id)
+        if not settings.get("enabled"):
+            return (
+                "Context Control isn't active for this agent, so there's nothing to "
+                "compact. Enable the Context Control ability to use `/compact`."
+            )
+        info = await maybe_compact(db, user_id, session_id, settings, force=True)
+    except Exception as e:
+        logger.warning("/compact failed for %s: %s", session_id, e)
+        return f"Couldn't compact this session — {e}"
+
+    if not info:
+        return (
+            "Nothing to compact right now — this conversation already fits inside "
+            "the verbatim recent tail (Keep Verbatim), so there are no older turns "
+            "to fold. No summary was created."
+        )
+    folded = info.get("summarised_rows") or 0
+    new_cars = info.get("new_cars") or 0
+    parts = info.get("segments") or 0
+    return (
+        f"✅ **Compacted this conversation.** Folded {folded} older message(s) into "
+        f"{new_cars} new summary part(s) ({parts} part(s) total). The most recent "
+        "turns are kept word-for-word; everything older is now summarized and stays "
+        "searchable. This takes effect on the next turn."
+    )
 
 
 @router.post("/interrupt")
@@ -278,6 +426,62 @@ async def resume_chat(request: ResumeRequest):
     except Exception as e:
         logger.error("Error resuming run %s: %s", request.session_id, e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/terminal-chat/activate")
+async def terminal_chat_activate(fastapi_request: Request):
+    """Activate a terminal for the Terminal Chat agent — spawns the PTY and
+    emits a terminal_chat_state event so the frontend mounts xterm.js
+    immediately, without waiting for a user message."""
+    from app.auth.identity import assert_caller_is
+
+    user_id = await assert_caller_is(fastapi_request, None)
+    body = await fastapi_request.json()
+    session_id = body.get("session_id", "")
+    agent_id = body.get("agent_id", "")
+    
+    if not session_id or not agent_id:
+        return {"status": "error", "error": "session_id and agent_id required"}
+    
+    from app.db import get_db
+    db = get_db()
+    
+    # Get agent record to read terminal_chat config
+    agent_rec = await db.get_agent_by_id(agent_id)
+    if not agent_rec:
+        return {"status": "error", "error": "Agent not found"}
+    
+    # Read engine from metadata
+    meta = {}
+    try:
+        meta_raw = agent_rec.get("metadata", "{}")
+        if isinstance(meta_raw, str):
+            meta = json.loads(meta_raw)
+        elif isinstance(meta_raw, dict):
+            meta = meta_raw
+    except Exception:
+        pass
+    
+    engine = meta.get("engine", "")
+    if engine != "terminal_chat":
+        return {"status": "error", "error": "Agent is not a Terminal Chat agent"}
+    
+    tc_cfg = meta.get("terminal_chat", {}) if isinstance(meta.get("terminal_chat"), dict) else {}
+    command = str(tc_cfg.get("command") or "").strip()
+    
+    # Spawn the PTY and emit the state event
+    from plugins.engines.terminal_chat.terminal_chat import _get_or_create_pty
+    tsid = await _get_or_create_pty(session_id, user_id, command=command)
+    
+    # Emit terminal_chat_state on the WS so the frontend mounts xterm.js
+    await _emit_to_visualizers(session_id, {
+        "type": "terminal_chat_state",
+        "state": "active",
+        "terminal_session_id": tsid,
+        "command": command,
+    }, user_id=user_id)
+    
+    return {"status": "ok", "terminal_session_id": tsid}
 
 
 @router.get("/self-heal/status")
@@ -428,6 +632,105 @@ async def chat_skills(user_id: str, session_id: str, agent_id: Optional[str] = N
     return {"active": active, "skills": catalog}
 
 
+@router.get("/abilities")
+async def chat_abilities(user_id: str, session_id: str, agent_id: Optional[str] = None):
+    """Return the agent's enabled abilities + which are active for this session.
+
+    Drives the chat-side abilities panel + its counter. An ability is **active**
+    (highlighted; counted) when it is `visible` (its tools + skill are shown to
+    the agent now) OR the agent has pulled it in this session via `load_ability`.
+    """
+    db = get_db()
+    loaded = set(await db.get_session_active_abilities(session_id))
+    suppressed = set(await db.get_session_suppressed_abilities(session_id))
+    out = []
+    if agent_id:
+        try:
+            from app.tools.tool_modes import resolve_ability_mode
+            from app.abilities import ui_catalog
+            modes = await db.get_agent_ability_modes(agent_id)
+            cat_abilities = (ui_catalog() or {}).get("abilities", {})
+            rows = await db.get_agent_connections(agent_id)
+            for r in rows:
+                if r.get("section") != "ability" or not r.get("enabled"):
+                    continue
+                aid = r.get("connection_type")
+                if not aid:
+                    continue
+                meta = cat_abilities.get(aid, {})
+                mode = resolve_ability_mode(aid, modes)
+                # Active = revealed to the agent this turn: visible-by-config OR
+                # loaded this session, AND not suppressed from this panel.
+                active = ((mode == "visible") or (aid in loaded)) and (aid not in suppressed)
+                out.append({
+                    "id": aid,
+                    "display_name": meta.get("display_name") or aid,
+                    "icon": meta.get("icon") or "plug",
+                    "mode": mode,
+                    "loaded": aid in loaded,
+                    "suppressed": aid in suppressed,
+                    "active": active,
+                })
+        except Exception as e:
+            logger.debug("chat_abilities failed for %s: %s", agent_id, e)
+    out.sort(key=lambda a: (a["display_name"] or a["id"]).lower())
+    active_ids = [a["id"] for a in out if a["active"]]
+    return {"active": active_ids, "abilities": out}
+
+
+class AbilityToggleRequest(BaseModel):
+    user_id: str
+    session_id: str
+    ability_id: str
+    agent_id: Optional[str] = None
+
+
+@router.post("/abilities/activate")
+async def chat_ability_activate(req: AbilityToggleRequest):
+    """Arm an ability for this conversation from the chat panel. Clears any
+    suppression and — for a ``discoverable`` ability — adds it to the session's
+    active list (same effect as the agent calling ``load_ability``), so its tools
+    + skill flow into the next turn. A ``visible`` ability just needs un-suppressing."""
+    db = get_db()
+    await _ensure_session(db, req.user_id, req.session_id)
+    await db.set_session_suppressed_ability(req.session_id, req.ability_id, False)
+    mode = "visible"
+    if req.agent_id:
+        try:
+            from app.tools.tool_modes import resolve_ability_mode
+            modes = await db.get_agent_ability_modes(req.agent_id)
+            mode = resolve_ability_mode(req.ability_id, modes)
+        except Exception as e:
+            logger.debug("ability_activate mode-resolve failed for %s: %s", req.ability_id, e)
+    if mode != "visible":
+        await db.set_session_active_ability(req.session_id, req.ability_id, True)
+    return {"ability_id": req.ability_id, "active": True}
+
+
+@router.post("/abilities/deactivate")
+async def chat_ability_deactivate(req: AbilityToggleRequest):
+    """Turn an ability OFF for this conversation from the chat panel. Drops it
+    from the session's active list and — for a ``visible`` ability — records a
+    suppression so it's withheld even though the agent's config makes it visible.
+    Its tools + skill leave the model's context on the next turn."""
+    db = get_db()
+    await _ensure_session(db, req.user_id, req.session_id)
+    await db.set_session_active_ability(req.session_id, req.ability_id, False)
+    # Only a `visible`-by-config ability needs an explicit suppression to stay
+    # off; for a discoverable one, dropping it from the active list is enough —
+    # and suppressing it would wrongly block a later `load_ability` by the agent.
+    mode = "visible"
+    if req.agent_id:
+        try:
+            from app.tools.tool_modes import resolve_ability_mode
+            modes = await db.get_agent_ability_modes(req.agent_id)
+            mode = resolve_ability_mode(req.ability_id, modes)
+        except Exception as e:
+            logger.debug("ability_deactivate mode-resolve failed for %s: %s", req.ability_id, e)
+    await db.set_session_suppressed_ability(req.session_id, req.ability_id, mode == "visible")
+    return {"ability_id": req.ability_id, "active": False}
+
+
 @router.post("/skills/activate")
 async def chat_skill_activate(req: SkillActivateRequest):
     """Manually activate a selectable skill from the UI panel. Calls load_skill
@@ -476,6 +779,29 @@ async def set_session_model(req: SessionModelRequest):
     await _ensure_session(db, req.user_id, req.session_id)
     cfg = await db.set_session_llm_override(req.session_id, (req.model or "").strip() or None)
     return {"llm_config": cfg, "model": (cfg or {}).get("model", "")}
+
+
+class SessionEffortRequest(BaseModel):
+    user_id: str
+    session_id: str
+    model: str
+    reasoning_effort: Optional[str] = None
+
+
+@router.post("/session-model-effort")
+async def set_session_model_effort(req: SessionEffortRequest):
+    """Set (or clear, with 'default'/empty) the reasoning-effort level for a
+    specific model on THIS session. Each model remembers its own level (the footer
+    picker shows an effort selector per model row, and the Model Switcher ability
+    writes here too). Doesn't change which model is active — takes effect on the
+    next turn for whichever model is running."""
+    db = get_db()
+    await _ensure_session(db, req.user_id, req.session_id)
+    cfg = await db.set_session_model_effort(
+        req.session_id, (req.model or "").strip(), (req.reasoning_effort or "").strip() or None)
+    effort_map = (cfg or {}).get("model_effort") or {}
+    return {"llm_config": cfg, "model": (req.model or "").strip(),
+            "reasoning_effort": effort_map.get((req.model or "").strip(), "default")}
 
 
 @router.put("/suggestions/config")
@@ -536,6 +862,11 @@ async def chat(request: ChatRequest, fastapi_request: Request):
             logger.warning("tunnel routing failed for %s: %s", request.session_id, _tun_err)
 
         # ── Handle slash commands ──
+        # Built-in system commands first (not template-driven). /compact folds the
+        # session's older turns now; see _handle_compact_command.
+        if _is_compact_command(request.message or ""):
+            result = await _handle_compact_command(request.user_id, request.session_id, db)
+            return ChatResponse(reply=result, response=result, session_id=request.session_id)
         _slash_match = _match_slash_command(request.message or "")
         if _slash_match:
             _slash_key, _slash_arg, _slash_tid = _slash_match
@@ -610,6 +941,19 @@ async def chat(request: ChatRequest, fastapi_request: Request):
                 detail="No agent assigned. Create an agent before chatting.",
             )
 
+        # ── Bind session to agent ──
+        # The streaming send path does this in _prepare_send; the buffered path must
+        # too, or sessions.agent_id stays NULL and anything that resolves the session's
+        # agent later (e.g. /compact via get_session_agent_id) silently misfires.
+        _existing_agent_id = await db.get_session_agent_id(request.session_id)
+        if _existing_agent_id is None:
+            await db.bind_session_to_agent(request.session_id, agent["id"])
+        elif _existing_agent_id != agent["id"]:
+            raise RuntimeError(
+                f"Session {request.session_id[:8]} bound to agent {_existing_agent_id[:8]}, "
+                f"but resolved agent is {agent['id'][:8]}. Cannot respond."
+            )
+
         # ── Agent access policy enforcement ──
         await _enforce_agent_access_policy(db, agent, request.user_id)
         await _enforce_billing_access(db, agent, request.user_id)
@@ -633,6 +977,9 @@ async def chat(request: ChatRequest, fastapi_request: Request):
             receiver_id=agent["id"],
             source="optimizer" if is_opt else None,
         )
+
+        # Record the mode this turn runs in so the pill is restorable server-side.
+        await _record_session_execution_mode(db, request.session_id, getattr(request, 'execution_mode', 'ask'))
 
         # ── Start a run buffer for this turn ──
         _run_buffer = await get_run_buffer_registry().start_turn(
@@ -686,14 +1033,19 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         })
 
         # ── PHASE 1: Brain-first lookup (visible as tool interaction) ──
+        # The lookup is LAUNCHED here but (when it runs) awaited later, just
+        # before the system prompt is assembled — so its embedding round-trip
+        # overlaps with attachment/image prep instead of stalling the turn (#2).
+        brain_results = []
+        brain_context = None
+        parent_id = None
+        _brain_task = None
         if not loop_config.is_enabled("memory_search") or _should_skip_memory(request.message):
             _skip_reason = "node_disabled" if not loop_config.is_enabled("memory_search") else "greeting_or_cmd"
             await _emit_to_visualizers(request.session_id, {
                 "type": "pipeline", "level": "pipeline",
                 "step": "memory_search_skip", "reason": _skip_reason,
             })
-            brain_results = []
-            brain_context = None
             parent_id = await db.insert_interaction(
                 request.user_id, request.session_id, role="tool",
                 content=json.dumps({"skipped": True, "reason": _skip_reason}),
@@ -715,11 +1067,57 @@ async def chat(request: ChatRequest, fastapi_request: Request):
                 "type": "pipeline", "level": "pipeline",
                 "step": "memory_search_start", "query": request.message, "limit": 5,
             })
+            # Short messages take the keyword-only fast path (no embedding) (#3).
+            _use_vector = not _should_skip_vector(request.message)
+            _brain_task = asyncio.create_task(
+                db.memory_search(request.user_id, request.message, limit=5, vector=_use_vector)
+            )
 
-            brain_results = await db.memory_search(request.user_id, request.message, limit=5)
-            brain_context = None
+        # ── Resolve attachment references ──
+        attachment_context = None
+        attachment_docs: List[Dict[str, Any]] = []
+        if request.attachment_ids:
+            for att_id in request.attachment_ids:
+                att = await db.get_attachment(att_id)
+                if att:
+                    attachment_docs.append(att)
+            if attachment_docs:
+                attachment_context = format_attachments_for_prompt(attachment_docs)
+                await _emit_to_visualizers(request.session_id, {
+                    "type": "attachment", "level": "agent",
+                    "attachments": [
+                        {"id": a["id"], "original_name": a["original_name"],
+                         "mime_type": a["mime_type"], "size_bytes": a["size_bytes"],
+                         "storage_path": a.get("storage_path", "")}
+                        for a in attachment_docs
+                    ],
+                })
+        _desc_out = {}
+        async for _dev in _maybe_describe_images(
+            db, request.user_id, request.message, user_interaction_id,
+            loop_config, attachment_docs, _desc_out,
+            agent_id=agent["id"], session_id=request.session_id,
+        ):
+            await _emit_to_visualizers(request.session_id, _dev)
+        # App Control point-and-share fingerprint → foldable chip + this-turn fold.
+        async for _dev in _maybe_emit_app_control(
+            db, request, user_interaction_id, _desc_out,
+            agent_id=agent["id"], session_id=request.session_id, channel="web_portal",
+        ):
+            await _emit_to_visualizers(request.session_id, _dev)
+        user_message_content = await build_user_message_content(
+            _desc_out.get("message_text", request.message),
+            _desc_out.get("inline_docs", attachment_docs),
+        )
 
-            # ── Pipeline: memory search results ──
+        # ── PHASE 1 (cont.): await the memory lookup launched above ──
+        # By awaiting here — after the attachment/image work — the embedding
+        # round-trip has been overlapping with that prep, so it rarely adds
+        # visible latency. Results are folded into the prompt and recorded as
+        # the memory_search tool interaction (parent for the run that follows).
+        if _brain_task is not None:
+            brain_results = await _brain_task
+
             await _emit_to_visualizers(request.session_id, {
                 "type": "pipeline", "level": "pipeline",
                 "step": "memory_search_end", "results_count": len(brain_results),
@@ -779,37 +1177,6 @@ async def chat(request: ChatRequest, fastapi_request: Request):
                 "error": False,
             })
 
-        # ── Resolve attachment references ──
-        attachment_context = None
-        attachment_docs: List[Dict[str, Any]] = []
-        if request.attachment_ids:
-            for att_id in request.attachment_ids:
-                att = await db.get_attachment(att_id)
-                if att:
-                    attachment_docs.append(att)
-            if attachment_docs:
-                attachment_context = format_attachments_for_prompt(attachment_docs)
-                await _emit_to_visualizers(request.session_id, {
-                    "type": "attachment", "level": "agent",
-                    "attachments": [
-                        {"id": a["id"], "original_name": a["original_name"],
-                         "mime_type": a["mime_type"], "size_bytes": a["size_bytes"],
-                         "storage_path": a.get("storage_path", "")}
-                        for a in attachment_docs
-                    ],
-                })
-        _desc_out = {}
-        async for _dev in _maybe_describe_images(
-            db, request.user_id, request.message, user_interaction_id,
-            loop_config, attachment_docs, _desc_out,
-            agent_id=agent["id"], session_id=request.session_id,
-        ):
-            await _emit_to_visualizers(request.session_id, _dev)
-        user_message_content = await build_user_message_content(
-            _desc_out.get("message_text", request.message),
-            _desc_out.get("inline_docs", attachment_docs),
-        )
-
         # Build system prompt with brain context + dynamic tools
         # context_docs is already the resolved per-caller slot list.
         _agent_id_for_prompt = agent.get("id") if agent else None
@@ -819,13 +1186,14 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         )
         if attachment_context:
             system_prompt = system_prompt + "\n\n" + attachment_context
-        system_prompt = await append_skills_section(system_prompt, agent, request.session_id)
+        system_prompt = await append_skills_section(system_prompt, agent, request.session_id, caller_user_id=request.user_id)
 
         # ── Pipeline: prompt built ──
         from app.tools.loader import load_tools
         tools = await load_tools(request.user_id,
                                  agent_id=_agent_id_for_prompt or "",
-                                 agent_template_id=agent.get("template_id") if agent else None)
+                                 agent_template_id=agent.get("template_id") if agent else None,
+                                 gate_caller_access=True)
         tool_count_for_prompt = len(tools)
         section_names = ["SYSTEM"]  # Simplified section count — actual sections are dynamic
 
@@ -894,6 +1262,7 @@ async def chat(request: ChatRequest, fastapi_request: Request):
             db=db,
             agent_template_id=agent.get("template_id"),
             allowed_tools=_raw_allowed or None,
+            execution_mode=getattr(request, 'execution_mode', 'ask') or 'ask',
         )
 
         # ── PHASE 3: Background memory save (visible tool interaction) ──
@@ -982,12 +1351,20 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
         logger.warning("tunnel routing failed for %s: %s", request.session_id, _tun_err)
 
     # ── Handle slash commands ──
+    # Built-in system commands first (not template-driven). /compact folds the
+    # session's older turns now; see _handle_compact_command.
+    if _is_compact_command(request.message or ""):
+        result = await _handle_compact_command(request.user_id, request.session_id, db)
+        return {"slash_result": result}
     _slash_match = _match_slash_command(request.message or "")
     if _slash_match:
         _slash_key, _slash_arg, _slash_tid = _slash_match
         if _slash_tid == "opt_planner":
+            # Pass the parsed argument (text AFTER the command) as feedback — not the
+            # whole raw message. Passing request.message smuggled the literal
+            # "/optimize" in as user feedback to the Planner.
             result = await _handle_optimize_command(
-                request.user_id, request.session_id, request.message, channel, db,
+                request.user_id, request.session_id, _slash_arg, channel, db,
             )
         else:
             result = await _handle_generic_slash_command(
@@ -1098,6 +1475,9 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
         sender_id=request.user_id,
         receiver_id=agent["id"],
     )
+
+    # Record the mode this turn runs in so the pill is restorable server-side.
+    await _record_session_execution_mode(db, request.session_id, getattr(request, 'execution_mode', 'ask'))
 
     # ── Emit the user message so all subscribed devices render it instantly ──
     # (The RunBuffer + run-state for the new turn are started inside the turn
@@ -1213,6 +1593,22 @@ async def _run_turn_background(
 
         loop_config = LoopConfig.from_agent(agent)
 
+        # Local Claude Code (and any alternate-runtime) agent hands its WHOLE turn
+        # to its own engine adapter (see the engine seam in app/agent/loop.py) — it
+        # runs `claude` directly, not webAgent's loop. None of the normal turn
+        # plumbing applies, so skip the memory nodes: a Claude run should show no
+        # memory_search / memory_save bubbles around it.
+        _engine_id = ""
+        try:
+            _eng_meta = agent.get("metadata")
+            if isinstance(_eng_meta, str):
+                _eng_meta = json.loads(_eng_meta or "{}")
+            if isinstance(_eng_meta, dict):
+                _engine_id = str(_eng_meta.get("engine") or "").strip()
+        except Exception:
+            _engine_id = ""
+        _is_engine_agent = bool(_engine_id) and _engine_id != "default"
+
         await event_callback({
             "type": "pipeline", "level": "pipeline", "step": "agent_assigned",
             "agent_id": agent["id"], "max_turn_count": agent.get("max_turn_count", 0),
@@ -1235,11 +1631,20 @@ async def _run_turn_background(
         })
 
         # ── PHASE 1: Brain-first lookup ──
-        if not loop_config.is_enabled("memory_search") or _should_skip_memory(request.message):
+        # Launched here, awaited just before the prompt is built, so the
+        # embedding round-trip overlaps with attachment/image prep (#2).
+        brain_results = []
+        brain_context = None
+        parent_id = None
+        _brain_task = None
+        if _is_engine_agent:
+            # No memory plumbing for engine agents — the adapter owns the whole
+            # turn. The adapter's persisted rows parent to the user message.
+            parent_id = user_interaction_id
+        elif not loop_config.is_enabled("memory_search") or _should_skip_memory(request.message):
             _skip_reason = "node_disabled" if not loop_config.is_enabled("memory_search") else "greeting_or_cmd"
             await event_callback({"type": "pipeline", "level": "pipeline",
                                   "step": "memory_search_skip", "reason": _skip_reason})
-            brain_context = None
             parent_id = await db.insert_interaction(
                 user_id, session_id, role="tool",
                 content=json.dumps({"skipped": True, "reason": _skip_reason}),
@@ -1254,8 +1659,58 @@ async def _run_turn_background(
         else:
             await event_callback({"type": "pipeline", "level": "pipeline",
                                   "step": "memory_search_start", "query": request.message, "limit": 5})
-            brain_results = await db.memory_search(request.user_id, request.message, limit=5)
-            brain_context = None
+            # Short messages take the keyword-only fast path (no embedding) (#3).
+            _use_vector = not _should_skip_vector(request.message)
+            _brain_task = asyncio.create_task(
+                db.memory_search(request.user_id, request.message, limit=5, vector=_use_vector)
+            )
+
+        # ── Resolve attachments + vision fallback ──
+        attachment_context = None
+        attachment_docs: List[Dict[str, Any]] = []
+        if request.attachment_ids:
+            for att_id in request.attachment_ids:
+                att = await db.get_attachment(att_id)
+                if att:
+                    attachment_docs.append(att)
+            if attachment_docs:
+                attachment_context = format_attachments_for_prompt(attachment_docs)
+                await event_callback({
+                    "type": "attachment", "level": "agent",
+                    "attachments": [
+                        {"id": a["id"], "original_name": a["original_name"],
+                         "mime_type": a["mime_type"], "size_bytes": a["size_bytes"],
+                         "storage_path": a.get("storage_path", "")}
+                        for a in attachment_docs
+                    ],
+                })
+        _desc_out = {}
+        # Engine agents (e.g. Local Claude Code) read attached images as real
+        # files with their own vision-capable tools, so skip the vision-describe
+        # router entirely — it would otherwise burn a vision-model call, or (on a
+        # non-vision brain) fold a "you can't see this image" note that flatly
+        # contradicts the image file the engine is about to hand Claude.
+        if not _is_engine_agent:
+            async for _dev in _maybe_describe_images(
+                db, request.user_id, request.message, user_interaction_id,
+                loop_config, attachment_docs, _desc_out,
+                agent_id=agent["id"], session_id=session_id,
+            ):
+                await event_callback(_dev)
+        # App Control point-and-share fingerprint → foldable chip + this-turn fold.
+        async for _dev in _maybe_emit_app_control(
+            db, request, user_interaction_id, _desc_out,
+            agent_id=agent["id"], session_id=session_id, channel=channel,
+        ):
+            await event_callback(_dev)
+        user_message_content = await build_user_message_content(
+            _desc_out.get("message_text", request.message),
+            _desc_out.get("inline_docs", attachment_docs),
+        )
+
+        # ── PHASE 1 (cont.): await the memory lookup launched above, fold into prompt ──
+        if _brain_task is not None:
+            brain_results = await _brain_task
             await event_callback({
                 "type": "pipeline", "level": "pipeline", "step": "memory_search_end",
                 "results_count": len(brain_results),
@@ -1294,47 +1749,21 @@ async def _run_turn_background(
             await event_callback({"type": "tool_result", "level": "agent", "tool": "memory_search",
                                   "result": search_content[:2000], "duration_ms": 0, "error": False})
 
-        # ── Resolve attachments + vision fallback ──
-        attachment_context = None
-        attachment_docs: List[Dict[str, Any]] = []
-        if request.attachment_ids:
-            for att_id in request.attachment_ids:
-                att = await db.get_attachment(att_id)
-                if att:
-                    attachment_docs.append(att)
-            if attachment_docs:
-                attachment_context = format_attachments_for_prompt(attachment_docs)
-                await event_callback({
-                    "type": "attachment", "level": "agent",
-                    "attachments": [
-                        {"id": a["id"], "original_name": a["original_name"],
-                         "mime_type": a["mime_type"], "size_bytes": a["size_bytes"],
-                         "storage_path": a.get("storage_path", "")}
-                        for a in attachment_docs
-                    ],
-                })
-        _desc_out = {}
-        async for _dev in _maybe_describe_images(
-            db, request.user_id, request.message, user_interaction_id,
-            loop_config, attachment_docs, _desc_out,
-            agent_id=agent["id"], session_id=session_id,
-        ):
-            await event_callback(_dev)
-        user_message_content = await build_user_message_content(
-            _desc_out.get("message_text", request.message),
-            _desc_out.get("inline_docs", attachment_docs),
-        )
-
         _agent_id_for_prompt = agent.get("id") if agent else None
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id, agent_id=_agent_id_for_prompt)
-        if attachment_context:
+        # The attachment summary tells the model to call the `read_attachment`
+        # tool by attachment_id — meaningful only to the default loop. An engine
+        # agent (Local Claude Code) has no such tool; it gets the real file paths
+        # from its own adapter instead, so don't feed it this contradictory note.
+        if attachment_context and not _is_engine_agent:
             system_prompt = system_prompt + "\n\n" + attachment_context
-        system_prompt = await append_skills_section(system_prompt, agent, request.session_id)
+        system_prompt = await append_skills_section(system_prompt, agent, request.session_id, caller_user_id=request.user_id)
 
         from app.tools.loader import load_tools
         tools = await load_tools(request.user_id, agent_id=_agent_id_for_prompt or "",
-                                 agent_template_id=agent.get("template_id") if agent else None)
+                                 agent_template_id=agent.get("template_id") if agent else None,
+                                 gate_caller_access=True)
         await event_callback({
             "type": "pipeline", "level": "pipeline", "step": "build_prompt", "sections": ["SYSTEM"],
             "brain_injected": bool(brain_context), "tool_count_in_prompt": len(tools),
@@ -1382,7 +1811,7 @@ async def _run_turn_background(
                 _raw_at = []
 
         assistant_reply = ""
-        _exec_mode = getattr(request, 'execution_mode', 'write') or 'write'
+        _exec_mode = getattr(request, 'execution_mode', 'ask') or 'ask'
         async for event in stream_agent_events(
             user_id=request.user_id, session_id=request.session_id,
             user_message=user_message_content, system_prompt=system_prompt,
@@ -1390,6 +1819,10 @@ async def _run_turn_background(
             max_turns=agent.get("max_turn_count", 0), channel=channel, db=db,
             agent_template_id=agent.get("template_id"), allowed_tools=_raw_at or None,
             execution_mode=_exec_mode,
+            # Pass the resolved attachment rows so an engine agent (e.g. Local
+            # Claude Code) can read pasted images / attached files off disk with
+            # its own tools — the default loop already inlines images itself.
+            attachment_docs=attachment_docs,
         ):
             await event_callback(event)
             if event["type"] == "response":
@@ -1399,8 +1832,8 @@ async def _run_turn_background(
             elif event["type"] == "interrupted" and not assistant_reply:
                 assistant_reply = f"I was interrupted: {event['message']}"
 
-        # ── Background memory save ──
-        if 'memory_save' not in set(_raw_at or []) and loop_config.is_enabled("memory_save"):
+        # ── Background memory save ── (skipped for engine agents — no plumbing)
+        if not _is_engine_agent and 'memory_save' not in set(_raw_at or []) and loop_config.is_enabled("memory_save"):
             asyncio.create_task(_save_chat_to_memory(
                 db, request.user_id, request.session_id,
                 request.message, assistant_reply, agent["id"], parent_id,
@@ -1414,12 +1847,16 @@ async def _run_turn_background(
         try:
             from app.abilities import turn_hooks_for_agent
             for _hook in await turn_hooks_for_agent(agent.get("id", "")):
-                asyncio.create_task(_hook(
-                    db, request.user_id, request.session_id,
-                    lambda ev: _emit_to_user_listeners(request.user_id, ev),
-                ))
+                _spawn_bg(
+                    _hook(
+                        db, request.user_id, request.session_id,
+                        lambda ev: _emit_to_user_listeners(request.user_id, ev),
+                    ),
+                    label=f"turn_hook:{session_id[:8]}",
+                )
         except Exception as _th:
-            logger.debug("turn hooks dispatch failed: %s", _th)
+            logger.warning("turn hooks dispatch failed for %s: %s",
+                           session_id[:12], _th)
     except asyncio.CancelledError:
         # Hard-cancelled (replace grace timeout, or watchdog frozen-cancel). Mark
         # interrupted so it isn't wrongly recorded 'complete'; the stop_cause was
@@ -1498,8 +1935,12 @@ async def _resume_web_turn(rc: Dict[str, Any], replaced: bool):
         context_docs = agent.get("context_documents", [])
         system_prompt = await build_system_prompt(
             context_docs, None, user_id, agent_id=agent_id)
-        system_prompt = await append_skills_section(system_prompt, agent, session_id)
+        system_prompt = await append_skills_section(system_prompt, agent, session_id, caller_user_id=user_id)
+        # Resume replays a BOUNDED checkpoint, not the whole transcript: the
+        # recent steps + the task anchor, so a re-ignition doesn't grow the
+        # working set with conversation length (the runaway-memory cause).
         history = await build_openai_history_from_session(db, user_id, session_id, agent_id=agent_id)
+        history = trim_history_for_resume(history)
         _raw_at = agent.get("allowed_tools", [])
         if isinstance(_raw_at, str):
             try:
@@ -1683,7 +2124,7 @@ async def chat_send(request: ChatRequest, fastapi_request: Request):
         if is_bridge_alive(request.user_id):
             reply = await forward_to_bridge(
                 request.user_id, request.session_id, request.message or "",
-                execution_mode=getattr(request, 'execution_mode', 'write') or 'write',
+                execution_mode=getattr(request, 'execution_mode', 'ask') or 'ask',
             )
             if reply is not None:
                 # Persist the assistant reply
@@ -1774,7 +2215,7 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             if is_bridge_alive(request.user_id):
                 reply = await forward_to_bridge(
                     request.user_id, request.session_id, request.message or "",
-                    execution_mode=getattr(request, 'execution_mode', 'write') or 'write',
+                    execution_mode=getattr(request, 'execution_mode', 'ask') or 'ask',
                 )
                 if reply is not None:
                     # Persist the assistant reply
@@ -1829,9 +2270,19 @@ async def _save_chat_to_memory(
     parent_interaction_id: Optional[str] = None,
 ) -> None:
     """Save chat conversation to memory as visible tool interaction."""
+    slug = f"chat/{session_id[:8]}"
+    # Describe the save up-front so the memory_save_end event can carry it as the
+    # tool-result body for the LIVE chat bubble even if the upsert below fails
+    # (the persisted row uses the same content; reload renders from that).
+    save_content = json.dumps({
+        "action": "upserted",
+        "slug": slug,
+        "summary": f"Saved chat: {user_message[:60]}...",
+    }, indent=2)
+    save_args = {"user_message": user_message[:200], "assistant_reply": assistant_reply[:200]}
+    save_ok = False
     try:
         # Save chat as a memory page
-        slug = f"chat/{session_id[:8]}"
         result = await db.memory_upsert(
             user_id, slug, "meeting",
             title=f"Session {session_id[:8]}",
@@ -1840,11 +2291,6 @@ async def _save_chat_to_memory(
         )
 
         # Save memory_save as visible tool interaction
-        save_content = json.dumps({
-            "action": "upserted",
-            "slug": slug,
-            "summary": f"Saved chat: {user_message[:60]}...",
-        }, indent=2)
         await db.insert_interaction(
             user_id, session_id, role="tool",
             content=save_content,
@@ -1852,24 +2298,35 @@ async def _save_chat_to_memory(
             tool_name="memory_save",
             channel="web_portal",
             metadata=json.dumps({"brain": True, "slug": slug}),
-            input_data=json.dumps({"user_message": user_message[:200], "assistant_reply": assistant_reply[:200]}),
+            input_data=json.dumps(save_args),
             output_data=save_content,
             sender_id=agent_id,
             receiver_id=agent_id,
         )
 
-        # Emit to visualizer and user listeners
-        await _emit_to_visualizers(session_id, {
-            "type": "pipeline", "level": "pipeline",
-            "step": "memory_save_end", "slug": slug,
-        }, user_id=user_id)
         await _emit_to_visualizers(session_id, {
             "type": "db", "level": "db",
             "op": "memory_upsert", "slug": slug, "page_type": "meeting",
         }, user_id=user_id)
+        save_ok = True
         logger.debug("Saved chat to memory: %s", slug)
     except Exception as e:
         logger.warning("Failed to save chat to memory: %s", e)
+    finally:
+        # Always tell the activity chip the save has FINISHED — on the error path
+        # too — so the post-turn "Saving memory" note clears the moment the work is
+        # actually done, rather than hanging until the frontend's settle backstop
+        # (the bar treats this *_end as a terminal-for-housekeeping signal). The
+        # args + result body let the live chat render this as its own foldable
+        # memory_save tool bubble (mirroring the persisted reload render).
+        try:
+            await _emit_to_visualizers(session_id, {
+                "type": "pipeline", "level": "pipeline",
+                "step": "memory_save_end", "slug": slug,
+                "args": save_args, "result": save_content, "ok": save_ok,
+            }, user_id=user_id)
+        except Exception:
+            pass
 
 
 # ── Visualizer listener registry ──
@@ -1974,6 +2431,28 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
                "turn": 1}
         yield {"type": "tool_result", "level": "agent", "tool": "route_attachment",
                "result": guidance or "(no guidance)", "error": True, "turn": 1}
+        # Persist the route decision as an inspectable tool row (same rationale as
+        # the process_image row below) so this "unreadable" tool call survives a
+        # reload instead of being a live-only event. tool_call_id stays None →
+        # dropped from model history (the guidance reaches the model this turn via
+        # message_text, and is intentionally NOT folded into the user turn).
+        try:
+            await db.insert_interaction(
+                user_id, session_id, role="tool",
+                content=guidance or "(no guidance)",
+                parent_id=user_interaction_id,
+                tool_name="route_attachment",
+                channel="web_portal",
+                metadata=json.dumps({"attachment": names, "decision": "unreadable",
+                                     "reason": reason, "error": True}),
+                input_data=json.dumps({"attachment": names, "decision": "unreadable",
+                                       "reason": reason}),
+                output_data=guidance or "",
+                sender_id=agent_id or None,
+                receiver_id=agent_id or None,
+            )
+        except Exception as e:
+            logger.debug("attachment route: route_attachment row persist failed: %s", e)
         if guidance:
             parts.append(f"\n\n{guidance}")
         out["message_text"] = "".join(parts).strip() or (message or "")
@@ -2012,10 +2491,12 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
                "args": tool_args, "turn": 1}
         _img_start = _t.time()
         desc = None
+        was_cached = False
         if isinstance(meta, dict) and meta.get("vision_description") \
                 and meta.get("vision_describer_model") == describer.get("model"):
             desc = meta.get("vision_description")
             cached += 1
+            was_cached = True
         if not desc:
             desc = await describe_image_attachment(
                 a, describer, user_text_hint=message,
@@ -2032,10 +2513,41 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
                     })
                 except Exception as e:
                     logger.debug("attachment route: metadata cache failed: %s", e)
+        _img_ms = int((_t.time() - _img_start) * 1000)
         yield {"type": "tool_result", "level": "agent", "tool": "process_image",
                "result": desc or "(the vision model could not describe this image)",
-               "duration_ms": int((_t.time() - _img_start) * 1000),
+               "duration_ms": _img_ms,
                "error": not bool(desc), "turn": 1}
+        # Persist the vision-describe step as an inspectable tool interaction —
+        # mirrors how memory_search is recorded (role=tool, parent=the user turn).
+        # Without this the foldable process_image row is a LIVE-ONLY event that
+        # vanishes on reload, and the description was only recoverable from the
+        # text folded into the user message (which then wrongly rendered inside
+        # the user's chat bubble). tool_call_id stays None so the model-history
+        # builder drops this synthetic row (a real model-issued process_image call
+        # has a tool_call_id and is kept); the model still receives the
+        # description via the fold persisted on the user turn below.
+        try:
+            await db.insert_interaction(
+                user_id, session_id, role="tool",
+                content=desc or "(the vision model could not describe this image)",
+                parent_id=user_interaction_id,
+                tool_name="process_image",
+                channel="web_portal",
+                metadata=json.dumps({
+                    "attachment": name,
+                    "vision_model": describer.get("model", ""),
+                    "cached": was_cached,
+                    "error": not bool(desc),
+                    "duration_ms": _img_ms,
+                }),
+                input_data=json.dumps(tool_args),
+                output_data=desc or "",
+                sender_id=agent_id or None,
+                receiver_id=agent_id or None,
+            )
+        except Exception as e:
+            logger.debug("attachment route: process_image row persist failed: %s", e)
         if desc:
             parts.append(f"\n\n[Attached image — '{name}']:\n{desc}")
         else:
@@ -2059,6 +2571,113 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
            "described": described, "cached": cached,
            "duration_ms": int((_t.time() - _start) * 1000),
            "status": "ok" if (described or cached) else "partial"}
+
+
+# Default fold/chip wording if the catalog has no app_control_point.template.
+# Mirrors data/config + app/defaults app-prompts.json; both the model fold and the
+# foldable chip's readable summary are rendered from this exact text.
+_APP_CONTROL_FALLBACK_TEMPLATE = (
+    '[App Control · {intent} · pointing at "{label}" ({descriptor}) in the {region} '
+    'of the {page} page, at x={x}, y={y}. Locator: {selector}. Current style: {styles}. '
+    'Markup: {html}]: {text}'
+)
+
+
+def _app_control_template() -> str:
+    """The App Control hand-off wording — backend-adjustable via app-prompts.json
+    (ui_handoffs.app_control_point.template), no UI. Falls back to the built-in
+    default when the catalog is unreachable or omits it."""
+    try:
+        from app.util.paths import app_prompts_path
+        data = json.loads(app_prompts_path().read_text(encoding="utf-8"))
+        tpl = ((data.get("ui_handoffs") or {}).get("app_control_point") or {}).get("template")
+        if isinstance(tpl, str) and tpl.strip():
+            return tpl
+    except Exception:
+        pass
+    return _APP_CONTROL_FALLBACK_TEMPLATE
+
+
+def _format_app_control(tpl: str, fields: Dict[str, Any]) -> str:
+    import re
+    return re.sub(r"\{(\w+)\}", lambda m: str(fields.get(m.group(1), m.group(0))), tpl)
+
+
+async def _maybe_emit_app_control(db, request, user_interaction_id, desc_out,
+                                  agent_id="", session_id="", channel="web_portal"):
+    """App Control point-and-share hand-off (async generator).
+
+    When the user points at a UI element and sends from the App Control panel, the
+    frontend forwards a small *fingerprint* (request.app_control): the human label,
+    the element's role, the page + region it sits in, a CSS locator, a slice of its
+    computed style + markup, the cursor x/y, and the words the user typed. We:
+      • emit a foldable ``app_control`` tool call (LIVE render — same machinery as
+        process_image, see chat-activity.js _SYNTH_TOOLS) so the technical detail
+        lives in its own chip instead of bloating the user's message bubble;
+      • persist it as a display-only role=tool row (tool_call_id stays None → out of
+        model history) so the chip survives a reload (see db_viewer _row_to_msg);
+      • fold the fingerprint into the user message FOR THIS TURN ONLY (via
+        desc_out["message_text"]) so the agent acts on exactly what was clicked. The
+        fingerprint is NOT written into the user turn, so the visible chat bubble
+        keeps only the words the user typed.
+    """
+    fp = getattr(request, "app_control", None)
+    if not fp or not isinstance(fp, dict):
+        return
+
+    def _clip(v, n):
+        s = "" if v is None else str(v)
+        return s.replace("\r", " ").replace("\n", " ").strip()[:n]
+
+    fields = {
+        "intent": _clip(fp.get("intent"), 80) or "Point and ask",
+        "label": _clip(fp.get("label"), 80) or "the page",
+        "descriptor": _clip(fp.get("descriptor"), 40) or "area",
+        "region": _clip(fp.get("region"), 60) or "main area",
+        "page": _clip(fp.get("page"), 40) or "app",
+        "selector": _clip(fp.get("selector"), 200) or "(unknown)",
+        "styles": _clip(fp.get("styles"), 300) or "(unavailable)",
+        "html": _clip(fp.get("html"), 400) or "(unavailable)",
+        "x": _clip(fp.get("x"), 8),
+        "y": _clip(fp.get("y"), 8),
+        "text": _clip(fp.get("text"), 2000),
+    }
+    summary = _format_app_control(_app_control_template(), fields)
+
+    # LIVE foldable chip (paired call + result); turn=1 sits it with this exchange.
+    yield {"type": "tool_call", "level": "agent", "tool": "app_control",
+           "args": fields, "turn": 1}
+    yield {"type": "tool_result", "level": "agent", "tool": "app_control",
+           "result": summary, "duration_ms": 0, "error": False, "turn": 1}
+
+    # Persist as a display-only synthetic tool row (parented to the user turn, no
+    # tool_call_id) so reload rebuilds the chip — mirrors the process_image row.
+    try:
+        await db.insert_interaction(
+            request.user_id, session_id, role="tool",
+            content=summary,
+            parent_id=user_interaction_id,
+            tool_name="app_control",
+            channel=channel,
+            metadata=json.dumps({"app_control": True, "region": fields["region"],
+                                 "page": fields["page"], "error": False}),
+            input_data=json.dumps(fields),
+            output_data=summary,
+            sender_id=agent_id or None,
+            receiver_id=agent_id or None,
+        )
+    except Exception as e:
+        logger.debug("app control: tool row persist failed: %s", e)
+
+    # Deliver the fingerprint to the model THIS turn. The template already embeds
+    # the user's words ({text}), so when no other fold is present the summary IS the
+    # message; if an image description was folded in too, keep it and append context.
+    base = desc_out.get("message_text", request.message) or ""
+    words = request.message or ""
+    if base.strip() == words.strip():
+        desc_out["message_text"] = summary
+    else:
+        desc_out["message_text"] = (base + "\n\n" + summary).strip()
 
 
 async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: Optional[str] = None):
@@ -2085,6 +2704,25 @@ async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: 
             _buf.stamp_event(event)
     except Exception as _be:
         logger.debug("RunBuffer stamp failed for session %s: %s", session_id, _be)
+
+    # Durable in-flight-op snapshot: persist which tool is running so a refresh
+    # can re-show the live "in-process" indicator (cleared when the tool finishes
+    # or the run ends). Only tool events touch the DB — everything else is a no-op.
+    _et = event.get("type")
+    if _et in ("tool_call", "tool_result"):
+        try:
+            if _et == "tool_call":
+                _tool = event.get("tool") or "tool"
+                _op = json.dumps({
+                    "tool": _tool,
+                    "turn": event.get("turn"),
+                    "note": "Toolcall " + _tool,
+                })
+            else:
+                _op = None  # tool finished — back to a generic "thinking" state
+            await get_db().run_state_set_op(session_id, _op)
+        except Exception as _oe:
+            logger.debug("run_state_set_op failed for session %s: %s", session_id, _oe)
 
     # Flight-recorder tap: keep interesting loop/tool events (pipeline problems,
     # tool errors) for post-hoc diagnosis. Cheap + swallows its own errors.
@@ -2140,3 +2778,17 @@ async def _emit_to_user_listeners(user_id: str, event: Dict[str, Any]):
             disconnected.append(ws)
     for ws in disconnected:
         unregister_user_listener(user_id, ws)
+
+
+async def notify_user(user_id: str, event: Dict[str, Any]) -> None:
+    """Public, fire-and-forget broadcast of an out-of-band event to every live
+    WebSocket a user has open (all tabs / devices). Thin wrapper over the
+    per-user listener registry so other modules (agent CRUD endpoints, run-state
+    bookkeeping) don't reach into the private emitter. Never raises — a delivery
+    failure must not break the operation that triggered the notification."""
+    if not user_id:
+        return
+    try:
+        await _emit_to_user_listeners(user_id, event)
+    except Exception:
+        pass

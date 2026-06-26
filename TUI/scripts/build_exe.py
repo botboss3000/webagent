@@ -1,8 +1,8 @@
 """Build a single-file ``webagent`` executable via PyInstaller.
 
-    cd webagent
+    cd TUI
     uv run --extra build python scripts/build_exe.py
-    # → webagent(.exe) at the webagent/ root
+    # → webagent(.exe) at the TUI/ root
 
 The TUI's own data (external DB + config) lives in the per-user data dir (see
 config.py), NOT next to the exe, so the binary stays a pure, relocatable
@@ -18,7 +18,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent       # webagent/
+ROOT = Path(__file__).resolve().parent.parent       # TUI/
 PKG = ROOT / "webagent"
 NAME = "webagent"
 BUILD_STAMP = PKG / "_build.py"                      # generated; bundled then removed
@@ -66,10 +66,10 @@ def main() -> int:
     sep = ";" if os.name == "nt" else ":"
     add_data = f"{PKG / 'styles.tcss'}{sep}webagent"
     # The manager's human-readable config (system prompt, tool list, monitor
-    # defaults) lives under manager/ and is loaded at runtime (resources.py), so
+    # defaults) lives under tui-data/ and is loaded at runtime (resources.py), so
     # the whole folder must ride along in the frozen bundle, landing at
-    # webagent/manager/ where Path(__file__).parent/'manager' resolves it.
-    manager_data = f"{PKG / 'manager'}{sep}webagent/manager"
+    # tui-data/ where Path(__file__).resolve().parent.parent / 'tui-data' resolves it.
+    tui_data = f"{ROOT / 'tui-data'}{sep}tui-data"
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
@@ -77,7 +77,7 @@ def main() -> int:
         "--collect-all", "textual",      # Textual loads resources at runtime
         "--collect-all", "websockets",   # lazy submodule loading (asyncio client) — collect all
         "--add-data", add_data,
-        "--add-data", manager_data,
+        "--add-data", tui_data,
         "--console",
         str(PKG / "__main__.py"),
     ]

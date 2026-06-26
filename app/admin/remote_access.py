@@ -27,10 +27,12 @@ def _env_locked() -> bool:
 
 
 async def _require_admin(uid: str) -> None:
-    if not uid:
-        raise HTTPException(status_code=401, detail="Missing requesting_user_id")
-    from app.db import get_db
-    if not await get_db().is_user_admin(uid):
+    # Honors open mode via the shared chokepoint: over a Cloudflare Tunnel the
+    # page may carry no resolved user id, so a blank/non-admin caller in 'open'
+    # mode is granted the bootstrap admin. Non-open modes still require a real
+    # DB admin id. See app.auth.identity.resolve_admin_uid.
+    from app.auth.identity import resolve_admin_uid
+    if not await resolve_admin_uid(uid):
         raise HTTPException(status_code=403, detail="Admin required")
 
 
@@ -76,11 +78,15 @@ async def status(requesting_user_id: str = ""):
     runtime = await mgr.runtime_status()
 
     primary = netinfo.primary_same_network_url()
+    sn_urls = netinfo.same_network_urls()
     same_network = {
         "port": netinfo.get_port(),
         "primary_url": primary,
-        "urls": netinfo.same_network_urls(),
+        "urls": sn_urls,
         "qr_svg": netinfo.qr_svg(primary),
+        # Per-address entries so the card can stack every URL, each with its
+        # own copy button + on-demand QR popup (read by remote-access.js).
+        "entries": [{"url": u, "qr_svg": netinfo.qr_svg(u)} for u in sn_urls],
     }
 
     ts = tunnels.tailscale_status(cfg.get("tailscale", {}).get("bin_path", ""))

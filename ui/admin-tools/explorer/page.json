@@ -1,0 +1,7 @@
+{
+  "id": "explorer",
+  "kind": "admin",
+  "label": "File Manager",
+  "icon": "folder-tree",
+  "order": 2
+}

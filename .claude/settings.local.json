@@ -28,7 +28,14 @@
       "Bash(sqlite3 *)",
       "Bash(.venv/bin/python *)",
       "Read(//proc/5078/**)",
-      "Bash(Sort-Object Name)"
+      "Bash(Sort-Object Name)",
+      "Bash(npx --yes fallow dead-code --format json)",
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{try{const j=JSON.parse\\(s\\);const files=\\(j.unusedFiles||j.unused_files||[]\\).map\\(f=>f.path||f.file||f\\);const css=files.filter\\(f=>/\\\\.css$/i.test\\(f\\)\\);console.log\\('total unused files:',files.length\\);console.log\\('css:',css.length\\);const nonCss=files.filter\\(f=>!/\\\\.css$/i.test\\(f\\)\\);console.log\\('NON-css unused files:'\\);nonCss.forEach\\(f=>console.log\\('  '+f\\)\\);}catch\\(e\\){console.log\\('parse fail, raw head:'\\);console.log\\(s.slice\\(0,500\\)\\);}}\\)\")",
+      "Bash(npx --yes fallow fix --dry-run)",
+      "Bash(npx --yes fallow dead-code)",
+      "PowerShell($l = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue; if \\($l\\) { \"LISTENING pid=\" + \\($l.OwningProcess -join ','\\) } else { \"PORT 8080 FREE \\(no server\\)\" })",
+      "Bash(nohup ./.venv/Scripts/python.exe run.py)",
+      "Bash(echo \"launched pid $!\")"
     ]
   }
 }

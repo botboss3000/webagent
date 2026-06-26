@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import List
 
 logger = logging.getLogger(__name__)
@@ -60,4 +61,43 @@ async def embed_text(text: str) -> List[float]:
     """
     client, model = _get_embed_client()
     response = await client.embeddings.create(model=model, input=text[:8000])
+    # Record background usage without blocking this latency-sensitive call:
+    # memory recall awaits embeddings before the LLM turn, so fire-and-forget.
+    try:
+        _u = getattr(response, "usage", None)
+        if _u:
+            import asyncio
+            from plugins.billing.usage import record_background_usage
+            _tok = getattr(_u, "prompt_tokens", None)
+            if _tok is None:
+                _tok = getattr(_u, "total_tokens", 0) or 0
+            asyncio.create_task(record_background_usage(
+                model=model, input_tokens=_tok or 0, label="embed"))
+    except Exception:
+        pass
     return response.data[0].embedding
+
+
+async def warm_embed_client() -> bool:
+    """Best-effort warm-up of the embedding client, called once at startup.
+
+    The first embedding request of a process pays a cold-start penalty (lazy
+    openai import + httpx client construction + DNS/TLS handshake + provider
+    cold routing) — measured ~7.5s cold vs ~0.3s warm. Firing one throwaway
+    embed at boot moves that cost off the user's first chat turn, so the
+    pre-agent memory_search no longer stalls visibly on a cold connection.
+
+    Safe to call when no provider key is configured yet — it logs and returns
+    False rather than raising. The real call still falls back lazily on first use.
+    """
+    if not (os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY")):
+        logger.info("Embed warmup skipped: no provider API key configured yet")
+        return False
+    t = time.perf_counter()
+    try:
+        await embed_text("warmup")
+        logger.info("Embed client warmed in %.2fs", time.perf_counter() - t)
+        return True
+    except Exception as e:
+        logger.warning("Embed warmup failed (will retry lazily on first use): %s", e)
+        return False

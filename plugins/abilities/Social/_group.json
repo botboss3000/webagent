@@ -1,0 +1,7 @@
+{
+  "name": "Social Media",
+  "icon": "share-2",
+  "color": "#bb9af7",
+  "desc": "App-level credentials for social platform OAuth. Users connect their personal accounts from the agent's Abilities tab.",
+  "order": 5
+}

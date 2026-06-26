@@ -67,6 +67,8 @@ FLUSH_INTERVAL_SECONDS = 3        # batch-writer cadence
 PRUNE_INTERVAL_SECONDS = 120      # how often the writer prunes the DB table
 MAX_MESSAGE_LEN = 4000            # truncate over-long messages
 MAX_DETAIL_LEN = 16000            # truncate serialized detail blobs
+MAX_OPEN_TOOLS = 2000             # cap on in-flight tool-call timing entries
+OPEN_TOOL_TTL_SECONDS = 1800      # drop a tool-call still awaiting its result after this
 SETTINGS_FILE = "app-settings.json"
 
 # Loop/visualizer event types worth recording. Raw stream deltas, db echoes and
@@ -324,6 +326,7 @@ class DiagnosticRecorder:
                 if now - self._last_prune >= PRUNE_INTERVAL_SECONDS:
                     self._last_prune = now
                     await self._prune_once()
+                    self._evict_stale_open_tools()
             except asyncio.CancelledError:
                 break
             except Exception as e:  # never let the loop die
@@ -380,6 +383,30 @@ class DiagnosticRecorder:
                 )
             except Exception as e:
                 logger.debug("prune_tool_executions failed: %s", e)
+
+    def _evict_stale_open_tools(self) -> None:
+        """Drop in-flight tool-call timing entries whose matching tool_result
+        never arrived — the turn was interrupted / crashed mid-tool. Each
+        tool_call opens an entry in ``_open_tools`` that the tool_result is meant
+        to pop; on the hot resume path, turns die between the two often enough
+        that orphans accumulate without bound. Bounded two ways: an age cap (a
+        real tool rarely runs past the TTL) and a hard size cap (evict
+        oldest-started) as a burst backstop. Cheap, never raises."""
+        try:
+            ot = self._open_tools
+            if not ot:
+                return
+            now = time.time()
+            stale = [k for k, v in ot.items()
+                     if (now - (v.get("start") or now)) > OPEN_TOOL_TTL_SECONDS]
+            for k in stale:
+                ot.pop(k, None)
+            if len(ot) > MAX_OPEN_TOOLS:
+                oldest = sorted(ot.items(), key=lambda kv: kv[1].get("start") or 0.0)
+                for k, _ in oldest[:len(ot) - MAX_OPEN_TOOLS]:
+                    ot.pop(k, None)
+        except Exception:
+            pass
 
     def _instance_id(self) -> Optional[str]:
         try:
@@ -733,7 +760,10 @@ def tap_loop_event(session_id: str, event: Dict[str, Any]) -> None:
                        interaction_id=interaction_id, session_seq=session_seq,
                        turn_seq=turn_seq, persist=problem or None)
         elif etype == "tool_call":
-            name = event.get("name") or event.get("tool_name") or "tool"
+            # The agent loop emits the tool name in the "tool" field (see
+            # loop.py); "name"/"tool_name" are only used by a few legacy taps.
+            # Read "tool" first or every row lands under the literal "tool".
+            name = event.get("tool") or event.get("name") or event.get("tool_name") or "tool"
             args = event.get("arguments") or event.get("args")
             rec.record("info", "tool", f"tool_call: {name}", source=name,
                        detail={"arguments": args},
@@ -749,7 +779,7 @@ def tap_loop_event(session_id: str, event: Dict[str, Any]) -> None:
                 "input_params": _truncate(json.dumps(args, default=str), 1000) if args is not None else None,
             }
         elif etype == "tool_result":
-            name = event.get("name") or event.get("tool_name") or "tool"
+            name = event.get("tool") or event.get("name") or event.get("tool_name") or "tool"
             is_err = bool(event.get("error") or event.get("is_error"))
             result_str = _truncate(
                 event.get("result") if isinstance(event.get("result"), str)

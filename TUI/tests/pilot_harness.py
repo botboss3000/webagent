@@ -46,8 +46,8 @@ with contextlib.suppress(Exception):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from webagent.app import ServerManagerApp  # noqa: E402
-from webagent.llm import Completion, ToolCall  # noqa: E402
+from tui_app.app import ServerManagerApp  # noqa: E402
+from tui_app.llm import Completion, ToolCall  # noqa: E402
 
 
 @contextlib.asynccontextmanager

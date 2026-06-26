@@ -201,9 +201,19 @@ class LogStore:
     # ── Connections (same fast pragmas as the main backend) ──────────────────
 
     @staticmethod
-    def _connect(path: str) -> sqlite3.Connection:
-        conn = sqlite3.connect(path)
-        conn.row_factory = sqlite3.Row
+    def _connect(path: str):
+        # Routed through db_crypto: the canonical logs/recordings files honour the
+        # full-DB-encryption config; any custom/test path stays plaintext. With
+        # encryption OFF this is plain stdlib sqlite3, unchanged. Row factory is
+        # set by db_crypto to match the driver.
+        from app.db import db_crypto
+        if path == LOGS_DB_PATH:
+            db_id = "logs"
+        elif path == RECORDINGS_DB_PATH:
+            db_id = "recordings"
+        else:
+            db_id = "_logs_custom"
+        conn = db_crypto.connect(path, db_id)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=30000")
@@ -482,6 +492,44 @@ class LogStore:
         except Exception as e:
             logger.debug("query_tool_executions failed: %s", e)
             return []
+        finally:
+            conn.close()
+
+    async def session_tool_usage(
+        self,
+        tool_names: List[str],
+        *,
+        user_id: Optional[str] = None,
+        success_only: bool = True,
+    ) -> Dict[str, set]:
+        """Map each session_id to the SET of tool names it ran, restricted to
+        ``tool_names``. One grouped query — used to flag which sessions touched a
+        canvas or a browser page without a per-session round-trip. Sessions that
+        ran none of the listed tools are simply absent from the map."""
+        names = [t for t in (tool_names or []) if t]
+        if not names:
+            return {}
+        placeholders = ",".join("?" for _ in names)
+        where = [f"tool_name IN ({placeholders})", "session_id IS NOT NULL"]
+        params: List[Any] = list(names)
+        if success_only:
+            where.append("success = 1")
+        if user_id:
+            where.append("user_id = ?")
+            params.append(user_id)
+        sql = (
+            "SELECT DISTINCT session_id, tool_name FROM tool_executions WHERE "
+            + " AND ".join(where)
+        )
+        conn = self._connect(self._logs_path)
+        try:
+            out: Dict[str, set] = {}
+            for row in conn.execute(sql, params).fetchall():
+                out.setdefault(row["session_id"], set()).add(row["tool_name"])
+            return out
+        except Exception as e:
+            logger.debug("session_tool_usage failed: %s", e)
+            return {}
         finally:
             conn.close()
 

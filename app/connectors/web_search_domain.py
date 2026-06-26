@@ -5,9 +5,11 @@ Config:
   domain: str   — e.g. "support.acme.com" or "wikipedia.org"
   hint:   str   — optional extra terms always appended to every query
 
-Wraps the existing web-search tool in `app.tools.browser` (or `core_tools`),
-scoping every query to the configured domain. Enforced server-side: the
-LLM cannot escape to the wider web through this tool.
+Wraps the existing web-search tool — the `web_search` handler now lives in the
+`web_access` ability (`plugins/abilities/Web/web_access.py`), loaded via
+`app.abilities.ability_module('web_access')`, with `app.tools.browser` as a
+fallback — scoping every query to the configured domain. Enforced server-side:
+the LLM cannot escape to the wider web through this tool.
 """
 
 from __future__ import annotations
@@ -49,15 +51,20 @@ async def _provider_web_search(query: str, limit: int = 5) -> List[dict]:
     """Best-effort call into whichever web-search tool exists.
 
     Tries, in order:
-      1. app.tools.core_tools.web_search
+      1. the web_access ability's web_search (plugins/abilities/Web/web_access.py),
+         loaded via app.abilities.ability_module — `plugins` is NOT an importable
+         package (no __init__.py), so the ability is loaded by its module loader.
       2. app.tools.browser.web_search
     Returns a list of {title, url, snippet} dicts.
     """
     try:
-        from app.tools.core_tools import web_search as _ws  # type: ignore
+        from app.abilities import ability_module
 
-        res = await _ws(query, limit=limit)  # type: ignore[arg-type]
-        return _coerce(res)
+        _mod = ability_module("web_access")
+        _ws = getattr(_mod, "web_search", None) if _mod else None
+        if _ws is not None:
+            res = await _ws(query, limit=limit)  # type: ignore[arg-type]
+            return _coerce(res)
     except Exception:
         pass
     try:

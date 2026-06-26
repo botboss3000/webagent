@@ -1,0 +1,24 @@
+{
+  "display_name": "Wiki Control",
+  "kind": "ability",
+  "icon": "book-open",
+  "color": "#4285F4",
+  "description": "Read, search, create, edit, and delete Wiki articles.",
+  "note": null,
+  "simple": false,
+  "placeholder": false,
+  "tools": [
+    "wiki_search",
+    "wiki_list",
+    "wiki_get",
+    "wiki_create",
+    "wiki_update",
+    "wiki_set_status",
+    "wiki_delete",
+    "wiki_history",
+    "wiki_get_revision",
+    "wiki_restore",
+    "wiki_backlinks"
+  ],
+  "order": 1
+}

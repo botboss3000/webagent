@@ -36,46 +36,153 @@ from typing import Dict, Iterable, List, Optional
 
 # ── Core tools: always sent, never toggleable ──────────────────────────────────
 # Keep this set tiny — only the meta tools the agent cannot function without.
-# load_tool is what makes every discoverable tool reachable; list_skills /
-# load_skill are the equivalent discovery/activation tools for skills.
-CORE_TOOLS = {"load_tool", "list_skills", "load_skill"}
+# load_tool / load_ability are what make discoverable tools/abilities reachable;
+# list_skills / load_skill are the equivalent discovery/activation tools for skills.
+CORE_TOOLS = {"load_tool", "load_ability", "list_skills", "load_skill"}
 
-# Valid explicit modes a user can pick for a non-core tool.
-TOGGLEABLE_MODES = ("always", "discoverable")
+# ── Canonical visibility vocabulary ────────────────────────────────────────────
+# The SAME two values describe visibility for tools, skills, AND abilities:
+#   "visible"      — shown / full schema sent now.
+#   "discoverable" — withheld (name + one-liner only) until loaded on demand.
+# The locked "core" category above is separate (always sent, not toggleable).
+VISIBLE = "visible"
+DISCOVERABLE = "discoverable"
+
+# Valid explicit modes a user can pick for a non-core tool / skill / ability.
+TOGGLEABLE_MODES = (VISIBLE, DISCOVERABLE)
+
+# Legacy synonyms normalized to the canonical pair on read (older tool modes used
+# "always"; older skill modes used "always_on"/"selectable"). Write paths only
+# ever emit the canonical pair.
+_VISIBILITY_ALIASES = {
+    "always": VISIBLE, "always_on": VISIBLE, "visible": VISIBLE,
+    "selectable": DISCOVERABLE, "discoverable": DISCOVERABLE,
+}
+
+
+def normalize_visibility(value, default: Optional[str] = None) -> Optional[str]:
+    """Map any legacy or canonical visibility string to VISIBLE / DISCOVERABLE.
+    Returns ``default`` for empty/unknown input."""
+    if isinstance(value, str):
+        return _VISIBILITY_ALIASES.get(value.strip().lower(), default)
+    return default
+
 
 # Key under which the per-agent tool-mode map lives in agents.metadata.
 AGENT_TOOL_MODES_KEY = "tool_modes"
 
+# Key under which the per-agent ability-visibility map lives in agents.metadata
+# ({ability_id: "visible"|"discoverable"}). Discovery is tuned PER AGENT — there
+# is deliberately no app-wide ability-visibility default (the admin sets only the
+# ceiling: which abilities exist + permission limits).
+AGENT_ABILITY_MODES_KEY = "ability_modes"
+
+# Key under which the per-agent ability-SKILL visibility map lives in
+# agents.metadata ({ability_id: "visible"|"discoverable"}). Lets an agent make a
+# bundled skill's body always-shown (visible) or load-on-demand (discoverable),
+# independent of the ability's own visibility.
+AGENT_SKILL_MODES_KEY = "skill_modes"
+
+# ── Per-ability caller-ACCESS vocabulary ───────────────────────────────────────
+# A SEPARATE axis from visibility. Visibility tunes how the AGENT sees an ability
+# (visible vs discoverable); access decides WHICH CALLER may trigger it at all.
+# A ladder of three rungs, strictest last:
+#   "everyone"   — anyone, including not-signed-in anonymous guests (the default).
+#   "registered" — only signed-in (non-anonymous) accounts.
+#   "admin"      — only admin users.
+# Enforced server-side at tool-assembly time (the ability's tools are never
+# materialized for a caller below the rung) — a real boundary, not a prompt hint.
+ACCESS_EVERYONE = "everyone"
+ACCESS_REGISTERED = "registered"
+ACCESS_ADMIN = "admin"
+
+# Caller capability is also ranked on this ladder; an ability is kept only when
+# the caller's rank ≥ the ability's required rank.
+ACCESS_RANK = {ACCESS_EVERYONE: 1, ACCESS_REGISTERED: 2, ACCESS_ADMIN: 3}
+
+# Legacy / friendly synonyms normalized to the canonical trio on read. Write
+# paths only ever emit the canonical values.
+_ACCESS_ALIASES = {
+    "everyone": ACCESS_EVERYONE, "all": ACCESS_EVERYONE, "public": ACCESS_EVERYONE,
+    "anonymous": ACCESS_EVERYONE, "anon": ACCESS_EVERYONE, "": ACCESS_EVERYONE,
+    "registered": ACCESS_REGISTERED, "auth": ACCESS_REGISTERED,
+    "user": ACCESS_REGISTERED, "users": ACCESS_REGISTERED, "signed_in": ACCESS_REGISTERED,
+    "admin": ACCESS_ADMIN, "admins": ACCESS_ADMIN, "admin_only": ACCESS_ADMIN,
+}
+
+
+def normalize_access(value, default: Optional[str] = None) -> Optional[str]:
+    """Map any legacy/friendly access string to the canonical
+    everyone/registered/admin trio. Returns ``default`` for unknown input."""
+    if isinstance(value, str):
+        return _ACCESS_ALIASES.get(value.strip().lower(), default)
+    return default
+
+
+def resolve_ability_access(ability_id: str, access_map: Optional[Dict[str, str]]) -> str:
+    """The ability's effective required-access rung for an agent: the per-agent
+    choice (normalized) else the default ``everyone`` (no restriction)."""
+    explicit = normalize_access((access_map or {}).get(ability_id))
+    return explicit or ACCESS_EVERYONE
+
+
+# Key under which the per-agent ability-ACCESS map lives in agents.metadata
+# ({ability_id: "everyone"|"registered"|"admin"}). Per-agent only — absent means
+# everyone (no restriction), so every existing agent is unaffected until set.
+AGENT_ABILITY_ACCESS_KEY = "ability_access"
+
 # Key under which the active (loaded) tool-name list lives in sessions.metadata.
 SESSION_ACTIVE_TOOLS_KEY = "active_tools"
 
+# Key under which the active (load_ability'd) ability-id list lives in
+# sessions.metadata. Mirrors active_tools / active_skills.
+SESSION_ACTIVE_ABILITIES_KEY = "active_abilities"
 
-def resolve_mode(name: str, modes_map: Optional[Dict[str, str]]) -> str:
-    """Resolve a tool's effective mode for an agent.
+# Key under which the per-session SUPPRESSED ability-id list lives in
+# sessions.metadata. An ability here is turned OFF for the conversation from the
+# chat Abilities panel even when the agent's config makes it ``visible`` — its
+# tools + skill are withheld until the user re-arms it. Mirrors active_abilities.
+SESSION_SUPPRESSED_ABILITIES_KEY = "suppressed_abilities"
 
-    core            → if the tool is in CORE_TOOLS (locked).
+
+def resolve_mode(name: str, modes_map: Optional[Dict[str, str]],
+                 global_defaults: Optional[Dict[str, Dict[str, str]]] = None) -> str:
+    """Resolve a tool's effective exposure mode for an agent.
+
+    Resolution order (effective = agent-override ▸ global-default ▸ built-in):
+
+    core                → if the tool is in CORE_TOOLS (locked).
     always/discoverable → the agent's explicit setting, when present and valid.
-    always          → the hybrid default for any tool with no explicit setting,
-                      so nothing an agent already had silently stops being sent.
+    always/discoverable → the global per-tool default's ``visibility``, when the
+                          agent has no explicit setting (``global_defaults`` is the
+                          ``{tool: {permission?, visibility?}}`` admin blob).
+    always              → the hybrid default for any tool with neither setting,
+                          so nothing an agent already had silently stops being sent.
     """
     if name in CORE_TOOLS:
         return "core"
-    explicit = (modes_map or {}).get(name)
-    if explicit in TOGGLEABLE_MODES:
+    explicit = normalize_visibility((modes_map or {}).get(name))
+    if explicit:
         return explicit
-    return "always"
+    if global_defaults:
+        g_vis = normalize_visibility((global_defaults.get(name) or {}).get("visibility"))
+        if g_vis:
+            return g_vis
+    return VISIBLE
 
 
 def is_sent(name: str, modes_map: Optional[Dict[str, str]],
-            active_names: Optional[Iterable[str]]) -> bool:
+            active_names: Optional[Iterable[str]],
+            global_defaults: Optional[Dict[str, Dict[str, str]]] = None) -> bool:
     """True when this tool's full schema should be sent to the model this turn.
 
     Sent when it is core/always, OR when it is discoverable and the model has
     already loaded it this session (so a freshly loaded tool becomes callable on
-    the next turn).
+    the next turn). ``global_defaults`` is threaded through so the global
+    visibility fallback is honoured identically to ``resolve_mode``.
     """
-    mode = resolve_mode(name, modes_map)
-    if mode in ("core", "always"):
+    mode = resolve_mode(name, modes_map, global_defaults)
+    if mode in ("core", VISIBLE):
         return True
     return name in set(active_names or ())
 
@@ -112,9 +219,98 @@ def tools_for_ability(ability: str) -> List[str]:
     return list(ABILITY_TOOLS.get(ability, []))
 
 
+# ── Ability visibility ─────────────────────────────────────────────────────────
+
+def resolve_ability_mode(ability_id: str, modes_map: Optional[Dict[str, str]]) -> str:
+    """Effective visibility of an ability for an agent: the agent's explicit
+    per-agent choice (normalized) else the default ``VISIBLE``. Abilities have no
+    app-wide default — discovery is tuned per agent."""
+    explicit = normalize_visibility((modes_map or {}).get(ability_id))
+    return explicit or VISIBLE
+
+
+def resolve_skill_mode(ability_id: str, modes_map: Optional[Dict[str, str]],
+                       default: Optional[str] = None) -> str:
+    """Effective visibility of an ability's bundled skill for an agent: the
+    agent's explicit per-agent choice (normalized) ▸ the descriptor default ▸
+    ``discoverable``. ``visible`` = body always shown; ``discoverable`` = load on
+    demand."""
+    explicit = normalize_visibility((modes_map or {}).get(ability_id))
+    if explicit:
+        return explicit
+    return normalize_visibility(default) or DISCOVERABLE
+
+
+def ability_is_revealed(ability_id: str, modes_map: Optional[Dict[str, str]],
+                        active_ability_names: Optional[Iterable[str]],
+                        suppressed_ability_names: Optional[Iterable[str]] = None) -> bool:
+    """True when an ability's tools + bundled skill should flow into the prompt
+    this turn: it is ``visible``, OR it is discoverable but already pulled in via
+    ``load_ability`` this session.
+
+    ``suppressed_ability_names`` lets a session turn an ability OFF from the chat
+    Abilities panel even if it's ``visible`` by the agent's config — a suppressed
+    ability is never revealed (its tools + skill are withheld until re-armed)."""
+    if ability_id in set(suppressed_ability_names or ()):
+        return False
+    if resolve_ability_mode(ability_id, modes_map) == VISIBLE:
+        return True
+    return ability_id in set(active_ability_names or ())
+
+
+def tool_hidden_by_ability(
+    name: str,
+    ability_modes: Optional[Dict[str, str]],
+    active_ability_names: Optional[Iterable[str]],
+    active_tool_names: Optional[Iterable[str]] = None,
+    suppressed_ability_names: Optional[Iterable[str]] = None,
+) -> bool:
+    """True when a tool must be withheld entirely (not indexed, not sent) because
+    the ability that gates it is ``discoverable`` and has NOT been loaded yet — or
+    has been suppressed for this session from the chat Abilities panel.
+
+    Tools with no gating ability (always-on utilities, DB tools), tools of a
+    revealed ability, and a tool the agent already loaded individually
+    (``load_tool``) are never hidden by this rule."""
+    ability = ability_for_tool(name)
+    if not ability:
+        return False
+    if ability_is_revealed(ability, ability_modes, active_ability_names, suppressed_ability_names):
+        return False
+    return name not in set(active_tool_names or ())
+
+
+def render_ability_index(entries: List[Dict]) -> str:
+    """Build the ``# [ABILITIES]`` block listing discoverable abilities whose
+    tools + how-to skill are withheld until ``load_ability``.
+
+    ``entries`` is a list of ``{id, name, desc}`` dicts. Returns "" when empty.
+    """
+    rows = [e for e in entries if e.get("id")]
+    if not rows:
+        return ""
+    lines: List[str] = [
+        "# [ABILITIES]",
+        "These abilities are available but their tools and how-to skill are "
+        "withheld to keep your context lean. Call `load_ability(\"<id>\")` the "
+        "moment a task needs one — it returns the ability's skill plus its tools "
+        "and keeps them active for the rest of this conversation. Don't guess an "
+        "ability's tools before loading it.",
+    ]
+    for e in sorted(rows, key=lambda r: (r.get("name") or r["id"]).lower()):
+        nm = e.get("name") or e["id"]
+        desc = (e.get("desc") or "").strip().split("\n")[0]
+        lines.append(f"- `{e['id']}` — {nm}: {desc}" if desc else f"- `{e['id']}` — {nm}")
+    return "\n".join(lines).strip()
+
+
 # ── Prompt index rendering ─────────────────────────────────────────────────────
 
-def render_index(entries: List[Dict]) -> str:
+def render_index(
+    entries: List[Dict],
+    ask_names: Optional[set] = None,
+    denied_names: Optional[List[str]] = None,
+) -> str:
     """Build the ``# [TOOLS]`` system-prompt block from the agent's loaded tools.
 
     ``entries`` is a list of ``{name, desc, mode, active}`` dicts (one per loaded
@@ -123,11 +319,21 @@ def render_index(entries: List[Dict]) -> str:
     heading that points the model at ``load_tool``. Returns "" when there are no
     tools at all.
 
+    ``ask_names`` — tool names that are confirmation-gated in the current
+    execution mode; each is tagged inline so the agent knows it will pause for
+    the user (and can ask them to approve or switch to Auto) rather than
+    discovering the gate only by being blocked.
+    ``denied_names`` — tools withheld from this agent entirely (permission
+    "deny"); listed under a Blocked heading so the agent knows they exist but are
+    off-limits, instead of getting a misleading "tool not found".
+
     The catalog is generated from the real tool set, so it can never name a tool
     the agent doesn't have, and authors never hand-maintain it.
     """
-    if not entries:
+    if not entries and not denied_names:
         return ""
+
+    ask_set = set(ask_names or ())
 
     ready: List[str] = []
     loadable: List[str] = []
@@ -137,13 +343,17 @@ def render_index(entries: List[Dict]) -> str:
             continue
         desc = (e.get("desc") or "").strip().split("\n")[0]
         line = f"- `{name}` — {desc}" if desc else f"- `{name}`"
+        if name in ask_set:
+            line += "  _(needs the user's confirmation to run in this mode)_"
         mode = e.get("mode")
         if mode == "discoverable" and not e.get("active"):
             loadable.append(line)
         else:
             ready.append(line)
 
-    if not ready and not loadable:
+    blocked = sorted({n for n in (denied_names or []) if n})
+
+    if not ready and not loadable and not blocked:
         return ""
 
     lines: List[str] = [
@@ -151,6 +361,14 @@ def render_index(entries: List[Dict]) -> str:
         "These are the tools available to you on this agent. Tools under "
         "“Ready to use” can be called directly right now.",
     ]
+    if ask_set:
+        lines.append(
+            "Tools marked _(needs the user's confirmation)_ are gated by the "
+            "current execution mode: calling one pauses for the user. When such a "
+            "tool is the right next step, briefly tell the user what you want to "
+            "do and ask them to approve it — or, if they've already approved your "
+            "plan, switch to Auto with `set_execution_mode(\"auto\")` and proceed."
+        )
     if ready:
         lines.append("\n## Ready to use")
         lines.extend(sorted(ready))
@@ -165,5 +383,15 @@ def render_index(entries: List[Dict]) -> str:
             "here."
         )
         lines.extend(sorted(loadable))
+    if blocked:
+        lines.append(
+            "\n## Blocked for this agent"
+            "\nThese tools exist but are turned OFF for you (permission: deny), so "
+            "you cannot call them — doing so will fail. If one is genuinely needed, "
+            "tell the user it's blocked and ask them to enable it (in the agent's "
+            "Tools settings or by switching on the ability that provides it), or "
+            "find another approach. Do not keep retrying a blocked tool."
+        )
+        lines.extend(f"- `{n}`" for n in blocked)
 
     return "\n".join(lines).strip()

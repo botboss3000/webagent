@@ -295,11 +295,28 @@ async def find_user_by_display_name(display_name: str) -> str | None:
 # ── Registration system prompt ──────────────────────────────────────────────
 
 
+def _load_app_level_prompt(key: str) -> str:
+    """Load a single app-level prompt text from app/defaults/app-prompts.json."""
+    import json
+    from app.util.paths import app_prompts_path
+    p = app_prompts_path()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        entry = data.get("app_level_prompts", {}).get(key, {})
+        return entry.get("text") or entry.get("template", "") or ""
+    except Exception:
+        return ""
+
+
 def get_registration_system_prompt(identity: ChannelIdentity) -> str:
     """
     Build a system prompt for the agent when handling an unregistered user.
     This tells the agent to guide the user through registration.
     """
+    tpl = _load_app_level_prompt("registration_system_prompt")
+    if tpl:
+        return tpl.format(channel=identity.channel)
+    # Inline fallback if JSON is missing
     return f"""
 # [SYSTEM — REGISTRATION MODE]
 
@@ -322,6 +339,7 @@ Rules:
 
 def get_anonymous_limit_prompt() -> str:
     """System prompt fragment for anonymous users — limits their turns."""
-    return """
-[NOTE: User is ANONYMOUS — 5 turn limit. Encourage registration for full access.]
-""".strip()
+    text = _load_app_level_prompt("anonymous_limit_prompt")
+    if text:
+        return text.strip()
+    return "[NOTE: User is ANONYMOUS — 5 turn limit. Encourage registration for full access.]"

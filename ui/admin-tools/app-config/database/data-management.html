@@ -1,0 +1,401 @@
+<template data-slot="#ac-section-slot-database">
+<section id="ac-section-database" class="ac-section ac-stickynav">
+  <!-- DATA MANAGEMENT — admin-only. No page-title header: the tab carousel
+       already names this page. Follows the standard config-page layout
+       (App Settings / Agent Settings) — a stack of always-open, sticky
+       `.ac-category-group` headings (no chevron) and (deliberately) NO
+       page-assistant chat pill. See docs/claude/ui-guidance.md point 5 +
+       "the standard config-page layout".
+
+       The eight storage/maintenance configs are consolidated into FOUR groups,
+       each rendered as ONE shared ability-table list (`.ac-list` of expandable
+       `.ac-row`s — the same component as Remote Access in App Settings and the
+       Automation Engine in Agent Settings). Each row collapses to a single line
+       (icon · name · live-status badge · chevron) and expands in place to reveal
+       its full configurator:
+         1. Core Storage        — Application Data · Page Storage · Chat Attachments
+         2. Secrets & Encryption — Secrets Vault · Encryption
+         3. Maintenance         — Data Migration · Agent Prompt Templates
+         4. Runtime             — Stream Buffer
+       Every control id is PRESERVED VERBATIM from the former flat layout so the
+       drivers (ui/shared/js/storage.js, ui/shared/js/data-management.js) keep
+       finding their elements by id unchanged; the former `.ac-category-count`
+       status badges are now each row's `.ac-ability-status`. Rows are wired to
+       expand/collapse by _wireRows() in ./data-management.js (a click on a
+       control inside a body never collapses the row). -->
+
+  <!-- Section-wide functional banner (not a subheading description): shown by
+       storage.js when config is locked to environment variables. -->
+  <div id="ac-storage-env-banner" class="ac-info-banner" style="display:none;margin-bottom:12px;border-left-color:var(--warning);color:var(--warning);">
+    Configuration is locked to environment variables. UI changes are disabled. Edit the deployment to modify storage settings.
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       GROUP 1 · CORE STORAGE — where each kind of data physically lives.
+       Three rows that share the identical "pick a provider → test → activate"
+       shape. ════════════════════════════════════════════════════════════ -->
+  <div class="ac-category-group">
+    <div class="ac-category-summary">
+      <i data-lucide="hard-drive" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Core Storage</span>
+    </div>
+    <div class="ac-category-body">
+      <div class="ac-list">
+
+        <!-- ── Row · Application Data (the main app database) ── -->
+        <div class="ac-row" id="ac-row-appdata">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="server" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Application Data</div>
+              <div class="ac-ability-desc">Where the main app database lives — SQLite, Postgres, Supabase, and more.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-active-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Provider</label>
+            <select id="ac-storage-db-provider" class="ac-input">
+              <option value="sqlite">SQLite</option>
+              <option value="postgres">Postgres</option>
+              <option value="supabase">Supabase</option>
+              <option value="aws_rds">Amazon RDS</option>
+              <option value="gcp_cloud_sql">Google Cloud SQL</option>
+              <option value="azure_postgres">Azure Database</option>
+              <option value="neon">Neon</option>
+            </select>
+
+            <div id="ac-storage-db-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-left:3px solid var(--accent);border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
+            <div id="ac-storage-db-fields" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+              <button id="ac-storage-db-test" class="ac-btn">Test Connection</button>
+              <button id="ac-storage-db-show-sql" class="ac-btn">Show Schema SQL</button>
+              <button id="ac-storage-db-bootstrap" class="ac-btn">Auto-Create Tables</button>
+              <button id="ac-storage-db-save" class="ac-btn">Save Config</button>
+              <button id="ac-storage-db-activate" class="ac-btn ac-btn-primary">Activate</button>
+            </div>
+
+            <pre id="ac-storage-db-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+          </div>
+        </div>
+
+        <!-- ── Row · Page Storage (where Canvas pages live) ── -->
+        <div class="ac-row" id="ac-row-pagestorage">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="layout-template" class="lucide-icon" style="width:18px;height:18px;color:var(--success);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Page Storage</div>
+              <div class="ac-ability-desc">Where Canvas pages are stored — on disk, in the database, or hybrid.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-canvas-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Mode</label>
+            <select id="ac-storage-canvas-mode" class="ac-input">
+              <option value="filesystem">Filesystem (default — files on disk)</option>
+              <option value="database">Database (full HTML in DB; survives restarts)</option>
+              <option value="hybrid">Hybrid (metadata in DB, body on disk)</option>
+            </select>
+
+            <div id="ac-storage-canvas-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-left:3px solid var(--success);border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
+            <div style="display:flex;gap:6px;margin-top:12px;">
+              <button id="ac-storage-canvas-save" class="ac-btn ac-btn-primary">Activate</button>
+            </div>
+            <pre id="ac-storage-canvas-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+          </div>
+        </div>
+
+        <!-- ── Row · Chat Attachments (per-row storage backend) ── -->
+        <div class="ac-row" id="ac-row-attachments">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="paperclip" class="lucide-icon" style="width:18px;height:18px;color:var(--purple);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Chat Attachments</div>
+              <div class="ac-ability-desc">Where uploaded images, voice, and dropped files are saved.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-attach-active-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              Where chat attachments (images, voice, dropped files) are stored. Switch any time — existing files keep working because each attachment row remembers which backend wrote it.
+            </div>
+
+            <div id="ac-attach-env-banner" class="ac-info-banner" hidden style="margin-top:10px;border-left-color:var(--warning);color:var(--warning);font-size:11px;">
+              Config is env-locked (WEBAGENT_CONFIG_SOURCE=env or WEBAGENT_ATTACHMENTS_STORE set). Backend can be inspected but not changed from this UI.
+            </div>
+
+            <label class="ac-label" style="margin-top:10px;">Backend</label>
+            <select id="ac-attach-mode" class="ac-input"></select>
+
+            <div id="ac-attach-blurb" class="ac-hint" style="margin-top:6px;line-height:1.5;"></div>
+
+            <div id="ac-attach-fields" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;align-items:center;">
+              <button id="ac-attach-save" class="ac-btn ac-btn-primary">Activate Backend</button>
+              <button id="ac-attach-save-cfg" class="ac-btn">Save Provider Settings</button>
+              <button id="ac-attach-test" class="ac-btn">Test</button>
+              <span id="ac-attach-status" class="ac-hint" style="margin-left:6px;"></span>
+            </div>
+
+            <div id="ac-attach-counts" class="ac-hint" style="margin-top:8px;font-size:11px;"></div>
+          </div>
+        </div>
+
+      </div><!-- /.ac-list -->
+    </div><!-- /.ac-category-body -->
+  </div><!-- /.ac-category-group (Core Storage) -->
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       GROUP 2 · SECRETS & ENCRYPTION — protection for credentials and
+       data at rest. Encryption depends on the vault, so they sit together. -->
+  <div class="ac-category-group">
+    <div class="ac-category-summary">
+      <i data-lucide="shield" class="lucide-icon" style="width:16px;height:16px;color:var(--purple);"></i>
+      <span class="ac-category-title">Secrets &amp; Encryption</span>
+    </div>
+    <div class="ac-category-body">
+      <div class="ac-list">
+
+        <!-- ── Row · Secrets Vault ── -->
+        <div class="ac-row" id="ac-row-secrets">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="key-round" class="lucide-icon" style="width:18px;height:18px;color:var(--purple);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Secrets Vault</div>
+              <div class="ac-ability-desc">Where API keys and OAuth tokens are kept — app DB, OS keyring, or a cloud vault.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-secrets-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Provider</label>
+            <select id="ac-storage-secrets-provider" class="ac-input">
+              <option value="inline_db">App DB (default, plaintext)</option>
+              <option value="env">Environment variables (read-only)</option>
+              <option value="os_keyring">OS Keyring</option>
+              <option value="gcp_secret_manager">GCP Secret Manager</option>
+              <option value="aws_secrets_manager">AWS Secrets Manager</option>
+            </select>
+
+            <div id="ac-storage-secrets-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-left:3px solid var(--purple);border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
+            <div id="ac-storage-secrets-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:var(--danger);color:var(--danger);font-size:11px;">
+              Secrets stored as plaintext in main DB. Acceptable for local dev; upgrade to a vault for production.
+            </div>
+
+            <div style="display:flex;gap:6px;margin-top:12px;">
+              <button id="ac-storage-secrets-test" class="ac-btn">Test</button>
+              <button id="ac-storage-secrets-save" class="ac-btn ac-btn-primary">Activate</button>
+            </div>
+            <pre id="ac-storage-secrets-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+          </div>
+        </div>
+
+        <!-- ── Row · Encryption ── -->
+        <div class="ac-row" id="ac-row-encryption">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="lock" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Encryption</div>
+              <div class="ac-ability-desc">Encryption for sensitive data at rest, plus key generation and rotation.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-enc-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div id="ac-storage-enc-vault-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:var(--danger);color:var(--danger);font-size:11px;">
+              Secrets vault is set to <strong>inline_db</strong> while the database backend is remote. Encryption keys would live in the same DB they protect. Switch the Secrets Vault provider above before enabling per-tenant encryption.
+            </div>
+
+            <label class="ac-label" style="margin-top:10px;">Level</label>
+            <select id="ac-storage-enc-level" class="ac-input">
+              <option value="none">None (plaintext)</option>
+              <option value="field">Field-level, per-tenant (Fernet via vault)</option>
+            </select>
+
+            <div id="ac-storage-enc-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-left:3px solid var(--accent);border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+              <button id="ac-storage-enc-kek-generate" class="ac-btn">Generate KEK</button>
+              <button id="ac-storage-enc-test" class="ac-btn">Test Round-Trip</button>
+              <button id="ac-storage-enc-migrate" class="ac-btn">Encrypt Existing Rows</button>
+              <button id="ac-storage-enc-decrypt-all" class="ac-btn">Decrypt Back to Plaintext</button>
+              <button id="ac-storage-enc-kek-rotate" class="ac-btn">Rotate KEK</button>
+              <button id="ac-storage-enc-save" class="ac-btn ac-btn-primary">Activate Level</button>
+            </div>
+
+            <div style="margin-top:14px;">
+              <div style="font-size:11px;font-weight:600;color:var(--muted);">Per-tenant keys</div>
+              <div id="ac-storage-enc-tenants" style="margin-top:6px;font-size:11px;max-height:200px;overflow-y:auto;border:var(--border-width) solid var(--border);border-radius:6px;padding:6px;display:none;"></div>
+            </div>
+
+            <pre id="ac-storage-enc-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+          </div>
+        </div>
+
+        <!-- ── Row · Full-database encryption (whole-file, SQLCipher) ── -->
+        <!-- DISTINCT from the per-tenant Encryption row above: this encrypts each
+             ENTIRE SQLite database file at rest (main / vault / logs / recordings /
+             wiki), each keyed by its own key held in the keyring vault. Per-database
+             choice. The file conversion runs at startup, so a toggle here sets
+             intent and needs a server restart to apply. See app/db/db_crypto.py. -->
+        <div class="ac-row" id="ac-row-fulldb-enc">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="database" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Full-database encryption</div>
+              <div class="ac-ability-desc">Encrypt entire database files at rest (SQLCipher), each keyed by the vault. Choose per database; applies on restart.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-fulldb-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div id="ac-storage-fulldb-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:var(--danger);color:var(--danger);font-size:11px;"></div>
+            <div id="ac-storage-fulldb-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-left:3px solid var(--accent);border-radius:4px;font-size:11px;line-height:1.55;">
+              Each database is encrypted as a whole file under its own key, held in the keyring vault. The vault's master key unlocks them all — <strong>back it up</strong>, because if the keyring is lost the data can't be recovered. Toggling a database sets the intent; the file is converted (backup-first) on the next server restart.
+            </div>
+            <div id="ac-storage-fulldb-list" style="margin-top:12px;display:flex;flex-direction:column;gap:6px;"></div>
+            <pre id="ac-storage-fulldb-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+          </div>
+        </div>
+
+      </div><!-- /.ac-list -->
+    </div><!-- /.ac-category-body -->
+  </div><!-- /.ac-category-group (Secrets & Encryption) -->
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       GROUP 3 · MAINTENANCE — occasional admin operations on the data,
+       not "where it lives". ═══════════════════════════════════════════ -->
+  <div class="ac-category-group">
+    <div class="ac-category-summary">
+      <i data-lucide="wrench" class="lucide-icon" style="width:16px;height:16px;color:var(--success);"></i>
+      <span class="ac-category-title">Maintenance</span>
+    </div>
+    <div class="ac-category-body">
+      <div class="ac-list">
+
+        <!-- ── Row · Data Migration ── -->
+        <div class="ac-row" id="ac-row-migration">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="arrow-right-left" class="lucide-icon" style="width:18px;height:18px;color:var(--success);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Data Migration</div>
+              <div class="ac-ability-desc">Export the current backend to JSON, then import it after switching.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              Export current backend data to JSON, switch active backend, then import the file. Heavy tables may take a while.
+            </div>
+            <div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;">
+              <button id="ac-storage-export-btn" class="ac-btn ac-btn-primary">Export to JSON</button>
+              <label class="ac-btn" style="cursor:pointer;">
+                Import JSON
+                <input id="ac-storage-import-input" type="file" accept="application/json" style="display:none;">
+              </label>
+            </div>
+            <pre id="ac-storage-migrate-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+          </div>
+        </div>
+
+        <!-- ── Row · Agent Prompt Templates ── -->
+        <div class="ac-row" id="ac-row-templates">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="file-stack" class="lucide-icon" style="width:18px;height:18px;color:var(--success);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Agent Prompt Templates</div>
+              <div class="ac-ability-desc">Seed agent prompt templates from the on-disk JSON files.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-tpl-sync-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              Templates seed from <code>app/defaults/agents/*.json</code> (or a <code>data/agents/</code> override) at boot. Re-seed never overwrites slots edited from the admin UI (<code>source = admin</code>) unless you click <strong>Force Re-Seed</strong>.
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+              <button id="ac-tpl-refresh-btn" class="ac-btn">Refresh</button>
+              <button id="ac-tpl-seed-btn" class="ac-btn ac-btn-primary">Re-Seed from JSON</button>
+              <button id="ac-tpl-seed-force-btn" class="ac-btn" style="border-color:var(--danger);color:var(--danger);">Force Re-Seed (overwrite admin)</button>
+            </div>
+            <div id="ac-tpl-hash-row" class="ac-hint" style="margin-top:8px;font-family:var(--mono,monospace);font-size:10px;word-break:break-all;"></div>
+            <div id="ac-tpl-list" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+            <pre id="ac-tpl-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+          </div>
+        </div>
+
+        <!-- ── Row · Config Files (seed the default JSON config library) ── -->
+        <div class="ac-row" id="ac-row-configfiles">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="file-cog" class="lucide-icon" style="width:18px;height:18px;color:var(--success);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Config Files</div>
+              <div class="ac-ability-desc">Write the default JSON config files from the built-in templates.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-cfg-seed-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              The app runs fine with <strong>no</strong> config files — every setting falls back to a built-in default, and a file is created the moment you change that setting. This writes out the whole <strong>library</strong> of default config files to <code>data/config/</code> so you have editable copies to work from. Files that manage their own lifecycle (secrets, the ability catalog, the model catalog) are shown but not written. <strong>Existing files are never overwritten.</strong>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+              <button id="ac-cfg-refresh-btn" class="ac-btn">Refresh</button>
+              <button id="ac-cfg-seed-btn" class="ac-btn ac-btn-primary">Generate Missing Files</button>
+            </div>
+            <div id="ac-cfg-list" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+            <pre id="ac-cfg-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+          </div>
+        </div>
+
+      </div><!-- /.ac-list -->
+    </div><!-- /.ac-category-body -->
+  </div><!-- /.ac-category-group (Maintenance) -->
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       GROUP 4 · RUNTIME — in-memory tuning knobs (not persistent storage). -->
+  <div class="ac-category-group">
+    <div class="ac-category-summary">
+      <i data-lucide="gauge" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Runtime</span>
+    </div>
+    <div class="ac-category-body">
+      <div class="ac-list">
+
+        <!-- ── Row · Stream Buffer (in-memory per-turn event log for WS replay) ── -->
+        <div class="ac-row" id="ac-row-streambuffer">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="activity" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Stream Buffer</div>
+              <div class="ac-ability-desc">How long each chat turn's events stay in memory for replay after a refresh.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-sbuf-badge"></span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              Each chat turn keeps its events (stream tokens, tool calls, results) in memory so a refresh or session switch can replay what was missed. Buffer is dropped this many seconds after the turn finishes. 0 = drop immediately. Max 3600.
+            </div>
+            <label class="ac-label" style="margin-top:10px;">Retention seconds</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input type="number" id="ac-storage-sbuf-seconds" class="ac-input" min="0" max="3600" step="1" style="width:120px;" value="60">
+              <button id="ac-storage-sbuf-save" class="ac-btn ac-btn-primary">Save</button>
+              <span id="ac-storage-sbuf-status" class="ac-hint" style="margin-left:6px;"></span>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /.ac-list -->
+    </div><!-- /.ac-category-body -->
+  </div><!-- /.ac-category-group (Runtime) -->
+
+</section>
+</template>

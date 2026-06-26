@@ -134,26 +134,42 @@ def set_level(level: str, settings: Optional[dict] = None) -> None:
     logger.info("Encryption level switched to '%s'", level)
 
 
+def probe_level(level: str, settings: Optional[dict] = None) -> Optional[str]:
+    """Check whether a level can actually be ACTIVATED right now.
+
+    Returns None if the backend constructs cleanly (e.g. 'none', 'field'), or a
+    human-readable reason it can't (placeholder method not yet wired, missing
+    optional dependency, etc.). Used by the admin API to refuse a switch loudly
+    instead of silently falling back to NoEncryption — which would look like a
+    success while leaving data unencrypted.
+
+    Constructs a throwaway instance; it is never cached or set as active.
+    """
+    if level not in _all_levels():
+        return f"Unknown level '{level}'."
+    try:
+        _construct(level, settings or {})
+        return None
+    except Exception as e:
+        return str(e) or type(e).__name__
+
+
 def _construct(level: str, settings: dict) -> EncryptionBackend:
-    # Prefer the auto-discovered class; explicit branches remain as fallback.
+    # Auto-discovery (one class per drop-in file, keyed by FEATURE `level`) is the
+    # source of truth and already covers every built-in method — no per-level
+    # import list to maintain here.
     cls = _discovered().get(level)
     if cls is not None:
         try:
             return cls(settings)
         except TypeError:
             return cls()
+    # none is the irreducible default: keep an explicit branch so it can always
+    # be constructed even if discovery itself failed (the get_encryption fallback
+    # below also depends on it).
     if level == "none":
         from app.encryption.none import NoEncryption
         return NoEncryption()
-    if level == "field":
-        from app.encryption.field_fernet import FieldFernet
-        return FieldFernet(settings)
-    if level == "full_db":
-        from app.encryption.sqlcipher import SQLCipherEncryption
-        return SQLCipherEncryption(settings)
-    if level == "kms":
-        from app.encryption.kms_wrapped import KMSWrappedFernet
-        return KMSWrappedFernet(settings)
     raise ValueError(f"Unknown level: {level}")
 
 
@@ -184,6 +200,15 @@ def get_status() -> dict:
         "available": list(_all_levels()),
         "env_locked": _env_locked(),
     }
+
+
+def level_configured() -> bool:
+    """True if an encryption level has been explicitly persisted (file exists).
+
+    Absent file = nobody has chosen yet (fresh install) — used by the first-boot
+    security-defaults seeder to know it may act without overriding a real choice.
+    """
+    return os.path.exists(_MODE_FILE)
 
 
 def reset_for_tests() -> None:

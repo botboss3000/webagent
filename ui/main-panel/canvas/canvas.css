@@ -1,0 +1,250 @@
+/* ── Canvas Tab ── */
+
+/* COLOR SCHEME → ui/shared/css/design-system.css (single source of truth).
+   No raw hex/rgb here: use var(--brand) / var(--accent) / var(--accent-hover) for
+   the brand accent, rgba(var(--brand-rgb), a) for any accent opacity, var(--success|
+   warning|danger) (or rgba(var(--*-rgb), a)) for status, var(--purple) for the 2nd hue.
+   Need a colour that doesn't exist yet? Add a token to the palette in design-system.css
+   (the dark :root block AND its body.light-mode twin), then reference it here.
+   Re-theming the whole app (e.g. peach → green) is then a one-file edit. */
+
+/* NOTE: the footer toolbar (page selector, +, refresh, ✦ chat) lives in its own
+   swappable module — js/canvas-toolbar.js + canvas-toolbar.css. Its styles are
+   NOT here, so a redesign of the footer never touches this core stylesheet. */
+
+/* ── New Page Dialog ── */
+
+#canvas-new-page-dialog {
+  display: none;
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(var(--shadow-rgb), 0.65);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+}
+
+.canvas-dialog-box {
+  background: var(--bg-0);
+  border: var(--border-width) solid var(--border);
+  border-radius: 10px;
+  padding: 22px 24px;
+  width: 320px;
+  max-width: 90%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.5);
+}
+
+.canvas-dialog-box h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-1);
+}
+
+.canvas-dialog-input {
+  background: var(--bg-elev);
+  border: var(--border-width) solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-1);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.canvas-dialog-input:focus {
+  border-color: var(--accent);
+}
+
+.canvas-dialog-input::placeholder { color: var(--fg-4); }
+
+.canvas-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.canvas-dialog-btn {
+  padding: 6px 16px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s;
+}
+
+.canvas-dialog-btn-primary {
+  background: var(--accent);
+  color: var(--bg-0);
+  border-color: var(--accent);
+}
+
+.canvas-dialog-btn-primary:hover { background: var(--brand-strong); }
+
+.canvas-dialog-btn-cancel {
+  background: transparent;
+  color: var(--fg-3);
+  border-color: var(--border);
+}
+
+.canvas-dialog-btn-cancel:hover { background: var(--bg-elev); color: var(--fg-1); }
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+#tab-canvas {
+  display: none;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-0);
+}
+
+#tab-canvas.active {
+  display: flex;
+}
+
+#canvas-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  position: relative;
+}
+
+/* ── Viewport (iframe area) ──
+   PILL-PANEL-LAYOUT: flex:1 so it takes all the column height left over after
+   the normal-flow footer (page-nav + prompt pill) below it. When the footer is
+   collapsed (display:none) the viewport reclaims the full height. Mirrors the
+   Browser page's .browser-stage. */
+
+#canvas-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* FIRST-CLASS CANVAS HOST. The agent's canvas is rendered (into an open shadow
+   root) directly inside this element — no iframe. Two things make that safe for
+   the app shell:
+     • contain: layout paint  — clips the canvas's painting to this box AND makes
+       this element the containing block for any position:fixed descendant, so a
+       canvas's full-bleed background can't spill over the rest of the app.
+     • transform: translateZ(0) — belt-and-suspenders for the same fixed-child
+       containment in browsers that need a transform to establish it.
+   Background is transparent by default so the app's own animated background
+   shows THROUGH the canvas (the default look); a canvas only paints its own
+   background when the agent deliberately designs one. This host is the scroll
+   container for tall canvases. */
+.canvas-host {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: transparent;
+  position: relative;
+  overflow: auto;
+  contain: layout paint;
+  transform: translateZ(0);
+}
+
+/* ── Placeholder State ── */
+
+.canvas-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  color: var(--fg-3);
+}
+
+.canvas-placeholder-icon {
+  font-size: 48px;
+  opacity: 0.4;
+}
+
+.canvas-placeholder-text {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.canvas-placeholder-hint {
+  font-size: 12px;
+  color: var(--fg-4);
+  font-style: italic;
+}
+
+/* ── Loading State ── */
+
+.canvas-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+  color: var(--brand);
+  font-size: 14px;
+}
+
+.canvas-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-soft);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: canvas-spin 0.8s linear infinite;
+}
+
+@keyframes canvas-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ═══════════════════════════════════════════════
+   LIGHT MODE OVERRIDES
+   ═══════════════════════════════════════════════ */
+body.light-mode #tab-canvas {
+  background: var(--bg-0);
+}
+body.light-mode .canvas-host {
+  background: transparent;
+}
+body.light-mode .canvas-placeholder {
+  color: var(--fg-3);
+}
+body.light-mode .canvas-placeholder-text {
+  color: var(--brand);
+}
+body.light-mode .canvas-placeholder-hint {
+  color: var(--fg-4);
+}
+body.light-mode .canvas-spinner {
+  border-color: var(--border);
+  border-top-color: var(--brand);
+}
+body.light-mode .canvas-dialog-box {
+  background: var(--bg-0);
+  border-color: var(--border);
+}
+body.light-mode .canvas-dialog-box h3 { color: var(--fg-1); }
+body.light-mode .canvas-dialog-input {
+  background: var(--bg-0);
+  border-color: var(--border);
+  color: var(--fg-1);
+}
+body.light-mode .canvas-dialog-input:focus { border-color: var(--brand); }
+body.light-mode .canvas-dialog-btn-primary {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+body.light-mode .canvas-dialog-btn-cancel {
+  border-color: var(--border);
+  color: var(--fg-3);
+}
+body.light-mode .canvas-dialog-btn-cancel:hover { background: var(--bg-elev); color: var(--fg-1); }

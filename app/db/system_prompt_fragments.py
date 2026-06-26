@@ -1,65 +1,42 @@
 """
-Load system-prompt instructional fragments from app/db/system_prompt.md.
+Load system-prompt instructional fragments from app/defaults/app-prompts.json.
 
-Sections are delimited by markdown H2 headers: ## Section name
-Keys are derived as lower_snake_case from the header text after "## ".
+Each fragment lives under ``runtime_fragments.fragments`` as a
+``{key: {purpose: ..., text: ...}}`` object. Callers get a flat
+``{key: text}`` dict so existing code doesn't change.
 
-There are no built-in defaults: missing file, read errors, or absent sections
-yield empty strings for those keys (callers treat them as optional).
+If the JSON is missing or unparseable, returns ``{}`` — callers treat
+all fragments as optional.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Dict, List, Optional
+import json
+from typing import Dict, Optional
 
-_MD_PATH = Path(__file__).resolve().parent / "prompt_fragments.md"
+from app.util.paths import app_prompts_path
 
 _cache: Optional[Dict[str, str]] = None
 
 
-def _header_to_key(header_line: str) -> Optional[str]:
-    line = header_line.strip()
-    if not line.startswith("## "):
-        return None
-    # `###` is a tool subheading inside a fragment body, not a top-level section.
-    if line.startswith("###"):
-        return None
-    rest = line[3:].strip()
-    if not rest:
-        return None
-    return rest.lower().replace(" ", "_")
-
-
-def _parse_md_sections(text: str) -> Dict[str, str]:
-    fragments: Dict[str, str] = {}
-    current_key: Optional[str] = None
-    current_lines: List[str] = []
-
-    for raw in text.splitlines():
-        key = _header_to_key(raw)
-        if key is not None:
-            if current_key:
-                fragments[current_key] = "\n".join(current_lines).strip()
-            current_key = key
-            current_lines = []
-        else:
-            current_lines.append(raw)
-
-    if current_key:
-        fragments[current_key] = "\n".join(current_lines).strip()
-
-    return fragments
-
-
-def _load_from_disk() -> Dict[str, str]:
-    if not _MD_PATH.is_file():
+def _load_from_json() -> Dict[str, str]:
+    _path = app_prompts_path()
+    if not _path.is_file():
         return {}
     try:
-        text = _MD_PATH.read_text(encoding="utf-8")
-    except OSError:
+        data = json.loads(_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
         return {}
-    return _parse_md_sections(text)
+    fragments = data.get("runtime_fragments", {}).get("fragments", {})
+    out: Dict[str, str] = {}
+    for key, entry in fragments.items():
+        if isinstance(entry, dict):
+            text = entry.get("text", "")
+            if text and isinstance(text, str):
+                out[key] = text.strip()
+        elif isinstance(entry, str):
+            out[key] = entry.strip()
+    return out
 
 
 def format_tool_subheadings_markdown(raw: str) -> str:
@@ -68,14 +45,14 @@ def format_tool_subheadings_markdown(raw: str) -> str:
 
 
 def get_prompt_fragments() -> Dict[str, str]:
-    """Return fragments parsed from ``system_prompt.md`` (possibly empty)."""
+    """Return fragments parsed from app-prompts.json (possibly empty)."""
     global _cache
     if _cache is None:
-        _cache = _load_from_disk()
+        _cache = _load_from_json()
     return _cache
 
 
 def clear_prompt_fragments_cache() -> None:
-    """Reload system_prompt.md on next get_prompt_fragments() call."""
+    """Reload app-prompts.json on next get_prompt_fragments() call."""
     global _cache
     _cache = None

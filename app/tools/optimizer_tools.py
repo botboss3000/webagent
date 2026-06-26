@@ -327,10 +327,14 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
             real_user_id = parts[2]
     logging.warning(f"run_worker_trials: real_user_id={real_user_id}")
 
-    # Determine paths (app/tools/optimizer_tools.py -> app/db/)
+    # Determine paths. The runtime DB lives under data/db (app.db.local.DB_DIR),
+    # NOT app/db — the latter holds only an empty schema stub. Reading the stub
+    # left every worker trial unable to find the real agent (silent failure that
+    # stalled the whole pipeline). Always resolve via DB_DIR so the Worker and the
+    # runner agree on where local.db is.
     _here = os.path.dirname(os.path.abspath(__file__))          # .../app/tools
     _project_root = os.path.normpath(os.path.join(_here, "..", ".."))  # project root
-    _db_dir = os.path.normpath(os.path.join(_here, "..", "db"))       # .../app/db
+    from app.db.local import DB_DIR as _db_dir                  # canonical data/db
     _local_path = os.path.join(_db_dir, "local.db")
 
     # ── Read from local.db (read-only connection) ──
@@ -339,15 +343,20 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
     _local_conn.execute("PRAGMA busy_timeout=10000")
 
     try:
-        # Read original user message from optimizer:init interaction
-        original_message = "what time is it in Detroit?"
+        # Read the original user message out of the injected session context. The
+        # runner writes the target transcript as an interaction with source='context'
+        # (the old 'optimizer:init' source was never produced — this query used to
+        # always miss and fall back to a hardcoded placeholder). The first '[user]:'
+        # line is the real opening message; it only seeds the DEFAULT sim_user prompt,
+        # since the Planner usually supplies its own sim_user_prompt per change.
+        original_message = "Hello, I need help with a task."
         init_row = _local_conn.execute(
-            "SELECT content FROM interactions WHERE session_id=? AND source='optimizer:init' ORDER BY created_at ASC LIMIT 1",
+            "SELECT content FROM interactions WHERE session_id=? AND source='context' ORDER BY created_at ASC LIMIT 1",
             (session_id,),
         ).fetchone()
         if init_row:
             content = init_row[0]
-            user_msgs = re.findall(r'\[user\]\s*(.+)', content)
+            user_msgs = re.findall(r'\[user\]:?\s*(.+)', content)
             if user_msgs:
                 original_message = user_msgs[0].strip()
         logging.warning(f"run_worker_trials: original_message={original_message}")
@@ -623,6 +632,37 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
         if trial_entry:
             results.append(trial_entry)
 
+    # ── Capture the optimized trial metrics onto the run row ──
+    # Trial DBs are deleted, so these measured numbers can't be re-derived later.
+    # The dashboard subtracts them from the baseline target session to show the
+    # performance delta. Best-effort + non-fatal: must never break a trial.
+    try:
+        scored = [t for t in results if not t.get("error")]
+        best = max(scored, key=lambda t: t.get("confidence", 0)) if scored else None
+        if best is not None:
+            opt_tokens = int(best.get("token_estimate") or 0)
+            opt_ms = int(best.get("duration_ms") or 0)
+            _rconn = sqlite3.connect(_local_path)
+            try:
+                _rconn.execute("PRAGMA busy_timeout=10000")
+                have = {r[1] for r in _rconn.execute("PRAGMA table_info(optimizer_runs)").fetchall()}
+                for col in ("optimized_tokens", "optimized_ms", "trials_count"):
+                    if col not in have:
+                        try:
+                            _rconn.execute(f"ALTER TABLE optimizer_runs ADD COLUMN {col} INTEGER")
+                        except Exception:
+                            pass
+                _rconn.execute(
+                    "UPDATE optimizer_runs SET optimized_tokens=?, optimized_ms=?, trials_count=? "
+                    "WHERE session_id=?",
+                    (opt_tokens, opt_ms, len(results), session_id),
+                )
+                _rconn.commit()
+            finally:
+                _rconn.close()
+    except Exception as _cap_e:
+        logging.warning(f"run_worker_trials: metric capture skipped (non-fatal): {_cap_e}")
+
     return json.dumps(results, indent=2)
 
 
@@ -645,9 +685,10 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
             real_user_id = parts[2]
     logger.warning(f"handoff_to_closer: real_user_id={real_user_id}")
 
-    # 2. Compute paths
-    _here = os.path.dirname(os.path.abspath(__file__))
-    _db_dir = os.path.normpath(os.path.join(_here, "..", "db"))
+    # 2. Compute paths — use the canonical runtime DB dir (data/db), not app/db.
+    #    app/db holds only an empty schema stub; reading it made the Closer handoff
+    #    fail to find the opt_closer template and the baseline session.
+    from app.db.local import DB_DIR as _db_dir
     _local_path = os.path.join(_db_dir, "local.db")
     os.makedirs(_db_dir, exist_ok=True)
     temp_db_name = f"closer_{_uuid_mod.uuid4().hex[:16]}.db"
@@ -715,7 +756,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
         template_data.get("model"),
         template_data.get("provider"),
         template_data.get("temperature", 0.2),
-        template_data.get("max_tokens", 4096),
+        template_data.get("max_tokens", 8000),
         "active",
         template_data.get("metadata", "{}"),
         json.dumps([agent_user_id]),
@@ -738,8 +779,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
             logger.warning(f"handoff_to_closer: reusing existing closer agent {agent_id[:8]}")
         else:
             agent_id = str(_uuid_mod.uuid4())
-            vals = (_agent_vals_new[1:] if False else
-                    (agent_id,) + _agent_vals_new[1:])  # replace placeholder id
+            vals = (agent_id,) + _agent_vals_new[1:]  # replace placeholder id
             _lc_agent.execute(
                 f"INSERT INTO agents ({', '.join(_agent_cols)}) VALUES ({', '.join(['?']*len(_agent_cols))})",
                 vals,
@@ -747,6 +787,36 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
             _lc_agent.commit()
             agent_row_dict = dict(zip(_agent_cols, vals))
             logger.warning(f"handoff_to_closer: created new closer agent {agent_id[:8]} in local.db")
+
+        # Clone the opt_closer instruction slots (system prompt etc.) into this
+        # agent's agent_prompts. Without this the Closer runs with a BLANK system
+        # prompt — handoff creates the agent row directly, bypassing the normal
+        # materialization path that would otherwise clone the template slots.
+        # Idempotent: only clone when the agent has no slots yet.
+        try:
+            have_slots = _lc_agent.execute(
+                "SELECT 1 FROM agent_prompts WHERE agent_id=? LIMIT 1", (agent_id,)
+            ).fetchone()
+            if not have_slots:
+                tpl_slots = _lc_agent.execute(
+                    """SELECT slot_name, order_index, lock, merge_mode, content, version
+                       FROM agent_prompt_templates WHERE template_id='opt_closer'
+                       ORDER BY order_index""",
+                ).fetchall()
+                for s in tpl_slots:
+                    _lc_agent.execute(
+                        """INSERT INTO agent_prompts
+                           (id, agent_id, slot_name, user_id, order_index, lock,
+                            merge_mode, content, template_version, updated_at, updated_by)
+                           VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'system')""",
+                        (str(_uuid_mod.uuid4()), agent_id, s["slot_name"],
+                         s["order_index"], s["lock"], s["merge_mode"],
+                         s["content"], s["version"], now_sql),
+                    )
+                _lc_agent.commit()
+                logger.warning(f"handoff_to_closer: cloned {len(tpl_slots)} opt_closer slots into {agent_id[:8]}")
+        except Exception as _slot_err:
+            logger.warning(f"handoff_to_closer: slot clone failed (non-fatal): {_slot_err}")
     finally:
         _lc_agent.close()
 
@@ -788,7 +858,13 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
         # 8a. Judging criteria + summary as the opening context
         _inject("user", f"## Judging Criteria\n{judging_criteria}\n\n## Optimization Summary\n{summary}")
 
-        # 8b. Baseline interactions from target session in local.db
+        # 8b. Baseline interactions from target session in local.db.
+        # Inject the whole baseline as ONE 'user' context block — NOT as role-played
+        # user/assistant turns. Replaying the baseline agent's replies as 'assistant'
+        # rows pollutes the Closer's own history (it sees prior "assistant" turns that
+        # aren't its own) and a weak model then continues that persona instead of
+        # judging + deploying. A single labelled block keeps the Closer's assistant
+        # history clean: the only assistant turn is its verdict.
         baseline_injected = False
         if target_session_id:
             try:
@@ -800,10 +876,13 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
                         (target_session_id,)
                     ).fetchall()
                     if b_rows:
-                        _inject("user", f"## Baseline Conversation (original session `{target_session_id[:8]}`)")
+                        _lines = [f"## Baseline Conversation (original session `{target_session_id[:8]}`)",
+                                  "This is the ORIGINAL transcript before optimization — for comparison only."]
                         for br in b_rows:
-                            role = br["role"] if br["role"] in ("user", "assistant") else "user"
-                            _inject(role, (br["content"] or "")[:2000])
+                            r = br["role"] if br["role"] in ("user", "assistant", "tool") else "user"
+                            label = {"user": "User", "assistant": "Agent", "tool": "Tool"}.get(r, r)
+                            _lines.append(f"[{label}]: {(br['content'] or '')[:1500]}")
+                        _inject("user", "\n".join(_lines))
                         baseline_injected = True
                 finally:
                     _lc3.close()
@@ -885,20 +964,54 @@ async def _kickstart_closer(user_id: str, closer_sid: str, summary: str) -> None
     The Closer's system prompt has Auto-Start Rule: it evaluates immediately on first message.
     All context (criteria, baseline, trials) is pre-injected as session history.
     """
-    import httpx, os, logging as _log
+    import asyncio, httpx, os, logging as _log
     try:
         port = os.environ.get('PORT', '8080')
         _log.warning(f"Kickstarting Closer {closer_sid}")
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"http://127.0.0.1:{port}/api/v1/chat",
-                json={
-                    "message": "Start your evaluation.",
-                    "user_id": user_id,
-                    "session_id": closer_sid,
-                },
+
+        # Mint a short-lived JWT so this loopback POST passes the chat endpoint's
+        # caller-identity check — same fix as the Planner kickstart. Without it the
+        # request is rejected 401 → surfaced as 500, silently killing the Closer
+        # before it ever evaluates.
+        headers = {}
+        try:
+            from app.auth.jwt import create_access_token
+            headers["Authorization"] = (
+                f"Bearer {create_access_token(username=user_id, user_id=user_id)}"
             )
-            _log.warning(f"Kickstart Closer responded: {resp.status_code}")
+        except Exception as _auth_err:
+            _log.warning(f"Could not mint Closer kickstart token for {user_id}: {_auth_err}")
+
+        # The closer session + agent are written right before this fires; give the
+        # writes a moment to settle, then retry on 5xx / connection errors. The
+        # trigger message is idempotent (the Closer re-evaluates from injected
+        # history), so a retry can't duplicate work.
+        await asyncio.sleep(0.6)
+        delays = [1.0, 2.5, 5.0]
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            for attempt in range(len(delays) + 1):
+                try:
+                    resp = await client.post(
+                        f"http://127.0.0.1:{port}/api/v1/chat",
+                        json={
+                            "message": "Start your evaluation.",
+                            "user_id": user_id,
+                            "session_id": closer_sid,
+                        },
+                        headers=headers,
+                    )
+                    if resp.status_code < 500 or attempt >= len(delays):
+                        _log.warning(f"Kickstart Closer responded: {resp.status_code}"
+                                     + (f" (attempt {attempt + 1})" if attempt else ""))
+                        break
+                    _log.warning(f"Kickstart Closer got {resp.status_code}; "
+                                 f"retrying in {delays[attempt]}s (attempt {attempt + 1})")
+                except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as ce:
+                    if attempt >= len(delays):
+                        _log.warning(f"Kickstart Closer connection failed: {ce}")
+                        break
+                    _log.warning(f"Kickstart Closer connect error; retrying in {delays[attempt]}s")
+                await asyncio.sleep(delays[attempt])
     except Exception as e:
         _log.warning(f"Kickstart Closer failed (non-fatal): {e}")
 

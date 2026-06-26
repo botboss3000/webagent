@@ -29,6 +29,21 @@ from app.db import get_db
 logger = logging.getLogger(__name__)
 
 
+# ── Tier-1 always-on tools ─────────────────────────────────────────────────────
+# The irreducible utility/meta tools every agent keeps no matter what. They are
+# NEVER removed by the allowed_tools (block) filter, and may NEVER be denied by a
+# global per-tool default either. Exposed at module level so the loop and the
+# admin tool-defaults endpoint can honour the same exclusion without duplicating
+# the literal set.
+TIER_1_ALWAYS_ON = {
+    "load_tool", "load_ability",
+    "list_skills", "load_skill",
+    "set_execution_mode",
+    "get_time", "get_date", "calculate", "read_attachment",
+    "register_user",
+}
+
+
 # ── Built-in tool metadata ────────────────────────────────────────────────────
 # Consumed by /admin/tools to provide a merged view of all tools (built-ins +
 # user skills) with loop-stage annotations for the visualizer.
@@ -39,10 +54,13 @@ logger = logging.getLogger(__name__)
 BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     # ── Core discovery (always sent, locked) ──
     "load_tool":                     {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "load_ability":                  {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "set_execution_mode":            {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     # ── Web & browser ──
     "web_search":                    {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "browser_action":                {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "http_request":                  {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "vault_login":                   {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "maps_geocode":                  {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     # ── Image generation (gated by image_generation) ──
     "generate_image":                {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
@@ -66,6 +84,12 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     # ── Memory ──
     "memory":                        {"stages": ["memory_search", "memory_save", "execute_tools"], "destructive": False, "agent_types": []},
     "session_search":                {"stages": ["load_context", "execute_tools"],               "destructive": False, "agent_types": []},
+    # ── Self-prompt (Core ▸ Base — an agent reading/improving its OWN prompt) ──
+    "read_own_prompt":               {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
+    "edit_own_prompt":               {"stages": ["execute_tools"],                               "destructive": True,  "agent_types": []},
+    # ── Self-skills (Core ▸ Base — an agent teaching itself reusable how-to) ──
+    "save_own_skill":                {"stages": ["execute_tools"],                               "destructive": True,  "agent_types": []},
+    "remove_own_skill":              {"stages": ["execute_tools"],                               "destructive": True,  "agent_types": []},
     # ── Utilities ──
     "get_time":                      {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
     "get_date":                      {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
@@ -153,14 +177,6 @@ _FALLBACK_ABILITY_TOOLS: Dict[str, List[str]] = {
                             "wiki_restore", "wiki_backlinks"],
 }
 
-# context_control gates loop behavior (context-fill signal + compaction), not a
-# grantable, user-facing ability — so it stays a core residual rather than a
-# drop-in file. It carries no statically-gated tool names.
-_CORE_ABILITY_TOOLS: Dict[str, List[str]] = {
-    "context_control": [],
-}
-
-
 def _build_ability_tools() -> Dict[str, List[str]]:
     """Build the ability→tools map from plugins/abilities/, with a fail-safe."""
     merged: Dict[str, List[str]] = {}
@@ -172,7 +188,6 @@ def _build_ability_tools() -> Dict[str, List[str]]:
         merged.update(_FALLBACK_ABILITY_TOOLS)
     if not merged:  # scan present but empty — don't strand every ability
         merged.update(_FALLBACK_ABILITY_TOOLS)
-    merged.update(_CORE_ABILITY_TOOLS)
     return merged
 
 
@@ -193,6 +208,24 @@ def _merge_integration_metadata() -> None:
 
 
 _merge_integration_metadata()
+
+
+def _merge_ability_tool_metadata() -> None:
+    """Pull per-tool loop metadata from `plugins/abilities/*` descriptors into
+    BUILTIN_TOOL_METADATA, so a dropped-in ability's tools appear in /admin/tools
+    and the loop visualizer with no edit here. Explicit `tool_metadata` blocks in
+    an ability's .json override the legacy literals above; tools with no entry
+    anywhere get safe defaults (execute_tools stage, non-destructive)."""
+    try:
+        from app.abilities import tool_metadata
+        for name, meta in tool_metadata().items():
+            if meta.pop("_explicit", False) or name not in BUILTIN_TOOL_METADATA:
+                BUILTIN_TOOL_METADATA[name] = meta
+    except Exception as e:
+        logger.warning("could not merge ability tool metadata: %s", e)
+
+
+_merge_ability_tool_metadata()
 
 
 def _get_webhook_base_url() -> str:
@@ -223,7 +256,7 @@ class ToolLoader:
     def __init__(self):
         self._client = get_db().get_raw_client()
 
-    async def load_tools(self, user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, session_id: str = "") -> Dict[str, 'ToolInfo']:
+    async def load_tools(self, user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, session_id: str = "", gate_caller_access: bool = False) -> Dict[str, 'ToolInfo']:
         """
         Load all active tools for a user from the tools table.
         Each tool's `code` field contains the full async function to execute.
@@ -282,6 +315,23 @@ class ToolLoader:
             enabled_providers = {p for p in enabled_providers if ability_enabled(p)}
         except Exception:
             pass
+
+        # ── Caller-access gate (runtime only) ──
+        # Drop any ability whose per-agent "Available to" level (everyone /
+        # registered / admin) the LIVE caller (`user_id`) doesn't meet, so its
+        # tools are never materialized for that caller — a real security boundary,
+        # not a prompt hint. Default everyone = no-op; fail-open. The matching
+        # ability skills are stripped from the prompt in append_skills_section.
+        # OPT-IN (`gate_caller_access`): the real chat/run paths pass True so
+        # `user_id` is the live chatter; the config/preview endpoints (Tools panel,
+        # schema preview) leave it False so they always show the agent's full
+        # configured set regardless of who is viewing.
+        if gate_caller_access:
+            try:
+                from app.agent.ability_access import filter_abilities_for_caller
+                enabled_providers = await filter_abilities_for_caller(agent_id, enabled_providers, user_id)
+            except Exception:
+                pass
 
         # ── Inject built-in tools (override any DB versions) ──
         self._inject_builtin_tools(
@@ -407,12 +457,7 @@ class ToolLoader:
         #                     deploy_optimization). No normal agent ever sees
         #                     them — otherwise agents (e.g. admin) discover them
         #                     via list_tools/search_tools and loop on them.
-        # `_orchestration_on` → the agent admin enabled the "agent_orchestration"
-        #                     ability for this agent. Gates the opt-in tools that
-        #                     let an agent reach OTHER agents/pipelines:
-        #                     run_optimizer + delegate_to_agent. Off by default.
         _is_opt_agent = agent_template_id in ("opt_planner", "opt_closer")
-        _orchestration_on = "agent_orchestration" in enabled_providers
 
         # create_tool (create_tools ability) → moved to plugins/abilities/create_tools.py build_tools.
 
@@ -446,74 +491,10 @@ class ToolLoader:
             },
         )
 
-        # ── run_optimizer (trigger interactive optimizer session) ──
-        # Opt-in: only injected when the agent has the "agent_orchestration"
-        # ability enabled. Skipped for optimizer sub-agents (recursion guard).
-        if not user_id.startswith("opt_") and _orchestration_on:
-            async def _run_optimizer_wrapper(feedback: str = "", skill_name: str = "", criteria: str = ""):
-                """Start an interactive optimizer session. User chats with the Planner agent."""
-                # Safety check: if we're already in an optimizer session, don't create another
-                from app.db import get_db as _get_db
-                _dbc = _get_db()._get_conn()
-                _recent = _dbc.execute(
-                    "SELECT metadata FROM sessions WHERE user_id=? AND id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1",
-                    (user_id,)
-                ).fetchone()
-                _dbc.close()
-                if _recent and _recent[0]:
-                    import json as _jm
-                    _meta = _jm.loads(_recent[0])
-                    if _meta.get('opt_role'):
-                        # We're being called from within an optimizer session — skip
-                        return _jm.dumps({"status": "skipped", "message": "Already in an optimizer session."})
-                import httpx
-                try:
-                    async with httpx.AsyncClient(timeout=15.0) as hclient:
-                        resp = await hclient.post(
-                            f"http://127.0.0.1:{os.environ.get('PORT', '8080')}/admin/settings/optimizer/run",
-                            params={"user_id": user_id, "session_id": "", "feedback": feedback},
-                        )
-                        result = resp.json()
-                    if result.get("status") == "session_created":
-                        return json.dumps({
-                            "status": "completed",
-                            "optimizer_session_id": result["optimizer_session_id"],
-                            "message": f"Optimization session ready. Go to the optimizer session to talk to the Planner."
-                        })
-                    return json.dumps({"status": "error", "message": result.get("message", "Unknown error")})
-                except Exception as e:
-                    from app.admin.settings import load_provider_for_user
-                    import uuid, json as jmod
-                    from app.db import get_db as _get_db
-                    await load_provider_for_user(user_id)
-                    opt_sid = f"optimizer-{user_id[:8]}-{str(uuid.uuid4())[:8]}"
-                    db_conn = _get_db()._get_conn()
-                    db_conn.execute(
-                        "INSERT OR IGNORE INTO sessions (id,user_id,title,metadata,created_at,updated_at) VALUES (?,?,?,?,datetime('now'),datetime('now'))",
-                        (opt_sid, user_id, f"Optimizer - {opt_sid[:12]}", jmod.dumps({"opt_role": "planner"}))
-                    )
-                    db_conn.execute(
-                        "INSERT INTO interactions (id,session_id,role,content,source,channel,created_at) VALUES (?,?,'user',?,'optimizer:trigger','optimizer',datetime('now'))",
-                        (str(uuid.uuid4()), opt_sid, f"I need help optimizing this session. Feedback: {feedback or 'General optimization'}.")
-                    )
-                    db_conn.commit()
-                    db_conn.close()
-                    return jmod.dumps({"status": "session_created", "optimizer_session_id": opt_sid,
-                                       "message": f"Optimization session created. Go to the optimizer session to talk to the Planner."})
-
-            tools["run_optimizer"] = ToolInfo(
-                name="run_optimizer",
-                handler=_run_optimizer_wrapper,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "skill_name": {"type": "string", "description": "Optional: specific skill to optimize (e.g. 'send_email'). If blank, analyzes all skills."},
-                        "feedback": {"type": "string", "description": "Optional: what to improve. E.g. 'make it use the API instead of scraping' or 'response was too verbose'"},
-                        "criteria": {"type": "string", "description": "Optional: which metric to optimize. 'turns' (fewer back-and-forths), 'tokens' (cheaper), or 'time' (faster). If blank, balances all."},
-                    },
-                    "required": [],
-                },
-            )
+        # run_optimizer (trigger interactive optimizer session) → moved to
+        # plugins/abilities/Core/agent_orchestration/agent_orchestration.py
+        # build_tools (gated by the agent_orchestration ability like the rest
+        # of the orchestration toolset).
 
         # ── read_attachment (always available) ──
         from app.tools.read_attachment import read_attachment as _builtin_read_attachment, TOOL_DEFINITION as _ATTACH_TOOL_DEF
@@ -641,45 +622,14 @@ class ToolLoader:
         # ui_admin → moved to plugins/abilities/ui_admin.py build_tools (uses enabled_providers).
         # visualizer → moved to plugins/abilities/visualizer.py build_tools.
 
-        # ── Delegation tools — OPT-IN, non-pipeline agents only ──
-        # Allows agents to hand off to each other mid-conversation. Gated by the
-        # "agent_orchestration" ability so a normal agent can't auto-discover
-        # and hand off to (or loop on) other agents/workers. Off by default.
-        _is_pipeline = agent_template_id in ("opt_planner", "opt_closer")
-        if not _is_pipeline and _orchestration_on:
-            try:
-                from app.tools.delegation import build_delegation_tools
-                _delegation = build_delegation_tools(user_id)
-                _delegation_schemas = {
-                    "delegate_to_agent": {
-                        "type": "object",
-                        "properties": {
-                            "agent_template_id": {"type": "string", "description": "Template ID of the agent to delegate to (e.g. 'admin-agent')."},
-                            "context": {"type": "string", "description": "Context or reason for the delegation — passed to the new agent."},
-                        },
-                        "required": ["agent_template_id"],
-                    },
-                    "list_delegatable_agents": {
-                        "type": "object",
-                        "properties": {},
-                        "required": [],
-                    },
-                }
-                for _dname, _dhandler in _delegation.items():
-                    # NOTE: ToolInfo has no `description` field — the loop derives
-                    # the description from the handler's docstring. Passing it
-                    # here used to raise TypeError, silently disabling delegation.
-                    tools[_dname] = ToolInfo(
-                        name=_dname,
-                        handler=_dhandler,
-                        parameters=_delegation_schemas.get(_dname, {"type": "object", "properties": {}, "required": []}),
-                    )
-            except Exception as _de:
-                logger.warning("Delegation tools unavailable: %s", _de)
-
+        # delegation tools (delegate_to_agent / list_delegatable_agents) →
+        #   folded into plugins/abilities/Core/agent_orchestration.py build_tools
+        #   (former app/tools/delegation.py). They are now injected by the generic
+        #   self-contained discovery block below when the "agent_orchestration"
+        #   ability is enabled — no special wiring here anymore.
         # terminal_control → moved to plugins/abilities/terminal_control.py build_tools.
         # app_control → moved to plugins/abilities/app_control.py build_tools.
-        # wiki_control → moved to plugins/abilities/wiki_control.py build_tools.
+        # wiki_control → self-contained in plugins/abilities/Memory/wiki_context.py build_tools.
 
         # ── Self-contained ability tools (generic drop-in discovery) ──────────
         # The blocks above wire specific abilities whose handlers live in core.
@@ -692,7 +642,23 @@ class ToolLoader:
         # owns its own gating (it may return {} to inject nothing this call).
         try:
             from app import abilities as _abilities_mgr
-            for _ab_id in list(enabled_providers or ()):
+            # A locked-on ability (e.g. context_control) is "always active" by
+            # definition, so its tools must load even when the agent has no
+            # explicit agent_connections row enabling it — mirroring how
+            # turn_hooks_for_agent / context_strategy_for_agent union locked-on
+            # abilities. Without this, compact_context (the only context_control
+            # tool) silently never loads for agents that rely on the locked-on
+            # default, and the agent correctly reports it cannot self-compact.
+            _locked_on_abilities: set = set()
+            try:
+                _cat = _abilities_mgr._load()
+                _locked_on_abilities = {
+                    _aid for _aid, _feat in (_cat or {}).items()
+                    if isinstance(_feat, dict) and _feat.get("locked_on")
+                }
+            except Exception:
+                _locked_on_abilities = set()
+            for _ab_id in (set(enabled_providers or ()) | _locked_on_abilities):
                 _ab_mod = _abilities_mgr.ability_module(_ab_id)
                 _build = getattr(_ab_mod, "build_tools", None) if _ab_mod else None
                 if not callable(_build):
@@ -738,6 +704,10 @@ class ToolLoader:
             get_time as _core_get_time,
             get_date as _core_get_date,
             calculate as _core_calculate,
+            read_own_prompt as _core_read_own_prompt,
+            edit_own_prompt as _core_edit_own_prompt,
+            save_own_skill as _core_save_own_skill,
+            remove_own_skill as _core_remove_own_skill,
         )
 
         # ── load_tool (core) — activate a discoverable tool ──────────────────
@@ -795,6 +765,109 @@ class ToolLoader:
             },
         )
 
+        # ── load_ability (core) — activate a discoverable ability in one call ──
+        # A "discoverable" ability appears as a single # [ABILITIES] entry; its
+        # tools and how-to skill are withheld. load_ability returns the skill body
+        # plus the ability's tools — full input schema for the agent's VISIBLE
+        # tools, name + description for its discoverable ones — and marks the
+        # ability (and its bundled skill) active so its visible tools start being
+        # sent on the next turn. Mirrors load_tool / load_skill.
+        async def _load_ability_wrapper(ability_id: str):
+            """Activate an ability listed under the [ABILITIES] section. Returns its how-to skill plus its tools (full schema for visible tools, name+description for discoverable ones) and keeps it active for the rest of the conversation."""
+            from app.tools.tool_modes import resolve_mode as _rm, VISIBLE as _VIS
+            # Tolerate the common mix-up where the model passes the ability's SKILL
+            # HANDLE (e.g. "visualizer_7a842b54") instead of the ability id. The
+            # handle is "<ability_id>_<8 hex>"; if the raw id resolves to nothing,
+            # strip a trailing _<8hex> and retry so the load still succeeds.
+            if ability_id not in ABILITY_TOOLS:
+                import re as _re_h
+                _m = _re_h.match(r"^(.*)_[0-9a-f]{8}$", ability_id or "")
+                if _m and _m.group(1) in ABILITY_TOOLS:
+                    ability_id = _m.group(1)
+            names = list(ABILITY_TOOLS.get(ability_id, []))
+            skill_body = skill_summary = ""
+            skill_handle = None
+            try:
+                from app.abilities import ability_feature_with_skill
+                from app.agent.ability_skills import _skill_from_feature
+                feat = ability_feature_with_skill(ability_id)
+                if feat:
+                    sk = _skill_from_feature(feat, ability_id)
+                    if sk:
+                        skill_body = sk.get("body") or ""
+                        skill_handle = sk.get("handle")
+                        skill_summary = sk.get("description") or ""
+            except Exception as e:
+                logger.debug("load_ability skill resolve failed for %s: %s", ability_id, e)
+
+            if not names and not skill_body:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"No ability named '{ability_id}' is available to you. Only "
+                        f"load abilities listed in the [ABILITIES] section."
+                    ),
+                })
+
+            agent_modes = {}
+            try:
+                from app.db import get_db as _gd
+                if agent_id:
+                    agent_modes = await _gd().get_agent_tool_modes(agent_id)
+            except Exception:
+                agent_modes = {}
+
+            tools_out = []
+            for n in names:
+                info = tools.get(n)
+                if info is None:
+                    continue
+                desc = ((info.handler.__doc__ or "").strip().split("\n")[0]
+                        if hasattr(info, "handler") else "")
+                entry = {"name": n, "description": desc}
+                if _rm(n, agent_modes) == _VIS:
+                    entry["parameters"] = info.parameters if hasattr(info, "parameters") else {}
+                else:
+                    entry["note"] = "discoverable — call load_tool to get its parameters"
+                tools_out.append(entry)
+
+            if session_id:
+                try:
+                    from app.db import get_db as _gd
+                    _db = _gd()
+                    await _db.set_session_active_ability(session_id, ability_id, True)
+                    if skill_handle:
+                        await _db.set_session_active_skill(session_id, skill_handle, True)
+                except Exception as e:
+                    logger.debug("load_ability activation failed: %s", e)
+
+            return json.dumps({
+                "status": "ok",
+                "ability": {"id": ability_id, "skill_summary": skill_summary},
+                "skill": skill_body,
+                "tools": tools_out,
+                "message": (
+                    f"Ability '{ability_id}' is now active. Its visible tools are "
+                    f"callable now; call load_tool for any discoverable ones. The "
+                    f"skill above stays in context for the rest of this conversation."
+                ),
+            })
+
+        tools["load_ability"] = ToolInfo(
+            name="load_ability",
+            handler=_load_ability_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "ability_id": {
+                        "type": "string",
+                        "description": "Exact id of the ability to activate (from the [ABILITIES] section).",
+                    },
+                },
+                "required": ["ability_id"],
+            },
+        )
+
         # ── On-demand skills (list_skills / load_skill) ──
         # Always available (mirrors the tool-discovery bootstrap). The agent
         # learns which skills exist from the `# [SKILLS]` prompt section and
@@ -830,6 +903,63 @@ class ToolLoader:
                     },
                 },
                 "required": ["name"],
+            },
+        )
+
+        # ── set_execution_mode (core) — switch Ask/Plan/Auto mid-conversation ──
+        # The chat pill (Ask/Plan/Auto) is the user's per-message control. This
+        # tool lets the agent CHANGE the live mode when the user authorises it —
+        # the canonical case is flipping Plan→Auto the moment the user approves a
+        # plan ("yes, go ahead"), so the agent can carry it out without every
+        # write being gated. It records the choice on the session; the loop reads
+        # the tool's result, applies the new mode for the rest of the turn, and
+        # broadcasts an `execution_mode` event so the UI pill visibly switches.
+        # Only call it when the user has clearly authorised the change.
+        async def _set_execution_mode_wrapper(mode: str, reason: str = ""):
+            """Switch the conversation's execution mode (ask/plan/auto). Call this when the user authorises a change — e.g. flip to 'auto' once they approve your plan so you can act without each step being gated, or back to 'plan'/'ask' when they want to slow down. The pill below the chat updates to match."""
+            m = str(mode or "").strip().lower()
+            _aliases = {"read": "plan", "write": "ask", "plan": "plan", "ask": "ask", "auto": "auto"}
+            m = _aliases.get(m, "")
+            if not m:
+                return json.dumps({
+                    "status": "error",
+                    "message": "mode must be one of: ask, plan, auto.",
+                })
+            if session_id:
+                try:
+                    from app.db import get_db as _gd
+                    await _gd().set_session_execution_mode(session_id, m, reason or "")
+                except Exception as e:
+                    logger.debug("set_session_execution_mode failed: %s", e)
+            _label = {"ask": "ASK", "plan": "PLAN", "auto": "AUTO"}[m]
+            _posture = {
+                "ask": "Read/research freely; destructive or write actions still need the user's confirmation.",
+                "plan": "Research with read-only tools; do not make changes — produce a plan and get approval.",
+                "auto": "You may now act autonomously — tools run without per-step confirmation. Proceed and report what you did.",
+            }[m]
+            return json.dumps({
+                "status": "ok",
+                "execution_mode": m,
+                "message": f"Execution mode is now {_label}. {_posture}",
+            })
+
+        tools["set_execution_mode"] = ToolInfo(
+            name="set_execution_mode",
+            handler=_set_execution_mode_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["ask", "plan", "auto"],
+                        "description": "The mode to switch to. 'auto' = act without per-step confirmation (use after the user approves a plan); 'plan' = read-only planning; 'ask' = confirm before writes.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional one-line note on why you're switching (e.g. 'user approved the plan').",
+                    },
+                },
+                "required": ["mode"],
             },
         )
 
@@ -912,6 +1042,87 @@ class ToolLoader:
                     "limit": {"type": "integer", "description": "Max results (default 10)", "default": 10},
                 },
                 "required": ["query"],
+            },
+        )
+
+        # ── Self-prompt (read + improve your OWN prompt) ──
+        # Surfaced under Core ▸ Base (see plugins/abilities/Core/base/base.json).
+        # NOT in TIER_1_ALWAYS_ON, so the standard Deny/Ask/Auto permission tri
+        # applies in both ability tables. edit_own_prompt is marked destructive in
+        # BUILTIN_TOOL_METADATA → confirms in Ask/Plan mode. Both close over the
+        # running agent_id + user_id, so they can only ever touch THIS agent's own
+        # prompt; admin-locked slots are read-only (enforced in core_tools).
+        async def _read_own_prompt_wrapper():
+            return await _core_read_own_prompt(agent_id=agent_id, user_id=user_id)
+        _read_own_prompt_wrapper.__doc__ = _core_read_own_prompt.__doc__
+
+        tools["read_own_prompt"] = ToolInfo(
+            name="read_own_prompt",
+            handler=_read_own_prompt_wrapper,
+            parameters={"type": "object", "properties": {}, "required": []},
+        )
+
+        async def _edit_own_prompt_wrapper(slot_name: str, content: str, mode: str = "replace"):
+            return await _core_edit_own_prompt(
+                slot_name=slot_name, content=content, mode=mode,
+                agent_id=agent_id, user_id=user_id,
+            )
+        _edit_own_prompt_wrapper.__doc__ = _core_edit_own_prompt.__doc__
+
+        tools["edit_own_prompt"] = ToolInfo(
+            name="edit_own_prompt",
+            handler=_edit_own_prompt_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "slot_name": {"type": "string", "description": "The prompt section to change (see read_own_prompt). A new name creates a new section."},
+                    "content": {"type": "string", "description": "The new text for the section."},
+                    "mode": {"type": "string", "enum": ["replace", "append"], "description": "'replace' overwrites the section (default); 'append' adds to the end of the existing section.", "default": "replace"},
+                },
+                "required": ["slot_name", "content"],
+            },
+        )
+
+        # ── Self-skills (teach yourself reusable how-to "skill-type memories") ──
+        # Self-targeted skill authoring, surfaced under Core ▸ Base. The agent's
+        # own skills appear in list_skills and load on demand via load_skill, so
+        # these write into that same store. Both destructive (write); gateable.
+        async def _save_own_skill_wrapper(name: str, description: str = None,
+                                          instructions: str = None, mode: str = "selectable"):
+            return await _core_save_own_skill(
+                name=name, description=description, instructions=instructions,
+                mode=mode, agent_id=agent_id, user_id=user_id,
+            )
+        _save_own_skill_wrapper.__doc__ = _core_save_own_skill.__doc__
+
+        tools["save_own_skill"] = ToolInfo(
+            name="save_own_skill",
+            handler=_save_own_skill_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Short identifier you'll load the skill by later."},
+                    "description": {"type": "string", "description": "ONE line saying WHEN to use this skill — always shown in your [SKILLS] catalog."},
+                    "instructions": {"type": "string", "description": "The full step-by-step body (the actual know-how). Required for a new skill."},
+                    "mode": {"type": "string", "enum": ["selectable", "always_on"], "description": "'selectable' (default) = body loaded on demand via load_skill; 'always_on' = body always in context (short essential guidance only).", "default": "selectable"},
+                },
+                "required": ["name"],
+            },
+        )
+
+        async def _remove_own_skill_wrapper(name: str):
+            return await _core_remove_own_skill(name=name, agent_id=agent_id, user_id=user_id)
+        _remove_own_skill_wrapper.__doc__ = _core_remove_own_skill.__doc__
+
+        tools["remove_own_skill"] = ToolInfo(
+            name="remove_own_skill",
+            handler=_remove_own_skill_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The name of your own skill to delete (see list_skills)."},
+                },
+                "required": ["name"],
             },
         )
 
@@ -1062,25 +1273,28 @@ class ToolLoader:
         # ── Optimizer tools (Planner / Closer subagents) ──
         from app.tools.optimizer_tools import run_worker_trials, handoff_to_closer, deploy_optimization
 
-        async def _run_worker_trials_wrapper(changes_json: str = ""):
-            import logging as _log
-            import sqlite3, uuid as _uid, traceback as _tb
-            _log.warning(f"_WRAPPER CALLED: user_id={user_id}")
+        def _latest_optimizer_sid() -> str:
+            """The most recent optimizer-* session id (or a fresh fallback id if
+            none exists). Shared by all three optimizer-tool wrappers below."""
+            import uuid as _uid
+            from app.db import get_db as _gdb
+            db = _gdb()._get_conn()
             try:
-                # Find latest optimizer session
-                from app.db import get_db as _gdb; db = _gdb()._get_conn()
                 row = db.execute(
                     "SELECT id FROM sessions WHERE id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1"
                 ).fetchone()
-                sid = row[0] if row else f"optimizer-{str(_uid.uuid4())[:8]}"
+            finally:
                 db.close()
-                _log.warning(f"_WRAPPER: sid={sid}")
+            return row[0] if row else f"optimizer-{str(_uid.uuid4())[:8]}"
+
+        async def _run_worker_trials_wrapper(changes_json: str = ""):
+            import traceback as _tb
+            try:
+                sid = _latest_optimizer_sid()
                 result = await run_worker_trials(changes_json=changes_json, user_id=user_id, session_id=sid)
-                _log.warning(f"_WRAPPER SUCCESS: len={len(result)}")
                 return result
             except Exception as e:
                 tb_str = _tb.format_exc()
-                _log.error(f"_WRAPPER EXCEPTION: {type(e).__name__}: {e}\n{tb_str[:500]}")
                 return json.dumps({"status": "error", "message": f"{type(e).__name__}: {e}", "traceback": tb_str[:500]})
         tools["run_worker_trials"] = ToolInfo(
             name="run_worker_trials",
@@ -1096,13 +1310,7 @@ class ToolLoader:
 
         async def _handoff_to_closer_wrapper(summary: str = "", judging_criteria: str = "",
                                                   baseline_transcript: str = "", worker_results: str = ""):
-            import sqlite3, uuid as _uid
-            from app.db import get_db as _gdb; db = _gdb()._get_conn()
-            row = db.execute(
-                "SELECT id FROM sessions WHERE id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1"
-            ).fetchone()
-            sid = row[0] if row else f"optimizer-{str(_uid.uuid4())[:8]}"
-            db.close()
+            sid = _latest_optimizer_sid()
             return await handoff_to_closer(
                 summary=summary, user_id=user_id, session_id=sid,
                 judging_criteria=judging_criteria,
@@ -1125,13 +1333,7 @@ class ToolLoader:
         )
 
         async def _deploy_optimization_wrapper(changes_json: str = ""):
-            import sqlite3, uuid as _uid
-            from app.db import get_db as _gdb; db = _gdb()._get_conn()
-            row = db.execute(
-                "SELECT id FROM sessions WHERE id LIKE 'optimizer-%' ORDER BY created_at DESC LIMIT 1"
-            ).fetchone()
-            sid = row[0] if row else f"optimizer-{str(_uid.uuid4())[:8]}"
-            db.close()
+            sid = _latest_optimizer_sid()
             return await deploy_optimization(changes_json=changes_json, user_id=user_id, session_id=sid)
         tools["deploy_optimization"] = ToolInfo(
             name="deploy_optimization",
@@ -1384,6 +1586,7 @@ async def load_tools(
     allowed_tools: Optional[List[str]] = None,
     custom_tool_ids: Optional[List[str]] = None,
     session_id: str = "",
+    gate_caller_access: bool = False,
 ) -> Dict[str, ToolInfo]:
     """
     Load all active tools for a user.
@@ -1400,7 +1603,7 @@ async def load_tools(
     Returns:
         Dictionary mapping tool names to ToolInfo objects.
     """
-    tools = await _tool_loader.load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id, session_id=session_id)
+    tools = await _tool_loader.load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id, session_id=session_id, gate_caller_access=gate_caller_access)
 
     # Propagate requires_confirmation and destructive from BUILTIN_TOOL_METADATA
     # to built-in ToolInfo entries. DB tools already have these set from their row;
@@ -1414,13 +1617,8 @@ async def load_tools(
                 info.destructive = True
 
     # Phase 5: enforce allowed_tools filter.
-    # Tier-1 tools are always-on and must never be filtered.
-    TIER_1_ALWAYS_ON = {
-        "load_tool",
-        "list_skills", "load_skill",
-        "get_time", "get_date", "calculate", "read_attachment",
-        "register_user",
-    }
+    # Tier-1 tools are always-on and must never be filtered (see module-level
+    # TIER_1_ALWAYS_ON).
     # NOTE: delegate_to_agent / list_delegatable_agents are deliberately NOT
     # always-on. They are opt-in via the "agent_orchestration" ability and are
     # only injected (in _inject_builtin_tools) when that ability is enabled.
@@ -1439,6 +1637,25 @@ async def load_tools(
             ti = tools[name]
             # Only filter tools that came from the DB (have a tool_id)
             if ti.tool_id and ti.tool_id not in allowed_id_set:
+                del tools[name]
+
+    # ── Optimizer pipeline agents: HARD-restrict to their action tools ──────────
+    # The Planner and Closer run UNATTENDED on a cheap model. With a full toolset
+    # they squander turns on memory_search / search_this_session / compact_context /
+    # recall_compacted (all returning nothing) and may never reach their pipeline
+    # tools. They need no others: the Planner reads the session from its injected
+    # context and drives the pipeline; the Closer judges from pre-injected history
+    # and deploys. This is the final word — applied after every other filter.
+    # (The simulated Worker is loaded via a SEPARATE load_tools call with the REAL
+    #  agent's template, so it keeps the full toolset — only these two are pinned.)
+    _OPT_PIPELINE_TOOLS = {
+        "opt_planner": {"run_worker_trials", "handoff_to_closer"},
+        "opt_closer": {"deploy_optimization"},
+    }
+    _opt_keep = _OPT_PIPELINE_TOOLS.get(agent_template_id)
+    if _opt_keep is not None:
+        for name in list(tools.keys()):
+            if name not in _opt_keep:
                 del tools[name]
 
     return tools

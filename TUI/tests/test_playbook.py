@@ -16,11 +16,11 @@ except Exception:
 
 from webagent import playbook as pb
 from webagent import monstate
-from webagent.db import Store
-from webagent.pb_coordinator import PlaybookCoordinator
-from webagent.watchdog import Watchdog
-from webagent.tools.base import ToolContext
-from webagent.tools import ToolRegistry
+from tui_app.db import Store
+from tui_app.pb_coordinator import PlaybookCoordinator
+from tui_app.watchdog import Watchdog
+from tui_app.tools.base import ToolContext
+from tui_app.tools import ToolRegistry
 
 
 def run(c):

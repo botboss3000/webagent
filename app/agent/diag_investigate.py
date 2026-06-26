@@ -141,17 +141,40 @@ async def _run_investigation(db, failed_session_id, user_id, status, cause, erro
             logger.warning("auto-investigate: session insert failed: %s", e)
             return
 
-        brief = (
-            "A run just failed and needs investigation.\n\n"
-            f"- Failed session: {failed_session_id}\n"
-            f"- Status: {status}\n"
-            f"- Stop cause: {cause}\n"
-            f"- Error: {error or '(none recorded)'}\n\n"
-            "Use read_diagnostics to pull the recent errors / loop events for this session "
-            "and the server, identify the most likely root cause, and report it concisely "
-            "with evidence (file:line where a traceback points). Stay read-only — do not "
-            "change any files unless explicitly asked."
-        )
+        # Load investigator brief from app-prompts.json, with inline fallback
+        import json as _jmod
+        from app.util.paths import app_prompts_path
+        _prompt_path = app_prompts_path()
+        _brief_tpl = ""
+        try:
+            _data = _jmod.loads(_prompt_path.read_text(encoding="utf-8"))
+            _entry = _data.get("app_level_prompts", {}).get("diagnostic_investigator_brief", {})
+            _brief_tpl = _entry.get("template") or _entry.get("text", "")
+        except Exception:
+            pass
+
+        if _brief_tpl:
+            try:
+                brief = _brief_tpl.format(
+                    failed_session_id=failed_session_id,
+                    status=status,
+                    cause=cause,
+                    error=error or "(none recorded)",
+                )
+            except (KeyError, ValueError):
+                brief = _brief_tpl
+        else:
+            brief = (
+                "A run just failed and needs investigation.\n\n"
+                f"- Failed session: {failed_session_id}\n"
+                f"- Status: {status}\n"
+                f"- Stop cause: {cause}\n"
+                f"- Error: {error or '(none recorded)'}\n\n"
+                "Use read_diagnostics to pull the recent errors / loop events for this session "
+                "and the server, identify the most likely root cause, and report it concisely "
+                "with evidence (file:line where a traceback points). Stay read-only — do not "
+                "change any files unless explicitly asked."
+            )
 
         resolved_slots = await db.resolve_prompts(agent_id, user_id=user_id)
         context_docs = [

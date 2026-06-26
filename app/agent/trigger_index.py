@@ -9,12 +9,9 @@ Usage:
     template_id = trigger_index.get('tool_call', 'run_optimizer')
 """
 import logging
-import sqlite3
 from typing import Optional
 
 logger = logging.getLogger(__name__)
-
-_DB_PATH = "app/db/local.db"
 
 # {(trigger_type, trigger_key): template_id}
 _index: dict = {}

@@ -13,37 +13,53 @@
  * Bump CACHE on each release so the activate handler drops the prior cache.
  */
 
-const CACHE = "webagent-v21";
+const CACHE = "webagent-v109";
 const STATIC_PATTERN = /\.(css|js|json|svg|png|ico|woff2?)$/;
 const CDN_PATTERN = /^(https?:)?\/\/(fonts\.googleapis|cdn\.jsdelivr|unpkg)\./;
 const API_PATTERN = /^\/api\//;
 const WS_PATTERN = /^\/api\/v1\/agent\/ws/;
 
-/* ── Install: precache the app shell ── */
+/* ── Install: precache the app shell ──
+ * Paths must match the live `ui/` layout. The CSS moved into `ui/shared/css/`
+ * and per-page folders during the UI restructure; the old `/ui/css/...` paths
+ * here 404'd.
+ *
+ * IMPORTANT — resilient precache: each asset is added INDIVIDUALLY via
+ * Promise.allSettled, not cache.addAll(). addAll() rejects the WHOLE batch if a
+ * single URL 404s, which failed the install and PINNED the previous service
+ * worker (and its stale cached CSS) — the real cause of "I edited the CSS but
+ * the old version keeps showing / it needs several refreshes". With allSettled
+ * the new worker always installs + activates; any asset that can't be fetched is
+ * simply skipped here and still runtime-cached on first use (staleWhileRevalidate
+ * below). So a future file move degrades gracefully instead of freezing updates. */
+const PRECACHE = [
+  "/",
+  "/app",
+  "/index.html",
+  "/ui/diagnostics.html",
+  "/ui/manifest.json",
+  "/ui/favicon.svg",
+  "/ui/icons/icon-192x192.png",
+  "/ui/icons/icon-192x192-maskable.png",
+  "/ui/icons/icon-512x512.png",
+  "/ui/icons/icon-512x512-maskable.png",
+  "/ui/shared/css/app1.css",
+  "/ui/shared/css/app2.css",
+  "/ui/shared/css/app3.css",
+  "/ui/shared/css/app-control-point.css",
+  "/ui/shared/css/index.css",
+  "/ui/shared/css/design-system.css",
+  "/ui/main-panel/agents/agent-loop/loop.css",
+  "/ui/main-panel/agents/agent-loop/loop-visual.css",
+  "/ui/main-panel/canvas/canvas.css",
+  "/ui/main-panel/agents/agents.css",
+  "/ui/main-panel/admin-tools/files.css",
+  "/ui/tutorials/tutorial.css",
+];
 self.addEventListener("install", (e) => {
   e.waitUntil(
     caches.open(CACHE).then((cache) =>
-      cache.addAll([
-        "/",
-        "/index.html",
-        "/ui/diagnostics.html",
-        "/ui/manifest.json",
-        "/ui/favicon.svg",
-        "/ui/icons/icon-192x192.png",
-        "/ui/icons/icon-192x192-maskable.png",
-        "/ui/icons/icon-512x512.png",
-        "/ui/icons/icon-512x512-maskable.png",
-        "/ui/css/app1.css",
-        "/ui/css/app2.css",
-        "/ui/css/app3.css",
-        "/ui/css/loop.css",
-        "/ui/css/loop-visual.css",
-        "/ui/css/autoagent.css",
-        "/ui/css/agents.css",
-        "/ui/css/files.css",
-        "/ui/css/tutorial.css",
-        "/ui/css/design-system.css",
-      ])
+      Promise.allSettled(PRECACHE.map((u) => cache.add(u)))
     )
   );
   self.skipWaiting();
@@ -98,16 +114,21 @@ self.addEventListener("fetch", (e) => {
 
 /* ── Cache strategies ── */
 
+/* ── Shared helper — fetches and caches the response if OK ── */
+async function fetchAndCache(request) {
+  const response = await fetch(request);
+  if (response.ok) {
+    const copy = response.clone();
+    caches.open(CACHE).then((cache) => cache.put(request, copy));
+  }
+  return response;
+}
+
 async function cacheFirst(request) {
   const cached = await caches.match(request);
   if (cached) return cached;
   try {
-    const response = await fetch(request);
-    if (response.ok) {
-      const copy = response.clone();
-      caches.open(CACHE).then((cache) => cache.put(request, copy));
-    }
-    return response;
+    return await fetchAndCache(request);
   } catch {
     return new Response("Offline", { status: 503 });
   }
@@ -115,26 +136,14 @@ async function cacheFirst(request) {
 
 async function staleWhileRevalidate(request) {
   const cached = await caches.match(request);
-  const fetchPromise = fetch(request)
-    .then((response) => {
-      if (response.ok) {
-        const copy = response.clone();
-        caches.open(CACHE).then((cache) => cache.put(request, copy));
-      }
-      return response;
-    })
+  const fetchPromise = fetchAndCache(request)
     .catch(() => null);
   return cached || (await fetchPromise) || new Response("Offline", { status: 503 });
 }
 
 async function networkFirstNavigation(request) {
   try {
-    const response = await fetch(request);
-    if (response.ok) {
-      const copy = response.clone();
-      caches.open(CACHE).then((cache) => cache.put(request, copy));
-    }
-    return response;
+    return await fetchAndCache(request);
   } catch {
     const cached = await caches.match(request);
     if (cached) return cached;

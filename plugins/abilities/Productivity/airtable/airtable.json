@@ -1,0 +1,12 @@
+{
+  "display_name": "Airtable",
+  "kind": "placeholder",
+  "icon": "table",
+  "color": "#4285F4",
+  "description": "Connect Airtable bases and tables.",
+  "note": "Free tier (OAuth or token); paid plans for larger bases.",
+  "simple": false,
+  "placeholder": true,
+  "tools": [],
+  "order": 7
+}

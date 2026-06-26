@@ -36,7 +36,18 @@ SETTINGS_FILE = "data/config/app-settings.json"
 
 
 def _read_retention_seconds() -> int:
-    """Read stream_buffer_retention_seconds from data/config/app-settings.json."""
+    """Read stream_buffer_retention_seconds.
+
+    A value in data/config/debug-config.json (the consolidated debug file) wins;
+    otherwise fall back to data/config/app-settings.json, then the default.
+    """
+    try:
+        from app.admin.debug_config import debug_overrides
+        ov = debug_overrides().get("stream_buffer_retention_seconds")
+        if isinstance(ov, int) and ov >= 0:
+            return ov
+    except Exception:
+        pass
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -164,34 +175,6 @@ class RunBufferRegistry:
             buf = self._buffers.get(session_id)
             if buf:
                 buf.mark_completed()
-
-    def replay_after(
-        self, session_id: str, after_session_seq: int
-    ) -> List[Dict[str, Any]]:
-        buf = self._buffers.get(session_id)
-        if not buf:
-            return []
-        return buf.replay_after(after_session_seq)
-
-    def list_active_sessions(self) -> List[str]:
-        """Sessions whose turn is currently running (not completed)."""
-        return [sid for sid, b in self._buffers.items()
-                if b.completed_at is None]
-
-    def buffer_states(self) -> Dict[str, Dict[str, Any]]:
-        """Debug snapshot of all live buffers."""
-        out: Dict[str, Dict[str, Any]] = {}
-        for sid, b in self._buffers.items():
-            out[sid] = {
-                "turn_id": b.turn_id,
-                "user_id": b.user_id,
-                "events": len(b.events),
-                "latest_seq": b.latest_seq,
-                "completed": b.completed_at is not None,
-                "age_seconds": time.time() - b.created_at,
-                "since_completed": (time.time() - b.completed_at) if b.completed_at else None,
-            }
-        return out
 
     def _ensure_sweeper(self) -> None:
         if self._sweeper_task and not self._sweeper_task.done():

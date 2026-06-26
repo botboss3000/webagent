@@ -29,9 +29,7 @@ RUN pip install --user --upgrade pip setuptools wheel && \
 FROM python:3.12-slim AS runtime
 
 # ── Build metadata ────────────────────────────────────────────────────────────
-LABEL vendor="Your Company" \
-      description="Production Flask web application" \
-      org.opencontainers.image.source="https://github.com/your-org/your-repo"
+LABEL description="webAgent — FastAPI agent harness"
 
 # ── Hardened system packages ──────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,12 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── Environment ───────────────────────────────────────────────────────────────
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    FLASK_ENV=production \
-    FLASK_DEBUG=0 \
-    # Override these at runtime with -e or in your orchestrator
-    FLASK_APP=run.py \
-    APP_CONFIG=config.ProductionConfig \
-    APP_PORT=5000
+    APP_PORT=8080
 
 # ── Create non-root user ──────────────────────────────────────────────────────
 RUN addgroup --system --gid 1001 appgroup && \
@@ -76,4 +69,10 @@ EXPOSE ${APP_PORT}
 
 # tini reaps zombie processes and forwards signals cleanly
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--access-logfile", "-", "--error-logfile", "-", "run:app"]
+# webAgent is an ASGI app (app.main:app) served by uvicorn on :8080 — the same
+# server, port and WebSocket stack (wsproto) that run.py uses. Multi-worker is
+# supported and correct: the singleton background loops run in ONE worker via the
+# leader lock (app/coordination/leader.py), and cross-worker chat turns stream via
+# the client DB-tail reconcile (see README / docs/claude/deployment.md). Single
+# worker gives the smoothest WS streaming — set --workers 1 for that.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "4", "--ws", "wsproto"]

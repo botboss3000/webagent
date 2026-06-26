@@ -7,6 +7,10 @@
 <link rel="icon" href="./favicon.svg" type="image/svg+xml">
 <!--
   STANDALONE Diagnostics page.
+  KEEP (intentional): this is a deliberate self-contained DUPLICATE of the
+  Admin Tools → Diagnostics view (ui/admin-tools/diagnostics/). Do NOT delete it
+  as redundant or try to de-duplicate it against the in-app version — the whole
+  point is that it shares no code, so it survives a broken front-end (see below).
 
   This is a deliberately self-contained copy of the Admin Tools → Diagnostics
   sub-page. Unlike the in-app version it depends on NOTHING else: no
@@ -41,7 +45,7 @@
   })();
 </script>
 <style>
-  /* ── Theme tokens (mirrors ui/css/design-system.css) ─────────────────
+  /* ── Theme tokens (mirrors ui/shared/css/design-system.css) ─────────────────
      Inlined so the page is fully self-contained — works from disk with no
      stylesheet fetch. Both dark (:root) and light (.light-mode) are defined,
      so no hex is ever hard-coded into component rules below. */
@@ -194,7 +198,7 @@
     .sidebar { flex: 0 0 auto; max-height: 42vh; border-right: none; border-bottom: 1px solid var(--border); }
   }
 
-  /* ── Diagnostics sidebar (ported from ui/css/files.css) ───────────── */
+  /* ── Diagnostics sidebar (ported from ui/main-panel/admin-tools/files.css) ───────────── */
   .diag-side { display: flex; flex-direction: column; gap: 14px; padding: 12px; }
   .diag-side-section { display: flex; flex-direction: column; gap: 7px; }
   .diag-side-title {
@@ -463,7 +467,7 @@
   function _qs(id) { return document.getElementById(id); }
 
   // ════════════════════════════════════════════════════════════════════
-  //  Filter definitions + state  (mirrors ui/js/diagnostics.js)
+  //  Filter definitions + state  (mirrors ui/shared/js/diagnostics.js)
   // ════════════════════════════════════════════════════════════════════
   var LEVELS = [
     { key: 'error', label: 'Errors' },

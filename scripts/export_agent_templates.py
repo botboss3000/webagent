@@ -2,8 +2,9 @@
 Export agent_templates rows from the local SQLite DB back to JSON seed files.
 
 Reverse of the startup seed: reads the DB and writes one .json file per
-template into data/agents/, matching the format consumed by
-scan_agent_json_files() in app/context/md_seeder.py.
+template into the bundled app/defaults/agents/ (or data/agents/ if that override
+exists), matching the format consumed by scan_agent_json_files() in
+app/context/md_seeder.py.
 
 Usage:
     python scripts/export_agent_templates.py            # write files
@@ -19,7 +20,11 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 DB_PATH = os.path.join(PROJECT_ROOT, "app", "db", "local.db")
-AGENTS_DIR = os.path.join(PROJECT_ROOT, "data", "agents")
+# Write back to the same seed dir the app reads — reuse its resolver so the two
+# never drift (data/agents/ override if present, else bundled app/defaults/agents/).
+sys.path.insert(0, PROJECT_ROOT)
+from app.util.paths import agents_seed_dir
+AGENTS_DIR = agents_seed_dir()
 
 BOOL_COLUMNS = {"can_be_default", "is_system", "is_pipeline", "discoverable"}
 

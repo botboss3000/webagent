@@ -53,6 +53,12 @@ def _compute_next_run(cron_expr: str, tz: str = "UTC") -> Optional[str]:
     try:
         from croniter import croniter
     except ImportError:
+        # Never fail silently: a missing croniter nulls next_run_at and kills
+        # every recurring schedule this process touches (seen when a stray
+        # server ran under an interpreter without project deps).
+        logger.error(
+            "croniter is not installed in this interpreter — cannot recompute "
+            "next_run_at for cron %r; the recurring schedule will stop.", cron_expr)
         return None
     try:
         from zoneinfo import ZoneInfo
@@ -290,16 +296,50 @@ async def run_turn(
     if overlays:
         system_prompt = system_prompt + "\n\n" + "\n\n".join(overlays)
 
+    # Live broadcast: route this run's events to the user's WebSocket subscribers
+    # so a session they are VIEWING updates in real time, exactly like a typed
+    # turn. The scheduler + event runtime run in-process, so this reaches the
+    # user's socket. Without it an automation writing into the open session was
+    # invisible until a manual refresh. Falls back silently if the chat module
+    # can't be imported (e.g. a stripped edition).
+    try:
+        from app.api.chat import _emit_to_visualizers as _emit_live
+    except Exception:
+        _emit_live = None
+
+    async def _broadcast(ev: Dict[str, Any]) -> None:
+        if not _emit_live:
+            return
+        try:
+            await _emit_live(session_id, ev, user_id=user_id)
+        except Exception:
+            pass
+
     turn_uid = None
     try:
+        # Assign a session_seq so the synthetic prompt also rides the incremental
+        # DB-tail the chat UI polls (the durable "always-updated" path), not just
+        # the WebSocket — covers cross-worker topologies where the socket can't.
+        try:
+            _user_seq = await db.next_session_seq(session_id, 1)
+        except Exception:
+            _user_seq = None
         turn_uid = await db.insert_interaction(
             user_id, session_id, role="user", content=prompt,
             channel="automation",
             metadata=json.dumps({"source": "automation", "row_id": row_id}),
             sender_id=user_id, receiver_id=runner_agent_id, source="automation",
+            session_seq=_user_seq,
         )
     except Exception as e:
         logger.debug("Could not insert synthetic interaction: %s", e)
+
+    # Surface the injected prompt to any device viewing this session right away.
+    if turn_uid:
+        await _broadcast({
+            "type": "user_message", "level": "user",
+            "content": prompt, "id": turn_uid, "source": "automation",
+        })
 
     raw_allowed = agent.get("allowed_tools", [])
     if isinstance(raw_allowed, str):
@@ -318,6 +358,7 @@ async def run_turn(
                 agent_template_id=agent.get("template_id"),
                 allowed_tools=raw_allowed or None,
                 max_turns=agent.get("max_turn_count", 0),
+                event_callback=_broadcast,
             )
             return RunOutcome(status="complete", stop_cause="complete", reply=reply)
 
@@ -516,7 +557,11 @@ async def run_one(
             except Exception as e:
                 logger.warning("Could not reap ephemeral clone %s: %s", runner_id, e)
 
-        return {"ok": True, "session_id": session_id, "delivery": outcomes}
+        # Include what the run actually produced: callers that surface this to
+        # an LLM (run_automation_now) need the outcome visible, otherwise the
+        # model can't tell the run "worked" and re-fires it in a loop.
+        return {"ok": True, "session_id": session_id, "delivery": outcomes,
+                "reply_excerpt": (reply or "")[:300]}
 
     except Exception as e:
         logger.exception("Automation run %s failed: %s", row_id, e)

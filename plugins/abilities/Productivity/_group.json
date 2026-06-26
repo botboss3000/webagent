@@ -1,0 +1,7 @@
+{
+  "name": "Productivity",
+  "icon": "briefcase",
+  "color": "#4285F4",
+  "desc": "App-level credentials for mail, calendar, and file providers, plus the company Wiki. Users connect their personal accounts from the agent's Abilities tab.",
+  "order": 2
+}

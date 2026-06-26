@@ -88,11 +88,3 @@ async def check_path(path: str, action: str = "read") -> None:
                 f"Access denied: '{path}' has extension '{ext}'. "
                 f"UI admin can only read .css, .html, .js, .json, .svg, .png files."
             )
-
-
-async def check_command(command: str) -> None:
-    """Always block shell commands for UI admin."""
-    raise PermissionError(
-        "Shell commands are not available for UI admin. "
-        "Use the file editing tools (read_source, write_source, edit_source, patch_source) instead."
-    )

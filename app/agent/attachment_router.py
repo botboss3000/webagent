@@ -55,8 +55,8 @@ _DEFAULT_GUIDANCE = {
         "An attached file could not be read by your current model, so a "
         "description from a capable model has been added below. If it isn't enough "
         "for the user's request, you may switch to a capable model with "
-        "switch_model('{switch_target}') and inspect it directly, then revert with "
-        "switch_model('default')."
+        "set_model('{switch_target}') and inspect it directly, then revert with "
+        "set_model('default')."
     ),
     "describe_only": (
         "An attached file could not be read by your current model, so a "
@@ -217,8 +217,11 @@ async def plan_image_attachments(
     ) if cfg.get("worker_system") else ""
     worker_instruction = cfg.get("worker_instruction")
 
+    # The "take over on a vision model" hint is only honest when the agent actually
+    # has the Model Switcher ability (set_model). Without it, steer to process_image.
     switch_targets = routing.get("vision_switch_targets") or []
-    if switch_targets:
+    can_switch = bool(switch_targets) and await _ability_enabled(agent_id, user_id, "model_switcher")
+    if can_switch:
         guidance = guidance_cfg["switch_available"].format(switch_target=switch_targets[0])
     else:
         guidance = guidance_cfg["describe_only"]

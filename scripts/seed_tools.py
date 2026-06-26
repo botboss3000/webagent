@@ -26,9 +26,9 @@ _HARDCODED_STUB_CODE = '''async def _hardcoded_stub(**kwargs):
     raise RuntimeError("This tool is handled by a hardcoded loader. The DB entry provides discoverable metadata only.")
 '''
 
-# NOTE: web_search is now hardcoded in app/tools/core_tools.py.
+# NOTE: web_search is provided by the Web Access ability
+# (plugins/abilities/Web/web_access.py), injected via its build_tools hook.
 # This DB entry provides discoverable metadata for list_tools/get_tool_definition.
-# The actual handler at runtime comes from _inject_builtin_tools in loader.py.
 WEB_SEARCH_CODE = _HARDCODED_STUB_CODE
 
 

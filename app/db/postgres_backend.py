@@ -129,20 +129,10 @@ async def bootstrap_schema(cfg: DBConnectionConfig, password: Optional[str]) -> 
             logger.warning("Could not create pgvector extension: %s", e)
             errors.append({"stmt": "CREATE EXTENSION vector", "error": str(e)})
 
-        # Split on ';' at the top level. The DDL renderer produces simple
-        # statements separated by ';' (no PL/pgSQL bodies), so this is safe.
-        # FTS / trigger statements use multi-statement bodies in SQLite only;
-        # the postgres renderer emits single CREATE INDEX expressions.
-        # Tables are dependency-ordered by the renderer, so a single pass works.
-        for stmt in _split_sql(ddl):
-            # Drop full-line comments so a leading "-- header" comment glued to
-            # the first CREATE statement doesn't cause the whole statement to be
-            # skipped (the renderer emits a banner comment before the first DDL).
-            s = "\n".join(
-                ln for ln in stmt.splitlines() if not ln.strip().startswith("--")
-            ).strip()
-            if not s:
-                continue
+        # Statements are split + comment-stripped by _iter_ddl_statements. The
+        # DDL renderer produces simple statements separated by ';' (no PL/pgSQL
+        # bodies) in dependency order, so a single pass works.
+        for s in _iter_ddl_statements(ddl):
             try:
                 await conn.execute(s)
                 statements_run += 1
@@ -168,6 +158,20 @@ def _split_sql(text: str) -> list:
     if tail:
         out.append(tail)
     return out
+
+
+def _iter_ddl_statements(ddl: str):
+    """Yield each non-empty, comment-stripped statement from rendered DDL.
+
+    Shared by both bootstrap paths (async asyncpg `bootstrap_schema` and sync
+    psycopg `_bootstrap_pg_schema`): split on ';', drop full-line `--` comments
+    (so a leading banner comment glued to the first CREATE doesn't swallow it),
+    and skip anything left blank. Each caller executes the statements itself.
+    """
+    for raw in _split_sql(ddl):
+        stmt = _strip_comment_lines(raw)
+        if stmt:
+            yield stmt
 
 
 # ── Live Postgres backend ────────────────────────────────────────────────────
@@ -292,10 +296,7 @@ def _make_postgres_backend_class():
                     conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
                 except Exception as e:
                     logger.warning("CREATE EXTENSION vector failed: %s", e)
-                for raw in _split_sql(ddl):
-                    stmt = _strip_comment_lines(raw)
-                    if not stmt:
-                        continue
+                for stmt in _iter_ddl_statements(ddl):
                     try:
                         conn.execute(stmt)
                     except Exception as e:

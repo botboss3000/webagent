@@ -140,7 +140,7 @@ async def read_file(path: str = Query(..., description="Path to file (relative o
     """Read any file on the system."""
     resolved = resolve_path(path)
     try:
-        check_path(str(resolved), "read")
+        await check_path(str(resolved), "read")
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
@@ -170,7 +170,7 @@ async def write_file(request: WriteRequest):
     ext = resolved.suffix.lower()
 
     try:
-        check_path(str(resolved), "write")
+        await check_path(str(resolved), "write")
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
@@ -216,7 +216,7 @@ async def delete_file(request: DeleteRequest):
     resolved = resolve_path(request.path)
 
     try:
-        check_path(str(resolved), "delete")
+        await check_path(str(resolved), "delete")
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
@@ -257,7 +257,7 @@ async def run_command(request: CommandRequest):
     Returns stdout, stderr, and exit code.
     """
     try:
-        check_command(request.command)
+        await check_command(request.command)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     logger.info("Executing command: %s", request.command)

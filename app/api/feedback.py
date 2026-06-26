@@ -33,9 +33,10 @@ router = APIRouter(prefix="/api/v1/feedback")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _PROVIDER_FILE = _PROJECT_ROOT / "data" / "config" / "provider.json"
 
-# Default relay URL — points at the upstream webAgent project's relay.
-# Cloners can override via app-settings.json `feedback_relay_url`.
-_DEFAULT_RELAY_URL = "https://feedback.webagent.live/submit"
+# Default relay URL — points at the upstream webAgent project's relay (a
+# Cloudflare Worker). Every clone inherits this and works out of the box;
+# cloners can override via app-settings.json `feedback_relay_url`.
+_DEFAULT_RELAY_URL = "https://webagent-feedback-relay.botboss.workers.dev/submit"
 
 VALID_TYPES = {"bug", "feature", "message"}
 MAX_BODY_LEN = 8000
@@ -123,6 +124,9 @@ class FeedbackSubmit(BaseModel):
     body: str = Field(..., min_length=1, max_length=MAX_BODY_LEN)
     email: Optional[str] = Field(default=None, max_length=MAX_EMAIL_LEN)
     turnstile_token: Optional[str] = Field(default=None, max_length=4096)
+    # Honeypot — must stay empty for real users. A non-empty value means a bot
+    # filled the hidden decoy field, so we silently drop the submission.
+    website: Optional[str] = Field(default=None, max_length=256)
 
     @field_validator("type")
     @classmethod
@@ -172,6 +176,12 @@ async def get_feedback_config() -> FeedbackConfig:
 
 @router.post("")
 async def submit_feedback(payload: FeedbackSubmit, request: Request) -> dict:
+    # Honeypot tripped: a bot filled the hidden decoy field. Pretend success so
+    # the bot can't tell it was caught, but never forward to the relay.
+    if payload.website:
+        logger.info("Feedback honeypot tripped; dropping submission silently")
+        return {"ok": True, "issue_url": None}
+
     s = _load_feedback_settings()
     if not s["feedback_enabled"]:
         raise HTTPException(status_code=403, detail="Feedback is disabled on this deployment")

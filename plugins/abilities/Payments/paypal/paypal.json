@@ -1,0 +1,12 @@
+{
+  "display_name": "PayPal",
+  "kind": "placeholder",
+  "icon": "wallet",
+  "color": "#9ece6a",
+  "description": "Accept PayPal payments.",
+  "note": "OAuth — free to integrate; per-transaction fees apply.",
+  "simple": false,
+  "placeholder": true,
+  "tools": [],
+  "order": 2
+}

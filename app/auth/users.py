@@ -1,11 +1,11 @@
-"""Simple user store. Default admin user seeded on import.
+"""Simple user store. Admin account created via setup page or BOOTSTRAP_ADMIN_PASSWORD env var.
 
 Uses bcrypt directly (passlib has compat issues on Windows + Python 3.14).
-Supports remember-me tokens for persistent sessions.
-"""
+Supports remember-me tokens for persistent sessions."""
 
 import json
 import logging
+import os as _os
 import secrets
 from pathlib import Path
 from typing import Optional
@@ -81,20 +81,6 @@ def _generate_remember_token() -> str:
 _users: dict[str, User] = {}  # username → User
 
 
-def _ensure_default_admin():
-    """Seed the default admin user if not already persisted."""
-    if "admin" in _users:
-        return
-    admin = User(
-        username="admin",
-        password_hash=_hash_password("admin"),
-        user_id="admin_default",
-        display_name="Admin",
-    )
-    _users["admin"] = admin
-    _persist()
-
-
 def _load():
     if _USER_FILE.exists():
         try:
@@ -116,9 +102,37 @@ def _persist():
         logger.warning("Failed to persist users.json: %s", e)
 
 
-# Load existing users; seed admin if needed
+def _bootstrap_admin():
+    """On first start, create admin from env var BOOTSTRAP_ADMIN_PASSWORD if set."""
+    password = _os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "")
+    if password and "admin" not in _users:
+        admin = User(
+            username="admin",
+            password_hash=_hash_password(password),
+            user_id="admin",
+            display_name="Admin",
+        )
+        _users["admin"] = admin
+        _persist()
+        logger.info("Bootstrap admin created from BOOTSTRAP_ADMIN_PASSWORD env var")
+    elif "admin" not in _users:
+        logger.info("No admin user found. App is in uninitialized state.")
+
+
+def admin_exists() -> bool:
+    """Return whether an admin user account exists."""
+    return "admin" in _users
+
+
+def is_default_seed() -> bool:
+    """Return whether the admin was seeded with a default password.
+    Always False now — no default seed is used."""
+    return False
+
+
+# Load existing users; bootstrap admin from env var if set
 _load()
-_ensure_default_admin()
+_bootstrap_admin()
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -271,15 +285,15 @@ def change_password(username: str, new_password: str) -> bool:
 def delete_user_self(username: str) -> tuple[bool, str]:
     """Delete the user identified by `username` (self-service).
 
-    Blocks deletion of the bootstrap admin (user_id == "admin_default").
+    Blocks deletion of the bootstrap admin (user_id == "admin").
     Returns (ok, reason). reason is "" on success, otherwise a short code:
       - "not_found"  — username not in store
-      - "protected"  — the admin_default seed cannot be deleted
+      - "protected"  — the admin seed cannot be deleted
     """
     user = _users.get(username)
     if user is None:
         return False, "not_found"
-    if user.user_id == "admin_default":
+    if user.user_id == "admin":
         return False, "protected"
     del _users[username]
     _persist()

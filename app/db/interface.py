@@ -55,6 +55,31 @@ class StorageBackend(ABC):
         """
         ...
 
+    @abstractmethod
+    async def get_session_segments(
+        self, user_id: str, session_id: str
+    ) -> List[dict]:
+        """Return the ordered compaction "train" of frozen summary cars (seq asc).
+
+        Each row: {seq, start_index, end_index, summary, token_estimate, topic,
+        tier, updated_at}. Empty list when the session has no segments yet.
+        See app/agent/compaction.py.
+        """
+        ...
+
+    @abstractmethod
+    async def replace_session_segments(
+        self, user_id: str, session_id: str, segments: List[dict]
+    ) -> None:
+        """Replace a session's entire train with ``segments`` (delete-all + insert).
+
+        Each segment dict carries: seq, start_index, end_index, summary,
+        token_estimate, topic, tier. The train is small (a handful of cars), so a
+        full replace keeps the write atomic and simple — the far-back merge and
+        normal appends both just re-state the whole list.
+        """
+        ...
+
     # ---- Interactions ----
 
     @abstractmethod
@@ -63,6 +88,33 @@ class StorageBackend(ABC):
     ) -> List[InteractionRecord]:
         """Load all interactions for a session, ordered by created_at."""
         ...
+
+    async def fetch_first_user_messages(
+        self, user_id: str, session_id: str, limit: int = 3
+    ) -> List[str]:
+        """Return up to ``limit`` opening user-message texts (oldest first).
+
+        Lightweight helper for session naming, which only needs a session's
+        first few user turns — never the whole transcript. This default walks
+        ``fetch_interactions`` and filters in Python (correct everywhere, but
+        still loads the full session); ``LocalBackend`` overrides it with a
+        bounded SQL query that stays O(limit). Filters match the agent-context
+        view: real user rows with non-blank content, terminal-tunnel traffic
+        (source 'terminal_tunnel') excluded.
+        """
+        rows = await self.fetch_interactions(user_id, session_id)
+        out: List[str] = []
+        for r in rows:
+            if getattr(r, "role", None) != "user":
+                continue
+            if getattr(r, "source", None) == "terminal_tunnel":
+                continue
+            content = getattr(r, "content", None)
+            if isinstance(content, str) and content.strip():
+                out.append(content)
+                if len(out) >= limit:
+                    break
+        return out
 
     @abstractmethod
     async def insert_interaction(
@@ -184,9 +236,10 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def memory_search(
-        self, user_id: str, query: str, limit: int = 10
+        self, user_id: str, query: str, limit: int = 10, vector: bool = True
     ) -> List[dict]:
-        """Keyword search across memory pages using FTS."""
+        """Search memory pages. When ``vector`` is False, use the keyword-only
+        (FTS) fast path and skip the remote query-embedding round-trip."""
         ...
 
     # ---- Session Search ----
@@ -505,6 +558,10 @@ class StorageBackend(ABC):
         """Advance the highest emitted session_seq. Default: no-op."""
         return None
 
+    async def run_state_set_op(self, session_id: str, current_op: Optional[str]) -> None:
+        """Record/clear the in-flight operation snapshot (JSON). Default: no-op."""
+        return None
+
     async def run_state_finish(
         self, session_id: str, status: str = "complete", error: Optional[str] = None,
         stop_cause: Optional[str] = None,
@@ -718,17 +775,6 @@ class StorageBackend(ABC):
         ...
 
 
-    # ---- Provider Ratings ----
-
-    @abstractmethod
-    async def get_provider_ratings(self, user_id: str) -> dict:
-        """Get all provider ratings for a user. Returns dict: {(provider, model): rating}"""
-        pass
-
-    @abstractmethod
-    async def update_provider_rating(self, user_id: str, provider: str, model: str, delta: int) -> int:
-        """Increment/decrement a provider rating. Returns the new rating."""
-        pass
 
 
     # ---- User Profiles ----
@@ -762,10 +808,18 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def create_custom_agent(self, user_id: str, name: str, description: str = "") -> dict:
+    async def create_custom_agent(
+        self, user_id: str, name: str, description: str = "",
+        template_id: str = "default", seed_abilities: bool = True,
+    ) -> dict:
         """
-        Create a new custom agent for a user, cloned from the default template.
+        Create a new custom agent for a user, cloned from the given template.
         Returns the new agents row as a dict (with source='custom').
+
+        ``template_id`` may be a real template id, or a falsy / "none" / "blank"
+        / "scratch" value for a true blank-slate agent (no template cloned — it
+        runs on the app-global baseline identity). ``seed_abilities`` copies the
+        template's pre-enabled abilities; pass False for a bare agent.
         """
         ...
 
@@ -838,37 +892,51 @@ class StorageBackend(ABC):
         """Return True if user_id is a member or admin of the agent."""
         ...
 
-    # ---- AutoAgent pages (page-builder workspace) ----
+    # ---- canvases (canvas workspace) ----
 
     @abstractmethod
-    async def pages_list(self, user_id: str) -> List[dict]:
-        """Return all page rows for user_id, ordered with 'home' first then by updated_at desc.
+    async def canvas_list(self, user_id: str) -> List[dict]:
+        """Return all canvas rows for user_id, ordered with 'home' first then by updated_at desc.
         Each row: id, user_id, slug, title, agent_context, html, created_at, updated_at.
         `html` may be None when the body lives on disk (hybrid mode)."""
         ...
 
     @abstractmethod
-    async def pages_get(self, user_id: str, slug: str) -> Optional[dict]:
-        """Get one page row by (user_id, slug). Returns None if not found."""
+    async def canvas_get(self, user_id: str, slug: str) -> Optional[dict]:
+        """Get one canvas row by (user_id, slug). Returns None if not found."""
         ...
 
     @abstractmethod
-    async def pages_upsert(
+    async def canvas_upsert(
         self,
         user_id: str,
         slug: str,
         title: str,
         agent_context: str = "",
         html: Optional[str] = None,
+        agent_id: str = "",
     ) -> dict:
-        """Insert or update a page. Returns the saved row. `html=None` leaves the
+        """Insert or update a canvas. Returns the saved row. `html=None` leaves the
         column NULL on insert and untouched on update (so hybrid mode can store
-        metadata-only rows without disturbing existing bodies)."""
+        metadata-only rows without disturbing existing bodies). `agent_id` is the
+        owning agent (the one that created/manages this canvas); a freshly-supplied
+        value wins, otherwise the existing owner is preserved."""
         ...
 
     @abstractmethod
-    async def pages_delete(self, user_id: str, slug: str) -> bool:
+    async def canvas_delete(self, user_id: str, slug: str) -> bool:
         """Delete one page. Returns True if a row was removed."""
+        ...
+
+    @abstractmethod
+    async def canvas_get_data(self, user_id: str, slug: str) -> Optional[str]:
+        """Return a canvas's raw data JSON string (the `data` column), or None."""
+        ...
+
+    @abstractmethod
+    async def canvas_set_data(self, user_id: str, slug: str, data_json: str) -> bool:
+        """Set a canvas's `data` column to data_json (a JSON string). Returns True
+        if a row was updated."""
         ...
 
     # ---- Per-Agent External Data Sources ----

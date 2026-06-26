@@ -8,12 +8,49 @@ Its agent talks **directly to the LLM API** (never through the webAgent server),
 so it can inspect, edit, and source-control a webAgent checkout **even when the
 server is down**.
 
-> **mk2 — event-driven build.** This copy (under `webagent/TUI`) upgrades the agent
+> **mk2 — event-driven build.** This copy (in `TUI/`) upgrades the agent
 > loop from strictly synchronous to **event-driven**: the agent can delegate work to
 > background **subagents**, accept **steering** while it's mid-turn, **auto-continue**
 > when delegated results arrive, and react to **watchdog alerts** as events. When run
 > from source it keeps its data **in this project folder** (see **External database**),
 > so the install is self-contained. See **Subagents & the event-driven loop** below.
+
+> **mk3 — the app front door (two brains).** Once a checkout is **linked**, an
+> ordinary chat turn is no longer handled by the TUI's own clone-agent — it is
+> driven by the **linked checkout's REAL agent loop**, run headlessly in the
+> checkout's **own venv**, against the app's **own database**, as the **admin**
+> user and the new **`server-manager`** agent template — but with **no web
+> server**. The terminal becomes *a different front door to the same app*, the way
+> the browser is, except it doesn't need the server switched on. The TUI's built-in
+> brain stays the **onboarding / recovery / watchdog brain** and the **automatic
+> fallback** when the checkout can't load. See **Two brains** below.
+
+### Two brains (mk3)
+
+| | **Built-in manager brain** | **App-brain front door** |
+|---|---|---|
+| **Code** | the TUI's own loop (`agent.py`), talks straight to the LLM | the linked checkout's real `stream_agent_events` loop |
+| **Runs where** | inside the TUI process | a headless subprocess in the checkout's `.venv` (`engine_driver.py`) |
+| **Database** | the TUI's own `webagent.db` | the **app's own DB** (shared with the browser) |
+| **Identity** | the Server Manager persona (`tui-data/prompt.md`) | admin user + `data/agents/server-manager.json` template |
+| **Handles** | onboarding, install/link, watchdog & synthetic turns, fallback | ordinary user turns in managed mode |
+| **Needs the server?** | no | no — that's the whole point |
+
+The two are bridged by [`tui_app/app_engine.py`](tui_app/app_engine.py) (parent
+side: launch the venv driver, ready/fatal handshake, serialize turns, translate
+the app's loop events into the TUI's event contract) and
+[`tui_app/engine_driver.py`](tui_app/engine_driver.py) (runs under the checkout's
+interpreter: boots provider config + DB, materializes the agent, streams the real
+loop over a line-delimited JSON stdio protocol). If the checkout can't load
+(missing venv, broken code), the bridge raises `EngineUnavailable` and the turn
+falls back to the built-in brain so you can still diagnose and repair it.
+
+A managed turn is recorded **only** in the app's own DB (user text, assistant
+bubbles and tool steps), never mirrored into `webagent.db`. The TUI reads that
+session's visible transcript straight back from the app DB via
+[`tui_app/app_db.py`](tui_app/app_db.py) — a read-only reader (sqlite `mode=ro`,
+**no app import**) — so the terminal and the browser show the exact same
+conversation, tool steps and all. Built-in-brain sessions stay in `webagent.db`.
 
 ### Modes
 
@@ -21,13 +58,15 @@ The manager runs even with **no checkout linked** — it's an onboarding guide
 first, a codebase agent second:
 
 - **Onboarding** (no repo linked) — orient, explain webAgent, **install a fresh
-  copy**, or **link an existing checkout**. Runs on the **app key**.
-- **Managed** (a webAgent checkout linked) — the full ability sets below, plus
-  the linked repo's AI key takes over automatically (live re-pick on link).
+  copy**, or **link an existing checkout**. Runs on the **app key**, on the
+  built-in brain.
+- **Managed** (a webAgent checkout linked) — ordinary turns run on the **app-brain
+  front door** (the checkout's real agent, shared app DB); the built-in brain keeps
+  the management/recovery ability sets below and the linked repo's AI key.
 
-Every turn the agent is handed a **live situation snapshot** — host OS, Python,
-git, whether a repo is linked, server health, and the AI key in use — so its
-guidance stays grounded instead of guessed.
+Every turn the built-in brain is handed a **live situation snapshot** — host OS,
+Python, git, whether a repo is linked, server health, and the AI key in use — so
+its guidance stays grounded instead of guessed.
 
 Ability sets:
 
@@ -111,7 +150,7 @@ session transcripts all sit next to the code, and these runtime files are
 
 ```
 TUI/
-├── webagent/            ← the package (source)
+├── tui_app/            ← the package (source)
 ├── webagent.db          ← sessions + audit trail   (gitignored)
 ├── config.json          ← settings                 (gitignored)
 ├── monitor.json         ← watchdog config          (gitignored)
@@ -144,7 +183,7 @@ elsewhere with `WEBAGENT_DB=/path/to.db`).
 
 ## Monitoring & alarms (autonomous watchdog)
 
-Alongside the chat, a background **watchdog** ([`webagent/watchdog.py`](webagent/watchdog.py))
+Alongside the chat, a background **watchdog** ([`tui_app/watchdog.py`](tui_app/watchdog.py))
 runs on a fixed interval (managed mode, when enabled). Each tick it:
 
 1. probes the server's health (`/health`) + PID-alive,
@@ -168,7 +207,7 @@ runs on a fixed interval (managed mode, when enabled). Each tick it:
   instance the manager didn't start, and a **zombie** holding port 8080 without
   serving `/health` (which blocks a clean restart — the orphaned-LISTENER case
   `run.py` fights). Built dependency-free in
-  [`webagent/sysmetrics.py`](webagent/sysmetrics.py).
+  [`tui_app/sysmetrics.py`](tui_app/sysmetrics.py).
 
 **Resource health** (`sysmetrics.py`, no `psutil`): host **disk** (`shutil`),
 **memory** (Windows `GlobalMemoryStatusEx` / Linux `/proc/meminfo`), **CPU** (a
@@ -189,12 +228,12 @@ as `n/a`.
 
 **Notifications** go to the channels in `monitor.json` (`channels`). v1 ships the
 **`desktop`** channel — a native OS toast (Windows tray balloon, macOS
-`osascript`, Linux `notify-send`) via [`webagent/notify.py`](webagent/notify.py),
+`osascript`, Linux `notify-send`) via [`tui_app/notify.py`](tui_app/notify.py),
 which always **also** echoes the alert into the chat transcript. The notifier is
 channel-based so Telegram / email / an in-webapp banner can be added later.
 
 In the transcript each alert renders as a **colour-coded, collapsible notification
-box** (`_notify_box` in [`webagent/app.py`](webagent/app.py)): a header showing the
+box** (`_notify_box` in [`tui_app/app.py`](tui_app/app.py)): a header showing the
 **timestamp** + a 1–3 word summary on the left and a clickable **`[Show]`/`[Hide]`**
 toggle on the right. It's **collapsed by default** — only the header line shows;
 click **`[Show]`** to reveal the full detail below (and **`[Hide]`** to re-collapse). It's
@@ -219,7 +258,7 @@ dir. The watchdog re-reads them every tick, so edits apply with no restart.
 
 The watchdog above is **in-process** — it dies the instant the TUI dies, which is
 exactly when the server it launched is most likely to fall over. The **keep-alive
-guardian** ([`webagent/guardian.py`](webagent/guardian.py)) is the answer: a
+guardian** ([`tui_app/guardian.py`](tui_app/guardian.py)) is the answer: a
 **separate, detached process** the TUI spawns on open that **outlives** it and
 keeps **both** running:
 
@@ -267,8 +306,8 @@ the daemon stays tiny. The runtime files (`guardian.pid`, `guardian.json`,
 ## The Playbook (self-healing issue knowledge base)
 
 The watchdog doesn't just react — it **learns**. The Playbook
-([`webagent/playbook.py`](webagent/playbook.py) pure logic +
-[`webagent/pb_coordinator.py`](webagent/pb_coordinator.py) persistence) turns every
+([`tui_app/playbook.py`](tui_app/playbook.py) pure logic +
+[`tui_app/pb_coordinator.py`](tui_app/pb_coordinator.py) persistence) turns every
 detected problem into a closed feedback loop:
 
 1. **Detect → Fingerprint.** Each condition (server down, zombie port, crash-loop,
@@ -316,7 +355,7 @@ controls, plus the remediation-mode selector.
 
 ## Subagents & the event-driven loop (mk2)
 
-The agent loop ([`webagent/agent.py`](webagent/agent.py)) is **event-driven and
+The agent loop ([`tui_app/agent.py`](tui_app/agent.py)) is **event-driven and
 re-entrant**. A turn can be triggered by any of three events:
 
 | Event | Source | What the agent does |
@@ -343,10 +382,10 @@ instead of ending, so nothing is stranded.
 (no inherited default) and cannot spawn its own subagents — so a fan-out worker can be made
 read-only or granted write/run access deliberately, per call.
 
-The mechanics live in [`webagent/subagents.py`](webagent/subagents.py) (a Textual-free,
+The mechanics live in [`tui_app/subagents.py`](tui_app/subagents.py) (a Textual-free,
 unit-tested registry + result buffer + delivery logic) and
-[`webagent/tools/delegate.py`](webagent/tools/delegate.py) (the three tools). The
-Textual app ([`webagent/app.py`](webagent/app.py)) hosts the workers: `_spawn_subagent`
+[`tui_app/tools/delegate.py`](tui_app/tools/delegate.py) (the three tools). The
+Textual app ([`tui_app/app.py`](tui_app/app.py)) hosts the workers: `_spawn_subagent`
 creates the sub-session and launches a worker; `_run_subagent` runs it and reports back; steering
 is queued on submit while busy; `_after_turn_settle` handles auto-continue. Tests live in
 [`tests/`](tests/) (`test_subagents.py`, `test_delegate.py`, `test_event_loop.py`).
@@ -359,7 +398,7 @@ pytest-asyncio dependency), run with the venv Python:
 | Style | What it drives | Files |
 |-------|----------------|-------|
 | **Logic / agent loop** | `ServerManagerAgent` directly with a `FakeLLM` — no UI, no network. Verifies the event-driven loop, subagents, and delegate tools. | `test_event_loop.py`, `test_subagents.py`, `test_delegate.py`, `test_playbook.py` |
-| **UI / Pilot** | The whole `ServerManagerApp` **headlessly** via Textual's `App.run_test()` → a `Pilot`. Boots into an off-screen buffer (no terminal opens), then types, presses keys, clicks widgets, inspects the tree, and takes **text** screenshots to verify appearance. | [`pilot_harness.py`](tests/pilot_harness.py) (reusable boot/snapshot/LLM helpers), [`test_tui_pilot.py`](tests/test_tui_pilot.py) (pure-UI smoke test), [`test_tui_pilot_repo_dir.py`](tests/test_tui_pilot_repo_dir.py) (Admin ▸ Repo directory field save/clear → DB) |
+| **UI / Pilot** | The whole `ServerManagerApp` **headlessly** via Textual's `App.run_test()` → a `Pilot`. Boots into an off-screen buffer (no terminal opens), then types, presses keys, clicks widgets, inspects the tree, and takes **text** screenshots to verify appearance. | [`pilot_harness.py`](tests/pilot_harness.py) (reusable boot/snapshot/LLM helpers), [`test_tui_pilot.py`](tests/test_tui_pilot.py) (pure-UI smoke test), [`test_tui_pilot_repo_dir.py`](tests/test_tui_pilot_repo_dir.py) (Admin ▸ Repo directory field save/clear → DB), [`test_tui_pilot_admin_panels.py`](tests/test_tui_pilot_admin_panels.py) (every side panel builds without crashing — guards Admin ▸ Reset) |
 | **UI / Pilot + LLM** | A full chat turn driven **through the UI** with a scripted `FakeLLM` — prompt submit → agent loop → assistant bubble → token HUD → Stop pill — offline and deterministic. Use `use_fake_llm` + `drive_turn` from the harness. | [`test_tui_pilot_llm.py`](tests/test_tui_pilot_llm.py) |
 
 Run a Pilot test:
@@ -389,15 +428,15 @@ live-provider smoke test — that needs an API key + network and a longer timeou
 
 The agent's **prose and settings** live in files, not Python, so its behaviour can
 be read and changed without editing code or rebuilding the `.exe`. See
-[`webagent/manager/README.md`](webagent/manager/README.md):
+[`tui-data/README.md`](tui-data/README.md):
 
 | File | Holds |
 |------|-------|
-| `webagent/manager/prompt.md` | The system prompt (loaded at startup; restart to apply). |
-| `webagent/manager/tools.json` | Each tool's description + `enabled` + category (the code only binds names → handlers + schemas). |
-| `webagent/manager/monitor.defaults.json` | Shipped watchdog defaults; seeds the live `monitor.json`. |
+| `tui-data/prompt.md` | The system prompt (loaded at startup; restart to apply). |
+| `tui-data/tools.json` | Each tool's description + `enabled` + category (the code only binds names → handlers + schemas). |
+| `tui-data/monitor.defaults.json` | Shipped watchdog defaults; seeds the live `monitor.json`. |
 
-Loaded by [`webagent/resources.py`](webagent/resources.py) with a
+Loaded by [`tui_app/resources.py`](tui_app/resources.py) with a
 **user-override → packaged-default → built-in-fallback** order, and bundled into
 the frozen build by `scripts/build_exe.py`.
 
@@ -419,12 +458,25 @@ Already have the `.venv` from a previous run? Just launch with it directly —
 `.venv\Scripts\python.exe -m webagent` (Windows) or
 `.venv/bin/python -m webagent` (macOS/Linux) — no reinstall needed.
 
+**Install as a global `webagent` command (uv).** The package exposes two console
+scripts — `tui-app` and `webagent` (both launch the TUI). To put `webagent` on
+your `PATH` straight from the repo in one line, no manual clone needed:
+
+```bash
+uv tool install "git+https://github.com/botboss3000/webagent-dev.git#subdirectory=TUI"
+```
+
+This installs a **frozen snapshot** of whatever is on GitHub. For a local working
+copy whose command tracks your live edits, clone the repo and install editable
+against the `TUI` folder instead: `uv tool install --editable ./webagent-dev/TUI`.
+Either way, launch afterwards with `webagent`.
+
 - **Target project** — the webAgent checkout to operate on. Auto-detected from
   the working directory if it contains `run.py` + `app/`; otherwise set
   `WEBAGENT_PROJECT`.
 - **LLM provider** — resolved (highest priority first) from an explicit
   `WEBAGENT_*` override → the **linked repo's `provider.json`** (the same
-  credential store the webAgent server itself uses; `admin_default` profile
+  credential store the webAgent server itself uses; `admin` profile
   preferred) → generic/legacy `LLM_*` / `OPENROUTER_*` env / the project's `.env`
   (the **app key**, used during onboarding) → saved config → built-in defaults.
   OpenAI compatible. Reading `provider.json` as one coherent (api_key, base_url,
@@ -440,7 +492,7 @@ Install the manager straight into Termux — no proot, no full server — with a
 single paste:
 
 ```bash
-cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/webagent/install-termux.sh
+cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/TUI/install-termux.sh
 ```
 
 …or via the short URL the webAgent server hosts (it serves `/termux` → this same
@@ -519,7 +571,7 @@ python scripts/build_exe.py      # → ./webagent  (or webagent.exe)
 ```
 
 The build **stamps the source commit + timestamp** into the bundle (a generated,
-gitignored `webagent/_build.py`, removed from the tree right after) so a
+gitignored `tui_app/_build.py`, removed from the tree right after) so a
 frozen exe can tell whether it's behind upstream — the input to self-update.
 
 ## Updating itself
@@ -576,7 +628,7 @@ agent re-reads each session's history by id, so its context follows the active t
 
 | Header item | Action |
 |-------------|--------|
-| **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Same gate as the App panel's Read/Write/Auto. |
+| **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Maps to the App panel's **Ask / Plan / Auto** pill (plan↔read, ask↔write). |
 | **Admin** | a **Repo directory** field (paste a folder path → `[Save]` / `[Clear]`) at the top, then opens `[Connect]` · `[App Config]` · `[Model Settings]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` · `[Keep-alive: ON/OFF]` |
 | **Git** (managed mode only) | source control: a **GitHub token** field with `[Save]` / `[Clear]` (used to authenticate network ops; stored in the TUI's own config, never written into the repo's `.git/config`), then `[Fetch]` · `[Pull]` · `[Push]`. Each button hands the agent a plain-language request so it runs the matching `git_tool` op under the usual op-safety rules (force-push blocked); Pull/Push arm writes first since the click is the consent. |
 | **Playbook** (managed mode only) | the self-healing **issue knowledge base**: a **remediation-mode** selector (`[Document]` / `[Safe-auto]` / `[Autonomous]`), then the list of learned issues (occurrences, status, best remedy + confidence). Click an issue to drill in: its remedies with helped/didn't stats, recent incidents, and `[Approve]` / `[Disable]` / `[Forget]` controls. See [The Playbook](#the-playbook-self-healing-issue-knowledge-base). |

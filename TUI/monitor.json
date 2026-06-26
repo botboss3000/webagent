@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "interval_seconds": 20,
+  "autonomy": "auto_restart",
+  "channels": [
+    "desktop"
+  ],
+  "auto_restart": true,
+  "restart_backoff_seconds": 15,
+  "max_restarts_per_hour": 5,
+  "error_rate_threshold": 10,
+  "disk_percent_threshold": 90,
+  "mem_percent_threshold": 90,
+  "cpu_percent_threshold": 0,
+  "notify_on_server_down": true,
+  "notify_on_recovery": true,
+  "digest_minutes": 60,
+  "remediation_mode": "safe_auto",
+  "remediation_confidence_threshold": 0.6,
+  "program_trigger_after": 3
+}

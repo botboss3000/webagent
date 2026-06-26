@@ -1,62 +1,83 @@
 """Host-ability catalog — the drop-in registry for agent abilities.
 
-An **ability** is a host-side capability bundle the agent admin can grant to an
-agent (Codebase Admin, Web Access, Terminal Control, Wiki Control, …). It is the
-last subsystem to join the drop-in model used by integrations, channels, events,
-secrets, encryption, billing, and scheduler.
+An **ability** is a host-side capability the agent admin can grant to an agent
+(Codebase Admin, Web Access, Terminal Control, Wiki Control, …). Abilities are
+the drop-in unit for everything the agent can do — tool-gating abilities, OAuth
+credential providers, messaging channels, and placeholder coming-soon entries.
 
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║  THIS FILE IS CORE.  Abilities themselves are NOT defined here.           ║
-║  Each ability is ONE self-describing file in  ``plugins/abilities/`` —    ║
-║  drop a file in to add an ability, delete it to remove one. You do NOT    ║
-║  edit this manager, app/api/agents.py, app/tools/loader.py,               ║
-║  ui/js/app-config.js, or ui/js/agents.js when adding an ability. They all ║
-║  read whatever this manager discovers. See CLAUDE.md ("Core vs. plugins") ║
-║  and docs/claude/production-editions.md.                                  ║
+║  Each ability is a folder under ``plugins/abilities/`` containing a       ║
+║  ``<id>.json`` descriptor and (optionally) a ``<id>.py`` runtime module.  ║
+║  Groups are derived from folder names; group styling comes from            ║
+║  ``_group.json`` files. You do NOT edit this manager, app/api/agents.py,  ║
+║  app/tools/loader.py, ui/js/app-config.js, or ui/js/agents.js when adding ║
+║  an ability. They all read whatever this manager discovers.               ║
+║  See CLAUDE.md ("Core vs. plugins") and docs/claude/production-editions.md.║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-Ability file contract (``plugins/abilities/<id>.py``)
------------------------------------------------------
-A module-level ``FEATURE`` dict. The standard self-description fields (consumed
-by the feature catalog + edition gating) PLUS ability-specific fields:
+Ability descriptor JSON contract (``plugins/abilities/<group>/<id>.json``)
+--------------------------------------------------------------------------
+{
+  "display_name": "Web Access",
+  "kind": "ability",          // ability | channel | oauth | credential | placeholder
+  "icon": "globe",            // Lucide icon name
+  "color": "#7aa2f7",         // accent colour
+  "description": "Lets the agent search the web, …",
+  "note": null,               // optional one-line config note
+  "simple": true,             // true = toggle directly; false = needs config panel
+  "placeholder": false,       // true = grey "Coming Soon" row, no toggle
+  "virtual": false,           // optional — true = display-only row that LISTS
+                              //   always-on core tools (e.g. Core ▸ Base) for
+                              //   permission management. Owns no .py runtime, is
+                              //   kept OUT of tools_map()/ABILITY_TOOLS (gates
+                              //   nothing), and is NOT coerced to a placeholder
+                              //   despite having no runtime. Pair with
+                              //   locked_on+protected. See virtual_ability_for_tool.
+  "default_enabled": false,   // optional — on-by-default at the app level when an
+                              //   admin has made no explicit choice. Behavioural
+                              //   always-on abilities set true; credentialed /
+                              //   destructive ones omit it (→ off until enabled).
+                              //   The stored choice lives in
+                              //   data/config/agent-abilities.json.
+  "order": 10,                // optional — SEED position in the ability table. On
+                              //   first boot it is snapshotted into the order
+                              //   section of data/config/agent-abilities.json,
+                              //   which is then the live source an admin can edit;
+                              //   the descriptor value only positions a brand-new
+                              //   drop-in until then. Lower sorts first; ties break
+                              //   on display name. Default 100.
+  "tools": ["web_search", "get_weather", "maps_geocode"],
+  "config": {                 // optional — only when simple=false or ability has extra data
+    "settings": [ ... ]
+  }
+}
 
-    FEATURE = {
-        "id": "web_access",                 # stable id; defaults to file stem
-        "display_name": "Web Access",
-        "category": "ability",
-        "status": "stable",                 # stable | beta | experimental
-        "summary": "web_search, weather, maps geocoding.",
-        # --- ability runtime + UI (read here) ---
-        "tools": ["web_search", "get_weather", "maps_geocode"],  # tool NAMES it gates
-        "group": "web",                     # UI group id — reuse one or invent a new one
-        "icon": "globe",                    # lucide icon name
-        "color": "#7aa2f7",                 # accent colour (used in both panels)
-        "description": "Lets the agent search the web, …",        # row description
-        "simple": True,                     # True = toggles directly; False = needs config
-        # optional — only when you INVENT a new group; style it from here:
-        # "group_label": "Communication", "group_icon": "message-circle",
-        # "group_color": "#7aa2f7", "group_desc": "Talk to the outside world.",
-        # optional bundled skill (same scheme as integrations) — minted once:
-        # "skill": "…how-to…", "skill_handle": "web_access_a1b2c3d4",
-    }
+Group descriptor JSON contract (``plugins/abilities/<group>/_group.json``)
+--------------------------------------------------------------------------
+{
+  "name": "Web",
+  "icon": "globe",
+  "color": "#7aa2f7",
+  "desc": "Reach the open web — search, browser, scraping, cookies.",
+  "order": 3                  // SEED group position — like a per-ability "order",
+                              //   snapshotted into data/config/agent-abilities.json
+                              //   on first boot and editable there afterwards.
+}
+If _group.json is missing, the group gets emergent defaults: folder name
+as-is for display, neutral icon/colour, no description, sorted alphabetically
+after all numbered groups.
 
 Tool handlers can live EITHER in core (the classic ability just declares which
 tool *names* it unlocks, and the handlers sit in app/tools/core_tools.py and
-friends) OR in the ability file itself — a SELF-CONTAINED ability ships its own
-handlers via an optional ``build_tools()`` hook (and an optional
-``start_background()`` service), exactly like an integration carries its TOOLS.
-Both are auto-discovered; see "Self-contained abilities" lower in this file.
-
-Groups are EMERGENT — there is no master list to edit. The ``group`` id you give
-an ability decides its bucket: name an existing id to JOIN that group, or a new
-id to CREATE one (see the group-resolution rules below ``_KNOWN_GROUPS``). A new
-group can be styled right here via the optional ``group_*`` fields, or it just
-gets a sensible default look. Abilities AND groups are both the drop-in unit.
+friends) OR in the ability's .py file — a SELF-CONTAINED ability ships its own
+handlers via ``build_tools()``, ``TOOL_SCHEMAS``, and ``DESTRUCTIVE``.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -65,178 +86,266 @@ logger = logging.getLogger(__name__)
 
 _ABILITIES_DIR = Path(__file__).resolve().parents[2] / "plugins" / "abilities"
 
-
-# ── UI groups — EMERGENT from the abilities, NOT a fixed list ────────────────
-# An ability says which group it belongs to via FEATURE["group"] (an id like
-# "administrator" or "communication"). The set of groups is then DERIVED from
-# whatever the ability files declare — there is no master group list to edit:
-#   • Two abilities that name the SAME group id  → they share that one group.
-#   • An ability that names a BRAND-NEW group id → a new group is created for it.
-# So adding a group is itself drop-in: just name one in an ability file.
-#
-# Each group needs a look (label, icon, colour, blurb). It is resolved, in order:
-#   1. _KNOWN_GROUPS below — the curated built-in groups (stable name/icon/order).
-#   2. Optional hints ON the ability file — FEATURE["group_label" / "group_icon" /
-#      "group_color" / "group_desc"] (first ability that sets each wins). This lets
-#      a NEW group be fully styled from a drop-in file, with no edit here.
-#   3. Sensible defaults — Title-cased id + a neutral icon/colour.
-# Known groups render first (in _KNOWN_GROUPS order); emergent groups follow,
-# alphabetically. Members inside a group are sorted by display name.
-_KNOWN_GROUPS: Dict[str, Dict[str, Any]] = {
-    "administrator": {"order": 0, "name": "Administrator", "icon": "shield-alert", "color": "#f7768e",
-                      "desc": "Full host control — files & shell, version control, terminals, and diagnostics. Grant with care."},
-    "core":          {"order": 1, "name": "Core", "icon": "wrench", "color": "#7dcfff",
-                      "desc": "Everyday, non-destructive capabilities — UI edits, tool creation, automation, pages, image generation, orchestration, agent management, and app view control."},
-    "productivity":  {"order": 2, "name": "Productivity", "icon": "briefcase", "color": "#4285F4",
-                      "desc": "Read, search, create, edit, and delete entries in the company-wide Wiki."},
-    "web":           {"order": 3, "name": "Web", "icon": "globe", "color": "#7aa2f7",
-                      "desc": "Reach the open web — search, a headless browser, third-party scraping, and authenticated cookie sessions."},
-}
-# An ability that forgets to declare a group lands here, so it's never silently
-# dropped from the UI.
-_DEFAULT_GROUP = "core"
-# Look for an emergent (unknown) group when the ability gives no styling hints.
+# ── Emergent group defaults (when _group.json is absent) ─────────────────────
 _EMERGENT_GROUP_ICON = "layers"
 _EMERGENT_GROUP_COLOR = "#9aa5ce"
 _EMERGENT_GROUP_ORDER = 100
 
-
-def _titleize(gid: str) -> str:
-    """'communication' / 'data-ops' → 'Communication' / 'Data Ops'."""
-    return (gid or "").replace("_", " ").replace("-", " ").strip().title() or gid
+# ── Warning threshold for group id collisions ────────────────────────────────
+_COLLIDING_GROUPS: Dict[str, List[str]] = {}  # normalized_id → [folder_names]
 
 
-def _group_of(feat: Dict[str, Any]) -> str:
-    return feat.get("group") or _DEFAULT_GROUP
+def _normalize_group_id(folder_name: str) -> str:
+    """'Agent Admin' → 'agent_admin', 'core' → 'core'."""
+    import re
+    return re.sub(r'[-\s]+', '_', folder_name.strip().lower())
 
 
-def _resolve_group_meta(gid: str, hints: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    """Group display metadata: curated → ability hints → defaults. Carries a
-    private ``_order`` used only for sorting (stripped before returning)."""
-    if gid in _KNOWN_GROUPS:
-        m = _KNOWN_GROUPS[gid]
-        return {"id": gid, "name": m["name"], "icon": m["icon"], "color": m["color"],
-                "desc": m["desc"], "_order": m["order"]}
-    h = hints.get(gid, {})
-    return {"id": gid,
-            "name": h.get("label") or _titleize(gid),
-            "icon": h.get("icon") or _EMERGENT_GROUP_ICON,
-            "color": h.get("color") or _EMERGENT_GROUP_COLOR,
-            "desc": h.get("desc") or "",
-            "_order": _EMERGENT_GROUP_ORDER}
+def _load_group_meta(group_dir: Path, folder_name: str) -> Dict[str, Any]:
+    """Read _group.json if it exists, otherwise return emergent defaults."""
+    gjson = group_dir / "_group.json"
+    if gjson.is_file():
+        try:
+            raw = json.loads(gjson.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                return {
+                    "name": raw.get("name") or folder_name,
+                    "icon": raw.get("icon") or _EMERGENT_GROUP_ICON,
+                    "color": raw.get("color") or _EMERGENT_GROUP_COLOR,
+                    "desc": raw.get("desc") or "",
+                    "order": raw.get("order", _EMERGENT_GROUP_ORDER),
+                }
+        except Exception as e:
+            logger.warning("Failed to parse _group.json in %s: %s", group_dir, e)
+    # Emergent defaults
+    return {
+        "name": folder_name,
+        "icon": _EMERGENT_GROUP_ICON,
+        "color": _EMERGENT_GROUP_COLOR,
+        "desc": "",
+        "order": _EMERGENT_GROUP_ORDER,
+    }
 
-# Credential providers that are NOT abilities (no tool bundle of their own) but
-# render inside an ability group as their own config cards. Their connection
-# rows are still produced by app/api/agents.py; here we only tell the UI which
-# group they sit in so the panels can place them. (display_name, group).
-_CREDENTIAL_MEMBERS: Dict[str, Dict[str, str]] = {
-    "scraper":         {"display_name": "Web Scraper",    "group": "web"},
-    "browser_session": {"display_name": "Browser Cookies", "group": "web"},
-}
+
+def _load_ability_json(json_path: Path) -> Optional[Dict[str, Any]]:
+    """Read an ability descriptor JSON. Returns None on failure."""
+    try:
+        raw = json.loads(json_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return None
+        return raw
+    except Exception as e:
+        logger.warning("Failed to parse ability descriptor %s: %s", json_path, e)
+        return None
 
 
-_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
-# {ability_id: loaded module} — kept alongside _CACHE so an ability that ships
-# its OWN tool handlers / background service (see "Self-contained abilities"
-# below) can be reached without re-executing the file.
+# ── Caches ───────────────────────────────────────────────────────────────────
+# _CATALOG: {ability_id: {all descriptor fields + group, has_runtime, _py_path}}
+# _GROUP_META: {normalized_group_id: {name, icon, color, desc, order}}
+# _MODULE_CACHE: {ability_id: loaded Python module}
+_CATALOG: Optional[Dict[str, Dict[str, Any]]] = None
+_GROUP_META: Dict[str, Dict[str, Any]] = {}
 _MODULE_CACHE: Dict[str, Any] = {}
 
 
 def _load(force: bool = False) -> Dict[str, Dict[str, Any]]:
-    """Path-scan ``plugins/abilities/*.py`` and return {id: FEATURE dict}.
+    """Walk ``plugins/abilities/*/`` and build the full ability catalog.
 
-    Path-based loading (not import_module) so the top-level ``plugins/`` tree
-    need not be on ``sys.path``. Mirrors the communications / events managers.
-    The executed module objects are cached in ``_MODULE_CACHE`` so a
-    self-contained ability's ``build_tools`` / ``start_background`` hooks can be
-    invoked later without re-importing.
+    Returns {ability_id: {descriptor fields + group, has_runtime, _py_path}}.
+    Populates _GROUP_META from _group.json files (or emergent defaults).
     """
-    global _CACHE
-    if _CACHE is not None and not force:
-        return _CACHE
+    global _CATALOG, _GROUP_META
+    if _CATALOG is not None and not force:
+        return _CATALOG
 
-    out: Dict[str, Dict[str, Any]] = {}
-    mods: Dict[str, Any] = {}
+    cat: Dict[str, Dict[str, Any]] = {}
+    groups: Dict[str, Dict[str, Any]] = {}
+    _COLLIDING_GROUPS.clear()
+
     if not _ABILITIES_DIR.is_dir():
         logger.warning("Abilities dir not found: %s", _ABILITIES_DIR)
-        _CACHE = out
-        _MODULE_CACHE.clear()
-        return out
+        _CATALOG = cat
+        _GROUP_META = groups
+        return cat
 
-    for fpath in sorted(_ABILITIES_DIR.iterdir()):
-        if fpath.suffix != ".py" or fpath.name.startswith("_"):
+    for group_dir in sorted(_ABILITIES_DIR.iterdir()):
+        if not group_dir.is_dir():
             continue
-        stem = fpath.stem
-        try:
-            spec = importlib.util.spec_from_file_location(f"plugins.abilities.{stem}", fpath)
-            if spec is None or spec.loader is None:
-                continue
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            feature = getattr(mod, "FEATURE", None)
-            if not isinstance(feature, dict):
-                logger.debug("Ability %s has no FEATURE dict, skipping", stem)
-                continue
-            feat = dict(feature)
-            feat.setdefault("id", stem)
-            feat.setdefault("category", "ability")
-            aid = str(feat["id"])
-            out[aid] = feat
-            mods[aid] = mod
-        except Exception as e:
-            logger.error("Failed to load ability %s: %s", stem, e)
+        if group_dir.name.startswith("_") or group_dir.name == "__pycache__":
+            continue
 
-    _CACHE = out
-    _MODULE_CACHE.clear()
-    _MODULE_CACHE.update(mods)
-    return out
+        folder_name = group_dir.name
+        gid = _normalize_group_id(folder_name)
+
+        # Detect collisions
+        if gid in groups and gid not in _COLLIDING_GROUPS:
+            existing = _COLLIDING_GROUPS.setdefault(gid, [])
+            # Find the original folder name
+            for gid2, meta2 in groups.items():
+                if gid2 == gid:
+                    existing.append(meta2.get("_folder", folder_name))
+                    break
+        if gid in groups:
+            _COLLIDING_GROUPS.setdefault(gid, []).append(folder_name)
+
+        # Load group meta (first _group.json wins in collision)
+        if gid not in groups:
+            meta = _load_group_meta(group_dir, folder_name)
+            meta["_folder"] = folder_name
+            groups[gid] = meta
+
+        # Scan ability subdirectories (one per ability)
+        for sub_dir in sorted(group_dir.iterdir()):
+            if not sub_dir.is_dir():
+                continue
+            if sub_dir.name.startswith("_") or sub_dir.name == "__pycache__":
+                continue
+
+            ability_id = sub_dir.name
+            json_path = sub_dir / f"{ability_id}.json"
+            if not json_path.is_file():
+                continue  # no descriptor inside — not a valid ability
+
+            desc = _load_ability_json(json_path)
+            if desc is None:
+                continue
+
+            py_path = sub_dir / f"{ability_id}.py"
+            has_runtime = py_path.is_file()
+
+            # Determine kind and placeholder status
+            kind = desc.get("kind", "ability")
+            # A "virtual" ability lists always-on CORE tools (load_tool, get_time,
+            # memory, …) for display + permission management only. It owns no
+            # runtime and gates nothing — its tools are wired into every agent by
+            # the loader regardless — so it is NOT a coming-soon placeholder even
+            # without a .py, and it is deliberately kept OUT of tools_map() /
+            # ABILITY_TOOLS so the runtime never withholds these tools via ability
+            # gating. See base (plugins/abilities/Core/base) and virtual_ability_for_tool.
+            is_virtual = bool(desc.get("virtual", False))
+            is_placeholder = bool(desc.get("placeholder", False))
+            # Only ability-kind requires a .py; oauth/credential/channel can work
+            # without one, and a virtual ability is intentionally runtime-less.
+            if not is_placeholder and not is_virtual and kind == "ability" and not has_runtime:
+                is_placeholder = True
+            if is_placeholder:
+                kind = "placeholder"
+
+            cat[ability_id] = {
+                "id": ability_id,
+                "display_name": desc.get("display_name") or ability_id,
+                "kind": kind,
+                "icon": desc.get("icon") or "plug",
+                "color": desc.get("color") or "#7aa2f7",
+                "description": desc.get("description") or "",
+                "note": desc.get("note"),
+                "simple": bool(desc.get("simple", True)),
+                # Marks a behavioural, pick-one context-management strategy
+                # (compaction / window / retrieval). The resolver filters on this
+                # before loading any module. See context_strategy_for_agent.
+                "context_strategy": bool(desc.get("context_strategy", False)),
+                # Safety device: an always-on ability whose toggle is fixed in
+                # the ON position and cannot be turned off (e.g. Context Control,
+                # which keeps long chats from running away). Forced enabled at
+                # both the app and per-agent level; the two ability panels render
+                # its toggle locked. See get_agent_connections / disable_ability /
+                # context_strategy_for_agent for the enforcement points.
+                "locked_on": bool(desc.get("locked_on", False)),
+                "placeholder": is_placeholder,
+                "status": desc.get("status") or "stable",
+                "protected": bool(desc.get("protected", False)),
+                # On-by-default at the app level: an ability with no explicit
+                # admin toggle stored in data/config/agent-abilities.json falls
+                # back to this. Pure behavioural always-on abilities (git_control,
+                # ui_admin, …) set it true; credentialed/destructive ones omit it
+                # (default false → off until an admin turns them on).
+                "default_enabled": bool(desc.get("default_enabled", False)),
+                "order": desc.get("order", 100),
+                # Display-only ability: lists always-on core tools for management
+                # but owns no runtime and gates nothing (see is_virtual above).
+                "virtual": is_virtual,
+                "tools": list(desc.get("tools") or []),
+                "tool_metadata": desc.get("tool_metadata") or {},
+                "config": desc.get("config"),
+                # Declarative credential needs (the common-credential framework,
+                # see app/abilities/credentials.py). When present, the ability's
+                # secrets are stored/read/gated generically — no bespoke endpoint.
+                "credentials": desc.get("credentials"),
+                # Bundled-skill metadata (the body lives inline or in a sibling
+                # <id>.skill.md). skill_summary is the always-shown "when to use
+                # it" catalog line; without it a JSON ability's skill would have
+                # a blank summary. skill_mode: selectable (load-on-demand) or
+                # always_on. See app/agent/ability_skills.py.
+                "skill_summary": desc.get("skill_summary") or "",
+                "skill_mode": desc.get("skill_mode") or "selectable",
+                "skill_handle": desc.get("skill_handle"),
+                "group": gid,
+                "has_runtime": has_runtime,
+                "_py_path": py_path if has_runtime else None,
+            }
+
+    # Log collisions
+    for gid, folders in _COLLIDING_GROUPS.items():
+        logger.warning(
+            "Group id collision: '%s' from folders %s — merged into one group",
+            gid, folders
+        )
+
+    _CATALOG = cat
+    _GROUP_META = groups
+    return cat
 
 
 def reload() -> None:
-    """Drop the cache so a newly-dropped ability file is picked up."""
+    """Drop caches so a newly-dropped ability/group is picked up."""
+    global _CATALOG, _GROUP_META, _CONFIRM_TOOLS_CACHE
+    _CATALOG = None
+    _GROUP_META.clear()
+    _MODULE_CACHE.clear()
+    _CONFIRM_TOOLS_CACHE = None
     _load(force=True)
 
 
-# ── Self-contained abilities — abilities that ship their own tools / runtime ──
-# By default an ability only DECLARES tool names (handlers live in core). But an
-# ability MAY instead carry its own implementation in its plugin file, exactly
-# like an integration does (app/integrations/*). It does so with two optional
-# module-level hooks, both discovered generically — no core edit per ability:
-#
-#   build_tools(*, user_id, session_id, agent_id, agent_template_id, **ctx)
-#       → {tool_name: async_handler}.  Called by app/tools/loader.py for every
-#         ENABLED ability that defines it; the returned handlers are injected as
-#         normal tools. The module may also expose TOOL_SCHEMAS ({name: schema})
-#         and DESTRUCTIVE (a set of names needing confirmation). The ability owns
-#         any gating of its own (e.g. refusing to arm inside certain sessions) —
-#         return {} to inject nothing this call.
-#
-#   start_background() / stop_background()  (async)
-#       → a long-lived service (e.g. a poller) the ability needs running while
-#         the app is up. Started/stopped generically by app/main.py.
-#
-# This keeps a tool-bearing ability fully drop-in: its FEATURE, skill, handlers,
-# storage, and background service all live in plugins/abilities/, and deleting
-# the file removes the whole capability. Heavy imports should be done lazily
-# INSIDE these hooks (or in a sibling ``_<id>_impl.py``, skipped by the scanner)
-# so the FEATURE scan stays cheap.
-
+# ── Lazy Python module loading ───────────────────────────────────────────────
 
 def ability_module(ability_id: str) -> Optional[Any]:
-    """Return the executed plugin module for an ability id (or None). Used to
-    reach optional ``build_tools`` / ``start_background`` hooks."""
-    _load()
-    return _MODULE_CACHE.get(ability_id)
+    """Return the executed plugin module for an ability id (or None). Lazy-loads
+    on first call so the catalog scan stays cheap."""
+    if ability_id in _MODULE_CACHE:
+        return _MODULE_CACHE.get(ability_id)
+
+    cat = _load()
+    entry = cat.get(ability_id)
+    if not entry or not entry.get("_py_path"):
+        return None
+
+    py_path = entry["_py_path"]
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"plugins.abilities.{entry['group']}.{ability_id}", py_path
+        )
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _MODULE_CACHE[ability_id] = mod
+        return mod
+    except Exception as e:
+        logger.error("Failed to load ability module %s: %s", ability_id, e)
+        return None
 
 
 def background_service_hooks() -> List[Dict[str, Any]]:
-    """Discover abilities that expose a background service. Returns a list of
-    ``{"id", "start", "stop"}`` for every ability module defining an async
-    ``start_background`` (``stop`` may be None). app/main.py runs these at
-    startup / shutdown so no ability wires itself into the lifespan by name."""
+    """Discover abilities that expose a background service. Returns {id, start, stop}
+    for every ability module defining an async ``start_background``."""
     _load()
     hooks: List[Dict[str, Any]] = []
-    for aid, mod in _MODULE_CACHE.items():
+    for aid, entry in _load().items():
+        if not entry.get("has_runtime"):
+            continue
+        mod = ability_module(aid)
+        if mod is None:
+            continue
         start = getattr(mod, "start_background", None)
         if callable(start):
             hooks.append({
@@ -247,150 +356,379 @@ def background_service_hooks() -> List[Dict[str, Any]]:
     return hooks
 
 
-# ---- Turn-lifecycle hooks ----
-# An ability can export a module-level TURN_HOOK async callable that fires
-# after every chat turn (best-effort, fire-and-forget). The dispatch lives in
-# app/api/chat.py's _run_turn_background. This keeps post-turn behaviour
-# (naming, logging, analytics, etc.) as swappable abilities - a completely
-# different naming strategy is another drop-in file with a different TURN_HOOK.
 async def turn_hooks_for_agent(agent_id: str) -> list:
     """Discover abilities enabled for this agent that export a TURN_HOOK.
 
-    Uses the agent_abilities table (the UI toggle) to find which abilities are
-    enabled, then checks each for a module-level ``TURN_HOOK`` callable.
-
-    Returns a list of async callables with the signature::
-
+    Returns a list of async callables with the signature:
         async hook(db, user_id, session_id, emit)
-
-    Called after each chat turn completes (best-effort, fire-and-forget).
-    Fully guarded - a missing ability module is silently skipped.
     """
     if not agent_id:
         return []
-    # Ensure ability modules are discovered and cached.
-    _load()
+    cat = _load()
+    enabled: set = set()
     try:
         from app.db import get_db
         db = get_db()
-        if not hasattr(db, "get_agent_connections"):
-            return []
-        rows = await db.get_agent_connections(agent_id)
-        enabled = {r["connection_type"] for r in rows
-                   if r.get("section") == "ability" and r.get("enabled")}
-    except Exception:
-        return []
+        if hasattr(db, "get_agent_connections"):
+            rows = await db.get_agent_connections(agent_id)
+            enabled = {r["connection_type"] for r in rows
+                       if r.get("section") == "ability" and r.get("enabled")}
+    except Exception as e:
+        # Do NOT abort here: a locked-on hook (e.g. the Session Namer) is a safety
+        # device that must run on EVERY turn even if the per-agent connection
+        # lookup momentarily fails (e.g. transient DB contention). Bailing out with
+        # [] used to silently skip the locked-on union below — the root cause of the
+        # namer never firing. Log it and fall through with whatever we resolved.
+        logger.warning(
+            "turn_hooks_for_agent: connection lookup failed for %s (%s); "
+            "continuing with locked-on hooks only", agent_id, e)
+
+    # A locked-on hook ability (safety device) always runs, even if no per-agent
+    # row enabled it — that's the whole point of "cannot be turned off". Union it
+    # into the enabled set before resolving (mirrors context_strategy_for_agent).
+    locked_on = {aid for aid, e in cat.items() if e.get("locked_on")}
 
     hooks = []
-    for aid in enabled:
-        mod = _MODULE_CACHE.get(aid)
+    for aid in (enabled | locked_on):
+        mod = ability_module(aid)
         if mod is None:
             continue
         hook = getattr(mod, "TURN_HOOK", None)
         if callable(hook):
             hooks.append(hook)
+
+    # ── Built-in turn hooks (grouped under Core ▸ Base, always run) ──
+    # The session namer is not a separate catalog entry anymore; it runs
+    # unconditionally on every turn (locked-on, no tools to gate).
+    try:
+        from plugins.abilities.Core.session_titler.session_titler import (
+            TURN_HOOK as _session_namer_hook,
+        )
+        if callable(_session_namer_hook):
+            hooks.append(_session_namer_hook)
+    except Exception:
+        logger.debug("session_titler not available", exc_info=True)
+
     return hooks
 
 
-# ---- Ability-bundled skills ----
+async def context_strategy_for_agent(agent_id: str):
+    """Return the single enabled context-management strategy module for an agent.
+
+    A context strategy decides how the stored transcript is shaped into the
+    message list sent to the model (compaction, sliding window, retrieval, …)
+    and surfaces the context-fill gauge. Its runtime marks itself with the
+    module attribute ``CONTEXT_STRATEGY = True`` (mirroring the ``TURN_HOOK``
+    attribute pattern). Strategies are **pick-one**: if more than one is enabled
+    we deterministically choose the lowest ``order`` (ties broken by id) and warn,
+    rather than stacking two compactors. Returns ``None`` when none is enabled —
+    callers then fall back to the default (no shaping), exactly as before.
+    """
+    if not agent_id:
+        return None
+    cat = _load()
+    try:
+        from app.db import get_db
+        db = get_db()
+        if not hasattr(db, "get_agent_connections"):
+            return None
+        rows = await db.get_agent_connections(agent_id)
+        enabled = {r["connection_type"] for r in rows
+                   if r.get("section") == "ability" and r.get("enabled")}
+    except Exception:
+        return None
+
+    # A locked-on context strategy (safety device) is always a candidate, even
+    # if no per-agent row enabled it — that's the whole point of "cannot be
+    # turned off". Union it into the enabled set before resolving.
+    locked_on = {aid for aid, e in cat.items()
+                 if e.get("context_strategy") and e.get("locked_on")}
+
+    candidates = []
+    for aid in (enabled | locked_on):
+        entry = cat.get(aid) or {}
+        if not entry.get("context_strategy"):
+            continue  # cheap descriptor filter — avoids loading unrelated modules
+        mod = ability_module(aid)
+        if mod is None or not getattr(mod, "CONTEXT_STRATEGY", False):
+            continue  # descriptor claims it but the runtime doesn't honour it
+        candidates.append((entry.get("order", 100), aid, mod))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: (c[0], c[1]))
+    if len(candidates) > 1:
+        logger.warning(
+            "Multiple context strategies enabled for agent %s (%s); using '%s'.",
+            agent_id, [c[1] for c in candidates], candidates[0][1],
+        )
+    return candidates[0][2]
 
 
-# ── Ability-bundled skills ───────────────────────────────────────────────────
-# An ability can carry a skill — a knowledge pack folded into the agent's
-# `# [SKILLS]` catalog whenever the ability is enabled (load-on-demand by
-# default, or always-on). The body can live INLINE in FEATURE["skill"], or in a
-# separate file so long bodies stay out of the .py. Resolution order for a file:
-#   1. FEATURE["skill_file"]        — explicit path, relative to plugins/abilities/
-#   2. plugins/abilities/<id>.skill.md
-#   3. plugins/abilities/<id>/SKILL.md   (a per-ability folder)
-# Mode + handle come from FEATURE (skill_mode / skill_handle); the agent layer
-# (app/agent/ability_skills.py) shapes the final skill dict and mints a stable
-# handle when none is given. The catalog "when to use it" line is
-# FEATURE["skill_summary"] if set (so a skill can prompt loading in its own
-# words), else it falls back to the ability's tool FEATURE["summary"].
+# ── Skill resolution ─────────────────────────────────────────────────────────
 
-def _resolve_skill_body(feat: Dict[str, Any], ability_id: str) -> str:
-    """Return the skill body for an ability — inline FEATURE['skill'] or a file."""
-    inline = (feat.get("skill") or "").strip()
+def _resolve_skill_body(entry: Dict[str, Any], ability_id: str) -> str:
+    """Find the skill body for an ability — from the descriptor's skill fields
+    or a companion .skill.md / SKILL.md inside the ability's subfolder."""
+    # Check descriptor for inline skill
+    inline = (entry.get("skill") or "").strip()
     if inline:
         return inline
-    candidates = []
-    if feat.get("skill_file"):
-        candidates.append(_ABILITIES_DIR / str(feat["skill_file"]))
-    candidates.append(_ABILITIES_DIR / f"{ability_id}.skill.md")
-    candidates.append(_ABILITIES_DIR / ability_id / "SKILL.md")
-    for path in candidates:
-        try:
-            if path.is_file():
-                return path.read_text(encoding="utf-8").strip()
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning("Could not read skill file %s: %s", path, e)
+
+    # Search in the ability's subfolder (inside the group folder)
+    group = entry.get("group")
+    if group:
+        for gid, meta in _GROUP_META.items():
+            if gid == group:
+                folder_name = meta.get("_folder", group)
+                candidates = [
+                    _ABILITIES_DIR / folder_name / ability_id / f"{ability_id}.skill.md",
+                    _ABILITIES_DIR / folder_name / ability_id / "SKILL.md",
+                ]
+                for path in candidates:
+                    try:
+                        if path.is_file():
+                            return path.read_text(encoding="utf-8").strip()
+                    except Exception as e:
+                        logger.warning("Could not read skill file %s: %s", path, e)
+                break
     return ""
 
 
 def ability_feature_with_skill(ability_id: str) -> Optional[Dict[str, Any]]:
     """If the ability declares a skill (inline or file), return a copy of its
-    FEATURE with the resolved body inlined under ``skill``; else None. The agent
-    layer turns this into a `# [SKILLS]` entry."""
-    feat = _load().get(ability_id)
-    if not feat:
+    catalog entry with the resolved body inlined under ``skill``."""
+    entry = _load().get(ability_id)
+    if not entry:
         return None
-    body = _resolve_skill_body(feat, ability_id)
+    body = _resolve_skill_body(entry, ability_id)
     if not body:
         return None
-    return {**feat, "skill": body}
+    return {**entry, "skill": body}
+
+
+def skill_file_path(ability_id: str) -> Optional[Path]:
+    """The canonical ``<id>.skill.md`` path inside the ability's subfolder.
+
+    Returned whether or not the file exists yet, so callers can both read it and
+    create it on first save. ``None`` when the ability is unknown or its group
+    folder can't be resolved. NOTE: when an ability defines its skill *inline*
+    in the descriptor (``entry['skill']``), that inline body wins over this file
+    in ``_resolve_skill_body`` — editing the file would have no effect, so the
+    skill endpoints treat inline-skill abilities as read-only."""
+    entry = _load().get(ability_id)
+    if not entry:
+        return None
+    group = entry.get("group")
+    if not group:
+        return None
+    folder_name = None
+    for gid, meta in _GROUP_META.items():
+        if gid == group:
+            folder_name = meta.get("_folder", group)
+            break
+    if not folder_name:
+        return None
+    return _ABILITIES_DIR / folder_name / ability_id / f"{ability_id}.skill.md"
+
+
+def ability_has_inline_skill(ability_id: str) -> bool:
+    """True when the ability's skill body is defined inline in its descriptor
+    (so a sibling .skill.md file would be ignored by ``_resolve_skill_body``)."""
+    entry = _load().get(ability_id)
+    return bool(entry and (entry.get("skill") or "").strip())
 
 
 # ── Accessors ───────────────────────────────────────────────────────────────
 
 def all_raw() -> Dict[str, Dict[str, Any]]:
-    """Every discovered ability's raw FEATURE dict, keyed by id."""
+    """Every discovered ability's catalog entry, keyed by id."""
     return dict(_load())
 
 
+def group_folder(group_id: str) -> Optional[str]:
+    """Resolve a normalized group id (e.g. 'web') to its on-disk folder name
+    (e.g. 'Web'). Returns None if unknown."""
+    _load()
+    meta = _GROUP_META.get(group_id)
+    if meta:
+        return meta.get("_folder")
+    return None
+
+
 def tools_map() -> Dict[str, List[str]]:
-    """{ability_id: [tool names it gates]} — feeds app/tools/loader.ABILITY_TOOLS."""
-    return {aid: list(feat.get("tools") or []) for aid, feat in _load().items()}
+    """{ability_id: [tool names it gates]} — feeds app/tools/loader.ABILITY_TOOLS.
+    Only kind=ability entries with has_runtime contribute tools."""
+    return {
+        aid: list(entry.get("tools") or [])
+        for aid, entry in _load().items()
+        if entry.get("has_runtime") and entry.get("kind") in (None, "ability")
+    }
+
+
+def virtual_ability_for_tool(name: str) -> Optional[str]:
+    """The DISPLAY-ONLY (``virtual``) ability that lists a tool, or None.
+
+    A virtual ability (e.g. Core ▸ Base) groups always-on core tools under one
+    row in both ability tables purely for visibility + permission management. It
+    is intentionally NOT in ``tools_map()``/``ABILITY_TOOLS`` — so this lookup is
+    kept SEPARATE from ``tool_modes.ability_for_tool`` (which drives runtime
+    gating). Using this for gating would let ``tool_hidden_by_ability`` withhold
+    these always-on tools — exactly what we avoid. Use it ONLY to LABEL a tool's
+    owning row in the panels (see app/api/agents.py list_agent_tools)."""
+    for aid, entry in _load().items():
+        if entry.get("virtual") and name in (entry.get("tools") or []):
+            return aid
+    return None
+
+
+def tool_metadata() -> Dict[str, Dict[str, Any]]:
+    """Per-tool loop metadata for every ability-gated tool — feeds
+    app/tools/loader.BUILTIN_TOOL_METADATA so a dropped-in ability's tools show
+    up in /admin/tools and the loop visualizer with NO loader edit.
+
+    An ability's .json may carry an optional top-level ``tool_metadata`` map:
+        "tool_metadata": {"my_tool": {"stages": ["guardrails", "execute_tools"],
+                                       "destructive": true}}
+    Tools without an explicit entry get safe defaults (execute_tools stage,
+    non-destructive). Entries with explicit descriptor metadata are flagged
+    ``_explicit`` so the loader lets them override its legacy literals."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for aid, entry in _load().items():
+        if not entry.get("has_runtime") or entry.get("kind") not in (None, "ability"):
+            continue
+        explicit = entry.get("tool_metadata") or {}
+        for tname in entry.get("tools") or []:
+            meta: Dict[str, Any] = {"stages": ["execute_tools"],
+                                    "destructive": False, "agent_types": []}
+            em = explicit.get(tname)
+            if isinstance(em, dict):
+                meta.update(em)
+                meta["_explicit"] = True
+            out[tname] = meta
+    return out
+
+
+_CONFIRM_TOOLS_CACHE: Optional[set] = None
+
+
+def confirm_gated_tools(force: bool = False) -> set:
+    """Global set of tool names that inherently PAUSE for the user's confirmation
+    in Ask/Plan mode — their built-in ``requires_confirmation`` nature, independent
+    of any admin/agent permission override.
+
+    This is the single source of truth that lets both ability tables show a
+    write/destructive tool at its true permission ("Ask") and lock it from being
+    set looser, instead of misleadingly defaulting it to "Auto". It unions:
+
+      1. each runtime ability's ``DESTRUCTIVE`` set (the loader turns membership
+         into ``requires_confirmation`` on the tool);
+      2. integration tools whose spec requires confirmation (defaults to its
+         ``destructive`` flag) + the always-confirmed generic ``oauth_api_call``;
+      3. built-in tools flagged ``requires_confirmation`` in the loader metadata,
+         plus the hard-coded loop baseline (``run_command`` / ``restart_server``).
+
+    Note this is the ASK-mode floor: a tool that is ``destructive`` but NOT
+    ``requires_confirmation`` (e.g. ``db_query``, gated only in Plan mode) is
+    deliberately excluded, so the displayed permission matches Ask-mode reality.
+    Cached; pass ``force=True`` (or call ``reload()``) after a drop-in change."""
+    global _CONFIRM_TOOLS_CACHE
+    if _CONFIRM_TOOLS_CACHE is not None and not force:
+        return _CONFIRM_TOOLS_CACHE
+
+    names: set = set()
+    # 1. Each runtime ability's DESTRUCTIVE set (populated by its build_tools()).
+    for aid, entry in _load().items():
+        if not entry.get("has_runtime") or entry.get("kind") not in (None, "ability"):
+            continue
+        mod = ability_module(aid)
+        if mod is None:
+            continue
+        bt = getattr(mod, "build_tools", None)
+        if callable(bt):
+            try:
+                bt(user_id="", session_id="", agent_id="", enabled_providers={aid})
+            except Exception:
+                pass
+        try:
+            names |= set(getattr(mod, "DESTRUCTIVE", set()) or set())
+        except Exception:
+            pass
+
+    # 2. Integration (OAuth) tools — requires_confirmation defaults to destructive.
+    try:
+        from app.integrations import _discover_tool_specs
+        for spec in _discover_tool_specs():
+            if spec.get("requires_confirmation", spec.get("destructive", False)):
+                names.add(spec["name"])
+        names.add("oauth_api_call")
+    except Exception:
+        pass
+
+    # 3. Built-in metadata flagged requires_confirmation + the loop baseline.
+    try:
+        from app.tools.loader import BUILTIN_TOOL_METADATA
+        names |= {n for n, md in BUILTIN_TOOL_METADATA.items()
+                  if isinstance(md, dict) and md.get("requires_confirmation")}
+    except Exception:
+        pass
+    try:
+        from app.agent.loop import DESTRUCTIVE_TOOLS
+        names |= set(DESTRUCTIVE_TOOLS)
+    except Exception:
+        names |= {"run_command", "restart_server"}
+
+    _CONFIRM_TOOLS_CACHE = names
+    return names
 
 
 def feature_descriptors() -> List[Any]:
     """FeatureDescriptor objects for the feature catalog / edition gating."""
     from app.features.descriptor import normalize_feature
     out = []
-    for aid, feat in _load().items():
+    for aid, entry in _load().items():
         out.append(normalize_feature(
-            feat, category="ability", default_id=aid,
-            module=f"plugins.abilities.{aid}", drop_in=True,
+            {
+                "id": aid,
+                "display_name": entry["display_name"],
+                "category": "ability",
+                "status": entry.get("status") or "stable",
+                "summary": entry.get("description", ""),
+            },
+            category="ability", default_id=aid,
+            module=f"plugins.abilities.{entry.get('group', '')}.{aid}",
+            drop_in=True,
         ))
     return out
 
 
-def _surfaced() -> Dict[str, Dict[str, Any]]:
-    """Every discovered ability file surfaces as a UI toggle — drop a file in
-    and it shows up. One that omits FEATURE["group"] lands in the default group
-    rather than vanishing."""
-    return dict(_load())
-
-
 def connection_rows() -> List[Dict[str, Any]]:
-    """The ``section='ability'`` connection rows app/api/agents.py serves.
-
-    Carries the UI metadata (description/icon/color/group/simple) so the two
-    ability panels can render generically without per-ability constants.
-    """
+    """Connection rows for app/api/agents.py — all non-placeholder abilities."""
     rows: List[Dict[str, Any]] = []
-    for aid, feat in _surfaced().items():
+    for aid, entry in _load().items():
+        if entry.get("placeholder"):
+            continue
         rows.append({
             "connection_type": aid,
             "section": "ability",
-            "display_name": feat.get("display_name") or aid,
+            "display_name": entry["display_name"],
             "status": "available",
-            "description": feat.get("description") or feat.get("summary") or "",
-            "icon": feat.get("icon") or "plug",
-            "color": feat.get("color") or "#7aa2f7",
-            "group": feat.get("group") or _DEFAULT_GROUP,
-            "simple": bool(feat.get("simple", True)),
-            "maturity": feat.get("status") or "unknown",
+            "description": entry.get("description") or "",
+            "icon": entry.get("icon") or "plug",
+            "color": entry.get("color") or "#7aa2f7",
+            "group": entry.get("group") or "",
+            "simple": bool(entry.get("simple", True)),
+            "kind": entry.get("kind", "ability"),
+            "maturity": entry.get("status") or "stable",
+            # Safety device — always-on, fixed toggle (cannot be turned off).
+            # The per-agent Abilities panel renders its toggle locked and the
+            # connections API forces its enabled flag true.
+            "locked_on": bool(entry.get("locked_on", False)),
+            # True when the ability declares a credentials block — the per-agent
+            # Abilities panel renders the shared credentials form for it (the
+            # admin panel reads the same flag from the catalog as has_credentials).
+            "has_credentials": bool(isinstance(entry.get("credentials"), dict)
+                                    and entry["credentials"].get("fields")),
         })
     return rows
 
@@ -400,59 +738,106 @@ def ui_catalog() -> Dict[str, Any]:
 
     {
       groups: [{id, name, icon, color, desc, members:[ability_id…]}],
-      abilities: {id: {display_name, description, icon, color, simple, status, group, tools}},
-      credential_members: [id…],
+      abilities: {id: {display_name, kind, description, note, icon, color, simple,
+                        placeholder, group, tools}},
     }
-    Members are sorted alphabetically by display name and include the credential
-    providers that live in the group (scraper / browser_session).
+    Members are sorted alphabetically by display name.
+    Groups are sorted by _group.json order, then alphabetically.
     """
-    raw = _surfaced()
+    cat = _load()
+    groups_meta = dict(_GROUP_META)  # {normalized_gid: {name, icon, ...}}
+
+    # Live order overrides from data/config/agent-abilities.json (admin-editable,
+    # repo-specific). Any group/ability not listed there falls back to the
+    # descriptor / _group.json ``order`` (the drop-in seed default). Read lazily so
+    # the catalog core stays decoupled and still works if admin config is absent.
+    order_groups: Dict[str, int] = {}
+    order_abilities: Dict[str, int] = {}
+    # Live on/off toggles (admin-set, stored in data/config/agent-abilities.json).
+    # Only explicitly-stored choices appear here; anything absent falls back to the
+    # ability's descriptor ``default_enabled``. Baking the resolved state INTO the
+    # catalog lets each panel draw every toggle in the correct position on first
+    # render, with no second state fetch / race (mirrors ``_ability_app_enabled``).
+    stored_states: Dict[str, bool] = {}
+    try:
+        from app.admin import ability_config as _abcfg
+        _ov = _abcfg.get_order()
+        order_groups = _ov.get("groups") or {}
+        order_abilities = _ov.get("abilities") or {}
+        stored_states = _abcfg.all_ability_states()
+    except Exception:
+        pass
 
     abilities: Dict[str, Any] = {}
-    group_hints: Dict[str, Dict[str, Any]] = {}  # optional per-group styling from ability files
-    for aid, feat in raw.items():
-        gid = _group_of(feat)
+    for aid, entry in cat.items():
         abilities[aid] = {
             "id": aid,
-            "display_name": feat.get("display_name") or aid,
-            "description": feat.get("description") or feat.get("summary") or "",
-            "icon": feat.get("icon") or "plug",
-            "color": feat.get("color") or "#7aa2f7",
-            "simple": bool(feat.get("simple", True)),
-            "status": feat.get("status") or "unknown",
-            "group": gid,
-            "tools": list(feat.get("tools") or []),
+            "display_name": entry["display_name"],
+            "kind": entry["kind"],
+            "description": entry.get("description") or "",
+            "note": entry.get("note"),
+            "icon": entry.get("icon") or "plug",
+            "color": entry.get("color") or "#7aa2f7",
+            "simple": entry.get("simple", True),
+            "placeholder": entry.get("placeholder", False),
+            "status": entry.get("status", "stable"),
+            "protected": entry.get("protected", False),
+            "default_enabled": entry.get("default_enabled", False),
+            # Safety device — always-on, fixed toggle (cannot be turned off).
+            "locked_on": entry.get("locked_on", False),
+            # Resolved live on/off: a locked-on safety ability is forced ON
+            # regardless of any stored admin choice; otherwise stored admin
+            # choice ▸ descriptor default.
+            "enabled": True if entry.get("locked_on")
+                       else stored_states.get(aid, entry.get("default_enabled", False)),
+            # Bundled-skill metadata so a panel can render the "Skill" row (its
+            # "when to use it" summary + an editor) without a per-ability fetch.
+            "skill_summary": entry.get("skill_summary") or "",
+            "skill_mode": entry.get("skill_mode") or "selectable",
+            "order": order_abilities.get(aid, entry.get("order", 100)),
+            "group": entry["group"],
+            "tools": entry.get("tools") or [],
+            # True when the ability declares a ``credentials`` block — the panel
+            # then renders its generic credentials form. Field defs + values are
+            # fetched on demand from /abilities/{id}/credentials (never inlined
+            # here, so secrets never ride along with the catalog).
+            "has_credentials": bool(isinstance(entry.get("credentials"), dict)
+                                    and entry["credentials"].get("fields")),
         }
-        # First ability to style an emergent group wins (known groups ignore hints).
-        if gid not in _KNOWN_GROUPS and gid not in group_hints:
-            h = {}
-            for src, dst in (("group_label", "label"), ("group_icon", "icon"),
-                             ("group_color", "color"), ("group_desc", "desc")):
-                if feat.get(src):
-                    h[dst] = feat[src]
-            if h:
-                group_hints[gid] = h
 
-    # Display names for member sorting (abilities + credential providers).
+    # Display names for member sorting
     name_of: Dict[str, str] = {aid: a["display_name"] for aid, a in abilities.items()}
-    for cid, meta in _CREDENTIAL_MEMBERS.items():
-        name_of[cid] = meta["display_name"]
 
-    # Bucket members by group — group ids are whatever the abilities declared.
+    # Bucket members by group
     by_group: Dict[str, List[str]] = {}
     for aid, a in abilities.items():
         by_group.setdefault(a["group"], []).append(aid)
-    for cid, meta in _CREDENTIAL_MEMBERS.items():
-        by_group.setdefault(meta["group"], []).append(cid)
 
-    # Resolve each group's look, attach sorted members, order known-first.
+    # Ensure groups with only _group.json and no members still appear
+    for gid in groups_meta:
+        if gid not in by_group:
+            by_group[gid] = []
+
+    # Build group list with sorted members
     groups = []
     for gid, members in by_group.items():
-        if not members:
-            continue
-        g = _resolve_group_meta(gid, group_hints)
-        g["members"] = sorted(members, key=lambda m: name_of.get(m, m).lower())
-        groups.append(g)
+        gm = groups_meta.get(gid, {
+            "name": gid.replace("_", " ").title(),
+            "icon": _EMERGENT_GROUP_ICON,
+            "color": _EMERGENT_GROUP_COLOR,
+            "desc": "",
+            "order": _EMERGENT_GROUP_ORDER,
+        })
+        groups.append({
+            "id": gid,
+            "name": gm["name"],
+            "icon": gm["icon"],
+            "color": gm["color"],
+            "desc": gm.get("desc", ""),
+            "members": sorted(members, key=lambda m: (abilities.get(m, {}).get("order", 100), name_of.get(m, m).lower())),
+            "_order": order_groups.get(gid, gm.get("order", _EMERGENT_GROUP_ORDER)),
+        })
+
     groups.sort(key=lambda g: (g["_order"], g["name"].lower()))
     for g in groups:
         g.pop("_order", None)
@@ -460,5 +845,99 @@ def ui_catalog() -> Dict[str, Any]:
     return {
         "groups": groups,
         "abilities": abilities,
-        "credential_members": list(_CREDENTIAL_MEMBERS.keys()),
     }
+
+
+def ability_ids(kind: Optional[str] = "ability") -> List[str]:
+    """All ability ids in the catalog, optionally filtered to one ``kind``.
+
+    Default ``kind="ability"`` returns the host tool-gating abilities that the
+    admin Agent Tools panel shows an on/off toggle for — i.e. the set whose
+    enabled-state lives in data/config/agent-abilities.json. Pass ``kind=None``
+    for every catalog entry (abilities, oauth, credential, channel, placeholder).
+    """
+    cat = _load()
+    if kind is None:
+        return list(cat.keys())
+    return [aid for aid, e in cat.items() if e.get("kind") == kind]
+
+
+def ability_entry(ability_id: str) -> Optional[Dict[str, Any]]:
+    """Return the raw catalog entry for an ability id (or None)."""
+    return _load().get(ability_id)
+
+
+def is_toggleable_ability(ability_id: str) -> bool:
+    """True iff ``ability_id`` is a kind="ability" member of the catalog — the
+    ones the admin can enable/disable at the app level. Replaces the old
+    hardcoded `_ABILITY_CONFIG_KEY` membership check."""
+    e = _load().get(ability_id)
+    return bool(e and e.get("kind") == "ability")
+
+
+def ability_default_enabled(ability_id: str) -> bool:
+    """The descriptor-declared default for an ability with no stored admin toggle."""
+    e = _load().get(ability_id)
+    return bool(e and e.get("default_enabled", False))
+
+
+def ability_is_locked_on(ability_id: str) -> bool:
+    """True for a safety-device ability that is always on and cannot be turned
+    off (descriptor ``locked_on``). Its toggle is fixed ON in both panels and it
+    is forced enabled at the app and per-agent level. See get_agent_connections,
+    upsert_agent_connection, disable_ability, and context_strategy_for_agent."""
+    e = _load().get(ability_id)
+    return bool(e and e.get("locked_on", False))
+
+
+def group_orders() -> Dict[str, int]:
+    """{normalized_group_id: order} from each group's ``_group.json`` (the seed
+    default). The live order an admin can override lives in
+    data/config/agent-abilities.json."""
+    _load()
+    return {gid: int(meta.get("order", _EMERGENT_GROUP_ORDER))
+            for gid, meta in _GROUP_META.items()}
+
+
+def ability_orders() -> Dict[str, int]:
+    """{ability_id: order} from each ability's descriptor ``order`` (the seed
+    default). The live order an admin can override lives in
+    data/config/agent-abilities.json."""
+    return {aid: int(e.get("order", 100)) for aid, e in _load().items()}
+
+
+def ability_config_schema(ability_id: str) -> Optional[Dict[str, Any]]:
+    """Return the config schema for an ability from its descriptor's ``config`` key.
+    Returns None if the ability has no config or is simple=True."""
+    entry = _load().get(ability_id)
+    if not entry:
+        return None
+    if entry.get("simple", True):
+        return None
+    config = entry.get("config")
+    if not isinstance(config, dict):
+        return None
+    settings = config.get("settings")
+    if not isinstance(settings, list):
+        return None
+    return {
+        "ability_id": ability_id,
+        "settings": settings,
+        "notes": config.get("notes"),
+    }
+
+
+def ability_credentials_spec(ability_id: str) -> Optional[Dict[str, Any]]:
+    """Return the ability's declarative ``credentials`` block (or None).
+
+    Shape: {scope: admin|user|agent, requires: [keys], fields: [{key,label,type,
+    secret,options,placeholder,hint}, …]}. Consumed by the common-credential
+    framework (app/abilities/credentials.py), the GET/POST/DELETE credential
+    endpoints, and configured-state gating."""
+    entry = _load().get(ability_id)
+    if not entry:
+        return None
+    creds = entry.get("credentials")
+    if not isinstance(creds, dict) or not creds.get("fields"):
+        return None
+    return creds

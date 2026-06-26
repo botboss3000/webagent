@@ -1,0 +1,7 @@
+{
+  "name": "Memory",
+  "icon": "brain",
+  "color": "#bb9af7",
+  "desc": "Persistent knowledge — let the agent read, search, and write wiki-style memory pages.",
+  "order": 10
+}

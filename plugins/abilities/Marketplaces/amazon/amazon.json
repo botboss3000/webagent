@@ -1,0 +1,12 @@
+{
+  "display_name": "Amazon",
+  "kind": "oauth",
+  "icon": "package",
+  "color": "#e0af68",
+  "description": "Amazon Seller API for orders and inventory.",
+  "note": "Requires a Professional Seller plan ($39.99/mo) plus SP-API developer registration.",
+  "simple": false,
+  "placeholder": false,
+  "tools": [],
+  "order": 4
+}

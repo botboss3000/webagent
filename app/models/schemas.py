@@ -32,9 +32,10 @@ class ChatRequest(BaseModel):
     documents: Optional[List[ContextDocumentPayload]] = None
     history: Optional[List[HistoryMessagePayload]] = None
     attachment_ids: Optional[List[str]] = None
+    app_control: Optional[Dict[str, Any]] = None  # App Control point-and-share fingerprint (clicked element label/role/region/page/locator/style/markup/x,y + typed text); folded to the model for this turn and shown as a foldable app_control tool chip
     agent_template_id: Optional[str] = None  # request a specific agent template for this session
     agent_id: Optional[str] = None  # request a specific custom agent by ID for this session
-    execution_mode: Optional[str] = 'write'  # 'read' | 'write' | 'auto' — controls tool execution permission
+    execution_mode: Optional[str] = 'ask'  # 'ask' | 'plan' | 'auto' (legacy 'read'/'write' accepted) — controls tool execution permission
 
 
 class ChatResponse(BaseModel):
@@ -172,7 +173,7 @@ class AgentTemplate(BaseModel):
     model: Optional[str] = None
     provider: Optional[str] = None
     temperature: float = 0.0
-    max_tokens: int = 4096
+    max_tokens: int = 8000
     metadata: str = "{}"
     created_at: datetime
     updated_at: datetime
@@ -189,7 +190,7 @@ class AgentRecord(BaseModel):
     model: Optional[str] = None
     provider: Optional[str] = None
     temperature: float = 0.0
-    max_tokens: int = 4096
+    max_tokens: int = 8000
     status: str = "active"
     metadata: str = "{}"
     assigned_at: datetime

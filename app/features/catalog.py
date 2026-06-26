@@ -43,7 +43,7 @@ _FOLDER_SPECS = [
     ("scheduler", "scheduler/providers", "app.scheduler.providers", False, set()),
     ("encryption", "encryption", "app.encryption", False,
      {"interface", "migration", "vault_keys"}),
-    ("payment", "billing/processors", "app.billing.processors", False, {"base"}),
+    ("payment", "../plugins/billing/processors", "plugins.billing.processors", False, {"base"}),
     ("secrets", "secrets", "app.secrets", False, {"interface"}),
 ]
 
@@ -70,7 +70,7 @@ _ABILITIES = [
     ("automation", "Automation", "beta", "scheduled tasks + event subscriptions."),
     ("browser_control", "Browser Control", "beta", "headless Playwright browser + arbitrary HTTP."),
     ("image_generation", "Image Generation", "beta", "generate_image via the configured image model."),
-    ("visualizer", "Visualizer", "beta", "page-authoring tools for the Pages workspace."),
+    ("visualizer", "Visualizer", "beta", "page-authoring tools for the Canvas workspace."),
     ("ui_admin", "UI Admin", "beta", "admin UI configuration tools."),
     ("create_tools", "Create Tools", "beta", "define new DB-persisted tools at runtime."),
     ("terminal_control", "Terminal Control", "experimental", "drive interactive terminal programs (effectively shell access)."),

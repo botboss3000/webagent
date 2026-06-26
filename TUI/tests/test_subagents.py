@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from webagent.subagents import (  # noqa: E402
+from tui_app.subagents import (  # noqa: E402
     BACKGROUND, COMPLETED, ERROR, GATHER, NOTIFY,
     SubagentRegistry, format_delivery,
 )

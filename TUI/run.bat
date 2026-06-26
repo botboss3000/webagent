@@ -22,5 +22,5 @@ if not exist "%VENV_PY%" (
     "%VENV_PY%" -m pip install -e .
 )
 
-"%VENV_PY%" -m webagent
+"%VENV_PY%" -m tui_app
 if errorlevel 1 pause

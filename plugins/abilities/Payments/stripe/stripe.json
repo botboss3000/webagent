@@ -1,0 +1,12 @@
+{
+  "display_name": "Stripe",
+  "kind": "placeholder",
+  "icon": "credit-card",
+  "color": "#9ece6a",
+  "description": "Accept payments and manage subscriptions.",
+  "note": "OAuth (Connect) — free to integrate; Stripe takes a per-transaction fee.",
+  "simple": false,
+  "placeholder": true,
+  "tools": [],
+  "order": 1
+}

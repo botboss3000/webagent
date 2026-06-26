@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webAgent</title>
+<!-- SEO / social-preview meta (description, canonical, Open Graph, Twitter card)
+     is injected RIGHT HERE server-side by app/main.py `_render_app_shell`, and the
+     bare <title> above is replaced there too. It's done server-side so the urls
+     are ABSOLUTE (link scrapers reject relative og:image/og:url) and so a shared
+     public agent link (/{agent_id}) previews with that agent's own name. Single
+     source of truth = main.py — do NOT hard-code og:/twitter: tags here, they'd
+     duplicate the injected block. KEEP this title as the static fallback. -->
 <link rel="icon" href="./ui/favicon.svg" type="image/svg+xml">
 <!-- PWA: manifest + service worker -->
 <!-- The service worker is registered ONCE near the end of <body> (search for
@@ -25,6 +32,94 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<!-- ── Early JS-error capture (classic, pre-module) ─────────────────────────────
+     Registered BEFORE any ES module loads so it survives the one failure the
+     module-level handler in ui/shared/js/main.js cannot catch: a module *link*
+     error (e.g. "does not provide an export named X"). Such an error aborts the
+     whole module graph at instantiation time, so main.js never evaluates and the
+     error/unhandledrejection listeners it installs never exist — the SyntaxError
+     then surfaces only as an uncaught console message and never reaches logs.db.
+     This classic inline script runs synchronously at parse time, independent of
+     the module graph, guaranteeing those failures POST to
+     /api/v1/log/browser-error. main.js routes its richer banner handler through
+     the same window.__reportJsError funnel below; a short message-dedupe collapses
+     the two listeners firing for one event into a single logs.db row.
+     KEEP: this must stay the FIRST <script> in the document and stay classic
+     (NOT type="module"), or pre-boot module-link errors go uncaptured again. -->
+<script>
+(function () {
+  var _recent = Object.create(null);   // message -> last-post epoch ms (dedupe)
+  var _DEDUPE_MS = 1500;
+
+  // Benign browser notifications that arrive as "error" events but are NOT real
+  // errors and aren't actionable. "ResizeObserver loop…" is the canonical one:
+  // the browser raises it whenever a ResizeObserver callback changes layout in
+  // the same frame (e.g. the file-editor's resizable panes settling when the
+  // File Explorer opens). Drop them so they never reach logs.db or flag the tab.
+  // (Mirrored in main.js's _showJsErrorBanner for the banner path.)
+  var _BENIGN = [
+    /ResizeObserver loop completed with undelivered notifications/i,
+    /ResizeObserver loop limit exceeded/i,
+  ];
+  function _isBenign(m) {
+    var s = String(m || '');
+    for (var i = 0; i < _BENIGN.length; i++) { if (_BENIGN[i].test(s)) return true; }
+    return false;
+  }
+
+  // Single POST funnel — shared by these early listeners AND main.js's
+  // _showJsErrorBanner, so identical events from both collapse to one row.
+  window.__reportJsError = function (payload) {
+    try {
+      if (!payload || !payload.message) return;
+      if (_isBenign(payload.message)) return;   // non-actionable browser noise
+      var now = Date.now();
+      var key = String(payload.message).slice(0, 200);
+      if (_recent[key] && (now - _recent[key]) < _DEDUPE_MS) return;   // collapse duplicates
+      if (Object.keys(_recent).length > 200) _recent = Object.create(null);  // bound growth
+      _recent[key] = now;
+      var body = {
+        message: String(payload.message).slice(0, 4000),
+        source: String(payload.source || '').slice(0, 200),
+        level: payload.level || 'error',
+        url: location.pathname + location.search,
+      };
+      if (payload.stack) body.stack = String(payload.stack).slice(0, 8000);
+      // Correlation coords, if the app booted far enough to know them.
+      if (window.app) {
+        if (window.app.currentUserId)    body.user_id = window.app.currentUserId;
+        if (window.app.currentSessionId) body.session_id = window.app.currentSessionId;
+        if (window.app.currentAgentId)   body.agent_id = window.app.currentAgentId;
+      }
+      fetch('/api/v1/log/browser-error', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        keepalive: true,    // still sent if the page is tearing down
+      }).catch(function () {});
+    } catch (_) {}
+  };
+
+  // Uncaught synchronous errors AND top-level module <script> link failures
+  // (the latter dispatch a window 'error' event, not a rejection).
+  window.addEventListener('error', function (e) {
+    var msg = e.message || (e.error && e.error.message);
+    if (!msg) return;   // ignore resource-load (404) error events — no message
+    if (_isBenign(msg)) return;   // benign browser noise — no banner, no title flag
+    var src = e.filename ? (e.filename.split('/').pop() + ':' + e.lineno) : 'error';
+    window.__reportJsError({ message: msg, source: src, stack: e.error && e.error.stack });
+    try { document.title = '[JS ERR] ' + document.title.replace(/^\[JS ERR\] /, ''); } catch (_) {}
+  });
+
+  // Unhandled promise rejections — this is the path a failed dynamic import()
+  // of the main module graph takes ("Uncaught (in promise) SyntaxError: ...").
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    var msg = (r && r.message) ? r.message : String(r);
+    window.__reportJsError({ message: msg, source: 'unhandledrejection', stack: r && r.stack });
+  });
+})();
+</script>
 <!-- crypto.randomUUID polyfill for insecure contexts (plain HTTP / IP access) -->
 <script>
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID !== 'function') {
@@ -61,21 +156,28 @@
   if (!window.DOMPurify) console.warn('[UI] DOMPurify failed to load — chat falls back to plain text (no HTML).');
 </script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm/css/xterm.css">
-<link rel="stylesheet" href="./ui/css/app1.css">
-<link rel="stylesheet" href="./ui/css/app2.css">
-<link rel="stylesheet" href="./ui/css/app3.css">
-<link rel="stylesheet" href="./ui/css/loop.css">
-<link rel="stylesheet" href="./ui/css/loop-visual.css">
-<link rel="stylesheet" href="./ui/css/autoagent.css">
-<link rel="stylesheet" href="./ui/css/agents.css">
-<link rel="stylesheet" href="./ui/css/sessions.css">
-<link rel="stylesheet" href="./ui/css/automations.css">
-<link rel="stylesheet" href="./ui/css/files.css">
-<link rel="stylesheet" href="./ui/css/web.css">
-<link rel="stylesheet" href="./ui/css/wiki.css">
-<link rel="stylesheet" href="./ui/css/tutorial.css">
+<link rel="stylesheet" href="./ui/shared/css/app1.css">
+<link rel="stylesheet" href="./ui/shared/css/app2.css">
+<link rel="stylesheet" href="./ui/shared/css/app3.css">
+<!-- App Control point-and-share panel (right-click → point at a UI element →
+     send to chat). Paired with ui/shared/js/app-control-point.js. -->
+<link rel="stylesheet" href="./ui/shared/css/app-control-point.css">
+<!-- Cross-page shared styling (the agent-loop visualizer is used by both the
+     Agents page and the Admin Tools › Interactions view; tutorial + chat-widget
+     are app-shell infra). PER-PAGE stylesheets are NOT listed here — each page
+     declares its own `css` in page.json and the shell auto-injects them from the
+     catalog (see header-build.js __ensurePageStyles), so dropping a page folder
+     in / removing it loads / unloads its CSS with zero edits to this file. -->
+<link rel="stylesheet" href="./ui/main-panel/agents/agent-loop/loop.css">
+<link rel="stylesheet" href="./ui/main-panel/agents/agent-loop/loop-visual.css">
+<link rel="stylesheet" href="./ui/tutorials/tutorial.css">
+<link rel="stylesheet" href="./ui/chat-widget/chat-widget.css">
 <!-- Design system tokens + visual overrides (loaded last to take effect) -->
-<link rel="stylesheet" href="./ui/css/design-system.css">
+<link rel="stylesheet" href="./ui/shared/css/design-system.css">
+<!-- Global border + font knobs from app-settings.json (via /api/v1/auth/ui-config).
+     Render-blocking right after the design tokens so its CSS-variable overrides
+     win the cascade and are in place before the app mounts. -->
+<script src="./ui/shared/js/appearance.js"></script>
 <!-- ============================================================
      Pull-to-refresh from header (mobile): style for the indicator
      ============================================================ -->
@@ -102,12 +204,112 @@
   .ptr-label-hint.show { opacity: 0.6; }
 </style>
 <!-- ============================================================
+     Boot curtain — full-screen loading cover (anti-flash)
+     ------------------------------------------------------------
+     A single opaque overlay painted on the FIRST frame (the
+     #boot-curtain element is the first child of <body>). It hides
+     the whole boot churn — empty shell, partials injecting, theme,
+     splash fade-in, session restore — so the user only ever sees a
+     clean loading animation, then the finished intended view.
+     Lifted by window.__boot (defined just below the element):
+       • appReady()    — app shell + active tab mounted (no splash)
+       • splashReady() — splash finished fading in (hand-off)
+       • reveal()      — forced (server-down / safety net)
+     Sits ABOVE the splash (z 2147483000) so it can hand off to it.
+     Colour is var(--bg-0) so it matches the final page base in BOTH
+     themes (no second flash on lift); design-system.css is loaded
+     render-blocking in <head> above, so the token resolves on the
+     first paint. Disabled animations under reduced-motion.
+     ============================================================ -->
+<style>
+  #boot-curtain {
+    position: fixed; inset: 0; z-index: 2147483600;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg-0);
+    opacity: 1; transition: opacity 0.5s ease;
+  }
+  #boot-curtain.is-revealed { opacity: 0; pointer-events: none; }
+  .boot-curtain-loader {
+    position: relative; width: 72px; height: 72px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .boot-curtain-ring {
+    position: absolute; inset: 0; border-radius: 50%;
+    border: 3px solid rgba(var(--brand-rgb), 0.16);
+    border-top-color: var(--accent);
+    animation: bootCurtainSpin 0.9s linear infinite;
+  }
+  .boot-curtain-mark {
+    width: 30px; height: 30px; color: var(--accent);
+    animation: bootCurtainPulse 1.8s ease-in-out infinite;
+  }
+  @keyframes bootCurtainSpin { to { transform: rotate(360deg); } }
+  @keyframes bootCurtainPulse {
+    0%, 100% { opacity: 0.5; transform: scale(0.92); }
+    50%      { opacity: 1;   transform: scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #boot-curtain { transition: none; }
+    .boot-curtain-ring, .boot-curtain-mark { animation: none; }
+  }
+</style>
+<!-- ============================================================
      Stargaze background + dynamic spotlight overrides
      Loaded last so it wins the cascade.
      ============================================================ -->
-<link rel="stylesheet" href="./ui/css/index.css">
+<link rel="stylesheet" href="./ui/shared/css/index.css">
 </head>
 <body>
+<!-- ── Boot curtain: opaque loading cover (first child so it paints first). ──
+     Critical CSS lives in <head> (search "Boot curtain"). The bot glyph mirrors
+     the favicon. window.__boot below owns when it lifts. ──────────────────── -->
+<div id="boot-curtain" role="status" aria-label="Loading">
+  <div class="boot-curtain-loader">
+    <span class="boot-curtain-ring"></span>
+    <svg class="boot-curtain-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 8V4H8"/>
+      <rect width="16" height="12" x="4" y="8" rx="2"/>
+      <path d="M2 14h2"/><path d="M20 14h2"/>
+      <path d="M15 13v2"/><path d="M9 13v2"/>
+    </svg>
+  </div>
+</div>
+<script>
+  // Boot-curtain coordinator. Defined synchronously during parse so it exists
+  // before the splash plugin (partial-loader) and main.js run. The curtain stays
+  // opaque until exactly one of these lifts it:
+  //   • appReady()    — app shell ready, AND no splash is taking over.
+  //   • splashReady() — the splash finished fading in (hand-off; black→splash).
+  //   • reveal()      — forced (server-down catch / safety net).
+  // splashWillShow() lets the splash claim the reveal so appReady() defers to it.
+  (function () {
+    var done = false;
+    var curtain = document.getElementById('boot-curtain');
+    function remove() {
+      if (curtain && curtain.parentNode) curtain.parentNode.removeChild(curtain);
+      curtain = null;
+    }
+    function reveal() {
+      if (done) return;
+      done = true;
+      if (!curtain) return;
+      curtain.classList.add('is-revealed');
+      var t = setTimeout(remove, 700);
+      curtain.addEventListener('transitionend', function (e) {
+        if (e.propertyName === 'opacity') { clearTimeout(t); remove(); }
+      });
+    }
+    window.__boot = {
+      _splashPending: false,
+      splashWillShow: function () { this._splashPending = true; },
+      splashReady:    function () { reveal(); },
+      appReady:       function () { if (!this._splashPending) reveal(); },
+      reveal:         reveal,
+    };
+    // Safety net: never trap the user on the curtain if a boot step never reports.
+    setTimeout(reveal, 10000);
+  })();
+</script>
 <!-- Pull-to-refresh indicator (fixed; shown during touch-drag from header on mobile) -->
 <div id="ptr-indicator" style="display:none;">
   <svg viewBox="0 0 48 48" width="44" height="44">
@@ -153,7 +355,16 @@
       var isMobile = window.innerWidth <= 800;
       var key = isMobile ? 'chatPanelVisibleMobile' : 'chatPanelVisible';
       var stored = localStorage.getItem(key);
-      var visible = stored === null ? !isMobile : stored !== 'false';
+      // First-visit default: mobile always starts hidden; desktop follows the
+      // admin's "chat at startup" setting (cached by appearance.js under
+      // `wa_appearance`, served via ui-config). Defaults to visible.
+      var adminDefault = true;
+      try {
+        var rawAp = localStorage.getItem('wa_appearance');
+        if (rawAp && String(JSON.parse(rawAp).chat_default_visible).toLowerCase() === 'hidden') adminDefault = false;
+      } catch (_) {}
+      var defaultVisible = isMobile ? false : adminDefault;
+      var visible = stored === null ? defaultVisible : stored !== 'false';
       document.body.classList.toggle('chat-visible', visible);
       document.body.classList.toggle('chat-hidden', !visible);
     } catch (_) {}
@@ -172,6 +383,27 @@
         localStorage.removeItem('terminalSessionId');
       }
     } catch (_) {}
+
+    // Check if app needs setup (no admin account exists yet).
+    // Redirect to setup page before anything else loads.
+    (function checkSetup() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', '/api/v1/auth/setup-status', false);  // sync
+      try {
+        xhr.send();
+        if (xhr.status === 200) {
+          var data = JSON.parse(xhr.responseText);
+          if (!data.initialized) {
+            window.location.href = '/setup.html';
+            return;
+          }
+        }
+      } catch (_) {
+        // Server unreachable — the partial loader will also fail and show a
+        // visible notice. Log a compact hint here since this runs first.
+        console.warn('[webAgent] Backend unreachable during setup check — server may be down.');
+      }
+    })();
   })();
 </script>
 <script>
@@ -179,6 +411,13 @@
   // on-screen keyboard appears. dvh handles browser chrome but on Android
   // Chrome does not shrink for keyboards, so we drive --app-height from
   // window.visualViewport.height (falls back to innerHeight).
+  //
+  // We ALSO flag the mobile soft keyboard being open by toggling `body.kb-open`:
+  // the keyboard is open when the visual viewport is meaningfully shorter than
+  // the (constant) layout viewport AND an editable field holds focus. Some pages
+  // hide bottom-docked clutter while it's up so the focused field isn't covered —
+  // e.g. the App Config chat pill + sticky section headings (see app3.css
+  // `body.kb-open` rules). Class is mobile-gated here, so desktop never sets it.
   (function () {
     var root = document.documentElement;
     var vv = window.visualViewport;
@@ -186,16 +425,31 @@
       var h = (vv ? vv.height : window.innerHeight);
       root.style.setProperty('--app-height', h + 'px');
     }
-    window.__appHeightApply = apply;
-    apply();
-    if (vv) {
-      vv.addEventListener('resize', apply);
-      vv.addEventListener('scroll', apply);
+    function applyKb() {
+      if (!document.body) return;
+      var isMobile = window.innerWidth <= 800;       // mirrors __isMobileChatLayout / the CSS breakpoint
+      var vvh = (vv ? vv.height : window.innerHeight);
+      var ae = document.activeElement;
+      var editable = !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
+      // Keyboards are ~250px+; a 120px floor clears browser-chrome jitter.
+      var open = isMobile && editable && (window.innerHeight - vvh) > 120;
+      document.body.classList.toggle('kb-open', open);
     }
-    window.addEventListener('resize', apply);
+    function applyAll() { apply(); applyKb(); }
+    window.__appHeightApply = apply;
+    applyAll();
+    if (vv) {
+      vv.addEventListener('resize', applyAll);
+      vv.addEventListener('scroll', applyAll);
+    }
+    window.addEventListener('resize', applyAll);
     window.addEventListener('orientationchange', function () {
-      setTimeout(apply, 120);
+      setTimeout(applyAll, 120);
     });
+    // Focus changes flip the editable-field gate before/after the viewport
+    // resize fires (and catch field-to-field moves while the keyboard stays up).
+    document.addEventListener('focusin', applyKb);
+    document.addEventListener('focusout', function () { setTimeout(applyKb, 0); });
   })();
 </script>
 <script>
@@ -205,8 +459,22 @@
   window.__chatVisibilityKey = function () {
     return window.__isMobileChatLayout() ? 'chatPanelVisibleMobile' : 'chatPanelVisible';
   };
+  // The admin's app-wide "chat at startup" default (App Settings → Chat panel),
+  // served via /api/v1/auth/ui-config and cached by appearance.js under
+  // `wa_appearance`. 'hidden' → start collapsed on desktop. Returns true unless
+  // the admin chose 'hidden'. (Mobile always defaults hidden regardless.)
+  window.__chatAdminDefaultVisible = function () {
+    try {
+      var raw = localStorage.getItem('wa_appearance');
+      if (raw) {
+        var v = JSON.parse(raw);
+        if (v && String(v.chat_default_visible).toLowerCase() === 'hidden') return false;
+      }
+    } catch (_) {}
+    return true;
+  };
   window.__chatVisibilityDefault = function () {
-    return window.__isMobileChatLayout() ? false : true;
+    return window.__isMobileChatLayout() ? false : window.__chatAdminDefaultVisible();
   };
   window.__getChatVisible = function () {
     try {
@@ -249,29 +517,64 @@
   window.__toggleChat = function () {
     window.__applyChatVisible(!window.__getChatVisible());
   };
-  // Delegated capture-phase listener on document. Survives DOM rebuilds.
-  // Triple-fallback to handle Lucide's MutationObserver swapping SVGs mid-click:
-  //   1) closest() on e.target
-  //   2) walk composedPath() (immutable snapshot from dispatch time)
-  //   3) hit-test via elementFromPoint at click coords
-  document.addEventListener('click', function (e) {
+
+  // Resolve the chat-toggle button from an event with a triple-fallback so it
+  // survives Lucide's MutationObserver swapping the inner SVG mid-interaction:
+  //   1) closest() on e.target  2) walk composedPath()  3) hit-test at coords.
+  function __findChatToggle(e) {
     var btn = null;
-    if (e.target && e.target.closest) {
-      btn = e.target.closest('#chat-toggle-btn');
-    }
+    if (e.target && e.target.closest) btn = e.target.closest('#chat-toggle-btn');
     if (!btn && typeof e.composedPath === 'function') {
       var path = e.composedPath();
       for (var i = 0; i < path.length; i++) {
         if (path[i] && path[i].id === 'chat-toggle-btn') { btn = path[i]; break; }
       }
     }
-    if (!btn) {
+    if (!btn && typeof e.clientX === 'number') {
       var hit = document.elementFromPoint(e.clientX, e.clientY);
       if (hit && hit.closest) btn = hit.closest('#chat-toggle-btn');
     }
+    return btn;
+  }
+
+  // ── Chat button: short click toggles the panel; LONG-PRESS (≥500ms) starts a
+  //    fresh session with the default agent. A long press sets _lpFired, which
+  //    the click handler below honours to skip the toggle that the release
+  //    click would otherwise fire. _lpFired is reset on the next pointerdown,
+  //    so a later short click is never wrongly swallowed. ──
+  var _lpTimer = null, _lpFired = false;
+  function _lpClear() { if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } }
+  document.addEventListener('pointerdown', function (e) {
+    var btn = __findChatToggle(e);
+    if (!btn) return;
+    _lpFired = false;
+    _lpClear();
+    _lpTimer = setTimeout(function () {
+      _lpFired = true;
+      _lpClear();
+      btn.classList.add('lp-active');
+      setTimeout(function () { btn.classList.remove('lp-active'); }, 280);
+      try {
+        if (!window.__getChatVisible()) window.__applyChatVisible(true);
+        if (typeof window.__startNewSessionDefault === 'function') {
+          window.__startNewSessionDefault();
+        }
+      } catch (_) {}
+    }, 500);
+  }, true);
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (evt) {
+    document.addEventListener(evt, function (e) {
+      if (__findChatToggle(e)) _lpClear();
+    }, true);
+  });
+
+  // Delegated capture-phase click → toggle (unless a long press just fired).
+  document.addEventListener('click', function (e) {
+    var btn = __findChatToggle(e);
     if (btn) {
       e.stopPropagation();
       e.preventDefault();
+      if (_lpFired) { _lpFired = false; return; }  // long press handled it
       window.__toggleChat();
     }
   }, true);
@@ -301,36 +604,59 @@
 
 <div id="main-header">
 
-  <!-- Hidden native <select> kept for tabs.js compat -->
+  <!-- Hidden native <select> kept for tabs.js compat. Options are generated from
+       the page catalog by header-build.js (__buildHeader); only the pinned
+       "Manage Account" entry is authored statically and kept last. -->
   <select id="main-tab-select" style="display:none;" aria-hidden="true">
-    <option value="admin-tools">Admin Tools</option>
-    <option value="autoagent">Pages</option>
-    <option value="agents">Agents</option>
-    <option value="sessions">Sessions</option>
-    <option value="web">Web</option>
-    <option value="terminal">Terminal</option>
-    <option value="automations">Automations</option>
-    <option value="wiki">Wiki</option>
     <option value="account">Manage Account</option>
-    <!-- Plugin pages injected dynamically by JS -- they get <option> elements
-         created on-the-fly from localStorage["pluginPages"]. -->
   </select>
 
   <!-- Horizontal tab strip with chevron-scroll carousel -->
   <div id="main-tabs-wrap">
     <button type="button" id="main-tabs-chev-left" class="main-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button>
     <div id="main-tabs" role="tablist">
-      <!-- User avatar inline, left of the refresh button -->
+      <!-- User avatar: trigger lives inside the carousel.
+           The menu (#user-dropdown-menu) is a body-level portal so the CSS mask
+           applied to this element when chevrons are visible cannot trap the
+           fixed-position popup in a sub-stacking-context and hide it behind page content. -->
       <div class="user-dropdown" id="user-dropdown">
-        <span id="top-user-id" class="user-dropdown-trigger" title="Account">
+        <button type="button" id="top-user-id" class="user-dropdown-trigger" title="Account" aria-label="Account">
           <span id="top-user-avatar-slot"><!-- Default icon shown before JS renders the avatar -->
             <svg class="user-avatar-default" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;opacity:0.55;">
               <circle cx="12" cy="8" r="4"></circle>
               <path d="M4 20c0-4 4-7 8-7s8 3 8 7"></path>
             </svg>
           </span>
-        </span>
-        <div id="user-dropdown-menu" class="user-dropdown-menu" style="display:none;">
+        </button>
+      </div>
+
+      <!-- Debug console toggle — relocated by header-build.js (__buildHeader)
+           INTO the Admin Tools group, immediately right of the server health
+           dot. It stays a standalone <button> so clicking the bug never
+           triggers the Admin Tools tab switch. Defined here (not generated) so
+           debugConsole.js can wire it on boot regardless of catalog timing. -->
+      <button id="debug-console-toggle" class="debug-console-toggle-btn" title="Toggle console log panel" style="flex-shrink:0;">
+        <i data-lucide="bug" style="width:14px;height:14px;"></i>
+      </button>
+
+      <!-- Header tab buttons are generated from the page catalog by
+           header-build.js (__buildHeader): pre-painted synchronously from the
+           cache below, then reconciled against the live catalog by
+           partial-loader.js. The user-dropdown above is the only static child. -->
+    </div>
+    <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
+  </div>
+
+<!-- ── User dropdown menu portal ──────────────────────────────────────────────
+     Intentionally placed as a direct child of <body>, outside #main-tabs.
+     When #main-tabs has a CSS mask (applied whenever tabs overflow on narrow
+     screens), WebKit creates a new stacking context that traps any
+     position:fixed descendant — rendering it behind page content despite
+     z-index:1100. Lifting the menu to body-level avoids this entirely.
+     The trigger (#top-user-id) stays inside the carousel; user-panel.js
+     anchors the menu under the trigger via getBoundingClientRect() on open.
+  ─────────────────────────────────────────────────────────────────────────── -->
+<div id="user-dropdown-menu" class="user-dropdown-menu" style="display:none;">
           <!-- Current user row + Manage Account button -->
           <div class="user-dropdown-current-row" id="dropdown-current-row"></div>
           <button id="btn-manage-account" class="user-dropdown-manage-btn">
@@ -403,6 +729,14 @@
                   <input id="feedback-email" name="email" type="email" maxlength="254" placeholder="you@example.com" autocomplete="email">
                 </label>
 
+                <!-- Honeypot: invisible decoy field. Real users never see or
+                     focus it (hidden via .dropdown-feedback-hp, aria-hidden,
+                     tabindex -1, autocomplete off); naive bots fill it and get
+                     silently dropped server-side. Host-independent anti-spam. -->
+                <div class="dropdown-feedback-hp" aria-hidden="true">
+                  <label>Website<input id="feedback-website" name="website" type="text" tabindex="-1" autocomplete="off"></label>
+                </div>
+
                 <div id="feedback-turnstile" class="dropdown-feedback-turnstile"></div>
                 <div id="feedback-status" class="dropdown-feedback-status" aria-live="polite"></div>
 
@@ -424,174 +758,49 @@
             Sign Out
           </button>
 
-          <div class="user-dropdown-legal">
-            <a href="/privacy" target="_blank" rel="noopener">Privacy</a>
-            <span aria-hidden="true">·</span>
-            <a href="/tos" target="_blank" rel="noopener">Terms</a>
-          </div>
-        </div>
+      <div class="user-dropdown-legal">
+        <a href="/privacy" target="_blank" rel="noopener">Privacy</a>
+        <span aria-hidden="true">·</span>
+        <a href="/tos" target="_blank" rel="noopener">Terms</a>
       </div>
-      <span class="main-tab-group" id="admin-tools-group">
-        <button type="button" class="main-tab" data-value="admin-tools" role="tab">
-          <i data-lucide="wrench" class="lucide-icon"></i>Admin Tools
-          <span id="admin-health-dot" class="health-dot health-dot-red" title="Server status unknown"></span>
-        </button>
-      </span>
-      <button type="button" class="main-tab" data-value="autoagent" role="tab">
-        <i data-lucide="files" class="lucide-icon"></i>Pages
-      </button>
-      <button type="button" class="main-tab" data-value="agents" role="tab">
-        <i data-lucide="bot" class="lucide-icon"></i>Agents
-      </button>
-      <button type="button" class="main-tab" data-value="sessions" role="tab">
-        <i data-lucide="list" class="lucide-icon"></i>Sessions
-      </button>
-      <button type="button" class="main-tab" data-value="web" role="tab">
-        <i data-lucide="globe" class="lucide-icon"></i>Web
-      </button>
-      <button type="button" class="main-tab" data-value="terminal" role="tab">
-        <i data-lucide="terminal" class="lucide-icon"></i>Terminal
-      </button>
-      <button type="button" class="main-tab" data-value="automations" role="tab">
-        <i data-lucide="settings-2" class="lucide-icon"></i>Automations
-      </button>
-      <button type="button" class="main-tab" data-value="wiki" role="tab">
-        <i data-lucide="book-open" class="lucide-icon"></i>Wiki
-      </button>
     </div>
-    <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
-  </div>
 
-  <!-- Pre-paint header-tab visibility/order.
-       The header tab buttons above are authored statically, but which ones a
-       user actually wants (and in what order) is an admin preference saved in
-       localStorage by App Settings → Main Panel Pages. This block applies that
-       preference synchronously BEFORE first paint, so pages the admin turned
-       off never flash into view. The page list + storage keys are the source
-       of truth in ui/js/app-config.js (_MAIN_PANEL_PAGES) — keep them in sync.
-       Admin Tools is locked-visible and never hidden here. -->
+  <!-- Pre-paint the header tab strip from the cached page catalog.
+       The set/order/labels/icons/visibility of pages is an admin preference now
+       stored SERVER-SIDE (data/config/main-panel-pages.json) and served by
+       GET /api/v1/pages/catalog. To avoid a flash of an empty header on every
+       load, header-build.js caches the last catalog in localStorage; this block
+       paints the strip from that cache synchronously before first paint.
+       partial-loader.js then fetches the live catalog and reconciles. First-ever
+       load (no cache) shows the strip a moment later, within the boot spinner. -->
+  <script src="./ui/shared/js/header-build.js"></script>
   <script>
   (function () {
     try {
-      var DEFAULT_ORDER = ['admin-tools', 'agents', 'sessions', 'autoagent', 'web', 'terminal', 'automations', 'wiki'];
-      var bar = document.getElementById('main-tabs');
-      if (!bar) return;
-
-      var order = DEFAULT_ORDER.slice();
-      try {
-        var savedOrder = JSON.parse(localStorage.getItem('mainPanelOrder') || 'null');
-        if (Array.isArray(savedOrder)
-            && savedOrder.length === DEFAULT_ORDER.length
-            && DEFAULT_ORDER.every(function (id) { return savedOrder.indexOf(id) >= 0; })) {
-          order = savedOrder;
-        }
-      } catch (e) {}
-
-      var hidden = [];
-      try {
-        var savedHidden = JSON.parse(localStorage.getItem('mainPanelHidden') || 'null');
-        if (Array.isArray(savedHidden)) hidden = savedHidden;
-      } catch (e) {}
-
-      // Map each page id to its header element. Admin Tools lives inside a
-      // wrapper group (so it can carry the health dot), so map to the group.
-      var adminGroup = document.getElementById('admin-tools-group');
-      var byId = {};
-      if (adminGroup) byId['admin-tools'] = adminGroup;
-      bar.querySelectorAll('.main-tab').forEach(function (btn) {
-        var id = btn.dataset.value;
-        if (!id) return;
-        byId[id] = (adminGroup && adminGroup.contains(btn)) ? adminGroup : btn;
-      });
-
-      // Reorder + show/hide. Nodes stay in the DOM (display toggled) so a later
-      // un-hide in App Settings restores them live without a reload.
-      order.forEach(function (id) {
-        var el = byId[id];
-        if (!el) return;
-        var hide = id !== 'admin-tools' && hidden.indexOf(id) >= 0;
-        el.style.display = hide ? 'none' : '';
-        bar.appendChild(el);
-      });
+      if (typeof window.__buildHeader !== 'function') return;
+      var cached = window.__readPagesCache && window.__readPagesCache();
+      if (cached && Array.isArray(cached.main) && cached.main.length) {
+        // Inject cached pages' own stylesheets synchronously (no FOUC for
+        // returning users) before painting the strip from the cache.
+        try { window.__ensurePageStyles(cached); } catch (e) {}
+        window.__buildHeader(cached.main);
+      }
     } catch (e) {}
-  })();
-  </script>
-
-  <!-- Pre-paint injection of plugin pages from the plugin registry.
-       Plugin pages are stored in localStorage["pluginPages"] as a JSON array:
-       [{ slug, title, icon }]. They create header tab buttons + select options
-       + tab content iframes dynamically. The source of truth is
-       ui/js/app-config.js (_PLUGIN_PAGES). -->
-  <script>
-  (function () {
-    try {
-      var plugins = JSON.parse(localStorage.getItem('pluginPages') || '[]');
-      if (!Array.isArray(plugins) || plugins.length === 0) return;
-
-      var bar = document.getElementById('main-tabs');
-      var select = document.getElementById('main-tab-select');
-      var mainPanel = document.getElementById('main-panel');
-      if (!bar || !select || !mainPanel) return;
-
-      plugins.forEach(function (p, i) {
-        // Create tab button
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'main-tab';
-        btn.dataset.value = 'plugin-' + p.slug;
-        btn.setAttribute('role', 'tab');
-        var iconName = p.icon || 'file-text';
-        btn.innerHTML = '<i data-lucide="' + iconName + '" class="lucide-icon"></i>' + _esc(p.title);
-        bar.appendChild(btn);
-
-        // Create select option (hidden native select for tabs.js compat)
-        var opt = document.createElement('option');
-        opt.value = 'plugin-' + p.slug;
-        opt.textContent = p.title;
-        select.appendChild(opt);
-
-        // Create tab-content div with an iframe, if one doesn't already exist
-        var contentId = 'tab-plugin-' + p.slug;
-        if (!document.getElementById(contentId)) {
-          var tabDiv = document.createElement('div');
-          tabDiv.id = contentId;
-          tabDiv.className = 'tab-content';
-          var iframe = document.createElement('iframe');
-          iframe.className = 'terminal-frame';
-          iframe.style.cssText = 'width:100%;height:100%;border:none;background:#0d0d1a;';
-          iframe.title = p.title;
-          iframe.loading = 'lazy';
-          iframe.src = '/plugins/pages/' + encodeURIComponent(p.slug) + '.html?_t=' + Date.now();
-          tabDiv.appendChild(iframe);
-          mainPanel.appendChild(tabDiv);
-        }
-      });
-
-      // Re-run lucide for the new icons
-      if (window.lucide) { try { lucide.createIcons(); } catch (_) {} }
-    } catch (e) {}
-    function _esc(s) {
-      if (typeof s !== 'string') return '';
-      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    }
   })();
   </script>
 
   <!-- User menu (right side) -->
   <span id="status-right">
-    <span id="header-notifications">
-      <span id="header-session-counter" class="header-notif-badge" title="Sessions needing attention" style="display:none;">
-        <i data-lucide="alert-triangle" style="width:13px;height:13px;"></i>
-        <span id="header-session-count">0</span>
-      </span>
-    </span>
-    <button id="chat-toggle-btn" class="chat-toggle-btn active" title="Toggle chat panel">
+    <!-- Click toggles the chat panel; LONG-PRESS starts a fresh session with the
+         default agent (long-press logic + click-suppression in the chat-toggle
+         script block above; new-session action = window.__startNewSessionDefault,
+         exposed by ui/chat-side-panel/js/session-init.js). -->
+    <button id="chat-toggle-btn" class="chat-toggle-btn active" title="Toggle chat panel (long-press for a new session)">
       <i data-lucide="message-square" class="lucide-icon" style="width:16px;height:16px;"></i>
       <span>Chat</span>
     </button>
-    <button id="session-new-header-btn" class="session-new-header-btn" title="New session">
-      <i data-lucide="plus" style="width:24px;height:24px;"></i>
-    </button>
+    <!-- The new-session (+) button moved into the chat panel header
+         (ui/chat-side-panel/chat-side-panel.html → .header-actions). -->
   </span>
 
 </div>
@@ -601,24 +810,11 @@
 
   <!-- Main panel -->
   <div id="main-panel">
-    <!-- Tab content -->
-    <div id="tab-autoagent" class="tab-content"></div>
-    <div id="tab-agents" class="tab-content"></div>
-    <div id="tab-sessions" class="tab-content"></div>
-    <div id="tab-web" class="tab-content"></div>
-    <div id="tab-terminal" class="tab-content">
-      <iframe src="/web-terminal/" class="terminal-frame" title="Terminal" loading="lazy"></iframe>
-    </div>
-    <div id="tab-automations" class="tab-content"></div>
-    <div id="tab-wiki" class="tab-content"></div>
+    <!-- Tab content mounts are generated from the page catalog by header-build.js
+         (__buildHeader): one #tab-<id> per page, plus an <iframe> for iframe-only
+         pages (e.g. Terminal). #tab-account is authored statically because the
+         Account view is a pinned, non-catalog destination (the user dropdown). -->
     <div id="tab-account" class="tab-content"></div>
-    <div id="tab-admin-tools" class="tab-content"></div>
-
-    <!-- Plugin pages: rendered in an iframe, similar to terminal tab -->
-    <div id="tab-plugin" class="tab-content">
-      <iframe id="plugin-page-iframe" class="terminal-frame" title="Plugin Page" loading="lazy" style="width:100%;height:100%;border:none;background:#0d0d1a;"></iframe>
-    </div>
-
   </div>
 
   <!-- Chat resize handle -->
@@ -626,6 +822,23 @@
 
   <!-- Chat panel -->
   <div id="chat-panel"></div>
+
+  <!-- App-wide Restricted Access gate.
+       Shown (via body.app-restricted, toggled in ui/shared/js/main.js) when the
+       visitor isn't signed in / authorized to use this instance. It fills the
+       whole #stage so NO page or chat is visible behind it — the same lock
+       treatment the Admin Tools tab uses for non-admins, applied app-wide. The
+       header stays visible above #stage so the account/sign-in menu is reachable;
+       the button below opens it directly. Sign-in reloads the page, which
+       re-runs the gate and reveals the app once authorized. -->
+  <div id="app-restricted-overlay" style="display:none;">
+    <div class="app-restricted-card">
+      <div class="app-restricted-icon"><i data-lucide="lock" style="width:32px;height:32px;"></i></div>
+      <div class="app-restricted-title">Restricted Access</div>
+      <div class="app-restricted-desc" id="app-restricted-desc">Sign in to use this app.</div>
+      <button id="app-restricted-signin" class="app-restricted-btn">Sign in</button>
+    </div>
+  </div>
 
 </div><!-- /#stage -->
 
@@ -649,46 +862,93 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit/lib/addon-fit.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links/lib/addon-web-links.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-search/lib/addon-search.js"></script>
-<script src="./ui/js/db-select.js"></script>
+<script src="./ui/shared/js/db-select.js"></script>
 <script type="module">
-  // Boot the partial loader, wait for every HTML partial to be injected,
-  // then dynamically import the main JS modules so their getElementById
-  // / querySelector calls resolve against a fully populated DOM.
-  import { partialsReady } from './ui/js/partial-loader.js';
-  await partialsReady;
+	  // Boot the partial loader, wait for every HTML partial to be injected,
+	  // then dynamically import the main JS modules so their getElementById
+	  // / querySelector calls resolve against a fully populated DOM.
+	  import { partialsReady } from './ui/shared/js/partial-loader.js';
+	  (async () => {
+	  try {
+	    await partialsReady;
+	  } catch (_) {
+	    // Partial loading failed — almost certainly the server is down.
+	    // Lift the boot curtain so the message below is visible, then show a
+	    // visible message in the main panel instead of a blank screen.
+	    try { if (window.__boot) window.__boot.reveal(); } catch (_e) {}
+	    (function showServerDown() {
+	      var dot = document.getElementById('admin-health-dot');
+      if (dot) {
+        dot.className = 'health-dot health-dot-red';
+        dot.title = 'Server unreachable — start the backend then refresh';
+      }
+      var panel = document.getElementById('tab-canvas');
+      if (!panel) return;
+      panel.classList.add('active');
+      panel.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:48px 24px;text-align:center;';
+      var icon = document.createElement('div');
+      icon.innerHTML = '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--fg-4, #6b7397)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
+      panel.appendChild(icon);
+      var title = document.createElement('h2');
+      title.textContent = 'Server Unreachable';
+      title.style.cssText = 'margin:0;font:600 20px/1.3 Inter,sans-serif;color:var(--fg-2, #c8cfe0);';
+      panel.appendChild(title);
+      var msg = document.createElement('p');
+      msg.textContent = 'The webAgent backend at ' + (location.host || 'localhost:8080') + ' cannot be reached. Start the server then refresh this page.';
+      msg.style.cssText = 'margin:0;max-width:420px;font:400 14px/1.6 Inter,sans-serif;color:var(--fg-3, #8a92b0);';
+      panel.appendChild(msg);
+      var hint = document.createElement('p');
+      hint.textContent = 'python -m app.main';
+      hint.style.cssText = 'margin:0;font:500 13px/1.5 "JetBrains Mono",monospace;color:var(--fg-4, #6b7397);background:var(--bg-1, #16162a);padding:8px 16px;border-radius:6px;border:1px solid var(--border, #25254a);';
+      panel.appendChild(hint);
+    })();
+    return;
+  }
   await Promise.all([
-    import('./ui/js/main.js'),
-    import('./ui/js/attachments.js'),
-    import('./ui/js/data-sources.js'),
+    import('./ui/shared/js/main.js'),
+    import('./ui/shared/js/attachments.js'),
+    import('./ui/shared/js/data-sources.js'),
   ]);
 
   // ── Register service worker for PWA support ──
   if ('serviceWorker' in navigator) {
-    // If a worker is ALREADY controlling this page, a later controllerchange
-    // means an UPDATED worker (new sw.js / cache version) just took over —
-    // reload once so the fresh app shell (JS/CSS) is actually used instead of
-    // the previous cached copy. Guarded so a first-ever install doesn't reload
-    // and it never loops.
-    if (navigator.serviceWorker.controller) {
-      let _swReloaded = false;
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (_swReloaded) return;
-        _swReloaded = true;
-        window.location.reload();
-      });
-    }
+    // Auto-reload ONCE when an UPDATED worker takes control, so an ordinary
+    // reload picks up new JS/CSS without a manual hard refresh. Relying on a
+    // single trigger left tabs pinned on stale cached code (the "it worked once,
+    // then I need a hard reset" trap), so we cover both ways the new worker can
+    // arrive:
+    //   1. controllerchange — the new worker (skipWaiting in sw.js) claims us.
+    //   2. updatefound → 'activated' — belt-and-suspenders if (1) doesn't fire.
+    // Guarded: _hadController stops a first-ever install from reloading, and
+    // _swReloaded makes it strictly one-shot so it can NEVER loop. (Do not add an
+    // unregister/clear-caches bypass — that fights this and thrash-reloads.)
+    const _hadController = !!navigator.serviceWorker.controller;
+    let _swReloaded = false;
+    const _swReloadOnce = () => {
+      if (_swReloaded || !_hadController) return;
+      _swReloaded = true;
+      window.location.reload();
+    };
+    navigator.serviceWorker.addEventListener('controllerchange', _swReloadOnce);
     try {
       const reg = await navigator.serviceWorker.register('/sw.js');
       reg.update().catch(() => {});   // proactively check for a new sw.js each load
+      reg.addEventListener('updatefound', () => {
+        const nw = reg.installing;
+        if (!nw) return;
+        nw.addEventListener('statechange', () => {
+          if (nw.state === 'activated') _swReloadOnce();
+        });
+      });
       console.log('[PWA] Service worker registered:', reg.scope);
     } catch (err) {
-      console.warn('[PWA] Service worker registration failed:', err);
+console.warn('[PWA] Service worker registration failed:', err);
     }
   }
+  })();
 </script>
 <!-- ── Lucide icons + horizontal tab strip with carousel ───────── -->
-<script>
-(function () {
+<script>(function () {
   // Render all data-lucide icons in the DOM
   lucide.createIcons();
 
@@ -722,15 +982,20 @@
     setTimeout(updateChevrons, 350); // catch end of smooth scroll
   }
 
-  // Pick a tab
-  tabBar.querySelectorAll('.main-tab').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      var val = btn.dataset.value;
-      nativeSelect.value = val;
-      nativeSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      syncActive(val);
-    });
+  // Pick a tab — delegated on the strip so it works for buttons generated
+  // (and re-generated) from the page catalog after this script runs.
+  tabBar.addEventListener('click', function (e) {
+    var btn = e.target.closest('.main-tab');
+    if (!btn || !tabBar.contains(btn)) return;
+    var val = btn.dataset.value;
+    if (!val) return;
+    nativeSelect.value = val;
+    nativeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    syncActive(val);
   });
+
+  // Let header-build.js refresh chevrons after it (re)builds the strip.
+  window.__refreshTabStrip = updateChevrons;
 
   // Chevron carousel (matches app-config tabs pattern)
   if (chevLeft && chevRight) {
@@ -757,16 +1022,16 @@
     window.addEventListener('resize', updateChevrons);
   }
 
-  // MutationObserver: sync when tabs.js (or config menu) switches tab externally
-  var tabContents = document.querySelectorAll('.tab-content');
-  if (tabContents.length) {
+  // MutationObserver: sync when tabs.js (or config menu) switches tab externally.
+  // Observe the #main-panel subtree (not each .tab-content node) so it also
+  // covers content mounts generated from the catalog after this script runs.
+  var mainPanel = document.getElementById('main-panel');
+  if (mainPanel) {
     var observer = new MutationObserver(function () {
       var active = document.querySelector('.tab-content.active');
       if (active) syncActive(active.id.replace('tab-', ''));
     });
-    tabContents.forEach(function (el) {
-      observer.observe(el, { attributes: true, attributeFilter: ['class'] });
-    });
+    observer.observe(mainPanel, { subtree: true, attributes: true, attributeFilter: ['class'] });
   }
 
   // Sync to whatever tab is currently active on load
@@ -775,7 +1040,37 @@
 
 })();
 </script>
-<script src="./ui/js/stargaze.js"></script>
+<!-- Cursor glow + card spotlights (always on, independent of the background). -->
+<script src="./ui/shared/js/cursor-effects.js"></script>
+<!-- Pluggable animated background: registry first, then the engine. The engine
+     loads the admin-chosen background plugin from ui/background/<id>/ for the
+     active theme. See ui/background/README.md. -->
+<script src="./ui/background/_engine/registry.js"></script>
+<script src="./ui/background/_engine/manager.js"></script>
+
+<!-- ── Debug Console Log Panel (floating overlay) ── -->
+<div id="debug-console-panel" class="debug-console-panel">
+  <div class="debug-console-header">
+    <span class="debug-console-title"><i data-lucide="terminal" style="width:14px;height:14px;"></i> Console Log</span>
+    <div class="debug-console-header-actions">
+      <button id="debug-console-filter-log" class="debug-console-filter-btn active" data-level="log" title="Show console.log">log</button>
+      <button id="debug-console-filter-warn" class="debug-console-filter-btn active" data-level="warn" title="Show console.warn">warn</button>
+      <button id="debug-console-filter-error" class="debug-console-filter-btn active" data-level="error" title="Show console.error">error</button>
+      <button id="debug-console-filter-debug" class="debug-console-filter-btn" data-level="debug" title="Show console.debug">debug</button>
+      <button id="debug-console-clear" class="debug-console-clear-btn" title="Clear log">✕</button>
+      <button id="debug-console-close" class="debug-console-close-btn" title="Close panel">—</button>
+    </div>
+  </div>
+  <div id="debug-console-content" class="debug-console-content">
+    <div class="debug-console-empty">Console log output will appear here.</div>
+  </div>
+  <div class="debug-console-footer">
+    <label class="debug-console-preserve">
+      <input type="checkbox" id="debug-console-preserve" checked /> Preserve on refresh
+    </label>
+    <span id="debug-console-count" class="debug-console-count">0 entries</span>
+  </div>
+</div>
 
 <!-- ── Feedback sub-view inside the user dropdown (toggled by ui/js/feedback.js) ── -->
 <!--
@@ -786,7 +1081,7 @@
 
 
 
-<script type="module" src="./ui/js/feedback.js"></script>
+<script type="module" src="./ui/shared/js/feedback.js"></script>
 <!-- ── Pull-to-refresh: touch-drag from the header to reload ── -->
 <script>
 (() => {
@@ -886,5 +1181,6 @@
   header.addEventListener('touchcancel', ptrEnd, { passive: true });
 })();
 </script>
+
 </body>
 </html>

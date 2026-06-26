@@ -182,9 +182,12 @@ class WikiStore:
     # DELETE mode the only sidecar is a short-lived -journal that exists solely
     # during a write transaction; between writes there is just wiki.db.
     def _connect(self):
-        import sqlite3
-        conn = sqlite3.connect(self._path)
-        conn.row_factory = sqlite3.Row
+        # Routed through db_crypto so wiki.db honours the full-DB-encryption config
+        # (off by default — this file is git-tracked and serves public pages). With
+        # encryption OFF this is plain stdlib sqlite3. Row factory set by db_crypto.
+        from app.db import db_crypto
+        db_id = "wiki" if self._path == WIKI_DB_PATH else "_wiki_custom"
+        conn = db_crypto.connect(self._path, db_id)
         conn.execute("PRAGMA journal_mode=DELETE")
         conn.execute("PRAGMA synchronous=FULL")
         conn.execute("PRAGMA busy_timeout=30000")
@@ -373,7 +376,22 @@ class WikiStore:
         async with self._write_lock:
             conn = self._connect()
             try:
+                # Resolve the article id first so we can also purge its child rows.
+                # Deleting only wiki_articles left orphaned wiki_revisions (and
+                # wiki_chunks) behind — which both wastes space and let the agent
+                # wrongly tell the user "all revision history is gone" while the
+                # rows persisted. Purge children in the same transaction.
+                idrow = conn.execute(
+                    "SELECT id FROM wiki_articles WHERE slug = ?", (slug,)
+                ).fetchone()
+                article_id = idrow[0] if idrow else None
                 cur = conn.execute("DELETE FROM wiki_articles WHERE slug = ?", (slug,))
+                if article_id is not None:
+                    for _tbl in ("wiki_revisions", "wiki_chunks"):
+                        try:
+                            conn.execute(f"DELETE FROM {_tbl} WHERE article_id = ?", (article_id,))
+                        except Exception:
+                            pass  # table may not exist in older schemas
                 conn.commit()
                 return cur.rowcount > 0
             finally:

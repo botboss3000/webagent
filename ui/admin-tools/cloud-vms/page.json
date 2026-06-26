@@ -1,0 +1,13 @@
+{
+  "id": "cloud-vms",
+  "label": "Cloud VMs",
+  "icon": "server",
+  "order": 7,
+  "html": "cloud-vms.html",
+  "mount": "#files-cloud-vms-main",
+  "entry": "ui/admin-tools/cloud-vms/cloud-vms.js",
+  "start": "startView",
+  "stop": "stopView",
+  "css": ["cloud-vms.css"],
+  "router": "server.py"
+}

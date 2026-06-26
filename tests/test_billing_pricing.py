@@ -5,7 +5,10 @@ Covers:
 - Trial short-circuit (returns is_trial=True, zero charge).
 - Exemption short-circuit (returns is_exempt=True, zero charge).
 - Free strategy stays at zero.
-- Platform-fee split: end_user = fee + earnings invariant.
+
+The platform-fee split is an optional add-on tier and is tested separately in
+plugins/admin/billing/test_platform_billing.py — the core charge here is just
+"what the end user pays" (the agent admin keeps all of it).
 
 The pricing engine is pure-logic; we mock the DB with a tiny in-memory shim
 so we never hit SQLite/Supabase.
@@ -25,7 +28,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from app.billing.pricing import (
+from plugins.billing.pricing import (
     Usage,
     Strategy,
     resolve_charge,
@@ -195,7 +198,6 @@ def test_free_returns_zero(db):
     db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="free"))
     r = _run(resolve_charge(_agent(), "u1", Usage(input_tokens=100, output_tokens=200), db))
     assert r.end_user_charge_cents == 0
-    assert r.platform_fee_cents == 0
     assert r.strategy == "free"
     assert not r.is_exempt and not r.is_trial
 
@@ -209,37 +211,35 @@ def test_credits_default_llm(db):
     r = _run(resolve_charge(_agent(byo=False), "u1", usage, db))
     # 50 + 75 + 50 = 175c
     assert r.end_user_charge_cents == 175
-    # 20% platform fee
-    assert r.platform_fee_cents == 35
-    assert r.agent_admin_earnings_cents == 140
     assert r.strategy == "credits"
     assert r.is_byo_llm is False
 
 
 def test_credits_byo_llm(db):
-    db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="credits"))
+    db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="credits",
+        rate_card_byo_llm=json.dumps({"credits_per_1k_input_tokens": 20, "credits_per_1k_output_tokens": 60,
+                                       "llm_markup_pct": 0, "min_charge_cents": 1})))
     usage = Usage(input_tokens=1000, output_tokens=500, provider_cost_cents=999_999)
     r = _run(resolve_charge(_agent(byo=True), "u1", usage, db))
     # BYO uses lower rates + 0% markup
     # 20 + 30 = 50c
     assert r.end_user_charge_cents == 50
     assert r.is_byo_llm is True
-    assert r.platform_fee_cents + r.agent_admin_earnings_cents == r.end_user_charge_cents
 
 
 # ── Per-message strategy ──
 
 def test_per_message_default(db):
-    db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="per_message"))
+    db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="per_message",
+        rate_card_default_llm=json.dumps({"per_message_cents": 200, "min_charge_cents": 1})))
     usage = Usage(input_tokens=0, output_tokens=0, provider_cost_cents=0)
     r = _run(resolve_charge(_agent(byo=False), "u1", usage, db))
     assert r.end_user_charge_cents == 200
-    assert r.platform_fee_cents == 40
-    assert r.agent_admin_earnings_cents == 160
 
 
 def test_per_message_byo(db):
-    db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="per_message"))
+    db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="per_message",
+        rate_card_byo_llm=json.dumps({"per_message_cents": 80, "llm_markup_pct": 0, "min_charge_cents": 1})))
     r = _run(resolve_charge(_agent(byo=True), "u1", Usage(), db))
     assert r.end_user_charge_cents == 80
 
@@ -252,7 +252,6 @@ def test_per_token_default(db):
     r = _run(resolve_charge(_agent(byo=False), "u1", usage, db))
     # 100 + 150 + 100 (markup) = 350
     assert r.end_user_charge_cents == 350
-    assert r.platform_fee_cents + r.agent_admin_earnings_cents == 350
 
 
 # ── Exemptions ──
@@ -325,7 +324,8 @@ def test_active_subscription_is_free(db):
 
 
 def test_cancelled_subscription_falls_through(db):
-    db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="per_message"))
+    db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="per_message",
+        rate_card_default_llm=json.dumps({"per_message_cents": 200, "min_charge_cents": 1})))
     db.tables["subscriptions"].append({
         "user_id": "u1", "agent_id": "agent-1", "status": "cancelled",
     })

@@ -3,7 +3,8 @@
 Thin wrapper around the ``wiki_*`` methods on the active StorageBackend
 (``app/db/local.py``), plus slug derivation and a couple of validation rules.
 Used by both the HTTP API (``app/api/wiki.py``) and the agent tools
-(``app/tools/wiki_tools.py``) so the two stay in lock-step.
+(the Wiki Context ability, ``plugins/abilities/Memory/wiki_context.py``) so the
+two stay in lock-step.
 """
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ def is_public_actor(user_id) -> bool:
     """True when the caller should be treated as anonymous / public.
 
     Registered members have a real user_id (their email, or the bootstrap
-    'admin_default'). Anonymous visitors always get an 'anon_…' user_id (see
+    'admin'). Anonymous visitors always get an 'anon_…' user_id (see
     app/communications/auth.create_anonymous_identity). No user_id (no token)
     is also treated as public. Public actors see only PUBLISHED articles.
     """

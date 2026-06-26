@@ -141,17 +141,26 @@ def _from_openrouter(m: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _merge(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
-    """Fill empty fields of `base` from `extra`; description always prefers the
-    one that is non-empty. Numeric facts keep `base` (models.dev) when present."""
+    """Merge OpenRouter metadata onto a models.dev entry.
+
+    OpenRouter is who bills us, so its prices always win over models.dev's.
+    For non-pricing fields, fill empty slots from whichever source has data.
+    Description prefers whichever source actually has prose."""
+    PRICING_FIELDS = {'cost_input', 'cost_output', 'cost_cache_read', 'cost_cache_write'}
     out = dict(base)
     for k, v in extra.items():
         if k == "sources":
             out["sources"] = sorted(set(out.get("sources", []) + v))
             continue
-        cur = out.get(k)
-        is_empty = cur is None or cur == "" or cur == []
-        if is_empty and not (v is None or v == "" or v == []):
+        if v is None or v == "" or v == []:
+            continue
+        # Pricing: OpenRouter's actual prices win (we're billed through OpenRouter)
+        if k in PRICING_FIELDS:
             out[k] = v
+        else:
+            cur = out.get(k)
+            if cur is None or cur == "" or cur == []:
+                out[k] = v
     # Description: prefer whichever source actually has prose.
     if not base.get("description") and extra.get("description"):
         out["description"] = extra["description"]
@@ -319,6 +328,30 @@ def lookup(model_id: str, provider_hint: str = "") -> Optional[Dict[str, Any]]:
 def enrich(model_id: str, provider_hint: str = "") -> Dict[str, Any]:
     """Like lookup() but always returns a dict (empty fields if unknown)."""
     return lookup(model_id, provider_hint) or _empty_entry(model_id)
+
+
+def cost_for(
+    model_id: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    provider_hint: str = "",
+) -> tuple:
+    """Published-price USD cost for one LLM call: the model's per-1M input/output
+    price (from the catalog) × this call's tokens.
+
+    Returns ``(cost_usd, source)`` where source is 'catalog' when at least one
+    price was known, or 'unknown' when the model has no published price (cost 0).
+    This is the canonical cost figure stored per usage row and summed for
+    session / agent / global totals, so it never re-prices when a session later
+    switches models — each call keeps the rate it was made at."""
+    meta = lookup(model_id, provider_hint) or {}
+    ci = meta.get("cost_input")
+    co = meta.get("cost_output")
+    if ci is None and co is None:
+        return 0.0, "unknown"
+    cost = (int(input_tokens or 0) / 1_000_000.0) * (ci or 0.0) \
+        + (int(output_tokens or 0) / 1_000_000.0) * (co or 0.0)
+    return round(cost, 8), "catalog"
 
 
 def all_models() -> Dict[str, Any]:

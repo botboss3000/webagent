@@ -1,0 +1,445 @@
+/* ── Sessions Panel ──────────────────────────────────────────────── */
+/* ---- HARMONY: toolbar action styles (sessions-tb-btn, sessions-tb-trash,
+       sessions-tb-restore, sessions-back-btn) mirror the agents page's
+       agents-tb-* rules in ui/main-panel/agents/agents.css. Keep them in sync. */
+
+/* COLOR SCHEME → ui/shared/css/design-system.css (single source of truth).
+   No raw hex/rgb here: use var(--brand) / var(--accent) / var(--accent-hover) for
+   the brand accent, rgba(var(--brand-rgb), a) for any accent opacity, var(--success|
+   warning|danger) (or rgba(var(--*-rgb), a)) for status, var(--purple) for the 2nd hue.
+   Need a colour that doesn't exist yet? Add a token to the palette in design-system.css
+   (the dark :root block AND its body.light-mode twin), then reference it here.
+   Re-theming the whole app (e.g. peach → green) is then a one-file edit. */
+
+#tab-sessions {
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  position: relative;
+}
+
+/* ── Toolbar ── */
+#sessions-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px 12px;
+  flex-shrink: 0;
+}
+#sessions-toolbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+#sessions-toolbar-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--fg-1);
+}
+#sessions-toolbar-sub {
+  font-size: 12px;
+  color: var(--fg-4);
+  font-weight: 400;
+}
+#sessions-back-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  border: none; border-radius: 7px; cursor: pointer;
+  background: transparent; color: var(--fg-1);
+  transition: background .12s ease, color .12s ease;
+}
+#sessions-back-btn:hover { background: rgba(var(--ink-rgb),0.12); }
+#sessions-back-btn > * { pointer-events: none; }
+
+#sessions-toolbar-actions {
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.sessions-tb-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 28px; padding: 0 10px;
+  font-size: 12px; font-weight: 600;
+  border: var(--border-width) solid var(--border); border-radius: 7px;
+  background: rgba(var(--ink-rgb),0.04); color: var(--fg-1); cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease, opacity .12s ease;
+}
+.sessions-tb-btn:hover { background: rgba(var(--ink-rgb),0.12); border-color: rgba(var(--ink-rgb),0.30); }
+.sessions-tb-btn:disabled { opacity: 0.4; cursor: default; }
+.sessions-tb-btn > * { pointer-events: none; }
+.sessions-tb-restore { color: var(--success); border-color: rgba(var(--success-rgb),0.30); }
+.sessions-tb-restore:hover { background: rgba(var(--success-rgb),0.14); border-color: rgba(var(--success-rgb),0.5); }
+
+/* Header trash button — reuses the shared trash→hazard→spin states */
+.sessions-tb-trash {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  border: 1px solid rgba(var(--danger-rgb),0.22); border-radius: 7px;
+  background: rgba(var(--danger-rgb),0.05); color: var(--danger); cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease, opacity .12s ease;
+}
+.sessions-tb-trash:hover { background: rgba(var(--danger-rgb),0.14); border-color: rgba(var(--danger-rgb),0.45); }
+.sessions-tb-trash.warning { color: var(--warning); border-color: rgba(var(--warning-rgb),0.5); background: rgba(var(--warning-rgb),0.12); }
+.sessions-tb-trash.warning:hover { background: rgba(var(--warning-rgb),0.2); color: var(--warning); }
+.sessions-tb-trash:disabled { opacity: 0.4; cursor: default; }
+.sessions-tb-trash > * { pointer-events: none; }
+
+/* Light mode: only the neutral text tone differs (fg-1 → fg-2); the accent /
+   status hues + neutral tints now come from the per-theme tokens above, so no
+   per-colour override is needed here. */
+body.light-mode .sessions-tb-btn { color: var(--fg-2); border-color: rgba(var(--ink-rgb),0.18); }
+body.light-mode .sessions-back-btn { color: var(--fg-2); }
+
+/* ── Scrollable table area ── */
+#sessions-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb, var(--bg-tint)) transparent;
+  padding: 0 16px 16px;
+}
+#sessions-table-wrap::-webkit-scrollbar { width: 5px; height: 5px; }
+#sessions-table-wrap::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, var(--bg-tint)); border-radius: 3px; }
+#sessions-table-wrap::-webkit-scrollbar-track { background: transparent; }
+
+#sessions-table-inner {
+  min-width: 850px;
+}
+
+/* ── Table ── */
+#sessions-table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+  font-size: 12px;
+  table-layout: fixed;
+}
+#sessions-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-1);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-4);
+  padding: 8px 6px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: var(--border-width) solid var(--border);
+  user-select: none;
+  position: relative;
+}
+#sessions-table thead th.col-cost { text-align: right; }
+#sessions-table thead th.col-tokens-in,
+#sessions-table thead th.col-tokens-out,
+#sessions-table thead th.col-msgs,
+#sessions-table thead th.col-duration {
+  text-align: right;
+}
+#sessions-table thead th.col-caret,
+#sessions-table tbody td.col-caret {
+  width: 22px;
+  min-width: 22px;
+  padding: 0;
+  text-align: center;
+}
+#sessions-table thead th.col-check {
+  width: 32px;
+  min-width: 32px;
+  padding: 8px 0 8px 6px;
+}
+#sessions-table thead th.col-updated {
+  width: 100px;
+  text-align: right;
+}
+
+/* ── Resizable column handle ── */
+.col-resizable {
+  position: relative;
+}
+.col-resizable::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 4px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+  background: transparent;
+}
+.col-resizable:last-child::after { display: none; }
+.col-resizable.resizing::after {
+  background: var(--accent);
+  opacity: 0.3;
+}
+
+/* ── Checkbox cell ── */
+.sessions-check-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  border: var(--border-width) solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  transition: background .1s, border-color .1s;
+  color: transparent;
+}
+.sessions-check-cell:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.sessions-check-cell.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* ── Expand caret (parent groups) — sits left of the checkbox ──
+   Mirrors the chat session list's .session-row-expand tree caret. */
+.sessions-row-expand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--fg-3);
+  cursor: pointer;
+  transition: background .1s, color .1s;
+}
+.sessions-row-expand:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.sessions-row-expand i { pointer-events: none; }
+
+/* ── Child rows (spawns / optimizer Closer) — indented under their parent ── */
+#sessions-table tbody tr.sessions-child-row td.col-title {
+  color: var(--fg-3);
+}
+.sess-child-rail {
+  display: inline-block;
+  width: 14px;
+  height: 1px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-bottom: var(--border-width) solid var(--border);
+}
+.sess-child-role-icon {
+  color: var(--accent);
+  margin-right: 5px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+#sessions-table tbody tr {
+  transition: background 0.1s;
+  cursor: default;
+}
+#sessions-table tbody tr:hover {
+  background: var(--accent-soft);
+}
+#sessions-table tbody tr.selected {
+  background: var(--accent-soft);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+#sessions-table tbody td {
+  padding: 7px 6px;
+  color: var(--fg-2);
+  border-bottom: var(--border-width) solid var(--border-soft);
+  white-space: nowrap;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#sessions-table tbody td.col-cost,
+#sessions-table tbody td.col-tokens-in,
+#sessions-table tbody td.col-tokens-out,
+#sessions-table tbody td.col-msgs,
+#sessions-table tbody td.col-duration,
+#sessions-table tbody td.col-updated {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+#sessions-table tbody td.col-title {
+  max-width: 220px;
+}
+#sessions-table tbody td.col-check {
+  width: 32px;
+  padding: 7px 0 7px 6px;
+}
+
+/* ── Status badges ── */
+.sess-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+/* Semantic status hues from the palette (the per-theme -rgb triples adapt the
+   colour to light/dark automatically, so no body.light-mode override needed).
+   "stopped" + "needs_manual_resume" both read as warning — the badge label text
+   distinguishes them. "unknown" is a neutral fill. */
+.sess-status.complete {
+  background: rgba(var(--success-rgb),0.12);
+  color: var(--success);
+  border: 1px solid rgba(var(--success-rgb),0.25);
+}
+.sess-status.running {
+  background: rgba(var(--brand-rgb),0.12);
+  color: var(--accent);
+  border: 1px solid rgba(var(--brand-rgb),0.25);
+}
+.sess-status.interrupted,
+.sess-status.error {
+  background: rgba(var(--danger-rgb),0.12);
+  color: var(--danger);
+  border: 1px solid rgba(var(--danger-rgb),0.25);
+}
+.sess-status.stopped,
+.sess-status.needs_manual_resume {
+  background: rgba(var(--warning-rgb),0.12);
+  color: var(--warning);
+  border: 1px solid rgba(var(--warning-rgb),0.25);
+}
+.sess-status.unknown {
+  background: rgba(var(--ink-rgb),0.08);
+  color: var(--fg-3);
+  border: 1px solid rgba(var(--ink-rgb),0.18);
+}
+
+/* ── Link badges (canvas / browser page) ── */
+.col-links { width: 70px; }
+#sessions-table tbody td.col-links {
+  white-space: nowrap;
+  overflow: visible;
+}
+.sess-link-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.sess-link-badge.canvas {
+  color: var(--purple);
+  background: rgba(var(--purple-rgb), 0.12);
+  border: var(--border-width) solid rgba(var(--purple-rgb), 0.28);
+}
+.sess-link-badge.browser {
+  color: var(--accent);
+  background: rgba(var(--brand-rgb), 0.12);
+  border: var(--border-width) solid rgba(var(--brand-rgb), 0.28);
+}
+.sess-link-badge i { pointer-events: none; }
+.sess-link-none { color: var(--fg-4); }
+
+/* ── Agent badge in table ── */
+.sess-agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-2);
+  padding: 2px 8px;
+  background: var(--bg-2);
+  border-radius: 6px;
+  border: var(--border-width) solid var(--border-soft);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sess-agent-badge i,
+.sess-agent-badge svg {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+/* ── Empty state ── */
+.sessions-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+}
+.sessions-empty-icon {
+  color: var(--fg-4);
+  opacity: 0.3;
+  margin-bottom: 12px;
+}
+.sessions-empty-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-3);
+  margin-bottom: 4px;
+}
+.sessions-empty-hint {
+  font-size: 11px;
+  color: var(--fg-4);
+}
+
+/* ── Loading state ── */
+.sessions-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 20px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+@keyframes lucide-spin {
+  to { transform: rotate(360deg); }
+}
+.lucide-spin {
+  animation: lucide-spin 1s linear infinite;
+}
+
+/* ── Bulk subset-select dropdown (toolbar) ── */
+.sessions-tb-select {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  border: var(--border-width) solid var(--border);
+  border-radius: 7px;
+  background: rgba(var(--ink-rgb),0.04);
+  color: var(--fg-1);
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.sessions-tb-select:hover { background: rgba(var(--ink-rgb),0.12); border-color: rgba(var(--ink-rgb),0.30); }
+body.light-mode .sessions-tb-select { color: var(--fg-2); border-color: rgba(var(--ink-rgb),0.18); }
+
+/* Clickable Links badges — show the affordance on hover. */
+.sess-link-badge[role="button"] { cursor: pointer; transition: filter .12s ease, transform .08s ease; }
+.sess-link-badge[role="button"]:hover { filter: brightness(1.12); transform: translateY(-1px); }
+
+/* ── Light mode overrides ── */
+body.light-mode #sessions-table thead th {
+  background: var(--bg-1);
+  border-bottom-color: var(--border);
+}
+body.light-mode #sessions-table tbody td {
+  border-bottom-color: var(--border-soft);
+}
+body.light-mode .sess-agent-badge {
+  background: var(--bg-2);
+  border-color: var(--border-soft);
+}

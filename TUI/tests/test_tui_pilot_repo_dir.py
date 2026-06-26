@@ -12,7 +12,7 @@ the agent a turn). Run with the TUI venv::
 
 import asyncio
 
-import webagent.app as appmod
+import tui_app.app as appmod
 from textual.widgets import Input
 
 from pilot_harness import boot, snapshot, hdr_button

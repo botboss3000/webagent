@@ -21,6 +21,18 @@
       "min_status": "beta",
       "include": [],
       "exclude": []
+    },
+    "public": {
+      "label": "Public (agent-only)",
+      "description": "Everything except the platform / marketplace billing tier, whose code, UI and schema are physically stripped so the public artifact has no trace of it.",
+      "rule": "all",
+      "include": [],
+      "exclude": [],
+      "exclude_paths": [
+        "plugins/admin/billing",
+        "ui/admin-tools/billing",
+        "migrations/021_billing_platform.sql"
+      ]
     }
   }
 }

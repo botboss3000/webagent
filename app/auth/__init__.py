@@ -1,5 +1,6 @@
 """Auth router — login with remember-me + recall endpoint."""
 
+import ipaddress
 import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
@@ -7,10 +8,12 @@ from pydantic import BaseModel
 
 from app.auth.jwt import create_access_token, decode_token
 from app.auth.users import (
+    admin_exists,
     authenticate,
     set_remember_token,
     resolve_remember_token,
     get_user,
+    get_user_by_id,
     register_user,
     update_user,
     change_password,
@@ -21,6 +24,48 @@ from app.db import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+_BOOTSTRAP_ADMIN_ID = "admin"
+
+
+def _is_localhost(request: Request) -> bool:
+    """True only when the request originates from the local machine.
+
+    The strictest gate, reserved for the most dangerous one-time action:
+    first-run admin creation (and first-class canvas, which runs unsandboxed
+    agent code with camera/mic in the visitor's browser). A misconfigured
+    public deployment must never hand either of those to a remote visitor.
+    """
+    host = request.client.host if request.client else ""
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+def _is_trusted_local(request: Request) -> bool:
+    """True when the request comes from the local machine OR the local
+    private network (LAN): loopback, RFC1918 private ranges, or link-local.
+
+    This is a deliberately wider boundary than `_is_localhost`. It exists so
+    the 'open' auto-admin login can hand a real session to same-network
+    devices — a phone or laptop reaching the server by its LAN address
+    (e.g. 10.0.0.x / 192.168.x) — instead of leaving them tokenless and
+    half-authenticated. PUBLIC addresses are still rejected, so flipping a
+    publicly-exposed deployment (e.g. a Cloudflare Tunnel exit) to 'open'
+    still can't grant a random internet visitor admin: they'd have to be on
+    the private network itself.
+    """
+    host = request.client.host if request.client else ""
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # Non-IP host string (e.g. the literal "localhost").
+        return host == "localhost"
+    # Unwrap IPv4-mapped IPv6 (e.g. ::ffff:10.0.0.5) to judge the real IPv4.
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
 class LoginRequest(BaseModel):
@@ -163,15 +208,12 @@ async def register(req: RegisterRequest):
 
     Username must be unique. On success, returns a JWT (auto-login).
     Honors the app's access_mode:
-      - private:         registration blocked (403)
-      - admin_approval:  account created but unapproved; login blocked until admin approves
-      - public_*:        account created and auto-approved
+      - admin_approval:   account created but unapproved; login blocked until admin approves
+      - public_registered: account created and auto-approved (must still sign in)
+      - open:             auto-admin localhost mode; normal registration still auto-approves
     """
     from app.admin.settings import get_access_mode as _gam
     mode = _gam()
-    if mode == "private":
-        raise HTTPException(status_code=403, detail="Registration is disabled. This app is private.")
-
     auto_approve = (mode != "admin_approval")
     user = register_user(req.email, req.password, req.display_name, is_approved=auto_approve)
     if user is None:
@@ -205,7 +247,7 @@ async def register(req: RegisterRequest):
 
 
 class AccessModeResponse(BaseModel):
-    access_mode: str  # public_anonymous | public_registered | admin_approval | private
+    access_mode: str  # admin_approval | public_registered | open
 
 
 @router.get("/access-mode", response_model=AccessModeResponse)
@@ -215,6 +257,358 @@ async def access_mode():
     """
     from app.admin.settings import get_access_mode as _gam
     return AccessModeResponse(access_mode=_gam())
+
+
+class UiConfigResponse(BaseModel):
+    # Per-theme animated-background choice (background ids or "none").
+    background_dark: str
+    background_light: str
+    # Global border + typography + full theme palette (see
+    # app.admin.settings.get_appearance_config). Injected at boot as CSS-variable
+    # overrides by ui/shared/js/appearance.js. The palette keys come in
+    # _dark / _light pairs and mirror the design-system.css palette blocks.
+    border_color_dark: str
+    border_color_light: str
+    border_width: str
+    font_sans: str
+    font_mono: str
+    accent_dark: str
+    accent_light: str
+    secondary_dark: str
+    secondary_light: str
+    success_dark: str
+    success_light: str
+    warning_dark: str
+    warning_light: str
+    danger_dark: str
+    danger_light: str
+    surface_bg_dark: str
+    surface_bg_light: str
+    surface_panel_dark: str
+    surface_panel_light: str
+    surface_tint_dark: str
+    surface_tint_light: str
+    text_dark: str
+    text_light: str
+    text_muted_dark: str
+    text_muted_light: str
+    ambient_dark: str
+    ambient_light: str
+    # Chat bubble overrides (blank = follow theme default; #rrggbb[aa]).
+    user_bubble_dark: str
+    user_bubble_light: str
+    agent_bubble_dark: str
+    agent_bubble_light: str
+    # Chat composer pill fill (blank = follow theme default; #rrggbb[aa]).
+    chat_pill_bg_dark: str
+    chat_pill_bg_light: str
+    # Theme-independent style knobs (JSON-only; injected by appearance.js).
+    radius_scale: str
+    shadow_strength: str
+    ui_scale: str
+    reduce_motion: str
+    cursor_glow: str
+    # Chat-composer geometry + button knobs (CSS lengths; see app1.css
+    # CHAT-PILL-VARS). Injected app-wide by ui/shared/js/appearance.js.
+    chat_pill_max_width: str
+    chat_pill_radius: str
+    chat_pill_padding: str
+    chat_pill_min_height: str
+    chat_pill_max_height: str
+    chat_pill_font_size: str
+    chat_pill_attach_size: str
+    chat_pill_attach_icon: str
+    chat_pill_button_size: str
+    chat_pill_button_icon: str
+    # Chat panel layout (app-wide defaults; injected by appearance.js).
+    #   chat_position        — "right" (default) | "left" (desktop split side)
+    #   chat_default_visible — "visible" (default) | "hidden" (first-visit default)
+    chat_position: str
+    chat_default_visible: str
+    # Master on/off for the welcome landing page (ui/splash/splash-page), app-wide.
+    # app/main.py serves the landing at / when this is on; the per-device
+    # "don't show again" / account preference (wa_seen_splash cookie) layers on top.
+    splash_enabled: bool
+    # Master on/off for the in-app tour / hint bubbles (ui/tutorials), app-wide.
+    # The tutorial module reads this; the per-user "show app tour" preference
+    # layers on top, and the account page hides its toggle when this is off.
+    hints_enabled: bool
+    # First-class canvases (ui/main-panel/canvas): render agent-authored canvases
+    # directly in the app (no sandboxed iframe) with real-page powers — live
+    # webcam/mic, direct agent calls. A canvas runs with the VIEWER's OWN app
+    # trust (it is per-user — a person only ever sees their own canvases, in their
+    # own browser/session), so this is gated by the Canvas page's VISIBILITY
+    # setting, enforced server-side (app.auth.identity.caller_may_access_page):
+    #   • "all"  → everyone, including anonymous guests
+    #   • "auth" → any signed-in REGISTERED user (the default — registration
+    #              required out of the box, NOT admin-only)
+    #   • "off"  → admins only
+    # Admins always pass; 'open' single-user/local mode passes everything (local
+    # convenience, incl. over a Cloudflare tunnel where the browser can't mint a
+    # JWT). The frontend MUST send the caller's auth token on the /ui-config fetch
+    # so the gate can see who they are (see _fetchCanvasGate in autoagent.js). The
+    # canvas HTTP endpoints (app/api/canvas.py) re-check this SAME gate + per-user
+    # ownership, so a hidden tab can't be bypassed by calling the API directly.
+    canvas_first_class: bool
+    # Whether signed-in users may set their own theme (App Settings → Appearance →
+    # "Allow per-user themes"). The account page (ui/shared/js/account.js) shows
+    # its "My appearance" editor only when this is True; this same endpoint also
+    # layers the caller's saved per-user overrides on top of the palette/background
+    # fields below when it is True. Default False (the app behaves exactly as
+    # before — one global theme).
+    allow_user_appearance: bool
+
+
+@router.get("/ui-config", response_model=UiConfigResponse)
+async def ui_config(request: Request):
+    """Public endpoint: app-wide UI config every visitor needs before render.
+
+    Carries the admin's per-theme animated-background choice (so the background
+    engine ui/background/_engine/manager.js renders the right one) plus the
+    global border + font appearance knobs (so ui/shared/js/appearance.js can
+    recolour/resize borders and swap the UI font app-wide) — for anonymous and
+    signed-in visitors alike. Also reports whether first-class canvases are
+    permitted (local-only safety gate; see app/visualizer + the Canvas tab).
+    """
+    from app.admin.settings import (
+        get_background_config,
+        get_appearance_config,
+        get_access_mode,
+        get_splash_enabled,
+        get_hints_enabled,
+        get_allow_user_appearance,
+        valid_background,
+    )
+    cfg = get_background_config()
+    app = get_appearance_config()
+    bg_dark, bg_light = cfg["dark"], cfg["light"]
+    # Whether THIS caller may run first-class (full-trust) canvases is now driven
+    # by the Canvas page's VISIBILITY setting, enforced server-side — not a
+    # separate hardcoded admin-only gate. caller_may_access_page resolves the
+    # caller from the token the frontend sends and applies the 3-state rule:
+    #   • Canvas "all"  → everyone, incl. anonymous guests
+    #   • Canvas "auth" → any signed-in registered user (the default — so canvas
+    #                     is registration-required out of the box, not admin-only)
+    #   • Canvas "off"  → admins only
+    # Admins always pass, and 'open' single-user/local mode passes everything
+    # (local convenience, incl. over a tunnel where the browser can't mint a JWT).
+    from app.auth.identity import request_user_id, caller_may_access_page
+    caller_uid = request_user_id(request)
+    canvas_first_class = await caller_may_access_page(request, "main", "canvas")
+    # Per-user theme: when the admin has enabled it, layer the signed-in caller's
+    # saved overrides on top of the global appearance, so the boot-time applier
+    # (ui/shared/js/appearance.js) needs NO change — it just receives an already
+    # personalised theme. A blank/absent token keeps the global value (fall back
+    # to global); the background is re-validated against installed plugins.
+    allow_user_appearance = get_allow_user_appearance()
+    if allow_user_appearance and caller_uid:
+        try:
+            from app.db import get_db
+            db = get_db()
+            overrides = {}
+            if hasattr(db, "get_user_appearance"):
+                overrides = await db.get_user_appearance(caller_uid) or {}
+            for key, val in overrides.items():
+                if key in app and isinstance(val, str) and val.strip():
+                    app[key] = val.strip()
+            bg_dark = valid_background(overrides.get("background_dark"), bg_dark)
+            bg_light = valid_background(overrides.get("background_light"), bg_light)
+        except Exception:  # noqa: BLE001 — per-user theme must never break boot config
+            pass
+    # `app` (get_appearance_config) carries every appearance key — the border /
+    # font knobs and the full per-theme palette — each concrete (never blank).
+    # Spread it so newly-added palette tokens flow through with no per-key wiring.
+    return UiConfigResponse(
+        background_dark=bg_dark,
+        background_light=bg_light,
+        canvas_first_class=canvas_first_class,
+        splash_enabled=get_splash_enabled(),
+        hints_enabled=get_hints_enabled(),
+        allow_user_appearance=allow_user_appearance,
+        **app,
+    )
+
+
+@router.get("/backgrounds")
+async def list_backgrounds_public():
+    """Public: the installed animated-background catalog (id, name, status).
+
+    The per-user theme editor (account page → ui/shared/js/appearance-me.js) needs
+    this to populate its background selects; the admin equivalent lives under
+    /admin/settings/backgrounds. The catalog is just plugin display names, so it
+    is not gated."""
+    try:
+        from app.ui_backgrounds import catalog as _bg_catalog
+        return {"backgrounds": _bg_catalog()}
+    except Exception:  # noqa: BLE001
+        return {"backgrounds": []}
+
+
+class SetupStatusResponse(BaseModel):
+    initialized: bool
+
+
+class SetupAdminRequest(BaseModel):
+    password: str
+    display_name: str = ""
+
+
+class SetupAdminResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    username: str
+    user_id: str
+    display_name: str
+
+
+@router.get("/setup-status", response_model=SetupStatusResponse)
+async def setup_status():
+    """Public endpoint: returns whether an admin account exists."""
+    return SetupStatusResponse(initialized=admin_exists())
+
+
+@router.post("/setup-admin", response_model=SetupAdminResponse)
+async def setup_admin(req: SetupAdminRequest, request: Request):
+    """Create the first admin account. Only accessible from localhost.
+    Rejects if an admin already exists or if request is not from localhost."""
+    # Localhost-only gate
+    if not _is_localhost(request):
+        raise HTTPException(status_code=403, detail="Setup is only available from localhost")
+
+    if admin_exists():
+        raise HTTPException(status_code=400, detail="Admin already exists")
+
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    user = register_user("admin", req.password, req.display_name or "Admin")
+    if user is None:
+        raise HTTPException(status_code=409, detail="Admin already exists")
+
+    from app.auth.jwt import create_access_token
+
+    token = create_access_token(user.username, user.user_id)
+
+    # Track setup as first login
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    await db.upsert_user_profile(user.user_id, last_login_at=now_iso)
+
+    return SetupAdminResponse(
+        access_token=token,
+        username=user.username,
+        user_id=user.user_id,
+        display_name=user.display_name,
+    )
+
+
+class OpenLoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    username: str
+    user_id: str
+    display_name: str
+
+
+@router.post("/open-login", response_model=OpenLoginResponse)
+async def open_login(request: Request):
+    """Auto-login as the default admin — only in 'open' access mode, from the
+    local machine or the local private network (LAN).
+
+    This backs the 'Open' access level ("Default admin account is auto-logged
+    in. Recommended for local use only."). Two hard gates protect it:
+
+      1. The app's access_mode must be 'open'. Any other mode → 403.
+      2. The request must originate from a trusted-local address: the box
+         itself OR a same-network (private-LAN) device. A request from a
+         PUBLIC address → 403, so flipping a publicly-exposed deployment to
+         'open' can never grant a random internet visitor admin (they'd still
+         have to be on the private network itself). Widening this from
+         localhost-only to the LAN is what lets a phone/laptop on the same
+         network get a real admin session — and so pass the token-strict gates
+         (the web terminal, etc.) instead of a tokenless half-login.
+
+    Issues a JWT for the bootstrap admin (admin). If no admin account
+    exists yet the client should fall through to the localhost setup page.
+    """
+    from app.admin.settings import get_access_mode as _gam
+    if _gam() != "open":
+        raise HTTPException(status_code=403, detail="Open auto-login is not enabled")
+    if not _is_trusted_local(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Open auto-login is only available on the local network",
+        )
+
+    admin = get_user_by_id(_BOOTSTRAP_ADMIN_ID) or get_user("admin")
+    if admin is None:
+        raise HTTPException(status_code=404, detail="No admin account exists yet")
+
+    token = create_access_token(admin.username, admin.user_id)
+
+    # Track the auto-login as activity, like every other login path.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    await db.upsert_user_profile(admin.user_id, last_login_at=now_iso)
+
+    return OpenLoginResponse(
+        access_token=token,
+        username=admin.username,
+        user_id=admin.user_id,
+        display_name=admin.display_name,
+    )
+
+
+class GuestLoginRequest(BaseModel):
+    browser_id: str | None = None
+
+
+class GuestLoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    username: str
+    user_id: str
+    display_name: str
+
+
+@router.post("/guest-login", response_model=GuestLoginResponse)
+async def guest_login(request: Request, req: GuestLoginRequest | None = None):
+    """Mint an anonymous guest session — only in 'public_registered' (Open
+    Registration) access mode.
+
+    Open Registration means the app is open to anonymous visitors: anyone may
+    browse and chat without first creating an account, and whether a *given*
+    agent will actually talk to a guest is decided per-agent (its `user_mode`),
+    NOT at the app level. This endpoint is what lets that work: it hands a
+    tokenless visitor a persistent anonymous identity — a `web_public` guest
+    keyed to their browser id, so the same browser keeps the same guest (and its
+    sessions) across reloads — plus a JWT so the WebSocket handshake and the chat
+    gate accept them. It is the app-level sibling of the per-agent public-URL
+    flow (`POST /api/v1/agents/{id}/anon-session`), which mints the same kind of
+    `web_public` identity for a single public agent page.
+
+    Gated to 'public_registered' only. 'open' mode auto-logs-in the bootstrap
+    admin (see open_login) and the stricter 'admin_approval' mode requires a real
+    approved account, so a guest token is refused (403) in both — keeping their
+    access rules unchanged.
+    """
+    import uuid as _uuid_mod
+    from app.admin.settings import get_access_mode as _gam
+    if _gam() != "public_registered":
+        raise HTTPException(status_code=403, detail="Guest access is not enabled")
+
+    browser_id = (req.browser_id if req else None) or _uuid_mod.uuid4().hex
+    from app.communications.auth import get_or_create_identity
+    identity = await get_or_create_identity(channel="web_public", external_id=browser_id)
+
+    token = create_access_token(username=identity.user_id, user_id=identity.user_id)
+
+    return GuestLoginResponse(
+        access_token=token,
+        username=identity.user_id,
+        user_id=identity.user_id,
+        display_name=identity.display_name or "Guest",
+    )
 
 
 @router.post("/logout")
@@ -366,7 +760,7 @@ async def post_change_password(request: Request, body: ChangePasswordRequest):
 async def delete_me(request: Request, body: DeleteMeRequest):
     """Delete the authenticated user's account.
 
-    Requires password confirmation. The bootstrap `admin_default` user
+    Requires password confirmation. The bootstrap `admin` user
     cannot be deleted (returns 403).
     """
     username, _user_id = _require_auth(request)
@@ -382,3 +776,81 @@ async def delete_me(request: Request, body: DeleteMeRequest):
         raise HTTPException(status_code=404, detail="User not found")
 
     return {"status": "ok"}
+
+
+# ── Per-user appearance (self-service "My appearance" theme editor) ──────────
+# The account page (ui/shared/js/account.js) reads/writes the signed-in user's
+# own theme override here. Storage is the user's profile (user_profiles.appearance,
+# a sparse JSON patch of the same keys as the global appearance). The override is
+# applied at boot by the per-user merge in GET /api/v1/auth/ui-config above, so a
+# user's theme follows them across devices. Gated by the admin's
+# `allow_user_appearance` flag — when off, saving is refused (403) and the editor
+# is hidden.
+
+def _allowed_appearance_keys() -> set:
+    """The set of appearance tokens a user may override: every key the global
+    appearance carries, plus the two per-theme background ids."""
+    from app.admin.settings import _DEFAULT_APPEARANCE
+    return set(_DEFAULT_APPEARANCE.keys()) | {"background_dark", "background_light"}
+
+
+@router.get("/me/appearance")
+async def get_my_appearance(request: Request):
+    """Return the caller's own theme overrides plus whether the feature is on.
+
+    ``allow`` mirrors the admin's allow_user_appearance flag so the account page
+    can decide whether to render its editor; ``overrides`` is the user's sparse
+    patch (empty when they follow the global theme)."""
+    from app.admin.settings import get_allow_user_appearance
+    _username, user_id = _require_auth(request)
+    from app.db import get_db
+    db = get_db()
+    overrides = {}
+    if hasattr(db, "get_user_appearance"):
+        try:
+            overrides = await db.get_user_appearance(user_id) or {}
+        except Exception:  # noqa: BLE001
+            overrides = {}
+    return {"allow": get_allow_user_appearance(), "overrides": overrides}
+
+
+@router.put("/me/appearance")
+async def put_my_appearance(request: Request):
+    """Merge a partial theme patch into the caller's own overrides.
+
+    Only known appearance keys are accepted (others are dropped). A key sent with
+    a blank value clears that token (the user falls back to the global theme for
+    it). Refused with 403 when the admin has not enabled per-user themes."""
+    from app.admin.settings import get_allow_user_appearance
+    _username, user_id = _require_auth(request)
+    if not get_allow_user_appearance():
+        raise HTTPException(status_code=403, detail="Per-user themes are disabled")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be an object of appearance keys")
+    allowed = _allowed_appearance_keys()
+    patch = {k: v for k, v in body.items() if k in allowed and isinstance(v, str)}
+    from app.db import get_db
+    db = get_db()
+    if not hasattr(db, "merge_user_appearance"):
+        raise HTTPException(status_code=501, detail="Per-user themes not supported by this backend")
+    merged = await db.merge_user_appearance(user_id, patch)
+    return {"overrides": merged}
+
+
+@router.delete("/me/appearance")
+async def delete_my_appearance(request: Request):
+    """Clear ALL of the caller's theme overrides — they fall back to the global
+    theme. Allowed regardless of the admin flag (a reset is always safe)."""
+    _username, user_id = _require_auth(request)
+    from app.db import get_db
+    db = get_db()
+    if hasattr(db, "set_user_appearance"):
+        try:
+            await db.set_user_appearance(user_id, {})
+        except Exception:  # noqa: BLE001
+            pass
+    return {"overrides": {}}

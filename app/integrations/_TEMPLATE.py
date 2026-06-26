@@ -12,7 +12,7 @@ The app *discovers* plugin files at runtime — you register nothing by hand.
   • app/connectors/                  → per-agent external data sources
   • app/secrets/                     → secrets vaults
   • app/encryption/                  → encryption methods
-  • app/billing/processors/          → payment processors
+  • plugins/billing/processors/      → payment processors
   • app/scheduler/providers/         → remote scheduler backends
 
 To add an integration:

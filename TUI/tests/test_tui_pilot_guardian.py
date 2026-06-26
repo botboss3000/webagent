@@ -27,7 +27,7 @@ with contextlib.suppress(Exception):
 import asyncio  # noqa: E402
 
 from webagent import guardian  # noqa: E402
-from webagent.app import ServerManagerApp  # noqa: E402
+from tui_app.app import ServerManagerApp  # noqa: E402
 
 # ── stub the real process side-effects (no subprocess spawned in tests) ────────
 _calls = {"ensure": 0, "stop": 0}

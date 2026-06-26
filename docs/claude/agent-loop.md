@@ -24,7 +24,7 @@ Neither layout is derived from the other. A node missing from one view simply wo
 7. `ui/loop-nodes.json` — add entries to `NODE_STATIC_ITEMS` and `NODE_PANEL_INFO`
 8. `ui/js/agents.js` `_INFO_NODES` set — add node ID if it should show info-only panel (no edit bar)
 9. `app/agent/loop_executor.py` `DEFAULT_NODE_ORDER` list — add node in the correct position
-10. All agent JSON templates in `data/agents/` — add node ID to each `loop_logic` array
+10. All agent JSON templates in `app/defaults/agents/` (or a `data/agents/` override) — add node ID to each `loop_logic` array
 11. Any existing agents' `loop_logic` DB field — update via migration or seed script
 
 ## The `attachment_describe` node is a capability-driven type-router
@@ -48,6 +48,46 @@ then picks a path from the agent's *actual* model capability
   vision model*, not to a model limitation. Same rule for the **describe** path's
   guidance *note*: the image description is persisted into the turn (kept across
   turns), but the agent-directive note is delivered to the model only — not the bubble.
+
+Both foldable rows (`process_image` for describe, `route_attachment` for unreadable)
+are **persisted as `role=tool` interaction rows** (parent = the user turn, mirroring
+`memory_search`), so they survive a reload instead of being live-only stream events.
+They carry **`tool_call_id = None`**, which keeps these synthetic rows out of the
+model's rebuilt history (`interactions_to_openai_messages` drops un-paired tool rows)
+— a *real* model-issued `process_image` call has a `tool_call_id` and is kept. On
+reload, the describe path's folded `[Attached image — …]` block is **stripped from the
+user bubble for display** (`_strip_folded_attachments` in `app/api/db_viewer.py`) and
+shown via the `process_image` row instead; the raw folded row is left intact for the
+model path (`fetch_interactions`), so the description still persists across turns.
+
+**Rendering the foldable row (both render paths must agree).** Because these rows
+have no assistant `tool_call` to pair against, the normal renderer — which matches
+tool results to an assistant's saved `tool_calls` — skips them. They are rendered
+explicitly instead, as their own foldable tool-only bubble in chronological
+position. **This same "synthetic standalone tool" machinery also renders the
+loop-node memory tools** — `memory_search` (before the turn, parented to the user)
+and `memory_save` (after the turn, parented to the search row, tagged
+`metadata.brain`) — so brain reads/writes show up in the transcript just like any
+other tool call (search before the reply, save after):
+- **Reload:** `/session-messages` tags every such row `_synth_tool` — vision by
+  parent role == user, memory by `tool_name ∈ {memory_search, memory_save}` +
+  `metadata.brain` — and keeps its body even in light mode (`_slim` exemption); the
+  chat builds a call entry straight from the row (`_buildSynthCall` /
+  `_isSynthToolRow` in `ui/chat-side-panel/js/session-load.js`) — no lazy
+  `/session-turn-detail` fetch.
+- **Live:** these calls fire outside a reply bubble's normal tool accounting —
+  vision/`memory_search` during ingestion (before `turn_start`), `memory_save`
+  *after* the turn's `response`. `chat-activity.js` therefore renders them
+  out-of-band via `_renderSynthToolBubble`, drawing the completed call straight
+  onto the transcript the moment it finishes, independent of turn accounting, so it
+  survives every event ordering. Args arrive per-tool: vision via its `tool_call`
+  event, `memory_search` via `memory_search_start` (rendered on its `tool_result`),
+  `memory_save` via the args+result the backend rides on `memory_save_end`. Regular
+  tool calls are unaffected.
+The pasted image **thumbnail** likewise re-renders on reload: `/session-messages`
+resolves the user row's `input.attachment_ids` into a frontend-shaped
+`attachments` array (read from the RAW input column so it survives light mode) and
+`session-load.js` re-renders it with the same component the live send flow uses.
 
 A new file-type ability adds itself by shipping a companion `<ability>.json`
 (`handles` + `worker_system` + `guidance`) next to its `.py` — **no edit to this

@@ -1,0 +1,15 @@
+{
+  "display_name": "Diagnostics",
+  "kind": "ability",
+  "icon": "activity",
+  "color": "#e0af68",
+  "description": "Lets the agent read the in-app flight recorder to diagnose the running app. On by default; switch off to remove it platform-wide.",
+  "note": null,
+  "simple": true,
+  "placeholder": false,
+  "default_enabled": true,
+  "tools": [
+    "read_diagnostics"
+  ],
+  "order": 2
+}

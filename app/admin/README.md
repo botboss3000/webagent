@@ -10,7 +10,7 @@ This directory holds the **admin/management surfaces** of the app: provider sett
 
 | File | Purpose |
 |------|---------|
-| **`settings.py`** | Provider configuration — AI provider / API key / model selection, metadata-logging toggle, provider presets, model fetching. |
+| **`settings.py`** | Provider configuration — AI provider / API key / model selection, metadata-logging toggle, provider presets, model fetching. Also the **usage/cost endpoints** that sum `usage_events.cost_usd`: `model-usage` (per model; `scope=global` is admin-wide incl. background), `session-cost` (per session), `agent-usage` (this user's spend with one agent — scoped to the (user, agent) pair, total + per-model; its `/reset` clears only the caller's own rows), and `session-model-usage` (per model, this session). |
 | **`integrations.py`** | Admin enable/disable of integrations + abilities, OAuth credential config and redirect handling, `gather_enabled_providers` inputs, default-ability seeding. |
 | **`db_mode.py`** | Toggle between Cloud (Supabase) and Local (SQLite) database backends (`/admin/db/`). |
 | **`users.py`** | User administration endpoints. |
@@ -21,6 +21,7 @@ This directory holds the **admin/management surfaces** of the app: provider sett
 | **`webhooks_admin.py`** | Webhook administration endpoints. |
 | **`remote_access.py`** | Remote-access / tunnel configuration. |
 | **`optimizer.py`** | Prompt-optimizer admin pipeline support. |
+| **`tasks.py`** | **Task grouping** — folds a session's flat turns into inferred "tasks" (one request + its plan/execution + any approval/feedback turns). Like `optimizer.py`'s runs dashboard it is **derived at read time** (no `task_id` column, no migration): it reconstructs turns from `interactions` and runs a boundary-inference layer over message wording (timing is NOT used). **Synthetic `role='user'` rows are excluded** (`_is_synthetic_user` — `[ORCHESTRATION EVENT]`/event/automation/optimizer-trigger injections): they attach to the open turn instead of opening one, so a background wake-up never splits a session. **Two passes:** (1) `_decide_boundary` — a fast text-only keyword rule (short reaction/approval/feedback or explicit "also…" continuation ⇒ same task; everything else ⇒ new task); (2) when that rule would open a NEW task, a **fast single-shot LLM tie-breaker** (`_llm_decide_related`) sees the last few **user messages only** + the new message and decides SAME/NEW, gluing over-split follow-ups ("make it bigger") back onto the current task. The LLM prompt lives in `app/defaults/app-prompts.json` (`app_level_prompts.task_grouping_classifier`); the call is bounded (no retries) and memoised, and degrades to the keyword verdict on any failure / no-credentials / `TASK_GROUPING_LLM=0`. `GET /admin/settings/tasks/session/{id}` groups one session **with** the LLM tie-breaker; `GET /admin/settings/tasks/overview?user_id=` lists sessions with task counts and stays **text-only** (avoids an LLM-call storm across many sessions). |
 | **`review.py`** | List/view/deprecate DB-defined tools (`/admin/tools`). |
 
 ## See also

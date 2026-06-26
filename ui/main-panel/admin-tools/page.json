@@ -1,0 +1,13 @@
+{
+  "id": "admin-tools",
+  "label": "Admin Tools",
+  "icon": "wrench",
+  "order": 0,
+  "locked": true,
+  "html": "admin-tools.html",
+  "mount": "#tab-admin-tools",
+  "entry": "ui/shared/js/files.js",
+  "start": "startAdminTools",
+  "stop": "stopAdminTools",
+  "css": ["files.css"]
+}

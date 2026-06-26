@@ -1,9 +1,9 @@
 import asyncio, os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from webagent.tools.base import ToolContext
-from webagent.tools import delegate
-from webagent.subagents import SubagentRegistry
+from tui_app.tools.base import ToolContext
+from tui_app.tools import delegate
+from tui_app.subagents import SubagentRegistry
 
 AVAIL = ["read_source", "search_source", "run_command", "delegate_async", "check_task"]
 

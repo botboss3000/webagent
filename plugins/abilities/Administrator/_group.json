@@ -1,0 +1,7 @@
+{
+  "name": "Administrator",
+  "icon": "shield-alert",
+  "color": "#f7768e",
+  "desc": "Full host control — files & shell, version control, terminals, and diagnostics. Grant with care.",
+  "order": 0
+}

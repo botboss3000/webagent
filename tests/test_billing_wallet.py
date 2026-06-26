@@ -18,7 +18,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from app.billing import wallet as wallet_mod
+from plugins.billing import wallet as wallet_mod
 
 
 class FileDB:

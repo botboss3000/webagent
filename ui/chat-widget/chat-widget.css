@@ -1,0 +1,310 @@
+/* ── Chat widget — floating mini chat (ui/chat-widget/) ─────────────────────
+   A small floating card any page can spawn to run a task-scoped agent
+   session without disturbing the main chat side-panel. Built entirely from
+   design-system variables — works in dark AND light mode (body.light-mode).
+   The input row opts into the shared .chat-pill classes (CHAT-PILL-SYNC in
+   app1.css) — pill geometry/behaviour is NOT restyled here.
+   Tool-call rows reuse the global .ca-tool-* styles from the chat activity
+   panel; this file only styles their container.                            */
+
+/* COLOR SCHEME → ui/shared/css/design-system.css (single source of truth).
+   No raw hex/rgb here: use var(--brand) / var(--accent) / var(--accent-hover) for
+   the brand accent, rgba(var(--brand-rgb), a) for any accent opacity, var(--success|
+   warning|danger) (or rgba(var(--*-rgb), a)) for status, var(--purple) for the 2nd hue.
+   Need a colour that doesn't exist yet? Add a token to the palette in design-system.css
+   (the dark :root block AND its body.light-mode twin), then reference it here.
+   Re-theming the whole app (e.g. peach → green) is then a one-file edit. */
+
+#chat-widget-layer {
+  position: fixed;
+  bottom: 16px;
+  right: 16px; /* shifted left at runtime when the main chat panel is open */
+  z-index: 8500; /* above page content, below modals (9000+) */
+  display: flex;
+  flex-direction: column-reverse; /* newest widget at the bottom, stack grows up */
+  align-items: flex-end;
+  gap: 12px;
+  pointer-events: none; /* only the cards themselves catch the pointer */
+}
+
+.chat-widget {
+  pointer-events: auto;
+  position: relative; /* anchor for the resize handles */
+  display: flex;
+  flex-direction: column;
+  width: 360px;
+  max-height: min(480px, 60vh);
+  background: var(--bg-elev);
+  border: var(--border-width) solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.35);
+  overflow: hidden;
+}
+body.light-mode .chat-widget {
+  box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.15);
+}
+
+/* Floating: the user dragged or resized the card, so it leaves the docked
+   stack and is positioned/sized explicitly via inline styles. */
+.chat-widget.cw-floating {
+  position: fixed;
+  z-index: 8600;
+  max-height: none;
+}
+
+/* ── Resize handles (one per edge/corner) ── */
+.cw-resize { position: absolute; z-index: 4; }
+.cw-resize-n  { top: -3px; left: 10px; right: 10px; height: 8px; cursor: ns-resize; }
+.cw-resize-s  { bottom: -3px; left: 10px; right: 10px; height: 8px; cursor: ns-resize; }
+.cw-resize-e  { top: 10px; bottom: 10px; right: -3px; width: 8px; cursor: ew-resize; }
+.cw-resize-w  { top: 10px; bottom: 10px; left: -3px; width: 8px; cursor: ew-resize; }
+.cw-resize-ne { top: -4px; right: -4px; width: 14px; height: 14px; cursor: nesw-resize; z-index: 5; }
+.cw-resize-nw { top: -4px; left: -4px; width: 14px; height: 14px; cursor: nwse-resize; z-index: 5; }
+.cw-resize-se { bottom: -4px; right: -4px; width: 14px; height: 14px; cursor: nwse-resize; z-index: 5; }
+.cw-resize-sw { bottom: -4px; left: -4px; width: 14px; height: 14px; cursor: nesw-resize; z-index: 5; }
+/* The minimized chip is never resizable. */
+.chat-widget.minimized .cw-resize { display: none; }
+/* Keep text selection/cursor sane while a drag or resize is in progress. */
+body.cw-dragging, body.cw-dragging * { cursor: inherit !important; user-select: none !important; }
+
+/* ── Header (doubles as the minimized chip) ── */
+.cw-header {
+  position: relative;
+  z-index: 6; /* above resize handles so its buttons stay clickable */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: var(--border-width) solid var(--border-soft);
+  flex-shrink: 0;
+  user-select: none;
+  cursor: grab; /* draggable to move the card */
+  touch-action: none;
+}
+.chat-widget.minimized .cw-header { cursor: pointer; }
+body.cw-dragging .cw-header { cursor: grabbing; }
+.cw-head-icon { color: var(--accent); }
+.cw-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cw-status {
+  font-size: 11px;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.cw-done .cw-status { color: var(--success); }
+
+.cw-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--fg-4);
+}
+.cw-dot.starting,
+.cw-dot.running {
+  background: var(--accent);
+  animation: cw-pulse 1.2s ease-in-out infinite;
+}
+.cw-dot.done { background: var(--success); }
+.cw-dot.interrupted { background: var(--warning); }
+.cw-dot.error { background: var(--danger); }
+@keyframes cw-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cw-dot.starting, .cw-dot.running { animation: none; }
+}
+
+.cw-icon-btn {
+  background: none;
+  border: none;
+  color: var(--fg-3);
+  cursor: pointer;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: 0.15s;
+}
+.cw-icon-btn:hover {
+  color: var(--fg-1);
+  background: var(--bg-tint);
+}
+
+/* ── Minimized = compact chip (also the "Done" chip) ── */
+.chat-widget.minimized {
+  width: auto;
+  max-width: 280px;
+}
+.chat-widget.minimized .cw-body,
+.chat-widget.minimized .cw-footer { display: none; }
+.chat-widget.minimized .cw-header {
+  border-bottom: none;
+  cursor: pointer;
+  padding: 8px 12px;
+}
+.chat-widget.minimized .cw-min-btn { display: none; }
+
+/* ── Message area ── */
+.cw-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 60px;
+}
+
+.cw-bubble {
+  max-width: 92%;
+  padding: 7px 10px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cw-bubble.user {
+  align-self: flex-end;
+  background: var(--bg-tint);
+  border: var(--border-width) solid var(--border-soft);
+}
+.cw-bubble.agent {
+  align-self: flex-start;
+  background: var(--bg-1);
+  border: var(--border-width) solid var(--border-soft);
+}
+.cw-bubble.streaming { opacity: 0.9; }
+.cw-bubble.cw-error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.cw-bubble.failed { border-color: var(--danger); }
+
+/* Markdown output (filled by the shared bubble renderer) */
+.cw-bubble.md { white-space: normal; }
+.cw-bubble .md-body { font-size: 12.5px; }
+.cw-bubble .md-body > :first-child { margin-top: 0; }
+.cw-bubble .md-body > :last-child { margin-bottom: 0; }
+.cw-bubble .md-body pre {
+  max-width: 100%;
+  overflow-x: auto;
+  font-size: 11px;
+}
+
+.cw-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  background: none;
+  border: var(--border-width) solid var(--border);
+  border-radius: 8px;
+  color: var(--fg-2);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.cw-retry-btn:hover { color: var(--fg-1); border-color: var(--border-strong); }
+
+/* ── Tool-call group (rows come from the shared .ca-tool-* component) ── */
+.cw-tools {
+  align-self: flex-start;
+  max-width: 100%;
+  border: var(--border-width) solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-1);
+  overflow: hidden;
+}
+.cw-tools-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--fg-3);
+  font-size: 11px;
+  padding: 5px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+.cw-tools-head:hover { color: var(--fg-1); }
+.cw-tools-chevron { margin-left: auto; transition: transform 0.15s; }
+.cw-tools.open .cw-tools-chevron { transform: rotate(90deg); }
+.cw-tools-panel {
+  border-top: var(--border-width) solid var(--border-soft);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+/* ── Footer (working spinner + Continue / Stop actions + shared chat pill) ── */
+.cw-footer {
+  position: relative;
+  z-index: 1; /* above resize edge handles so the pill/buttons stay usable */
+  flex-shrink: 0;
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* The row above the pill: spinning loader pinned left, action buttons right.
+   Hidden by JS (inline display) when there's nothing to show. */
+.cw-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* Spinning loader shown above-left of the pill while the agent is working —
+   the widget's echo of the main panel's live tool-call activity. A genuine
+   loader icon (Lucide loader-circle), NOT a pulsing dot. */
+.cw-spinner {
+  margin-right: auto; /* pin to the far left, buttons stay on the right */
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent);
+  animation: cw-spin 0.8s linear infinite;
+}
+@keyframes cw-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .cw-spinner { animation: none; }
+}
+/* SIBLING-BTN-COHESION: same box math as the app's other pill-sibling buttons. */
+.cw-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: var(--border-width) solid var(--border);
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 4px 14px;
+  cursor: pointer;
+  transition: 0.15s;
+}
+.cw-stop-btn { color: var(--danger); }
+.cw-stop-btn:hover { border-color: var(--danger); }
+.cw-continue-btn { color: var(--accent); }
+.cw-continue-btn:hover { border-color: var(--accent); }
+
+/* Mobile: full-width cards */
+@media (max-width: 800px) {
+  .chat-widget { width: calc(100vw - 32px); }
+}

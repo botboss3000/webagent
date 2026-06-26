@@ -144,6 +144,43 @@ class SupabaseBackend(StorageBackend):
             logger.error("Error reading session summary: %s", e)
             return None
 
+    async def get_session_segments(
+        self, user_id: str, session_id: str
+    ) -> List[dict]:
+        try:
+            resp = (self._client.table("session_summary_segments")
+                    .select("seq, start_index, end_index, summary, token_estimate, topic, tier, updated_at")
+                    .eq("user_id", user_id).eq("session_id", session_id)
+                    .order("seq", desc=False).execute())
+            return resp.data or []
+        except Exception as e:
+            logger.error("Error reading session segments: %s", e)
+            return []
+
+    async def replace_session_segments(
+        self, user_id: str, session_id: str, segments: List[dict]
+    ) -> None:
+        try:
+            self._client.table("session_summary_segments").delete().eq(
+                "session_id", session_id).execute()
+            if segments:
+                payload = [{
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "seq": int(seg.get("seq", 0)),
+                    "start_index": int(seg.get("start_index", 0)),
+                    "end_index": int(seg.get("end_index", 0)),
+                    "summary": seg.get("summary") or "",
+                    "token_estimate": int(seg.get("token_estimate", 0)),
+                    "topic": seg.get("topic"),
+                    "tier": int(seg.get("tier", 0)),
+                    "updated_at": "now()",
+                } for seg in segments]
+                self._client.table("session_summary_segments").insert(payload).execute()
+        except Exception as e:
+            logger.error("Error replacing session segments: %s", e)
+            raise
+
     # ---- Interactions ----
 
     async def fetch_interactions(self, user_id: str, session_id: str) -> List[InteractionRecord]:
@@ -326,7 +363,13 @@ class SupabaseBackend(StorageBackend):
                 return  # Already seeded
 
             import os
-            skill_path = os.path.join(os.path.dirname(__file__), "..", "visualizer", "SKILL.md")
+            # Canonical home for the visualizer ability skill is the plugin
+            # folder (resolved by app.abilities._resolve_skill_body at runtime);
+            # read the same file here so the seeded template never drifts.
+            skill_path = os.path.join(
+                os.path.dirname(__file__), "..", "..",
+                "plugins", "abilities", "Core", "visualizer", "visualizer.skill.md",
+            )
             with open(skill_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
@@ -844,7 +887,7 @@ class SupabaseBackend(StorageBackend):
         return []
 
     async def memory_search(
-        self, user_id: str, query: str, limit: int = 10
+        self, user_id: str, query: str, limit: int = 10, vector: bool = True
     ) -> List[dict]:
         logger.warning("memory_search not yet implemented for Supabase backend")
         return []
@@ -1065,7 +1108,7 @@ class SupabaseBackend(StorageBackend):
             if not tpl:
                 logger.warning(
                     "No 'default' agent template found after JSON seeding — "
-                    "check data/agents/default.json"
+                    "check app/defaults/agents/default.json (or data/agents/ override)"
                 )
                 raise ValueError("No default agent template available")
 
@@ -1127,7 +1170,7 @@ class SupabaseBackend(StorageBackend):
             if res.data:
                 return res.data[0]
             logger.warning(
-                "No 'default' agent template in DB — check data/agents/default.json"
+                "No 'default' agent template in DB — check app/defaults/agents/default.json (or data/agents/ override)"
             )
             # Fallback: minimal dict — JSON is the real source of truth
             return {
@@ -1137,7 +1180,7 @@ class SupabaseBackend(StorageBackend):
                 "model": None,
                 "provider": None,
                 "temperature": 0.0,
-                "max_tokens": 4096,
+                "max_tokens": 8000,
                 "metadata": "{}",
             }
         except Exception as e:
@@ -1572,13 +1615,13 @@ class SupabaseBackend(StorageBackend):
             return False
 
     # ────────────────────────────────────────────────────────────────────
-    # Pages (page-builder workspace)
+    # Canvases (canvas workspace)
     # ────────────────────────────────────────────────────────────────────
 
-    async def pages_list(self, user_id: str) -> List[dict]:
+    async def canvas_list(self, user_id: str) -> List[dict]:
         try:
             res = (
-                self._client.table("pages")
+                self._client.table("canvases")
                 .select("*")
                 .eq("user_id", user_id)
                 .order("updated_at", desc=True)
@@ -1590,13 +1633,13 @@ class SupabaseBackend(StorageBackend):
             others = [r for r in rows if r.get("slug") != "home"]
             return home + others
         except Exception as e:
-            logger.error("pages_list error: %s", e)
+            logger.error("canvas_list error: %s", e)
             return []
 
-    async def pages_get(self, user_id: str, slug: str) -> Optional[dict]:
+    async def canvas_get(self, user_id: str, slug: str) -> Optional[dict]:
         try:
             res = (
-                self._client.table("pages")
+                self._client.table("canvases")
                 .select("*")
                 .eq("user_id", user_id)
                 .eq("slug", slug)
@@ -1605,23 +1648,24 @@ class SupabaseBackend(StorageBackend):
             )
             return res.data[0] if res.data else None
         except Exception as e:
-            logger.error("pages_get error: %s", e)
+            logger.error("canvas_get error: %s", e)
             return None
 
-    async def pages_upsert(
+    async def canvas_upsert(
         self,
         user_id: str,
         slug: str,
         title: str,
         agent_context: str = "",
         html: Optional[str] = None,
+        agent_id: str = "",
     ) -> dict:
         import uuid
         now = datetime.now(timezone.utc).isoformat()
         try:
             existing = (
-                self._client.table("pages")
-                .select("id")
+                self._client.table("canvases")
+                .select("id, agent_id")
                 .eq("user_id", user_id)
                 .eq("slug", slug)
                 .limit(1)
@@ -1633,10 +1677,14 @@ class SupabaseBackend(StorageBackend):
                     "agent_context": agent_context,
                     "updated_at": now,
                 }
+                # Owning agent: a freshly-supplied agent_id wins; otherwise keep the
+                # existing owner so a metadata-only update never clears it.
+                new_agent = agent_id or existing.data[0].get("agent_id") or None
+                data["agent_id"] = new_agent
                 if html is not None:
                     data["html"] = html
                 res = (
-                    self._client.table("pages")
+                    self._client.table("canvases")
                     .update(data)
                     .eq("id", existing.data[0]["id"])
                     .execute()
@@ -1648,20 +1696,21 @@ class SupabaseBackend(StorageBackend):
                     "slug": slug,
                     "title": title,
                     "agent_context": agent_context,
+                    "agent_id": agent_id or None,
                     "html": html,
                     "created_at": now,
                     "updated_at": now,
                 }
-                res = self._client.table("pages").insert(data).execute()
+                res = self._client.table("canvases").insert(data).execute()
             return res.data[0] if res.data else data
         except Exception as e:
-            logger.error("pages_upsert error: %s", e)
+            logger.error("canvas_upsert error: %s", e)
             raise
 
-    async def pages_delete(self, user_id: str, slug: str) -> bool:
+    async def canvas_delete(self, user_id: str, slug: str) -> bool:
         try:
             res = (
-                self._client.table("pages")
+                self._client.table("canvases")
                 .delete()
                 .eq("user_id", user_id)
                 .eq("slug", slug)
@@ -1669,7 +1718,37 @@ class SupabaseBackend(StorageBackend):
             )
             return bool(res.data)
         except Exception as e:
-            logger.error("pages_delete error: %s", e)
+            logger.error("canvas_delete error: %s", e)
+            return False
+
+    async def canvas_get_data(self, user_id: str, slug: str) -> Optional[str]:
+        try:
+            res = (
+                self._client.table("canvases")
+                .select("data")
+                .eq("user_id", user_id)
+                .eq("slug", slug)
+                .limit(1)
+                .execute()
+            )
+            return (res.data[0].get("data") if res.data else None)
+        except Exception as e:
+            logger.error("canvas_get_data error: %s", e)
+            return None
+
+    async def canvas_set_data(self, user_id: str, slug: str, data_json: str) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            res = (
+                self._client.table("canvases")
+                .update({"data": data_json, "updated_at": now})
+                .eq("user_id", user_id)
+                .eq("slug", slug)
+                .execute()
+            )
+            return bool(res.data)
+        except Exception as e:
+            logger.error("canvas_set_data error: %s", e)
             return False
 
     # ────────────────────────────────────────────────────────────────────
@@ -2038,6 +2117,14 @@ class SupabaseClient:
         return await SupabaseClient._get_backend().get_session_summary(user_id, session_id)
 
     @staticmethod
+    async def get_session_segments(user_id: str, session_id: str) -> List[dict]:
+        return await SupabaseClient._get_backend().get_session_segments(user_id, session_id)
+
+    @staticmethod
+    async def replace_session_segments(user_id: str, session_id: str, segments: List[dict]) -> None:
+        await SupabaseClient._get_backend().replace_session_segments(user_id, session_id, segments)
+
+    @staticmethod
     async def fetch_interactions(user_id: str, session_id: str) -> List[InteractionRecord]:
         return await SupabaseClient._get_backend().fetch_interactions(user_id, session_id)
 
@@ -2143,8 +2230,8 @@ class SupabaseClient:
         return await SupabaseClient._get_backend().memory_list(user_id, page_type)
 
     @staticmethod
-    async def memory_search(user_id: str, query: str, limit: int = 10) -> List[dict]:
-        return await SupabaseClient._get_backend().memory_search(user_id, query, limit)
+    async def memory_search(user_id: str, query: str, limit: int = 10, vector: bool = True) -> List[dict]:
+        return await SupabaseClient._get_backend().memory_search(user_id, query, limit, vector=vector)
 
     @staticmethod
     async def search_sessions(user_id: str, query: str, limit: int = 5) -> List[dict]:

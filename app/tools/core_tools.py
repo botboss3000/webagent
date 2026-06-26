@@ -6,6 +6,19 @@ sent in full every turn are surfaced by name in the generated # [TOOLS] index
 and pulled into context on demand via the `load_tool` core tool (see
 app/tools/loader.py and app/tools/tool_modes.py).
 
+What lives here (always-on host core, wired directly by app/tools/loader.py):
+list_skills, load_skill (+ the _ability_skills helper), memory, session_search,
+get_time, get_date, calculate, the self-prompt tools read_own_prompt /
+edit_own_prompt (an agent reading + improving its OWN prompt), and the self-skill
+tools save_own_skill / remove_own_skill (an agent teaching itself reusable
+how-to "skill-type memories"). All four self-improvement tools are surfaced under
+Core ▸ Base and gateable per-tool via the standard Deny/Ask/Auto permission, NOT
+a separate ability toggle; their methodology guide lives in
+plugins/abilities/Core/base/base.skill.md. The ability-gated handlers that used to live here —
+web_search, get_weather, db_query, http_request — have been relocated into their
+owning ability plugins (web_access, codebase_admin, browser_control); see the
+in-file breadcrumbs.
+
 ⚠ DROP-IN POLICY — this file is ONLY for the always-on core bootstrap tools.
 Do NOT add a new agent capability's tool handler here. New capabilities are
 DROP-IN PLUGINS, never core edits:
@@ -17,7 +30,7 @@ and plugins/abilities/_TEMPLATE.py.
 
 import json
 import logging
-from typing import Dict, Any, List, Optional
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -116,135 +129,9 @@ async def load_skill(name: str, agent_id: str = "", session_id: str = "", db=Non
         return json.dumps({"status": "error", "message": str(e)})
 
 
-# ── Web search ────────────────────────────────────────────────────────────────
-
-async def web_search(query: str, max_results: int = 5) -> str:
-    """
-    Search the web using DuckDuckGo.
-
-    Returns titled search results with snippets and URLs.
-    Use for finding current information, documentation, news, or any web content.
-    No API key required.
-    """
-    import httpx
-    import re
-    from urllib.parse import quote_plus
-
-    max_results = min(max_results, 10)
-    url = "https://html.duckduckgo.com/html/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    }
-
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        response = await client.post(url, data={"q": query}, headers=headers)
-        response.raise_for_status()
-        html = response.text
-
-    results = []
-    link_pattern = re.compile(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
-    snippet_pattern = re.compile(r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL)
-
-    links = link_pattern.findall(html)
-    snippets = snippet_pattern.findall(html)
-
-    for i in range(min(len(links), max_results)):
-        href, title_html = links[i]
-        title = re.sub(r'<[^>]+>', '', title_html).strip()
-        snippet = ""
-        if i < len(snippets):
-            snippet = re.sub(r'<[^>]+>', '', snippets[i]).strip()
-        if href.startswith("//"):
-            href = "https:" + href
-        results.append(f"{i+1}. {title}\n   {snippet}\n   {href}")
-
-    if not results:
-        return f"No results found for '{query}'."
-
-    return f"Search results for '{query}':\n\n" + "\n\n".join(results)
-
-
-# ── DB query (prompt slots on the user's agent) ──────────────────────────────
-
-async def db_query(
-    action: str,
-    slot_name: Optional[str] = None,
-    content: Optional[str] = None,
-    lock: Optional[bool] = None,
-    merge_mode: Optional[str] = None,
-    order_index: Optional[int] = None,
-    user_id: str = "",
-    **_legacy,
-) -> str:
-    """
-    Read and edit the admin-base prompt slots on the user's assigned agent.
-
-    Actions:
-      list   → list all admin-base slots
-      get    → get one slot by slot_name
-      insert → create a new slot (slot_name + content required)
-      update → replace a slot's content (slot_name + content required)
-      delete → delete a slot by slot_name
-
-    Lock + merge_mode + order_index are optional on insert/update.
-    """
-    try:
-        from app.db import get_db
-        db = get_db()
-        agent = await db.get_agent_for_user(user_id)
-        if not agent:
-            return json.dumps({"status": "error", "message": "No agent assigned for this user."})
-        agent_id = agent["id"]
-        # Tolerate legacy param names from older callers.
-        slot_name = slot_name or _legacy.get("context_id") or _legacy.get("context_type") or _legacy.get("title")
-
-        if action == "list":
-            slots = await db.list_slots(agent_id)
-            return json.dumps({"status": "ok", "count": len(slots), "slots": slots}, default=str)
-
-        elif action == "get":
-            if not slot_name:
-                return json.dumps({"status": "error", "message": "slot_name required for get action"})
-            slots = await db.list_slots(agent_id)
-            slot = next((s for s in slots if s["slot_name"] == slot_name), None)
-            if not slot:
-                return json.dumps({"status": "error", "message": f"Slot '{slot_name}' not found."})
-            return json.dumps({"status": "ok", "slot": slot}, default=str)
-
-        elif action in ("insert", "update"):
-            if not slot_name or content is None:
-                return json.dumps({"status": "error", "message": "slot_name and content required"})
-            existing = await db.list_slots(agent_id)
-            current = next((s for s in existing if s["slot_name"] == slot_name), None)
-            resolved_order = order_index if order_index is not None else (
-                current["order_index"] if current
-                else (max((s["order_index"] or 0) for s in existing), 0)[0] + 10 if existing else 10
-            )
-            resolved_lock = lock if lock is not None else (current["lock"] if current else False)
-            resolved_mode = merge_mode if merge_mode is not None else (current.get("merge_mode") if current else "replace")
-            await db.upsert_slot(
-                agent_id=agent_id,
-                slot_name=slot_name,
-                order_index=int(resolved_order),
-                lock=bool(resolved_lock),
-                merge_mode=resolved_mode,
-                content=content,
-                updated_by=f"tool:{user_id}",
-            )
-            return json.dumps({"status": "ok", "slot_name": slot_name})
-
-        elif action == "delete":
-            if not slot_name:
-                return json.dumps({"status": "error", "message": "slot_name required for delete"})
-            n = await db.delete_slot(agent_id, slot_name)
-            return json.dumps({"status": "ok", "slot_name": slot_name, "deleted_rows": n})
-
-        else:
-            return json.dumps({"status": "error", "message": f"Unknown action '{action}'. Use: list, get, insert, update, delete."})
-
-    except Exception as e:
-        logger.error("db_query failed: %s", e)
-        return json.dumps({"status": "error", "message": str(e)})
+# web_search → relocated to plugins/abilities/Web/web_access.py (web_access ability).
+# db_query   → relocated to plugins/abilities/Administrator/codebase_admin.py
+#              (codebase_admin ability).
 
 
 # ── Memory (persistent knowledge pages) ──────────────────────────────────────
@@ -414,6 +301,280 @@ async def session_search(
         return json.dumps({"status": "error", "message": str(e)})
 
 
+# ── Self-prompt (read + improve your OWN prompt) ──────────────────────────────
+# The two halves of agent self-improvement. An agent uses these to study and then
+# refine the instruction sections ("slots") that define it. They act ONLY on the
+# calling agent's own prompt — there is no way to target another agent (that lives
+# behind the heavier Agent Management ability, which deliberately FORBIDS
+# self-targeting). Admin-LOCKED slots are read-only here, so safety/identity
+# sections an admin protects can never be self-rewritten. Writes go to the
+# admin-base slot layer (user_id IS NULL), exactly like edit_agent_prompt.
+
+async def read_own_prompt(agent_id: str = "", user_id: str = "") -> str:
+    """
+    Read your OWN prompt — the instruction sections that define you.
+
+    This is the self-knowledge half of self-improvement: review how you are
+    currently instructed before deciding what to refine. Returns every section
+    ("slot") of your own system prompt, each with:
+      - slot_name : the section's name (e.g. system, agent, user, skills)
+      - order     : where it sits in the assembled prompt
+      - locked    : true = protected by your admin — you may READ it, but
+                    edit_own_prompt will refuse to change it
+      - editable  : true = you may rewrite this section with edit_own_prompt
+      - content   : the section's current text
+
+    You can only ever see your OWN prompt — never another agent's. Pair this with
+    edit_own_prompt to study, then improve, your own instructions.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        if not agent_id:
+            return json.dumps({
+                "status": "error",
+                "message": "No agent is bound to this conversation, so there is no prompt to read.",
+            })
+        slots = await db.list_slots(agent_id)
+        out = []
+        for s in slots:
+            name = s.get("slot_name") or ""
+            # Internal slots (e.g. __skills__) are machine-managed by their own
+            # tools (save_own_skill / load_skill) — hide them from the prompt view.
+            if name.startswith("__"):
+                continue
+            locked = bool(s.get("lock"))
+            out.append({
+                "slot_name": name,
+                "order": s.get("order_index"),
+                "locked": locked,
+                "editable": not locked,
+                "content": s.get("content", "") or "",
+            })
+        return json.dumps({"status": "ok", "count": len(out), "slots": out})
+    except Exception as e:
+        logger.error("read_own_prompt failed: %s", e)
+        return json.dumps({"status": "error", "message": str(e)})
+
+
+async def edit_own_prompt(
+    slot_name: str,
+    content: str,
+    mode: str = "replace",
+    agent_id: str = "",
+    user_id: str = "",
+) -> str:
+    """
+    Improve your OWN prompt by editing one of its sections.
+
+    This is how you update and improve yourself: rewrite or extend a section
+    ("slot") of your own system prompt so future runs behave better. Read your
+    current prompt first with read_own_prompt.
+
+      slot_name : the section to change (from read_own_prompt). A NEW name
+                  creates a new section.
+      content   : the new text.
+      mode      : "replace" overwrites the section with content (default), or
+                  "append" adds content to the end of the existing section — use
+                  append to record a lesson learned without losing what's there.
+
+    Rules:
+      - You can only edit your OWN prompt; there is no way to target another
+        agent (use the Agent Management ability for that).
+      - Sections your admin has LOCKED are read-only — this refuses to change
+        them. That is how safety/identity instructions are protected from
+        self-modification. New sections you create start unlocked.
+    Changes take effect on your next run.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        if not agent_id:
+            return json.dumps({
+                "status": "error",
+                "message": "No agent is bound to this conversation, so there is no prompt to edit.",
+            })
+        if not slot_name or not slot_name.strip():
+            return json.dumps({"status": "error", "message": "slot_name is required."})
+        if content is None:
+            return json.dumps({"status": "error", "message": "content is required."})
+        mode = (mode or "replace").lower()
+        if mode not in ("replace", "append"):
+            return json.dumps({"status": "error", "message": "mode must be 'replace' or 'append'."})
+
+        slot_name = slot_name.strip()
+        existing = await db.list_slots(agent_id)
+        current = next((s for s in existing if s.get("slot_name") == slot_name), None)
+
+        # Respect locks — a locked section is admin-protected and read-only here.
+        if current and bool(current.get("lock")):
+            return json.dumps({
+                "status": "error",
+                "message": (f"Section '{slot_name}' is locked by your admin and cannot be "
+                            f"self-edited. You can still read it with read_own_prompt."),
+            })
+
+        # Resolve the new content (append vs replace).
+        if mode == "append" and current:
+            base = current.get("content", "") or ""
+            new_content = base + ("\n\n" if (base and content) else "") + (content or "")
+        else:
+            new_content = content
+
+        resolved_order = (
+            current.get("order_index") if current
+            else (max((s.get("order_index") or 0) for s in existing) + 10 if existing else 10)
+        )
+        merge_mode = (current.get("merge_mode")
+                      if current and current.get("merge_mode") in ("replace", "append")
+                      else "replace")
+
+        await db.upsert_slot(
+            agent_id=agent_id,
+            slot_name=slot_name,
+            order_index=int(resolved_order),
+            lock=False,  # self-edited/created sections stay unlocked (admin can lock later)
+            merge_mode=merge_mode,
+            content=new_content,
+            updated_by=f"self:{agent_id}",
+        )
+        return json.dumps({
+            "status": "ok",
+            "slot_name": slot_name,
+            "mode": mode,
+            "created": current is None,
+            "message": (f"Your '{slot_name}' prompt section was "
+                        f"{'created' if current is None else 'updated'}. "
+                        f"It takes effect on your next run."),
+        })
+    except Exception as e:
+        logger.error("edit_own_prompt failed: %s", e)
+        return json.dumps({"status": "error", "message": str(e)})
+
+
+# ── Self-skills (teach yourself reusable how-to "skill-type memories") ─────────
+# An agent's skills are named, loadable knowledge packs (each like a little
+# skill.md: a "when to use it" line + a body of instructions). These let the
+# agent WRITE its own — the heart of self-improvement: when it builds something
+# reusable, works out a non-obvious procedure, or is given a durable task-specific
+# instruction, it records a skill so a future run can load it with load_skill.
+# This is for MEANINGFUL, reusable know-how only — ordinary facts belong in the
+# `memory` tool, and ordinary replies need saving nowhere. Skills are stored in
+# the agent's own (admin-base) skill list, exactly like admin/agent-authored ones,
+# so they appear in list_skills and load on demand. Self-targeted: an agent can
+# only ever write its OWN skills.
+
+async def save_own_skill(
+    name: str,
+    description: Optional[str] = None,
+    instructions: Optional[str] = None,
+    mode: str = "selectable",
+    agent_id: str = "",
+    user_id: str = "",
+) -> str:
+    """
+    Teach yourself a reusable SKILL — a named how-to you can load on a later task.
+
+    This is how you improve yourself with durable, reusable know-how. Save a skill
+    when something is worth keeping for next time, for example:
+      - you built or set up something and want to remember HOW to use it,
+      - you worked out a non-obvious procedure or fix worth repeating,
+      - the user gave a SPECIFIC, lasting instruction for how a task should be done.
+    Do NOT use this for ordinary facts (use the `memory` tool) or for normal
+    replies (save nothing).
+
+      name         : short identifier you'll load it by later.
+      description  : ONE line saying WHEN to use this skill — always shown to you
+                     in your [SKILLS] catalog, so make the trigger obvious.
+      instructions : the full step-by-step body (the actual know-how).
+      mode         : "selectable" (default) keeps the body out of context until
+                     you load it with load_skill on a matching task — best for
+                     most playbooks; "always_on" keeps it in context every turn —
+                     use only for short, essential guidance.
+
+    Saving an existing name updates it (omitted fields keep their current value).
+    You can only ever write your OWN skills. See load_skill / list_skills to use
+    them, and remove_own_skill to delete one.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        if not agent_id:
+            return json.dumps({
+                "status": "error",
+                "message": "No agent is bound to this conversation, so there is no skill set to write.",
+            })
+        if not name or not name.strip():
+            return json.dumps({"status": "error", "message": "name is required."})
+        nm = name.strip()
+        if mode is not None and mode not in ("selectable", "always_on"):
+            return json.dumps({"status": "error", "message": "mode must be 'selectable' or 'always_on'."})
+
+        skills = await db.get_agent_skills(agent_id)
+        existing = next((s for s in skills if (s.get("name") or "").lower() == nm.lower()), None)
+        if existing:
+            if description is not None:
+                existing["description"] = description
+            if instructions is not None:
+                existing["body"] = instructions
+            if mode is not None:
+                existing["mode"] = mode
+            existing["enabled"] = True
+        else:
+            if instructions is None or not instructions.strip():
+                return json.dumps({"status": "error",
+                                   "message": "instructions are required when creating a new skill."})
+            skills.append({
+                "name": nm,
+                "description": description or "",
+                "body": instructions,
+                "mode": mode or "selectable",
+                "enabled": True,
+            })
+        saved = await db.set_agent_skills(agent_id, skills, updated_by=f"self:{agent_id}")
+        return json.dumps({
+            "status": "ok",
+            "skill": nm,
+            "created": existing is None,
+            "count": len(saved),
+            "message": (f"Skill '{nm}' was {'created' if existing is None else 'updated'}. "
+                        f"You can load it with load_skill('{nm}') on a future matching task."),
+        })
+    except Exception as e:
+        logger.error("save_own_skill failed: %s", e)
+        return json.dumps({"status": "error", "message": str(e)})
+
+
+async def remove_own_skill(name: str, agent_id: str = "", user_id: str = "") -> str:
+    """
+    Delete one of your OWN skills by name.
+
+    Use this to retire a skill that is wrong, stale, or no longer useful. Only
+    your own skills can be removed (skills contributed by your abilities are not
+    yours to delete). See list_skills for the names.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        if not agent_id:
+            return json.dumps({
+                "status": "error",
+                "message": "No agent is bound to this conversation, so there is no skill set to edit.",
+            })
+        if not name or not name.strip():
+            return json.dumps({"status": "error", "message": "name is required."})
+        target = name.strip().lower()
+        skills = await db.get_agent_skills(agent_id)
+        kept = [s for s in skills if (s.get("name") or "").lower() != target]
+        if len(kept) == len(skills):
+            return json.dumps({"status": "error", "message": f"You have no skill named '{name}'."})
+        saved = await db.set_agent_skills(agent_id, kept, updated_by=f"self:{agent_id}")
+        return json.dumps({"status": "ok", "removed": name, "count": len(saved)})
+    except Exception as e:
+        logger.error("remove_own_skill failed: %s", e)
+        return json.dumps({"status": "error", "message": str(e)})
+
+
 # ── Time & Date utilities ─────────────────────────────────────────────────────
 
 async def get_time(timezone: str = "UTC") -> str:
@@ -468,158 +629,9 @@ async def get_date(timezone: str = "UTC", format: str = "full") -> str:
         return f"Error: could not resolve timezone '{timezone}'. Use IANA format e.g. 'America/New_York'. ({e})"
 
 
-# ── Weather ───────────────────────────────────────────────────────────────────
-
-async def get_weather(location: str, units: str = "metric") -> str:
-    """
-    Get current weather conditions for a location.
-
-    Uses Open-Meteo (free, no API key required). Fetches temperature,
-    conditions, wind speed, and humidity.
-
-    Args:
-        location: City name or "lat,lon" coordinates (e.g. "London", "New York", "40.71,-74.01")
-        units: "metric" (Celsius, km/h) or "imperial" (Fahrenheit, mph)
-
-    Returns:
-        Formatted weather report for the location.
-    """
-    import httpx
-
-    try:
-        # Resolve location to coordinates
-        lat, lon = await _resolve_location(location)
-
-        # Fetch weather from Open-Meteo (free, no key)
-        temp_unit = "celsius" if units == "metric" else "fahrenheit"
-        wind_unit = "kmh" if units == "metric" else "mph"
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                "https://api.open-meteo.com/v1/forecast",
-                params={
-                    "latitude": lat,
-                    "longitude": lon,
-                    "current": ["temperature_2m", "relative_humidity_2m",
-                                "apparent_temperature", "weather_code",
-                                "wind_speed_10m", "wind_direction_10m"],
-                    "temperature_unit": temp_unit,
-                    "wind_speed_unit": wind_unit,
-                    "timezone": "auto",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-        current = data.get("current", {})
-        temp = current.get("temperature_2m", "?")
-        feels_like = current.get("apparent_temperature", "?")
-        humidity = current.get("relative_humidity_2m", "?")
-        wind_speed = current.get("wind_speed_10m", "?")
-        weather_code = current.get("weather_code", 0)
-
-        conditions = _weather_code_to_text(weather_code)
-        temp_label = "C" if units == "metric" else "F"
-        wind_label = "km/h" if units == "metric" else "mph"
-
-        return (
-            f"Weather in {location}: {conditions}\n"
-            f"Temperature: {temp}°{temp_label} (feels like {feels_like}°{temp_label})\n"
-            f"Humidity: {humidity}%\n"
-            f"Wind: {wind_speed} {wind_label}"
-        )
-
-    except Exception as e:
-        logger.warning("Open-Meteo failed for %s: %s", location, e)
-        # Fallback: try wttr.in
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"https://wttr.in/{_encode_location(location)}?format=%C+%t+%w+%h"
-                )
-                resp.raise_for_status()
-                text = resp.text.strip()
-                if text:
-                    return f"Weather in {location}: {text}"
-        except Exception:
-            pass
-        return f"Could not fetch weather for '{location}'. Please try a different location name or use 'lat,lon' coordinates."
-
-
-_WEATHER_CODES = {
-    0: "Clear sky",
-    1: "Mainly clear",
-    2: "Partly cloudy",
-    3: "Overcast",
-    45: "Foggy",
-    48: "Depositing rime fog",
-    51: "Light drizzle",
-    53: "Moderate drizzle",
-    55: "Dense drizzle",
-    56: "Light freezing drizzle",
-    57: "Dense freezing drizzle",
-    61: "Slight rain",
-    63: "Moderate rain",
-    65: "Heavy rain",
-    66: "Light freezing rain",
-    67: "Heavy freezing rain",
-    71: "Slight snowfall",
-    73: "Moderate snowfall",
-    75: "Heavy snowfall",
-    77: "Snow grains",
-    80: "Slight rain showers",
-    81: "Moderate rain showers",
-    82: "Violent rain showers",
-    85: "Slight snow showers",
-    86: "Heavy snow showers",
-    95: "Thunderstorm",
-    96: "Thunderstorm with slight hail",
-    99: "Thunderstorm with heavy hail",
-}
-
-
-def _weather_code_to_text(code: int) -> str:
-    return _WEATHER_CODES.get(code, f"Unknown ({code})")
-
-
-def _encode_location(location: str) -> str:
-    """Encode location for URL use."""
-    import urllib.parse
-    return urllib.parse.quote(location.replace(",", " "))
-
-
-async def _resolve_location(location: str) -> tuple:
-    """
-    Resolve a location name to (lat, lon) coordinates.
-    If already "lat,lon" format, parse directly.
-    """
-    # Check if already coordinates
-    parts = location.split(",")
-    if len(parts) == 2:
-        try:
-            lat = float(parts[0].strip())
-            lon = float(parts[1].strip())
-            if -90 <= lat <= 90 and -180 <= lon <= 180:
-                return (lat, lon)
-        except ValueError:
-            pass
-
-    # Geocode via Open-Meteo (free, no key)
-    import httpx
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(
-            "https://geocoding-api.open-meteo.com/v1/search",
-            params={"name": location, "count": 1, "language": "en", "format": "json"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-    results = data.get("results")
-    if not results:
-        raise ValueError(f"Location '{location}' not found")
-
-    return (results[0]["latitude"], results[0]["longitude"])
+# get_weather (+ its _resolve_location / _weather_code_to_text / _encode_location
+# helpers and the _WEATHER_CODES table) → relocated to
+# plugins/abilities/Web/web_access.py (web_access ability).
 
 
 # ── Calculator ────────────────────────────────────────────────────────────────
@@ -668,122 +680,8 @@ _CALC_SAFE_LOCALS = {
 }
 
 
-# ── HTTP Request tool ────────────────────────────────────────────────────────
-
-async def http_request(
-    method: str = "GET",
-    url: str = "",
-    headers: Optional[Dict[str, str]] = None,
-    body: Optional[Any] = None,
-    body_type: str = "json",
-    timeout: int = 30,
-) -> str:
-    """
-    Make an outbound HTTP request to any endpoint.
-
-    Supports GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS.
-    Body can be JSON (auto-serialized), form data, or raw text.
-
-    Args:
-        method: HTTP method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)
-        url: Full URL including scheme (e.g. https://api.example.com/data)
-        headers: Optional dict of HTTP headers
-        body: Request body data (dict for JSON/form, string for raw text)
-        body_type: "json", "form", "text" — how to encode body
-        timeout: Request timeout in seconds (default 30)
-
-    Returns:
-        Formatted response with status code, headers, and body.
-    """
-    import httpx
-    import json as _json
-    import time
-
-    method = method.upper()
-    valid_methods = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
-    if method not in valid_methods:
-        return f"Error: invalid method '{method}'. Use one of: {', '.join(sorted(valid_methods))}"
-
-    if not url:
-        return "Error: url is required"
-
-    if not url.startswith(("http://", "https://")):
-        return "Error: url must start with http:// or https://"
-
-    prepared_headers = {
-        "User-Agent": "webAgent/1.0",
-    }
-    if headers:
-        prepared_headers.update(headers)
-
-    # Prepare body
-    content = None
-    if body is not None:
-        if body_type == "json":
-            if isinstance(body, str):
-                try:
-                    body = _json.loads(body)
-                except _json.JSONDecodeError:
-                    pass
-            content = _json.dumps(body).encode()
-            prepared_headers.setdefault("Content-Type", "application/json")
-        elif body_type == "form":
-            content = body  # httpx handles dicts directly for data= in POST
-        elif body_type == "text":
-            content = str(body).encode()
-            prepared_headers.setdefault("Content-Type", "text/plain")
-
-    start = time.time()
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            if method == "GET":
-                resp = await client.get(url, headers=prepared_headers)
-            elif method == "POST":
-                if body_type == "form" and isinstance(body, dict):
-                    resp = await client.post(url, headers=prepared_headers, data=body)
-                else:
-                    resp = await client.post(url, headers=prepared_headers, content=content)
-            elif method == "PUT":
-                resp = await client.put(url, headers=prepared_headers, content=content)
-            elif method == "DELETE":
-                resp = await client.delete(url, headers=prepared_headers, content=content)
-            elif method == "PATCH":
-                resp = await client.patch(url, headers=prepared_headers, content=content)
-            elif method == "HEAD":
-                resp = await client.head(url, headers=prepared_headers)
-            elif method == "OPTIONS":
-                resp = await client.options(url, headers=prepared_headers)
-            else:
-                return f"Error: unsupported method {method}"
-    except httpx.TimeoutException:
-        return f"Error: request to {url} timed out after {timeout}s"
-    except httpx.ConnectError as e:
-        return f"Error: could not connect to {url} — {e}"
-    except Exception as e:
-        return f"Error: request failed — {e}"
-
-    duration_ms = int((time.time() - start) * 1000)
-
-    # Truncate large response bodies
-    body_text = resp.text
-    if len(body_text) > 50000:
-        body_text = body_text[:50000] + f"\n[... truncated, full size: {len(body_text)} bytes]"
-
-    # Summarize headers (exclude long or binary ones)
-    summary_headers = dict(resp.headers)
-    for skip in ("set-cookie", "transfer-encoding", "content-encoding"):
-        summary_headers.pop(skip, None)
-
-    lines = [
-        f"Status: {resp.status_code}",
-        f"Duration: {duration_ms}ms",
-        f"Content-Type: {resp.headers.get('content-type', '?')}",
-        f"Content-Length: {len(resp.content)} bytes",
-        "",
-        "Body:",
-        body_text,
-    ]
-    return "\n".join(lines)
+# http_request → relocated to plugins/abilities/Web/browser_control.py
+#                (browser_control ability).
 
 
 async def calculate(expression: str) -> str:

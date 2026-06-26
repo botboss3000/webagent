@@ -20,6 +20,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from app.communications.manager import get_plugin_manager, reload_plugins
+from app.util.config_io import safe_write_json
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/communications", tags=["admin"])
@@ -113,10 +114,9 @@ async def set_webhook_url(req: WebhookUrlRequest):
     registry = getattr(pm, "_registry", {})
     registry["webhook_base_url"] = req.url.rstrip("/")
 
-    import json as _json
     from pathlib import Path
     reg_path = Path(__file__).resolve().parent.parent / "communications" / "registry.json"
-    reg_path.write_text(_json.dumps(registry, indent=2), encoding="utf-8")
+    safe_write_json(reg_path, registry)
 
     results = {}
     for plugin in pm.get_enabled_plugins():
@@ -144,7 +144,6 @@ async def set_plugin_token(name: str, req: WebhookUrlRequest, http_request: Requ
     registry["plugins"][name]["bot_token"] = token
 
     from pathlib import Path
-    import json as _json
     reg_path = Path(__file__).resolve().parent.parent / "communications" / "registry.json"
 
     # Auto-detect server URL from the incoming request if base URL not set
@@ -164,7 +163,7 @@ async def set_plugin_token(name: str, req: WebhookUrlRequest, http_request: Requ
         registry["webhook_base_url"] = server_url
         logger.info("Auto-detected server URL: %s", server_url)
 
-    reg_path.write_text(_json.dumps(registry, indent=2), encoding="utf-8")
+    safe_write_json(reg_path, registry)
 
     # Re-init plugin so it picks up the new token
     plugin._bot_token = token
@@ -225,7 +224,6 @@ async def set_plugin_credentials(name: str, req: CredentialsRequest, http_reques
     plugin_cfg.update(req.credentials)
 
     from pathlib import Path
-    import json as _json
     reg_path = Path(__file__).resolve().parent.parent / "communications" / "registry.json"
 
     server_url = registry.get("webhook_base_url", "")
@@ -242,7 +240,7 @@ async def set_plugin_credentials(name: str, req: CredentialsRequest, http_reques
             server_url = "https://" + server_url[len("http://"):]
         registry["webhook_base_url"] = server_url
 
-    reg_path.write_text(_json.dumps(registry, indent=2), encoding="utf-8")
+    safe_write_json(reg_path, registry)
 
     plugin._registry = registry
     pm.enable_plugin(name)

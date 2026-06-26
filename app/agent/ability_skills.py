@@ -59,6 +59,73 @@ def _skill_from_feature(feature: dict, module_name: str) -> Optional[dict]:
     }
 
 
+async def _agent_ability_settings(agent_id: str) -> Dict[str, dict]:
+    """Map of ``ability_id -> ability_settings dict`` for this agent's enabled
+    ability rows. Used to resolve declarative per-ability ``bias`` postures.
+
+    Fully guarded — any failure yields an empty map, so a read error never
+    breaks the prompt build."""
+    out: Dict[str, dict] = {}
+    if not agent_id:
+        return out
+    try:
+        import json as _json
+        from app.db import get_db
+        db = get_db()
+        rows = await db.get_agent_connections(agent_id)
+        for r in rows or []:
+            if r.get("section") != "ability":
+                continue
+            aid = r.get("connection_type")
+            if not aid:
+                continue
+            cfg = r.get("config") or {}
+            if isinstance(cfg, str):
+                try:
+                    cfg = _json.loads(cfg or "{}")
+                except Exception:
+                    cfg = {}
+            if not isinstance(cfg, dict):
+                cfg = {}
+            s = cfg.get("ability_settings")
+            out[aid] = s if isinstance(s, dict) else cfg
+    except Exception as e:
+        logger.debug("_agent_ability_settings failed: %s", e)
+    return out
+
+
+def _bias_posture_line(feature: dict, settings: dict) -> str:
+    """Resolve a declarative ``config.bias`` posture for one ability.
+
+    An ability opts in by declaring in its descriptor::
+
+        "config": {"bias": {"key": "<setting_key>", "default": "...",
+                            "levels": {"<value>": "<posture sentence>", ...}}}
+
+    The selected level comes from the agent's saved ability setting (the same
+    value the config panel writes), falling back to ``bias.default``. Returns the
+    matching posture sentence (may be ""), or "" when the ability declares no
+    bias. Generic — no ability is named here; the text lives in each ability's
+    own drop-in descriptor."""
+    try:
+        cfg = feature.get("config")
+        if not isinstance(cfg, dict):
+            return ""
+        bias = cfg.get("bias")
+        if not isinstance(bias, dict):
+            return ""
+        key = bias.get("key")
+        levels = bias.get("levels")
+        if not key or not isinstance(levels, dict):
+            return ""
+        val = settings.get(key)
+        if val is None or val == "":
+            val = bias.get("default")
+        return str(levels.get(str(val), "")).strip()
+    except Exception:
+        return ""
+
+
 async def collect_ability_skills(agent_id: str, user_id: Optional[str] = None) -> List[dict]:
     """Skill dicts contributed by the abilities enabled on this agent.
 
@@ -80,9 +147,10 @@ async def collect_ability_skills(agent_id: str, user_id: Optional[str] = None) -
     seen: set = set()
     try:
         from app.integrations import gather_enabled_providers, _discover_tool_specs
-        providers = await gather_enabled_providers(agent_id, user_id)
-        if not providers:
-            return []
+        # `providers` = the agent's enabled OAuth/host abilities. May be empty —
+        # sections 1 & 2 below then no-op, but section 3 (always-on virtual
+        # abilities) must still run, so we do NOT early-return on an empty set.
+        providers = await gather_enabled_providers(agent_id, user_id) or set()
 
         # ── 1. Integration-module skills (keyed by served provider) ──
         mod_providers: Dict[str, set] = {}
@@ -106,6 +174,7 @@ async def collect_ability_skills(agent_id: str, user_id: Optional[str] = None) -
         # ── 2. Host-ability skills (plugins/abilities/*) ──
         try:
             from app.abilities import ability_feature_with_skill
+            ability_settings = await _agent_ability_settings(agent_id)
             for ability_id in providers:
                 feat = ability_feature_with_skill(ability_id)
                 if not feat:
@@ -113,9 +182,50 @@ async def collect_ability_skills(agent_id: str, user_id: Optional[str] = None) -
                 skill = _skill_from_feature(feat, ability_id)
                 if skill and skill["handle"] not in seen:
                     seen.add(skill["handle"])
+                    # Tag the owning host ability so the prompt builder can hide
+                    # this skill while the ability is discoverable-and-unloaded.
+                    skill["ability_id"] = ability_id
+                    # Append any per-agent BIAS posture (declared in the ability's
+                    # descriptor config.bias) to the always-visible "when to use"
+                    # line, so the agent's prompt carries its tuned stance without
+                    # having to load the skill body. Generic & opt-in per ability.
+                    # The settings are the ADMIN app-level defaults with the
+                    # agent's own choices layered on top, so the posture inherits
+                    # the app-wide default the admin set unless this agent overrode it.
+                    eff_settings = ability_settings.get(ability_id) or {}
+                    try:
+                        from app.admin import ability_config as _abcfg
+                        eff_settings = _abcfg.effective_ability_config(ability_id, eff_settings)
+                    except Exception:
+                        pass
+                    posture = _bias_posture_line(feat, eff_settings)
+                    if posture:
+                        desc = (skill.get("description") or "").strip()
+                        skill["description"] = (desc + " " + posture).strip() if desc else posture
                     out.append(skill)
         except Exception as e:
             logger.debug("host-ability skill collection failed: %s", e)
+
+        # ── 3. Always-on VIRTUAL abilities (e.g. Core ▸ Base) ──
+        # A virtual ability is wired into every agent and owns no agent_connections
+        # row, so it never appears in `providers` — yet its bundled skill (the
+        # self-improvement guide on Base) should reach every agent. Pull each
+        # virtual ability's skill here, deduped by handle with the sections above.
+        try:
+            from app.abilities import all_raw, ability_feature_with_skill
+            for ability_id, entry in all_raw().items():
+                if ability_id in providers or not entry.get("virtual"):
+                    continue
+                feat = ability_feature_with_skill(ability_id)
+                if not feat:
+                    continue
+                skill = _skill_from_feature(feat, ability_id)
+                if skill and skill["handle"] not in seen:
+                    seen.add(skill["handle"])
+                    skill["ability_id"] = ability_id
+                    out.append(skill)
+        except Exception as e:
+            logger.debug("virtual-ability skill collection failed: %s", e)
 
         return out
     except Exception as e:

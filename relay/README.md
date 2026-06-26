@@ -2,10 +2,21 @@
 
 A small Cloudflare Worker that sits between the webAgent app and GitHub
 Issues. The app (every clone in the wild, including yours) POSTs feedback
-here; this Worker verifies a Turnstile captcha, applies rate limits, and
-creates an issue in the configured private feedback repo.
+here; this Worker applies rate limits + a blocklist, drops honeypot-tripped
+spam, and creates an issue in the configured private feedback repo.
 
 The GitHub token lives only on the Worker. Clones never see it.
+
+**Deployed instance:** `https://webagent-feedback-relay.botboss.workers.dev`
+(the free `*.workers.dev` URL — no custom domain). This is the default every
+clone talks to; it's the `_DEFAULT_RELAY_URL` in `app/api/feedback.py`.
+
+**Captcha is OFF by default.** A Turnstile widget is locked to a fixed list of
+hostnames (free tier) or needs Enterprise "Any Hostname" to work on arbitrary
+domains — neither fits an open repo that anyone clones onto their own host. So
+this relay ships captcha-less and relies on rate limits + blocklist + a
+host-independent honeypot. Turnstile support is left in the code as an optional
+opt-in for an operator running on their own known domain (see below).
 
 ## Architecture
 
@@ -14,7 +25,7 @@ The GitHub token lives only on the Worker. Clones never see it.
    │ POST /api/v1/feedback        (browser → FastAPI)
    ▼
 [FastAPI app/api/feedback.py]
-   │ POST https://feedback.webagent.live/submit
+   │ POST https://webagent-feedback-relay.botboss.workers.dev/submit
    ▼
 [this Worker]
    │ POST https://api.github.com/repos/.../issues   (with PAT)
@@ -32,14 +43,7 @@ labels: `bug`, `enhancement`, `feedback`.
 On github.com, create a fine-grained personal access token scoped to **just
 that repo**, with permission **Issues: Read and write**. Nothing else.
 
-### 3. Set up Cloudflare Turnstile
-At dash.cloudflare.com → Turnstile → Add site. Use the **Invisible** widget
-mode. You'll get:
-- a **site key** (public — paste it into `wrangler.toml` `TURNSTILE_SITE_KEY`;
-  the relay serves it from `/config` so clones pick it up automatically)
-- a **secret key** (set it via `wrangler secret put TURNSTILE_SECRET_KEY` below)
-
-### 4. Install wrangler and create KV namespaces
+### 3. Install wrangler and create KV namespaces
 ```bash
 npm install
 npx wrangler login
@@ -49,32 +53,47 @@ npx wrangler kv namespace create BLOCKLIST_KV
 Paste the two returned IDs into `wrangler.toml` (replacing the
 `REPLACE_WITH_*` placeholders).
 
-### 5. Set secrets
+### 4. Set the GitHub token secret
 ```bash
 npx wrangler secret put GITHUB_TOKEN
-npx wrangler secret put TURNSTILE_SECRET_KEY
 ```
+This is the only required secret. It's stored encrypted on Cloudflare and
+never written to any file in the repo.
 
-### 6. Deploy
+### 5. Deploy
 ```bash
 npx wrangler deploy
 ```
+Wrangler prints the worker's `*.workers.dev` URL. Put that URL (with `/submit`)
+into `_DEFAULT_RELAY_URL` in `app/api/feedback.py` so every clone uses it.
 
-### 7. Point your domain at the Worker
-In the Cloudflare dashboard, open the Worker → Triggers → Custom Domains
-→ add `feedback.webagent.live`. Cloudflare handles the DNS record
-automatically when the apex domain is in the same Cloudflare account.
+### (Optional) Custom domain
+Not used for this deployment — we run on the free `*.workers.dev` URL since the
+relay is a backend endpoint users never see. If you'd rather use a custom
+domain: Worker → Triggers → Custom Domains → add your subdomain (Cloudflare
+handles DNS automatically when the apex domain is in the same account), then
+point `_DEFAULT_RELAY_URL` at it.
 
-### 8. (Optional) Configure the app
-By default the app talks to the upstream relay and pulls the Turnstile site
-key from its `/config` endpoint — no setup needed in the app for normal users.
+### (Optional) Turnstile captcha
+Off by default (see top of this README for why it doesn't fit open clones). If
+you run on a **known, fixed domain** and want captcha:
+1. dash.cloudflare.com → Turnstile → Add widget → **Managed** mode → add your
+   hostname(s). You get a **site key** (public) and a **secret key**.
+2. Paste the site key into `wrangler.toml` `TURNSTILE_SITE_KEY` (the relay
+   serves it from `/config` so the form picks it up).
+3. `npx wrangler secret put TURNSTILE_SECRET_KEY`, then `npx wrangler deploy`.
 
-If you want to override either, edit `app-settings.json` (project root) or
-use the App Settings UI:
+The relay verifies a token only when `TURNSTILE_SECRET_KEY` is set; the form
+renders the widget only when a site key is present. Leave both unset to stay
+captcha-less.
+
+### (Optional) Configure the app
+By default the app talks to the deployed relay above — no setup needed. To
+override, edit `app-settings.json` (project root) or the App Settings UI:
 - `feedback_relay_url` — leave empty to use the default
-  (`https://feedback.webagent.live/submit`), or paste a custom URL
+  (`https://webagent-feedback-relay.botboss.workers.dev/submit`), or a custom URL
 - `turnstile_site_key` — leave empty to inherit from the relay, or paste a
-  specific site key to use a different Turnstile configuration
+  specific site key
 - `feedback_enabled` — set to `false` to hide the feedback button entirely
 
 ## Local development

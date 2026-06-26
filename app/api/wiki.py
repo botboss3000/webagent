@@ -35,7 +35,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from app.auth.jwt import decode_token
+from app.auth.identity import request_user_id
 from app.wiki.store import (
     list_articles,
     get_article,
@@ -58,13 +58,13 @@ router = APIRouter(prefix="/api/v1/wiki", tags=["wiki"])
 
 def _actor_user_id(request: Request) -> str:
     """Resolve the caller's user_id from the optional Bearer token (or ?token=).
-    Returns "" when there is no/invalid token."""
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else request.query_params.get("token", "")
-    if not token:
-        return ""
-    payload = decode_token(token) or {}
-    return payload.get("user_id") or ""
+    Returns "" when there is no/invalid token.
+
+    Delegates to the shared chokepoint, so in 'open' access mode a tokenless
+    caller resolves to the bootstrap admin — letting wiki editing work over a
+    Cloudflare Tunnel, where the browser can't mint a JWT (see
+    app.auth.identity.request_user_id)."""
+    return request_user_id(request)
 
 
 def _can_see_drafts(request: Request) -> bool:

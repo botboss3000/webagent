@@ -43,6 +43,19 @@ def strip_think_blocks(content: Optional[str]) -> str:
     return cleaned.strip()
 
 
+def _is_parallel_loser(metadata_str: Optional[str]) -> bool:
+    """True when an assistant row is a parallel-racing LOSER. Parallel racing was
+    removed so no NEW loser rows are written, but historical rows persist in older
+    DBs — this guard keeps them out of the replayed model context (and the
+    transcript) so they can't resurface the old context-contamination bug."""
+    if not metadata_str:
+        return False
+    try:
+        return bool(json.loads(metadata_str).get("parallel_loser"))
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+
 def _extract_tool_calls_from_output(output_str: Optional[str]) -> Optional[List[Dict[str, Any]]]:
     """Try to extract tool_calls from the interaction's output JSON field.
 
@@ -81,6 +94,13 @@ def interactions_to_openai_messages(
     filtered: List[InteractionRecord] = []
     for r in interactions:
         if r.id in exclude:
+            continue
+        # Legacy parallel-racing LOSER rows (metadata.parallel_loser=True) from
+        # older DBs are NOT part of the real conversation — replaying them feeds
+        # the model conflicting answers to the same turn (and any legacy
+        # "[Tool calls: …]" suffix), training it to emit tool calls as plain text.
+        # Racing is gone, but the guard stays for historical rows.
+        if r.role == "assistant" and _is_parallel_loser(r.metadata):
             continue
         if r.role == "tool" and r.tool_name in INTERNAL_TOOL_NAMES:
             continue
@@ -210,6 +230,64 @@ def interactions_to_openai_messages(
     return out
 
 
+# How many of the most recent messages a RESUMED turn replays. A resume
+# continues an interrupted task — it needs the recent steps, NOT the entire
+# transcript. Replaying the whole conversation made the per-attempt working set
+# grow with conversation length, and on the very hot resume path (hundreds of
+# re-ignitions a day) that drove the runaway memory spikes. The first user
+# message (the task) and any leading rolling-summary are kept regardless, so the
+# model still has grounding without the full history.
+RESUME_TAIL_MESSAGES = 12
+
+
+def trim_history_for_resume(
+    messages: List[Dict[str, Any]],
+    *,
+    max_tail_messages: int = RESUME_TAIL_MESSAGES,
+) -> List[Dict[str, Any]]:
+    """Reduce a full OpenAI-style history to a bounded checkpoint for resume.
+
+    Keeps, in order:
+      * an optional leading rolling-summary (system) message, verbatim;
+      * the first user message in the conversation — the original task, as a
+        grounding anchor — if it would otherwise fall outside the tail;
+      * the last ``max_tail_messages`` messages, advanced forward to a safe
+        boundary so a ``tool`` result is never left without the assistant
+        ``tool_calls`` message that produced it (which the model API rejects).
+
+    The tail is a true suffix of the list, so every assistant ``tool_calls``
+    message it keeps is still followed by its own tool results — only an
+    *orphaned* leading tool result (whose call was trimmed away) is dropped.
+    """
+    if not messages or max_tail_messages <= 0 or len(messages) <= max_tail_messages:
+        return messages
+
+    head: List[Dict[str, Any]] = []
+    body = messages
+    # Preserve a leading rolling-summary (system) message verbatim — it is itself
+    # a bounded, compacted stand-in for the older turns.
+    if body and body[0].get("role") == "system":
+        head = [body[0]]
+        body = body[1:]
+
+    # Original task anchor: the first user message in the body.
+    anchor: Optional[Dict[str, Any]] = next(
+        (m for m in body if m.get("role") == "user"), None)
+
+    # Bounded tail, advanced past any leading orphan tool results.
+    tail = body[-max_tail_messages:]
+    start = 0
+    while start < len(tail) and tail[start].get("role") == "tool":
+        start += 1
+    tail = tail[start:]
+
+    out = list(head)
+    if anchor is not None and anchor not in tail:
+        out.append(anchor)
+    out.extend(tail)
+    return out
+
+
 async def build_openai_history_from_session(
     db: StorageBackend,
     user_id: str,
@@ -228,35 +306,62 @@ async def build_openai_history_from_session(
         ``[summary] + [verbatim tail]`` instead of the full transcript. The raw
         rows are never deleted — they stay searchable.
     """
-    # Active compaction (write side) — only for agent-loop callers that pass an
-    # agent_id. Other callers (suggestions, webhooks) still get the passive read.
+    # Context-management strategy (write side) — only for agent-loop callers that
+    # pass an agent_id. Whichever strategy is enabled (default: Context Control)
+    # gets to persist any reshaping of the history before it is read back; the
+    # default folds older turns into a rolling summary when over threshold. Other
+    # callers (suggestions, webhooks) skip this and still get the passive read.
+    strategy = None
+    settings: Dict[str, Any] = {}
     if agent_id:
         try:
-            from app.agent.context_control import get_context_settings
-            from app.agent.compaction import maybe_compact
-            settings = await get_context_settings(db, agent_id)
-            if settings.get("enabled") and settings.get("compaction_enabled", True):
-                await maybe_compact(db, user_id, session_id, settings)
+            from app.abilities import context_strategy_for_agent
+            strategy = await context_strategy_for_agent(agent_id)
+            if strategy is not None:
+                _get = getattr(strategy, "CONTEXT_SETTINGS", None)
+                _compact = getattr(strategy, "CONTEXT_COMPACT", None)
+                settings = (await _get(db, agent_id, session_id, user_id)) if _get else {}
+                if settings.get("enabled") and settings.get("compaction_enabled", True) and _compact:
+                    await _compact(db, user_id, session_id, settings)
         except Exception as e:  # pragma: no cover - defensive
-            logger.warning("compaction step skipped: %s", e)
+            logger.warning("context strategy (write side) skipped: %s", e)
 
     rows = await db.fetch_interactions(user_id, session_id)
 
-    # Passive read (read side): respect any rolling summary marker.
-    summary_row = None
+    # Optional full assembly override: a strategy may reshape the message list
+    # itself (e.g. a sliding-window or retrieval-recall strategy) and take full
+    # responsibility for the output. The default Context Control strategy does
+    # NOT implement this — its compaction persists a rolling-summary marker that
+    # the passive read below already understands, so it returns None and falls
+    # through. A strategy that overrides assembly should honour any exclusion it
+    # cares about itself.
+    if strategy is not None and settings.get("enabled"):
+        try:
+            _assemble = getattr(strategy, "CONTEXT_ASSEMBLE", None)
+            if _assemble is not None:
+                shaped = await _assemble(db, user_id, session_id, rows, settings)
+                if shaped is not None:
+                    return shaped
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("context strategy (assemble) skipped: %s", e)
+
+    # Passive read (read side): assemble the compaction train — the ordered list
+    # of frozen summary cars followed by the verbatim hot tail. load_segments folds
+    # any legacy single-rolling-summary row into one car, so old sessions still work.
+    segments: List[Dict[str, Any]] = []
     try:
-        summary_row = await db.get_session_summary(user_id, session_id)
+        from app.agent.compaction import load_segments, render_segment_message
+        segments = await load_segments(db, user_id, session_id, rows)
     except Exception as e:  # pragma: no cover - older backends / read error
-        logger.debug("get_session_summary unavailable: %s", e)
-    if summary_row:
-        covered = int(summary_row.get("covered_count") or 0)
+        logger.debug("load_segments unavailable: %s", e)
+    if segments:
+        covered = max(int(s.get("end_index") or 0) for s in segments)
         covered = max(0, min(covered, len(rows)))
-        summary_text = (summary_row.get("summary") or "").strip()
-        if covered > 0 and summary_text:
-            from app.agent.compaction import render_summary_message
-            tail = rows[covered:]
-            msgs = interactions_to_openai_messages(
-                tail, exclude_interaction_ids=exclude_interaction_ids)
-            return [render_summary_message(summary_text)] + msgs
+        total = len(segments)
+        car_msgs = [render_segment_message(s, i + 1, total) for i, s in enumerate(segments)]
+        tail = rows[covered:]
+        msgs = interactions_to_openai_messages(
+            tail, exclude_interaction_ids=exclude_interaction_ids)
+        return car_msgs + msgs
 
     return interactions_to_openai_messages(rows, exclude_interaction_ids=exclude_interaction_ids)

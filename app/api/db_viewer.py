@@ -27,6 +27,18 @@ from app.auth.jwt import decode_token
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/db", tags=["db_viewer"])
 
+
+def _is_loser_row(metadata_str) -> bool:
+    """True when an interactions row is a parallel-racing LOSER (metadata
+    parallel_loser=True). These are persisted only for diagnostics; the chat
+    transcript should show one answer per turn (the winner), not the losers too."""
+    if not metadata_str:
+        return False
+    try:
+        return bool(json.loads(metadata_str).get("parallel_loser"))
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return False
+
 # SQLite files live under data/db/ alongside every other runtime DB. Import the
 # canonical location from app.db.local so this stays in lockstep if it ever moves
 # again — recomputing the path here is what left this endpoint pointing at the old
@@ -62,7 +74,6 @@ _USER_ID_COLUMN: dict[str, str] = {
     "attachments": "user_id",
     "channel_identities": "user_id",
     "webhook_registrations": "user_id",
-    "provider_ratings": "user_id",
     "user_profiles": "user_id",
     "tenant_key_meta": "user_id",
     "usage_events": "user_id",
@@ -168,6 +179,24 @@ def _acl_clause(table: str, user_id: Optional[str], is_admin: bool) -> tuple[Opt
         )
     # Unknown table — deny by default for non-admins.
     return "1=0", []
+
+
+def _is_open_access_mode() -> bool:
+    """True when the app is running in 'open' access mode.
+
+    In open mode the auth middleware already trusts every request as the
+    bootstrap admin (single-user / local convenience, no cross-tenant risk).
+    The per-session participant gates below must mirror that: when the app is
+    reached through a Cloudflare Tunnel etc., the frontend has no localhost
+    JWT to present, so a strict valid-token check would wrongly mark EVERY
+    session `restricted` and the chat would show "New session" for all of
+    them. Honour open mode here so the gate matches the middleware.
+    """
+    try:
+        from app.admin.settings import get_access_mode
+        return get_access_mode() == "open"
+    except Exception:
+        return False
 
 
 def _get_db_path(name: str = "local.db") -> Path:
@@ -390,6 +419,7 @@ async def delete_user(
 @router.delete("/sessions/{session_id}")
 async def delete_session(
     session_id: str,
+    request: Request,
     db: str = Query("local.db", description="Database filename"),
     permanent: bool = Query(False, description="Hard-delete instead of recycling"),
 ):
@@ -405,6 +435,24 @@ async def delete_session(
         conn, _dialect = _open(db)
         cur = conn.cursor()
 
+        # Ownership gate: only the session's owner/participant (or an admin, or
+        # open/local mode) may delete it. Returns None for a phantom session with
+        # no `sessions` row — those fall through to the orphan-transcript cleanup
+        # below, exactly like the transcript read routes.
+        if _session_access_ok(cur, session_id, request, None) is False:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not authorized for this session")
+
+        # Resolve the run-family children (optimizer Planner/Closer + spawned
+        # helpers) ONCE up front, so both the soft- and hard-delete paths take the
+        # whole family with the parent. Best-effort; empty when nothing hangs off.
+        try:
+            from app.db.local import resolve_child_sessions
+            child_ids = resolve_child_sessions(conn, [session_id])
+        except Exception as _re:  # noqa: BLE001
+            logger.debug("child-session resolve on delete failed: %s", _re)
+            child_ids = []
+
         # ── Soft delete (default): just flip the status, keep everything ──
         if not permanent:
             has_status = False
@@ -416,28 +464,48 @@ async def delete_session(
             if has_status:
                 cur.execute("UPDATE sessions SET status = 'recycled' WHERE id = ?", (session_id,))
                 recycled = cur.rowcount
-                conn.commit()
-                conn.close()
-                logger.info(f"Recycled session {session_id[:12]}: {recycled} session")
-                return {"success": True, "session_id": session_id, "recycled": recycled}
-            # Fall through to hard delete if the column isn't there yet.
+                # A real session row was recycled → carry its children to the bin
+                # too. If NOTHING matched (recycled == 0), this is a "phantom"
+                # session: the Sessions page derived it straight from the
+                # interactions log because it has no row in `sessions`. There's
+                # nothing to recycle, so a soft delete would be a silent no-op and
+                # the row would reappear on the next reload. In that case we fall
+                # through to a hard delete of its orphan transcript so it actually
+                # disappears.
+                if recycled:
+                    children_recycled = 0
+                    for cid in child_ids:
+                        cur.execute("UPDATE sessions SET status = 'recycled' WHERE id = ?", (cid,))
+                        children_recycled += cur.rowcount
+                    conn.commit()
+                    conn.close()
+                    logger.info(f"Recycled session {session_id[:12]}: {recycled} session, "
+                                f"{children_recycled} children")
+                    return {
+                        "success": True,
+                        "session_id": session_id,
+                        "recycled": recycled,
+                        "children_recycled": children_recycled,
+                    }
+            # Fall through to hard delete if the column isn't there yet OR this is
+            # a phantom session with no `sessions` row to recycle.
 
-        # Delete interactions for this session
-        cur.execute('DELETE FROM interactions WHERE session_id = ?', (session_id,))
-        interactions_deleted = cur.rowcount
-
-        # Delete session summary
-        cur.execute('DELETE FROM session_summaries WHERE session_id = ?', (session_id,))
-
-        # Delete pipeline events
-        try:
-            cur.execute('DELETE FROM pipeline_events WHERE session_id = ?', (session_id,))
-        except Exception:
-            pass
-
-        # Delete the session itself
-        cur.execute('DELETE FROM sessions WHERE id = ?', (session_id,))
-        session_deleted = cur.rowcount
+        # ── Hard delete: erase the base session AND its whole run-family ──
+        # Phantom-safe: deleting by session_id removes the orphan interactions
+        # even when no `sessions` row exists.
+        targets = [session_id] + [c for c in child_ids if c != session_id]
+        interactions_deleted = 0
+        session_deleted = 0
+        for tid in targets:
+            cur.execute('DELETE FROM interactions WHERE session_id = ?', (tid,))
+            interactions_deleted += cur.rowcount
+            cur.execute('DELETE FROM session_summaries WHERE session_id = ?', (tid,))
+            try:
+                cur.execute('DELETE FROM pipeline_events WHERE session_id = ?', (tid,))
+            except Exception:
+                pass
+            cur.execute('DELETE FROM sessions WHERE id = ?', (tid,))
+            session_deleted += cur.rowcount
 
         # Cascade: an orchestrator session takes its spawned CLONES with it —
         # their agents, sessions and transcripts (recursively). Best-effort; only
@@ -445,20 +513,22 @@ async def delete_session(
         clones_deleted = 0
         try:
             from app.db.local import cascade_delete_clones
-            clones_deleted = cascade_delete_clones(conn, [session_id])
+            clones_deleted = cascade_delete_clones(conn, targets)
         except Exception as _ce:  # noqa: BLE001
             logger.debug("clone cascade on session delete failed: %s", _ce)
 
         conn.commit()
         conn.close()
 
-        logger.info(f"Deleted session {session_id[:12]}: {session_deleted} session, "
-                    f"{interactions_deleted} interactions, {clones_deleted} clones")
+        logger.info(f"Deleted session {session_id[:12]}: {session_deleted} session(s) "
+                    f"(+{len(targets) - 1} family), {interactions_deleted} interactions, "
+                    f"{clones_deleted} clones")
         return {
             "success": True,
             "session_id": session_id,
             "session_deleted": session_deleted,
             "interactions_deleted": interactions_deleted,
+            "children_deleted": len(targets) - 1,
             "clones_deleted": clones_deleted,
         }
     except HTTPException:
@@ -470,6 +540,7 @@ async def delete_session(
 @router.post("/sessions/{session_id}/restore")
 async def restore_session(
     session_id: str,
+    request: Request,
     db: str = Query("local.db", description="Database filename"),
 ):
     """Restore a recycled session back to active status."""
@@ -477,11 +548,24 @@ async def restore_session(
     try:
         conn, _dialect = _open(db)
         cur = conn.cursor()
+        # Ownership gate (open/local mode + admins pass; non-owner refused).
+        if _session_access_ok(cur, session_id, request, None) is False:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not authorized for this session")
         cur.execute("UPDATE sessions SET status = 'active', updated_at = datetime('now') WHERE id = ? AND status = 'recycled'", (session_id,))
         restored = cur.rowcount
+        # Bring the run-family back with the parent (mirrors the recycle cascade).
+        children_restored = 0
+        try:
+            from app.db.local import resolve_child_sessions
+            for cid in resolve_child_sessions(conn, [session_id]):
+                cur.execute("UPDATE sessions SET status = 'active', updated_at = datetime('now') WHERE id = ? AND status = 'recycled'", (cid,))
+                children_restored += cur.rowcount
+        except Exception as _re:  # noqa: BLE001
+            logger.debug("child-session restore cascade failed: %s", _re)
         conn.commit()
         conn.close()
-        return {"success": True, "session_id": session_id, "restored": restored}
+        return {"success": True, "session_id": session_id, "restored": restored, "children_restored": children_restored}
     except HTTPException:
         raise
     except Exception as e:
@@ -489,9 +573,10 @@ async def restore_session(
 
 
 class SessionPatchRequest(BaseModel):
-    """Body for PATCH /sessions/{id} — rename and/or pin."""
+    """Body for PATCH /sessions/{id} — rename, pin, and/or hide."""
     title: Optional[str] = None
     pinned: Optional[bool] = None
+    hidden: Optional[bool] = None
 
 
 class SessionReorderRequest(BaseModel):
@@ -504,16 +589,22 @@ class SessionReorderRequest(BaseModel):
 async def patch_session(
     session_id: str,
     req: SessionPatchRequest,
+    request: Request,
     db: str = Query("local.db", description="Database filename"),
 ):
-    """Update a session's title and/or pinned state."""
-    if req.title is None and req.pinned is None:
-        raise HTTPException(status_code=400, detail="Provide title and/or pinned")
+    """Update a session's title, pinned, and/or hidden state."""
+    if req.title is None and req.pinned is None and req.hidden is None:
+        raise HTTPException(status_code=400, detail="Provide title, pinned, and/or hidden")
 
     db_path = _get_db_path(db)
     try:
         conn, _dialect = _open(db)
         cur = conn.cursor()
+
+        # Ownership gate (open/local mode + admins pass; non-owner refused).
+        if _session_access_ok(cur, session_id, request, None) is False:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not authorized for this session")
 
         sets = []
         params: list[object] = []
@@ -521,7 +612,8 @@ async def patch_session(
             sets.append("title = ?")
             params.append(req.title)
             # A manual rename wins over the auto-namer: lock it so the background
-            # session titler (app/agent/session_titler.py) stops overwriting it.
+            # Session Namer ability (plugins/abilities/Core/session_titler/)
+            # stops overwriting it.
             try:
                 cur.execute("SELECT metadata FROM sessions WHERE id = ?", (session_id,))
                 _mrow = cur.fetchone()
@@ -541,6 +633,14 @@ async def patch_session(
                 cur.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
             sets.append("pinned = ?")
             params.append(1 if req.pinned else 0)
+        if req.hidden is not None:
+            # Confirm column exists before writing
+            cur.execute("PRAGMA table_info(sessions)")
+            cols = {row[1] for row in cur.fetchall()}
+            if "hidden" not in cols:
+                cur.execute("ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+            sets.append("hidden = ?")
+            params.append(1 if req.hidden else 0)
         sets.append("updated_at = CURRENT_TIMESTAMP")
 
         params.append(session_id)
@@ -561,6 +661,7 @@ async def patch_session(
 @router.post("/sessions/reorder")
 async def reorder_sessions(
     req: SessionReorderRequest,
+    request: Request,
     db: str = Query("local.db", description="Database filename"),
 ):
     """Persist the manual drag order of the requesting user's sessions.
@@ -570,6 +671,12 @@ async def reorder_sessions(
     user's rows. Sessions not listed keep their existing sort_order and fall
     after the ordered set (NULLS LAST) in list_sessions.
     """
+    # Identity gate: the claimed user_id must be the authenticated caller (or an
+    # admin); open/local mode is full-trust. Without this a caller could reorder
+    # another user's sessions by passing their user_id + session ids.
+    if not _is_open_access_mode():
+        from app.auth.identity import assert_caller_is
+        await assert_caller_is(request, req.user_id)
     if not req.order:
         return {"success": True, "updated": 0}
     db_path = _get_db_path(db)
@@ -605,6 +712,7 @@ async def list_sessions(
     db: str = Query("local.db", description="Database filename"),
     agent_id: Optional[str] = Query(None, description="Filter to sessions bound to this agent"),
     limit: int = Query(20, ge=1, le=50, description="Max sessions to return"),
+    include_hidden: bool = Query(False, description="Include sessions flagged hidden"),
 ):
     """List sessions for a user (owner or participant).
 
@@ -627,8 +735,14 @@ async def list_sessions(
     _payload = decode_token(_token) if _token else None
     requesting_user_id = _payload.get("user_id") if _payload else None
     requesting_username = _payload.get("sub") if _payload else None
-    # Fall back to user_id query param when no token (unauthenticated local UUID users)
-    requester_identities = {v for v in (requesting_user_id, requesting_username, user_id) if v}
+    # The SQL below only returns rows whose owner/participant id is in this set.
+    # A claimed `user_id` query param is honoured as a fallback identity ONLY
+    # when there's no valid token (unauthenticated local UUID users) or in open
+    # mode — so a token-bearing caller can't pass `?user_id=<someone else>` to
+    # read another user's session list.
+    requester_identities = {v for v in (requesting_user_id, requesting_username) if v}
+    if (not _payload or _is_open_access_mode()) and user_id:
+        requester_identities.add(user_id)
 
     db_path = _get_db_path(db)
     try:
@@ -646,12 +760,15 @@ async def list_sessions(
             has_sort_order = "sort_order" in sess_cols
             has_read_at = "read_at" in sess_cols
             has_status = "status" in sess_cols
+            has_hidden = "hidden" in sess_cols
 
-            select_cols = 's.id, s.title, s.created_at, s.user_id, s.participants, s.agent_id, s.updated_at'
+            select_cols = 's.id, s.title, s.created_at, s.user_id, s.participants, s.agent_id, s.updated_at, a.name AS agent_name, a.metadata AS agent_metadata'
             if has_pinned:
                 select_cols += ', s.pinned'
             if has_read_at:
                 select_cols += ', s.read_at'
+            if has_hidden:
+                select_cols += ', s.hidden'
 
             where_clause = '(s.agent_id IS NULL OR a.id IS NOT NULL)'
             params: list = []
@@ -665,10 +782,23 @@ async def list_sessions(
             if has_status:
                 where_clause = f"({where_clause}) AND (s.status IS NULL OR s.status != 'recycled')"
 
+            # Hidden sessions: the chat-header "manage list" eye-toggle declutters
+            # the dropdown without deleting. Excluded by default (NULL = visible,
+            # same convention as status); revealed when include_hidden is set.
+            if has_hidden and not include_hidden:
+                where_clause = f"({where_clause}) AND (s.hidden IS NULL OR s.hidden = 0)"
+
             # Hide spawned-clone sessions from the sidebar: they belong to
             # ephemeral clone agents and live/die with their orchestrator (see
             # cascade_delete_clones). Their ids are always prefixed 'spawn-'.
-            where_clause = f"({where_clause}) AND (s.id NOT LIKE 'spawn-%')"
+            # Optimizer Planner ('optimizer-*') and Closer ('closer-*') sessions
+            # are likewise children of the BASE session the optimizer ran on —
+            # they're reached by expanding that base row in the tree / via its
+            # sub-header tabs, not as their own top-level rows.
+            where_clause = (
+                f"({where_clause}) AND (s.id NOT LIKE 'spawn-%') "
+                f"AND (s.id NOT LIKE 'closer-%') AND (s.id NOT LIKE 'optimizer-%')"
+            )
 
             # Sort by last active time (updated_at), newest first.
             # Pinned sessions come first, then the rest sorted by last active.
@@ -688,6 +818,54 @@ async def list_sessions(
                 cur2.execute("SELECT session_id, status, updated_at FROM session_runs")
                 for r in cur2.fetchall():
                     run_statuses[r[0]] = {"status": r[1], "updated_at": r[2]}
+            except Exception:
+                pass
+
+            # Pre-fetch child counts so a parent row can show an expand caret.
+            # A session has children if it is an orchestrator (spawned helpers in
+            # agent_spawns) or a BASE session an optimizer ran on (its Planner
+            # 'optimizer-*' + Closer 'closer-*' members). One small query each;
+            # tallied into child_counts keyed by the parent (base) sid.
+            child_counts: dict = {}
+            try:
+                for r in cur2.execute(
+                    "SELECT orchestrator_session_id AS p, COUNT(*) AS n FROM agent_spawns "
+                    "GROUP BY orchestrator_session_id"
+                ).fetchall():
+                    if r[0]:
+                        child_counts[r[0]] = child_counts.get(r[0], 0) + int(r[1] or 0)
+            except Exception:
+                pass
+            # Optimizer Planners: each is a child of its base session
+            # (metadata.target_session). Build planner→base map for the closers.
+            _planner_base: dict = {}
+            try:
+                for r in cur2.execute(
+                    "SELECT id, metadata FROM sessions WHERE id LIKE 'optimizer-%'"
+                ).fetchall():
+                    try:
+                        _pm = json.loads(r[1] or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        _pm = {}
+                    _base = _pm.get("target_session")
+                    if _base:
+                        _planner_base[r[0]] = _base
+                        child_counts[_base] = child_counts.get(_base, 0) + 1
+            except Exception:
+                pass
+            # Optimizer Closers: also children of the base session, resolved via
+            # their Planner (metadata.source_optimizer_session → planner → base).
+            try:
+                for r in cur2.execute(
+                    "SELECT metadata FROM sessions WHERE id LIKE 'closer-%'"
+                ).fetchall():
+                    try:
+                        _cm = json.loads(r[0] or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        _cm = {}
+                    _base = _planner_base.get(_cm.get("source_optimizer_session"))
+                    if _base:
+                        child_counts[_base] = child_counts.get(_base, 0) + 1
             except Exception:
                 pass
 
@@ -755,10 +933,27 @@ async def list_sessions(
                         "created_at": row["created_at"],
                         "updated_at": row["updated_at"],
                         "agent_id": row["agent_id"],
+                        "agent_name": row["agent_name"] or "",
+                        "agent_icon": "",
+                        "agent_engine": "",
                         "pinned": pinned_val,
+                        "hidden": bool(row["hidden"]) if has_hidden else False,
                         "run_status": run_status,
                         "has_unread": has_unread,
+                        "child_count": child_counts.get(sid, 0),
                     })
+                    # Resolve icon and engine from agent metadata JSON
+                    am = row["agent_metadata"]
+                    if am:
+                        try:
+                            _m = json.loads(am)
+                            if isinstance(_m, dict):
+                                if _m.get("icon"):
+                                    sessions[-1]["agent_icon"] = _m["icon"]
+                                if _m.get("engine"):
+                                    sessions[-1]["agent_engine"] = _m["engine"]
+                        except Exception:
+                            pass
         except Exception:
             pass
 
@@ -771,11 +966,15 @@ async def list_sessions(
 
 
 @router.post("/sessions/{session_id}/read")
-async def mark_session_read(session_id: str, db: str = Query("local.db", description="Database filename")):
+async def mark_session_read(session_id: str, request: Request, db: str = Query("local.db", description="Database filename")):
     """Mark a session as read by setting read_at to now."""
     db_path = _get_db_path(db)
     try:
         conn, _dialect = _open(db)
+        # Ownership gate (open/local mode + admins pass; non-owner refused).
+        if _session_access_ok(conn.cursor(), session_id, request, None) is False:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not authorized for this session")
         conn.execute(
             "UPDATE sessions SET read_at = ? WHERE id = ?",
             (datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f+00:00"), session_id),
@@ -789,22 +988,347 @@ async def mark_session_read(session_id: str, db: str = Query("local.db", descrip
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _session_title(cur, sid: str):
+    """Best-effort session title lookup (None if absent)."""
+    try:
+        row = cur.execute("SELECT title FROM sessions WHERE id = ?", (sid,)).fetchone()
+        return row["title"] if row else None
+    except Exception:
+        return None
+
+
+def _session_meta_get(cur, sid: str, key: str):
+    """Best-effort lookup of a single key from a session's metadata JSON."""
+    try:
+        row = cur.execute("SELECT metadata FROM sessions WHERE id = ?", (sid,)).fetchone()
+        if not row:
+            return None
+        meta = json.loads(row["metadata"] or "{}")
+        return meta.get(key) if isinstance(meta, dict) else None
+    except (json.JSONDecodeError, TypeError, Exception):
+        return None
+
+
+@router.get("/sessions/{session_id}/related")
+async def get_session_related(
+    session_id: str,
+    request: Request,
+    db: str = Query("local.db", description="Database filename"),
+):
+    """Return spawned helpers and browser sessions related to this session.
+
+    * Spawned helpers: rows from ``agent_spawns`` where the orchestrator
+      session matches this session id. Returns the helper's session id,
+      name, status, and result summary.
+    * Browser sessions: rows from ``browser_sessions`` where the linked
+      agent matches the session's agent_id (if any).
+    """
+    from app.auth.identity import assert_caller_is
+    user_id = await assert_caller_is(request, None)
+
+    db_path = _get_db_path(db)
+    # `children` is the unified family-member list (spawned helpers OR optimizer
+    # worker/closer sessions). Each carries a `label`/`role` so one frontend
+    # renderer draws both the sub-header tab bar AND the session-list tree the
+    # same way. `root_label` names the family-root tab ("Main" for an
+    # orchestrator, "Planner" for an optimizer run). `spawns` is kept as a
+    # back-compat alias for the spawn children.
+    result = {"spawns": [], "children": [], "browser_sessions": [],
+              "parent": None, "orchestrator": None,
+              "group_kind": None, "root_label": "Main"}
+
+    try:
+        conn, _dialect = _open(db)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        # ── 1. Resolve the "family root" (orchestrator) for this session ──
+        # The chat sub-header shows a persistent tab bar for a whole spawn
+        # family — a "Main" tab for the orchestrator plus one tab per spawned
+        # helper — and it must look identical whether the user is viewing the
+        # orchestrator OR any of its spawns. So first find the family root:
+        #   • if THIS session was itself spawned, the root is its orchestrator
+        #     (one hop up), and `parent` is surfaced for back-compat;
+        #   • otherwise THIS session IS the root.
+        # Spawn ids are written as ``spawn-<uuid>`` by the orchestration
+        # ability, so a spawn always resolves to exactly one orchestrator row.
+        family_root = session_id
+        try:
+            tbl = cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_spawns'"
+            ).fetchone()
+            if tbl:
+                parent_row = cur.execute(
+                    """SELECT orchestrator_session_id
+                       FROM agent_spawns
+                       WHERE spawn_session_id = ?
+                       ORDER BY created_at ASC LIMIT 1""",
+                    (session_id,),
+                ).fetchone()
+                if parent_row and parent_row["orchestrator_session_id"]:
+                    family_root = parent_row["orchestrator_session_id"]
+                    result["parent"] = {
+                        "session_id": family_root,
+                        "title": _session_title(cur, family_root),
+                    }
+
+                # ── 2. The family's spawned helpers (siblings of THIS session
+                #       when it is a spawn; own children when it is the root) ──
+                spawn_rows = cur.execute(
+                    """SELECT id, spawn_session_id, name, task, status, result_summary, created_at
+                       FROM agent_spawns
+                       WHERE orchestrator_session_id = ?
+                       ORDER BY created_at ASC""",
+                    (family_root,),
+                ).fetchall()
+                result["spawns"] = [
+                    {
+                        "id": r["id"],
+                        "spawn_session_id": r["spawn_session_id"],
+                        "name": r["name"],
+                        "task": r["task"],
+                        "status": r["status"],
+                        "result_summary": r["result_summary"],
+                        "created_at": r["created_at"],
+                    }
+                    for r in spawn_rows
+                ]
+
+                # The "Main" tab target. Only meaningful once the family has at
+                # least one spawn; the frontend hides it otherwise.
+                if result["spawns"]:
+                    result["orchestrator"] = {
+                        "session_id": family_root,
+                        "title": _session_title(cur, family_root),
+                    }
+                    result["group_kind"] = "orchestrator"
+                    result["root_label"] = "Main"
+                    # Unified children list (label=None → frontend defaults to
+                    # "Spawn N"); same shape the optimizer family produces below.
+                    result["children"] = [
+                        {
+                            "session_id": s["spawn_session_id"],
+                            "label": None,
+                            "role": "spawn",
+                            "name": s["name"],
+                            "status": s["status"],
+                        }
+                        for s in result["spawns"]
+                    ]
+        except Exception:
+            pass
+
+        # ── 1c. Optimizer family (BASE session = root; Planner + Closer = tabs) ──
+        # The real session the optimizer ran ON is the family root ("Main"); its
+        # Planner (``optimizer-*``, linked by metadata.target_session → base) and
+        # Closer (``closer-*``, linked by metadata.source_optimizer_session →
+        # Planner) are surfaced as spawn-style member tabs beneath it — exactly
+        # like an orchestrator's spawns. Worker trials are NOT surfaced (they are
+        # ephemeral sims, deleted after the run). Resolves the base session from
+        # whichever member we're viewing (the base session itself, a Planner, or
+        # a Closer). This APPENDS to any spawn family already found above, so a
+        # session that is BOTH an orchestrator AND an optimizer base shows both
+        # its spawns and its Planner/Closer members in one tab strip.
+        if True:
+            try:
+                base_sid = None
+                if session_id.startswith("optimizer-"):
+                    base_sid = _session_meta_get(cur, session_id, "target_session")
+                elif session_id.startswith("closer-"):
+                    _planner = _session_meta_get(cur, session_id, "source_optimizer_session")
+                    if _planner:
+                        base_sid = _session_meta_get(cur, _planner, "target_session")
+                else:
+                    # Possibly a base session — confirmed below iff a Planner
+                    # actually targets it.
+                    base_sid = session_id
+
+                if base_sid:
+                    children = []
+                    planner_sids = set()
+                    for pr in cur.execute(
+                        "SELECT id, title, metadata FROM sessions WHERE id LIKE 'optimizer-%' "
+                        "ORDER BY created_at ASC"
+                    ).fetchall():
+                        try:
+                            pm = json.loads(pr["metadata"] or "{}")
+                        except (json.JSONDecodeError, TypeError):
+                            pm = {}
+                        if pm.get("target_session") == base_sid:
+                            planner_sids.add(pr["id"])
+                            children.append({
+                                "session_id": pr["id"],
+                                "label": "Planner",
+                                "role": "planner",
+                                "name": pr["title"] or "Planner",
+                                "status": None,
+                            })
+                    for cr in cur.execute(
+                        "SELECT id, title, metadata FROM sessions WHERE id LIKE 'closer-%' "
+                        "ORDER BY created_at ASC"
+                    ).fetchall():
+                        try:
+                            cm = json.loads(cr["metadata"] or "{}")
+                        except (json.JSONDecodeError, TypeError):
+                            cm = {}
+                        if cm.get("source_optimizer_session") in planner_sids:
+                            children.append({
+                                "session_id": cr["id"],
+                                "label": "Closer",
+                                "role": "closer",
+                                "name": cr["title"] or "Closer",
+                                "status": None,
+                            })
+
+                    # Surface the family only when it actually has optimizer
+                    # members hanging off this base session. Append to (not
+                    # replace) any spawn family found above; only fill in the
+                    # root/group fields if the spawn branch didn't already.
+                    if children:
+                        result["children"] = (result.get("children") or []) + children
+                        result["root_label"] = result.get("root_label") or "Main"
+                        if not result.get("group_kind"):
+                            result["group_kind"] = "optimizer"
+                        if not result.get("orchestrator"):
+                            result["orchestrator"] = {
+                                "session_id": base_sid,
+                                "title": _session_title(cur, base_sid),
+                            }
+                        if session_id != base_sid and not result.get("parent"):
+                            result["parent"] = {
+                                "session_id": base_sid,
+                                "title": _session_title(cur, base_sid),
+                            }
+            except Exception:
+                pass
+
+        # ── 2. Resolve the owning agent for this session ──
+        agent_id = None
+        try:
+            agent_row = cur.execute(
+                "SELECT agent_id FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if agent_row:
+                agent_id = agent_row["agent_id"]
+        except Exception:
+            pass
+
+        # ── 3. Browser sessions linked to the same agent ──
+        # Gate: only surface the agent's browser tab(s) if the agent ACTUALLY
+        # drove the browser in THIS chat session. A browser_sessions row exists
+        # as soon as the user opens the Web tab for an agent (browser_stream
+        # auto-creates one via resolve_agent_session), so the row alone is not
+        # proof of use. The reliable per-session signal is a browser_action tool
+        # execution recorded against this session_id in logs.db.
+        used_browser = False
+        try:
+            from app.db.logs_store import get_log_store
+            _bx = await get_log_store().query_tool_executions(
+                tool_name="browser_action", session_id=session_id, limit=1
+            )
+            used_browser = bool(_bx)
+        except Exception:
+            used_browser = False
+
+        if agent_id and used_browser:
+            try:
+                bs_rows = cur.execute(
+                    """SELECT id, title, url, status, shared, created_at
+                       FROM browser_sessions
+                       WHERE user_id = ? AND agent_id = ?
+                       ORDER BY position ASC, created_at ASC""",
+                    (user_id, agent_id),
+                ).fetchall()
+                result["browser_sessions"] = [
+                    {
+                        "id": r["id"],
+                        "title": r["title"],
+                        "url": r["url"],
+                        "status": r["status"],
+                        "shared": bool(r["shared"]),
+                        "created_at": r["created_at"],
+                    }
+                    for r in bs_rows
+                ]
+            except Exception:
+                pass
+
+        conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return result
+
+
+def _strip_folded_attachments(content: str) -> str:
+    """Remove image-description blocks folded into a stored user message.
+
+    The attachment-describe step (app/api/chat.py _maybe_describe_images) appends
+    a "[Attached image - ...]: <description>" block to the persisted USER turn so a
+    blind model keeps the description across turns. That belongs in the model's
+    context, not the user's chat bubble — on reload it made the whole description
+    render *inside* the user's message. The description is shown instead via the
+    persisted process_image tool row, so we strip the fold for DISPLAY only here.
+    The model path (fetch_interactions -> interactions_to_openai_messages) reads
+    the raw row and is unaffected. Marker matched on its ASCII prefix (the next
+    char is an em dash) so the original typed message before it is returned as-is.
+    """
+    if not content:
+        return content
+    idx = content.find("\n\n[Attached image ")
+    return content[:idx].rstrip() if idx != -1 else content
+
+
+def _user_row_attachments(input_raw, att_by_id):
+    """Resolve the attachment records referenced by a stored user turn.
+
+    The message -> attachment link lives in the user row's input JSON
+    (`attachment_ids`); the bytes live in the session's attachments table. Returns
+    frontend-shaped records (matching renderAttachmentElement / _resolveAttachmentUrl)
+    so a reloaded user bubble can re-render its pasted images/files — the live
+    bubble renders them from the send flow, but a cold reload has only the row.
+    Reads the raw input column directly so it still works in light mode (where the
+    serialized message's `input` is blanked).
+    """
+    if not input_raw or not att_by_id:
+        return []
+    try:
+        ids = (json.loads(input_raw) or {}).get("attachment_ids") or []
+    except Exception:
+        return []
+    return [att_by_id[i] for i in ids if i in att_by_id]
+
+
 @router.get("/session-messages")
 async def get_session_messages(
     request: Request,
     session_id: str = Query(..., description="Session ID"),
-    limit: int = Query(20, description="Max messages to return"),
+    limit: int = Query(20, description="Max messages to return (per edge when `around_id` is set)"),
     before_id: Optional[str] = Query(None, description="If set, return the batch of messages immediately older than this message (backward pagination)"),
+    after_id: Optional[str] = Query(None, description="If set, return the batch of messages immediately newer than this message (forward pagination)"),
+    around_id: Optional[str] = Query(None, description="If set, return a window centred on this message: up to `limit` older rows plus up to `limit` newer rows. Used to reopen a session on the user's saved scroll position without downloading the whole tail."),
+    light: int = Query(0, description="When 1, blank the heavy tool-call bodies (per-turn LLM input, tool results, tool-call arguments) while keeping the wire shape. Tool-call headings (names + durations) still render; the full bodies load on demand via /session-turn-detail when the user expands a panel."),
     db: str = Query("local.db", description="Database filename"),
 ):
-    """Return the most recent `limit` messages for a session, oldest-first.
+    """Return a window of a session's messages, oldest-first.
 
-    Initial load (no `before_id`) returns the NEWEST `limit` rows — not the
-    oldest — so a long session opens on its latest messages instead of stopping
-    at an old point. Page further back with `before_id` (the oldest row
-    currently shown); each call returns the `limit` rows immediately older than
-    it. `has_more` reports whether still-older rows remain. Within a batch, rows
-    are ordered oldest-first for top-to-bottom rendering.
+    Three open modes, by cursor:
+      • none → the NEWEST `limit` rows (a long session opens on its latest
+        messages, not its oldest).
+      • `around_id` → a window CENTRED on that message (`limit` older + `limit`
+        newer). This is the fast "reopen where I left off" path.
+      • `before_id` / `after_id` → the batch immediately older / newer than that
+        message (infinite scroll up / down).
+
+    `has_more` reports whether still-older rows remain; `has_newer` whether
+    still-newer rows remain (relevant after an `around_id`/`before_id` open).
+    Within a batch, rows are ordered oldest-first for top-to-bottom rendering.
+    `max_session_seq` is the session's true latest seq (so the live reconcile
+    poll doesn't backfill the gap when opened mid-history); `context_tokens` is
+    a whole-session token estimate for the ctx indicator (the windowed payload
+    alone would under-report it).
     """
     # Route to temp DB if session has one
     resolved_db = _resolve_session_db(session_id, db)
@@ -830,15 +1354,27 @@ async def get_session_messages(
         requesting_user_id = _payload.get("user_id") if _payload else None
         requesting_username = _payload.get("sub") if _payload else None
         requester_identities = {v for v in (requesting_user_id, requesting_username) if v}
+        # The session's recorded execution mode (Ask/Plan/Auto) — the chat panel
+        # applies this on load so the pill matches what the server will actually
+        # do, even on a cold device. None when never set (UI defaults to Ask).
+        _session_exec_mode = None
         try:
             cur.execute(
-                "SELECT user_id, participants FROM sessions WHERE id = ?",
+                "SELECT user_id, participants, metadata FROM sessions WHERE id = ?",
                 (session_id,)
             )
             session_row = cur.fetchone()
             if session_row:
                 owner_id = session_row[0]
                 participants_raw = session_row[1] or "[]"
+                try:
+                    _smeta = json.loads(session_row[2]) if session_row[2] else {}
+                    if isinstance(_smeta, dict):
+                        _mv = _smeta.get("execution_mode")
+                        if isinstance(_mv, str) and _mv:
+                            _session_exec_mode = _mv
+                except (json.JSONDecodeError, TypeError):
+                    pass
                 try:
                     participants = json.loads(participants_raw)
                 except (json.JSONDecodeError, TypeError):
@@ -847,35 +1383,166 @@ async def get_session_messages(
                 is_authorized = bool(requester_identities) and bool(
                     requester_identities & ({owner_id} | participant_ids)
                 )
-                if not is_authorized:
+                if not is_authorized and not _is_open_access_mode():
                     conn.close()
                     return {"messages": [], "session_id": session_id, "db": db, "restricted": True}
         except Exception:
             pass  # No sessions table — fall through to message fetch
 
         messages = []
-        # Pagination cursor. `before_id` marks the oldest row already shown; we
-        # return the rows immediately OLDER than it. created_at alone is NOT a
-        # safe cursor — insert_interaction relies on the second-resolution
-        # datetime('now') default, so a whole turn's rows usually share the same
-        # created_at. We therefore order and page by the composite
-        # (created_at, rowid): rowid is the table's monotonic insertion counter,
-        # which breaks same-second ties in true chronological order.
-        before_ts = None
-        before_rowid = None
-        if before_id:
+        # Resolve this session's attachments once so a reloaded user turn can
+        # re-render its pasted images/files (the live bubble gets them from the
+        # send flow; a cold reload has only the stored row). Shaped to match the
+        # frontend attachment object (renderAttachmentElement/_resolveAttachmentUrl).
+        att_by_id = {}
+        try:
+            cur.execute(
+                "SELECT id, original_name, mime_type, size_bytes, storage_path, storage_provider "
+                "FROM attachments WHERE session_id = ?",
+                (session_id,),
+            )
+            for _a in cur.fetchall():
+                att_by_id[_a[0]] = {
+                    "attachment_id": _a[0],
+                    "original_name": _a[1],
+                    "mime_type": _a[2],
+                    "size_bytes": _a[3],
+                    "storage_path": _a[4],
+                    "storage_provider": _a[5],
+                }
+        except Exception:
+            att_by_id = {}
+        # role-by-id (filled once `rows` is fetched below) lets _row_to_msg tell a
+        # SYNTHETIC standalone tool row — vision (process_image/route_attachment
+        # parented to the user turn) or a loop-node memory row (search/save, tagged
+        # metadata.brain) — both written with no assistant tool_call to pair with —
+        # from a real model-issued one, so the reload renderer can show each as its
+        # own foldable tool call.
+        role_by_id = {}
+        has_more = False
+        has_newer = False
+        # Pagination cursors. created_at alone is NOT a safe cursor —
+        # insert_interaction relies on the second-resolution datetime('now')
+        # default, so a whole turn's rows usually share the same created_at. We
+        # therefore order and page by the composite (created_at, rowid): rowid is
+        # the table's monotonic insertion counter, which breaks same-second ties
+        # in true chronological order.
+        def _cursor_for(mid):
             for _tbl in ("interactions", "messages"):
                 try:
-                    cur.execute(f'SELECT created_at, {_tb} FROM "{_tbl}" WHERE id = ?', (before_id,))
+                    cur.execute(f'SELECT created_at, {_tb} FROM "{_tbl}" WHERE id = ?', (mid,))
                     _r = cur.fetchone()
                     if _r:
-                        before_ts, before_rowid = _r[0], _r[1]
-                        break
+                        return _r[0], _r[1]
                 except Exception:
                     pass
-        # Fetch one extra row so we can detect whether older messages remain
-        # (has_more) without a second existence query.
-        fetch_n = (limit or 20) + 1
+            return None, None
+
+        before_ts = before_rowid = None
+        after_ts = after_rowid = None
+        around_ts = around_rowid = None
+        if before_id:
+            before_ts, before_rowid = _cursor_for(before_id)
+        if after_id:
+            after_ts, after_rowid = _cursor_for(after_id)
+        if around_id:
+            around_ts, around_rowid = _cursor_for(around_id)
+
+        lim = limit or 20
+        # Fetch one extra row per edge so we can detect remaining rows without a
+        # second existence query.
+        fetch_n = lim + 1
+
+        # Light mode blanks the heavy bodies while keeping the wire shape, so the
+        # renderer is unchanged but the transcript opens on a tiny payload. The
+        # per-turn LLM input (the whole message history — the dominant cost) is
+        # dropped; tool result bodies are blanked; the assistant's output is
+        # slimmed to just the tool-call NAMES (so the "N tool calls" heading and
+        # each row's name + duration still render). Full bodies load on demand
+        # when the user expands a panel — see /session-turn-detail.
+        def _is_brain_row(meta_str):
+            # Loop-node memory rows (the pre-turn search / post-turn save) carry
+            # metadata.brain=True. That distinguishes them from a model-issued
+            # memory_search the agent calls as a normal tool (which pairs with an
+            # assistant tool_call and renders the ordinary way). A SKIPPED search
+            # (greeting/command — nothing actually happened) is left untagged so it
+            # doesn't render an empty bubble; the live path skips it too (no
+            # tool_result fires), so both paths stay consistent.
+            try:
+                meta = json.loads(meta_str) if meta_str else {}
+                return bool(meta.get("brain")) and not meta.get("skipped")
+            except Exception:
+                return False
+
+        def _slim(m):
+            # Synthetic standalone tool rows (vision ingestion + loop-node memory)
+            # ship their (small) body even in light mode: their foldable panel is
+            # rendered straight from the row on reload (no assistant pairing to
+            # lazy-fetch against), so blanking it would leave an empty panel when
+            # expanded.
+            if m.get("_synth_tool"):
+                return m
+            m["input"] = None
+            role = m.get("role")
+            if role == "assistant":
+                out = m.get("output")
+                if out:
+                    try:
+                        _o = json.loads(out)
+                        _tcs = _o.get("tool_calls") or []
+                        _slim_tcs = [
+                            {"function": {"name": (tc.get("function") or {}).get("name"), "arguments": ""}}
+                            for tc in _tcs if isinstance(tc, dict)
+                        ]
+                        m["output"] = json.dumps({"tool_calls": _slim_tcs}) if _slim_tcs else None
+                    except Exception:
+                        m["output"] = None
+            elif role == "tool":
+                # Tool result bodies are the heavy part; the heading needs only
+                # the (kept) metadata for the duration.
+                m["content"] = ""
+                m["output"] = None
+            return m
+
+        def _row_to_msg(row):
+            m = {
+                "id": row[0],
+                "session_id": row[1],
+                "role": row[2],
+                "content": row[3],
+                "tool_name": row[4],
+                "created_at": row[5],
+                "status": row[6],
+                "session_seq": row[7],
+                "output": row[8],
+                "metadata": row[9],
+                "parent_id": row[10],
+                "input": row[11],
+            }
+            # Hide any image-description block folded into the user turn — it is
+            # shown as a process_image tool row, not inside the user's bubble.
+            if m.get("role") == "user":
+                m["content"] = _strip_folded_attachments(m.get("content"))
+                # Re-attach the turn's pasted images/files so they survive reload.
+                _atts = _user_row_attachments(row[11], att_by_id)
+                if _atts:
+                    m["attachments"] = _atts
+            elif m.get("role") == "tool" and m.get("tool_name") in ("process_image", "route_attachment", "app_control") \
+                    and role_by_id.get(row[10]) == "user":
+                # Image-processing AND App Control rows are parented to the USER turn
+                # and have no assistant tool_call to pair with, so the normal renderer
+                # (which matches results to an assistant's saved tool_calls) skips
+                # them. Mark them so the reload path renders each as its own foldable
+                # tool call (and so _slim keeps the body intact in light mode).
+                m["_synth_tool"] = True
+            elif m.get("role") == "tool" and m.get("tool_name") in ("memory_search", "memory_save") \
+                    and _is_brain_row(row[9]):
+                # Loop-node memory rows (brain search before the turn, save after)
+                # are written WITHOUT an assistant tool_call to pair against —
+                # exactly the vision case — so the normal renderer skips them too.
+                # Flag them to render as their own foldable tool bubble on reload.
+                m["_synth_tool"] = True
+            return _slim(m) if light else m
 
         # Try interactions table first (has richer data)
         try:
@@ -887,41 +1554,78 @@ async def get_session_messages(
             except Exception:
                 _has_status = False
             _status_col = "status" if _has_status else "'complete' AS status"
-            _where = "session_id = ?"
-            _params: list = [session_id]
-            if before_ts is not None:
-                _where += f" AND (created_at < ? OR (created_at = ? AND {_tb} < ?))"
-                _params.extend([before_ts, before_ts, before_rowid])
-            cur.execute(
-                f'SELECT id, session_id, role, content, tool_name, created_at, {_status_col}, session_seq, '
-                f'output, metadata, parent_id, input '
-                f'FROM interactions WHERE {_where} ORDER BY created_at DESC, {_tb} DESC LIMIT ?',
-                (*_params, fetch_n)
+            _base = (
+                f'SELECT id, session_id, role, content, tool_name, created_at, {_status_col}, '
+                f'session_seq, output, metadata, parent_id, input FROM interactions'
             )
-            for row in cur.fetchall():
-                messages.append({
-                    "id": row[0],
-                    "session_id": row[1],
-                    "role": row[2],
-                    "content": row[3],
-                    "tool_name": row[4],
-                    "created_at": row[5],
-                    "status": row[6],
-                    "session_seq": row[7],
-                    "output": row[8],
-                    "metadata": row[9],
-                    "parent_id": row[10],
-                    "input": row[11],
-                })
+
+            if around_ts is not None:
+                # Window centred on the anchor: anchor-and-older (newest-first)
+                # plus strictly-newer (oldest-first); each edge reports whether
+                # more rows remain beyond it.
+                cur.execute(
+                    _base + f' WHERE session_id = ? AND (created_at < ? OR (created_at = ? AND {_tb} <= ?)) '
+                    f'ORDER BY created_at DESC, {_tb} DESC LIMIT ?',
+                    (session_id, around_ts, around_ts, around_rowid, fetch_n),
+                )
+                older = cur.fetchall()
+                has_more = len(older) > lim
+                older = older[:lim]
+                cur.execute(
+                    _base + f' WHERE session_id = ? AND (created_at > ? OR (created_at = ? AND {_tb} > ?)) '
+                    f'ORDER BY created_at ASC, {_tb} ASC LIMIT ?',
+                    (session_id, around_ts, around_ts, around_rowid, fetch_n),
+                )
+                newer = cur.fetchall()
+                has_newer = len(newer) > lim
+                newer = newer[:lim]
+                rows = list(reversed(older)) + list(newer)  # oldest-first
+            elif after_ts is not None:
+                cur.execute(
+                    _base + f' WHERE session_id = ? AND (created_at > ? OR (created_at = ? AND {_tb} > ?)) '
+                    f'ORDER BY created_at ASC, {_tb} ASC LIMIT ?',
+                    (session_id, after_ts, after_ts, after_rowid, fetch_n),
+                )
+                rows = cur.fetchall()  # oldest-first
+                has_newer = len(rows) > lim
+                rows = rows[:lim]
+                has_more = True  # paged forward from a point → older rows exist
+            else:
+                _where = "session_id = ?"
+                _params: list = [session_id]
+                if before_ts is not None:
+                    _where += f" AND (created_at < ? OR (created_at = ? AND {_tb} < ?))"
+                    _params.extend([before_ts, before_ts, before_rowid])
+                cur.execute(
+                    _base + f' WHERE {_where} ORDER BY created_at DESC, {_tb} DESC LIMIT ?',
+                    (*_params, fetch_n),
+                )
+                rows = cur.fetchall()  # newest-first
+                has_more = len(rows) > lim
+                rows = rows[:lim]
+                rows.reverse()  # oldest-first
+                has_newer = before_ts is not None
+
+            # Map id -> role for this window so _row_to_msg can classify a synthetic
+            # vision tool row by its parent turn's role.
+            for _r in rows:
+                role_by_id[_r[0]] = _r[2]
+            for row in rows:
+                # Hide parallel-racing loser rows (kept only for diagnostics) so the
+                # transcript shows one answer per turn, not the winner + 3 losers.
+                if _is_loser_row(row[9]):
+                    continue
+                messages.append(_row_to_msg(row))
         except Exception:
             pass
 
         if not messages:
-            # Fallback to messages table
+            # Fallback to messages table (legacy DBs). Only newest/before paging;
+            # an anchor/forward cursor degrades to newest.
             try:
                 _where = "session_id = ?"
                 _params = [session_id]
-                if before_ts is not None:
+                if before_ts is not None and around_ts is None and after_ts is None:
                     _where += f" AND (created_at < ? OR (created_at = ? AND {_tb} < ?))"
                     _params.extend([before_ts, before_ts, before_rowid])
                 cur.execute(
@@ -929,24 +1633,23 @@ async def get_session_messages(
                     f'FROM messages WHERE {_where} ORDER BY created_at DESC, {_tb} DESC LIMIT ?',
                     (*_params, fetch_n)
                 )
-                for row in cur.fetchall():
-                    messages.append({
+                _rows = cur.fetchall()
+                has_more = len(_rows) > lim
+                _rows = _rows[:lim]
+                _rows.reverse()
+                for row in _rows:
+                    m = {
                         "id": row[0],
                         "session_id": row[1],
                         "role": row[2],
                         "content": row[3],
                         "created_at": row[4],
-                    })
+                    }
+                    if light and m.get("role") == "tool":
+                        m["content"] = ""
+                    messages.append(m)
             except Exception:
                 pass
-
-        # We fetched newest-first with one extra row. If the extra came back,
-        # older messages remain (has_more); drop it, keeping the newest `limit`.
-        # Then flip back to chronological (oldest-first) order for rendering.
-        has_more = len(messages) > limit
-        if has_more:
-            messages = messages[:limit]
-        messages.reverse()
 
         # ── Durable run-state: is a turn in progress for this session? ──
         # Lets a cold/second device know to show the live indicator and where to
@@ -954,7 +1657,7 @@ async def get_session_messages(
         run_info = None
         try:
             cur.execute(
-                "SELECT status, turn_id, assistant_interaction_id, latest_session_seq, updated_at "
+                "SELECT status, turn_id, assistant_interaction_id, latest_session_seq, updated_at, current_op "
                 "FROM session_runs WHERE session_id = ?",
                 (session_id,)
             )
@@ -967,12 +1670,257 @@ async def get_session_messages(
                     "assistant_interaction_id": r[2],
                     "latest_session_seq": r[3],
                     "updated_at": r[4],
+                    "current_op": r[5],
                 }
         except Exception:
             pass  # session_runs table not present (legacy/temp DB)
 
+        # The session's true latest seq — the live reconcile poll seeds its
+        # cursor here so opening mid-history (an `around_id` window) doesn't make
+        # it backfill every newer row; the gap is reached by scrolling down.
+        max_session_seq = 0
+        try:
+            cur.execute("SELECT MAX(session_seq) FROM interactions WHERE session_id = ?", (session_id,))
+            _r = cur.fetchone()
+            if _r and _r[0] is not None:
+                max_session_seq = _r[0]
+        except Exception:
+            pass
+
+        # Whole-session token estimate for the ctx indicator (the windowed
+        # payload alone would under-report it once the open fetch is small).
+        context_tokens = 0
+        try:
+            cur.execute(
+                "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM interactions "
+                "WHERE session_id = ? AND role IN ('user', 'assistant')",
+                (session_id,),
+            )
+            _r = cur.fetchone()
+            if _r and _r[0]:
+                context_tokens = int(_r[0]) // 4
+        except Exception:
+            pass
+
         conn.close()
-        return {"messages": messages, "session_id": session_id, "db": db, "run": run_info, "has_more": has_more}
+        return {
+            "messages": messages,
+            "session_id": session_id,
+            "db": db,
+            "run": run_info,
+            "has_more": has_more,
+            "has_newer": has_newer,
+            "light": bool(light),
+            "max_session_seq": max_session_seq,
+            "context_tokens": context_tokens,
+            "execution_mode": _session_exec_mode,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/session-turn-detail")
+async def get_session_turn_detail(
+    request: Request,
+    session_id: str = Query(..., description="Session ID (for the participant check)"),
+    ids: str = Query(..., description="Comma-separated assistant interaction ids to expand"),
+    db: str = Query("local.db", description="Database filename"),
+):
+    """Full tool-call bodies for specific assistant turns, loaded on demand.
+
+    The chat transcript opens in ``light`` mode (tool-call bodies blanked — see
+    /session-messages). When the user expands a tool-call panel, the frontend
+    calls this for just the assistant ids in that panel and gets back, per id,
+    the full LLM ``input``/``output``/``metadata`` plus the child tool rows'
+    ``content``/``output``/``metadata`` to populate the body. This keeps the
+    rarely-viewed heavy payload off the initial load entirely.
+    """
+    resolved_db = _resolve_session_db(session_id, db)
+    if resolved_db != db:
+        db = resolved_db
+    try:
+        conn, _dialect = _open(db)
+        cur = conn.cursor()
+        _tb = "rowid" if _dialect == "sqlite" else "id"
+
+        # Participant gate — identical to /session-messages.
+        _token = ""
+        _auth_header = request.headers.get("Authorization", "")
+        if _auth_header.startswith("Bearer "):
+            _token = _auth_header[7:]
+        if not _token:
+            _token = request.query_params.get("token", "")
+        _payload = decode_token(_token) if _token else None
+        requesting_user_id = _payload.get("user_id") if _payload else None
+        requesting_username = _payload.get("sub") if _payload else None
+        requester_identities = {v for v in (requesting_user_id, requesting_username) if v}
+        try:
+            cur.execute("SELECT user_id, participants FROM sessions WHERE id = ?", (session_id,))
+            session_row = cur.fetchone()
+            if session_row:
+                owner_id = session_row[0]
+                try:
+                    participants = json.loads(session_row[1] or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    participants = []
+                participant_ids = {p.get("id") for p in participants if isinstance(p, dict)}
+                is_authorized = bool(requester_identities) and bool(
+                    requester_identities & ({owner_id} | participant_ids)
+                )
+                if not is_authorized and not _is_open_access_mode():
+                    conn.close()
+                    return {"details": {}, "session_id": session_id, "db": db, "restricted": True}
+        except Exception:
+            pass  # No sessions table — fall through
+
+        id_list = [s for s in (ids or "").split(",") if s]
+        details = {}
+        for aid in id_list:
+            try:
+                cur.execute(
+                    "SELECT input, output, metadata FROM interactions WHERE id = ? AND session_id = ?",
+                    (aid, session_id),
+                )
+                r = cur.fetchone()
+                if not r:
+                    continue
+                tools = []
+                try:
+                    cur.execute(
+                        "SELECT tool_name, content, output, metadata FROM interactions "
+                        f"WHERE parent_id = ? AND session_id = ? ORDER BY created_at ASC, {_tb} ASC",
+                        (aid, session_id),
+                    )
+                    for tr in cur.fetchall():
+                        tools.append({
+                            "tool_name": tr[0],
+                            "content": tr[1],
+                            "output": tr[2],
+                            "metadata": tr[3],
+                        })
+                except Exception:
+                    pass
+                details[aid] = {"input": r[0], "output": r[1], "metadata": r[2], "tools": tools}
+            except Exception:
+                continue
+
+        conn.close()
+        return {"details": details, "session_id": session_id, "db": db}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/session-tail")
+async def get_session_tail(
+    request: Request,
+    session_id: str = Query(..., description="Session ID"),
+    after_session_seq: int = Query(0, description="Return only interactions with session_seq greater than this"),
+    user_id: Optional[str] = Query(None, description="Active client identity — fallback when no JWT (local users)"),
+    db: str = Query("local.db", description="Database filename"),
+):
+    """Incremental tail of a session's interactions for the live DB-reconcile path.
+
+    Returns only interactions whose ``session_seq > after_session_seq`` (ascending),
+    PLUS the in-progress streaming assistant row, PLUS the durable ``run`` object.
+
+    This is the cheap poll the chat UI runs (gated on WebSocket silence) to stream
+    a reply when the live WebSocket and the agent run are on DIFFERENT server
+    processes/workers — the DB is the shared source of truth, so this path is
+    correct regardless of process topology. The active streaming row is unioned
+    in explicitly because its ``session_seq`` is assigned once at insert and does
+    NOT advance as its content is updated every ~0.6s — a ``session_seq > after``
+    filter alone would return it once and then miss its GROWING text. Mirrors the
+    row shape of ``/session-messages`` so the frontend uses one renderer.
+    """
+    resolved_db = _resolve_session_db(session_id, db)
+    if resolved_db != db:
+        db = resolved_db
+    try:
+        conn, _dialect = _open(db)
+        cur = conn.cursor()
+
+        # Same participant gate as /session-messages (False = deny; None/True = proceed).
+        if _session_access_ok(cur, session_id, request, user_id) is False:
+            conn.close()
+            return {"messages": [], "session_id": session_id, "db": db, "run": None, "restricted": True}
+
+        # `status` may not exist on very old DBs — probe and fall back.
+        _has_status = False
+        try:
+            _icols = {r[1] for r in cur.execute("PRAGMA table_info(interactions)").fetchall()}
+            _has_status = "status" in _icols
+        except Exception:
+            _has_status = False
+        _status_col = "status" if _has_status else "'complete' AS status"
+        _cols = (f'id, session_id, role, content, tool_name, created_at, {_status_col}, '
+                 f'session_seq, output, metadata, parent_id, input')
+
+        def _row_to_msg(row):
+            return {
+                "id": row[0], "session_id": row[1], "role": row[2], "content": row[3],
+                "tool_name": row[4], "created_at": row[5], "status": row[6],
+                "session_seq": row[7], "output": row[8], "metadata": row[9],
+                "parent_id": row[10], "input": row[11],
+            }
+
+        messages = []
+        seen_ids = set()
+        try:
+            cur.execute(
+                f'SELECT {_cols} FROM interactions '
+                f'WHERE session_id = ? AND session_seq IS NOT NULL AND session_seq > ? '
+                f'ORDER BY session_seq ASC LIMIT 200',
+                (session_id, after_session_seq),
+            )
+            for row in cur.fetchall():
+                if _is_loser_row(row[9]):
+                    continue
+                m = _row_to_msg(row)
+                messages.append(m)
+                seen_ids.add(m["id"])
+        except Exception:
+            pass
+
+        # Durable run-state: is a turn in progress for this session?
+        run_info = None
+        try:
+            cur.execute(
+                "SELECT status, turn_id, assistant_interaction_id, latest_session_seq, updated_at, current_op "
+                "FROM session_runs WHERE session_id = ?",
+                (session_id,),
+            )
+            r = cur.fetchone()
+            if r:
+                run_info = {
+                    "status": r[0],
+                    "active": r[0] == "running",
+                    "turn_id": r[1],
+                    "assistant_interaction_id": r[2],
+                    "latest_session_seq": r[3],
+                    "updated_at": r[4],
+                    "current_op": r[5],
+                }
+        except Exception:
+            pass  # session_runs table not present (legacy/temp DB)
+
+        # Union the in-progress streaming row (see docstring) so its growing text
+        # rides every poll even though its session_seq never advances.
+        _asst = run_info.get("assistant_interaction_id") if run_info else None
+        if _asst and _asst not in seen_ids:
+            try:
+                cur.execute(f'SELECT {_cols} FROM interactions WHERE id = ?', (_asst,))
+                row = cur.fetchone()
+                if row:
+                    messages.append(_row_to_msg(row))
+            except Exception:
+                pass
+
+        conn.close()
+        return {"messages": messages, "session_id": session_id, "db": db, "run": run_info}
     except HTTPException:
         raise
     except Exception as e:
@@ -988,7 +1936,7 @@ def _session_access_ok(cur, session_id: str, request: Request, user_id: Optional
     ``user_id`` is the active client identity (``app.currentUserId``) passed as a
     query param. It's accepted as a fallback identity when there's no matching
     JWT — exactly like get_user_sessions does — so unauthenticated local UUID
-    users (and sessions created from the TUI / launcher under ``admin_default``)
+    users (and sessions created from the TUI / launcher under ``admin``)
     can manage their own rows. The session row's owner / participant list is
     still the gate: a claimed ``user_id`` only authorizes when it actually
     matches the session, so it can't widen access to other users' sessions."""
@@ -1019,6 +1967,8 @@ def _session_access_ok(cur, session_id: str, request: Request, user_id: Optional
     except (json.JSONDecodeError, TypeError):
         participants = []
     participant_ids = {p.get("id") for p in participants if isinstance(p, dict)}
+    if _is_open_access_mode():
+        return True  # open mode: middleware already trusts the request as admin
     return bool(requester_identities) and bool(
         requester_identities & ({owner_id} | participant_ids)
     )
@@ -1120,6 +2070,7 @@ async def delete_turn(
 
 @router.get("/session-stats")
 async def session_stats(
+    request: Request,
     user_id: str = Query(..., description="User ID"),
     db: str = Query("local.db", description="Database filename"),
     status: str = Query("active", description="Filter by session status: 'active', 'recycled', or 'all'"),
@@ -1133,6 +2084,16 @@ async def session_stats(
       - cost (from assistant roles, when available)
       - turn count, message count, last active
     """
+    # Authorization: a caller may only read their OWN session stats. Open mode is
+    # single-user / local full-trust (mirrors _session_access_ok), so skip the
+    # check there; otherwise require the JWT (Authorization header or ?token=) to
+    # match the requested user_id — admins may read any user. Closes the
+    # previously-unauthenticated cross-tenant leak of another user's session
+    # list, token usage and cost.
+    if not _is_open_access_mode():
+        from app.auth.identity import assert_caller_is
+        await assert_caller_is(request, user_id)
+
     db_path = _get_db_path(db)
     try:
         conn, _dialect = _open(db)
@@ -1160,15 +2121,32 @@ async def session_stats(
             for r in session_rows
         }
 
-        # If no sessions table rows, fall back to distinct session_ids from interactions
-        if not sessions_map:
+        # If no sessions table rows, fall back to distinct session_ids from the
+        # interactions log so an orphaned transcript (no `sessions` row) is still
+        # shown and can be cleared. These "phantom" sessions have no recycled
+        # state — so only surface them in the active/all views, never in the bin
+        # (otherwise the same orphans would show in both, since this fallback has
+        # no status to filter on). Deleting one hard-removes its interactions
+        # (see delete_session), so it truly disappears rather than reappearing.
+        if not sessions_map and status != "recycled":
+            # Skip any session that DOES have a row marked recycled — e.g. a real
+            # session that lives under a different user_id (so the query above
+            # found nothing for THIS user) but was already recycled. Without this,
+            # recycling such a session wouldn't stick: the fallback re-derives it
+            # straight from the interactions log on every reload.
+            recycled_ids: set = set()
+            try:
+                for r in cur.execute("SELECT id FROM sessions WHERE status = 'recycled'"):
+                    recycled_ids.add(r[0])
+            except Exception:
+                pass
             try:
                 cur.execute(
                     'SELECT DISTINCT session_id FROM interactions ORDER BY created_at DESC'
                 )
                 for row in cur.fetchall():
                     sid = row[0]
-                    if sid and sid not in sessions_map:
+                    if sid and sid not in sessions_map and sid not in recycled_ids:
                         sessions_map[sid] = {"title": sid[:12], "created_at": None}
             except Exception:
                 pass
@@ -1178,6 +2156,113 @@ async def session_stats(
             return {"sessions": [], "db": db}
 
         session_ids = list(sessions_map.keys())
+
+        # Which sessions touched a canvas or a web browser page? Derived from the
+        # tool_executions log (logs.db) — a session is "linked" to a canvas if it
+        # ran any canvas build/edit tool, and to a browser page if it drove the
+        # live browser. No FK on the canvas/browser rows is needed for this.
+        _CANVAS_TOOLS = [
+            "render_visual", "edit_canvas", "create_canvas",
+            "set_canvas_data", "rename_canvas", "screenshot_canvas",
+        ]
+        _BROWSER_TOOLS = ["browser_action"]
+        canvas_sessions: set = set()
+        browser_sessions_used: set = set()
+        try:
+            from app.db.logs_store import get_log_store
+            # No user_id filter: tool_executions rows often carry a NULL user_id
+            # (the loop's tool events don't stamp it). Correctness instead comes
+            # from only flagging sessions that are in this user's session map.
+            usage = await get_log_store().session_tool_usage(
+                _CANVAS_TOOLS + _BROWSER_TOOLS
+            )
+            _canvas_set = set(_CANVAS_TOOLS)
+            _browser_set = set(_BROWSER_TOOLS)
+            for sid_used, tools in usage.items():
+                if tools & _canvas_set:
+                    canvas_sessions.add(sid_used)
+                if tools & _browser_set:
+                    browser_sessions_used.add(sid_used)
+        except Exception:
+            pass
+
+        # ── Family grouping (mirror /sessions + the chat session list) ──────
+        # Tag every session so the Sessions table can nest children under their
+        # parent as an expandable tree, identical in shape to the chat session
+        # list. A session is a parent if it is an orchestrator (spawned helpers
+        # in agent_spawns) or an optimizer Planner (a closer-* whose metadata
+        # points back to it); a session is a child if it is one of those
+        # spawn-* / closer-* rows. Workers ('trial-*') live in throwaway temp
+        # DBs and never reach local.db, so they're naturally excluded.
+        child_counts: dict = {}
+        parent_of: dict = {}     # child sid -> parent sid
+        child_role: dict = {}    # child sid -> 'spawn' | 'planner' | 'closer'
+        try:
+            for r in cur.execute(
+                "SELECT orchestrator_session_id AS p, spawn_session_id AS c FROM agent_spawns"
+            ).fetchall():
+                _p, _c = r["p"], r["c"]
+                if _p and _c:
+                    child_counts[_p] = child_counts.get(_p, 0) + 1
+                    parent_of[_c] = _p
+                    child_role[_c] = "spawn"
+        except Exception:
+            pass
+        # Optimizer Planners are children of the BASE session they ran on
+        # (metadata.target_session). Build planner→base for the closers below.
+        _planner_base: dict = {}
+        try:
+            for r in cur.execute(
+                "SELECT id, metadata FROM sessions WHERE id LIKE 'optimizer-%'"
+            ).fetchall():
+                try:
+                    _pm = json.loads(r["metadata"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    _pm = {}
+                _base = _pm.get("target_session")
+                if _base:
+                    _planner_base[r["id"]] = _base
+                    child_counts[_base] = child_counts.get(_base, 0) + 1
+                    parent_of[r["id"]] = _base
+                    child_role[r["id"]] = "planner"
+        except Exception:
+            pass
+        # Optimizer Closers are also children of the base session, via Planner.
+        try:
+            for r in cur.execute(
+                "SELECT id, metadata FROM sessions WHERE id LIKE 'closer-%'"
+            ).fetchall():
+                try:
+                    _cm = json.loads(r["metadata"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    _cm = {}
+                _base = _planner_base.get(_cm.get("source_optimizer_session"))
+                if _base:
+                    child_counts[_base] = child_counts.get(_base, 0) + 1
+                    parent_of[r["id"]] = _base
+                    child_role[r["id"]] = "closer"
+        except Exception:
+            pass
+
+        # ── Authoritative per-session cost (usage_events) ───────────────────
+        # The interactions.metadata 'cost' field is only populated on some rows,
+        # so most sessions would otherwise show an em-dash. usage_events stores
+        # the locked-in per-call cost_usd (published price × tokens) for every
+        # LLM call and is the single source of truth for spend (see the
+        # /session-cost endpoint). Sum it once, grouped by session, and overlay
+        # it below — preferring it over the sparse interactions cost.
+        cost_by_session: dict = {}
+        try:
+            for r in cur.execute(
+                "SELECT session_id, COALESCE(SUM(cost_usd),0) AS c "
+                "FROM usage_events WHERE user_id = ? GROUP BY session_id",
+                (user_id,),
+            ).fetchall():
+                _sid, _c = r["session_id"], r["c"]
+                if _sid is not None:
+                    cost_by_session[_sid] = float(_c or 0)
+        except Exception:
+            pass
 
         # Build stats per session
         results = []
@@ -1244,6 +2329,16 @@ async def session_stats(
             # Count user+assistant turns that form "loops"
             total_tokens = total_input_tokens + total_output_tokens
 
+            # Prefer the authoritative usage_events cost; fall back to the
+            # interactions-derived cost only when there's no usage_events row.
+            ue_cost = cost_by_session.get(sid)
+            if ue_cost is not None and ue_cost > 0:
+                resolved_cost = round(ue_cost, 6)
+            elif has_cost:
+                resolved_cost = round(total_cost, 6)
+            else:
+                resolved_cost = None
+
             entry = {
                 "session_id": sid,
                 "title": sessions_map[sid]["title"],
@@ -1255,7 +2350,12 @@ async def session_stats(
                 "total_output_tokens": total_output_tokens,
                 "total_tokens": total_tokens,
                 "total_duration_ms": total_duration_ms,
-                "total_cost": round(total_cost, 6) if has_cost else None,
+                "total_cost": resolved_cost,
+                "has_canvas": sid in canvas_sessions,
+                "has_browser": sid in browser_sessions_used,
+                "child_count": child_counts.get(sid, 0),
+                "parent_session_id": parent_of.get(sid),
+                "child_role": child_role.get(sid),
             }
             # Enrich with agent_name and run_status if available
             try:
@@ -1264,9 +2364,21 @@ async def session_stats(
                 if srow and srow["agent_id"]:
                     entry["agent_id"] = srow["agent_id"]
                     cur2 = conn.cursor()
-                    cur2.execute('SELECT name FROM agents WHERE id = ?', (srow["agent_id"],))
+                    cur2.execute('SELECT name, metadata FROM agents WHERE id = ?', (srow["agent_id"],))
                     arow = cur2.fetchone()
                     entry["agent_name"] = arow["name"] if arow else ""
+                    entry["agent_icon"] = ""
+                    entry["agent_engine"] = ""
+                    if arow and arow["metadata"]:
+                        try:
+                            meta = json.loads(arow["metadata"])
+                            if isinstance(meta, dict):
+                                if meta.get("icon"):
+                                    entry["agent_icon"] = meta["icon"]
+                                if meta.get("engine"):
+                                    entry["agent_engine"] = meta["engine"]
+                        except Exception:
+                            pass
                 else:
                     entry["agent_id"] = None
                     entry["agent_name"] = ""
@@ -1614,9 +2726,9 @@ async def query_table(
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     order_by: Optional[str] = Query(None, description="Column to order by"),
-    order_dir: str = Query("ASC", regex="^(ASC|DESC)$"),
+    order_dir: str = Query("ASC", pattern="^(ASC|DESC)$"),
     filter_col: Optional[str] = Query(None, description="Column to filter on"),
-    filter_op: str = Query("contains", regex="^(contains|equals|starts|gt|lt|not_in)$"),
+    filter_op: str = Query("contains", pattern="^(contains|equals|starts|gt|lt|not_in)$"),
     filter_val: Optional[str] = Query(None, description="Filter value (comma-separated for not_in)"),
     filters_json: Optional[str] = Query(None, description="JSON array of {col, op, val} for multi-column filters"),
     db: str = Query("local.db", description="Database filename"),

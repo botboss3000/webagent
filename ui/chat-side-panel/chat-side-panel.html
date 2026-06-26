@@ -1,0 +1,183 @@
+<!-- TWO GENUINE FULL-WIDTH ROWS (#chat-header is flex-column). Each row spans the
+     whole header.
+       · Row 1 (.chat-header-row-top): more (⋯, FAR LEFT) · agent chevron + name + refresh · new (+) just right of refresh.
+       · Row 2 (.chat-header-row-bottom): prev/next arrows + session dropdown; the delete button
+         sits just LEFT of the dropdown chevron (both live INSIDE #session-dropdown, after the
+         label trigger — delete first, chevron last), so the chevron is the row's right-most control.
+     Controls:
+       · more (#chat-header-more-btn) — FAR LEFT of row 1; opens #chat-header-more-menu anchored
+         under it; ADMIN-ONLY (body.is-admin), built + wired in session-init.js (_wireHeaderMoreMenu).
+       · refresh  (#chat-refresh-transcript) — sits just right of the agent name; wired in
+         session-init.js; resets ONLY the chat transcript via session-load.js (refreshTranscript),
+         never the page.
+       · new session (#session-new-header-btn) — sits in row-1 just RIGHT of refresh; wired in session-init.js
+         (single-click → new session / agent picker; middle-click → fresh session in a new tab).
+       · delete  (#session-delete-header) — shared delete-control.js arm/confirm; lives inside
+         #session-dropdown between the label trigger and the chevron (just LEFT of the chevron).
+       · chevron (.session-dropdown-chevron) — moved OUT of the trigger button (so delete can sit
+         to its left) to the dropdown's right edge; clicking it toggles the session menu the same
+         as the trigger (wired in session-init.js). -->
+<div id="chat-header">
+  <!-- Row 1 — more (⋯, far left, admin-only) · agent chevron + name + refresh (name text set by
+       session-list.js _setTriggerLabel, hidden until an agent resolves) · new (+) just right of refresh. -->
+  <div class="chat-header-row chat-header-row-top">
+    <span id="chat-header-more" class="chat-header-more">
+      <button id="chat-header-more-btn" class="chat-header-more-btn" title="More" type="button" aria-haspopup="true" aria-expanded="false"><i data-lucide="more-vertical" style="width:18px;height:18px;"></i></button>
+      <div id="chat-header-more-menu" class="chat-header-more-menu" role="menu" hidden></div>
+    </span>
+    <span class="chat-header-name-row">
+      <span id="chat-header-agent-name" class="chat-header-agent-name" style="display:none;"></span>
+      <button id="chat-refresh-transcript" class="chat-refresh-btn" title="Refresh the chat transcript" type="button"><i data-lucide="refresh-cw" style="width:18px;height:18px;"></i></button>
+      <div id="agent-dropdown-menu" class="agent-dropdown-menu" role="menu" hidden></div>
+    </span>
+    <button id="session-new-header-btn" class="session-new-header-btn" title="New session" type="button"><i data-lucide="plus" style="width:18px;height:18px;"></i></button>
+  </div>
+  <!-- Row 2 — prev/next arrows + the session dropdown. The delete button and the
+       dropdown chevron both live INSIDE #session-dropdown after the label trigger:
+       delete first, chevron last, so delete sits just LEFT of the chevron at the
+       row's right edge. -->
+  <div class="chat-header-row chat-header-row-bottom">
+    <span class="header-session-line">
+      <span class="header-session-nav">
+        <button id="session-prev-btn" class="session-nav-btn" title="Previous pinned session" type="button"><i data-lucide="arrow-big-left" style="width:22px;height:22px;"></i></button>
+        <button id="session-next-btn" class="session-nav-btn" title="Next pinned session" type="button"><i data-lucide="arrow-big-right" style="width:22px;height:22px;"></i></button>
+      </span>
+      <span id="session-label">
+        <div id="session-dropdown" class="session-dropdown">
+          <button id="session-dropdown-trigger" type="button" class="status-select session-dropdown-trigger">
+            <span id="session-dropdown-status" class="session-dropdown-status"></span>
+            <span id="session-dropdown-label">—</span>
+          </button>
+          <button id="session-delete-header" title="Delete session" class="header-delete-btn" data-state="trash"><i data-lucide="trash-2" style="width:18px;height:18px;"></i></button>
+          <span class="session-dropdown-chevron" role="button" tabindex="0" title="Show sessions" aria-label="Show sessions">
+            <i data-lucide="loader-2" class="session-chevron-spinner" style="width:22px;height:22px;flex-shrink:0;"></i>
+            <i data-lucide="chevron-down" class="session-chevron-arrow" style="width:22px;height:22px;flex-shrink:0;"></i>
+          </span>
+          <div id="session-dropdown-menu" class="session-dropdown-menu" hidden></div>
+        </div>
+        <span id="tui-bridge-indicator" class="tui-bridge-indicator" style="display:none;" title="TUI agent bridge active">🖥️</span>
+      </span>
+    </span>
+  </div>
+</div>
+<div id="chat-sub-header" style="display:none;">
+  <span id="chat-sub-parent"></span>
+  <span id="chat-sub-spawns"></span>
+  <span id="chat-sub-browsers"></span>
+</div>
+<div id="chat-messages">
+  <!-- Top-of-panel jump nav — floats centered over the top edge of the
+       scroller (mirrors the scroll-to-bottom FAB above the pill). Side by side:
+       the DOUBLE chevron (left) jumps to the very start of the session; the
+       SINGLE chevron (right) steps up one user message at a time from the
+       current scroll position (each click walks back one more). Each is
+       shown/hidden independently by ui/chat-side-panel/js/chat-ui.js
+       (_updateTopNav). -->
+  <div id="chat-top-nav" aria-label="Jump to top of conversation">
+    <button id="chat-scroll-top-btn" class="chat-nav-fab" title="Jump to the start of the session" aria-label="Jump to the start of the session" type="button">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 11 12 6 17 11"/><polyline points="7 18 12 13 17 18"/></svg>
+    </button>
+    <button id="chat-scroll-lastuser-btn" class="chat-nav-fab" title="Jump up to the previous message you sent" aria-label="Jump up to the previous message you sent" type="button">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 14 12 9 17 14"/></svg>
+    </button>
+  </div>
+  <div id="chat-messages-inner">
+    <!-- Pre-paint fallback only. The live welcome text is driven by
+         data/config/app-prompts.json (ui_messages.chat.welcome_bubble) and
+         re-rendered by ui/chat-side-panel/js/session-load.js (_renderWelcomeBubble)
+         on session load. Keep this string in sync with that JSON default. -->
+    <div class="chat-bubble agent">
+      <span class="label">Assistant</span>
+      Welcome to WebAgent
+    </div>
+  </div>
+</div>
+<div id="chat-input-area">
+  <!-- Suggested-reply chips — populated by ui/chat-side-panel/js/suggestions.js from the
+       silent user-impersonator agent. Tapping a chip fills the pill.
+       Positioned above the continue/stop buttons and the tool-call panel. -->
+  <div id="chat-suggest-row" class="chat-suggest-row" aria-label="Suggested replies"></div>
+  <!-- CHAT-ABOVE-PILL: the Stop/Continue actions and the live activity bar
+       (tool-call chip + chevron) share ONE row directly above the pill — the
+       activity bar sits left, Stop/Continue hug the right. When the activity note
+       runs long it slides BEHIND the buttons (lower z-index) rather than pushing
+       them off-row or wrapping. Styles: ".chat-above-pill" block in
+       ui/shared/css/app1.css. -->
+  <div id="chat-above-pill" class="chat-above-pill">
+  <!-- Stop + Continue actions — ALWAYS present (a quiet, resting state); the one
+       that's relevant right now glows. Stop glows while the agent is processing;
+       Continue glows when the agent is idle and waiting. The whole row hides
+       (collapsing the band) only when no agent is selected. Toggled by
+       ui/chat-side-panel/js/chat-ui.js (_updateActionBtns). -->
+  <div id="chat-action-row" class="chat-action-row">
+    <button id="chat-stop-btn" class="chat-stop-btn" title="Stop generation">🛑 Stop</button>
+    <button id="chat-continue-btn" class="chat-continue-btn" title="Send 'continue' to resume the agent">Continue</button>
+  </div>
+  <!-- Activity ("thinking") indicator — the clickable tool-call chip + chevron,
+       sharing the band with Stop/Continue (see CHAT-ABOVE-PILL above). It is
+       absolutely positioned on the left of the band; the expandable tool-call
+       panel floats up as an overlay. Driven by ui/shared/js/chat-activity.js. -->
+  <div id="chat-activity" class="chat-activity">
+    <div id="chat-activity-panel" class="chat-activity-panel" role="region" aria-label="Tool calls this turn" hidden></div>
+    <button type="button" id="chat-activity-bar" class="chat-activity-bar" aria-expanded="false" aria-controls="chat-activity-panel" title="Show tool calls from this turn">
+      <span class="chat-activity-dot" aria-hidden="true"></span>
+      <span class="chat-activity-text" aria-live="polite" aria-atomic="true"></span>
+      <span class="chat-activity-chevron" aria-hidden="true">›</span>
+    </button>
+  </div>
+  </div>
+  <!-- CHAT-PILL-SYNC: shares .chat-pill* styles with #ac-int-admin-chat-input-row,
+       #agent-builder-bar-row, #canvas-prompt-row. Style rules live in
+       ui/shared/css/app1.css under the "Chat-pill" block. -->
+  <div id="chat-input-row" class="chat-pill">
+    <div id="chat-preview-bar" style="display:none;"></div>
+    <button id="chat-scroll-bottom-btn" class="chat-scroll-bottom-btn chat-nav-fab" title="Scroll to latest message" aria-label="Scroll to latest message" hidden>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
+    </button>
+<button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or paste / drop onto the chat pill)"><i data-lucide="plus" style="width:22px;height:22px;"></i></button>
+		    <!-- placeholder is a pre-paint fallback; the live value is driven by
+		         data/config/app-prompts.json (ui_messages.chat.pill_placeholder) via
+		         ui/shared/js/app-prompts.js + chat-send.js applyChatGate(). -->
+		    <textarea id="chat-input" class="chat-pill-input" rows="1" placeholder="Chat with the agent" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+		    <button id="chat-voice-btn" class="chat-pill-voice" title="Record voice"><i data-lucide="mic" style="width:22px;height:22px;"></i></button>
+		    <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:22px;height:22px;"></i></button>
+    <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
+    <!-- TERMINAL-KEYS VIEW — Terminal Chat only. An alternate "view" the pill takes
+         on: when #chat-input-area gets .term-keys-open (footer #chat-term-keys-btn)
+         the pill's normal controls (attach/textarea/mic/send) hide and this grid
+         OVERLAYS the whole pill box — same border, radius, background and resting
+         height — turning the composer into a number pad + arrows + shortcut keys
+         (Esc/Tab/⇧Tab/Enter/^C…). Each key fires a SINGLE keystroke to the live PTY
+         (no Enter appended). Built + wired in ui/chat-side-panel/js/chat-terminal-keys.js;
+         bytes via app.terminalChatKey (ui/chat-side-panel/js/chat-terminal-engine.js).
+         REMOVE-WHEN: the Terminal Chat engine is dropped. -->
+    <div id="chat-term-keypad" class="chat-term-keypad"></div>
+  </div>
+  <div id="chat-footer-row" class="chat-footer-row">
+	    <div class="chat-footer-left">
+	      <div id="chat-token-bar" class="chat-token-bar">
+	        <span class="chat-token-label">in</span>
+	        <span id="chat-tokens-in" class="chat-token-value">0</span>
+	        <span id="chat-token-spinner" class="chat-token-spinner"></span>
+	        <span id="chat-tokens-out" class="chat-token-value">0</span>
+	        <span class="chat-token-label">out</span>
+	      </div>
+	      <div id="chat-model-ctx" class="chat-model-ctx" style="display:none;" title="Active model's context window and max output"></div>
+	      <div id="chat-cost" class="chat-cost" style="display:none;" title="Estimated cost of this session so far (tokens used × active model's price)"></div>
+	    </div>
+	    <div class="chat-footer-right">
+	      <!-- The dedicated model-name button was removed; the model picker is still
+	           opened by clicking the token/cost group on the footer's left
+	           (.chat-footer-left → _onFooterClick in chat-activity.js). -->
+	      <!-- Terminal-keys toggle — hidden until Terminal Chat mode activates
+           (shown/hidden by ui/chat-side-panel/js/chat-terminal-keys.js). Opens
+           the #chat-term-keypad panel above. -->
+      <button id="chat-term-keys-btn" class="chat-skills-btn chat-term-keys-btn" title="Terminal keys — arrows, number pad & shortcuts" type="button" hidden><i data-lucide="keyboard" style="width:20px;height:20px;"></i></button>
+      <button id="chat-abilities-btn" class="chat-skills-btn" title="Abilities — click to turn each on/off for this chat">
+	        <i data-lucide="blocks" style="width:20px;height:20px;"></i>
+	        <span id="chat-abilities-badge" class="csp-badge">0</span>
+	      </button>
+	      <button id="chat-mode-btn" class="chat-mode-btn" title="Click to toggle execution mode: Ask → Plan → Auto → Ask">Ask</button>
+	    </div>
+	  </div>
+</div>

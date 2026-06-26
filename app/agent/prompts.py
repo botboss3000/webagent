@@ -101,6 +101,7 @@ async def append_skills_section(
     system_prompt: str,
     agent: Optional[Dict] = None,
     session_id: Optional[str] = None,
+    caller_user_id: Optional[str] = None,
 ) -> str:
     """Append the `# [SKILLS]` block to a built system prompt.
 
@@ -108,6 +109,11 @@ async def append_skills_section(
     session's active (loaded) skill list, then renders name + description for
     every skill, plus the body for always-on/loaded skills and a placeholder for
     selectable ones. A no-op when the agent has no skills.
+
+    `caller_user_id` is the live chatter; when given, ability-bundled skills for
+    abilities the caller's access level can't reach (the per-agent "Available to"
+    gate) are stripped, so the agent isn't told about tools it doesn't have this
+    turn. The actual tool boundary is enforced in `loader.load_tools`.
     """
     from app.agent.skills import format_skills_section
 
@@ -130,6 +136,52 @@ async def append_skills_section(
         skills = list(skills or []) + await collect_ability_skills(agent_id, user_id=None)
     except Exception as e:
         logger.debug("Could not collect ability skills for agent %s: %s", agent_id, e)
+
+    # Hide an ability-bundled skill while its ability is discoverable-and-unloaded
+    # (revealed by load_ability). Authored skills and integration-module skills
+    # carry no `ability_id`, so they are unaffected.
+    try:
+        from app.tools.tool_modes import ability_is_revealed, resolve_skill_mode
+        from app.db import get_db as _gd
+        _db = _gd()
+        _amodes = await _db.get_agent_ability_modes(agent_id)
+        _smodes = await _db.get_agent_skill_modes(agent_id)
+        _aactive = await _db.get_session_active_abilities(session_id) if session_id else []
+        _asuppressed = await _db.get_session_suppressed_abilities(session_id) if session_id else []
+        # Per-agent skill visibility override: visible = body shown every turn,
+        # discoverable = load on demand. Applies to ability-bundled skills only
+        # (they carry `ability_id`); the descriptor mode is the default.
+        for s in skills:
+            aid = s.get("ability_id")
+            if aid:
+                s["mode"] = resolve_skill_mode(aid, _smodes, s.get("mode"))
+        # Hide an ability-bundled skill while its ability is discoverable-and-unloaded.
+        skills = [
+            s for s in skills
+            if not s.get("ability_id")
+            or ability_is_revealed(s["ability_id"], _amodes, _aactive, _asuppressed)
+        ]
+    except Exception as e:
+        logger.debug("ability-skill visibility filter failed for %s: %s", agent_id, e)
+
+    # Caller-access gate: strip ability-bundled skills for abilities the live
+    # caller's level can't reach (per-agent "Available to"). Mirrors the tool
+    # boundary in loader.load_tools so the prompt never advertises tools the
+    # caller doesn't have. Only ability-tagged skills are affected; authored and
+    # integration-module skills carry no `ability_id`. Skipped when no caller is
+    # threaded (local/admin contexts) — then nothing is gated.
+    if caller_user_id:
+        try:
+            from app.agent.ability_access import filter_abilities_for_caller
+            ability_ids = {s.get("ability_id") for s in skills if s.get("ability_id")}
+            if ability_ids:
+                allowed = await filter_abilities_for_caller(agent_id, ability_ids, caller_user_id)
+                skills = [
+                    s for s in skills
+                    if not s.get("ability_id") or s["ability_id"] in allowed
+                ]
+        except Exception as e:
+            logger.debug("ability-skill access filter failed for %s: %s", agent_id, e)
 
     if not skills:
         return system_prompt

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_BOOTSTRAP_ADMIN_ID = "admin_default"
+_BOOTSTRAP_ADMIN_ID = "admin"
 
 # Names to hide from the tree by default. Users can still address them
 # directly if they know the path.
@@ -61,14 +61,30 @@ def _user_id(request: Request) -> str:
         payload = decode_token(auth[7:])
         if payload and payload.get("user_id"):
             return payload["user_id"]
-    # Fallback: query param. Still gated by db.is_user_admin downstream.
-    return request.query_params.get("user_id", "") or ""
+    # Explicit query-param identity (JWT-rotation / multi-account escape hatch).
+    qp = request.query_params.get("user_id", "")
+    if qp:
+        return qp
+    # Open access mode: single-user / local convenience, no cross-tenant risk.
+    # A tunnel client holds no localhost JWT (open-login is localhost-only), and
+    # AuthMiddleware is not registered globally (see app/auth/identity.py) so
+    # request.state carries no identity here either. Resolve to the bootstrap
+    # admin directly off the access mode — mirroring db_viewer._is_open_access_mode
+    # — so the file editor AND the admin-status probe work over a Cloudflare
+    # Tunnel. Still gated by db.is_user_admin downstream.
+    try:
+        from app.admin.settings import get_access_mode
+        if get_access_mode() == "open":
+            return _BOOTSTRAP_ADMIN_ID
+    except Exception:
+        pass
+    return ""
 
 
 async def _is_admin(user_id: str) -> bool:
     """Return True only when user_profiles.is_admin = 1 for this user.
 
-    No bootstrap shortcut — the admin_default user is already promoted
+    No bootstrap shortcut — the admin user is already promoted
     by the DB migration in app/db/local.py, so the table is the single
     source of truth.
     """

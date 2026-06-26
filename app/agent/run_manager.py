@@ -24,14 +24,14 @@ Contract
   records run-state in the DB, and supervises completion.
 - ``interrupt`` sets the DB interrupt flag the loop already polls, so the turn
   stops gracefully and persists its partial answer as 'interrupted'.
-- ``is_running`` / ``active_sessions`` answer "is a run live right now?" from RAM
+- ``is_running`` answers "is a run live right now?" from RAM
   (the DB ``session_runs`` table is the cross-process / cold-device source).
 """
 
 import asyncio
 import logging
 import time
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Awaitable, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +71,6 @@ class RunManager:
     def is_running(self, session_id: str) -> bool:
         h = self._runs.get(session_id)
         return bool(h and h.task and not h.task.done())
-
-    def active_sessions(self, user_id: Optional[str] = None) -> List[str]:
-        out: List[str] = []
-        for sid, h in self._runs.items():
-            if h.task and not h.task.done():
-                if user_id is None or h.user_id == user_id:
-                    out.append(sid)
-        return out
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 

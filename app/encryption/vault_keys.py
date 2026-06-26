@@ -240,13 +240,6 @@ class VaultKeyManager:
         self._dek_cache.pop((user_id, version), None)
         return True
 
-    async def purge_tenant(self, user_id: str) -> int:
-        """Delete every DEK version (vault + meta) for this tenant. Returns count."""
-        versions = await self.list_dek_versions(user_id)
-        for v in versions:
-            await self.purge_retired_dek(user_id, v["key_version"])
-        return len(versions)
-
     async def list_dek_versions(self, user_id: str) -> List[dict]:
         """Return all tenant_key_meta rows for this user, ordered by version desc."""
         from app.db import get_db
@@ -386,12 +379,6 @@ class VaultKeyManager:
         except ValueError:
             pass
         return out
-
-    # ── Cache management ───────────────────────────────────────────────────
-
-    def invalidate_cache(self) -> None:
-        self._dek_cache.clear()
-        self._kek_cache.clear()
 
 
 # ── Module-level singleton ─────────────────────────────────────────────────

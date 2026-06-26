@@ -1,0 +1,45 @@
+<div id="canvas-container">
+
+  <!-- New-page dialog (hidden by default) -->
+  <div id="canvas-new-page-dialog">
+    <div class="canvas-dialog-box">
+      <h3>New Page</h3>
+      <input type="text" id="canvas-dialog-input" class="canvas-dialog-input" placeholder="Page title (e.g. Dashboard, Notes)" maxlength="60" autocomplete="off" data-lpignore="true" data-1p-ignore="true">
+      <div class="canvas-dialog-actions">
+        <button id="canvas-dialog-cancel" class="canvas-dialog-btn canvas-dialog-btn-cancel">Cancel</button>
+        <button id="canvas-dialog-confirm" class="canvas-dialog-btn canvas-dialog-btn-primary">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Viewport -->
+  <div id="canvas-viewport">
+    <div id="canvas-placeholder" class="canvas-placeholder">
+      <span class="canvas-placeholder-icon"><i data-lucide="palette" style="width:48px;height:48px;"></i></span>
+      <span class="canvas-placeholder-text">Loading your pages...</span>
+      <span class="canvas-placeholder-hint">Each page has its own dedicated agent</span>
+    </div>
+    <!-- FIRST-CLASS CANVAS HOST (local-only). The agent's canvas is grafted
+         straight into the app here — no sandboxed iframe — so it has real-page
+         powers (live webcam/mic, direct calls to the agent). It is rendered into
+         an open shadow root for CSS containment, and this host carries a CSS
+         containment context (contain: paint + transform in app1.css) so a
+         canvas's full-bleed background / fixed children stay inside this box
+         instead of escaping over the app shell. See js/canvas.js
+         (mountCanvas) and the Visualizer skill for the authoring contract.
+         When the app is NOT in local single-user mode the host stays empty and
+         a notice is shown instead (agent-authored page code must never run with
+         app trust on a shared server). -->
+    <div id="canvas-host" class="canvas-host" style="display:none;"></div>
+    <div id="canvas-loading" class="canvas-loading" style="display:none;">
+      <span class="canvas-spinner"></span>
+      <span>Page agent is working...</span>
+    </div>
+  </div>
+
+  <!-- Footer: an EMPTY mount filled by the swappable toolbar module
+       (js/canvas-toolbar.js → _buildToolbar). It owns the page-selector popup
+       and the new / refresh / ✦ chat buttons, so a user can redesign the footer
+       there without touching the base canvas markup or core. -->
+  <div id="canvas-footer"></div>
+</div>

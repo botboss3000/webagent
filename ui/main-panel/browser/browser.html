@@ -1,0 +1,150 @@
+<!-- Web: in-app, AI-augmented browser.
+     Loaded by ui/shared/js/partial-loader.js into #tab-browser · logic: ui/main-panel/browser/js/browser.js ·
+     styles: ui/main-panel/browser/browser.css · streamed from app/api/browser_stream.py.
+
+PILL-PANEL-LAYOUT: mirrors the Canvas page (ui/main-panel/canvas/canvas.html). The browser
+	     stage flex-fills the panel; the .browser-toolbar sits in normal flow at the
+	     bottom, with the browser image stretching to fill the stage both vertically
+	     and horizontally. The page shares the agent's browser session, so whatever
+	     the agent does shows here live and the user can take over at any time.
+
+	     TOOLBAR-LAYOUT (sister to Canvas's canvas-toolbar): the .browser-toolbar is a
+	     SINGLE row holding the compact browser controls (.browser-nav: back/forward/
+	     reload + device/point/share/session — borderless flat buttons straight on the
+	     toolbar background, no container chip) on the left and ONE unified chat pill
+	     (.browser-prompt-bar) that grows to fill the rest. The pill is BOTH the
+	     address bar and the agent chat box: it rests showing the current page URL,
+	     and as you type it detects a URL vs a message to the agent (see UNIFIED-PILL
+	     in browser.js). On a narrow panel the toolbar STACKS into two rows — the pill
+	     on TOP, the button row BELOW it (column-reverse in browser.css). -->
+<div class="browser-page">
+
+  <!-- Full-height browser stage. Two renderers share it:
+         • .browser-frame  — the HTML proxy iframe (in-app / headless backend).
+         • .browser-mirror — a live pixel mirror (CDP screencast canvas) used when
+           the session is driving the REAL browser on the user's device, and for
+           any page the iframe can't frame. Only one is visible at a time. -->
+  <div class="browser-stage">
+    <iframe class="browser-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allow="cross-origin-isolated"></iframe>
+    <canvas class="browser-mirror" tabindex="0"></canvas>
+    <!-- Loading state: shown by browser.js while a session that HAS a saved page
+         is reconnecting / restoring, so the user sees a spinner instead of the
+         "type a URL" hint. The hint (.browser-empty) is reserved for sessions
+         with genuinely nothing saved yet. Only one of the two ever shows. -->
+    <div class="browser-loading" style="display:none;" aria-label="Loading page" role="status">
+      <span class="browser-spinner" aria-hidden="true"></span>
+    </div>
+    <div class="browser-empty" style="display:none;">This is a shared browser. Type a URL in the bar below to start &mdash; the agent can see and act on this same page, and you can take over any time.</div>
+    <!-- CONNECTOR-NOTICE: shown only when this session's backend is "connector" —
+         the page lives in the user's OWN browser (via the extension), so there's
+         nothing to mirror here. Reuses .browser-empty styling. Toggled by
+         _showConnectorStage() in browser.js; any normal stage change hides it. -->
+    <div class="browser-empty browser-connector-notice" style="display:none;">This session is running in <b>your own browser</b> via the webAgent extension. Watch the agent act in your browser window. Switch the control on the left back to <b>In-app</b> to use the shared browser here.</div>
+  </div>
+
+  <!-- Toolbar: browser controls (left) + small chat pill (right), floating overlay.
+       SINGLE row on a wide panel, STACKS to two rows on a narrow one — see browser.css
+       .browser-toolbar (sister layout to ui/main-panel/canvas/canvas-toolbar.css). -->
+  <div class="browser-toolbar">
+
+    <!-- Browser-specific controls: back / forward / reload, plus the device
+         switcher, point-and-ask, per-tab share toggle, the session menu and the
+         live-status dot. The address bar is GONE — its job moved into the unified
+         chat pill below (UNIFIED-PILL), which rests showing the current URL. -->
+    <div class="browser-nav">
+      <!-- Navigation icon buttons -->
+      <button class="browser-btn browser-nav-icon" data-act="back" title="Back" aria-label="Back">
+        <i data-lucide="arrow-left"></i>
+      </button>
+      <button class="browser-btn browser-nav-icon" data-act="forward" title="Forward" aria-label="Forward">
+        <i data-lucide="arrow-right"></i>
+      </button>
+      <button class="browser-btn browser-nav-icon" data-act="reload" title="Reload" aria-label="Reload">
+        <i data-lucide="rotate-cw"></i>
+      </button>
+
+      <!-- Backend switcher: CYCLES this session between the in-app browser, the
+           real browser on this machine ("On device"), and the user's OWN browser
+           driven through the webAgent extension ("My browser"). Label + title are
+           set by cycleBackend() / updateDeviceUi() in browser.js. -->
+      <button class="browser-btn web-device browser-device" data-act="device" aria-pressed="false"
+              title="Switch how this session is driven: in-app, on device, or my browser (extension)">
+        <i data-lucide="monitor"></i>
+        <span class="browser-device-label">In-app</span>
+      </button>
+
+      <!-- Pair extension: open the one-time setup card that hands this browser's
+           server URL + a long-lived token to the webAgent browser extension, so
+           "My browser" mode can connect. Opened by openPairModal() in browser.js;
+           needed because, outside 'open' access mode, the extension must present a
+           token and a non-technical user has no other way to get one. -->
+      <button class="browser-btn web-pair browser-pair" data-act="pair"
+              title="Set up the browser extension (My browser mode)">
+        <i data-lucide="plug"></i>
+      </button>
+
+      <!-- Point-and-ask: arm a mode where clicking a spot on the page marks it,
+           and the next chat message asks the agent about exactly that spot. -->
+      <button class="browser-btn web-point browser-point" data-act="point" aria-pressed="false"
+              title="Point at something on the page to ask the agent about it">
+        <i data-lucide="crosshair"></i>
+      </button>
+
+      <!-- Per-tab share toggle: off = private, on = shared with the agent -->
+      <button class="browser-btn web-share browser-share" data-act="share" aria-pressed="false"
+              title="Share this tab with the agent">Private</button>
+
+      <!-- Session menu: trigger + popover, mirrors the chat-panel session dropdown -->
+      <div class="browser-sessions">
+        <button class="browser-btn web-sessions-toggle browser-session-trigger" data-act="sessions"
+                title="Switch browser session" aria-haspopup="true" aria-expanded="false">
+          <i data-lucide="layers" class="browser-session-trigger-icon"></i>
+          <span class="browser-session-trigger-label">Session</span>
+          <i data-lucide="chevron-down" class="browser-session-trigger-chev"></i>
+        </button>
+        <!-- Sessions popover — opens upward, styled like the chat session menu -->
+        <div class="browser-sessions-popover session-dropdown-menu" style="display:none;">
+          <div class="browser-sessions-list"></div>
+        </div>
+      </div>
+
+      <button class="browser-btn web-new-session browser-new-session" data-act="new-session" title="New browser session" aria-label="New browser session">
+        <i data-lucide="plus"></i>
+      </button>
+
+      <span class="browser-status" title="Live connection status">
+        <span class="browser-dot" aria-hidden="true"></span>
+        <span class="browser-status-text">idle</span>
+      </span>
+    </div>
+
+    <!-- UNIFIED-PILL — the one input for this page: BOTH the address bar AND the
+         agent chat box. It grows to fill the row left of the nav on a wide panel and
+         drops BELOW the nav when the toolbar stacks. It rests showing the current
+         page URL; as the user types, browser.js classifies the text (UNIFIED-PILL in
+         browser.js): a URL swaps the action icon to a globe and navigates the page on
+         submit, anything else stays the send icon and goes to the agent in the active
+         browser session. CHAT-PILL-SYNC: shares .chat-pill* styles with
+         #chat-input-row, #canvas-prompt-row, #agent-builder-bar-row — geometry in
+         ui/shared/css/app1.css, floating-glass skin in ui/shared/css/index.css. This
+         panel owns only the wrapper width + stack breakpoint (browser.css). -->
+    <div class="browser-prompt-bar">
+      <div class="browser-prompt-row chat-pill chat-pill-1line">
+        <textarea class="chat-pill-input web-prompt-input" rows="1" wrap="off"
+          placeholder="Enter a URL, or message the agent&hellip;"
+          spellcheck="false" maxlength="2000" autocomplete="off"></textarea>
+        <button type="button" class="chat-pill-voice web-voice" title="Record voice">
+          <i data-lucide="mic"></i>
+        </button>
+        <!-- web-send: icon + action swap live in browser.js — 'send' (→ agent) or
+             'globe' (→ navigate the page) depending on what's typed. -->
+        <button type="button" class="chat-pill-send web-send" title="Send to the agent">
+          <i data-lucide="send"></i>
+        </button>
+        <button type="button" class="chat-pill-attach web-attach" title="Attach files">
+          <i data-lucide="plus"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

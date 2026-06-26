@@ -56,4 +56,3 @@ After **any** change that affects how the repo is structured, configured, or use
 ## Misc directions
 
 - **Console logs:** If adding console logs to investigate an issue, remove the logging after the issue is resolved.
-- **Git pushes:** Always push to `main` (fast-forward from the working branch via `git push origin HEAD:main`). Do not stop at pushing only to the feature branch — promote to `main` as part of the same step, without asking.

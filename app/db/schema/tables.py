@@ -168,6 +168,9 @@ TABLES: List[Table] = [
         Column("owner_token", "TEXT"),
         Column("lease_expires_at", "TIMESTAMP"),
         Column("relaunch_ctx", "TEXT"),
+        # Durable snapshot of the in-flight operation (JSON: tool/turn/note) so a
+        # refresh can re-show the live "in-process" indicator. Cleared on finish.
+        Column("current_op", "TEXT"),
     ]),
 
     # Diagnostic flight-recorder (see app/agent/diagnostics.py). Rolling,
@@ -232,6 +235,34 @@ TABLES: List[Table] = [
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
+    # Segmented compaction "train": one row per FROZEN summary car. Replaces the
+    # single rolling summary above with an ordered list of cars, each summarising
+    # one contiguous span of raw turns exactly once and then never re-summarised
+    # (the far-back merge is the only exception — it folds the oldest cars into a
+    # tier=1 block). The verbatim hot tail is every interaction after the largest
+    # `end_index`. The raw turns a car covers stay in `interactions` and are
+    # retrievable verbatim via [start_index, end_index). See app/agent/compaction.py.
+    Table("session_summary_segments", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("user_id", "TEXT", nullable=False),
+        Column("session_id", "TEXT", nullable=False, references="sessions(id)"),
+        # Order of this car within the session's train (0 = oldest).
+        Column("seq", "INTEGER", nullable=False, default="0"),
+        # Half-open range of covered interactions in created_at order: [start, end).
+        Column("start_index", "INTEGER", nullable=False, default="0"),
+        Column("end_index", "INTEGER", nullable=False, default="0"),
+        Column("summary", "TEXT", nullable=False),
+        # Rough token size of `summary` (for the fill gauge / assembly maths).
+        Column("token_estimate", "INTEGER", nullable=False, default="0"),
+        # Short human-facing label of what this span was about (retrieval hint).
+        Column("topic", "TEXT"),
+        # 0 = normal car (one peeled span). 1 = far-back merged block (several
+        # oldest cars folded together once the car count passed the cap).
+        Column("tier", "INTEGER", nullable=False, default="0"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=["UNIQUE(session_id, seq)"]),
+
     Table("agent_templates", [
         Column("id", "TEXT", nullable=False, primary_key=True, default="'default'"),
         Column("max_turn_count", "INTEGER", nullable=False, default="0"),
@@ -241,7 +272,7 @@ TABLES: List[Table] = [
         Column("model", "TEXT"),
         Column("provider", "TEXT"),
         Column("temperature", "REAL", nullable=False, default="0.0"),
-        Column("max_tokens", "INTEGER", nullable=False, default="4096"),
+        Column("max_tokens", "INTEGER", nullable=False, default="8000"),
         Column("metadata", "TEXT", nullable=False, default="'{}'"),
         Column("trigger_type", "TEXT", nullable=False, default="'user_input'"),
         Column("trigger_key", "TEXT"),
@@ -264,7 +295,7 @@ TABLES: List[Table] = [
         Column("model", "TEXT"),
         Column("provider", "TEXT"),
         Column("temperature", "REAL", nullable=False, default="0.0"),
-        Column("max_tokens", "INTEGER", nullable=False, default="4096"),
+        Column("max_tokens", "INTEGER", nullable=False, default="8000"),
         Column("status", "TEXT", nullable=False, default="'active'"),
         Column("metadata", "TEXT", nullable=False, default="'{}'"),
         Column("trigger_type", "TEXT", nullable=False, default="'user_input'"),
@@ -520,6 +551,7 @@ TABLES: List[Table] = [
         Column("name", "TEXT", nullable=False),
         Column("instructions", "TEXT", nullable=False, default="''"),
         Column("active", "INTEGER", nullable=False, default="1"),
+        Column("deleted_at", "TEXT"),  # NULL = active; set = in the Automations recycling bin
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
@@ -547,15 +579,6 @@ TABLES: List[Table] = [
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
-
-    Table("provider_ratings", [
-        Column("user_id", "TEXT", nullable=False),
-        Column("provider", "TEXT", nullable=False),
-        Column("model", "TEXT", nullable=False),
-        Column("rating", "INTEGER", nullable=False, default="0"),
-        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
-        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
-    ], constraints=["PRIMARY KEY (user_id, provider, model)"]),
 
     Table("user_profiles", [
         Column("user_id", "TEXT", nullable=False, primary_key=True),
@@ -627,8 +650,7 @@ TABLES: List[Table] = [
     ]),
 
     # ── Billing / monetization ──
-    # Effective config is the platform row merged with an agent-scoped row.
-    # scope: 'platform' or 'agent:<agent_id>'.
+    # Per-agent pricing config. scope: 'agent:<agent_id>'.
     Table("billing_configs", [
         Column("scope", "TEXT", nullable=False, primary_key=True),
         Column("strategy", "TEXT", nullable=False, default="'free'"),
@@ -636,8 +658,6 @@ TABLES: List[Table] = [
         Column("allowed_processors", "TEXT", nullable=False, default="'[]'"),
         Column("rate_card_default_llm", "TEXT", nullable=False, default="'{}'"),
         Column("rate_card_byo_llm", "TEXT", nullable=False, default="'{}'"),
-        Column("platform_fee_pct", "REAL", nullable=False, default="0"),
-        Column("platform_fee_flat_cents", "INTEGER", nullable=False, default="0"),
         Column("trial_config", "TEXT", nullable=False, default="'{}'"),
         Column("subscription_price_cents", "INTEGER", nullable=False, default="0"),
         Column("currency", "TEXT", nullable=False, default="'usd'"),
@@ -657,7 +677,6 @@ TABLES: List[Table] = [
         Column("output_tokens", "INTEGER", nullable=False, default="0"),
         Column("provider_cost_cents", "INTEGER", nullable=False, default="0"),
         Column("end_user_charge_cents", "INTEGER", nullable=False, default="0"),
-        Column("platform_fee_cents", "INTEGER", nullable=False, default="0"),
         Column("agent_admin_earnings_cents", "INTEGER", nullable=False, default="0"),
         Column("strategy", "TEXT", nullable=False, default="'free'"),
         Column("is_byo_llm", "INTEGER", nullable=False, default="0"),
@@ -665,6 +684,15 @@ TABLES: List[Table] = [
         Column("is_exempt", "INTEGER", nullable=False, default="0"),
         Column("model", "TEXT"),
         Column("provider", "TEXT"),
+        # Locked-in published-price cost of this single call in USD (model rate ×
+        # this call's tokens, computed at save time). Summing it gives accurate
+        # session / agent / global cost even when the session switches models.
+        Column("cost_usd", "REAL", nullable=False, default="0"),
+        Column("cost_source", "TEXT"),
+        # Direct session attribution for chat rows (NULL for background rows).
+        Column("session_id", "TEXT"),
+        # 'chat' for agent turns, 'background' for non-chat LLM calls.
+        Column("source", "TEXT", nullable=False, default="'chat'"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
@@ -691,7 +719,7 @@ TABLES: List[Table] = [
         Column("note", "TEXT"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ], constraints=[
-        "CHECK (kind IN ('purchase','usage','refund','platform_fee','earnings','hold','release'))",
+        "CHECK (kind IN ('purchase','usage','refund','earnings','hold','release'))",
     ]),
 
     Table("subscriptions", [
@@ -720,18 +748,6 @@ TABLES: List[Table] = [
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ], constraints=[
         "UNIQUE(user_id, agent_id)",
-    ]),
-
-    Table("payment_accounts", [
-        Column("user_id", "TEXT", nullable=False),
-        Column("processor", "TEXT", nullable=False),
-        Column("external_account_id", "TEXT"),
-        Column("onboarding_complete", "INTEGER", nullable=False, default="0"),
-        Column("metadata", "TEXT", nullable=False, default="'{}'"),
-        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
-        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
-    ], constraints=[
-        "PRIMARY KEY (user_id, processor)",
     ]),
 
     Table("payments", [
@@ -808,6 +824,7 @@ TABLES: List[Table] = [
         Column("next_retry_at", "TEXT"),
         Column("memory_json", "TEXT", nullable=False, default="'{}'"),       # per-automation persistent state
         Column("origin", "TEXT", nullable=False, default="'slot'"),          # slot | tool | dashboard | timer
+        Column("deleted_at", "TEXT"),  # NULL = active; set = in the Automations recycling bin (also enabled=0)
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
@@ -856,6 +873,7 @@ TABLES: List[Table] = [
         Column("next_retry_at", "TEXT"),
         Column("memory_json", "TEXT", nullable=False, default="'{}'"),
         Column("origin", "TEXT", nullable=False, default="'slot'"),          # slot | tool | dashboard
+        Column("deleted_at", "TEXT"),  # NULL = active; set = in the Automations recycling bin (also enabled=0)
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
@@ -894,14 +912,21 @@ TABLES: List[Table] = [
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
-    # Visualizer workspace pages (see migration 019).
-    Table("pages", [
+    # Visualizer workspace canvases (see migration 019 / 030 / 032).
+    Table("canvases", [
         Column("id", "TEXT", nullable=False, primary_key=True),
         Column("user_id", "TEXT", nullable=False),
         Column("slug", "TEXT", nullable=False),
         Column("title", "TEXT", nullable=False),
         Column("agent_context", "TEXT", nullable=False, default="''"),
+        # Owning agent — the agent that created/manages this canvas (mirrors
+        # browser_sessions.agent_id). Nullable: a user-made canvas has none until
+        # an agent renders into it; the footer falls back to the default webAgent.
+        Column("agent_id", "TEXT"),
         Column("html", "TEXT"),
+        # Per-canvas DATA bag (JSON object) — the content the page renders, kept
+        # separate from `html` so the agent updates data without rewriting markup.
+        Column("data", "TEXT"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ], constraints=[
@@ -932,6 +957,7 @@ INDEXES: List[Index] = [
     Index("idx_render_rec_kind", "render_recordings", "kind"),
     Index("idx_render_rec_seq", "render_recordings", "session_seq"),
     Index("idx_summaries_user", "session_summaries", "user_id"),
+    Index("idx_summary_segments_session", "session_summary_segments", "session_id, seq"),
     Index("idx_agent_prompts_agent", "agent_prompts", "agent_id"),
     Index("idx_agent_prompts_user", "agent_prompts", "user_id"),
     Index("idx_agent_prompt_templates_tpl", "agent_prompt_templates", "template_id"),
@@ -978,6 +1004,8 @@ INDEXES: List[Index] = [
     # Billing
     Index("idx_usage_events_agent_created", "usage_events", "agent_id, created_at"),
     Index("idx_usage_events_user_created", "usage_events", "user_id, created_at"),
+    Index("idx_usage_events_model_created", "usage_events", "model, created_at"),
+    Index("idx_usage_events_session", "usage_events", "session_id"),
     Index("idx_wallet_tx_wallet", "wallet_transactions", "wallet_id"),
     Index("idx_payments_user", "payments", "user_id"),
     Index("idx_payments_external", "payments", "processor, external_payment_id"),
@@ -1005,7 +1033,7 @@ INDEXES: List[Index] = [
     Index("idx_automation_runs_auto", "automation_runs", "automation_id, created_at DESC"),
     Index("idx_automation_runs_sub", "automation_runs", "subscription_id, created_at DESC"),
     Index("idx_automation_runs_owner", "automation_runs", "owner_user_id, created_at DESC"),
-    Index("idx_pages_user", "pages", "user_id"),
+    Index("idx_canvases_user", "canvases", "user_id"),
 ]
 
 

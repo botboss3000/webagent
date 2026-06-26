@@ -106,7 +106,14 @@ class LocalScheduler(SchedulerBackend):
         db = get_db()
         now = datetime.now(timezone.utc).isoformat()
         self._last_poll = now
-        due = await db.claim_due_automations(now_iso=now)
+        try:
+            due = await db.claim_due_automations(now_iso=now)
+        except Exception as e:
+            err_str = str(e)
+            if "no such table" in err_str or "does not exist" in err_str:
+                logger.warning("Scheduler tick skipped — automations table not ready yet: %s", err_str[:80])
+                return
+            raise
         for row in due:
             if row["id"] in self._in_flight:
                 continue

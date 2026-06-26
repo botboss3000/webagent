@@ -54,7 +54,7 @@ def _lean_apply_provider_config() -> None:
         data = json.loads(PROVIDER_FILE.read_text(encoding="utf-8")) or {}
         if "provider" in data:  # legacy flat (single-user) format
             data = {ANONYMOUS_KEY: data}
-        config = data.get(ANONYMOUS_KEY) or data.get("admin_default") or {}
+        config = data.get(ANONYMOUS_KEY) or data.get("admin") or {}
         if config:
             _lean_apply_to_env(config)
     except Exception as e:

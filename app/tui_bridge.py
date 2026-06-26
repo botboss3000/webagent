@@ -66,7 +66,7 @@ async def forward_to_bridge(
     user_id: str,
     session_id: str,
     message: str,
-    execution_mode: str = "write",
+    execution_mode: str = "ask",
 ) -> Optional[str]:
     """Forward a message to the TUI bridge and return the reply.
     

@@ -1,4 +1,4 @@
-"""Unit tests for the keep-alive guardian (webagent/guardian.py).
+"""Unit tests for the keep-alive guardian (tui_app/guardian.py).
 
 Pure-logic, no TUI, no network: we point the data dir at a throwaway temp folder
 (``WEBAGENT_DATA_DIR``) so nothing touches the real ``TUI/`` runtime files, then

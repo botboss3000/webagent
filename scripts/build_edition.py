@@ -45,6 +45,19 @@ def _module_to_path(module: str) -> Path:
     return REPO_ROOT / (module.replace(".", "/") + ".py")
 
 
+def _edition_exclude_paths(edition: str) -> list:
+    """Whole files/folders the edition strips outright (an optional tier that must
+    leave no trace). Declared as the edition's ``exclude_paths`` in editions.json."""
+    try:
+        import json
+        data = json.loads((REPO_ROOT / "app" / "features" / "editions.json").read_text(encoding="utf-8"))
+        spec = data.get("editions", {}).get(edition, {})
+        return [Path(p) for p in (spec.get("exclude_paths") or [])]
+    except Exception as e:
+        print(f"  (warning) could not read exclude_paths: {e}")
+        return []
+
+
 def build(edition: str, out_dir: Path) -> int:
     sys.path.insert(0, str(REPO_ROOT))
     from app.features.catalog import build_catalog
@@ -78,12 +91,20 @@ def build(edition: str, out_dir: Path) -> int:
     print(f"Copying repo → {out_dir} …")
     shutil.copytree(REPO_ROOT, out_dir, ignore=_IGNORE)
 
-    # Pin the artifact's active edition.
+    # Pin the artifact's active edition, and SANITIZE the manifest so the
+    # artifact never reveals what was stripped: drop every edition's build-only
+    # `exclude_paths` and neutralize the active edition's description.
     ed_file = out_dir / "app" / "features" / "editions.json"
     try:
         import json
         data = json.loads(ed_file.read_text(encoding="utf-8"))
         data["active"] = edition
+        for _name, _spec in (data.get("editions") or {}).items():
+            if isinstance(_spec, dict):
+                _spec.pop("exclude_paths", None)
+        active_spec = (data.get("editions") or {}).get(edition)
+        if isinstance(active_spec, dict):
+            active_spec["description"] = f"The {active_spec.get('label', edition)} edition."
         ed_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception as e:
         print(f"  (warning) could not pin active edition: {e}")
@@ -95,6 +116,23 @@ def build(edition: str, out_dir: Path) -> int:
             target.unlink()
             removed += 1
             print(f"  pruned: {rel}")
+
+    # Edition-level path strips: whole folders/files removed outright so an
+    # optional tier leaves no trace (code + UI + schema). The platform billing
+    # tier is stripped this way for the 'public' edition.
+    path_removed = 0
+    for rel in _edition_exclude_paths(edition):
+        target = out_dir / rel
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+            path_removed += 1
+            print(f"  pruned dir:  {rel}")
+        elif target.exists():
+            target.unlink()
+            path_removed += 1
+            print(f"  pruned file: {rel}")
+    if path_removed:
+        print(f"  edition path-strips removed: {path_removed}")
 
     kept = sum(1 for f in features if f["category"] in _PRUNABLE) - removed
     print(

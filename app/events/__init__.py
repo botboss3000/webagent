@@ -17,8 +17,6 @@ Two delivery paths feed the router:
 
 from __future__ import annotations
 
-from typing import Optional
-
 _MANAGER = None
 
 
@@ -33,8 +31,6 @@ def get_manager():
 
 async def start_event_runtime() -> None:
     """Start poll + renewal loops. Called from ``app.main`` startup."""
-    from app.events.poller import EventPoller
-    from app.events.renewer import SubscriptionRenewer
     mgr = get_manager()
     await mgr.start_poller()
     await mgr.start_renewer()

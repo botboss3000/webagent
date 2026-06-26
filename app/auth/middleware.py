@@ -15,6 +15,8 @@ PUBLIC_PATHS = {
     "/",
     "/login.html",
     "/ui/login.html",
+    "/setup.html",
+    "/ui/setup.html",
     "/health",
     "/favicon.ico",
     "/favicon.svg",
@@ -22,6 +24,10 @@ PUBLIC_PATHS = {
     "/api/v1/auth/recall",
     "/api/v1/auth/logout",
     "/api/v1/auth/anonymous",
+    "/api/v1/auth/setup-status",
+    "/api/v1/auth/setup-admin",
+    "/api/v1/auth/access-mode",
+    "/api/v1/auth/ui-config",
     "/test",
     "/privacy",
     "/tos",
@@ -68,7 +74,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Allow WebSocket endpoints (auth done via first message / query token)
         if (path.startswith("/api/v1/agent/ws")
                 or path.startswith("/api/v1/terminal/ws")
-                or path.startswith("/api/v1/browser/ws")):
+                or path.startswith("/api/v1/browser/ws")
+                or path.startswith("/api/v1/browser/screencast")):
             return await call_next(request)
 
         # Check for Authorization header
@@ -88,6 +95,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.username = payload.get("sub")
                 request.state.user_id = payload.get("user_id")
                 return await call_next(request)
+
+        # ── Open access mode: trust unauthenticated requests ──
+        # In "open" mode (single-user / local convenience), there's no cross-tenant
+        # risk so we allow requests without a valid token. The frontend connects
+        # through Cloudflare Tunnel etc. where open-login is unavailable.
+        from app.admin.settings import get_access_mode
+        if get_access_mode() == "open":
+            request.state.username = "admin"
+            request.state.user_id = "admin"
+            return await call_next(request)
 
         # Not authenticated
         # API routes → 401 JSON

@@ -1,0 +1,74 @@
+<!-- Toolbar
+     ---- HARMONY: this toolbar (id naming, button set, bin logic) mirrors
+     ---- ui/agents.html. The two must stay in sync: any change to the
+     ---- toolbar layout, bin states, or right-side actions here must be
+     ---- copied to agents.html (and vice versa). Grep HARMONY-SESSIONS-BIN
+     ---- and HARMONY-AGENTS-BIN to find the matching call sites. -->
+
+<div id="sessions-toolbar">
+  <div id="sessions-toolbar-left">
+    <button type="button" id="sessions-back-btn" title="Back to Sessions" style="display:none;">
+      <i data-lucide="arrow-left" style="width:16px;height:16px;"></i>
+    </button>
+    <span id="sessions-toolbar-title">Sessions</span>
+    <span id="sessions-toolbar-sub"> &middot; history &middot; usage &middot; costs</span>
+  </div>
+  <div id="sessions-toolbar-actions">
+    <!-- Bulk subset selection — check a whole family at once, then delete.
+         Wired in sessions-page.js (_selectSubset). -->
+    <select id="sessions-bulk-select" class="sessions-tb-select" title="Select a group of sessions">
+      <option value="">Select…</option>
+      <option value="optimizer">Optimizer runs</option>
+      <option value="spawn">Spawned sessions</option>
+      <option value="all">All</option>
+      <option value="none">None</option>
+    </select>
+    <button type="button" id="sessions-restore-btn" class="sessions-tb-btn sessions-tb-restore" title="Restore selected sessions" style="display:none;">
+      <i data-lucide="archive-restore" style="width:15px;height:15px;"></i><span>Restore</span>
+    </button>
+    <!-- HARMONY-SESSIONS-BIN: trash+bin migration mirrors agents-tb-trash.
+         When nothing is selected, clicking opens the bin (recycled sessions).
+         In the bin: the trash permanently deletes. Restore button restores. -->
+    <button type="button" id="sessions-trash-btn" class="sessions-tb-trash" data-state="trash" title="Open recycling bin">
+      <i data-lucide="trash-2" style="width:16px;height:16px;"></i>
+    </button>
+  </div>
+</div>
+
+<!-- Scrollable table area -->
+<div id="sessions-table-wrap">
+  <div id="sessions-table-inner">
+    <table id="sessions-table">
+      <thead>
+        <tr>
+          <th class="col-caret" aria-hidden="true"></th>
+          <th class="col-check">
+            <span id="sessions-check-all" class="sessions-check-cell" title="Select all"> </span>
+          </th>
+          <th class="col-agent col-resizable">Agent</th>
+          <th class="col-title col-resizable">Session</th>
+          <th class="col-status">Status</th>
+          <th class="col-links" title="Linked canvases & browser pages">Links</th>
+          <th class="col-msgs col-resizable">Messages</th>
+          <th class="col-tokens-in col-resizable">Tokens In</th>
+          <th class="col-tokens-out col-resizable">Tokens Out</th>
+          <th class="col-cost col-resizable">Cost</th>
+          <th class="col-duration col-resizable">Duration</th>
+          <th class="col-updated col-resizable">Last Activity</th>
+        </tr>
+      </thead>
+      <tbody id="sessions-table-body">
+        <!-- Populated by JS -->
+      </tbody>
+    </table>
+    <div id="sessions-empty" class="sessions-empty" style="display:none;">
+      <div class="sessions-empty-icon"><i data-lucide="message-square" style="width:28px;height:28px;"></i></div>
+      <div class="sessions-empty-text">No sessions yet</div>
+      <div class="sessions-empty-hint">Start a conversation with an agent to see it here</div>
+    </div>
+    <div id="sessions-loading" class="sessions-loading" style="display:none;">
+      <i data-lucide="loader-2" style="width:18px;height:18px;" class="lucide-spin"></i>
+      <span>Loading sessions…</span>
+    </div>
+  </div>
+</div>

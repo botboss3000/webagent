@@ -1,0 +1,18 @@
+{
+  "plugins/abilities/codebase_admin.skill.md": {
+    "size": 12138,
+    "sha256": "11f705b3f6121c5f11c2963ae6630979b35dc7e2096dce8106f18aaf1493867c"
+  },
+  "plugins/abilities/agent_orchestration.skill.md": {
+    "size": 20391,
+    "sha256": "fd54d4e8cff4b9e9fea58bb6fc825533914e8a14bd40aff4c421b2763f411307"
+  },
+  "data/agents/default.json": {
+    "size": 17619,
+    "sha256": "7ddced66e51e3b1ad20e8f34cb9d5fc2e6f71a9fadc5c9941f475a6431a696f7"
+  },
+  "skills/pi-webagent-operator.md": {
+    "size": 30749,
+    "sha256": "166d543d60f5119787a1716cead2ef673520208606a97d71001d14e450200a3d"
+  }
+}

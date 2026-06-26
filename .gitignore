@@ -27,6 +27,18 @@ scheduler_config.json
 suggestions.json
 data/config/suggestions.json
 data/config/model_catalog.json
+data/config/cookie-allowlist.json
+data/config/update_sync.json
+# Runtime-written config — self-creates on first change (app/util/config_io.py);
+# kept out of the repo so an admin's live edits never collide with git pull.
+data/config/admin-panel-pages.json
+data/config/main-panel-pages.json
+data/config/agent-abilities.json
+data/config/debug-config.json
+data/config/optimizer.json
+data/config/deploy.json
+data/config/production-mirror.json
+data/config/git-repos.json
 app-settings.json
 .venv
 env/
@@ -34,6 +46,10 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Node dependencies — installed, never tracked (e.g. relay/node_modules: the
+# Cloudflare-relay build deps. Was accidentally committed once; keep it out.)
+node_modules/
 
 # IDE
 .vscode/
@@ -70,6 +86,18 @@ local.db
 data/wiki.db-journal
 data/wiki.db-wal
 data/wiki.db-shm
+
+# ── Browser profile (local-Chrome feature) ──────────────────────────────────
+# The entire on-disk Chrome profile is runtime state: cookies, trust tokens,
+# caches, and Chrome's own databases. Never commit it — it churns constantly,
+# bloats the repo, and contains session data.
+data/chrome-profile/
+
+# ── Stray / scratch databases & dumps (runtime, never tracked) ──────────────
+# Root-level stray DB, the TUI's runtime DB, and ad-hoc DB dumps.
+webagent.db
+TUI/webagent.db
+_dbdump.txt
 
 # ── Legacy app/db/ runtime DBs ──────────────────────────────────────────────
 # Pre-data/db layout. The app relocates these into data/db/ on first run; kept
@@ -128,12 +156,16 @@ app/auth/users.json.bak
 app/db_mode.json
 app/db_connection.json
 app/secrets_mode.json
+app/encryption_mode.json
+app/db_encryption.json
 app/pages_mode.json
 app/attachments_store_config.json
 # Remote Access (per-machine config + the signpost directory written at runtime)
 remote_access.json
 remote_access.json.bak
 remote_access_pointers.json
+# Tunnel Link (relay registration creds written at runtime)
+data/config/tunnel_link.json
 
 # FUSE / SSHFS temp leftovers
 app/db/.fuse_hidden*
@@ -160,6 +192,7 @@ data/screenshots/
 
 # Scratch / backup / PID files — kept on disk, never tracked
 .source-backups/
+.update-backups/
 tmp/
 bg_pid.txt
 TUI/server.pid
@@ -179,3 +212,8 @@ launcher/build/
 # launcher_android runtime bridge file (Browser button host↔proot)
 launcher_android/.browser-bridge
 .git-rewrite/
+  
+cookies.txt
+
+# Pre-admin-rename DB backup (kept on disk, never committed — contains 166MB+ DBs)
+data/db.bak-pre-admin-rename/

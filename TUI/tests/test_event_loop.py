@@ -1,10 +1,10 @@
 import asyncio, sys, tempfile, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from webagent.agent import ServerManagerAgent
-from webagent.db import Store
-from webagent.llm import Completion, ToolCall
-from webagent.subagents import SubagentRegistry
-from webagent.config import TuiConfig
+from tui_app.agent import ServerManagerAgent
+from tui_app.db import Store
+from tui_app.llm import Completion, ToolCall
+from tui_app.subagents import SubagentRegistry
+from tui_app.config import TuiConfig
 
 class FakeLLM:
     def __init__(self, script): self.script = list(script); self.calls = 0

@@ -38,6 +38,16 @@ DENIED_COMMANDS = [
 ]
 
 
+def _deny(action: str, path: str, pattern: str) -> None:
+    """Log and raise for a denied path. Centralised so every match branch in
+    check_path reports identically."""
+    logger.warning("Blocked %s on denied path: %s (matched: %s)", action, path, pattern)
+    raise PermissionError(
+        f"Access denied: '{path}' matches restricted pattern '{pattern}'. "
+        f"This path contains sensitive information."
+    )
+
+
 async def check_path(path: str, action: str = "read") -> None:
     """
     Check if a path is allowed. Raises PermissionError if denied.
@@ -52,16 +62,31 @@ async def check_path(path: str, action: str = "read") -> None:
     """
     import os
     normalized = path.replace("\\", "/")
+    basename = os.path.basename(normalized)
+    # Path segments (drop the drive letter / empty leading segment) so a pattern
+    # like ".ssh/*" can match an ABSOLUTE path. fnmatch on the whole absolute path
+    # only ever matched relative inputs, so directory patterns such as ".ssh/*"
+    # and ".ssh/**/*" were dead against the absolute paths the source tools pass
+    # in — SSH keys slipped through. We now also test the trailing path against
+    # every "<dir>/" pattern and check each segment by name.
+    segments = [s for s in normalized.split("/") if s and ":" not in s]
 
     for pattern in DENIED_PATTERNS:
-        if fnmatch.fnmatch(normalized, pattern) or fnmatch.fnmatch(
-            os.path.basename(normalized), pattern
+        # 1) Whole-path and basename match (catches ".env", "*.env", ".gitconfig").
+        if fnmatch.fnmatch(normalized, pattern) or fnmatch.fnmatch(basename, pattern):
+            _deny(action, path, pattern)
+        # 2) Any single path segment matches the pattern's leading component —
+        #    catches a denied DIRECTORY anywhere in an absolute path, e.g.
+        #    ".ssh/*" / ".ssh/**/*" → block anything under a ".ssh" segment.
+        lead = pattern.split("/", 1)[0]
+        if lead and lead not in ("", "*", "**") and any(
+            fnmatch.fnmatch(seg, lead) for seg in segments
         ):
-            logger.warning("Blocked %s on denied path: %s (matched: %s)", action, path, pattern)
-            raise PermissionError(
-                f"Access denied: '{path}' matches restricted pattern '{pattern}'. "
-                f"This path contains sensitive information."
-            )
+            _deny(action, path, pattern)
+        # 3) Suffix match on "dir/<glob>" patterns against the tail of the path,
+        #    so ".ssh/config" style explicit patterns still match absolute paths.
+        if "/" in pattern and fnmatch.fnmatch(normalized, "*/" + pattern):
+            _deny(action, path, pattern)
 
 
 async def check_command(command: str) -> None:

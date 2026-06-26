@@ -1,12 +1,12 @@
 -- 020_billing.sql
--- Three-tier marketplace billing: app admin <- agent admin <- end user.
--- Adds 9 tables: billing_configs, usage_events, wallets, wallet_transactions,
--- subscriptions, trials, payment_accounts, payments, billing_exemptions.
+-- Agent-tier billing: an agent admin charges its users; the agent keeps 100%.
+-- Adds 8 tables: billing_configs, usage_events, wallets, wallet_transactions,
+-- subscriptions, trials, payments, billing_exemptions.
 --
 -- Apply on Supabase via the SQL editor. Local SQLite picks these up from
 -- app/db/local.py:SCHEMA_SQL on next startup.
 
--- Pricing config keyed by scope: 'platform' (one row) or 'agent:<id>'.
+-- Per-agent pricing config, keyed by scope 'agent:<id>'.
 CREATE TABLE IF NOT EXISTS billing_configs (
     scope                      TEXT    PRIMARY KEY,
     strategy                   TEXT    NOT NULL DEFAULT 'free',
@@ -14,8 +14,6 @@ CREATE TABLE IF NOT EXISTS billing_configs (
     allowed_processors         TEXT    NOT NULL DEFAULT '[]',
     rate_card_default_llm      TEXT    NOT NULL DEFAULT '{}',
     rate_card_byo_llm          TEXT    NOT NULL DEFAULT '{}',
-    platform_fee_pct           REAL    NOT NULL DEFAULT 0,
-    platform_fee_flat_cents    INTEGER NOT NULL DEFAULT 0,
     trial_config               TEXT    NOT NULL DEFAULT '{}',
     subscription_price_cents   INTEGER NOT NULL DEFAULT 0,
     currency                   TEXT    NOT NULL DEFAULT 'usd',
@@ -34,7 +32,6 @@ CREATE TABLE IF NOT EXISTS usage_events (
     output_tokens               INTEGER NOT NULL DEFAULT 0,
     provider_cost_cents         INTEGER NOT NULL DEFAULT 0,
     end_user_charge_cents       INTEGER NOT NULL DEFAULT 0,
-    platform_fee_cents          INTEGER NOT NULL DEFAULT 0,
     agent_admin_earnings_cents  INTEGER NOT NULL DEFAULT 0,
     strategy                    TEXT NOT NULL DEFAULT 'free',
     is_byo_llm                  INTEGER NOT NULL DEFAULT 0,
@@ -69,7 +66,7 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
     ref_id      TEXT,
     note        TEXT,
     created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (kind IN ('purchase','usage','refund','platform_fee','earnings','hold','release'))
+    CHECK (kind IN ('purchase','usage','refund','earnings','hold','release'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_wallet_tx_wallet ON wallet_transactions (wallet_id);
@@ -104,17 +101,6 @@ CREATE TABLE IF NOT EXISTS trials (
 );
 
 CREATE INDEX IF NOT EXISTS idx_trials_user_agent ON trials (user_id, agent_id);
-
-CREATE TABLE IF NOT EXISTS payment_accounts (
-    user_id              TEXT NOT NULL,
-    processor            TEXT NOT NULL,
-    external_account_id  TEXT,
-    onboarding_complete  INTEGER NOT NULL DEFAULT 0,
-    metadata             TEXT NOT NULL DEFAULT '{}',
-    created_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (user_id, processor)
-);
 
 CREATE TABLE IF NOT EXISTS payments (
     id                  TEXT PRIMARY KEY,

@@ -41,7 +41,7 @@ DEFAULT_NODE_ORDER: List[str] = [
     "load_provider", "load_tools", "data_src_load", "integration_status", "assemble_msgs",
     # INFERENCE (per-turn while-loop)
     "interrupt_chk", "turn_counter", "permission_chk", "build_tool_defs",
-    "parallel_mode", "llm_call",
+    "llm_call",
     # ROUTING (validate + guard, per tool call)
     "db_persist_asst", "validate_tools", "destructive_chk", "guardrails", "post_val_chk",
     # EXECUTION (per tool result)
@@ -80,80 +80,6 @@ GATED_NODES: frozenset = frozenset({
 })
 
 
-# ── run_if evaluator ───────────────────────────────────────────────────────────
-
-def _evaluate_run_if(expr: str, context: Dict[str, Any]) -> bool:
-    """
-    Evaluate a simple run_if expression against a context dict.
-
-    Supported expressions:
-      "key"              → truthy check on context[key]
-      "!key"             → falsy check on context[key]
-      "key == value"     → equality (value is stripped, compared as string)
-      "key != value"     → inequality
-      "key > N"          → numeric greater-than
-      "key < N"          → numeric less-than
-      "key >= N"         → numeric greater-or-equal
-      "key <= N"         → numeric less-or-equal
-      "key in [a,b,c]"  → membership check
-
-    All comparisons are safe — no eval(). Returns True on parse failure
-    (fail-open: node runs if expression is malformed).
-    """
-    expr = expr.strip()
-    if not expr:
-        return True
-
-    try:
-        # Negation: "!key"
-        if expr.startswith("!"):
-            key = expr[1:].strip()
-            return not bool(context.get(key))
-
-        # Comparison operators (ordered longest-first to match >= before >)
-        for op in ("!=", ">=", "<=", "==", ">", "<"):
-            if op in expr:
-                parts = expr.split(op, 1)
-                if len(parts) == 2:
-                    key = parts[0].strip()
-                    val_str = parts[1].strip()
-                    ctx_val = context.get(key)
-
-                    if op == "==":
-                        return str(ctx_val) == val_str
-                    elif op == "!=":
-                        return str(ctx_val) != val_str
-                    else:
-                        try:
-                            ctx_num = float(ctx_val) if ctx_val is not None else 0
-                            cmp_num = float(val_str)
-                        except (ValueError, TypeError):
-                            return True  # fail-open
-                        if op == ">":
-                            return ctx_num > cmp_num
-                        elif op == "<":
-                            return ctx_num < cmp_num
-                        elif op == ">=":
-                            return ctx_num >= cmp_num
-                        elif op == "<=":
-                            return ctx_num <= cmp_num
-                break
-
-        # "key in [a,b,c]"
-        if " in " in expr:
-            parts = expr.split(" in ", 1)
-            key = parts[0].strip()
-            list_str = parts[1].strip().strip("[]")
-            members = [m.strip().strip("'\"") for m in list_str.split(",")]
-            return str(context.get(key, "")) in members
-
-        # Simple truthy check: "key"
-        return bool(context.get(expr))
-
-    except Exception:
-        return True  # fail-open on any error
-
-
 # ── NodeConfig ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -161,7 +87,6 @@ class NodeConfig:
     """Resolved configuration for a single loop node."""
     node: str
     enabled: bool = True
-    run_if: Optional[str] = None          # Future: expression evaluated at runtime
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -185,7 +110,6 @@ class LoopConfig:
 
     def __init__(self, loop_logic_raw: Any = None):
         self._nodes: Dict[str, NodeConfig] = {}
-        self._is_object_format: bool = False
         self._parse(loop_logic_raw)
 
     # ── Parsing ────────────────────────────────────────────────────────────────
@@ -214,7 +138,6 @@ class LoopConfig:
             return
 
         # ── New object array ──────────────────────────────────────────────────
-        self._is_object_format = True
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -231,41 +154,25 @@ class LoopConfig:
             self._nodes[node_name] = NodeConfig(
                 node=node_name,
                 enabled=enabled,
-                run_if=item.get("run_if"),
                 extra={k: v for k, v in item.items()
-                       if k not in ("node", "enabled", "run_if")},
+                       if k not in ("node", "enabled")},
             )
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def is_enabled(self, node: str, context: Optional[Dict[str, Any]] = None) -> bool:
+    def is_enabled(self, node: str) -> bool:
         """
         Return True if this node should execute.
 
         Locked nodes always return True.  Unknown nodes (e.g. future nodes not
         yet in DEFAULT_NODE_ORDER) default to True so forward-compat is safe.
-
-        If context is provided, evaluates the node's run_if condition against it.
         """
         if node in LOCKED_NODES:
             return True
         cfg = self._nodes.get(node)
         if cfg is None:
             return True
-        if not cfg.enabled:
-            return False
-        if cfg.run_if and context is not None:
-            return _evaluate_run_if(cfg.run_if, context)
-        return True
-
-    def get_node(self, node: str) -> Optional[NodeConfig]:
-        """Return the NodeConfig for a specific node, or None if not found."""
-        return self._nodes.get(node)
-
-    @property
-    def is_object_format(self) -> bool:
-        """True when the stored loop_logic used the new object-array format."""
-        return self._is_object_format
+        return cfg.enabled
 
     def disabled_nodes(self) -> List[str]:
         """Return sorted list of node IDs that are currently disabled."""
@@ -273,26 +180,6 @@ class LoopConfig:
             n for n, cfg in self._nodes.items()
             if not cfg.enabled and n not in LOCKED_NODES
         )
-
-    # ── Serialization ──────────────────────────────────────────────────────────
-
-    def to_list(self) -> List[Dict[str, Any]]:
-        """
-        Serialize to the object-array format for DB storage.
-        Only includes nodes in DEFAULT_NODE_ORDER.
-        """
-        result: List[Dict[str, Any]] = []
-        for node in DEFAULT_NODE_ORDER:
-            cfg = self._nodes.get(node, NodeConfig(node=node, enabled=True))
-            entry: Dict[str, Any] = {"node": cfg.node, "enabled": cfg.enabled}
-            if cfg.run_if is not None:
-                entry["run_if"] = cfg.run_if
-            result.append(entry)
-        return result
-
-    def to_json(self) -> str:
-        """Serialize to JSON string for direct DB storage."""
-        return json.dumps(self.to_list())
 
     # ── Factories ──────────────────────────────────────────────────────────────
 

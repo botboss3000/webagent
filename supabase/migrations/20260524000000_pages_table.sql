@@ -1,4 +1,4 @@
--- Pages table for the AutoAgent page-builder workspace.
+-- Pages table for the Canvas page-builder workspace.
 -- Backs DatabasePageStore (full HTML in `html`) and HybridPageStore
 -- (metadata-only rows, body on disk).
 

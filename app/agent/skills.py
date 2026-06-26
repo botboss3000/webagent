@@ -113,7 +113,11 @@ def format_skills_section(
         if desc:
             lines.append(desc)
 
-        if s.get("mode") == "always_on":
+        # "visible" (legacy always_on) → body shown every turn; "discoverable"
+        # (legacy selectable) → placeholder until loaded. Normalized so the unified
+        # vocabulary and the old skill modes both work.
+        from app.tools.tool_modes import normalize_visibility as _nv, VISIBLE as _VIS
+        if _nv(s.get("mode")) == _VIS:
             body = (s.get("body") or "").strip()
             if body:
                 lines.append(body)

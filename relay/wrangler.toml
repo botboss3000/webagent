@@ -33,11 +33,11 @@ TURNSTILE_SITE_KEY = ""
 
 [[kv_namespaces]]
 binding = "RATE_LIMIT_KV"
-id = "REPLACE_WITH_RATE_LIMIT_KV_ID"
+id = "c2e986de05df444896c025ec7ae5b46a"
 
 [[kv_namespaces]]
 binding = "BLOCKLIST_KV"
-id = "REPLACE_WITH_BLOCKLIST_KV_ID"
+id = "9bc077f8fad548eb9d515692a6065b08"
 
 # Secrets — NOT stored here. Set with:
 #   wrangler secret put GITHUB_TOKEN

@@ -1,0 +1,12 @@
+{
+  "display_name": "Notion",
+  "kind": "placeholder",
+  "icon": "file-text",
+  "color": "#4285F4",
+  "description": "Connect Notion pages and databases.",
+  "note": "Free OAuth — connect Notion pages and databases.",
+  "simple": false,
+  "placeholder": true,
+  "tools": [],
+  "order": 6
+}

@@ -5,7 +5,7 @@ venv launcher `python run.py` spawns the actual uvicorn interpreter as a child, 
 the LISTENER is a child of the tracked pid)."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from webagent.guardian import _foreign_server_pids, _server_tree, _is_server_proc
+from tui_app.guardian import _foreign_server_pids, _server_tree, _is_server_proc
 
 
 def test_reaps_nonserving_duplicate_keeps_serving_tree():

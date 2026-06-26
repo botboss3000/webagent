@@ -1,0 +1,522 @@
+<template data-slot="#ac-section-slot-app-settings">
+<section id="ac-section-app-settings" class="ac-section ac-stickynav">
+  <!-- No page heading here on purpose: the header tab carousel already names
+       the page. Every admin config page follows this standard — a section is
+       just a stack of subheading + one `.ac-list` table groups, no title row. -->
+  <!-- ════════════════════════════════════════════════════════════════
+       SECTION GROUP PATTERN — SHARED ACROSS ADMIN CONFIG PAGES
+       Each setting group is a `.ac-category-group` (plain text heading —
+       icon + title — over ONE full-width `.ac-card` / `.ac-list` of
+       options; NOT a card-within-a-card). App Settings' groups are
+       ALWAYS-OPEN `<div>`s (no chevron). A COLLAPSIBLE group is a
+       `<div class="ac-category-group ac-collapsible">` toggled by an
+       `.ac-open` class (Agent Settings' Channels/etc.) —
+       NOT a native `<details>`, because this section opts into the sticky
+       navigator (`ac-stickynav` on the <section>), whose display:contents
+       flatten breaks <details> collapse + layout. See app3.css "ADVANCED
+       SCROLL" + docs/claude/ui-guidance.md point 5.
+       STYLING IS SYNCED: the look lives in `.ac-category-group` /
+       `.ac-category-summary` / `.ac-category-body` in ui/shared/css/app3.css.
+       If you restyle one page's groups, update the shared CSS so every
+       page (App Settings, Agent Settings, and future pages) stays in
+       sync — do NOT fork per-page styles.
+       ════════════════════════════════════════════════════════════════ -->
+
+
+  <!-- ── Main Panel Pages ── -->
+  <!-- data-pa-area: the page-assistant pill (bottom of this section) reads which
+       area the mouse is over via closest('[data-pa-area]') and swaps its
+       placeholder + the prompt it hands webAgent. Keys map to
+       data/config/app-prompts.json → page_assistants.app_settings.areas. -->
+  <div class="ac-category-group" id="ac-main-panel-card" data-pa-area="main_panel">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="layout" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Main Panel Pages</span>
+    </div>
+    <div class="ac-category-body">
+      <div id="ac-main-panel-list" class="ac-main-panel-list ac-list"></div>
+    </div>
+  </div>
+
+  <!-- ── Admin Panel Pages ── -->
+  <div class="ac-category-group" id="ac-admin-panel-card" data-pa-area="admin_panel">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="panel-left" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Admin Panel Pages</span>
+    </div>
+    <div class="ac-category-body">
+      <div id="ac-admin-panel-list" class="ac-main-panel-list ac-list"></div>
+    </div>
+  </div>
+
+  <!-- ── Design (Startup & Boot + Appearance, one unified table) ── -->
+  <!-- The old "Startup & Boot" and "Appearance" groups were merged into a single
+       "Design" category whose body is ONE `.ac-list` table (#ac-design-list) — no
+       subsection headings. The Appearance theme rows come first, then the
+       Startup & Boot config rows below, flowing as one continuous table. No JS change was
+       needed — every element id is preserved, so app-settings.js wiring
+       (_initBoot*, _initAppearance, _loadAppearance) keeps working untouched. -->
+  <div class="ac-category-group" data-pa-area="design">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="palette" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Design</span>
+      <!-- Quick LIVE theme switch (Light · Dark · System) — same per-browser
+           toggle as the user-menu dropdown, surfaced here so you can flip the
+           active theme while editing the two palettes below. Reuses the shared
+           `.theme-option` buttons so highlight stays synced with the dropdown;
+           wired in app-settings.js (_initThemeSwitch) via user-panel.js setTheme.
+           SISTER-CONTROL of the #user-dropdown theme-toggle-group in index.html. -->
+      <div class="ac-theme-switch" role="group" aria-label="Theme">
+        <button class="theme-option" data-theme="light" title="Light" aria-label="Light theme">
+          <i data-lucide="sun" class="lucide-icon" style="width:14px;height:14px;"></i>
+        </button>
+        <button class="theme-option" data-theme="dark" title="Dark" aria-label="Dark theme">
+          <i data-lucide="moon" class="lucide-icon" style="width:14px;height:14px;"></i>
+        </button>
+        <button class="theme-option" data-theme="system" title="System" aria-label="Follow system theme">
+          <i data-lucide="monitor" class="lucide-icon" style="width:14px;height:14px;"></i>
+        </button>
+      </div>
+    </div>
+    <div class="ac-category-body">
+      <!-- ONE UNIFIED TABLE — the Startup/Boot config rows and the Appearance
+           theme rows live in a SINGLE `.ac-list` (#ac-design-list) so the whole
+           Design category reads as one continuous table, not split subsections.
+           STANDARD CONFIG ROWS — every setting is a flush `.ac-ability-row`
+           (icon + name + one-line description) with its control in a right-
+           aligned `.ac-config-control` slot: a `.conn-toggle` switch (the same
+           switch the ability tables use) for on/off settings, or an inline
+           `.ac-input.ac-config-sel` dropdown for a choice. No expandable bodies
+           here — the controls are simple enough to sit inline, so the whole
+           group reads as one uniform table (matches Appearance's border/font
+           rows below). Welcome screen + Show tooltips save app-wide (server,
+           via POST /admin/settings/app); Boot animation + Mobile boot save per
+           browser (localStorage). All four are wired in the sibling
+           app-settings.js — element ids unchanged. -->
+      <div class="ac-list" id="ac-design-list">
+
+        <!-- ── Appearance rows (theme palette · background · fonts & borders) ──
+             Appearance comes FIRST in the table; the Startup & Boot rows follow
+             below. Same `.ac-list` table — no separate container.
+             The whole app's look is two INDEPENDENT palettes (dark + light), shown
+             as two EXPANDABLE ability-rows (Light + Dark) that expand to reveal that
+             theme's one-click presets, the animated background, and the full palette
+             of colour swatches — injected by app-settings.js (_buildThemeCard) into
+             the row's .ac-ability-body. The three static rows after them are the
+             theme-independent knobs (border thickness + the two fonts), select +
+             green auto-save check on the right. Every control auto-saves per theme to
+             app settings, previews live in the admin's own window, and applies
+             app-wide for every visitor via the public /api/v1/auth/ui-config:
+               • palette + border + fonts → ui/shared/js/appearance.js
+               • background                → ui/background/_engine/manager.js
+             Border thickness applies to BOTH themes (Off = no borders). Extra
+             theme-independent knobs (roundness, shadow depth, UI scale, reduce
+             motion, cursor glow) are JSON-ONLY — edit data/config/app-settings.json. -->
+        <div class="ac-row" id="ac-theme-row-light" data-theme="light">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="sun" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Light mode</div>
+              <div class="ac-ability-desc">Preset themes, the animated background and the full colour palette for light mode.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body" id="ac-theme-body-light"></div>
+        </div>
+        <div class="ac-row" id="ac-theme-row-dark" data-theme="dark">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="moon" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Dark mode</div>
+              <div class="ac-ability-desc">Preset themes, the animated background and the full colour palette for dark mode.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body" id="ac-theme-body-dark"></div>
+        </div>
+        <!-- Allow per-user themes — app-WIDE setting saved server-side
+             (allow_user_appearance in app-settings.json), mirroring the Welcome
+             screen / Show tooltips switches. When on, every signed-in user gets a
+             "My appearance" editor on their account page whose choices layer on
+             top of the theme above. Wired in app-settings.js (_initAllowUserAppearance);
+             state loaded in _loadAppSettings. -->
+        <div class="ac-ability-row" id="ac-allow-user-appearance-row">
+          <span class="ac-ability-icon"><i data-lucide="user-pen" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Allow per-user themes</div>
+            <div class="ac-ability-desc">Let each signed-in person set their own colours, background and fonts from their account page. Their choices layer on top of the theme above — anything they don't change still follows it. Off hides the editor and ignores any saved personal themes.</div>
+          </div>
+          <span class="ac-config-control">
+            <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+              <input type="checkbox" id="ac-allow-user-appearance" class="conn-toggle">
+              <span class="conn-toggle-track"></span>
+            </label>
+          </span>
+        </div>
+        <div class="ac-ability-row ac-row-static" id="ac-border-row">
+          <span class="ac-ability-icon"><i data-lucide="square-dashed" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Border thickness</div>
+            <div class="ac-ability-desc">Outline weight for cards, tables and dividers across both themes. Off removes every border.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-border-width" class="ac-input ac-config-sel">
+              <option value="0">Off — no borders</option>
+              <option value="1px">Thin</option>
+              <option value="2px">Medium</option>
+              <option value="3px">Thick</option>
+            </select>
+          </span>
+        </div>
+        <div class="ac-ability-row ac-row-static" id="ac-font-sans-row">
+          <span class="ac-ability-icon"><i data-lucide="type" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">App font</div>
+            <div class="ac-ability-desc">Typeface for all interface text, in both light and dark.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-font-sans" class="ac-input ac-config-sel">
+              <option value="'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">Inter (default)</option>
+              <option value="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">System</option>
+              <option value="'Trebuchet MS', 'Segoe UI', Verdana, sans-serif">Rounded</option>
+              <option value="Georgia, 'Times New Roman', serif">Serif</option>
+            </select>
+          </span>
+        </div>
+        <div class="ac-ability-row ac-row-static" id="ac-font-mono-row">
+          <span class="ac-ability-icon"><i data-lucide="code" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Code font</div>
+            <div class="ac-ability-desc">Monospace typeface for code blocks, the terminal and logs.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-font-mono" class="ac-input ac-config-sel">
+              <option value="'JetBrains Mono', 'Fira Code', Menlo, ui-monospace, monospace">JetBrains Mono (default)</option>
+              <option value="ui-monospace, Menlo, Consolas, monospace">System mono</option>
+              <option value="'Courier New', Courier, monospace">Courier</option>
+            </select>
+          </span>
+        </div>
+
+        <!-- ── Startup & Boot rows (below Appearance, same table) ──
+             STANDARD CONFIG ROWS — each is a flush `.ac-ability-row` with its
+             control in a right-aligned `.ac-config-control` slot: a `.conn-toggle`
+             switch for on/off, or an inline `.ac-input.ac-config-sel` dropdown for a
+             choice. Welcome screen + Show tooltips save app-wide (server, via POST
+             /admin/settings/app); Boot animation + Mobile boot save per browser
+             (localStorage). All four are wired in the sibling app-settings.js —
+             element ids unchanged. -->
+        <div class="ac-ability-row" id="ac-boot-splash-row">
+          <span class="ac-ability-icon"><i data-lucide="sparkles" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Welcome landing page</div>
+            <div class="ac-ability-desc">Show a public welcome page at your web address — new visitors see it first and click Enter to reach the app (the installed app opens straight to the workspace). Off: the app loads directly at the front door. Each person can still skip it for themselves from the page or their account.</div>
+          </div>
+          <span class="ac-config-control">
+            <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+              <input type="checkbox" id="ac-boot-splash-enabled" class="conn-toggle">
+              <span class="conn-toggle-track"></span>
+            </label>
+          </span>
+        </div>
+        <div class="ac-ability-row" id="ac-boot-anim-row">
+          <span class="ac-ability-icon"><i data-lucide="play" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Boot animation</div>
+            <div class="ac-ability-desc">How the chat shrinks and the saved page appears when the app first loads. Saved per browser; applied on the next reload.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-boot-animation" class="ac-input ac-config-sel">
+              <option value="chat-slide-right">Chat slides right</option>
+              <option value="page-slide-in">Page slides in</option>
+              <option value="crossfade">Crossfade</option>
+            </select>
+          </span>
+        </div>
+        <div class="ac-ability-row" id="ac-boot-mobile-row">
+          <span class="ac-ability-icon"><i data-lucide="smartphone" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Mobile boot</div>
+            <div class="ac-ability-desc">Mobile only. "Always" forces the chat-first boot then animates to the saved view. "Remember" skips the animation and goes straight to whichever panel you had open last.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-boot-mobile-mode" class="ac-input ac-config-sel">
+              <option value="chat-first">Always chat-first</option>
+              <option value="memory">Remember last view</option>
+            </select>
+          </span>
+        </div>
+        <div class="ac-ability-row" id="ac-boot-tooltip-row">
+          <span class="ac-ability-icon"><i data-lucide="help-circle" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Show tooltips</div>
+            <div class="ac-ability-desc">Show the small hint bubbles that guide visitors through the app. Each person can still turn the tour off for themselves from their account page.</div>
+          </div>
+          <span class="ac-config-control">
+            <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+              <input type="checkbox" id="ac-boot-show-tooltips" class="conn-toggle">
+              <span class="conn-toggle-track"></span>
+            </label>
+          </span>
+        </div>
+
+        <!-- ── Chat panel layout rows (same Design table) ──
+             Two app-WIDE appearance keys saved via the merge-friendly POST
+             /admin/settings/app and served to every visitor through
+             /api/v1/auth/ui-config:
+               • Chat position    → injected as a #stage flex rule by appearance.js
+                                    (right = default; left reverses the desktop split)
+               • Chat at startup  → seeds the first-visit desktop default (read at
+                                    boot by index.html __chatVisibilityDefault); once
+                                    a visitor toggles the chat their own choice wins.
+             Wired in the sibling app-settings.js (_wireChatLayout); values loaded
+             in _loadAppearance. Ids: ac-chat-position / ac-chat-default-visible. -->
+        <div class="ac-ability-row ac-row-static" id="ac-chat-position-row">
+          <span class="ac-ability-icon"><i data-lucide="panel-right" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Chat position</div>
+            <div class="ac-ability-desc">Which side the chat panel sits on, beside the main panel. Applies app-wide on wider screens.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-chat-position" class="ac-input ac-config-sel">
+              <option value="right">Right (default)</option>
+              <option value="left">Left</option>
+            </select>
+          </span>
+        </div>
+        <div class="ac-ability-row ac-row-static" id="ac-chat-default-visible-row">
+          <span class="ac-ability-icon"><i data-lucide="message-square" class="lucide-icon" style="width:18px;height:18px;"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Chat at startup</div>
+            <div class="ac-ability-desc">Whether the chat panel is open the first time someone visits. Each person can still show or hide it themselves afterwards.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-chat-default-visible" class="ac-input ac-config-sel">
+              <option value="visible">Visible (default)</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       REMOTE ACCESS — one heading, one neat table (the shared ability-table
+       component: .ac-list / .ac-row / .ac-ability-row / .ac-ability-body).
+       This MERGES what used to be two separate, overlapping groups —
+       "Remote Access" (/admin/remote-access/*, wired in
+       ui/shared/js/remote-access.js) and "Tunnel" (/admin/tunnel-link/*, wired
+       in ui/shared/js/tunnel-link.js). Both backends are unchanged; this is a
+       UI reorg only. Two expandable rows:
+         1. Same network (Wi-Fi)      — the LAN addresses, stacked, each with a
+            copy + QR-popup button (ac-ra-sn-urls)
+         2. Reach it from anywhere    — the method configurator (ac-ra-method,
+            ac-ra-fields, start/stop/test/save, auto-start, runtime status)
+       (The former "On your phone" row — phone bookmark / signpost + the
+       tunnel.webagent.live scan-to-link — was removed from the UI. Its backend
+       endpoints and JS modules (remote-access.js phone/signpost wiring,
+       tunnel-link.js) remain but render nothing now that the markup is gone.)
+       EVERY element id the two JS modules read/write is preserved verbatim, so
+       the wiring keeps working untouched. The rows expand/collapse via
+       _wireBootRow() in the sibling app-settings.js (clicks on a control inside
+       a body never toggle the row — the listener is bound to the head only).
+       ════════════════════════════════════════════════════════════════ -->
+  <div class="ac-category-group" id="ac-ra-card" data-pa-area="remote_access">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="radio-tower" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Remote Access</span>
+      <span id="ac-ra-active-badge" class="ac-category-count">loading…</span>
+    </div>
+    <div class="ac-category-body">
+      <div id="ac-ra-env-banner" class="ac-info-banner" hidden style="border-left-color:var(--warning);color:var(--warning);font-size:11px;">
+        Config is env-locked (WEBAGENT_CONFIG_SOURCE=env). Settings can be viewed but not changed here.
+      </div>
+
+      <div class="ac-list" id="ac-ra-list" style="margin-top:10px;">
+
+        <!-- ── Row 1 · Same network (Wi-Fi) — open by default (the primary,
+             no-setup addresses; clicking the head still collapses it) ── -->
+        <div class="ac-row expanded" id="ac-ra-row-sn">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="wifi" class="lucide-icon" style="width:18px;height:18px;color:var(--success);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Same network (Wi-Fi)</div>
+              <div class="ac-ability-desc">Open this address on a device on the same Wi-Fi &mdash; no setup. (Plain http; secure-context features like Google sign-in need a tunnel.)</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <!-- Every LAN address stacked, uniform font/size/colour; each row gets
+                 its own Copy + QR button. QR opens a popup (built in remote-access.js). -->
+            <div id="ac-ra-sn-urls" class="ac-ra-sn-urls"></div>
+          </div>
+        </div>
+
+        <!-- ── Row 2 · Reach it from anywhere (the method configurator) ── -->
+        <div class="ac-row" id="ac-ra-row-net">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="globe" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Reach it from anywhere</div>
+              <div class="ac-ability-desc">Choose how this PC becomes reachable over the internet, configure it, then start it.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Remote method</label>
+            <select id="ac-ra-method" class="ac-input">
+              <option value="same_network">Same network only (no remote tunnel)</option>
+              <option value="ngrok">ngrok &mdash; app-managed tunnel</option>
+              <option value="cloudflare">Cloudflare &mdash; named tunnel on your domain</option>
+              <option value="tailscale">Tailscale &mdash; private mesh</option>
+              <option value="manual">Port-forward &mdash; manual</option>
+            </select>
+            <div id="ac-ra-blurb" class="ac-hint" style="line-height:1.5;"></div>
+            <div id="ac-ra-fields" class="ac-ra-fields"></div>
+
+            <div class="ac-ra-actions">
+              <button id="ac-ra-start" class="ac-btn ac-ra-icon-btn ac-ra-icon-btn-primary" type="button" title="Start" aria-label="Start"><i data-lucide="play"></i></button>
+              <button id="ac-ra-stop" class="ac-btn ac-ra-icon-btn" type="button" title="Stop" aria-label="Stop"><i data-lucide="square"></i></button>
+              <button id="ac-ra-test" class="ac-btn ac-ra-icon-btn" type="button" title="Test" aria-label="Test"><i data-lucide="activity"></i></button>
+              <button id="ac-ra-save-cfg" class="ac-btn ac-ra-icon-btn" type="button" title="Save settings" aria-label="Save settings"><i data-lucide="save"></i></button>
+              <label class="ac-ra-check-lbl">
+                <input type="checkbox" id="ac-ra-autostart"> Start on boot
+              </label>
+              <span id="ac-ra-status" class="ac-hint" style="margin-left:6px;"></span>
+            </div>
+            <div id="ac-ra-public-row" class="ac-hint" style="margin-top:8px;font-size:12px;"></div>
+          </div>
+        </div>
+
+      </div><!-- /.ac-list -->
+    </div><!-- /.ac-category-body -->
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       DEPLOY — live one-click deploy of this app onto a cloud target.
+       One heading over one `.ac-list` with a single expandable row (the
+       shared ability-table component). Inside the body: a target picker
+       (Google VM / AWS / … — rendered from GET /admin/deploy/catalog), a
+       dynamic SETTINGS form (non-secret config_fields) and a CLOUD KEY form
+       (secret credential_fields → encrypted vault), then Test / Save /
+       Deploy now / Tear down, a live NDJSON log, and a result line.
+       All wiring lives in the sibling deploy.js (initDeploy); the row's
+       expand/collapse reuses _wireBootRow in app-settings.js. The cloud key
+       is used for one deploy then auto-discarded from the vault (the
+       per-target "Forget keys after deploy" setting, default on).
+       Admin-only + the Deploy/Tear-down actions are confirm-gated in deploy.js.
+       ════════════════════════════════════════════════════════════════ -->
+  <div class="ac-category-group" id="ac-deploy-card" data-pa-area="deploy">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="rocket" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Deploy</span>
+      <span id="ac-deploy-badge" class="ac-category-count">loading…</span>
+    </div>
+    <div class="ac-category-body">
+      <div class="ac-list" id="ac-deploy-list">
+        <div class="ac-row" id="ac-deploy-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="cloud-upload" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Deploy this app to the cloud</div>
+              <div class="ac-ability-desc">Create a server on your cloud account and install webAgent on it automatically. Your cloud key is used once for the deploy, then discarded from the vault.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Where to deploy</label>
+            <select id="ac-deploy-provider" class="ac-input"></select>
+            <div id="ac-deploy-blurb" class="ac-hint" style="line-height:1.5;"></div>
+            <div id="ac-deploy-requires" class="ac-hint" style="line-height:1.5;color:var(--fg-3);"></div>
+
+            <label class="ac-label" style="margin-top:10px;">Settings</label>
+            <div id="ac-deploy-config" class="ac-ra-fields"></div>
+
+            <label class="ac-label" style="margin-top:10px;">Cloud key</label>
+            <div id="ac-deploy-creds" class="ac-ra-fields"></div>
+            <div id="ac-deploy-key-note" class="ac-hint" style="font-size:11px;"></div>
+
+            <div class="ac-ra-actions" style="margin-top:10px;">
+              <button id="ac-deploy-test" class="ac-btn" type="button">Test connection</button>
+              <button id="ac-deploy-save" class="ac-btn" type="button">Save settings</button>
+              <button id="ac-deploy-go" class="ac-btn ac-deploy-go-btn" type="button">Deploy now</button>
+              <button id="ac-deploy-destroy" class="ac-btn" type="button">Tear down</button>
+              <span id="ac-deploy-status" class="ac-hint" style="margin-left:6px;"></span>
+            </div>
+
+            <pre id="ac-deploy-log" class="ac-deploy-log" hidden></pre>
+            <div id="ac-deploy-result" class="ac-hint" style="margin-top:8px;font-size:12px;line-height:1.5;"></div>
+          </div>
+        </div>
+
+        <!-- ── Run on a phone (Termux) ── a SEPARATE sibling row (not a cloud
+             provider): the admin gives a GitHub URL + public/private (+ token if
+             private), and gets the one command to paste into Termux on the phone
+             plus a scannable QR of it. No cloud account, nothing billable. Body
+             ids are owned by deploy.js (_initPhone); expand reuses _wireBootRow. -->
+        <div class="ac-row" id="ac-deploy-phone-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="smartphone" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Run webAgent on a phone (Termux)</div>
+              <div class="ac-ability-desc">Install webAgent on an Android phone or tablet using the free Termux app. Enter your repository, then scan or paste the command it gives you — no cloud account, nothing to pay for.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Code to install (GitHub repository)</label>
+            <input id="ac-tx-url" class="ac-input" type="text" placeholder="https://github.com/owner/repo" autocomplete="off" spellcheck="false">
+
+            <label class="ac-label" style="margin-top:10px;">Repository access</label>
+            <select id="ac-tx-visibility" class="ac-input">
+              <option value="public">Public — anyone can clone it</option>
+              <option value="private">Private — needs an access token</option>
+            </select>
+
+            <div id="ac-tx-token-wrap" style="display:none;margin-top:10px;">
+              <label class="ac-label">Access token</label>
+              <input id="ac-tx-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
+              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the phone can download a private repository.</div>
+            </div>
+
+            <!-- The command is shown LIVE (built + QR generated by deploy.js as
+                 the fields change) — there is no "generate" button. Copy grabs it;
+                 the QR button toggles a popover with the same command as a scannable
+                 code (mirrors Remote Access → Same network). -->
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Paste this into Termux on the phone</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-tx-cmd"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-tx-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                  <button id="ac-tx-qr-btn" class="ac-btn ac-ra-icon-btn" type="button" title="Show QR code" aria-label="Show QR code"><i data-lucide="qr-code"></i></button>
+                </div>
+              </div>
+              <div id="ac-tx-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
+            </div>
+
+            <ol class="ac-tx-steps" id="ac-tx-steps"></ol>
+            <div class="ac-deploy-cmd-note" id="ac-tx-note" hidden></div>
+          </div>
+        </div>
+      </div><!-- /.ac-list -->
+    </div><!-- /.ac-category-body -->
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       PAGE-ASSISTANT CHAT PILL — the markup now lives ONE LEVEL UP, in
+       app-config.html as a sibling BELOW #app-config-content (the scroller),
+       NOT inside this section. Why: a pill floating INSIDE the scroller always
+       has page rows scrolling behind it. By placing it under the scroller (the
+       container is a flex column, so the scroller shrinks to sit above it) the
+       scroll viewport ENDS above the pill — content can never render behind it,
+       and the transparent gap around the pill shows the page background
+       gradient. It is scoped to show only while THIS section is active via a
+       CSS `:has()` rule (see #ac-pa-bar in app3.css). Everything else is
+       unchanged: the wiring (_initPageAssistant in the sibling app-settings.js)
+       still finds it by id, and the per-area placeholder swap still works
+       because that mouseover listener is bound to THIS section (the
+       data-pa-area groups above), independent of where the pill renders. -->
+</section>
+</template>

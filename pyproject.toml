@@ -3,19 +3,19 @@ name = "webagent"
 version = "0.2.0"
 description = "webAgent — FastAPI service with Supabase and dynamic tool loading"
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "numpy>=2.0.0",
-    "fastapi==0.104.1",
-    "uvicorn[standard]==0.24.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
     "openai==1.59.6",
     "httpx>=0.27.2",
     "supabase==2.29.0",
     "pydantic>=2.10.0,<3",
     "python-dotenv==1.0.0",
-    "python-multipart==0.0.6",
-    "python-jose[cryptography]==3.3.0",
-    "bcrypt==4.1.2",
+    "python-multipart>=0.0.18",
+    "python-jose[cryptography]>=3.4.0",
+    "bcrypt>=4.2.0,<5",
     "tiktoken>=0.5.2,<1",
     "playwright>=1.40.0",
     "Pillow>=10.0.0",
@@ -31,6 +31,7 @@ dependencies = [
     "aiomysql>=0.2.0",
     "sqlglot>=23.0.0",
     "croniter>=2.0.0",
+    "qrcode>=7.4",
     "pywinpty>=2.0.10; sys_platform == 'win32'",
 ]
 

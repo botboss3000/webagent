@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/integrations", tags=["integrations"])
 
 ANONYMOUS_KEY = "__anonymous__"
-_ADMIN_USER = "admin_default"
+_ADMIN_USER = "admin"
 
 _JWT_SECRET = os.environ.get("JWT_SECRET", "webagent-dev-secret-change-in-prod")
 _JWT_ALGORITHM = "HS256"
@@ -221,24 +221,141 @@ AMAZON_SCOPES = [
     "sellingpartnerapi::client_credential:refresh_token",
 ]
 
-# Map each provider to its config service key and default scope list
-_PROVIDER_SCOPE_DEFAULTS: dict[str, tuple[str, list]] = {
-    "google":    ("google_oauth_config",    GOOGLE_SCOPES),
-    "microsoft": ("microsoft_oauth_config", MICROSOFT_SCOPES),
-    "yahoo":     ("yahoo_oauth_config",     YAHOO_SCOPES),
-    "dropbox":   ("dropbox_oauth_config",   DROPBOX_SCOPES),
-    "meta":      ("meta_oauth_config",      META_SCOPES),
-    "twitter":   ("twitter_oauth_config",   TWITTER_SCOPES),
-    "linkedin":  ("linkedin_oauth_config",  LINKEDIN_SCOPES),
-    "tiktok":    ("tiktok_oauth_config",    TIKTOK_SCOPES),
-    "pinterest": ("pinterest_oauth_config", PINTEREST_SCOPES),
-    "reddit":    ("reddit_oauth_config",    REDDIT_SCOPES),
-    "snapchat":  ("snapchat_oauth_config",  SNAPCHAT_SCOPES),
-    "twitch":    ("twitch_oauth_config",    TWITCH_SCOPES),
-    "ebay":      ("ebay_oauth_config",      EBAY_SCOPES),
-    "etsy":      ("etsy_oauth_config",      ETSY_SCOPES),
-    "shopify":   ("shopify_oauth_config",   SHOPIFY_SCOPES),
-    "amazon":    ("amazon_oauth_config",    AMAZON_SCOPES),
+# ── Per-provider OAuth table — the single source of truth ──────────────────
+#
+# One row per provider drives all four generic helpers below (creds lookup,
+# redirect URI, authorize-URL build, token revoke). Fields:
+#   config_key       admin auth_elements service key holding the OAuth app creds
+#   env              (client_id_env_var, client_secret_env_var) — env fallback
+#   scopes           default scope list (admin can narrow it per provider)
+#   auth_url         authorize endpoint (absent for shopify/amazon — bespoke build)
+#   scope_sep        separator joining scopes in the URL ("," for a few; default " ")
+#   client_id_param  query param carrying the client id (default "client_id")
+#   extra_params     constant extra authorize-URL query params for this provider
+#   pkce             True → generate a PKCE pair and stash the verifier in state
+#   revoke           {"style", "url", ...} describing the revoke call, or absent
+#   delete_aliases   extra auth_elements services to delete on disconnect (meta)
+_PROVIDERS: dict[str, dict] = {
+    "google": {
+        "config_key": "google_oauth_config",
+        "env": ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"),
+        "scopes": GOOGLE_SCOPES,
+        "auth_url": "https://accounts.google.com/o/oauth2/auth",
+        # prompt=consent re-shows skipped sensitive-scope checkboxes;
+        # include_granted_scopes keeps re-consent additive over a prior grant.
+        "extra_params": {"access_type": "offline", "prompt": "consent", "include_granted_scopes": "true"},
+        "revoke": {"style": "param_token", "url": "https://oauth2.googleapis.com/revoke"},
+    },
+    "microsoft": {
+        "config_key": "microsoft_oauth_config",
+        "env": ("MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET"),
+        "scopes": MICROSOFT_SCOPES,
+        "auth_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "extra_params": {"response_mode": "query", "prompt": "consent"},
+    },
+    "yahoo": {
+        "config_key": "yahoo_oauth_config",
+        "env": ("YAHOO_CLIENT_ID", "YAHOO_CLIENT_SECRET"),
+        "scopes": YAHOO_SCOPES,
+        "auth_url": "https://api.login.yahoo.com/oauth2/request_auth",
+    },
+    "dropbox": {
+        "config_key": "dropbox_oauth_config",
+        "env": ("DROPBOX_APP_KEY", "DROPBOX_APP_SECRET"),
+        "scopes": DROPBOX_SCOPES,
+        "auth_url": "https://www.dropbox.com/oauth2/authorize",
+        "extra_params": {"token_access_type": "offline"},
+        "revoke": {"style": "bearer", "url": "https://api.dropboxapi.com/2/auth/token/revoke"},
+    },
+    "meta": {
+        "config_key": "meta_oauth_config",
+        "env": ("META_APP_ID", "META_APP_SECRET"),
+        "scopes": META_SCOPES,
+        "auth_url": "https://www.facebook.com/v19.0/dialog/oauth",
+        "scope_sep": ",",
+        "revoke": {"style": "meta_permissions", "url": "https://graph.facebook.com/v19.0/{uid}/permissions"},
+        "delete_aliases": ["facebook", "instagram"],
+    },
+    "twitter": {
+        "config_key": "twitter_oauth_config",
+        "env": ("TWITTER_CLIENT_ID", "TWITTER_CLIENT_SECRET"),
+        "scopes": TWITTER_SCOPES,
+        "auth_url": "https://twitter.com/i/oauth2/authorize",
+        "pkce": True,
+        "revoke": {"style": "basic_form", "url": "https://api.twitter.com/2/oauth2/revoke"},
+    },
+    "linkedin": {
+        "config_key": "linkedin_oauth_config",
+        "env": ("LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"),
+        "scopes": LINKEDIN_SCOPES,
+        "auth_url": "https://www.linkedin.com/oauth/v2/authorization",
+    },
+    "tiktok": {
+        "config_key": "tiktok_oauth_config",
+        "env": ("TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET"),
+        "scopes": TIKTOK_SCOPES,
+        "auth_url": "https://www.tiktok.com/v2/auth/authorize/",
+        "scope_sep": ",",
+        "client_id_param": "client_key",
+        "pkce": True,
+        "revoke": {"style": "form_creds", "url": "https://open.tiktokapis.com/v2/oauth/revoke/"},
+    },
+    "pinterest": {
+        "config_key": "pinterest_oauth_config",
+        "env": ("PINTEREST_APP_ID", "PINTEREST_APP_SECRET"),
+        "scopes": PINTEREST_SCOPES,
+        "auth_url": "https://www.pinterest.com/oauth/",
+        "scope_sep": ",",
+    },
+    "reddit": {
+        "config_key": "reddit_oauth_config",
+        "env": ("REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"),
+        "scopes": REDDIT_SCOPES,
+        "auth_url": "https://www.reddit.com/api/v1/authorize",
+        "extra_params": {"duration": "permanent"},
+        "revoke": {"style": "basic_form", "url": "https://www.reddit.com/api/v1/revoke_token",
+                   "headers": {"User-Agent": "webAgent/1.0"}},
+    },
+    "snapchat": {
+        "config_key": "snapchat_oauth_config",
+        "env": ("SNAPCHAT_CLIENT_ID", "SNAPCHAT_CLIENT_SECRET"),
+        "scopes": SNAPCHAT_SCOPES,
+        "auth_url": "https://accounts.snapchat.com/login/oauth2/authorize",
+        "revoke": {"style": "form_token", "url": "https://accounts.snapchat.com/login/oauth2/revoke_token"},
+    },
+    "twitch": {
+        "config_key": "twitch_oauth_config",
+        "env": ("TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET"),
+        "scopes": TWITCH_SCOPES,
+        "auth_url": "https://id.twitch.tv/oauth2/authorize",
+        "revoke": {"style": "param_client_token", "url": "https://id.twitch.tv/oauth2/revoke"},
+    },
+    "ebay": {
+        "config_key": "ebay_oauth_config",
+        "env": ("EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET"),
+        "scopes": EBAY_SCOPES,
+        "auth_url": "https://auth.ebay.com/oauth2/authorize",
+    },
+    "etsy": {
+        "config_key": "etsy_oauth_config",
+        "env": ("ETSY_CLIENT_ID", "ETSY_CLIENT_SECRET"),
+        "scopes": ETSY_SCOPES,
+        "auth_url": "https://www.etsy.com/oauth/connect",
+        "pkce": True,
+    },
+    # Shopify (per-shop host) and Amazon (Seller-Central app id + region host)
+    # keep bespoke `build_*` functions; they still resolve creds/scopes here.
+    "shopify": {
+        "config_key": "shopify_oauth_config",
+        "env": ("SHOPIFY_API_KEY", "SHOPIFY_API_SECRET"),
+        "scopes": SHOPIFY_SCOPES,
+        "scope_sep": ",",
+    },
+    "amazon": {
+        "config_key": "amazon_oauth_config",
+        "env": ("AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET"),
+        "scopes": AMAZON_SCOPES,
+    },
 }
 
 
@@ -274,6 +391,21 @@ OAUTH_ABILITY_SERVICE_PREFIX = "oauth_ability:"
 
 _OAUTH_ABILITY_MODES = ("disabled", "platform_only", "byo_only", "both")
 
+# ── Global per-tool defaults (app-wide) ───────────────────────────────────
+#
+# The app-wide DEFAULT settings every agent inherits unless that agent has its
+# own per-tool override. Two dimensions per tool:
+#   permission  — "auto" | "ask" | "deny"
+#   visibility  — "always" | "discoverable"
+# Stored in the `tools` section of data/config/agent-abilities.json
+# (app/admin/ability_config.py) as:
+#   {"<tool>": {"permission": ..., "visibility": ...}, ...}
+# Each tool key may carry either/both dimensions; an absent dimension = no global
+# default for it; an absent key = no global override. Resolution order is
+# agent-override ▸ this global default ▸ built-in default. (Legacy installs are
+# migrated from the old `tool_defaults` vault row on first boot.)
+TOOL_DEFAULTS_SERVICE = "tool_defaults"  # legacy vault service key (migration only)
+
 
 def _oauth_ability_service(ability_id: str) -> str:
     return f"{OAUTH_ABILITY_SERVICE_PREFIX}{ability_id}"
@@ -306,6 +438,24 @@ async def get_oauth_ability_config(ability_id: str) -> dict:
     if cfg["mode"] not in _OAUTH_ABILITY_MODES:
         cfg["mode"] = "platform_only"
     return cfg
+
+
+async def get_global_tool_defaults() -> dict:
+    """Return the app-wide per-tool default map: ``{tool: {permission?, visibility?}}``.
+
+    Reads the ``tools`` section of data/config/agent-abilities.json. Empty
+    ``{}`` when unset or on any error, so callers can treat "no globals" as the
+    safe no-op default. Mirrors ``get_oauth_ability_config``."""
+    try:
+        from app.admin import ability_config
+        try:
+            from app.db import get_db
+            await ability_config.ensure_bootstrapped(get_db())
+        except Exception:
+            pass
+        return ability_config.get_tools()
+    except Exception:
+        return {}
 
 
 async def get_all_oauth_ability_configs() -> dict[str, dict]:
@@ -543,27 +693,6 @@ async def _provider_redirect_uri(
 
 # ── Cred resolver: platform vs BYO ─────────────────────────────────────────
 
-_PROVIDER_PLATFORM_CRED_FN = {
-    # Provider name → name of the get_*_creds function on this module.
-    "google":    "get_google_creds",
-    "microsoft": "get_microsoft_creds",
-    "yahoo":     "get_yahoo_creds",
-    "dropbox":   "get_dropbox_creds",
-    "meta":      "get_meta_creds",
-    "twitter":   "get_twitter_creds",
-    "linkedin":  "get_linkedin_creds",
-    "tiktok":    "get_tiktok_creds",
-    "pinterest": "get_pinterest_creds",
-    "reddit":    "get_reddit_creds",
-    "snapchat":  "get_snapchat_creds",
-    "twitch":    "get_twitch_creds",
-    "ebay":      "get_ebay_creds",
-    "etsy":      "get_etsy_creds",
-    "shopify":   "get_shopify_creds",
-    "amazon":    "get_amazon_creds",
-}
-
-
 async def resolve_oauth_creds(
     provider: str, agent_id: str = "", *, source: str = "platform",
 ) -> tuple[str, str]:
@@ -586,13 +715,7 @@ async def resolve_oauth_creds(
         except Exception as e:
             logger.warning("BYO cred lookup failed for %s/%s: %s", p, agent_id, e)
         return ("", "")
-    fn_name = _PROVIDER_PLATFORM_CRED_FN.get(p)
-    if not fn_name:
-        return ("", "")
-    fn = globals().get(fn_name)
-    if not fn:
-        return ("", "")
-    return await fn()
+    return await _provider_creds(p)
 
 
 async def get_stored_oauth_redirect_uri(service_key: str) -> Optional[str]:
@@ -711,14 +834,25 @@ def _pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-# ── Google ────────────────────────────────────────────────────────────────
+# ── Generic per-provider OAuth helpers ─────────────────────────────────────
+#
+# All four helpers read the `_PROVIDERS` table above. The public
+# `get_<p>_creds` and `build_<p>_authorize_url` names are kept as one-line
+# wrappers because they are imported by name across the app (app/tools/
+# loader.py, app/integrations/oauth_helper.py, the per-agent authorize
+# dispatcher in app/api/agents.py, and the per-provider tool modules).
+# Token revocation collapses into the single generic `revoke_and_delete`.
 
-async def get_google_creds() -> tuple[str, str]:
-    """Get Google OAuth creds — DB first, then env vars fallback."""
+
+async def _provider_creds(provider: str) -> tuple[str, str]:
+    """(client_id, client_secret) for a provider — admin DB row first, env fallback."""
+    spec = _PROVIDERS.get((provider or "").lower())
+    if not spec:
+        return ("", "")
     try:
         from app.db import get_db
         db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "google_oauth_config", "default")
+        elem = await db.auth_element_get(_ADMIN_USER, spec["config_key"], "default")
         if elem and elem.get("config"):
             config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
             cid = config.get("client_id", "")
@@ -726,11 +860,137 @@ async def get_google_creds() -> tuple[str, str]:
             if cid and csec:
                 return (cid, csec)
     except Exception as e:
-        logger.debug("Failed to read Google creds from DB: %s", e)
-    return (
-        os.environ.get("GOOGLE_CLIENT_ID", ""),
-        os.environ.get("GOOGLE_CLIENT_SECRET", ""),
-    )
+        logger.debug("Failed to read %s creds from DB: %s", provider, e)
+    env_id, env_secret = spec["env"]
+    return (os.environ.get(env_id, ""), os.environ.get(env_secret, ""))
+
+
+async def provider_redirect_uri(
+    provider: str, request: Optional[Request] = None, *,
+    agent_id: str = "", source: str = "platform",
+) -> str:
+    """The OAuth landing URI for a provider — admin-stored, per-agent (BYO), or derived.
+
+    Replaces the old per-provider `get_<p>_redirect_uri` pass-throughs; both the
+    admin config view and the OAuth callback handlers call this directly.
+    """
+    spec = _PROVIDERS.get((provider or "").lower())
+    config_key = spec["config_key"] if spec else f"{(provider or '').lower()}_oauth_config"
+    return await _provider_redirect_uri(provider, config_key, request, agent_id, source)
+
+
+async def _build_authorize_url(
+    provider: str, user_id: str, agent_id: str = "", request: Optional[Request] = None,
+    *, source: str = "platform",
+) -> tuple[str, str]:
+    """Generic authorize-URL builder. Returns (authorize_url, state_token).
+
+    Honors the table's scope separator, client-id param name, constant extra
+    params and PKCE flag. Shopify / Amazon are built bespoke (see below).
+    """
+    spec = _PROVIDERS[(provider or "").lower()]
+    client_id, _ = await _provider_creds(provider)
+    redirect_uri = await provider_redirect_uri(provider, request, agent_id=agent_id, source=source)
+    state_extra: dict = {}
+    pkce_params: dict = {}
+    if spec.get("pkce"):
+        verifier, challenge = _pkce_pair()
+        state_extra["pkce_verifier"] = verifier
+        pkce_params = {"code_challenge": challenge, "code_challenge_method": "S256"}
+    state = make_state_token(user_id, agent_id, provider=provider, source=source, **state_extra)
+    legacy = await _get_enabled_scopes(spec["config_key"], spec["scopes"])
+    scopes = await compute_required_scopes(agent_id, provider, source=source, legacy_fallback=legacy)
+    params = {
+        spec.get("client_id_param", "client_id"): client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": spec.get("scope_sep", " ").join(scopes),
+        "state": state,
+        **spec.get("extra_params", {}),
+        **pkce_params,
+    }
+    return f"{spec['auth_url']}?{urlencode(params)}", state
+
+
+async def _do_revoke(style: str, *, url: str, access_token: str, client_id: str = "",
+                     client_secret: str = "", extra_headers: Optional[dict] = None,
+                     provider_user_id: str = "") -> None:
+    """Best-effort token revocation at the provider, dispatched by `style`."""
+    headers = dict(extra_headers or {})
+    async with httpx.AsyncClient() as c:
+        if style == "param_token":
+            await c.post(url, params={"token": access_token})
+        elif style == "param_client_token":
+            if not client_id:
+                return
+            await c.post(url, params={"client_id": client_id, "token": access_token})
+        elif style == "bearer":
+            await c.post(url, headers={**headers, "Authorization": f"Bearer {access_token}"})
+        elif style == "form_token":
+            await c.post(url, headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
+                         data={"token": access_token})
+        elif style == "form_creds":
+            await c.post(url, headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
+                         data={"client_key": client_id, "client_secret": client_secret, "token": access_token})
+        elif style == "basic_form":
+            creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+            await c.post(url, headers={**headers, "Authorization": f"Basic {creds}",
+                                       "Content-Type": "application/x-www-form-urlencoded"},
+                         data={"token": access_token, "token_type_hint": "access_token"})
+        elif style == "meta_permissions":
+            if provider_user_id:
+                await c.delete(url.format(uid=provider_user_id), params={"access_token": access_token})
+
+
+async def revoke_and_delete(provider: str, user_id: str, agent_id: str) -> bool:
+    """Revoke this (user, agent)'s token at the provider (best-effort) and delete it.
+
+    Replaces the 16 per-provider `revoke_and_delete_<p>` functions; the revoke
+    style + endpoint come from `_PROVIDERS`. Providers with no revoke endpoint
+    (Microsoft, Yahoo, LinkedIn, Pinterest, eBay, Etsy, Shopify, Amazon) are
+    delete-only. Meta also clears its facebook / instagram aliases.
+    """
+    p = (provider or "").lower()
+    spec = _PROVIDERS.get(p)
+    if not spec:
+        return False
+    from app.db import get_db
+    db = get_db()
+    label = oauth_label(agent_id)
+    rev = spec.get("revoke")
+    if rev:
+        elem = await db.auth_element_get(user_id, p, label)
+        if elem and elem.get("secret_ref"):
+            try:
+                tokens = json.loads(elem["secret_ref"])
+                access_token = tokens.get("access_token", "")
+                client_id, client_secret = "", ""
+                if rev["style"] in ("basic_form", "form_creds", "param_client_token"):
+                    client_id, client_secret = await _provider_creds(p)
+                provider_user_id = ""
+                if rev["style"] == "meta_permissions":
+                    cfg = elem.get("config")
+                    cfg = json.loads(cfg) if isinstance(cfg, str) else (cfg or {})
+                    provider_user_id = cfg.get("provider_user_id", "")
+                if access_token:
+                    await _do_revoke(
+                        rev["style"], url=rev["url"], access_token=access_token,
+                        client_id=client_id, client_secret=client_secret,
+                        extra_headers=rev.get("headers"), provider_user_id=provider_user_id,
+                    )
+            except Exception as e:
+                logger.warning("Failed to revoke %s token: %s", p, e)
+    deleted = await db.auth_element_delete(user_id, p, label)
+    aliases = spec.get("delete_aliases") or []
+    for alias in aliases:
+        await db.auth_element_delete(user_id, alias, label)
+    return True if aliases else deleted
+
+
+# ── Public per-provider wrappers (kept for import-by-name compatibility) ───
+
+async def get_google_creds() -> tuple[str, str]:
+    return await _provider_creds("google")
 
 
 def get_google_creds_sync() -> tuple[str, str]:
@@ -741,351 +1001,104 @@ def get_google_creds_sync() -> tuple[str, str]:
     )
 
 
-async def get_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("google", "google_oauth_config", request, agent_id, source)
+async def get_microsoft_creds() -> tuple[str, str]:
+    return await _provider_creds("microsoft")
+
+
+async def get_yahoo_creds() -> tuple[str, str]:
+    return await _provider_creds("yahoo")
+
+
+async def get_dropbox_creds() -> tuple[str, str]:
+    return await _provider_creds("dropbox")
+
+
+async def get_meta_creds() -> tuple[str, str]:
+    return await _provider_creds("meta")
+
+
+async def get_twitter_creds() -> tuple[str, str]:
+    return await _provider_creds("twitter")
+
+
+async def get_linkedin_creds() -> tuple[str, str]:
+    return await _provider_creds("linkedin")
+
+
+async def get_tiktok_creds() -> tuple[str, str]:
+    return await _provider_creds("tiktok")
+
+
+async def get_pinterest_creds() -> tuple[str, str]:
+    return await _provider_creds("pinterest")
+
+
+async def get_reddit_creds() -> tuple[str, str]:
+    return await _provider_creds("reddit")
+
+
+async def get_snapchat_creds() -> tuple[str, str]:
+    return await _provider_creds("snapchat")
+
+
+async def get_twitch_creds() -> tuple[str, str]:
+    return await _provider_creds("twitch")
+
+
+async def get_ebay_creds() -> tuple[str, str]:
+    return await _provider_creds("ebay")
+
+
+async def get_etsy_creds() -> tuple[str, str]:
+    return await _provider_creds("etsy")
+
+
+async def get_shopify_creds() -> tuple[str, str]:
+    return await _provider_creds("shopify")
+
+
+async def get_amazon_creds() -> tuple[str, str]:
+    return await _provider_creds("amazon")
 
 
 async def build_google_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    """Build the full Google OAuth authorization URL."""
-    client_id, _ = await get_google_creds()
-    redirect_uri = await get_redirect_uri(request, agent_id=agent_id, source=source)
-    state = make_state_token(user_id, agent_id, provider="google", source=source)
-    legacy = await _get_enabled_scopes("google_oauth_config", GOOGLE_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "google", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": " ".join(scopes),
-        "access_type": "offline",
-        # `prompt=consent` forces Google to redisplay every sensitive-scope
-        # checkbox so a user reconnecting can tick the ones they previously
-        # skipped (e.g. `gmail.modify` required for Gmail push subscriptions).
-        # `include_granted_scopes=true` makes the new grant *additive* over
-        # any prior grant so we never accidentally lose a scope on re-consent.
-        "prompt": "consent",
-        "include_granted_scopes": "true",
-        "state": state,
-    }
-    return f"https://accounts.google.com/o/oauth2/auth?{urlencode(params)}"
-
-
-async def revoke_and_delete_google(user_id: str, agent_id: str) -> bool:
-    """Revoke this (user, agent)'s Google token and delete from auth_elements."""
-    from app.db import get_db
-    db = get_db()
-    label = oauth_label(agent_id)
-    elem = await db.auth_element_get(user_id, "google", label)
-    if elem and elem.get("secret_ref"):
-        try:
-            tokens = json.loads(elem["secret_ref"])
-            access_token = tokens.get("access_token", "")
-            if access_token:
-                async with httpx.AsyncClient() as client:
-                    await client.post(
-                        "https://oauth2.googleapis.com/revoke",
-                        params={"token": access_token},
-                    )
-        except Exception as e:
-            logger.warning("Failed to revoke Google token: %s", e)
-    return await db.auth_element_delete(user_id, "google", label)
-
-
-# ── Microsoft ─────────────────────────────────────────────────────────────
-
-async def get_microsoft_creds() -> tuple[str, str]:
-    """Get Microsoft OAuth creds — DB first, then env vars fallback."""
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "microsoft_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Microsoft creds from DB: %s", e)
-    return (
-        os.environ.get("MICROSOFT_CLIENT_ID", ""),
-        os.environ.get("MICROSOFT_CLIENT_SECRET", ""),
-    )
-
-
-async def get_microsoft_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("microsoft", "microsoft_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("google", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_microsoft_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    """Build the full Microsoft OAuth authorization URL (common / multi-tenant)."""
-    client_id, _ = await get_microsoft_creds()
-    redirect_uri = await get_microsoft_redirect_uri(request, agent_id=agent_id, source=source)
-    state = make_state_token(user_id, agent_id, provider="microsoft", source=source)
-    legacy = await _get_enabled_scopes("microsoft_oauth_config", MICROSOFT_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "microsoft", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": " ".join(scopes),
-        "response_mode": "query",
-        # Force the consent screen so reconnects can pick up newly-added
-        # scopes (e.g. Mail.ReadWrite for Outlook subscriptions). Microsoft
-        # does NOT honour Google's `include_granted_scopes` flag — the v2
-        # endpoint already merges scopes additively across sessions.
-        "prompt": "consent",
-        "state": state,
-    }
-    return f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?{urlencode(params)}"
-
-
-async def revoke_and_delete_microsoft(user_id: str, agent_id: str) -> bool:
-    """Delete this (user, agent)'s Microsoft tokens (no revoke endpoint)."""
-    from app.db import get_db
-    db = get_db()
-    return await db.auth_element_delete(user_id, "microsoft", oauth_label(agent_id))
-
-
-# ── Yahoo ─────────────────────────────────────────────────────────────────
-
-async def get_yahoo_creds() -> tuple[str, str]:
-    """Get Yahoo OAuth creds — DB first, then env vars fallback."""
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "yahoo_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Yahoo creds from DB: %s", e)
-    return (
-        os.environ.get("YAHOO_CLIENT_ID", ""),
-        os.environ.get("YAHOO_CLIENT_SECRET", ""),
-    )
-
-
-async def get_yahoo_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("yahoo", "yahoo_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("microsoft", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_yahoo_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    """Build the Yahoo OAuth authorization URL."""
-    client_id, _ = await get_yahoo_creds()
-    redirect_uri = await get_yahoo_redirect_uri(request, agent_id=agent_id, source=source)
-    state = make_state_token(user_id, agent_id, provider="yahoo", source=source)
-    legacy = await _get_enabled_scopes("yahoo_oauth_config", YAHOO_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "yahoo", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": " ".join(scopes),
-        "state": state,
-    }
-    return f"https://api.login.yahoo.com/oauth2/request_auth?{urlencode(params)}"
-
-
-async def revoke_and_delete_yahoo(user_id: str, agent_id: str) -> bool:
-    """Delete this (user, agent)'s Yahoo tokens."""
-    from app.db import get_db
-    db = get_db()
-    return await db.auth_element_delete(user_id, "yahoo", oauth_label(agent_id))
-
-
-# ── Dropbox ───────────────────────────────────────────────────────────────
-
-async def get_dropbox_creds() -> tuple[str, str]:
-    """Get Dropbox OAuth creds — DB first, then env vars fallback."""
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "dropbox_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Dropbox creds from DB: %s", e)
-    return (
-        os.environ.get("DROPBOX_APP_KEY", ""),
-        os.environ.get("DROPBOX_APP_SECRET", ""),
-    )
-
-
-async def get_dropbox_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("dropbox", "dropbox_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("yahoo", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_dropbox_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    """Build the Dropbox OAuth authorization URL."""
-    client_id, _ = await get_dropbox_creds()
-    redirect_uri = await get_dropbox_redirect_uri(request, agent_id=agent_id, source=source)
-    state = make_state_token(user_id, agent_id, provider="dropbox", source=source)
-    legacy = await _get_enabled_scopes("dropbox_oauth_config", DROPBOX_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "dropbox", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": " ".join(scopes),
-        "token_access_type": "offline",
-        "state": state,
-    }
-    return f"https://www.dropbox.com/oauth2/authorize?{urlencode(params)}"
-
-
-async def revoke_and_delete_dropbox(user_id: str, agent_id: str) -> bool:
-    """Revoke this (user, agent)'s Dropbox token and delete from auth_elements."""
-    from app.db import get_db
-    db = get_db()
-    label = oauth_label(agent_id)
-    elem = await db.auth_element_get(user_id, "dropbox", label)
-    if elem and elem.get("secret_ref"):
-        try:
-            tokens = json.loads(elem["secret_ref"])
-            access_token = tokens.get("access_token", "")
-            if access_token:
-                async with httpx.AsyncClient() as client:
-                    await client.post(
-                        "https://api.dropboxapi.com/2/auth/token/revoke",
-                        headers={"Authorization": f"Bearer {access_token}"},
-                    )
-        except Exception as e:
-            logger.warning("Failed to revoke Dropbox token: %s", e)
-    return await db.auth_element_delete(user_id, "dropbox", label)
-
-
-# ── Meta (Facebook + Instagram) ───────────────────────────────────────────
-
-async def get_meta_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "meta_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Meta creds from DB: %s", e)
-    return (os.environ.get("META_APP_ID", ""), os.environ.get("META_APP_SECRET", ""))
-
-
-async def get_meta_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("meta", "meta_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("dropbox", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_meta_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    client_id, _ = await get_meta_creds()
-    redirect_uri = await get_meta_redirect_uri(request, agent_id=agent_id, source=source)
-    state = make_state_token(user_id, agent_id, provider="meta", source=source)
-    legacy = await _get_enabled_scopes("meta_oauth_config", META_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "meta", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": ",".join(scopes),
-        "state": state,
-    }
-    return f"https://www.facebook.com/v19.0/dialog/oauth?{urlencode(params)}"
-
-
-async def revoke_and_delete_meta(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    label = oauth_label(agent_id)
-    # Meta: revoke via Graph API DELETE /{user_id}/permissions
-    elem = await db.auth_element_get(user_id, "meta", label)
-    if elem and elem.get("secret_ref"):
-        try:
-            tokens = json.loads(elem["secret_ref"])
-            access_token = tokens.get("access_token", "")
-            meta_uid = (json.loads(elem["config"]) if isinstance(elem.get("config"), str) else elem.get("config", {})).get("provider_user_id", "")
-            if access_token and meta_uid:
-                async with httpx.AsyncClient() as c:
-                    await c.delete(f"https://graph.facebook.com/v19.0/{meta_uid}/permissions", params={"access_token": access_token})
-        except Exception as e:
-            logger.warning("Failed to revoke Meta token: %s", e)
-    await db.auth_element_delete(user_id, "meta", label)
-    # Also clean up the per-platform aliases (same per-agent scope)
-    await db.auth_element_delete(user_id, "facebook", label)
-    await db.auth_element_delete(user_id, "instagram", label)
-    return True
-
-
-# ── Twitter / X ───────────────────────────────────────────────────────────
-
-async def get_twitter_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "twitter_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Twitter creds from DB: %s", e)
-    return (os.environ.get("TWITTER_CLIENT_ID", ""), os.environ.get("TWITTER_CLIENT_SECRET", ""))
-
-
-async def get_twitter_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("twitter", "twitter_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("meta", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_twitter_authorize_url(
@@ -1093,560 +1106,75 @@ async def build_twitter_authorize_url(
     *, source: str = "platform",
 ) -> tuple[str, str]:
     """Returns (authorize_url, state_token). Twitter requires PKCE."""
-    client_id, _ = await get_twitter_creds()
-    redirect_uri = await get_twitter_redirect_uri(request, agent_id=agent_id, source=source)
-    verifier, challenge = _pkce_pair()
-    state = make_state_token(user_id, agent_id, provider="twitter", pkce_verifier=verifier, source=source)
-    legacy = await _get_enabled_scopes("twitter_oauth_config", TWITTER_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "twitter", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "scope": " ".join(scopes),
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    }
-    return f"https://twitter.com/i/oauth2/authorize?{urlencode(params)}", state
-
-
-async def revoke_and_delete_twitter(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    label = oauth_label(agent_id)
-    elem = await db.auth_element_get(user_id, "twitter", label)
-    if elem and elem.get("secret_ref"):
-        try:
-            tokens = json.loads(elem["secret_ref"])
-            access_token = tokens.get("access_token", "")
-            client_id, client_secret = await get_twitter_creds()
-            if access_token and client_id and client_secret:
-                creds_b64 = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-                async with httpx.AsyncClient() as c:
-                    await c.post(
-                        "https://api.twitter.com/2/oauth2/revoke",
-                        headers={"Authorization": f"Basic {creds_b64}", "Content-Type": "application/x-www-form-urlencoded"},
-                        data={"token": access_token, "token_type_hint": "access_token"},
-                    )
-        except Exception as e:
-            logger.warning("Failed to revoke Twitter token: %s", e)
-    return await db.auth_element_delete(user_id, "twitter", label)
-
-
-# ── LinkedIn ──────────────────────────────────────────────────────────────
-
-async def get_linkedin_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "linkedin_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read LinkedIn creds from DB: %s", e)
-    return (os.environ.get("LINKEDIN_CLIENT_ID", ""), os.environ.get("LINKEDIN_CLIENT_SECRET", ""))
-
-
-async def get_linkedin_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("linkedin", "linkedin_oauth_config", request, agent_id, source)
+    return await _build_authorize_url("twitter", user_id, agent_id, request, source=source)
 
 
 async def build_linkedin_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    client_id, _ = await get_linkedin_creds()
-    redirect_uri = await get_linkedin_redirect_uri(request, agent_id=agent_id, source=source)
-    state = make_state_token(user_id, agent_id, provider="linkedin", source=source)
-    legacy = await _get_enabled_scopes("linkedin_oauth_config", LINKEDIN_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "linkedin", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "scope": " ".join(scopes),
-        "state": state,
-    }
-    return f"https://www.linkedin.com/oauth/v2/authorization?{urlencode(params)}"
-
-
-async def revoke_and_delete_linkedin(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    return await db.auth_element_delete(user_id, "linkedin", oauth_label(agent_id))
-
-
-# ── TikTok ────────────────────────────────────────────────────────────────
-
-async def get_tiktok_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "tiktok_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read TikTok creds from DB: %s", e)
-    return (os.environ.get("TIKTOK_CLIENT_KEY", ""), os.environ.get("TIKTOK_CLIENT_SECRET", ""))
-
-
-async def get_tiktok_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("tiktok", "tiktok_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("linkedin", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_tiktok_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    client_id, _ = await get_tiktok_creds()
-    redirect_uri = await get_tiktok_redirect_uri(request, agent_id=agent_id, source=source)
-    verifier, challenge = _pkce_pair()
-    state = make_state_token(user_id, agent_id, provider="tiktok", pkce_verifier=verifier, source=source)
-    legacy = await _get_enabled_scopes("tiktok_oauth_config", TIKTOK_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "tiktok", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "client_key": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": ",".join(scopes),
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    }
-    return f"https://www.tiktok.com/v2/auth/authorize/?{urlencode(params)}"
-
-
-async def revoke_and_delete_tiktok(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    label = oauth_label(agent_id)
-    elem = await db.auth_element_get(user_id, "tiktok", label)
-    if elem and elem.get("secret_ref"):
-        try:
-            tokens = json.loads(elem["secret_ref"])
-            access_token = tokens.get("access_token", "")
-            client_id, client_secret = await get_tiktok_creds()
-            if access_token:
-                async with httpx.AsyncClient() as c:
-                    await c.post(
-                        "https://open.tiktokapis.com/v2/oauth/revoke/",
-                        headers={"Content-Type": "application/x-www-form-urlencoded"},
-                        data={"client_key": client_id, "client_secret": client_secret, "token": access_token},
-                    )
-        except Exception as e:
-            logger.warning("Failed to revoke TikTok token: %s", e)
-    return await db.auth_element_delete(user_id, "tiktok", label)
-
-
-# ── Pinterest ─────────────────────────────────────────────────────────────
-
-async def get_pinterest_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "pinterest_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Pinterest creds from DB: %s", e)
-    return (os.environ.get("PINTEREST_APP_ID", ""), os.environ.get("PINTEREST_APP_SECRET", ""))
-
-
-async def get_pinterest_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("pinterest", "pinterest_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("tiktok", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_pinterest_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    client_id, _ = await get_pinterest_creds()
-    redirect_uri = await get_pinterest_redirect_uri(request, agent_id=agent_id, source=source)
-    state = make_state_token(user_id, agent_id, provider="pinterest", source=source)
-    legacy = await _get_enabled_scopes("pinterest_oauth_config", PINTEREST_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "pinterest", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": ",".join(scopes),
-        "state": state,
-    }
-    return f"https://www.pinterest.com/oauth/?{urlencode(params)}"
-
-
-async def revoke_and_delete_pinterest(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    return await db.auth_element_delete(user_id, "pinterest", oauth_label(agent_id))
-
-
-# ── Reddit ────────────────────────────────────────────────────────────────
-
-async def get_reddit_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "reddit_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Reddit creds from DB: %s", e)
-    return (os.environ.get("REDDIT_CLIENT_ID", ""), os.environ.get("REDDIT_CLIENT_SECRET", ""))
-
-
-async def get_reddit_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("reddit", "reddit_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("pinterest", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_reddit_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    client_id, _ = await get_reddit_creds()
-    redirect_uri = await get_reddit_redirect_uri(request, agent_id=agent_id, source=source)
-    state = make_state_token(user_id, agent_id, provider="reddit", source=source)
-    legacy = await _get_enabled_scopes("reddit_oauth_config", REDDIT_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "reddit", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": " ".join(scopes),
-        "state": state,
-        "duration": "permanent",
-    }
-    return f"https://www.reddit.com/api/v1/authorize?{urlencode(params)}"
-
-
-async def revoke_and_delete_reddit(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    label = oauth_label(agent_id)
-    elem = await db.auth_element_get(user_id, "reddit", label)
-    if elem and elem.get("secret_ref"):
-        try:
-            tokens = json.loads(elem["secret_ref"])
-            access_token = tokens.get("access_token", "")
-            client_id, client_secret = await get_reddit_creds()
-            if access_token:
-                creds_b64 = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-                async with httpx.AsyncClient() as c:
-                    await c.post(
-                        "https://www.reddit.com/api/v1/revoke_token",
-                        headers={"Authorization": f"Basic {creds_b64}", "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "webAgent/1.0"},
-                        data={"token": access_token, "token_type_hint": "access_token"},
-                    )
-        except Exception as e:
-            logger.warning("Failed to revoke Reddit token: %s", e)
-    return await db.auth_element_delete(user_id, "reddit", label)
-
-
-# ── Snapchat ──────────────────────────────────────────────────────────────
-
-async def get_snapchat_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "snapchat_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Snapchat creds from DB: %s", e)
-    return (os.environ.get("SNAPCHAT_CLIENT_ID", ""), os.environ.get("SNAPCHAT_CLIENT_SECRET", ""))
-
-
-async def get_snapchat_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("snapchat", "snapchat_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("reddit", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_snapchat_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    client_id, _ = await get_snapchat_creds()
-    redirect_uri = await get_snapchat_redirect_uri(request, agent_id=agent_id, source=source)
-    state = make_state_token(user_id, agent_id, provider="snapchat", source=source)
-    legacy = await _get_enabled_scopes("snapchat_oauth_config", SNAPCHAT_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "snapchat", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": " ".join(scopes),
-        "state": state,
-    }
-    return f"https://accounts.snapchat.com/login/oauth2/authorize?{urlencode(params)}"
-
-
-async def revoke_and_delete_snapchat(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    label = oauth_label(agent_id)
-    elem = await db.auth_element_get(user_id, "snapchat", label)
-    if elem and elem.get("secret_ref"):
-        try:
-            tokens = json.loads(elem["secret_ref"])
-            access_token = tokens.get("access_token", "")
-            if access_token:
-                async with httpx.AsyncClient() as c:
-                    await c.post(
-                        "https://accounts.snapchat.com/login/oauth2/revoke_token",
-                        headers={"Content-Type": "application/x-www-form-urlencoded"},
-                        data={"token": access_token},
-                    )
-        except Exception as e:
-            logger.warning("Failed to revoke Snapchat token: %s", e)
-    return await db.auth_element_delete(user_id, "snapchat", label)
-
-
-# ── Twitch ────────────────────────────────────────────────────────────────
-
-async def get_twitch_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "twitch_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Twitch creds from DB: %s", e)
-    return (os.environ.get("TWITCH_CLIENT_ID", ""), os.environ.get("TWITCH_CLIENT_SECRET", ""))
-
-
-async def get_twitch_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("twitch", "twitch_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("snapchat", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_twitch_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    client_id, _ = await get_twitch_creds()
-    redirect_uri = await get_twitch_redirect_uri(request, agent_id=agent_id, source=source)
-    state = make_state_token(user_id, agent_id, provider="twitch", source=source)
-    legacy = await _get_enabled_scopes("twitch_oauth_config", TWITCH_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "twitch", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": " ".join(scopes),
-        "state": state,
-    }
-    return f"https://id.twitch.tv/oauth2/authorize?{urlencode(params)}"
-
-
-async def revoke_and_delete_twitch(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    label = oauth_label(agent_id)
-    elem = await db.auth_element_get(user_id, "twitch", label)
-    if elem and elem.get("secret_ref"):
-        try:
-            tokens = json.loads(elem["secret_ref"])
-            access_token = tokens.get("access_token", "")
-            client_id, _ = await get_twitch_creds()
-            if access_token and client_id:
-                async with httpx.AsyncClient() as c:
-                    await c.post(
-                        "https://id.twitch.tv/oauth2/revoke",
-                        params={"client_id": client_id, "token": access_token},
-                    )
-        except Exception as e:
-            logger.warning("Failed to revoke Twitch token: %s", e)
-    return await db.auth_element_delete(user_id, "twitch", label)
-
-
-# ── eBay ──────────────────────────────────────────────────────────────────
-
-async def get_ebay_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "ebay_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read eBay creds from DB: %s", e)
-    return (os.environ.get("EBAY_CLIENT_ID", ""), os.environ.get("EBAY_CLIENT_SECRET", ""))
-
-
-async def get_ebay_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("ebay", "ebay_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("twitch", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_ebay_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    client_id, _ = await get_ebay_creds()
-    redirect_uri = await get_ebay_redirect_uri(request, agent_id=agent_id, source=source)
-    state = make_state_token(user_id, agent_id, provider="ebay", source=source)
-    legacy = await _get_enabled_scopes("ebay_oauth_config", EBAY_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "ebay", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,  # eBay calls this the "RuName" but accepts the URI here for web flows
-        "response_type": "code",
-        "scope": " ".join(scopes),
-        "state": state,
-    }
-    return f"https://auth.ebay.com/oauth2/authorize?{urlencode(params)}"
-
-
-async def revoke_and_delete_ebay(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    return await db.auth_element_delete(user_id, "ebay", oauth_label(agent_id))
-
-
-# ── Etsy ──────────────────────────────────────────────────────────────────
-
-async def get_etsy_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "etsy_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Etsy creds from DB: %s", e)
-    return (os.environ.get("ETSY_CLIENT_ID", ""), os.environ.get("ETSY_CLIENT_SECRET", ""))
-
-
-async def get_etsy_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("etsy", "etsy_oauth_config", request, agent_id, source)
+    url, _ = await _build_authorize_url("ebay", user_id, agent_id, request, source=source)
+    return url
 
 
 async def build_etsy_authorize_url(
     user_id: str, agent_id: str = "", request: Optional[Request] = None,
     *, source: str = "platform",
 ) -> str:
-    """Etsy uses OAuth 2.0 + PKCE. Stash the verifier in the state JWT."""
-    client_id, _ = await get_etsy_creds()
-    redirect_uri = await get_etsy_redirect_uri(request, agent_id=agent_id, source=source)
-    verifier, challenge = _pkce_pair()
-    state = make_state_token(user_id, agent_id, provider="etsy", pkce_verifier=verifier, source=source)
-    legacy = await _get_enabled_scopes("etsy_oauth_config", ETSY_SCOPES)
-    scopes = await compute_required_scopes(
-        agent_id, "etsy", source=source, legacy_fallback=legacy,
-    )
-    params = {
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "scope": " ".join(scopes),
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    }
-    return f"https://www.etsy.com/oauth/connect?{urlencode(params)}"
+    """Etsy uses OAuth 2.0 + PKCE (verifier stashed in the state JWT)."""
+    url, _ = await _build_authorize_url("etsy", user_id, agent_id, request, source=source)
+    return url
 
 
-async def revoke_and_delete_etsy(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    return await db.auth_element_delete(user_id, "etsy", oauth_label(agent_id))
-
-
-# ── Shopify (per-shop) ────────────────────────────────────────────────────
-
-async def get_shopify_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "shopify_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Shopify creds from DB: %s", e)
-    return (os.environ.get("SHOPIFY_API_KEY", ""), os.environ.get("SHOPIFY_API_SECRET", ""))
-
-
-async def get_shopify_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("shopify", "shopify_oauth_config", request, agent_id, source)
-
+# ── Shopify (per-shop) — bespoke build, generic creds/redirect/scopes ──────
 
 def _shopify_normalize_shop(shop: str) -> str:
     """Normalize 'my-store' or 'my-store.myshopify.com' → 'my-store.myshopify.com'."""
@@ -1667,8 +1195,8 @@ async def build_shopify_authorize_url(
     if not shop:
         raise ValueError("shop domain required for Shopify authorize")
     shop_norm = _shopify_normalize_shop(shop)
-    client_id, _ = await get_shopify_creds()
-    redirect_uri = await get_shopify_redirect_uri(request, agent_id=agent_id, source=source)
+    client_id, _ = await _provider_creds("shopify")
+    redirect_uri = await provider_redirect_uri("shopify", request, agent_id=agent_id, source=source)
     state = make_state_token(user_id, agent_id, provider="shopify", shop=shop_norm, source=source)
     legacy = await _get_enabled_scopes("shopify_oauth_config", SHOPIFY_SCOPES)
     scopes = await compute_required_scopes(
@@ -1683,36 +1211,7 @@ async def build_shopify_authorize_url(
     return f"https://{shop_norm}/admin/oauth/authorize?{urlencode(params)}"
 
 
-async def revoke_and_delete_shopify(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    return await db.auth_element_delete(user_id, "shopify", oauth_label(agent_id))
-
-
-# ── Amazon SP-API (LWA) ───────────────────────────────────────────────────
-
-async def get_amazon_creds() -> tuple[str, str]:
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "amazon_oauth_config", "default")
-        if elem and elem.get("config"):
-            config = json.loads(elem["config"]) if isinstance(elem["config"], str) else elem["config"]
-            cid = config.get("client_id", "")
-            csec = elem.get("secret_ref", "") or config.get("client_secret", "")
-            if cid and csec:
-                return (cid, csec)
-    except Exception as e:
-        logger.debug("Failed to read Amazon creds from DB: %s", e)
-    return (os.environ.get("AMAZON_LWA_CLIENT_ID", ""), os.environ.get("AMAZON_LWA_CLIENT_SECRET", ""))
-
-
-async def get_amazon_redirect_uri(
-    request: Optional[Request] = None, *,
-    agent_id: str = "", source: str = "platform",
-) -> str:
-    return await _provider_redirect_uri("amazon", "amazon_oauth_config", request, agent_id, source)
-
+# ── Amazon SP-API (LWA) — bespoke build (app id + region host) ─────────────
 
 async def _get_amazon_app_id() -> str:
     """The Seller Central application id (separate from the LWA client_id).
@@ -1744,7 +1243,7 @@ async def build_amazon_authorize_url(
     then Amazon redirects back to our LWA callback with a spapi_oauth_code.
     """
     app_id = await _get_amazon_app_id()
-    redirect_uri = await get_amazon_redirect_uri(request, agent_id=agent_id, source=source)
+    redirect_uri = await provider_redirect_uri("amazon", request, agent_id=agent_id, source=source)
     state = make_state_token(user_id, agent_id, provider="amazon", region=region.upper(), source=source)
     # Seller Central hosts the consent screen, not LWA directly.
     sc_hosts = {
@@ -1762,67 +1261,10 @@ async def build_amazon_authorize_url(
     return f"{host}/apps/authorize/consent?{urlencode(params)}"
 
 
-async def revoke_and_delete_amazon(user_id: str, agent_id: str) -> bool:
-    from app.db import get_db
-    db = get_db()
-    return await db.auth_element_delete(user_id, "amazon", oauth_label(agent_id))
-
-
-# ── Generic Web Scraper (admin-global) ───────────────────────────────────
-
-async def get_scraper_creds() -> Optional[dict]:
-    """Return the admin-configured scraper provider config, or None."""
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(_ADMIN_USER, "scraper_config", "default")
-        if not elem:
-            return None
-        config = elem.get("config", {})
-        if isinstance(config, str):
-            config = json.loads(config)
-        api_key = elem.get("secret_ref", "") or config.get("api_key", "")
-        if not api_key:
-            return None
-        return {
-            "provider": (config.get("provider") or "apify").lower(),
-            "api_key": api_key,
-            "endpoint": config.get("endpoint", ""),
-            "extra": {
-                "actor_id": config.get("actor_id", ""),
-                "host": config.get("host", ""),
-            },
-        }
-    except Exception as e:
-        logger.debug("Failed to read scraper creds from DB: %s", e)
-        return None
-
-
-# ── Browser Session (per-user) ───────────────────────────────────────────
-
-async def get_browser_session_creds(user_id: str) -> Optional[dict]:
-    """Return the per-user browser-session blob, or None."""
-    try:
-        from app.db import get_db
-        db = get_db()
-        elem = await db.auth_element_get(user_id, "browser_session", "default")
-        if not elem:
-            return None
-        config = elem.get("config", {})
-        if isinstance(config, str):
-            config = json.loads(config)
-        cookies = elem.get("secret_ref", "")
-        if not cookies:
-            return None
-        return {
-            "domain": config.get("domain", ""),
-            "user_agent": config.get("user_agent", ""),
-            "saved_at": config.get("saved_at", ""),
-            "cookies": cookies,
-        }
-    except Exception as e:
-        logger.debug("Failed to read browser session for %s: %s", user_id, e)
-        return None
+# Web Scraper (admin-global) and Browser Cookies (per-user) are now ordinary
+# drop-in abilities under plugins/abilities/Web/. Their credentials live in the
+# common-credential framework (app/abilities/credentials.py) — no bespoke reader,
+# endpoint, or config map here anymore.
 
 
 # ── Connection → admin-config mapping ─────────────────────────────────────
@@ -1849,7 +1291,6 @@ _CONNECTION_ADMIN_CONFIG_KEY: dict[str, str] = {
     "etsy":      "etsy_oauth_config",
     "shopify":   "shopify_oauth_config",
     "amazon":    "amazon_oauth_config",
-    "scraper":   "scraper_config",
 }
 
 # Communication channels — gated by an admin enable flag stored in
@@ -1861,89 +1302,33 @@ _CHANNEL_CONFIG_KEY: dict[str, str] = {
 }
 
 # Agent Tools — privileged host-side capabilities (codebase admin, tool
-# creation). Same enable-flag mechanism as channels: an `auth_elements` row
-# with `secret_ref="enabled"` under `ability_{name}` means the app admin has
-# turned the ability on, after which agent admins can enable it per-agent.
-_ABILITY_CONFIG_KEY: dict[str, str] = {
-    "codebase_admin":   "ability_codebase_admin",
-    # Git Control — structured version control (status/diff/commit/push/branch)
-    # without raw shell access. Pure behavioral toggle (no platform credential —
-    # uses the repo's git + the optional GitHub token), so it lives in
-    # _ALWAYS_ON_ABILITIES (on by default; the per-agent switch is the real gate).
-    "git_control":      "ability_git_control",
-    # UI Admin — edit only front-end files under ui/ (.css/.html); never backend
-    # or shell. Reuses plugins/admin/ui_guardrails.py. Also a pure behavioral toggle.
-    "ui_admin":         "ability_ui_admin",
-    "create_tools":     "ability_create_tools",
-    "automation":       "ability_automation",
-    "web_access":       "ability_web_access",
-    "browser_control":  "ability_browser_control",
-    "image_generation": "ability_image_generation",
-    "visualizer":       "ability_visualizer",
-    # Terminal control — lets an agent open + drive interactive terminal
-    # programs (Claude Code, REPLs, any CLI). Effectively shell access, so it's
-    # OFF by default (not in _ALWAYS_ON_ABILITIES) and must be turned on at the
-    # app level then per-agent, exactly like codebase_admin.
-    "terminal_control": "ability_terminal_control",
-    # Pure behavioral toggles — no platform credential. They differ from the
-    # rows above only in their *default*: they are available unless an admin
-    # explicitly turns them off (see `_ALWAYS_ON_ABILITIES`), whereas the rows
-    # above are off until enabled. Listed here so the admin Agent Tools page
-    # can show + toggle them and the enable/disable endpoints accept them.
-    "agent_orchestration": "ability_agent_orchestration",
-    "diagnostics":         "ability_diagnostics",
-    "agent_management":    "ability_agent_management",
-    # App control — lets an agent rearrange the user's own screen (switch the
-    # main view, show/hide & resize the chat panel). Pure behavioral toggle,
-    # no credential, non-destructive → on by default at the app level.
-    "app_control":         "ability_app_control",
-    # Wiki control — lets an agent read/search the company-wide Wiki and
-    # create/edit/delete its articles. Writes/deletes change shared data
-    # everyone sees, so it's OFF by default (not in _ALWAYS_ON_ABILITIES) and
-    # must be turned on at the app level then per-agent, like terminal_control.
-    "wiki_control":        "ability_wiki_control",
-    "image_vision":        "ability_image_vision",
-    "session_titler":      "ability_session_titler",
-}
-
-# Abilities that are ON by default at the app level: available to the per-agent
-# toggle unless an admin explicitly disables them. For these the persisted
-# `auth_elements` row is inverted vs. the credentialed abilities — *absence of a
-# row means enabled*, and an explicit `secret_ref="disabled"` row means the
-# admin turned it off. This preserves the long-standing "always configured"
-# behavior (no regression for agents already using them) while still letting an
-# admin switch them off platform-wide from App Config → Agent Tools.
-_ALWAYS_ON_ABILITIES: set[str] = {
-    "agent_orchestration",
-    "diagnostics",
-    "agent_management",
-    "git_control",
-    "ui_admin",
-    "app_control",
-    "image_vision",
-    "session_titler",
-}
+# creation, …). These are now fully catalog-driven: the set of toggleable
+# abilities is every kind="ability" drop-in under plugins/abilities/, and each
+# one's app-level on/off choice lives in data/config/agent-abilities.json (with
+# the descriptor's `default_enabled` as the fallback when unset). There is
+# deliberately NO hardcoded ability list here any more — adding an ability is a
+# drop-in file, never a core edit (see CLAUDE.md "Core vs. plugins" and
+# app/admin/ability_config.py).
 
 
 async def _ability_app_enabled(db, ability: str) -> bool:
     """True iff `ability` is enabled at the app (platform) level.
 
-    - Credentialed abilities (codebase_admin, web_access, …): enabled only when
-      an `auth_elements` row exists with a truthy `secret_ref`.
-    - Always-on abilities (agent_orchestration, diagnostics, agent_management):
-      enabled unless an explicit `secret_ref="disabled"` row exists.
+    Catalog-driven (no hardcoded ability list): the on/off choice lives in
+    data/config/agent-abilities.json. When an ability has no explicit stored
+    choice it falls back to its descriptor `default_enabled` (on-by-default
+    abilities like git_control/ui_admin set it true; credentialed/destructive
+    ones default off). Any non-`kind:"ability"` id is not toggleable → False.
     """
-    service_key = _ABILITY_CONFIG_KEY.get(ability)
-    if not service_key:
+    from app import abilities as abilities_catalog
+    from app.admin import ability_config
+    if not abilities_catalog.is_toggleable_ability(ability):
         return False
-    try:
-        elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
-    except Exception as e:
-        logger.debug("auth_element_get failed for ability %s: %s", service_key, e)
-        elem = None
-    if ability in _ALWAYS_ON_ABILITIES:
-        return not (elem and elem.get("secret_ref") == "disabled")
-    return bool(elem and elem.get("secret_ref"))
+    await ability_config.ensure_bootstrapped(db)
+    stored = ability_config.get_ability_enabled(ability)
+    if stored is not None:
+        return stored
+    return abilities_catalog.ability_default_enabled(ability)
 
 
 async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[str]:
@@ -1954,8 +1339,9 @@ async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[s
       → Agent Abilities (auth_elements row exists with secret_ref="enabled"), OR
     - Its admin `auth_elements` row exists with a non-empty `secret_ref`
       (the client secret / API key), OR
-    - For `browser_session`: the given `user_id` has uploaded cookies. Without
-      a `user_id` we cannot answer this — `browser_session` is omitted.
+    - For a credential-bearing ability (one that declares a `credentials` block,
+      e.g. web_scraper / browser_cookies): it is app-enabled AND its required
+      secrets are present at its scope (per-user scopes need the `user_id`).
     """
     configured: set[str] = set()
     try:
@@ -1974,13 +1360,33 @@ async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[s
         except Exception as e:
             logger.debug("auth_element_get failed for channel %s: %s", service_key, e)
 
-    # Agent Tools — credentialed abilities (codebase_admin, create_tools, …) use
-    # the enable-flag pattern; always-on abilities (agent_orchestration,
-    # diagnostics, agent_management) are configured unless explicitly disabled.
-    # `_ability_app_enabled` encapsulates both cases.
-    for ct in _ABILITY_CONFIG_KEY:
-        if await _ability_app_enabled(db, ct):
-            configured.add(ct)
+    # Agent Tools — every kind="ability" drop-in in the catalog. Whether each is
+    # on is read from data/config/agent-abilities.json (with descriptor fallback)
+    # by `_ability_app_enabled`, so new drop-ins are picked up automatically.
+    # A credential-bearing ability (declares a `credentials` block) additionally
+    # requires its secrets to be present — generic, no per-ability special case.
+    from app import abilities as abilities_catalog
+    from app.abilities import credentials as _ab_creds
+    for ct in abilities_catalog.ability_ids("ability"):
+        if not await _ability_app_enabled(db, ct):
+            continue
+        spec = _ab_creds.ability_credentials_spec(ct)
+        if spec is not None and spec.get("scope") == "admin":
+            # ADMIN-scoped credentials (one global secret, e.g. web_scraper's API
+            # key): gate the ability — hide it from agents until the admin has
+            # saved the secret, since nothing a per-agent user does could supply
+            # it. USER/AGENT-scoped credentials (e.g. browser_cookies) are entered
+            # by the agent's own user in the per-agent panel, so the ability must
+            # stay VISIBLE even when empty — otherwise there is nowhere to enter
+            # them (chicken-and-egg). Their tools already return "not configured"
+            # at runtime until the user supplies the secret.
+            try:
+                if not await _ab_creds.is_configured(ct, user_id=user_id or ""):
+                    continue  # enabled but admin secret missing → not yet usable
+            except Exception as e:
+                logger.debug("cred check failed for %s: %s", ct, e)
+                continue
+        configured.add(ct)
 
     # Cache per service_key — facebook & instagram share `meta_oauth_config`.
     seen: dict[str, bool] = {}
@@ -1999,15 +1405,6 @@ async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[s
         seen[service_key] = ok
         if ok:
             configured.add(ct)
-
-    # browser_session is per-user — only surface when the active user has cookies.
-    if user_id:
-        try:
-            elem = await db.auth_element_get(user_id, "browser_session", "default")
-            if elem and elem.get("secret_ref"):
-                configured.add("browser_session")
-        except Exception as e:
-            logger.debug("auth_element_get failed for browser_session (%s): %s", user_id, e)
 
     return configured
 
@@ -2055,19 +1452,6 @@ def _apply_redirect_uri(cfg: dict, provider: str, req_redirect_uri: Optional[str
     cfg["redirect_uri"] = _validate_oauth_redirect_uri(raw, expected_path)
 
 
-class ScraperConfigRequest(BaseModel):
-    provider: str = "apify"   # apify | rapidapi | custom_http
-    api_key: str
-    endpoint: Optional[str] = ""
-    actor_id: Optional[str] = ""
-    host: Optional[str] = ""
-
-
-class BrowserSessionRequest(BaseModel):
-    domain: Optional[str] = ""
-    user_agent: Optional[str] = ""
-    cookies: str
-
 # Keep old name for backward compat
 GoogleOAuthConfigRequest = OAuthConfigRequest
 
@@ -2098,7 +1482,6 @@ async def get_integration_config(
     etsy_cid, etsy_csec       = await get_etsy_creds()
     shop_cid, shop_csec       = await get_shopify_creds()
     amz_cid, amz_csec         = await get_amazon_creds()
-    scraper_cfg               = await get_scraper_creds()
     channel_enabled           = await get_channel_enabled_map()
     ability_enabled           = await get_ability_enabled_map()
 
@@ -2132,93 +1515,92 @@ async def get_integration_config(
         "google_configured":    bool(google_cid and google_csec),
         "google_client_id":     _mask(google_cid),
         "google_scopes":        g_scopes,
-        "redirect_uri":         await get_redirect_uri(request),
+        "redirect_uri":         await provider_redirect_uri("google", request),
         "redirect_uri_suggested": _suggest("google"),
         "microsoft_configured": bool(ms_cid and ms_csec),
         "microsoft_client_id":  _mask(ms_cid),
         "microsoft_scopes":     ms_scopes,
-        "microsoft_redirect_uri": await get_microsoft_redirect_uri(request),
+        "microsoft_redirect_uri": await provider_redirect_uri("microsoft", request),
         "microsoft_redirect_uri_suggested": _suggest("microsoft"),
         "yahoo_configured":     bool(yahoo_cid and yahoo_csec),
         "yahoo_client_id":      _mask(yahoo_cid),
         "yahoo_scopes":         yh_scopes,
-        "yahoo_redirect_uri":   await get_yahoo_redirect_uri(request),
+        "yahoo_redirect_uri":   await provider_redirect_uri("yahoo", request),
         "yahoo_redirect_uri_suggested": _suggest("yahoo"),
         "dropbox_configured":   bool(dbx_cid and dbx_csec),
         "dropbox_client_id":    _mask(dbx_cid),
         "dropbox_scopes":       dbx_scopes,
-        "dropbox_redirect_uri": await get_dropbox_redirect_uri(request),
+        "dropbox_redirect_uri": await provider_redirect_uri("dropbox", request),
         "dropbox_redirect_uri_suggested": _suggest("dropbox"),
         # Social media
         "meta_configured":      bool(meta_cid and meta_csec),
         "meta_client_id":       _mask(meta_cid),
         "meta_scopes":          meta_scopes,
-        "meta_redirect_uri":    await get_meta_redirect_uri(request),
+        "meta_redirect_uri":    await provider_redirect_uri("meta", request),
         "meta_redirect_uri_suggested": _suggest("meta"),
         "twitter_configured":   bool(tw_cid and tw_csec),
         "twitter_client_id":    _mask(tw_cid),
         "twitter_scopes":       tw_scopes,
-        "twitter_redirect_uri": await get_twitter_redirect_uri(request),
+        "twitter_redirect_uri": await provider_redirect_uri("twitter", request),
         "twitter_redirect_uri_suggested": _suggest("twitter"),
         "linkedin_configured":  bool(li_cid and li_csec),
         "linkedin_client_id":   _mask(li_cid),
         "linkedin_scopes":      li_scopes,
-        "linkedin_redirect_uri": await get_linkedin_redirect_uri(request),
+        "linkedin_redirect_uri": await provider_redirect_uri("linkedin", request),
         "linkedin_redirect_uri_suggested": _suggest("linkedin"),
         "tiktok_configured":    bool(tt_cid and tt_csec),
         "tiktok_client_id":     _mask(tt_cid),
         "tiktok_scopes":        tt_scopes,
-        "tiktok_redirect_uri":  await get_tiktok_redirect_uri(request),
+        "tiktok_redirect_uri":  await provider_redirect_uri("tiktok", request),
         "tiktok_redirect_uri_suggested": _suggest("tiktok"),
         "pinterest_configured": bool(pin_cid and pin_csec),
         "pinterest_client_id":  _mask(pin_cid),
         "pinterest_scopes":     pin_scopes,
-        "pinterest_redirect_uri": await get_pinterest_redirect_uri(request),
+        "pinterest_redirect_uri": await provider_redirect_uri("pinterest", request),
         "pinterest_redirect_uri_suggested": _suggest("pinterest"),
         "reddit_configured":    bool(red_cid and red_csec),
         "reddit_client_id":     _mask(red_cid),
         "reddit_scopes":        red_scopes,
-        "reddit_redirect_uri":  await get_reddit_redirect_uri(request),
+        "reddit_redirect_uri":  await provider_redirect_uri("reddit", request),
         "reddit_redirect_uri_suggested": _suggest("reddit"),
         "snapchat_configured":  bool(snap_cid and snap_csec),
         "snapchat_client_id":   _mask(snap_cid),
         "snapchat_scopes":      snap_scopes,
-        "snapchat_redirect_uri": await get_snapchat_redirect_uri(request),
+        "snapchat_redirect_uri": await provider_redirect_uri("snapchat", request),
         "snapchat_redirect_uri_suggested": _suggest("snapchat"),
         "twitch_configured":    bool(twitch_cid and twitch_csec),
         "twitch_client_id":     _mask(twitch_cid),
         "twitch_scopes":        twit_scopes,
-        "twitch_redirect_uri":  await get_twitch_redirect_uri(request),
+        "twitch_redirect_uri":  await provider_redirect_uri("twitch", request),
         "twitch_redirect_uri_suggested": _suggest("twitch"),
         # Marketplaces
         "ebay_configured":      bool(ebay_cid and ebay_csec),
         "ebay_client_id":       _mask(ebay_cid),
         "ebay_scopes":          ebay_scopes,
-        "ebay_redirect_uri":    await get_ebay_redirect_uri(request),
+        "ebay_redirect_uri":    await provider_redirect_uri("ebay", request),
         "ebay_redirect_uri_suggested": _suggest("ebay"),
         "etsy_configured":      bool(etsy_cid and etsy_csec),
         "etsy_client_id":       _mask(etsy_cid),
         "etsy_scopes":          etsy_scopes,
-        "etsy_redirect_uri":    await get_etsy_redirect_uri(request),
+        "etsy_redirect_uri":    await provider_redirect_uri("etsy", request),
         "etsy_redirect_uri_suggested": _suggest("etsy"),
         "shopify_configured":   bool(shop_cid and shop_csec),
         "shopify_client_id":    _mask(shop_cid),
         "shopify_scopes":       shop_scopes,
-        "shopify_redirect_uri": await get_shopify_redirect_uri(request),
+        "shopify_redirect_uri": await provider_redirect_uri("shopify", request),
         "shopify_redirect_uri_suggested": _suggest("shopify"),
         "amazon_configured":    bool(amz_cid and amz_csec),
         "amazon_client_id":     _mask(amz_cid),
         "amazon_scopes":        amz_scopes,
-        "amazon_redirect_uri":  await get_amazon_redirect_uri(request),
+        "amazon_redirect_uri":  await provider_redirect_uri("amazon", request),
         "amazon_redirect_uri_suggested": _suggest("amazon"),
-        # Generic, non-OAuth providers (no client_id/secret pair)
-        "scraper_configured":   bool(scraper_cfg),
-        "scraper_provider":     (scraper_cfg or {}).get("provider", ""),
-        "scraper_endpoint":     (scraper_cfg or {}).get("endpoint", ""),
-        "scraper_actor_id":     (scraper_cfg or {}).get("extra", {}).get("actor_id", ""),
-        "scraper_host":         (scraper_cfg or {}).get("extra", {}).get("host", ""),
         # Channels (admin enable/disable; per-agent creds live in Connections)
         "telegram_configured":       channel_enabled.get("telegram", False),
+        # Agent Tools — generic catalog-driven map {ability_id: enabled}. The
+        # admin ability table loads its toggles from this, so newly dropped-in
+        # abilities reflect their saved state with no per-ability wiring. The
+        # individual `<id>_configured` keys below are kept for older readers.
+        "abilities":                 ability_enabled,
         # Agent Tools (host-side privileged capabilities)
         "codebase_admin_configured":   ability_enabled.get("codebase_admin", False),
         "git_control_configured":      ability_enabled.get("git_control", False),
@@ -2466,128 +1848,12 @@ router.post("/amazon",    response_model=None)(_amz_save)
 router.delete("/amazon",  response_model=None)(_amz_delete)
 
 
-# ── Generic Web Scraper config (admin) ─────────────────────────────────────
-
-@router.post("/scraper")
-async def save_scraper_config(
-    req: ScraperConfigRequest,
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
-):
-    """Save the global third-party scraper credentials (admin)."""
-    from app.db import get_db
-    db = get_db()
-    provider = (req.provider or "apify").lower()
-    if provider not in {"apify", "rapidapi", "custom_http"}:
-        return {"status": "error", "message": "provider must be apify, rapidapi, or custom_http"}
-    api_key = (req.api_key or "").strip()
-    if not api_key:
-        return {"status": "error", "message": "api_key is required"}
-    cfg: dict = {
-        "provider": provider,
-        "endpoint": (req.endpoint or "").strip(),
-        "actor_id": (req.actor_id or "").strip(),
-        "host": (req.host or "").strip(),
-    }
-    await db.auth_element_set(
-        user_id=_ADMIN_USER,
-        service="scraper_config",
-        config=cfg,
-        secret_ref=api_key,
-        label="default",
-    )
-    logger.info("Scraper config saved by admin (provider=%s)", provider)
-    return {"status": "ok", "message": "Scraper configured."}
-
-
-@router.delete("/scraper")
-async def delete_scraper_config(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
-):
-    """Remove the scraper credentials (admin)."""
-    from app.db import get_db
-    db = get_db()
-    deleted = await db.auth_element_delete(_ADMIN_USER, "scraper_config", "default")
-    logger.info("Scraper config removed by admin (deleted=%s)", deleted)
-    return {"status": "ok", "deleted": deleted}
-
-
-# ── Browser Session config (per-user) ──────────────────────────────────────
-
-@router.get("/browser-session")
-async def get_browser_session_status(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
-):
-    """Report the caller's stored browser session (no cookies returned)."""
-    user_id = resolve_user_id(authorization or "", token or "")
-    if not user_id or user_id == ANONYMOUS_KEY:
-        return {"status": "error", "message": "auth required"}
-    sess = await get_browser_session_creds(user_id)
-    if not sess:
-        return {"configured": False}
-    # Never echo cookies back — only summary metadata.
-    cookie_count = 0
-    try:
-        from app.integrations.web_tools import _parse_cookies
-        cookie_count = len(_parse_cookies(sess.get("cookies", "")))
-    except Exception:
-        pass
-    return {
-        "configured": True,
-        "domain": sess.get("domain", ""),
-        "user_agent": sess.get("user_agent", ""),
-        "saved_at": sess.get("saved_at", ""),
-        "cookie_count": cookie_count,
-    }
-
-
-@router.post("/browser-session")
-async def save_browser_session(
-    req: BrowserSessionRequest,
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
-):
-    """Save the caller's browser cookies for authenticated scraping."""
-    user_id = resolve_user_id(authorization or "", token or "")
-    if not user_id or user_id == ANONYMOUS_KEY:
-        return {"status": "error", "message": "auth required"}
-    cookies = (req.cookies or "").strip()
-    if not cookies:
-        return {"status": "error", "message": "cookies are required"}
-    from app.db import get_db
-    db = get_db()
-    cfg = {
-        "domain": (req.domain or "").strip(),
-        "user_agent": (req.user_agent or "").strip(),
-        "saved_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.auth_element_set(
-        user_id=user_id,
-        service="browser_session",
-        config=cfg,
-        secret_ref=cookies,
-        label="default",
-    )
-    logger.info("Browser session saved for user %s (domain=%s)", user_id, cfg["domain"])
-    return {"status": "ok", "message": "Browser session saved."}
-
-
-@router.delete("/browser-session")
-async def delete_browser_session(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
-):
-    """Remove the caller's stored browser session."""
-    user_id = resolve_user_id(authorization or "", token or "")
-    if not user_id or user_id == ANONYMOUS_KEY:
-        return {"status": "error", "message": "auth required"}
-    from app.db import get_db
-    db = get_db()
-    deleted = await db.auth_element_delete(user_id, "browser_session", "default")
-    logger.info("Browser session removed for user %s (deleted=%s)", user_id, deleted)
-    return {"status": "ok", "deleted": deleted}
+# Web Scraper (its own ability) and the cookie-replay tools (folded into Browser
+# Control) declare their credentials in their descriptors; those creds are
+# saved/read/deleted through the generic endpoints in app/api/agents.py
+# (GET/POST/DELETE /api/v1/abilities/{id}/credentials) backed by
+# app/abilities/credentials.py. The old bespoke /scraper and /browser-session
+# endpoints were removed.
 
 
 # ── Channels (admin enable/disable) ───────────────────────────────────────
@@ -2611,20 +1877,14 @@ async def get_channel_enabled_map() -> dict[str, bool]:
     return out
 
 
-# One-time first-boot seed: turn every admin Agent Tool ON so the app ships
-# ready to "do everything" out of the box. A marker `auth_elements` row records
-# that the seed ran, so an admin who later DISABLES an ability is never silently
-# re-enabled on the next restart.
-_ABILITY_SEED_MARKER_KEY = "ability_defaults_seeded"
-_ABILITY_SEED_VERSION = "v1"
-
-
 async def seed_default_abilities() -> dict:
-    """Enable all admin Agent Tools on first boot (idempotent, runs once).
+    """First-boot bootstrap of the admin ability config file (idempotent).
 
-    Mirrors `enable_ability` for each key in `_ABILITY_CONFIG_KEY`, then writes
-    a version marker. If the marker already exists the seed is skipped, so admin
-    disables persist across restarts.
+    The on/off state now lives in data/config/agent-abilities.json. On first
+    boot (file absent) `ensure_bootstrapped` seeds it from any existing vault
+    rows — preserving an upgrading admin's configuration — or from each
+    ability's descriptor `default_enabled` on a brand-new install. Once the file
+    exists this is a no-op, so admin disables persist across restarts.
     """
     try:
         from app.db import get_db
@@ -2633,60 +1893,34 @@ async def seed_default_abilities() -> dict:
         logger.debug("seed_default_abilities: db unavailable: %s", e)
         return {"seeded": False, "reason": "no-db"}
 
-    try:
-        marker = await db.auth_element_get(_ADMIN_USER, _ABILITY_SEED_MARKER_KEY, "default")
-        if marker and marker.get("secret_ref"):
-            return {"seeded": False, "reason": "already-seeded"}
-    except Exception as e:
-        logger.debug("seed_default_abilities: marker read failed (continuing): %s", e)
-
-    enabled: list[str] = []
-    for ability, service_key in _ABILITY_CONFIG_KEY.items():
-        try:
-            await db.auth_element_set(
-                user_id=_ADMIN_USER,
-                service=service_key,
-                config={"enabled": True},
-                secret_ref="enabled",
-                label="default",
-            )
-            enabled.append(ability)
-        except Exception as e:
-            logger.warning("seed_default_abilities: failed to enable %s: %s", ability, e)
-
-    try:
-        await db.auth_element_set(
-            user_id=_ADMIN_USER,
-            service=_ABILITY_SEED_MARKER_KEY,
-            config={"version": _ABILITY_SEED_VERSION},
-            secret_ref=_ABILITY_SEED_VERSION,
-            label="default",
-        )
-    except Exception as e:
-        logger.warning("seed_default_abilities: failed to write seed marker: %s", e)
-
-    logger.info("Seeded default admin abilities ON (enabled=%s)", enabled)
-    return {"seeded": True, "enabled": enabled}
+    from app.admin import ability_config
+    already = ability_config.file_exists()
+    await ability_config.ensure_bootstrapped(db)
+    if already:
+        return {"seeded": False, "reason": "already-seeded"}
+    return {"seeded": True, "enabled": sorted(ability_config.all_ability_states().keys())}
 
 
 async def get_ability_enabled_map() -> dict[str, bool]:
-    """Return {ability_name: enabled} for every entry in `_ABILITY_CONFIG_KEY`."""
+    """Return {ability_id: enabled} for every kind="ability" drop-in in the catalog."""
+    from app import abilities as abilities_catalog
     try:
         from app.db import get_db
         db = get_db()
     except Exception as e:
         logger.debug("Failed to import db while reading ability states: %s", e)
-        return {ab: False for ab in _ABILITY_CONFIG_KEY}
+        return {ab: abilities_catalog.ability_default_enabled(ab)
+                for ab in abilities_catalog.ability_ids("ability")}
     out: dict[str, bool] = {}
-    for ab in _ABILITY_CONFIG_KEY:
+    for ab in abilities_catalog.ability_ids("ability"):
         out[ab] = await _ability_app_enabled(db, ab)
     return out
 
 
 async def is_ability_enabled_for_agent(agent_id: str, ability: str) -> bool:
     """True iff the ability is enabled both at app level AND for this specific agent."""
-    service_key = _ABILITY_CONFIG_KEY.get(ability)
-    if not service_key:
+    from app import abilities as abilities_catalog
+    if not abilities_catalog.is_toggleable_ability(ability):
         return False
     try:
         from app.db import get_db
@@ -2788,6 +2022,152 @@ async def reset_oauth_ability_policy(
     return {"status": "ok", "ability_id": ability_id, "deleted": deleted}
 
 
+# ── Global per-tool defaults admin endpoints ──────────────────────────────
+
+class GlobalToolDefaultRequest(BaseModel):
+    permission: Optional[str] = None   # auto | ask | deny | null (clear)
+    visibility: Optional[str] = None   # always | discoverable | null (clear)
+
+
+async def _read_tool_defaults_blob() -> dict:
+    """Read the full ``{"tools": {...}}`` blob (defaulting to an empty tools map).
+
+    Backed by data/config/agent-abilities.json (`tools` section)."""
+    from app.admin import ability_config
+    try:
+        from app.db import get_db
+        await ability_config.ensure_bootstrapped(get_db())
+    except Exception:
+        pass
+    return {"tools": ability_config.get_tools()}
+
+
+async def _write_tool_defaults_blob(blob: dict) -> None:
+    from app.admin import ability_config
+    tools = blob.get("tools") if isinstance(blob, dict) else None
+    ability_config.set_tools(tools if isinstance(tools, dict) else {})
+
+
+@router.get("/tool-defaults")
+async def get_tool_defaults_endpoint(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Return the app-wide per-tool defaults blob.
+
+    Shape: ``{"tools": {"<tool>": {"permission": ..., "visibility": ...}}}`` —
+    an empty ``tools`` map when nothing has been set. These are the DEFAULTS
+    every agent inherits unless it has its own per-tool override.
+
+    ``confirm_tools`` lists every tool that inherently pauses for confirmation
+    (its built-in destructive/requires_confirmation nature) so the admin panel can
+    show those at their true "Ask" floor and lock the looser side, rather than
+    misreporting them as "Auto"."""
+    tools = await get_global_tool_defaults()
+    try:
+        from app.abilities import confirm_gated_tools
+        confirm = sorted(confirm_gated_tools())
+    except Exception:
+        confirm = []
+    return {"tools": tools, "confirm_tools": confirm}
+
+
+@router.put("/tool-defaults/{tool_name}")
+async def set_tool_default_endpoint(
+    tool_name: str,
+    req: GlobalToolDefaultRequest,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Set/clear a tool's app-wide default for either or both dimensions.
+
+    A provided value sets that dimension; a null value clears it. If both
+    dimensions end up empty the whole tool key is dropped. Read-modify-write the
+    single blob.
+
+    Validation: permission ∈ {auto,ask,deny}; visibility ∈ TOGGLEABLE_MODES;
+    visibility is rejected for locked (core) tools; ``deny`` is rejected for the
+    Tier-1 always-on tools (which can never be denied)."""
+    from app.tools.tool_modes import TOGGLEABLE_MODES, is_locked
+    from app.tools.tool_defaults import PERMISSION_VALUES
+    from app.tools.loader import TIER_1_ALWAYS_ON
+
+    if req.permission is not None and req.permission not in PERMISSION_VALUES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"permission must be one of {PERMISSION_VALUES} or null.",
+        )
+    if req.visibility is not None:
+        if is_locked(tool_name):
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{tool_name}' is a core tool — its visibility cannot be changed.",
+            )
+        if req.visibility not in TOGGLEABLE_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"visibility must be one of {TOGGLEABLE_MODES} or null.",
+            )
+    if req.permission == "deny" and tool_name in TIER_1_ALWAYS_ON:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{tool_name}' is an always-on tool and cannot be denied.",
+        )
+
+    blob = await _read_tool_defaults_blob()
+    entry = dict(blob["tools"].get(tool_name) or {})
+
+    # A provided value sets that dimension; null clears it.
+    if req.permission is not None:
+        entry["permission"] = req.permission
+    else:
+        entry.pop("permission", None)
+    if req.visibility is not None:
+        entry["visibility"] = req.visibility
+    else:
+        entry.pop("visibility", None)
+
+    if entry:
+        blob["tools"][tool_name] = entry
+    else:
+        blob["tools"].pop(tool_name, None)
+
+    await _write_tool_defaults_blob(blob)
+    logger.info(
+        "Global tool default set: %s permission=%s visibility=%s",
+        tool_name, req.permission, req.visibility,
+    )
+    return {"status": "ok", "tool": tool_name,
+            "permission": entry.get("permission"),
+            "visibility": entry.get("visibility")}
+
+
+@router.delete("/tool-defaults")
+async def clear_all_tool_defaults_endpoint(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Clear ALL app-wide per-tool defaults (empty the `tools` section)."""
+    from app.admin import ability_config
+    had = bool(ability_config.get_tools())
+    ability_config.set_tools({})
+    return {"status": "ok", "deleted": had}
+
+
+@router.delete("/tool-defaults/{tool_name}")
+async def clear_tool_default_endpoint(
+    tool_name: str,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Clear the app-wide default for a single tool (pop its key, RMW the blob)."""
+    blob = await _read_tool_defaults_blob()
+    existed = tool_name in blob["tools"]
+    blob["tools"].pop(tool_name, None)
+    await _write_tool_defaults_blob(blob)
+    return {"status": "ok", "tool": tool_name, "deleted": existed}
+
+
 @router.post("/abilities/{ability}")
 async def enable_ability(
     ability: str,
@@ -2795,23 +2175,16 @@ async def enable_ability(
     token: Optional[str] = Query(None),
 ):
     """Enable an agent ability (admin). Once enabled here, agent admins can
-    turn it on per-agent in the Abilities tab."""
-    if ability not in _ABILITY_CONFIG_KEY:
-        return {"status": "error", "message": f"Unknown ability: {ability}"}
+    turn it on per-agent in the Abilities tab. Catalog-driven — any kind="ability"
+    drop-in is accepted; the choice persists to data/config/agent-abilities.json."""
+    from app import abilities as abilities_catalog
+    from app.admin import ability_config
+    if not abilities_catalog.is_toggleable_ability(ability):
+        raise HTTPException(status_code=404, detail=f"Unknown ability: {ability}")
     from app.db import get_db
     db = get_db()
-    if ability in _ALWAYS_ON_ABILITIES:
-        # Inverted persistence: enabling means clearing any "disabled" marker so
-        # the ability falls back to its always-available default.
-        await db.auth_element_delete(_ADMIN_USER, _ABILITY_CONFIG_KEY[ability], "default")
-    else:
-        await db.auth_element_set(
-            user_id=_ADMIN_USER,
-            service=_ABILITY_CONFIG_KEY[ability],
-            config={"enabled": True},
-            secret_ref="enabled",
-            label="default",
-        )
+    await ability_config.ensure_bootstrapped(db)
+    ability_config.set_ability_enabled(ability, True)
     logger.info("Ability %s enabled by admin", ability)
     return {"status": "ok", "ability": ability, "enabled": True}
 
@@ -2825,24 +2198,22 @@ async def disable_ability(
     """Disable an agent ability (admin). Hides it from the agent Abilities
     tab. Existing per-agent `agent_connections` rows stay so they reactivate
     if the ability is re-enabled — except for `automation`, which purges all
-    per-agent automation tasks, event subscriptions, and ability toggles."""
-    if ability not in _ABILITY_CONFIG_KEY:
-        return {"status": "error", "message": f"Unknown ability: {ability}"}
+    per-agent automation tasks, event subscriptions, and ability toggles.
+    Catalog-driven; the off choice persists to data/config/agent-abilities.json."""
+    from app import abilities as abilities_catalog
+    from app.admin import ability_config
+    if not abilities_catalog.is_toggleable_ability(ability):
+        raise HTTPException(status_code=404, detail=f"Unknown ability: {ability}")
+    # A locked-on safety ability (e.g. Context Control) cannot be turned off.
+    if abilities_catalog.ability_is_locked_on(ability):
+        raise HTTPException(
+            status_code=400,
+            detail="This is a safety device and cannot be deactivated.",
+        )
     from app.db import get_db
     db = get_db()
-    if ability in _ALWAYS_ON_ABILITIES:
-        # Inverted persistence: disabling writes an explicit "disabled" marker
-        # (absence of a row would otherwise read as the always-on default).
-        await db.auth_element_set(
-            user_id=_ADMIN_USER,
-            service=_ABILITY_CONFIG_KEY[ability],
-            config={"enabled": False},
-            secret_ref="disabled",
-            label="default",
-        )
-        deleted = True
-    else:
-        deleted = await db.auth_element_delete(_ADMIN_USER, _ABILITY_CONFIG_KEY[ability], "default")
+    await ability_config.ensure_bootstrapped(db)
+    ability_config.set_ability_enabled(ability, False)
     if ability == "automation":
         # Wipe every agent's automation data so the feature truly resets.
         tasks_removed = await db.delete_all_automations()
@@ -2852,8 +2223,136 @@ async def disable_ability(
             "Automation ability disabled: purged %s tasks, %s subscriptions, %s per-agent toggles",
             tasks_removed, subs_removed, toggles_removed,
         )
-    logger.info("Ability %s disabled by admin (deleted=%s)", ability, deleted)
+    logger.info("Ability %s disabled by admin", ability)
     return {"status": "ok", "ability": ability, "enabled": False}
+
+
+class AbilityOrderBody(BaseModel):
+    groups: Optional[dict] = None      # {group_id: order_int}
+    abilities: Optional[dict] = None   # {ability_id: order_int}
+
+
+@router.get("/abilities/order")
+async def get_ability_order(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """The admin-editable display order of the ability table — group order and
+    per-ability order — read from data/config/agent-abilities.json. Seeded from
+    the drop-in descriptors on first boot; this file is then the live source."""
+    from app.admin import ability_config
+    from app.db import get_db
+    await ability_config.ensure_bootstrapped(get_db())
+    return {"status": "ok", **ability_config.get_order()}
+
+
+@router.put("/abilities/order")
+async def set_ability_order(
+    body: AbilityOrderBody,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Persist a new display order for the ability table (groups and/or
+    abilities) to data/config/agent-abilities.json. Either map may be omitted to
+    leave that side unchanged. Takes effect on the next catalog fetch — both
+    ability panels render from the same /abilities/catalog payload, which now
+    honours these overrides."""
+    from app.admin import ability_config
+    from app.db import get_db
+    await ability_config.ensure_bootstrapped(get_db())
+    ability_config.set_order(groups=body.groups, abilities=body.abilities)
+    logger.info(
+        "Ability table order updated by admin (%s groups, %s abilities)",
+        len(body.groups) if body.groups else 0,
+        len(body.abilities) if body.abilities else 0,
+    )
+    return {"status": "ok", **ability_config.get_order()}
+
+
+# ── UI page configuration (main header tabs + Admin Tools sidebar views) ──────
+# Catalog-driven, mirroring the ability order/toggle routes above. Overrides
+# persist to data/config/main-panel-pages.json (scope=main) and
+# admin-panel-pages.json (scope=admin). Page DEFINITIONS are drop-in page.json
+# descriptors under ui/ — never edited here.
+
+def _page_scope_or_404(scope: str) -> str:
+    if scope not in ("main", "admin"):
+        raise HTTPException(status_code=404, detail=f"Unknown page scope: {scope}")
+    return scope
+
+
+class PageOrderBody(BaseModel):
+    pages: dict  # {page_id: order_int}
+
+
+class PageOverrideBody(BaseModel):
+    label: Optional[str] = None    # rename; "" / null clears the override
+    icon: Optional[str] = None     # custom Lucide icon; "" / null clears
+    hidden: Optional[bool] = None  # legacy: hide from the strip (== visibility "off")
+    visibility: Optional[str] = None  # "all" | "auth" | "off"; "all" clears the override
+
+
+@router.put("/pages/{scope}/order")
+async def set_pages_order(
+    scope: str,
+    body: PageOrderBody,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Persist a new display order for one page strip ('main' header tabs or
+    'admin' sidebar views) to data/config/<scope>-panel-pages.json. Takes effect
+    on the next /api/v1/pages/catalog fetch."""
+    _page_scope_or_404(scope)
+    from app.admin import page_config
+    page_config.set_order(scope, body.pages or {})
+    logger.info("Page order updated by admin (scope=%s, %d pages)", scope, len(body.pages or {}))
+    return {"status": "ok", "scope": scope, "order": page_config.get_order(scope)}
+
+
+@router.post("/pages/{scope}/{page_id}")
+async def set_page_override(
+    scope: str,
+    page_id: str,
+    body: PageOverrideBody,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Set per-page overrides (rename, custom icon, visibility) for one page. Only
+    the fields present in the body are applied; passing an empty string / null
+    for label or icon clears that override (reverting to the descriptor default).
+    A locked page (Admin Tools / Admin Configuration) can never be turned "off" —
+    that would lock the user out of the app's configuration — so an attempt to set
+    it off (via `visibility:"off"` or the legacy `hidden:true`) is rejected; it may
+    still be set to "auth" (signed-in only) or "all" (always)."""
+    scope = _page_scope_or_404(scope)
+    from app.ui_pages import is_known_page, page_entry
+    if not is_known_page(scope, page_id):
+        raise HTTPException(status_code=404, detail=f"Unknown page: {page_id}")
+    is_locked = bool((page_entry(scope, page_id) or {}).get("locked"))
+    from app.admin import page_config
+    kwargs = {}
+    fields = body.model_dump(exclude_unset=True)
+    if "label" in fields:
+        kwargs["label"] = fields["label"]
+    if "icon" in fields:
+        kwargs["icon"] = fields["icon"]
+    if "hidden" in fields:
+        if is_locked and bool(fields["hidden"]):
+            raise HTTPException(status_code=400, detail="This page cannot be hidden.")
+        kwargs["hidden"] = fields["hidden"]
+    if "visibility" in fields:
+        vis = fields["visibility"]
+        if vis not in ("all", "auth", "off"):
+            raise HTTPException(status_code=400,
+                                detail="visibility must be one of: all, auth, off")
+        if is_locked and vis == "off":
+            raise HTTPException(status_code=400, detail="This page cannot be hidden.")
+        kwargs["visibility"] = vis
+    page_config.set_page(scope, page_id, **kwargs)
+    logger.info("Page override set by admin (scope=%s, page=%s, fields=%s)",
+                scope, page_id, list(kwargs.keys()))
+    return {"status": "ok", "scope": scope, "page": page_id,
+            "override": page_config.get_overrides(scope).get(page_id, {})}
 
 
 @router.post("/channels/{channel}")

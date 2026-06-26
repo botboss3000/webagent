@@ -14,9 +14,17 @@ _ALGORITHM = "HS256"
 _ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
 
-def create_access_token(username: str, user_id: str) -> str:
-    """Create a signed JWT access token."""
-    expire = datetime.now(timezone.utc) + timedelta(minutes=_ACCESS_TOKEN_EXPIRE_MINUTES)
+def create_access_token(username: str, user_id: str, expires_minutes: Optional[int] = None) -> str:
+    """Create a signed JWT access token.
+
+    ``expires_minutes`` overrides the default 24h lifetime when given — used by
+    the browser-connector pairing flow, which mints a long-lived token the user
+    pastes into the extension once (so it doesn't 401 a day later). The override
+    only changes the expiry; the token is otherwise identical to a login token,
+    scoped to the same user_id, so it carries no extra privilege.
+    """
+    minutes = _ACCESS_TOKEN_EXPIRE_MINUTES if expires_minutes is None else expires_minutes
+    expire = datetime.now(timezone.utc) + timedelta(minutes=minutes)
     payload = {
         "sub": username,
         "user_id": user_id,

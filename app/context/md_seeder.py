@@ -1,7 +1,7 @@
 """
 Scan files from app/context/ and parse into DB rows.
 
-Three scanners:
+Two scanners:
 
 1. scan_context_files()
    - Reads app/context/context_templates/*.md
@@ -9,17 +9,11 @@ Three scanners:
    - Frontmatter can set: context_type, title, tags
    - Filename stem = default context_type
 
-2. scan_agent_system_prompt_files()
-   - Reads app/context/agent_system_prompt/*.md (legacy, kept for compat)
-   - Returns content of first .md file found
-   - Used to seed agent_templates.system_prompt only
-
-3. scan_agent_json_files()
-   - Reads data/agents/*.json (NEW, preferred)
+2. scan_agent_json_files()
+   - Reads data/agents/*.json (the canonical agent template source)
    - Each JSON file provides FULL agent template schema:
      id, system_prompt, max_turn_count, model, provider,
      temperature, max_tokens, metadata
-   - Replaces scan_agent_system_prompt_files() for new deployments
 """
 
 import json
@@ -27,6 +21,8 @@ import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
+
+from app.util.paths import agents_seed_dir
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +32,10 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(os.path.dirname(_THIS_DIR))
 
 DEFAULT_CONTEXT_DIR = os.path.join(_THIS_DIR, "context_templates")
-DEFAULT_AGENT_SYSTEM_PROMPT_DIR = os.path.join(_THIS_DIR, "agent_system_prompt")
-# Agent template JSON source of truth lives at repo-root data/agents/.
-DEFAULT_AGENTS_DIR = os.path.join(_REPO_ROOT, "data", "agents")
+# Agent template JSON seeds: a data/agents/ override if present, else the bundled
+# app/defaults/agents/ that always ships — so a checkout with no data/ still seeds
+# the default + system agents. Resolved by app/util/paths.agents_seed_dir().
+DEFAULT_AGENTS_DIR = agents_seed_dir()
 
 _FM_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)", re.DOTALL)
 
@@ -197,73 +194,6 @@ def scan_context_files(directory: Optional[str] = None) -> List[Dict]:
     return results
 
 
-def scan_agent_system_prompt_files(directory: Optional[str] = None) -> Dict[str, str]:
-    """
-    Scan a directory for .md files and return a dict of {template_id: content}.
-
-    Each file's template_id comes from:
-      1. The ``id`` field in YAML frontmatter, if present
-      2. Otherwise, the filename stem (e.g., ``default.md`` → ``"default"``)
-
-    Content is the body after frontmatter stripping.
-
-    Args:
-        directory: Path to scan. Defaults to app/context/agent_system_prompt/.
-
-    Returns:
-        Dict[str, str] mapping template_id → body content.
-        Empty dict if directory missing or no .md files found.
-    """
-    if directory is None:
-        directory = DEFAULT_AGENT_SYSTEM_PROMPT_DIR
-
-    if not os.path.isdir(directory):
-        logger.debug(
-            "Agent system prompt directory %s does not exist — skipping scan",
-            directory,
-        )
-        return {}
-
-    result: Dict[str, str] = {}
-
-    for fname in sorted(os.listdir(directory)):
-        if fname.startswith(".") or not fname.lower().endswith(".md"):
-            continue
-        fpath = os.path.join(directory, fname)
-        if not os.path.isfile(fpath):
-            continue
-
-        stem = os.path.splitext(fname)[0]
-
-        try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                raw = f.read()
-        except OSError as e:
-            logger.warning("Cannot read %s: %s", fpath, e)
-            continue
-
-        # Parse frontmatter to check for explicit id
-        fm, body = _parse_frontmatter(raw)
-        template_id = fm.get("id", stem) if fm else stem
-        content = body.strip() if body else raw.strip()
-
-        result[template_id] = content
-        logger.debug(
-            "Loaded agent system prompt: %s → id=%s (%d chars)",
-            fname, template_id, len(content),
-        )
-
-    if result:
-        logger.info(
-            "Loaded %d agent system prompt templates from %s",
-            len(result), directory,
-        )
-    else:
-        logger.debug("No .md files found in %s", directory)
-
-    return result
-
-
 def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Scan a directory for .json files and parse into full agent template rows.
@@ -275,7 +205,7 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
       - model (str or null)
       - provider (str or null)
       - temperature (float, default 0.0)
-      - max_tokens (int, default 4096)
+      - max_tokens (int, default 8000)
       - metadata (dict or str, default {})
       - agent_prompt (str, default "")  — agent identity context
       - user_prompt (str, default "")   — user profile context
@@ -382,7 +312,7 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "model": data.get("model"),
             "provider": data.get("provider"),
             "temperature": data.get("temperature", 0.0),
-            "max_tokens": data.get("max_tokens", 4096),
+            "max_tokens": data.get("max_tokens", 8000),
             "metadata": meta_str,
             "agent_prompt": data.get("agent_prompt", ""),
             "user_prompt": data.get("user_prompt", ""),
@@ -398,6 +328,10 @@ def scan_agent_json_files(directory: Optional[str] = None) -> List[Dict[str, Any
             "can_be_default": 1 if data.get("can_be_default", True) else 0,
             "is_system": 1 if data.get("is_system", False) else 0,
             "is_pipeline": 1 if data.get("is_pipeline", False) else 0,
+            # Admin-only agent (documented in data/agents/README.md). The seeder's
+            # upsert already writes this column; fold it through here so the
+            # readable top-level key actually takes effect instead of always 0.
+            "is_admin_agent": 1 if data.get("is_admin_agent", False) else 0,
             # Whether this template appears in the "New Agent" creation dropdown.
             "discoverable": 1 if data.get("discoverable", False) else 0,
             "access_level": data.get("access_level", "all"),

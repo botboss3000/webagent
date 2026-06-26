@@ -1,8 +1,10 @@
 """Liveness watchdog — the self-healing core for runs that stop *while the
 process is alive* (boot recovery in app/agent/runner.py handles process death).
 
-A single asyncio task wakes every ``poll_seconds`` and sweeps the durable
-``session_runs`` rows still marked 'running'. For each it decides, using
+A single asyncio task wakes every ``poll_seconds`` and runs two sweeps over the
+durable ``session_runs`` rows.
+
+Sweep 1 — rows still marked 'running'. For each it decides, using
 ``RunManager.is_running`` (the in-RAM truth for this process) plus the
 ``heartbeat_at`` the loop advances:
 
@@ -13,6 +15,15 @@ A single asyncio task wakes every ``poll_seconds`` and sweeps the durable
   * **zombie**   — row still 'running' but NO live task past ``zombie_grace``
                    (the task vanished without finalizing): flip it terminal and
                    resume.
+
+Sweep 2 — rows that already finished with a *resumable* cause (crash /
+server_restart / frozen / zombie) but are sitting terminal. Boot recovery only
+re-ignites these at startup; this sweep does it at RUNTIME too, so a run that
+ended recoverable while the process kept living (e.g. the bounded stream-open
+timeout raising a resumable crash) comes back within a poll interval instead of
+waiting for the next reboot. The durable ``next_resume_at`` backoff gate (set by
+each resume claim) keeps a persistently-failing run from being hammered, and the
+per-run retry budget eventually retires it.
 
 Fully backend-driven — it needs no user WebSocket, so background, sub-agent and
 delegated runs are healed too. All resume decisions (eligibility, retry budget,
@@ -55,6 +66,7 @@ class RunWatchdog:
         self._last_poll: Optional[str] = None
         self._last_error: Optional[str] = None
         self._resumes: int = 0
+        self._runtime_resumes: int = 0
         self._frozen_detected: int = 0
         self._zombie_detected: int = 0
 
@@ -91,6 +103,7 @@ class RunWatchdog:
             "last_poll": self._last_poll,
             "last_error": self._last_error,
             "resumes": self._resumes,
+            "runtime_resumes": self._runtime_resumes,
             "frozen_detected": self._frozen_detected,
             "zombie_detected": self._zombie_detected,
         }
@@ -205,6 +218,37 @@ class RunWatchdog:
                     continue
                 await self._try_resume(runner, sid, "zombie")
 
+        # ── Sweep 2: re-ignite runs left TERMINAL with a resumable cause ──
+        # Boot recovery only fires at startup; without this a run that ended
+        # crash / server_restart / frozen / zombie while the process stayed up
+        # would wait for a reboot to come back. list_resumable already honours
+        # the per-run backoff gate (next_resume_at), so polling it cannot hammer
+        # a persistently-failing run, and resume_one enforces the retry budget.
+        try:
+            terminal = await db.run_state_list_resumable()
+        except Exception as e:  # noqa: BLE001
+            self._last_error = str(e)[:200]
+            terminal = []
+
+        for row in terminal:
+            sid = row.get("session_id")
+            if not sid:
+                continue
+            origin = row.get("origin") or "web"
+            if origin in runner._EXCLUDED_ORIGINS or sid.startswith(runner._THROWAWAY_PREFIXES):
+                continue
+            if rm.is_running(sid):
+                continue  # already alive (sweep 1, boot, or another worker)
+            lease = _parse_iso(row.get("lease_expires_at"))
+            if lease and lease > now:
+                continue  # another worker holds a fresh resume lease
+            cause = row.get("stop_cause") or "crash"
+            if await self._try_resume(runner, sid, f"runtime:{cause}"):
+                self._runtime_resumes += 1
+                logger.info(
+                    "Watchdog: re-ignited run %s at runtime (was terminal, cause=%s)",
+                    sid[:12], cause)
+
         return poll
 
     def _record_recovery(self, level: str, source: str, message: str,
@@ -223,12 +267,14 @@ class RunWatchdog:
         except Exception:
             pass
 
-    async def _try_resume(self, runner, sid: str, reason: str) -> None:
+    async def _try_resume(self, runner, sid: str, reason: str) -> bool:
         try:
             if await runner.resume_one(sid, reason=reason):
                 self._resumes += 1
+                return True
         except Exception as e:  # noqa: BLE001
             logger.warning("Watchdog %s-resume failed for %s: %s", reason, sid[:12], e)
+        return False
 
 
 # ── Module-level singleton ──

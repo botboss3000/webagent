@@ -215,8 +215,14 @@ async def create_tool(
             "message": f"Tool '{name}' updated. You can now call it.",
         }
     else:
-        # Insert new tool
+        # Insert new tool. The `tools` table's id is a TEXT PRIMARY KEY with no
+        # DB default, and the local insert proxy only auto-fills `id` when the
+        # key is present-but-falsy — so we must supply it, or the row stores a
+        # NULL id and reading back `created["id"]` raises KeyError (surfaced to
+        # the agent as a bogus validation_error on the very first create).
+        import uuid as _uuid
         row = {
+            "id": str(_uuid.uuid4()),
             "name": name,
             "code": code,
             "description": description,

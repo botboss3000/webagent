@@ -1,0 +1,7 @@
+{
+  "name": "CRM & Marketing",
+  "icon": "contact",
+  "color": "#bb9af7",
+  "desc": "Contacts, deals, and email campaigns. Mostly free OAuth; some products need a paid plan.",
+  "order": 9
+}

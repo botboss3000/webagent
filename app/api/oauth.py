@@ -5,8 +5,16 @@ Supported:
   Social:        meta (fb+ig), twitter, linkedin, tiktok, pinterest, reddit,
                  snapchat, twitch
   Marketplaces:  ebay, etsy, shopify, amazon
+
+Every callback shares the same eight steps (error check → decode state →
+confirm agent context → resolve creds → exchange code for a token → fetch
+profile → store → success page). That scaffolding lives once in
+`_run_callback`; each provider supplies only its `exchange` + `profile`
+closures (and any spec overrides). Shopify keeps a bespoke handler because of
+its per-shop host + non-expiring token.
 """
 
+import base64
 import json
 import logging
 import os
@@ -64,413 +72,7 @@ _ERROR_HTML = """<!DOCTYPE html>
 <script>setTimeout(() => window.close(), 5000);</script></body></html>"""
 
 
-# ── Google ────────────────────────────────────────────────────────────────
-
-@router.get("/callback/google")
-async def google_callback(
-    request: Request,
-    code: str = QueryParam(None),
-    state: str = QueryParam(None),
-    error: str = QueryParam(None),
-):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Google returned: {error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_redirect_uri
-    state_data = decode_state_token(state, provider="google")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-
-    client_id, client_secret = await resolve_oauth_creds("google", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Google OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_redirect_uri(request, agent_id=agent_id, source=source)
-
-    async with httpx.AsyncClient() as client:
-        token_resp = await client.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "code": code,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-            },
-        )
-
-    if token_resp.status_code != 200:
-        logger.error("Google token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
-
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
-
-    async with httpx.AsyncClient() as client:
-        userinfo_resp = await client.get(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-    userinfo = userinfo_resp.json() if userinfo_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-
-    config = {
-        "email": userinfo.get("email", ""),
-        "name": userinfo.get("name", ""),
-        "picture": userinfo.get("picture", ""),
-        "scopes": token_data.get("scope", "").split(),
-        "source": source,
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    secret = {
-        "access_token": access_token,
-        "refresh_token": token_data.get("refresh_token", ""),
-        "expires_in": token_data.get("expires_in", 3600),
-        "token_type": token_data.get("token_type", "Bearer"),
-    }
-
-    await db.auth_element_set(
-        user_id=user_id,
-        service="google",
-        config=config,
-        secret_ref=json.dumps(secret),
-        label=oauth_label(agent_id),
-    )
-
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id,
-            connection_type="google",
-            section="integration",
-            enabled=True,
-            config={"connected_user_id": user_id, "email": config["email"], "name": config["name"]},
-        )
-    except Exception as e:
-        logger.warning("Failed to update agent_connections for agent %s: %s", agent_id, e)
-
-    logger.info("Google OAuth connected for user %s (%s), agent=%s", user_id[:12], userinfo.get("email", "?"), agent_id)
-    return HTMLResponse(_success_html("Google", "google-oauth-success"))
-
-
-# ── Microsoft ─────────────────────────────────────────────────────────────
-
-@router.get("/callback/microsoft")
-async def microsoft_callback(
-    request: Request,
-    code: str = QueryParam(None),
-    state: str = QueryParam(None),
-    error: str = QueryParam(None),
-    error_description: str = QueryParam(None),
-):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Microsoft returned: {error_description or error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_microsoft_redirect_uri
-    state_data = decode_state_token(state, provider="microsoft")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-
-    client_id, client_secret = await resolve_oauth_creds("microsoft", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Microsoft OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_microsoft_redirect_uri(request, agent_id=agent_id, source=source)
-
-    async with httpx.AsyncClient() as client:
-        token_resp = await client.post(
-            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-            data={
-                "code": code,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-            },
-        )
-
-    if token_resp.status_code != 200:
-        logger.error("Microsoft token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
-
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
-
-    async with httpx.AsyncClient() as client:
-        userinfo_resp = await client.get(
-            "https://graph.microsoft.com/v1.0/me",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-    userinfo = userinfo_resp.json() if userinfo_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-
-    email = userinfo.get("mail") or userinfo.get("userPrincipalName", "")
-    name = userinfo.get("displayName", "")
-    config = {
-        "email": email,
-        "name": name,
-        "picture": "",
-        "scopes": token_data.get("scope", "").split(),
-        "source": source,
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    secret = {
-        "access_token": access_token,
-        "refresh_token": token_data.get("refresh_token", ""),
-        "expires_in": token_data.get("expires_in", 3600),
-        "token_type": token_data.get("token_type", "Bearer"),
-    }
-
-    await db.auth_element_set(
-        user_id=user_id,
-        service="microsoft",
-        config=config,
-        secret_ref=json.dumps(secret),
-        label=oauth_label(agent_id),
-    )
-
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id,
-            connection_type="microsoft",
-            section="integration",
-            enabled=True,
-            config={"connected_user_id": user_id, "email": email, "name": name},
-        )
-    except Exception as e:
-        logger.warning("Failed to update agent_connections for Microsoft, agent %s: %s", agent_id, e)
-
-    logger.info("Microsoft OAuth connected for user %s (%s), agent=%s", user_id[:12], email or "?", agent_id)
-    return HTMLResponse(_success_html("Microsoft", "microsoft-oauth-success"))
-
-
-# ── Yahoo ─────────────────────────────────────────────────────────────────
-
-@router.get("/callback/yahoo")
-async def yahoo_callback(
-    request: Request,
-    code: str = QueryParam(None),
-    state: str = QueryParam(None),
-    error: str = QueryParam(None),
-):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Yahoo returned: {error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_yahoo_redirect_uri
-    state_data = decode_state_token(state, provider="yahoo")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-
-    client_id, client_secret = await resolve_oauth_creds("yahoo", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Yahoo OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_yahoo_redirect_uri(request, agent_id=agent_id, source=source)
-
-    import base64
-    credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-
-    async with httpx.AsyncClient() as client:
-        token_resp = await client.post(
-            "https://api.login.yahoo.com/oauth2/get_token",
-            headers={
-                "Authorization": f"Basic {credentials}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            data={
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-            },
-        )
-
-    if token_resp.status_code != 200:
-        logger.error("Yahoo token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
-
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
-
-    # Yahoo returns xoauth_yahoo_guid in the token response; fetch profile via OpenID
-    async with httpx.AsyncClient() as client:
-        userinfo_resp = await client.get(
-            "https://api.login.yahoo.com/openid/v1/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-    userinfo = userinfo_resp.json() if userinfo_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-
-    email = userinfo.get("email", "")
-    name = userinfo.get("name", userinfo.get("nickname", ""))
-    config = {
-        "email": email,
-        "name": name,
-        "picture": userinfo.get("picture", ""),
-        "yahoo_guid": token_data.get("xoauth_yahoo_guid", ""),
-        "scopes": (token_data.get("scope", "") or "").split(),
-        "source": source,
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    secret = {
-        "access_token": access_token,
-        "refresh_token": token_data.get("refresh_token", ""),
-        "expires_in": token_data.get("expires_in", 3600),
-        "token_type": token_data.get("token_type", "Bearer"),
-    }
-
-    await db.auth_element_set(
-        user_id=user_id,
-        service="yahoo",
-        config=config,
-        secret_ref=json.dumps(secret),
-        label=oauth_label(agent_id),
-    )
-
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id,
-            connection_type="yahoo",
-            section="integration",
-            enabled=True,
-            config={"connected_user_id": user_id, "email": email, "name": name},
-        )
-    except Exception as e:
-        logger.warning("Failed to update agent_connections for Yahoo, agent %s: %s", agent_id, e)
-
-    logger.info("Yahoo OAuth connected for user %s (%s), agent=%s", user_id[:12], email or "?", agent_id)
-    return HTMLResponse(_success_html("Yahoo", "yahoo-oauth-success"))
-
-
-# ── Dropbox ───────────────────────────────────────────────────────────────
-
-@router.get("/callback/dropbox")
-async def dropbox_callback(
-    request: Request,
-    code: str = QueryParam(None),
-    state: str = QueryParam(None),
-    error: str = QueryParam(None),
-    error_description: str = QueryParam(None),
-):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Dropbox returned: {error_description or error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_dropbox_redirect_uri
-    state_data = decode_state_token(state, provider="dropbox")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-
-    client_id, client_secret = await resolve_oauth_creds("dropbox", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Dropbox OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_dropbox_redirect_uri(request, agent_id=agent_id, source=source)
-
-    async with httpx.AsyncClient() as client:
-        token_resp = await client.post(
-            "https://api.dropboxapi.com/oauth2/token",
-            data={
-                "code": code,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-            },
-        )
-
-    if token_resp.status_code != 200:
-        logger.error("Dropbox token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
-
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
-
-    # Fetch account info
-    async with httpx.AsyncClient() as client:
-        acct_resp = await client.post(
-            "https://api.dropboxapi.com/2/users/get_current_account",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            },
-            content=b"null",
-        )
-    acct = acct_resp.json() if acct_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-
-    name = acct.get("name", {}).get("display_name", "")
-    email = acct.get("email", "")
-    picture = acct.get("profile_photo_url", "")
-    config = {
-        "email": email,
-        "name": name,
-        "picture": picture,
-        "account_id": acct.get("account_id", ""),
-        "scopes": (token_data.get("scope", "") or "").split(),
-        "source": source,
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    secret = {
-        "access_token": access_token,
-        "refresh_token": token_data.get("refresh_token", ""),
-        "expires_in": token_data.get("expires_in", 14400),
-        "token_type": token_data.get("token_type", "Bearer"),
-    }
-
-    await db.auth_element_set(
-        user_id=user_id,
-        service="dropbox",
-        config=config,
-        secret_ref=json.dumps(secret),
-        label=oauth_label(agent_id),
-    )
-
-    try:
-        await db.upsert_agent_connection(
-            agent_id=agent_id,
-            connection_type="dropbox",
-            section="integration",
-            enabled=True,
-            config={"connected_user_id": user_id, "email": email, "name": name},
-        )
-    except Exception as e:
-        logger.warning("Failed to update agent_connections for Dropbox, agent %s: %s", agent_id, e)
-
-    logger.info("Dropbox OAuth connected for user %s (%s), agent=%s", user_id[:12], email or "?", agent_id)
-    return HTMLResponse(_success_html("Dropbox", "dropbox-oauth-success"))
-
-
-# ── Shared helper ─────────────────────────────────────────────────────────
+# ── Shared store / state helpers ──────────────────────────────────────────
 
 async def _store_oauth(db, user_id: str, service: str, config: dict, secret: dict,
                        agent_id: str, connection_type: str, section: str = "social",
@@ -517,6 +119,242 @@ def _extract_state(state_data: dict) -> tuple[str, str, str]:
     )
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ── The shared callback driver ────────────────────────────────────────────
+
+async def _run_callback(
+    request: Request,
+    *,
+    provider: str,
+    name: str,
+    message_type: str,
+    code: str,
+    state: str,
+    error: str,
+    error_description: str | None = None,
+    exchange,
+    profile,
+    section: str = "social",
+    success_name: str | None = None,
+    missing_msg: str = "Missing code or state parameter.",
+    not_configured_msg: str | None = None,
+    token_parse=None,
+    secret_builder=None,
+    aliases: list[str] | None = None,
+    extra_connections: list[str] | None = None,
+) -> HTMLResponse:
+    """Run the common OAuth-callback flow, parameterized per provider.
+
+    `exchange(client, *, code, redirect_uri, client_id, client_secret, state_data)`
+    must return the token-endpoint httpx.Response. `profile(client, *,
+    access_token, client_id, token_data, state_data)` returns the config dict to
+    store (it may set the control key `_connection_type` to override the agent
+    connection's type, as Meta does → "facebook").
+    """
+    if error:
+        return HTMLResponse(_ERROR_HTML % f"{name} returned: {error_description or error}", status_code=400)
+    if not code or not state:
+        return HTMLResponse(_ERROR_HTML % missing_msg, status_code=400)
+
+    from app.admin.integrations import decode_state_token, resolve_oauth_creds, provider_redirect_uri
+    state_data = decode_state_token(state, provider=provider)
+    if not state_data or not state_data.get("user_id"):
+        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
+
+    user_id, agent_id, source = _extract_state(state_data)
+    if not agent_id:
+        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
+
+    client_id, client_secret = await resolve_oauth_creds(provider, agent_id, source=source)
+    if not client_id or not client_secret:
+        return HTMLResponse(_ERROR_HTML % (not_configured_msg or f"{name} OAuth not configured on server."), status_code=500)
+
+    redirect_uri = await provider_redirect_uri(provider, request, agent_id=agent_id, source=source)
+
+    async with httpx.AsyncClient() as client:
+        token_resp = await exchange(
+            client, code=code, redirect_uri=redirect_uri,
+            client_id=client_id, client_secret=client_secret, state_data=state_data,
+        )
+    if token_resp.status_code != 200:
+        logger.error("%s token exchange failed: %s", name, token_resp.text)
+        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
+
+    token_data = (token_parse or (lambda r: r.json()))(token_resp)
+    access_token = token_data.get("access_token", "")
+
+    async with httpx.AsyncClient() as client:
+        config = await profile(
+            client, access_token=access_token, client_id=client_id,
+            token_data=token_data, state_data=state_data,
+        )
+
+    secret = (secret_builder or _token_secret)(token_data)
+    connection_type = config.pop("_connection_type", provider)
+
+    from app.db import get_db
+    db = get_db()
+    await _store_oauth(db, user_id, provider, config, secret, agent_id, connection_type,
+                       section=section, source=source, token_data=token_data)
+
+    # Per-provider aliases (Meta stores the same token under facebook + instagram).
+    for alias in (aliases or []):
+        cfg_aliased = {**config, "scopes": (token_data.get("scope", "") or "").split(), "source": source}
+        await db.auth_element_set(user_id=user_id, service=alias, config=cfg_aliased,
+                                  secret_ref=json.dumps(secret), label=oauth_label(agent_id))
+    for ct in (extra_connections or []):
+        try:
+            await db.upsert_agent_connection(
+                agent_id=agent_id, connection_type=ct, section=section, enabled=True,
+                config={"connected_user_id": user_id, "email": config.get("email", ""), "name": config.get("name", "")})
+        except Exception:
+            pass
+
+    logger.info("%s OAuth connected for user %s (%s), agent=%s", name, user_id[:12],
+                config.get("email") or config.get("name") or config.get("username") or "?", agent_id or "none")
+    return HTMLResponse(_success_html(success_name or name, message_type))
+
+
+# ── Google ────────────────────────────────────────────────────────────────
+
+@router.get("/callback/google")
+async def google_callback(
+    request: Request,
+    code: str = QueryParam(None),
+    state: str = QueryParam(None),
+    error: str = QueryParam(None),
+):
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        return await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={"code": code, "client_id": client_id, "client_secret": client_secret,
+                  "redirect_uri": redirect_uri, "grant_type": "authorization_code"},
+        )
+
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.get("https://www.googleapis.com/oauth2/v2/userinfo",
+                             headers={"Authorization": f"Bearer {access_token}"})
+        u = r.json() if r.status_code == 200 else {}
+        return {"email": u.get("email", ""), "name": u.get("name", ""), "picture": u.get("picture", ""),
+                "scopes": token_data.get("scope", "").split(), "connected_at": _now()}
+
+    return await _run_callback(
+        request, provider="google", name="Google", message_type="google-oauth-success",
+        section="integration", code=code, state=state, error=error,
+        exchange=exchange, profile=profile,
+    )
+
+
+# ── Microsoft ─────────────────────────────────────────────────────────────
+
+@router.get("/callback/microsoft")
+async def microsoft_callback(
+    request: Request,
+    code: str = QueryParam(None),
+    state: str = QueryParam(None),
+    error: str = QueryParam(None),
+    error_description: str = QueryParam(None),
+):
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        return await client.post(
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            data={"code": code, "client_id": client_id, "client_secret": client_secret,
+                  "redirect_uri": redirect_uri, "grant_type": "authorization_code"},
+        )
+
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.get("https://graph.microsoft.com/v1.0/me",
+                             headers={"Authorization": f"Bearer {access_token}"})
+        u = r.json() if r.status_code == 200 else {}
+        return {"email": u.get("mail") or u.get("userPrincipalName", ""),
+                "name": u.get("displayName", ""), "picture": "",
+                "scopes": token_data.get("scope", "").split(), "connected_at": _now()}
+
+    return await _run_callback(
+        request, provider="microsoft", name="Microsoft", message_type="microsoft-oauth-success",
+        section="integration", code=code, state=state, error=error, error_description=error_description,
+        exchange=exchange, profile=profile,
+    )
+
+
+# ── Yahoo ─────────────────────────────────────────────────────────────────
+
+@router.get("/callback/yahoo")
+async def yahoo_callback(
+    request: Request,
+    code: str = QueryParam(None),
+    state: str = QueryParam(None),
+    error: str = QueryParam(None),
+):
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        return await client.post(
+            "https://api.login.yahoo.com/oauth2/get_token",
+            headers={"Authorization": f"Basic {credentials}",
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            data={"code": code, "redirect_uri": redirect_uri, "grant_type": "authorization_code"},
+        )
+
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.get("https://api.login.yahoo.com/openid/v1/userinfo",
+                             headers={"Authorization": f"Bearer {access_token}"})
+        u = r.json() if r.status_code == 200 else {}
+        return {"email": u.get("email", ""), "name": u.get("name", u.get("nickname", "")),
+                "picture": u.get("picture", ""), "yahoo_guid": token_data.get("xoauth_yahoo_guid", ""),
+                "scopes": (token_data.get("scope", "") or "").split(), "connected_at": _now()}
+
+    return await _run_callback(
+        request, provider="yahoo", name="Yahoo", message_type="yahoo-oauth-success",
+        section="integration", code=code, state=state, error=error,
+        exchange=exchange, profile=profile,
+    )
+
+
+# ── Dropbox ───────────────────────────────────────────────────────────────
+
+@router.get("/callback/dropbox")
+async def dropbox_callback(
+    request: Request,
+    code: str = QueryParam(None),
+    state: str = QueryParam(None),
+    error: str = QueryParam(None),
+    error_description: str = QueryParam(None),
+):
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        return await client.post(
+            "https://api.dropboxapi.com/oauth2/token",
+            data={"code": code, "client_id": client_id, "client_secret": client_secret,
+                  "redirect_uri": redirect_uri, "grant_type": "authorization_code"},
+        )
+
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.post("https://api.dropboxapi.com/2/users/get_current_account",
+                             headers={"Authorization": f"Bearer {access_token}",
+                                      "Content-Type": "application/json"}, content=b"null")
+        acct = r.json() if r.status_code == 200 else {}
+        return {"email": acct.get("email", ""),
+                "name": acct.get("name", {}).get("display_name", ""),
+                "picture": acct.get("profile_photo_url", ""),
+                "account_id": acct.get("account_id", ""),
+                "scopes": (token_data.get("scope", "") or "").split(), "connected_at": _now()}
+
+    # Dropbox short-lived tokens default to a 4-hour expiry.
+    def _dbx_secret(token_data):
+        return {"access_token": token_data.get("access_token", ""),
+                "refresh_token": token_data.get("refresh_token", ""),
+                "expires_in": token_data.get("expires_in", 14400),
+                "token_type": token_data.get("token_type", "Bearer")}
+
+    return await _run_callback(
+        request, provider="dropbox", name="Dropbox", message_type="dropbox-oauth-success",
+        section="integration", code=code, state=state, error=error, error_description=error_description,
+        exchange=exchange, profile=profile, secret_builder=_dbx_secret,
+    )
+
+
 # ── Meta (Facebook + Instagram) ───────────────────────────────────────────
 
 @router.get("/callback/meta")
@@ -527,69 +365,31 @@ async def meta_callback(
     error: str = QueryParam(None),
     error_description: str = QueryParam(None),
 ):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Meta returned: {error_description or error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_meta_redirect_uri
-    state_data = decode_state_token(state, provider="meta")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await resolve_oauth_creds("meta", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Meta OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_meta_redirect_uri(request, agent_id=agent_id, source=source)
-    async with httpx.AsyncClient() as c:
-        token_resp = await c.get(
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        return await client.get(
             "https://graph.facebook.com/v19.0/oauth/access_token",
             params={"client_id": client_id, "client_secret": client_secret,
                     "redirect_uri": redirect_uri, "code": code},
         )
-    if token_resp.status_code != 200:
-        logger.error("Meta token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
 
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.get("https://graph.facebook.com/v19.0/me",
+                             params={"fields": "id,name,email,picture.type(large)", "access_token": access_token})
+        me = r.json() if r.status_code == 200 else {}
+        return {
+            "email": me.get("email", ""), "name": me.get("name", ""),
+            "picture": me.get("picture", {}).get("data", {}).get("url", "") if isinstance(me.get("picture"), dict) else "",
+            "provider_user_id": me.get("id", ""), "connected_at": _now(),
+            "_connection_type": "facebook",  # primary agent connection stored as facebook
+        }
 
-    async with httpx.AsyncClient() as c:
-        me_resp = await c.get(
-            "https://graph.facebook.com/v19.0/me",
-            params={"fields": "id,name,email,picture.type(large)", "access_token": access_token},
-        )
-    me = me_resp.json() if me_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-    now = datetime.now(timezone.utc).isoformat()
-    config = {
-        "email": me.get("email", ""),
-        "name": me.get("name", ""),
-        "picture": me.get("picture", {}).get("data", {}).get("url", "") if isinstance(me.get("picture"), dict) else "",
-        "provider_user_id": me.get("id", ""),
-        "connected_at": now,
-    }
-    secret = _token_secret(token_data)
-
-    # Store under "meta" (parent) + aliases for facebook and instagram, all scoped per-agent.
-    await _store_oauth(db, user_id, "meta", config, secret, agent_id, "facebook", section="social", source=source, token_data=token_data)
-    cfg_aliased = {**config, "scopes": (token_data.get("scope", "") or "").split(), "source": source}
-    await db.auth_element_set(user_id=user_id, service="facebook", config=cfg_aliased, secret_ref=json.dumps(secret), label=oauth_label(agent_id))
-    await db.auth_element_set(user_id=user_id, service="instagram", config=cfg_aliased, secret_ref=json.dumps(secret), label=oauth_label(agent_id))
-    try:
-        await db.upsert_agent_connection(agent_id=agent_id, connection_type="instagram", section="social",
-            enabled=True, config={"connected_user_id": user_id, "email": config["email"], "name": config["name"]})
-    except Exception:
-        pass
-
-    logger.info("Meta OAuth connected for user %s (%s), agent=%s", user_id[:12], config.get("email") or me.get("name", "?"), agent_id)
-    return HTMLResponse(_success_html("Meta (Facebook & Instagram)", "meta-oauth-success"))
+    return await _run_callback(
+        request, provider="meta", name="Meta", success_name="Meta (Facebook & Instagram)",
+        message_type="meta-oauth-success", section="social",
+        code=code, state=state, error=error, error_description=error_description,
+        exchange=exchange, profile=profile,
+        aliases=["facebook", "instagram"], extra_connections=["instagram"],
+    )
 
 
 # ── Twitter / X ───────────────────────────────────────────────────────────
@@ -602,63 +402,29 @@ async def twitter_callback(
     error: str = QueryParam(None),
     error_description: str = QueryParam(None),
 ):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Twitter returned: {error_description or error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    import base64 as _b64
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_twitter_redirect_uri
-    state_data = decode_state_token(state, provider="twitter")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    pkce_verifier = state_data.get("pkce_verifier", "")
-
-    client_id, client_secret = await resolve_oauth_creds("twitter", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Twitter OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_twitter_redirect_uri(request, agent_id=agent_id, source=source)
-    creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-
-    async with httpx.AsyncClient() as c:
-        token_resp = await c.post(
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        creds_b64 = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        return await client.post(
             "https://api.twitter.com/2/oauth2/token",
             headers={"Authorization": f"Basic {creds_b64}", "Content-Type": "application/x-www-form-urlencoded"},
             data={"code": code, "grant_type": "authorization_code", "redirect_uri": redirect_uri,
-                  "code_verifier": pkce_verifier},
+                  "code_verifier": state_data.get("pkce_verifier", "")},
         )
-    if token_resp.status_code != 200:
-        logger.error("Twitter token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
 
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.get("https://api.twitter.com/2/users/me",
+                             headers={"Authorization": f"Bearer {access_token}"},
+                             params={"user.fields": "name,username,profile_image_url,description"})
+        me = r.json().get("data", {}) if r.status_code == 200 else {}
+        return {"name": me.get("name", ""), "username": me.get("username", ""),
+                "picture": me.get("profile_image_url", ""), "email": "", "connected_at": _now()}
 
-    async with httpx.AsyncClient() as c:
-        me_resp = await c.get(
-            "https://api.twitter.com/2/users/me",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"user.fields": "name,username,profile_image_url,description"},
-        )
-    me = me_resp.json().get("data", {}) if me_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-    config = {
-        "name": me.get("name", ""),
-        "username": me.get("username", ""),
-        "picture": me.get("profile_image_url", ""),
-        "email": "",
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await _store_oauth(db, user_id, "twitter", config, _token_secret(token_data), agent_id, "twitter", source=source, token_data=token_data)
-    logger.info("Twitter OAuth connected for user %s (@%s), agent=%s", user_id[:12], me.get("username", "?"), agent_id or "none")
-    return HTMLResponse(_success_html("Twitter / X", "twitter-oauth-success"))
+    return await _run_callback(
+        request, provider="twitter", name="Twitter", success_name="Twitter / X",
+        message_type="twitter-oauth-success", section="social",
+        code=code, state=state, error=error, error_description=error_description,
+        exchange=exchange, profile=profile,
+    )
 
 
 # ── LinkedIn ──────────────────────────────────────────────────────────────
@@ -671,56 +437,26 @@ async def linkedin_callback(
     error: str = QueryParam(None),
     error_description: str = QueryParam(None),
 ):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"LinkedIn returned: {error_description or error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_linkedin_redirect_uri
-    state_data = decode_state_token(state, provider="linkedin")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await resolve_oauth_creds("linkedin", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "LinkedIn OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_linkedin_redirect_uri(request, agent_id=agent_id, source=source)
-    async with httpx.AsyncClient() as c:
-        token_resp = await c.post(
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        return await client.post(
             "https://www.linkedin.com/oauth/v2/accessToken",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={"code": code, "client_id": client_id, "client_secret": client_secret,
                   "redirect_uri": redirect_uri, "grant_type": "authorization_code"},
         )
-    if token_resp.status_code != 200:
-        logger.error("LinkedIn token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
 
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.get("https://api.linkedin.com/v2/userinfo",
+                             headers={"Authorization": f"Bearer {access_token}"})
+        me = r.json() if r.status_code == 200 else {}
+        return {"email": me.get("email", ""), "name": me.get("name", ""),
+                "picture": me.get("picture", ""), "connected_at": _now()}
 
-    async with httpx.AsyncClient() as c:
-        me_resp = await c.get(
-            "https://api.linkedin.com/v2/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-    me = me_resp.json() if me_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-    config = {
-        "email": me.get("email", ""),
-        "name": me.get("name", ""),
-        "picture": me.get("picture", ""),
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await _store_oauth(db, user_id, "linkedin", config, _token_secret(token_data), agent_id, "linkedin", source=source, token_data=token_data)
-    logger.info("LinkedIn OAuth connected for user %s (%s), agent=%s", user_id[:12], config["email"] or "?", agent_id or "none")
-    return HTMLResponse(_success_html("LinkedIn", "linkedin-oauth-success"))
+    return await _run_callback(
+        request, provider="linkedin", name="LinkedIn", message_type="linkedin-oauth-success",
+        section="social", code=code, state=state, error=error, error_description=error_description,
+        exchange=exchange, profile=profile,
+    )
 
 
 # ── TikTok ────────────────────────────────────────────────────────────────
@@ -733,60 +469,29 @@ async def tiktok_callback(
     error: str = QueryParam(None),
     error_description: str = QueryParam(None),
 ):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"TikTok returned: {error_description or error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_tiktok_redirect_uri
-    state_data = decode_state_token(state, provider="tiktok")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    pkce_verifier = state_data.get("pkce_verifier", "")
-
-    client_id, client_secret = await resolve_oauth_creds("tiktok", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "TikTok OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_tiktok_redirect_uri(request, agent_id=agent_id, source=source)
-    async with httpx.AsyncClient() as c:
-        token_resp = await c.post(
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        return await client.post(
             "https://open.tiktokapis.com/v2/oauth/token/",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={"client_key": client_id, "client_secret": client_secret, "code": code,
                   "grant_type": "authorization_code", "redirect_uri": redirect_uri,
-                  "code_verifier": pkce_verifier},
+                  "code_verifier": state_data.get("pkce_verifier", "")},
         )
-    if token_resp.status_code != 200:
-        logger.error("TikTok token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
 
-    token_data = token_resp.json().get("data", token_resp.json())
-    access_token = token_data.get("access_token", "")
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.get("https://open.tiktokapis.com/v2/user/info/",
+                             headers={"Authorization": f"Bearer {access_token}"},
+                             params={"fields": "open_id,display_name,avatar_url"})
+        me = r.json().get("data", {}).get("user", {}) if r.status_code == 200 else {}
+        return {"name": me.get("display_name", ""), "picture": me.get("avatar_url", ""),
+                "email": "", "connected_at": _now()}
 
-    async with httpx.AsyncClient() as c:
-        me_resp = await c.get(
-            "https://open.tiktokapis.com/v2/user/info/",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"fields": "open_id,display_name,avatar_url"},
-        )
-    me = me_resp.json().get("data", {}).get("user", {}) if me_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-    config = {
-        "name": me.get("display_name", ""),
-        "picture": me.get("avatar_url", ""),
-        "email": "",
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await _store_oauth(db, user_id, "tiktok", config, _token_secret(token_data), agent_id, "tiktok", source=source, token_data=token_data)
-    logger.info("TikTok OAuth connected for user %s (%s), agent=%s", user_id[:12], config["name"] or "?", agent_id or "none")
-    return HTMLResponse(_success_html("TikTok", "tiktok-oauth-success"))
+    return await _run_callback(
+        request, provider="tiktok", name="TikTok", message_type="tiktok-oauth-success",
+        section="social", code=code, state=state, error=error, error_description=error_description,
+        exchange=exchange, profile=profile,
+        token_parse=lambda r: r.json().get("data", r.json()),
+    )
 
 
 # ── Pinterest ─────────────────────────────────────────────────────────────
@@ -798,57 +503,26 @@ async def pinterest_callback(
     state: str = QueryParam(None),
     error: str = QueryParam(None),
 ):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Pinterest returned: {error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_pinterest_redirect_uri
-    state_data = decode_state_token(state, provider="pinterest")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await resolve_oauth_creds("pinterest", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Pinterest OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_pinterest_redirect_uri(request, agent_id=agent_id, source=source)
-    import base64 as _b64
-    creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-    async with httpx.AsyncClient() as c:
-        token_resp = await c.post(
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        creds_b64 = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        return await client.post(
             "https://api.pinterest.com/v5/oauth/token",
             headers={"Authorization": f"Basic {creds_b64}", "Content-Type": "application/x-www-form-urlencoded"},
             data={"code": code, "redirect_uri": redirect_uri, "grant_type": "authorization_code"},
         )
-    if token_resp.status_code != 200:
-        logger.error("Pinterest token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
 
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.get("https://api.pinterest.com/v5/user_account",
+                             headers={"Authorization": f"Bearer {access_token}"})
+        me = r.json() if r.status_code == 200 else {}
+        return {"name": me.get("username", ""), "picture": me.get("profile_image", ""),
+                "email": "", "connected_at": _now()}
 
-    async with httpx.AsyncClient() as c:
-        me_resp = await c.get(
-            "https://api.pinterest.com/v5/user_account",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-    me = me_resp.json() if me_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-    config = {
-        "name": me.get("username", ""),
-        "picture": me.get("profile_image", ""),
-        "email": "",
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await _store_oauth(db, user_id, "pinterest", config, _token_secret(token_data), agent_id, "pinterest", source=source, token_data=token_data)
-    logger.info("Pinterest OAuth connected for user %s (%s), agent=%s", user_id[:12], config["name"] or "?", agent_id or "none")
-    return HTMLResponse(_success_html("Pinterest", "pinterest-oauth-success"))
+    return await _run_callback(
+        request, provider="pinterest", name="Pinterest", message_type="pinterest-oauth-success",
+        section="social", code=code, state=state, error=error,
+        exchange=exchange, profile=profile,
+    )
 
 
 # ── Reddit ────────────────────────────────────────────────────────────────
@@ -860,58 +534,27 @@ async def reddit_callback(
     state: str = QueryParam(None),
     error: str = QueryParam(None),
 ):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Reddit returned: {error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_reddit_redirect_uri
-    import base64 as _b64
-    state_data = decode_state_token(state, provider="reddit")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await resolve_oauth_creds("reddit", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Reddit OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_reddit_redirect_uri(request, agent_id=agent_id, source=source)
-    creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-    async with httpx.AsyncClient() as c:
-        token_resp = await c.post(
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        creds_b64 = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        return await client.post(
             "https://www.reddit.com/api/v1/access_token",
             headers={"Authorization": f"Basic {creds_b64}", "Content-Type": "application/x-www-form-urlencoded",
                      "User-Agent": "webAgent/1.0"},
             data={"code": code, "redirect_uri": redirect_uri, "grant_type": "authorization_code"},
         )
-    if token_resp.status_code != 200:
-        logger.error("Reddit token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
 
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.get("https://oauth.reddit.com/api/v1/me",
+                             headers={"Authorization": f"Bearer {access_token}", "User-Agent": "webAgent/1.0"})
+        me = r.json() if r.status_code == 200 else {}
+        return {"name": me.get("name", ""), "picture": me.get("icon_img", "").split("?")[0],
+                "email": "", "connected_at": _now()}
 
-    async with httpx.AsyncClient() as c:
-        me_resp = await c.get(
-            "https://oauth.reddit.com/api/v1/me",
-            headers={"Authorization": f"Bearer {access_token}", "User-Agent": "webAgent/1.0"},
-        )
-    me = me_resp.json() if me_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-    config = {
-        "name": me.get("name", ""),
-        "picture": me.get("icon_img", "").split("?")[0],
-        "email": "",
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await _store_oauth(db, user_id, "reddit", config, _token_secret(token_data), agent_id, "reddit", source=source, token_data=token_data)
-    logger.info("Reddit OAuth connected for user %s (u/%s), agent=%s", user_id[:12], config["name"] or "?", agent_id or "none")
-    return HTMLResponse(_success_html("Reddit", "reddit-oauth-success"))
+    return await _run_callback(
+        request, provider="reddit", name="Reddit", message_type="reddit-oauth-success",
+        section="social", code=code, state=state, error=error,
+        exchange=exchange, profile=profile,
+    )
 
 
 # ── Snapchat ──────────────────────────────────────────────────────────────
@@ -923,58 +566,27 @@ async def snapchat_callback(
     state: str = QueryParam(None),
     error: str = QueryParam(None),
 ):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Snapchat returned: {error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_snapchat_redirect_uri
-    state_data = decode_state_token(state, provider="snapchat")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await resolve_oauth_creds("snapchat", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Snapchat OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_snapchat_redirect_uri(request, agent_id=agent_id, source=source)
-    import base64 as _b64
-    creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-    async with httpx.AsyncClient() as c:
-        token_resp = await c.post(
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        creds_b64 = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        return await client.post(
             "https://accounts.snapchat.com/login/oauth2/access_token",
             headers={"Authorization": f"Basic {creds_b64}", "Content-Type": "application/x-www-form-urlencoded"},
             data={"code": code, "redirect_uri": redirect_uri, "grant_type": "authorization_code"},
         )
-    if token_resp.status_code != 200:
-        logger.error("Snapchat token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
 
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.get("https://kit.snapchat.com/v1/me",
+                             headers={"Authorization": f"Bearer {access_token}"},
+                             params={"query": "{me{displayName bitmoji{avatar}}}"})
+        me = r.json().get("data", {}).get("me", {}) if r.status_code == 200 else {}
+        return {"name": me.get("displayName", ""), "picture": me.get("bitmoji", {}).get("avatar", ""),
+                "email": "", "connected_at": _now()}
 
-    async with httpx.AsyncClient() as c:
-        me_resp = await c.get(
-            "https://kit.snapchat.com/v1/me",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"query": "{me{displayName bitmoji{avatar}}}"},
-        )
-    me = me_resp.json().get("data", {}).get("me", {}) if me_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-    config = {
-        "name": me.get("displayName", ""),
-        "picture": me.get("bitmoji", {}).get("avatar", ""),
-        "email": "",
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await _store_oauth(db, user_id, "snapchat", config, _token_secret(token_data), agent_id, "snapchat", source=source, token_data=token_data)
-    logger.info("Snapchat OAuth connected for user %s (%s), agent=%s", user_id[:12], config["name"] or "?", agent_id or "none")
-    return HTMLResponse(_success_html("Snapchat", "snapchat-oauth-success"))
+    return await _run_callback(
+        request, provider="snapchat", name="Snapchat", message_type="snapchat-oauth-success",
+        section="social", code=code, state=state, error=error,
+        exchange=exchange, profile=profile,
+    )
 
 
 # ── Twitch ────────────────────────────────────────────────────────────────
@@ -987,55 +599,25 @@ async def twitch_callback(
     error: str = QueryParam(None),
     error_description: str = QueryParam(None),
 ):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Twitch returned: {error_description or error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_twitch_redirect_uri
-    state_data = decode_state_token(state, provider="twitch")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await resolve_oauth_creds("twitch", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Twitch OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_twitch_redirect_uri(request, agent_id=agent_id, source=source)
-    async with httpx.AsyncClient() as c:
-        token_resp = await c.post(
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        return await client.post(
             "https://id.twitch.tv/oauth2/token",
             params={"client_id": client_id, "client_secret": client_secret, "code": code,
                     "grant_type": "authorization_code", "redirect_uri": redirect_uri},
         )
-    if token_resp.status_code != 200:
-        logger.error("Twitch token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
 
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        r = await client.get("https://api.twitch.tv/helix/users",
+                             headers={"Authorization": f"Bearer {access_token}", "Client-Id": client_id})
+        me = (r.json().get("data") or [{}])[0] if r.status_code == 200 else {}
+        return {"name": me.get("display_name", ""), "picture": me.get("profile_image_url", ""),
+                "email": me.get("email", ""), "connected_at": _now()}
 
-    async with httpx.AsyncClient() as c:
-        me_resp = await c.get(
-            "https://api.twitch.tv/helix/users",
-            headers={"Authorization": f"Bearer {access_token}", "Client-Id": client_id},
-        )
-    me = (me_resp.json().get("data") or [{}])[0] if me_resp.status_code == 200 else {}
-
-    from app.db import get_db
-    db = get_db()
-    config = {
-        "name": me.get("display_name", ""),
-        "picture": me.get("profile_image_url", ""),
-        "email": me.get("email", ""),
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await _store_oauth(db, user_id, "twitch", config, _token_secret(token_data), agent_id, "twitch", source=source, token_data=token_data)
-    logger.info("Twitch OAuth connected for user %s (%s), agent=%s", user_id[:12], config["name"] or "?", agent_id or "none")
-    return HTMLResponse(_success_html("Twitch", "twitch-oauth-success"))
+    return await _run_callback(
+        request, provider="twitch", name="Twitch", message_type="twitch-oauth-success",
+        section="social", code=code, state=state, error=error, error_description=error_description,
+        exchange=exchange, profile=profile,
+    )
 
 
 # ── eBay ──────────────────────────────────────────────────────────────────
@@ -1048,64 +630,32 @@ async def ebay_callback(
     error: str = QueryParam(None),
     error_description: str = QueryParam(None),
 ):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"eBay returned: {error_description or error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    import base64 as _b64
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_ebay_redirect_uri
-    state_data = decode_state_token(state, provider="ebay")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    client_id, client_secret = await resolve_oauth_creds("ebay", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "eBay OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_ebay_redirect_uri(request, agent_id=agent_id, source=source)
-    creds_b64 = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-    async with httpx.AsyncClient() as c:
-        token_resp = await c.post(
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        creds_b64 = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        return await client.post(
             "https://api.ebay.com/identity/v1/oauth2/token",
             headers={"Authorization": f"Basic {creds_b64}", "Content-Type": "application/x-www-form-urlencoded"},
             data={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
         )
-    if token_resp.status_code != 200:
-        logger.error("eBay token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
 
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        # Fetch the seller's username so the UI can show who's connected.
+        name = ""
+        try:
+            r = await client.get("https://apiz.ebay.com/commerce/identity/v1/user/",
+                                 headers={"Authorization": f"Bearer {access_token}"})
+            if r.status_code == 200:
+                me = r.json()
+                name = me.get("username", "") or me.get("userId", "")
+        except Exception:
+            pass
+        return {"name": name, "email": "", "picture": "", "connected_at": _now()}
 
-    # Fetch the seller's username so the UI can show who's connected.
-    name = ""
-    try:
-        async with httpx.AsyncClient() as c:
-            me_resp = await c.get(
-                "https://apiz.ebay.com/commerce/identity/v1/user/",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-        if me_resp.status_code == 200:
-            me = me_resp.json()
-            name = me.get("username", "") or me.get("userId", "")
-    except Exception:
-        pass
-
-    from app.db import get_db
-    db = get_db()
-    config = {
-        "name": name,
-        "email": "",
-        "picture": "",
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await _store_oauth(db, user_id, "ebay", config, _token_secret(token_data), agent_id, "ebay", section="marketplace", source=source, token_data=token_data)
-    logger.info("eBay OAuth connected for user %s (%s), agent=%s", user_id[:12], name or "?", agent_id or "none")
-    return HTMLResponse(_success_html("eBay", "ebay-oauth-success"))
+    return await _run_callback(
+        request, provider="ebay", name="eBay", message_type="ebay-oauth-success",
+        section="marketplace", code=code, state=state, error=error, error_description=error_description,
+        exchange=exchange, profile=profile,
+    )
 
 
 # ── Etsy ──────────────────────────────────────────────────────────────────
@@ -1117,91 +667,50 @@ async def etsy_callback(
     state: str = QueryParam(None),
     error: str = QueryParam(None),
 ):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Etsy returned: {error}", status_code=400)
-    if not code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_etsy_redirect_uri
-    state_data = decode_state_token(state, provider="etsy")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    pkce_verifier = state_data.get("pkce_verifier", "")
-
-    client_id, client_secret = await resolve_oauth_creds("etsy", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Etsy OAuth not configured on server.", status_code=500)
-
-    redirect_uri = await get_etsy_redirect_uri(request, agent_id=agent_id, source=source)
-    async with httpx.AsyncClient() as c:
-        token_resp = await c.post(
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        # Etsy is PKCE — the client_id goes in the body and there is no secret.
+        return await client.post(
             "https://api.etsy.com/v3/public/oauth/token",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type": "authorization_code",
-                "client_id": client_id,
-                "redirect_uri": redirect_uri,
-                "code": code,
-                "code_verifier": pkce_verifier,
-            },
+            data={"grant_type": "authorization_code", "client_id": client_id,
+                  "redirect_uri": redirect_uri, "code": code,
+                  "code_verifier": state_data.get("pkce_verifier", "")},
         )
-    if token_resp.status_code != 200:
-        logger.error("Etsy token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
 
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token", "")
-    # Etsy access_tokens are formatted "<user_id>.<token>".
-    etsy_user_id = access_token.split(".", 1)[0] if "." in access_token else ""
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        # Etsy access_tokens are formatted "<user_id>.<token>".
+        etsy_user_id = access_token.split(".", 1)[0] if "." in access_token else ""
+        name = email = picture = shop_id = ""
+        try:
+            r = await client.get(f"https://openapi.etsy.com/v3/application/users/{etsy_user_id}",
+                                 headers={"Authorization": f"Bearer {access_token}", "x-api-key": client_id})
+            if r.status_code == 200:
+                me = r.json()
+                name = (me.get("first_name", "") + " " + me.get("last_name", "")).strip() or me.get("login_name", "")
+                email = me.get("primary_email", "")
+                picture = me.get("image_url_75x75", "")
+            shop_resp = await client.get(f"https://openapi.etsy.com/v3/application/users/{etsy_user_id}/shops",
+                                         headers={"Authorization": f"Bearer {access_token}", "x-api-key": client_id})
+            if shop_resp.status_code == 200:
+                sd = shop_resp.json() or {}
+                shop_id = str(sd.get("shop_id", "")) if "shop_id" in sd else ""
+        except Exception as e:
+            logger.warning("Etsy profile/shop lookup failed: %s", e)
+        return {"name": name, "email": email, "picture": picture,
+                "etsy_user_id": etsy_user_id, "shop_id": shop_id, "connected_at": _now()}
 
-    name = ""
-    email = ""
-    picture = ""
-    shop_id = ""
-    try:
-        async with httpx.AsyncClient() as c:
-            me_resp = await c.get(
-                f"https://openapi.etsy.com/v3/application/users/{etsy_user_id}",
-                headers={"Authorization": f"Bearer {access_token}", "x-api-key": client_id},
-            )
-        if me_resp.status_code == 200:
-            me = me_resp.json()
-            name = (me.get("first_name", "") + " " + me.get("last_name", "")).strip() or me.get("login_name", "")
-            email = me.get("primary_email", "")
-            picture = me.get("image_url_75x75", "")
-
-        # Look up the user's shop (if any) — needed for create/list listing calls.
-        async with httpx.AsyncClient() as c:
-            shop_resp = await c.get(
-                f"https://openapi.etsy.com/v3/application/users/{etsy_user_id}/shops",
-                headers={"Authorization": f"Bearer {access_token}", "x-api-key": client_id},
-            )
-        if shop_resp.status_code == 200:
-            sd = shop_resp.json() or {}
-            shop_id = str(sd.get("shop_id", "")) if "shop_id" in sd else ""
-    except Exception as e:
-        logger.warning("Etsy profile/shop lookup failed: %s", e)
-
-    from app.db import get_db
-    db = get_db()
-    config = {
-        "name": name,
-        "email": email,
-        "picture": picture,
-        "etsy_user_id": etsy_user_id,
-        "shop_id": shop_id,
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await _store_oauth(db, user_id, "etsy", config, _token_secret(token_data), agent_id, "etsy", section="marketplace", source=source, token_data=token_data)
-    logger.info("Etsy OAuth connected for user %s (%s, shop=%s), agent=%s", user_id[:12], name or "?", shop_id or "-", agent_id or "none")
-    return HTMLResponse(_success_html("Etsy", "etsy-oauth-success"))
+    return await _run_callback(
+        request, provider="etsy", name="Etsy", message_type="etsy-oauth-success",
+        section="marketplace", code=code, state=state, error=error,
+        exchange=exchange, profile=profile,
+    )
 
 
 # ── Shopify (per-shop) ────────────────────────────────────────────────────
+#
+# Bespoke handler (the task's documented exception): the token endpoint lives
+# on the per-shop host, the access token never expires, and the shop domain
+# from the redirect must match the one captured in state.
 
 @router.get("/callback/shopify")
 async def shopify_callback(
@@ -1278,7 +787,7 @@ async def shopify_callback(
         "email": email,
         "picture": "",
         "shop": shop,
-        "connected_at": datetime.now(timezone.utc).isoformat(),
+        "connected_at": _now(),
     }
     await _store_oauth(db, user_id, "shopify", config, secret, agent_id, "shopify", section="marketplace", source=source, token_data=token_data)
     logger.info("Shopify OAuth connected for user %s (%s), agent=%s", user_id[:12], shop, agent_id or "none")
@@ -1296,55 +805,24 @@ async def amazon_callback(
     mws_auth_token: str = QueryParam(None),
     error: str = QueryParam(None),
 ):
-    if error:
-        return HTMLResponse(_ERROR_HTML % f"Amazon returned: {error}", status_code=400)
-    if not spapi_oauth_code or not state:
-        return HTMLResponse(_ERROR_HTML % "Missing spapi_oauth_code or state parameter.", status_code=400)
-
-    from app.admin.integrations import decode_state_token, resolve_oauth_creds, get_amazon_redirect_uri
-    state_data = decode_state_token(state, provider="amazon")
-    if not state_data or not state_data.get("user_id"):
-        return HTMLResponse(_ERROR_HTML % "Invalid or expired state token.", status_code=400)
-
-    user_id, agent_id, source = _extract_state(state_data)
-    if not agent_id:
-        return HTMLResponse(_ERROR_HTML % "Missing agent context — re-launch sign-in from an agent's Connections tab.", status_code=400)
-    region = (state_data.get("region") or "NA").upper()
-
-    client_id, client_secret = await resolve_oauth_creds("amazon", agent_id, source=source)
-    if not client_id or not client_secret:
-        return HTMLResponse(_ERROR_HTML % "Amazon LWA not configured on server.", status_code=500)
-
-    redirect_uri = await get_amazon_redirect_uri(request, agent_id=agent_id, source=source)
-    async with httpx.AsyncClient() as c:
-        token_resp = await c.post(
+    async def exchange(client, *, code, redirect_uri, client_id, client_secret, state_data):
+        return await client.post(
             "https://api.amazon.com/auth/o2/token",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type": "authorization_code",
-                "code": spapi_oauth_code,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": redirect_uri,
-            },
+            data={"grant_type": "authorization_code", "code": code, "client_id": client_id,
+                  "client_secret": client_secret, "redirect_uri": redirect_uri},
         )
-    if token_resp.status_code != 200:
-        logger.error("Amazon LWA token exchange failed: %s", token_resp.text)
-        return HTMLResponse(_ERROR_HTML % "Token exchange failed.", status_code=400)
 
-    token_data = token_resp.json()
+    async def profile(client, *, access_token, client_id, token_data, state_data):
+        # Amazon supplies the seller id on the redirect; there is no profile call.
+        region = (state_data.get("region") or "NA").upper()
+        return {"name": selling_partner_id or "", "email": "", "picture": "",
+                "selling_partner_id": selling_partner_id or "", "region": region, "connected_at": _now()}
 
-    from app.db import get_db
-    db = get_db()
-    config = {
-        "name": selling_partner_id or "",
-        "email": "",
-        "picture": "",
-        "selling_partner_id": selling_partner_id or "",
-        "region": region,
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await _store_oauth(db, user_id, "amazon", config, _token_secret(token_data), agent_id, "amazon", section="marketplace", source=source, token_data=token_data)
-    logger.info("Amazon SP-API connected for user %s (sp_id=%s, region=%s), agent=%s",
-                user_id[:12], selling_partner_id or "?", region, agent_id or "none")
-    return HTMLResponse(_success_html("Amazon", "amazon-oauth-success"))
+    return await _run_callback(
+        request, provider="amazon", name="Amazon", message_type="amazon-oauth-success",
+        section="marketplace", code=spapi_oauth_code, state=state, error=error,
+        missing_msg="Missing spapi_oauth_code or state parameter.",
+        not_configured_msg="Amazon LWA not configured on server.",
+        exchange=exchange, profile=profile,
+    )

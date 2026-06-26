@@ -2,7 +2,7 @@
   "name": "webAgent",
   "short_name": "webAgent",
   "description": "AI agent harness — chat, tools, automations, and pages",
-  "start_url": "/?utm_source=homescreen",
+  "start_url": "/app?utm_source=homescreen",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone", "browser"],
   "orientation": "any",
@@ -44,7 +44,7 @@
       "name": "Chat",
       "short_name": "Chat",
       "description": "Open chat with the agent",
-      "url": "/?tab=chat",
+      "url": "/app?tab=chat",
       "icons": [
         {
           "src": "/ui/icons/icon-192x192.png",
@@ -56,13 +56,13 @@
       "name": "Admin Tools",
       "short_name": "Admin",
       "description": "File manager, terminal, and configuration",
-      "url": "/?tab=admin-tools"
+      "url": "/app?tab=admin-tools"
     },
     {
-      "name": "Pages",
-      "short_name": "Pages",
-      "description": "Visual pages workspace",
-      "url": "/?tab=autoagent"
+      "name": "Canvas",
+      "short_name": "Canvas",
+      "description": "Visual canvas workspace",
+      "url": "/app?tab=canvas"
     }
   ],
   "edge_side_panel": {

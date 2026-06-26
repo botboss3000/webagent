@@ -30,25 +30,34 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     The Planner / Closer agents handle those via tools in chat flow.
     """
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    from app.optimizer.templates import seed_optimizer_templates
-    seed_optimizer_templates()
 
     # Skip Worker test sessions to prevent recursive optimizer cascades
     if session_id.startswith('worker-') or session_id.startswith('optimizer-') or session_id.startswith('closer-'):
         return None
 
-    # Skip dedup check when force=True (/optimize command)
-    if not force:
-        if session_id in _recently_seen:
-            if asyncio.get_event_loop().time() - _recently_seen[session_id] < _RECENT_WINDOW_SEC and not criteria:
-                return None
-    _recently_seen[session_id] = asyncio.get_event_loop().time()
-
     cfg = load_config()
-    # Bypass mode check when force=True (used by /optimize command)
+    # Bypass mode + threshold + dedup when force=True (/optimize command).
     if not force:
-        if cfg.get("mode") != "live":
+        from app.optimizer.config import optimizer_enabled, optimizer_min_turns
+        if not optimizer_enabled(cfg):
             return None
+        # Minimum session length: only auto-run once this session has MORE than
+        # N completed turns (short chats are skipped). This MUST run before the
+        # dedup timestamp update below — otherwise the sub-threshold turns would
+        # still refresh the dedup clock and suppress the first eligible run.
+        min_turns = optimizer_min_turns(cfg)
+        if min_turns > 0:
+            turns = _count_user_turns(user_id, session_id)
+            if turns <= min_turns:
+                logger.debug("Optimizer: session %s has %s turns, not > threshold %s — skip",
+                             session_id, turns, min_turns)
+                return None
+        # Past the threshold. The dedup window throttles how often a long, active
+        # session re-runs the optimizer (at most once per window).
+        last = _recently_seen.get(session_id)
+        if last is not None and (asyncio.get_event_loop().time() - last) < _RECENT_WINDOW_SEC and not criteria:
+            return None
+    _recently_seen[session_id] = asyncio.get_event_loop().time()
 
     run_id = str(uuid.uuid4())
     opt_sid = f"optimizer-{str(uuid.uuid4())[:8]}"
@@ -73,7 +82,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
 
     # ── Inject target session data + webAgent context into temp DB ──
     # This gives the Planner the full picture without needing tool calls
-    _inject_session_context(user_id, session_id, temp_db_path, opt_sid)
+    await _inject_session_context(user_id, session_id, temp_db_path, opt_sid)
 
     # ── Create optimizer session in local.db ──
     _ensure_session(user_id, opt_sid, session_id)
@@ -103,23 +112,24 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     return opt_sid
 
 
-def _inject_session_context(user_id: str, session_id: str, temp_db_path: str, opt_sid: str) -> None:
-    """Inject target session interactions + webAgent context docs into the optimizer temp DB.
-    Limits to last 50 interactions so long sessions don't bloat the prompt."""
+async def _inject_session_context(user_id: str, session_id: str, temp_db_path: str, opt_sid: str) -> None:
+    """Inject target session interactions + webAgent base-prompt context into the
+    optimizer temp DB. Limits to last 50 interactions so long sessions don't
+    bloat the prompt."""
     import json
+    from app.db.local import DB_DIR
 
     ctx_data = []
+    # ── Target session transcript (read from the real runtime local.db) ──
     try:
-        local = sqlite3.connect(
-            os.path.join(os.path.dirname(temp_db_path), "..", "local.db")
-        )
+        local = sqlite3.connect(os.path.join(DB_DIR, "local.db"))
         local.row_factory = sqlite3.Row
-
         # Get last 50 target session interactions
         ics = local.execute(
             "SELECT role, content, tool_name FROM interactions WHERE session_id=? ORDER BY created_at DESC LIMIT 50",
             (session_id,)
         ).fetchall()
+        local.close()
         ics.reverse()
         if ics:
             ctx_data.append("## Target Session Interactions")
@@ -133,34 +143,41 @@ def _inject_session_context(user_id: str, session_id: str, temp_db_path: str, op
                 elif role == 'tool':
                     tn = ic['tool_name'] or ''
                     ctx_data.append(f"[tool] ({tn}): {content[:200]}")
+    except Exception as e:
+        logging.warning("Failed to inject session interactions: %s", e)
 
-        # Get webAgent context from context columns
-        agent = local.execute(
-            "SELECT agent_prompt, user_prompt, skills_prompt, tasks_prompt, misc_prompt FROM agents WHERE user_id=? LIMIT 1",
-            (user_id,)
-        ).fetchone()
-        if agent:
-            col_map = [
-                ("agent_prompt", "agent", "Agent Identity"),
-                ("user_prompt", "user", "User"),
-                ("skills_prompt", "skills", "Core Skills"),
-                ("tasks_prompt", "tasks", "Common Tasks"),
-                ("misc_prompt", "misc", "Misc"),
-            ]
+    # ── WebAgent context = the agent's resolved BASE PROMPTS ──
+    # Same starting point the orchestrator ability uses for its spawns: the
+    # agent's base prompt slots via db.resolve_prompts (the legacy agents.*_prompt
+    # columns were dropped in migration 021). Own try so a miss never blocks the
+    # transcript injection above.
+    try:
+        from app.optimizer.prefilter import resolve_session_agent_id
+        from app.db import get_db
+        agent_id = await resolve_session_agent_id(user_id, session_id)
+        if agent_id:
+            slot_titles = {
+                "agent": "Agent Identity", "user": "User",
+                "skills": "Core Skills", "tasks": "Common Tasks", "misc": "Misc",
+            }
             ctx_sections = []
-            for col, ct, title in col_map:
-                content = agent[col] or ""
-                if content.strip():
-                    ctx_sections.append(f"### {title} ({ct})")
-                    ctx_sections.append(content[:500])
+            for s in await get_db().resolve_prompts(agent_id, user_id=user_id):
+                title = slot_titles.get(s.get("slot_name"))
+                content = s.get("content") or ""
+                if title and content.strip():
+                    # Inject the FULL current column (up to a generous cap), not a
+                    # 500-char teaser. The Planner must see the complete existing
+                    # content so it can PRESERVE and EXTEND it — a truncated view
+                    # led the model to replace a whole column with only its addition,
+                    # wiping the agent's identity.
+                    ctx_sections.append(f"### {title} ({s['slot_name']})")
+                    ctx_sections.append(content[:3000])
             if ctx_sections:
                 ctx_data.append("")
                 ctx_data.append("## WebAgent Context")
                 ctx_data.extend(ctx_sections)
-
-        local.close()
     except Exception as e:
-        logging.warning("Failed to inject session context: %s", e)
+        logging.warning("Failed to inject agent base-prompt context: %s", e)
 
     if ctx_data:
         content = "\n".join(ctx_data)
@@ -181,26 +198,60 @@ def _inject_session_context(user_id: str, session_id: str, temp_db_path: str, op
 async def _kickstart_planner(user_id: str, opt_sid: str, feedback: str = "") -> None:
     """Auto-trigger the Planner by sending a user message to the optimizer session.
     chat.py routes messages to the opt_planner agent via resolve_agent()."""
-    import httpx, os, logging as _log
+    import asyncio, httpx, os, logging as _log
     try:
         port = os.environ.get('PORT', '8080')
         _log.warning(f"Kickstarting Planner for session {opt_sid}")
-        
+
         # Build message: include user feedback if provided
         msg = "Please analyze the main session and propose improvements."
         if feedback:
             msg += f" The user's feedback: {feedback}"
-        
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"http://127.0.0.1:{port}/api/v1/chat",
-                json={
-                    "message": msg,
-                    "user_id": user_id,
-                    "session_id": opt_sid,
-                },
+
+        # Mint a short-lived JWT so this loopback POST passes the chat endpoint's
+        # caller-identity check (assert_caller_is). Without it the request carries
+        # no token and is rejected 401 → surfaced as 500, silently killing the
+        # Planner before it ever starts. Same technique the orchestration ability
+        # uses for its spawn loopbacks (_internal_auth_headers). We act on behalf
+        # of the session's own user, so minting that user's own token is legit.
+        headers = {}
+        try:
+            from app.auth.jwt import create_access_token
+            headers["Authorization"] = (
+                f"Bearer {create_access_token(username=user_id, user_id=user_id)}"
             )
-            _log.warning(f"Kickstart Planner responded: {resp.status_code}")
+        except Exception as _auth_err:
+            _log.warning(f"Could not mint kickstart auth token for {user_id}: {_auth_err}")
+
+        # The kickstart fires from the tail of the target turn, so the very first
+        # Planner request races the turn-finalization + optimizer-setup writes and
+        # the one-time materialization of the opt_planner agent — a transient
+        # SQLite "database is locked" that surfaces as a 500. Settle briefly, then
+        # retry on 5xx / connection errors with backoff. The first message is
+        # idempotent ("analyze…") and the 500 happens at agent-resolve time, before
+        # any Planner work, so a retry can't duplicate work.
+        await asyncio.sleep(0.6)
+        delays = [1.0, 2.5, 5.0]
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            for attempt in range(len(delays) + 1):
+                try:
+                    resp = await client.post(
+                        f"http://127.0.0.1:{port}/api/v1/chat",
+                        json={"message": msg, "user_id": user_id, "session_id": opt_sid},
+                        headers=headers,
+                    )
+                    if resp.status_code < 500 or attempt >= len(delays):
+                        _log.warning(f"Kickstart Planner responded: {resp.status_code}"
+                                     + (f" (attempt {attempt + 1})" if attempt else ""))
+                        break
+                    _log.warning(f"Kickstart Planner got {resp.status_code}; "
+                                 f"retrying in {delays[attempt]}s (attempt {attempt + 1})")
+                except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as ce:
+                    if attempt >= len(delays):
+                        _log.warning(f"Kickstart Planner connection failed: {ce}")
+                        break
+                    _log.warning(f"Kickstart Planner connect error; retrying in {delays[attempt]}s")
+                await asyncio.sleep(delays[attempt])
     except Exception as e:
         _log.warning(f"Kickstart Planner failed (non-fatal): {e}")
 
@@ -217,6 +268,28 @@ def _retry_db_write(fn, max_attempts=5, delay=0.3):
                 time.sleep(delay * (a + 1))
             else:
                 raise
+
+
+def _count_user_turns(user_id, session_id) -> int:
+    """Number of completed user turns in a target session (one user message =
+    one turn). Used to enforce the 'run every N turns' cadence. Best-effort:
+    any DB error returns 0 so the caller simply skips this cycle."""
+    try:
+        from app.db import get_db
+        raw = getattr(get_db(), '_get_conn', None)
+        if not raw:
+            return 0
+        c = raw()
+        try:
+            row = c.execute(
+                "SELECT COUNT(*) FROM interactions WHERE session_id=? AND role='user'",
+                (session_id,),
+            ).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            c.close()
+    except Exception:
+        return 0
 
 
 def _store_optimizer_metadata(uid, sid, target_sid, temp_db_path=None):

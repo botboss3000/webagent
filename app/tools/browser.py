@@ -21,7 +21,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import socket
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
@@ -46,6 +49,66 @@ _pages: dict[str, Page] = {}              # bs_id -> Page
 # not a headless instance we launched. Never tear these down — closing them
 # would shut the window the user is looking at; we only disconnect.
 _attached: set[str] = set()
+
+# Per-session BACKEND preference: which kind of browser sits behind a bs_id.
+#   "headless" (default) — a server-side invisible Chromium we launch.
+#   "local"             — the real Chromium running on the user's device,
+#                         driven over CDP. The Web tab's "switcher" flips this.
+#   "connector"         — the user's REAL browser, possibly on a different
+#                         machine across the internet, driven through their
+#                         installed browser extension over a WebSocket. No
+#                         Playwright page is ever created for these; every action
+#                         is forwarded by _connector_action -> browser_connector.
+# A session only ATTACHES to a local window when its backend is "local" (or the
+# global auto-attach env is set), so headless sessions never get hijacked just
+# because a debuggable Chrome happens to be open.
+_backend: dict[str, str] = {}  # bs_id -> "headless" | "local" | "connector"
+
+# Registrable domains each session has actually NAVIGATED to (first-party). Used
+# at persist time to keep only first-party + allowlisted cookies and drop the
+# ad-tech long tail. In-memory per process; rebuilt as the session navigates.
+_visited_domains: dict[str, set] = {}
+
+
+def note_navigation(bs_id: str, url: str) -> None:
+    """Record that ``bs_id`` visited ``url`` as a first-party page. Called from
+    every navigation entry point (agent browser_action + the Web panel). Safe and
+    cheap; never raises."""
+    try:
+        from app.tools.cookie_allowlist import registrable_domain
+        reg = registrable_domain(url)
+        if reg:
+            _visited_domains.setdefault(bs_id, set()).add(reg)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _keep_firstparty_cookies(state, bs_id: str):
+    """Drop cookies that are neither first-party (a domain this session visited)
+    nor allowlisted (user list + SSO built-ins). Returns (state, dropped). No-op
+    when we have no navigation record for the session (so we never nuke a jar we
+    know nothing about — the tracker denylist still ran before this)."""
+    visited = _visited_domains.get(bs_id)
+    if not visited or not isinstance(state, dict):
+        return state, 0
+    cookies = state.get("cookies")
+    if not isinstance(cookies, list) or not cookies:
+        return state, 0
+    try:
+        from app.tools import cookie_allowlist as _ca
+        from app.db import browser_sessions_store as _store
+        owner = (_store.get(bs_id) or {}).get("user_id", "")
+    except Exception:  # noqa: BLE001
+        return state, 0
+    kept = []
+    for ck in cookies:
+        reg = _ca.registrable_domain(ck.get("domain", ""))
+        if reg in visited or _ca.is_allowed(owner, reg):
+            kept.append(ck)
+    dropped = len(cookies) - len(kept)
+    if dropped:
+        state = {**state, "cookies": kept}
+    return state, dropped
 
 
 def _cdp_port() -> int:
@@ -77,6 +140,31 @@ def _cdp_endpoint_open(port: int) -> bool:
         s.close()
 
 
+async def _install_tracker_blocker(context) -> None:
+    """Register a route on a context that ABORTS requests to ad/tracker domains
+    so their cookies are never set. The regex matcher means only tracker URLs hit
+    the handler — every other request proceeds natively, no per-request overhead.
+    Best-effort: a failure just leaves the context unfiltered."""
+    try:
+        from app.tools import tracker_blocklist
+        rx = tracker_blocklist.tracker_url_regex()
+        if not rx:
+            return
+
+        async def _abort(route):
+            try:
+                await route.abort()
+            except Exception:
+                try:
+                    await route.continue_()
+                except Exception:
+                    pass
+
+        await context.route(rx, _abort)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("tracker blocker install skipped: %s", e)
+
+
 async def _ensure_page(bs_id: str) -> Page:
     """Get or create the live page for a browser session (bs_id).
 
@@ -91,6 +179,15 @@ async def _ensure_page(bs_id: str) -> Page:
     global _playwright_instance
     key = bs_id
 
+    # A "connector" session is driven by the user's OWN browser via their
+    # extension — there is no server-side page to create. Refuse here so the
+    # screencast / proxy paths (get_or_create_page) fail cleanly instead of
+    # silently launching a headless Chromium, which would defeat the whole point
+    # of the connector backend. browser_action's connector branch never reaches
+    # this (it returns before _ensure_page).
+    if _backend.get(key) == "connector":
+        raise RuntimeError("connector backend has no server-side page")
+
     if key in _pages:
         page = _pages[key]
         try:
@@ -101,19 +198,28 @@ async def _ensure_page(bs_id: str) -> Page:
             logger.info(f"Page for {key} died, re-creating")
             _pages.pop(key, None)
             # A dead attached page means the window was closed — drop the stale
-            # connection so we can re-attach or fall back to headless.
+            # connection and revert to headless so the session transparently
+            # continues in the in-app browser.
             if key in _attached:
                 _attached.discard(key)
                 _contexts.pop(key, None)
                 _browsers.pop(key, None)
+                _backend[key] = "headless"
 
     if _playwright_instance is None:
         from playwright.async_api import async_playwright  # lazy: heavy import
         _playwright_instance = await async_playwright().start()
 
-    # ── (2) Attach to a visible app window if the launcher opened one ─────────
+    # ── (2) Attach to a visible app window if this session wants the LOCAL
+    #        backend (the Web-tab switcher set it, or the global env opted in)
+    #        and a debuggable Chrome is actually listening. Headless sessions
+    #        deliberately skip this so they're never hijacked by an open window.
     browser = _browsers.get(key)
-    if browser is None and _cdp_endpoint_open(_cdp_port()):
+    want_local = (
+        _backend.get(key) == "local"
+        or os.environ.get("WEBAGENT_BROWSER_AUTO_ATTACH", "").strip() in ("1", "true", "yes")
+    )
+    if browser is None and want_local and _cdp_endpoint_open(_cdp_port()):
         try:
             browser = await _playwright_instance.chromium.connect_over_cdp(
                 f"http://127.0.0.1:{_cdp_port()}", timeout=3000
@@ -164,9 +270,31 @@ async def _ensure_page(bs_id: str) -> Page:
             logger.debug("storage_state load for %s skipped: %s", bs_id, _se)
         context = await browser.new_context(**ctx_kwargs)
         _contexts[key] = context
+        # Block ad/tracker requests at the network layer so their cookies are
+        # never set (keeps the persisted jar lean + pages load faster). Only on
+        # OUR own contexts — never an attached user window. Best-effort.
+        await _install_tracker_blocker(context)
 
     page = await context.new_page()
     _pages[key] = page
+
+    # ── Resume prior status ──────────────────────────────────────────────────
+    # A freshly (re)created page starts on about:blank. If this session has a
+    # remembered URL (the row's last navigation, written on every nav), restore
+    # it so the tab comes back where it left off — after a server restart, the
+    # page dying, or an app reload that finds no live page — instead of blank.
+    # Cookies already came back via storage_state above, so a logged-in page
+    # resumes logged in AND on the right page. Best-effort: a slow/failed restore
+    # just leaves the blank page; it never blocks (or fails) page creation.
+    try:
+        from app.db import browser_sessions_store as _store
+        last = (_store.get(bs_id) or {}).get("url")
+        if last and last != "about:blank":
+            await page.goto(last, wait_until="domcontentloaded", timeout=15000)
+            note_navigation(bs_id, page.url)
+    except Exception as _re:  # noqa: BLE001
+        logger.debug("resume navigation for %s skipped: %s", bs_id, _re)
+
     return page
 
 
@@ -181,15 +309,6 @@ async def get_or_create_page(bs_id: str) -> Page:
     return await _ensure_page(bs_id)
 
 
-def get_existing_page(bs_id: str) -> Optional[Page]:
-    """Return the live page for this browser session if one exists, else None.
-
-    Does NOT create a browser — lets callers check whether a page is already open
-    before forcing one.
-    """
-    return _pages.get(bs_id)
-
-
 async def persist_state(bs_id: str) -> None:
     """Snapshot the context's cookies/localStorage back to the row so a login
     survives a server restart. No-op for attached (user-window) contexts."""
@@ -200,10 +319,161 @@ async def persist_state(bs_id: str) -> None:
         return
     try:
         state = await ctx.storage_state()
+        # (1) Drop any KNOWN tracker-domain cookies (belt-and-braces vs the
+        #     network blocker; also cleans jars from before blocking).
+        from app.tools import tracker_blocklist
+        state, d_track = tracker_blocklist.strip_tracker_cookies(state)
+        # (2) Keep ONLY first-party (visited) + allowlisted cookies — this is what
+        #     catches the ad-tech long tail no denylist can. No-op if we have no
+        #     navigation record for this session yet.
+        state, d_3p = _keep_firstparty_cookies(state, bs_id)
+        if d_track or d_3p:
+            logger.info("persist_state(%s): dropped %d tracker + %d non-first-party cookies",
+                        bs_id, d_track, d_3p)
         from app.db import browser_sessions_store as _store
         _store.set_storage_state(bs_id, state)
     except Exception as e:  # noqa: BLE001
         logger.debug("persist_state(%s) failed: %s", bs_id, e)
+
+
+async def cookies_for_session(bs_id: str) -> list:
+    """Best cookies we have for a browser session, as Playwright cookie dicts
+    ({name, value, domain, path, ...}).
+
+    Prefers the LIVE context (freshest — includes cookies set this session that
+    haven't been persisted yet) and falls back to the last-saved storage_state so
+    a closed-but-previously-logged-in tab still yields its login. NEVER launches a
+    browser. Returns [] when there's nothing. This is how the cookie-replay
+    fetch tools "act as the user" using whatever they're logged into on the
+    Browser page."""
+    ctx = _contexts.get(bs_id)
+    if ctx is not None:
+        try:
+            return await ctx.cookies()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("live cookies_for_session(%s) failed: %s", bs_id, e)
+    try:
+        from app.db import browser_sessions_store as _store
+        state = _store.get_storage_state(bs_id)
+        if isinstance(state, dict):
+            ck = state.get("cookies")
+            if isinstance(ck, list):
+                return ck
+    except Exception as e:  # noqa: BLE001
+        logger.debug("saved cookies_for_session(%s) failed: %s", bs_id, e)
+    return []
+
+
+_DEFAULT_EMAIL_SELECTOR = "#email, input[name='email'], input[type='email'], input[name='username'], input[autocomplete='username']"
+_DEFAULT_PASSWORD_SELECTOR = "#pass, input[name='pass'], input[type='password'], input[name='password'], input[autocomplete='current-password']"
+_DEFAULT_SUBMIT_SELECTOR = "button[name='login'], button[type='submit'], input[type='submit'], [data-testid='royal_login_button']"
+
+
+async def vault_login(
+    bs_id: str,
+    *,
+    email: str,
+    password: str,
+    login_url: Optional[str] = None,
+    email_selector: Optional[str] = None,
+    password_selector: Optional[str] = None,
+    submit_selector: Optional[str] = None,
+    success_selector: Optional[str] = None,
+    wait_ms: int = 6000,
+) -> dict:
+    """Fill a site's login form with vault-held credentials, SERVER-SIDE.
+
+    ``email`` / ``password`` are read from the encrypted vault by the caller and
+    passed in here; they are typed straight into the page and NEVER returned. The
+    result reports only the outcome — logged_in / needs_2fa / url — so the secret
+    never enters the agent's context. Cookies are persisted on success so the
+    headless session can be reused afterward.
+    """
+    if not email or not password:
+        return {"logged_in": False, "needs_2fa": False, "error": "no_credentials",
+                "message": "No saved login to use."}
+    page = await _ensure_page(bs_id)
+    try:
+        if login_url:
+            await page.goto(login_url, wait_until="domcontentloaded", timeout=max(wait_ms, 15000))
+            try:
+                note_navigation(bs_id, login_url)
+            except Exception:
+                pass
+        esel = email_selector or _DEFAULT_EMAIL_SELECTOR
+        psel = password_selector or _DEFAULT_PASSWORD_SELECTOR
+        ssel = submit_selector or _DEFAULT_SUBMIT_SELECTOR
+        # Fill — Playwright's .fill targets the first match of a comma selector.
+        try:
+            await page.fill(esel, email, timeout=wait_ms)
+            await page.fill(psel, password, timeout=wait_ms)
+        except Exception as fe:
+            return {"logged_in": False, "needs_2fa": False, "error": "form_not_found",
+                    "url": page.url,
+                    "message": f"Could not find the login fields on the page ({fe}). "
+                               f"Pass email_selector/password_selector that match this site's form."}
+        try:
+            await page.click(ssel, timeout=wait_ms)
+        except Exception:
+            # Fall back to submitting via Enter on the password field.
+            try:
+                await page.press(psel, "Enter")
+            except Exception as ce:
+                return {"logged_in": False, "needs_2fa": False, "error": "submit_failed",
+                        "url": page.url, "message": f"Filled the form but couldn't submit it ({ce})."}
+        # Let the navigation / XHR settle.
+        try:
+            await page.wait_for_load_state("networkidle", timeout=wait_ms)
+        except Exception:
+            pass
+
+        cur = (page.url or "").lower()
+        needs_2fa = any(k in cur for k in ("checkpoint", "two_factor", "2fa", "twofactor", "challenge", "/auth/"))
+        # Still showing a password field (and not a 2FA wall) → login likely failed.
+        still_pw = False
+        try:
+            still_pw = await page.is_visible(psel, timeout=1000)
+        except Exception:
+            still_pw = False
+        logged_in = False
+        if success_selector:
+            try:
+                logged_in = await page.is_visible(success_selector, timeout=2000)
+            except Exception:
+                logged_in = False
+        else:
+            logged_in = (not needs_2fa) and (not still_pw) and ("login" not in cur)
+
+        # Persist cookies so the session is reusable headlessly afterward.
+        try:
+            await persist_state(bs_id)
+        except Exception:
+            pass
+
+        title = ""
+        try:
+            title = await page.title()
+        except Exception:
+            title = ""
+
+        if needs_2fa:
+            msg = ("Login submitted but the site is asking for a verification step "
+                   "(2FA / checkpoint). Ask the user to complete it on the Browser page; "
+                   "the session will then be reused automatically.")
+        elif logged_in:
+            msg = "Logged in successfully; the session is saved for reuse."
+        elif still_pw:
+            msg = ("Login did not go through (the password field is still showing). "
+                   "The saved credentials may be wrong, or the site needs a captcha — "
+                   "ask the user to sign in on the Browser page.")
+        else:
+            msg = "Login submitted; outcome unclear. Verify by reading the page."
+        return {"logged_in": bool(logged_in), "needs_2fa": bool(needs_2fa),
+                "url": page.url, "title": title, "message": msg}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("vault_login(%s) failed: %s", bs_id, e)
+        return {"logged_in": False, "needs_2fa": False, "error": "exception",
+                "url": getattr(page, "url", ""), "message": f"Login attempt errored: {e}"}
 
 
 async def close(bs_id: str) -> dict:
@@ -214,6 +484,7 @@ async def close(bs_id: str) -> dict:
     """
     key = bs_id
     await persist_state(bs_id)
+    _backend.pop(key, None)
     if key in _attached:
         _pages.pop(key, None)
         _contexts.pop(key, None)
@@ -297,7 +568,7 @@ async def browser_action(
             - "navigate"    → url (required)
             - "click"       → selector (required)
             - "type"        → selector (required), text (required)
-            - "get_text"    → selector (required)
+            - "get_text"    → selector (optional, defaults to body)
             - "get_html"    → selector (optional, defaults to body)
             - "screenshot"  → full_page (optional, default true)
             - "wait"        → timeout_ms (optional, default 5000)
@@ -320,6 +591,15 @@ async def browser_action(
             - url: str (current page URL)
             - title: str (current page title)
     """
+    # Connector backend: forward the WHOLE action (including "close") to the
+    # owner's browser extension — their real, possibly-remote browser. Branches
+    # before any Playwright work; the headless/local path below is untouched.
+    if _backend.get(bs_id) == "connector":
+        return await _connector_action(
+            bs_id, action, selector=selector, text=text, url=url, js=js,
+            timeout_ms=timeout_ms, full_page=full_page,
+        )
+
     try:
         if action == "close":
             return await close(bs_id)
@@ -332,6 +612,7 @@ async def browser_action(
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(1000)  # let JS render settle
             title = await page.title()
+            note_navigation(bs_id, page.url)  # mark this site first-party
             # Remember where this tab is + snapshot the (now possibly logged-in)
             # cookie jar so the row survives a restart.
             try:
@@ -374,8 +655,10 @@ async def browser_action(
             }
 
         elif action == "get_text":
+            # Default to the whole page like get_html does, so "read the page text"
+            # works without the model having to know it must pass selector="body".
             if not selector:
-                return {"success": False, "error": "selector required for get_text action", "url": page.url, "title": await page.title()}
+                selector = "body"
             try:
                 await page.wait_for_selector(selector, timeout=5000)
                 el = await page.query_selector(selector)
@@ -499,6 +782,455 @@ async def browser_action(
         }
 
 
+async def _connector_action(
+    bs_id: str,
+    action: str,
+    *,
+    selector: Optional[str] = None,
+    text: Optional[str] = None,
+    url: Optional[str] = None,
+    js: Optional[str] = None,
+    timeout_ms: int = 5000,
+    full_page: bool = True,
+) -> dict:
+    """Forward a browser_action to the session owner's browser extension.
+
+    The owner is read from the browser-session row (the connector keys by user, so
+    a command only ever reaches that user's own extension). The reply already
+    matches the browser_action contract; we just keep the stored row's url/title
+    fresh, like the headless navigate path does.
+    """
+    from app.db import browser_sessions_store as _store
+    row = _store.get(bs_id) or {}
+    owner = row.get("user_id")
+    if not owner:
+        return {"success": False, "error": "browser session not found", "url": "", "title": ""}
+
+    params = {
+        "selector": selector, "text": text, "url": url, "js": js,
+        "timeout_ms": timeout_ms, "full_page": full_page,
+    }
+    params = {k: v for k, v in params.items() if v is not None}
+
+    from app.tools import browser_connector as _conn
+    result = await _conn.connector_execute(owner, bs_id, action, params)
+
+    try:
+        if result.get("success") and result.get("url"):
+            _store.update(bs_id, url=result.get("url"),
+                          title=result.get("title") or row.get("title"))
+    except Exception:  # noqa: BLE001
+        pass
+    return result
+
+
+# ── Local (on-device) browser: launch, attach, switch ─────────────────────────
+# Phase 1 of the "drive the real browser" feature. The user's Web tab (and the
+# agent, with confirmation) can flip a session from the headless backend to the
+# real Chromium on the user's device. Because everything keys on bs_id, the swap
+# is invisible to the agent's tools — the same session id just points at a
+# different browser. Same-machine only for now; the remote/companion path
+# (server and device on different machines) is a later phase.
+
+
+def _find_chrome() -> Optional[str]:
+    """Best-effort path to a Chrome/Chromium/Edge executable on this machine.
+
+    Checks the platform's usual install locations and PATH. Returns None if none
+    is found (the caller then reports that the device has no compatible browser).
+    """
+    # An explicit override always wins.
+    env = os.environ.get("WEBAGENT_LOCAL_BROWSER_PATH", "").strip()
+    if env and Path(env).exists():
+        return env
+
+    candidates: list[str] = []
+    if sys.platform.startswith("win"):
+        pf = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+        pf86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+        local = os.environ.get("LOCALAPPDATA", "")
+        for base in (pf, pf86, local):
+            if not base:
+                continue
+            candidates += [
+                str(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"),
+                str(Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
+            ]
+        for exe in ("chrome", "chrome.exe", "msedge", "msedge.exe"):
+            found = shutil.which(exe)
+            if found:
+                candidates.append(found)
+    elif sys.platform == "darwin":
+        candidates += [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]
+    else:  # linux / other
+        for exe in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"):
+            found = shutil.which(exe)
+            if found:
+                candidates.append(found)
+
+    for c in candidates:
+        try:
+            if c and Path(c).exists():
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def _default_user_data_dir() -> Optional[str]:
+    """The user's everyday Chrome profile directory for this OS, if it exists.
+
+    Driving this profile gives the agent the user's real logins. NOTE: recent
+    Chrome builds refuse to enable remote-debugging on the *default* profile dir
+    (an anti-cookie-theft measure), so this can fail — the caller falls back to a
+    dedicated profile and reports which one it used.
+    """
+    try:
+        if sys.platform.startswith("win"):
+            base = os.environ.get("LOCALAPPDATA", "")
+            p = Path(base) / "Google" / "Chrome" / "User Data" if base else None
+        elif sys.platform == "darwin":
+            p = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+        else:
+            p = Path.home() / ".config" / "google-chrome"
+        return str(p) if p and p.exists() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _dedicated_user_data_dir(user_id: Optional[str] = None) -> str:
+    """A clean, app-owned Chrome profile dir (persists its own logins) for the
+    real-browser backend. Per-user so each user's device logins stay separate and
+    live under their own data home: ``data/user_data/<user_id>/chrome-profile/``.
+    Falls back to the legacy shared ``data/chrome-profile`` only when no user is
+    known (should be rare — every chat call carries a user_id)."""
+    if user_id:
+        try:
+            from app.user_workspace import user_dir as _user_dir
+            return str(_user_dir(user_id, "chrome-profile"))
+        except Exception:  # noqa: BLE001 — fall through to the shared dir
+            pass
+    d = Path(__file__).resolve().parent.parent.parent / "data" / "chrome-profile"
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d)
+
+
+def _clear_singleton_lock(user_data_dir: str) -> None:
+    """Remove a stale Chrome singleton lock left by a crashed/half-launched
+    instance. Without this, a fresh launch on a dir whose previous owner died
+    uncleanly hands off to nothing and never opens the debug port. Safe to call
+    when the files don't exist (the normal case)."""
+    try:
+        base = Path(user_data_dir)
+        for name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"):
+            p = base / name
+            try:
+                if p.exists() or p.is_symlink():
+                    p.unlink()
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _spawn_debug_chrome(exe: str, port: int, user_data: str, profile_used: str) -> dict:
+    """Launch one Chrome with remote-debugging on ``user_data`` and wait for the
+    debug port. Fast-fails when the process exits early (the "handed off to an
+    already-running Chrome on this profile, then quit" case) so the caller can move
+    on to the next profile without burning the full timeout."""
+    args = [
+        exe,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={user_data}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--remote-allow-origins=*",  # required by modern Chrome for CDP attach
+        "about:blank",
+    ]
+    try:
+        creationflags = 0
+        if sys.platform.startswith("win"):
+            # Detach so closing the server doesn't kill the user's window.
+            creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "launch_failed",
+                "message": f"Could not start the local browser: {e}"}
+
+    for _ in range(40):  # up to ~10s
+        if _cdp_endpoint_open(port):
+            return {"ok": True, "reused": False, "profile_used": profile_used, "port": port,
+                    "message": f"Launched local Chrome ({profile_used} profile) on debug port {port}."}
+        # Fast-fail: the launcher process already exited without opening the port
+        # (it handed off to an existing Chrome on this profile). No point waiting.
+        if proc.poll() is not None:
+            return {"ok": False, "error": "no_debug_port", "profile_used": profile_used,
+                    "message": f"Chrome ({profile_used} profile) handed off to an already-running "
+                               f"instance and did not open a debug port."}
+        await asyncio.sleep(0.25)
+    return {"ok": False, "error": "no_debug_port", "profile_used": profile_used,
+            "message": f"Chrome ({profile_used} profile) started but did not open its debug port."}
+
+
+async def _launch_local_chrome(profile: str = "default", user_id: Optional[str] = None) -> dict:
+    """Make sure a debuggable local Chrome is running on the CDP port.
+
+    Returns a status dict: ``{ok, reused, profile_used, port, message}``.
+      • If a CDP endpoint is already open on the port we REUSE it (the user — or a
+        previous launch — already started one).
+      • Otherwise we launch Chrome with remote-debugging on. We try the user's
+        everyday profile first (their real logins) UNLESS ``profile="dedicated"``,
+        then **always fall back to a per-user dedicated profile**. The fallback is
+        essential: modern Chrome refuses remote-debugging on the everyday profile
+        (anti-cookie-theft) and an already-running everyday Chrome can't be
+        re-launched with a debug port — but a SEPARATE dedicated profile launches a
+        new instance that coexists with the user's open Chrome and opens the port.
+    """
+    port = _cdp_port()
+    if _cdp_endpoint_open(port):
+        return {"ok": True, "reused": True, "profile_used": "existing", "port": port,
+                "message": f"Reusing the Chrome already listening on debug port {port}."}
+
+    exe = _find_chrome()
+    if not exe:
+        return {"ok": False, "reused": False, "port": port,
+                "error": "no_browser",
+                "message": "No Chrome/Chromium/Edge found on this device. Install one or set "
+                           "WEBAGENT_LOCAL_BROWSER_PATH to its executable."}
+
+    # Ordered profiles to try. Everyday-first (real logins) with a guaranteed
+    # dedicated fallback; or dedicated-only when explicitly asked.
+    attempts: list[tuple[str, str]] = []
+    if profile != "dedicated":
+        _dflt = _default_user_data_dir()
+        if _dflt:
+            attempts.append(("default", _dflt))
+    attempts.append(("dedicated", _dedicated_user_data_dir(user_id)))
+
+    last: dict = {}
+    for profile_used, user_data in attempts:
+        if profile_used == "dedicated":
+            # A crashed prior instance can leave a lock that makes the launch
+            # silently hand off to nothing — clear it so the fallback is reliable.
+            _clear_singleton_lock(user_data)
+        last = await _spawn_debug_chrome(exe, port, user_data, profile_used)
+        if last.get("ok"):
+            return {**last, "port": port}
+
+    return {"ok": False, "reused": False, "port": port,
+            "error": last.get("error", "no_debug_port"),
+            "message": (last.get("message", "Could not open a debuggable local browser.")
+                        + " Tried the everyday profile then a dedicated one.")}
+
+
+def current_url(bs_id: str) -> str:
+    """Current URL of the live page for a session, or '' if none is open. Cheap;
+    never launches a browser."""
+    page = _pages.get(bs_id)
+    try:
+        return page.url if page else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+async def _snapshot_attached_cookies(bs_id: str) -> None:
+    """Pull cookies from an ATTACHED (real-device) context into the saved row so a
+    later headless session re-seeds with the same login. persist_state skips
+    attached contexts (not ours to snapshot), so this is the explicit hand-off
+    used when switching a session back to headless."""
+    ctx = _contexts.get(bs_id)
+    if ctx is None:
+        return
+    try:
+        cookies = await ctx.cookies()
+        if not cookies:
+            return
+        from app.db import browser_sessions_store as _store
+        prior = _store.get_storage_state(bs_id) or {}
+        if not isinstance(prior, dict):
+            prior = {}
+        prior["cookies"] = cookies
+        _store.set_storage_state(bs_id, prior)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("snapshot_attached_cookies(%s) failed: %s", bs_id, e)
+
+
+async def open_local_browser(bs_id: str, *, profile: str = "default", user_id: Optional[str] = None) -> dict:
+    """Switch a session to the LOCAL (on-device) browser backend.
+
+    Launches/reuses a debuggable Chrome on the device, re-points this bs_id at it,
+    and carries the current page forward so the real window opens where the
+    headless one was. ``user_id`` scopes the dedicated fallback profile to that
+    user's data home. Returns a status dict the Web tab / agent can show.
+    """
+    prev_url = current_url(bs_id)
+
+    launch = await _launch_local_chrome(profile=profile, user_id=user_id)
+    if not launch.get("ok"):
+        return {"success": False, "backend": _backend.get(bs_id, "headless"), **launch}
+
+    # Tear down the headless instance for this key (ours → safe to close) so
+    # _ensure_page re-binds to the attached window.
+    if bs_id not in _attached:
+        for d in (_pages, _contexts, _browsers):
+            obj = d.pop(bs_id, None)
+            if obj is not None:
+                try:
+                    await obj.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    _backend[bs_id] = "local"
+    try:
+        page = await _ensure_page(bs_id)
+    except Exception as e:  # noqa: BLE001
+        _backend[bs_id] = "headless"
+        return {"success": False, "backend": "headless", "error": "attach_failed",
+                "message": f"Started the local browser but could not attach to it: {e}"}
+
+    if bs_id not in _attached:
+        # The endpoint was up but the attach silently fell through to headless.
+        _backend[bs_id] = "headless"
+        return {"success": False, "backend": "headless", "error": "attach_failed",
+                "message": "Could not attach to the local browser window."}
+
+    # Bring the real window to where the session was.
+    if prev_url and prev_url not in ("about:blank", ""):
+        try:
+            await page.goto(prev_url, wait_until="domcontentloaded", timeout=30000)
+            note_navigation(bs_id, page.url)
+        except Exception:  # noqa: BLE001
+            pass
+
+    title = ""
+    try:
+        title = await page.title()
+    except Exception:  # noqa: BLE001
+        pass
+    return {"success": True, "backend": "local", "attached": True,
+            "profile_used": launch.get("profile_used"), "url": page.url, "title": title,
+            "message": launch.get("message", "Now driving the browser on your device.")}
+
+
+async def use_remote_browser(bs_id: str) -> dict:
+    """Switch a session back to the HEADLESS (server-side) backend.
+
+    Snapshots the device browser's login forward, disconnects from the real window
+    (leaving it open for the user), then re-binds this bs_id to a fresh headless
+    page seeded with that login and navigated to where the session was.
+    """
+    prev_url = current_url(bs_id)
+    await _snapshot_attached_cookies(bs_id)
+
+    # Disconnect (never close) any attached window, then drop the binding.
+    if bs_id in _attached:
+        _pages.pop(bs_id, None)
+        _contexts.pop(bs_id, None)
+        b = _browsers.pop(bs_id, None)
+        _attached.discard(bs_id)
+        if b is not None:
+            try:
+                await b.close()  # CDP: disconnects; the window stays open
+            except Exception:  # noqa: BLE001
+                pass
+
+    _backend[bs_id] = "headless"
+    try:
+        page = await _ensure_page(bs_id)
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "backend": "headless", "error": "headless_failed",
+                "message": f"Could not start the headless browser: {e}"}
+
+    if prev_url and prev_url not in ("about:blank", ""):
+        try:
+            await page.goto(prev_url, wait_until="domcontentloaded", timeout=30000)
+            note_navigation(bs_id, page.url)
+        except Exception:  # noqa: BLE001
+            pass
+
+    title = ""
+    try:
+        title = await page.title()
+    except Exception:  # noqa: BLE001
+        pass
+    return {"success": True, "backend": "headless", "attached": False,
+            "url": page.url, "title": title,
+            "message": "Switched back to the in-app browser. You can close the device window."}
+
+
+async def use_connector_browser(bs_id: str, *, user_id: Optional[str] = None) -> dict:
+    """Switch a session to the CONNECTOR backend — the user's real browser, driven
+    through their installed extension over the connector WebSocket.
+
+    Requires that the owner has a live extension connection; otherwise the backend
+    is left unchanged and the reason is reported. No Playwright page is created for
+    a connector session, so we just tear down any headless instance we own for this
+    key (never an attached window) and flip the flag — _connector_action then routes
+    every action over the socket.
+    """
+    from app.db import browser_sessions_store as _store
+    row = _store.get(bs_id) or {}
+    owner = user_id or row.get("user_id")
+
+    from app.tools import browser_connector as _conn
+    if not owner or not _conn.connector_connected(owner):
+        return {"success": False, "backend": _backend.get(bs_id, "headless"),
+                "connected": False, "error": "extension_not_connected",
+                "message": "No browser extension is connected for this user. Install and "
+                           "connect the webAgent browser extension, then try again."}
+
+    # Tear down any headless instance we launched for this key (ours → safe to
+    # close). Never touch an attached on-device window.
+    if bs_id not in _attached:
+        for d in (_pages, _contexts, _browsers):
+            obj = d.pop(bs_id, None)
+            if obj is not None:
+                try:
+                    await obj.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    _backend[bs_id] = "connector"
+    info = _conn.connector_info(owner)
+    return {"success": True, "backend": "connector", "connected": True,
+            "version": info.get("version", ""),
+            "message": "Now driving your own browser through the extension."}
+
+
+def backend_status(bs_id: str) -> dict:
+    """Report which backend a session is on plus what the device offers, so the
+    Web tab can render the switcher (and the agent can check before switching)."""
+    port = _cdp_port()
+    status = {
+        "backend": _backend.get(bs_id, "headless"),
+        "attached": bs_id in _attached,
+        "chrome_running": _cdp_endpoint_open(port),
+        "chrome_found": bool(_find_chrome()),
+        "port": port,
+        "url": current_url(bs_id),
+    }
+    # Connector (remote browser-extension) presence for the owning user, so the
+    # Web tab can show whether the "My browser" backend is available / live.
+    try:
+        from app.db import browser_sessions_store as _store
+        owner = (_store.get(bs_id) or {}).get("user_id")
+        if owner:
+            from app.tools import browser_connector as _conn
+            status["connector"] = _conn.connector_info(owner)
+    except Exception:  # noqa: BLE001
+        pass
+    return status
+
+
 async def close_all():
     """Clean up all browser instances. Call on server shutdown.
 
@@ -529,6 +1261,7 @@ async def close_all():
     _contexts.clear()
     _browsers.clear()
     _attached.clear()
+    _backend.clear()
     if _playwright_instance:
         await _playwright_instance.stop()
         _playwright_instance = None

@@ -7,17 +7,22 @@ Cross-platform: uses os/pty on Unix, pywinpty on Windows.
 
 import asyncio
 import concurrent.futures
+import glob
 import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import signal
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter, File, HTTPException, Request, UploadFile, WebSocket,
+    WebSocketDisconnect,
+)
 
 from app.auth.identity import _is_admin, assert_caller_is
 from app.auth.jwt import decode_token
@@ -87,15 +92,58 @@ IDLE_TIMEOUT_SECS = int(os.environ.get("TERMINAL_IDLE_TIMEOUT_HOURS", "0")) * 36
 # stale sessions quickly without burning cycles.
 IDLE_GC_INTERVAL_SECS = 300
 
+# Appended to every tmux session we create/attach so the browser's scroll
+# wheel works as a human expects inside a TUI like Claude Code.
+#
+# Why this is needed: a mouse-aware TUI (Claude) run DIRECTLY turns on mouse
+# reporting, so xterm.js forwards the wheel to it and it scrolls its OWN message
+# history. tmux defaults to mouse OFF, so when Claude runs *inside* tmux the
+# browser sees the alternate screen with no mouse reporting and falls back to
+# translating the wheel into cursor-up/down keys — which tmux delivers to the
+# focused pane, where they scroll Claude's prompt-history instead of the
+# messages. Turning tmux's mouse mode on makes tmux forward the wheel to the
+# mouse-aware app in the pane, restoring the direct-run behaviour. `-g` is
+# server-global and re-setting it is a no-op, so this is safe to append to
+# every launch/attach command.
+#
+# We use `';'` to separate the tmux subcommands (instead of `\;` which was
+# previously used). The single quotes work on both bash/WSL and PowerShell:
+# both treat `';'` as a literal semicolon passed as an argument to tmux,
+# which tmux interprets as its command separator. PowerShell's `\;` is NOT
+# an escape — `;` would act as a PowerShell statement separator, splitting
+# the command and causing the "A parameter cannot be found that matches
+# parameter name 'g'" error from Set-Variable.
+_TMUX_MOUSE_ON = " ';' set -g mouse on"
+
 # Sidebar quick-launch shortcuts. Each entry opens a new terminal tab and
 # types `command` followed by Enter into the freshly-spawned shell. Override
 # the whole list at boot via env var QUICK_LAUNCHES_JSON='[{...}, {...}]'.
+#
+# A short tap runs `command` — a plain, one-off process in a normal terminal
+# window. An optional `tmux_command` is what a LONG-PRESS runs instead: the same
+# thing wrapped in a named tmux session so it survives tab close/refresh and is
+# reachable from any device. The frontend (ftRenderLaunches) picks between them.
+# Rows with no `tmux_command` (or whose command is already a tmux operation, like
+# attach/ls) behave the same on tap and long-press.
 DEFAULT_QUICK_LAUNCHES: List[Dict[str, str]] = [
+    # Fresh Claude Code session. Tap = a plain `claude` in this terminal;
+    # long-press = `claude` inside a named tmux session (survivable, reattachable).
+    {"name": "Run Claude",
+     "command": "claude",
+     "tmux_command": "tmux new -As claude 'claude'" + _TMUX_MOUSE_ON,
+     "icon": "sparkles"},
+    # Dynamic launcher: carries no static `command` — instead an `action` the
+    # frontend resolves at click time via /api/v1/terminal/claude-resume-target
+    # (newest Claude conversation that isn't already open). See below.
+    {"name": "Resume Claude",
+     "action": "claude-resume",
+     "icon": "history"},
     {"name": "Claude Remote Control",
-     "command": "tmux new -As cc 'claude remote-control --spawn=worktree'",
+     "command": "claude remote-control --spawn=worktree",
+     "tmux_command": "tmux new -As cc 'claude remote-control --spawn=worktree'" + _TMUX_MOUSE_ON,
      "icon": "smartphone"},
     {"name": "Attach to 'cc'",
-     "command": "tmux attach -t cc",
+     "command": "tmux attach -t cc" + _TMUX_MOUSE_ON,
      "icon": "link"},
     {"name": "List tmux sessions",
      "command": "tmux ls",
@@ -117,6 +165,236 @@ def _load_quick_launches() -> List[Dict[str, str]]:
     except Exception as e:
         logger.warning("Bad QUICK_LAUNCHES_JSON, using defaults: %s", e)
     return DEFAULT_QUICK_LAUNCHES
+
+
+# ── "Resume Claude" quick action ──────────────────────────────────────────
+#
+# Powers the sidebar's "Resume Claude" quick-launch. Computes — at click time,
+# not at config time — the newest Claude Code conversation that ISN'T currently
+# open in a running `claude`, and returns the shell command that resumes it in a
+# fresh terminal tab.
+#
+#   • "Newest anywhere": all conversations across every project folder are
+#     ranked by last-touched time. Each conversation's own working directory is
+#     read out of its transcript, so the new tab lands in the right folder
+#     before resuming.
+#   • "Already open": a conversation counts as open if either signal fires:
+#       1. A live web-terminal tab opened by THIS button is running it (recorded
+#          on the TerminalSession from the WS's ?claude_session=<id> param).
+#          Cross-platform — this is what makes a second click skip the one you
+#          just opened on Windows, where /proc doesn't exist. It self-clears:
+#          close the tab and the conversation is resumable again.
+#       2. Any live process is holding its transcript file open OR a
+#          `claude --resume <id>` command line carries its id. This reads /proc,
+#          so it also catches conversations opened by hand outside webAgent — but
+#          only on Linux/Termux (the phone). On hosts without /proc this second
+#          signal is empty and only signal 1 applies.
+#   • Fallbacks: if there are no conversations, or every recent one is already
+#     open, it returns a plain `claude` (a fresh conversation) instead.
+
+_CLAUDE_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
+def _claude_projects_root() -> str:
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(
+        os.path.expanduser("~"), ".claude"
+    )
+    return os.path.join(base, "projects")
+
+
+def _first_user_text(rec: Dict[str, Any]) -> Optional[str]:
+    """Pull the plain text out of a transcript `user` record, whitespace
+    collapsed. Used as a last-resort conversation name."""
+    msg = rec.get("message")
+    if not isinstance(msg, dict):
+        return None
+    content = msg.get("content")
+    text: Optional[str] = None
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text")
+                break
+    if not isinstance(text, str):
+        return None
+    text = " ".join(text.split())
+    return text or None
+
+
+def _claude_session_meta(path: str) -> Tuple[Optional[str], Optional[str]]:
+    """Read (cwd, name) for a conversation out of its transcript. The opening
+    lines carry an `ai-title` record whose `aiTitle` is the conversation's
+    display name (what Claude shows in the resume picker); we take the last one
+    seen, then fall back to a `summary` record, then the first user message.
+    `cwd` = the first record carrying one. Bounded to the opening lines so we
+    never slurp a huge transcript (the title is written up top)."""
+    cwd: Optional[str] = None
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    first_user: Optional[str] = None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for _ in range(400):
+                line = fh.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line or line[0] != "{":
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if cwd is None:
+                    c = rec.get("cwd")
+                    if isinstance(c, str) and c:
+                        cwd = c
+                rtype = rec.get("type")
+                if rtype == "ai-title":
+                    at = rec.get("aiTitle")
+                    if isinstance(at, str) and at.strip():
+                        title = at.strip()            # keep the latest
+                elif rtype == "summary" and summary is None:
+                    sm = rec.get("summary")
+                    if isinstance(sm, str) and sm.strip():
+                        summary = sm.strip()
+                elif rtype == "user" and first_user is None:
+                    first_user = _first_user_text(rec)
+    except OSError:
+        pass
+    name = title or summary or first_user
+    if isinstance(name, str):
+        name = name.strip()[:80] or None
+    return cwd, name
+
+
+def _open_claude_session_ids(projects_root: str) -> set:
+    """Best-effort set of conversation ids open in a live process. Linux/Termux
+    only (reads /proc); two signals, unioned:
+      • a process holds a `<projects_root>/**/<id>.jsonl` transcript open, or
+      • a process command line contains a conversation id (covers
+        `claude --resume <id>`, including ones started by hand).
+    Returns an empty set on hosts without /proc."""
+    open_ids: set = set()
+    proc_root = "/proc"
+    if not os.path.isdir(proc_root):
+        return open_ids
+    norm_root = os.path.normpath(projects_root)
+    for pid in os.listdir(proc_root):
+        if not pid.isdigit():
+            continue
+        # 1) open file descriptors pointing at a transcript
+        fd_dir = os.path.join(proc_root, pid, "fd")
+        try:
+            for fd in os.listdir(fd_dir):
+                try:
+                    target = os.readlink(os.path.join(fd_dir, fd))
+                except OSError:
+                    continue
+                if target.endswith(".jsonl") and norm_root in os.path.normpath(target):
+                    open_ids.add(os.path.basename(target)[:-6])
+        except OSError:
+            pass
+        # 2) a conversation id on the command line (e.g. claude --resume <id>)
+        try:
+            with open(os.path.join(proc_root, pid, "cmdline"), "rb") as fh:
+                cmd = fh.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+        except OSError:
+            cmd = ""
+        if "claude" in cmd:
+            open_ids.update(_CLAUDE_UUID_RE.findall(cmd))
+    return open_ids
+
+
+def _live_terminal_claude_ids() -> set:
+    """Conversation ids currently running in a live web-terminal session, taken
+    from the ?claude_session= param each "Resume Claude" tab connects with. This
+    is the cross-platform "already open" signal (works on Windows, where /proc
+    doesn't exist). A session leaves _sessions when its tab is closed or the
+    shell exits, so a closed conversation correctly becomes resumable again.
+
+    Read the registry under its lock (see the caller) — we only inspect a
+    snapshot here, no mutation."""
+    ids: set = set()
+    for s in _sessions.values():
+        cid = getattr(s, "claude_session_id", "")
+        if cid and s.is_alive:
+            ids.add(cid)
+    return ids
+
+
+def _shell_cd_prefix(cwd: Optional[str]) -> str:
+    """`cd '<cwd>'` followed by a newline, or '' when unknown. The newline (not
+    `&&`) makes it a separate line the terminal submits on its own — portable
+    across bash and Windows PowerShell, which rejects `&&` as a separator.
+    POSIX single-quote escaping for the path (single quotes in cwds are rare)."""
+    if not cwd:
+        return ""
+    return "cd '" + cwd.replace("'", "'\\''") + "'\n"
+
+
+def _compute_claude_resume_target(
+    extra_open_ids: Optional[set] = None,
+) -> Dict[str, Any]:
+    """Pick the newest Claude conversation that isn't already open and build the
+    shell command that resumes it. Falls back to a fresh `claude` when there are
+    no conversations, or every recent one is already open.
+
+    `extra_open_ids` are conversation ids the caller already knows are open
+    (e.g. live web-terminal tabs from _live_terminal_claude_ids) — gathered on
+    the event loop and passed in here because this runs in a worker thread."""
+    projects_root = _claude_projects_root()
+    sessions: List[Tuple[float, str]] = []
+    for p in glob.glob(os.path.join(projects_root, "*", "*.jsonl")):
+        try:
+            sessions.append((os.path.getmtime(p), p))
+        except OSError:
+            continue
+    sessions.sort(key=lambda t: t[0], reverse=True)  # newest first
+
+    open_ids = _open_claude_session_ids(projects_root)
+    if extra_open_ids:
+        open_ids = open_ids | set(extra_open_ids)
+
+    newest_cwd: Optional[str] = None
+    for _mtime, path in sessions:
+        sid = os.path.basename(path)[:-6]  # strip ".jsonl"
+        cwd, title = _claude_session_meta(path)
+        if newest_cwd is None and cwd:
+            newest_cwd = cwd
+        if sid in open_ids:
+            continue
+        # Tab label = the conversation's own name (ai-title); degrade to the
+        # project folder, then a bare label, so the tab is never nameless.
+        base = os.path.basename(cwd.rstrip("/\\")) if cwd else ""
+        name = title or (("Claude · " + base) if base else "Claude")
+        return {
+            "fresh": False,
+            "session_id": sid,
+            "cwd": cwd or "",
+            # Tap = resume in a plain terminal; long-press = resume inside a named
+            # tmux session so it survives tab close/refresh (see tmux_command).
+            "command": _shell_cd_prefix(cwd) + "claude --resume " + sid,
+            "tmux_command": _shell_cd_prefix(cwd) + "tmux new -As claude-'" + sid[:8] + "' 'claude --resume " + sid + "'" + _TMUX_MOUSE_ON,
+            "name": name,
+            "title": title or "",
+            "open_count": len(open_ids),
+        }
+
+    # Nothing eligible — start fresh (in the newest project dir if we know one).
+    return {
+        "fresh": True,
+        "session_id": "",
+        "cwd": newest_cwd or "",
+        "command": _shell_cd_prefix(newest_cwd) + "claude",
+        "tmux_command": _shell_cd_prefix(newest_cwd) + "tmux new -As claude 'claude'" + _TMUX_MOUSE_ON,
+        "name": "Claude (new)",
+        "open_count": len(open_ids),
+    }
 
 
 def _reap_dead_locked() -> None:
@@ -282,6 +560,18 @@ async def set_session_paused(session_id: str, user_id: str, paused: bool) -> boo
     return True
 
 
+async def rename_session(session_id: str, user_id: str, name: str) -> bool:
+    """Set a friendly display name on a live session. Same field the WS
+    `set_name` control writes, but reachable over HTTP so the "Your sessions"
+    sidebar can rename a session that isn't open in this browser (no WS).
+    Returns True if the session was found + renamed."""
+    sess = await get_owned_session(session_id, user_id)
+    if sess is None:
+        return False
+    sess.name = (name or "").strip()[:80]
+    return True
+
+
 # ── Idle GC ──
 
 _gc_task: Optional[asyncio.Task] = None
@@ -433,6 +723,15 @@ class TerminalSession:
         self.agent_driven: bool = False
         self.launch_command: str = ""
         self.paused: bool = False
+
+        # ── "Resume Claude" open-tracking ──
+        # When a tab is opened by the "Resume Claude" quick-launch it carries the
+        # Claude conversation id it's resuming (?claude_session=<id> on the WS).
+        # We stash it here so _compute_claude_resume_target knows this
+        # conversation is already open — the cross-platform signal that works on
+        # Windows (no /proc) and stays correct because the session drops out of
+        # _sessions the moment the tab is closed or the shell exits.
+        self.claude_session_id: str = ""
 
     def mark_attached(self) -> None:
         """Increment the connected-clients counter (WS handshake)."""
@@ -876,13 +1175,22 @@ _FALLBACK_SESSION_ID = "__default__"
 
 async def _verify_admin_token(token: str) -> Optional[str]:
     """Decode a JWT and confirm the subject is an admin. Returns the verified
-    user_id or None if the token is invalid / the user is not an admin."""
-    if not token:
-        return None
-    payload = decode_token(token)
-    if not payload:
-        return None
-    user_id = payload.get("user_id") or payload.get("sub")
+    user_id or None if the token is invalid / the user is not an admin.
+
+    In 'open' access mode a tokenless/invalid caller is resolved to the
+    bootstrap admin (single-user / local convenience) so the web terminal
+    connects over a Cloudflare Tunnel, where the frontend can't mint a
+    server-side JWT — mirroring the HTTP chokepoint + the agent WS handshake.
+    The admin DB check below still applies, so only a genuinely-admin account
+    is ever accepted."""
+    user_id: Optional[str] = None
+    if token:
+        payload = decode_token(token)
+        if payload:
+            user_id = payload.get("user_id") or payload.get("sub")
+    if not user_id:
+        from app.auth.identity import open_mode_admin_id
+        user_id = open_mode_admin_id()
     if not user_id:
         return None
     if not await _is_admin(user_id):
@@ -903,6 +1211,27 @@ async def delete_terminal_session(session_id: str, request: Request):
     return {"closed": closed}
 
 
+@router.post("/api/v1/terminal/sessions/{session_id}/write")
+async def write_to_terminal(session_id: str, request: Request):
+    """Write text into a terminal session's STDIN. Used by the Terminal Chat
+    chat pill to send input directly to the PTY without going through the
+    WebSocket or the agent loop."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    body = await request.json()
+    input_text = body.get("input", "")
+    if not input_text:
+        return {"written": False, "error": "no input"}
+    try:
+        sess = await get_or_create_session(session_id, uid)
+        sess.write_input(input_text.encode("utf-8"))
+        return {"written": True}
+    except Exception as e:
+        logger.warning("write_to_terminal failed for %s: %s", session_id, e)
+        return {"written": False, "error": str(e)}
+
+
 @router.post("/api/v1/terminal/sessions/{session_id}/pause")
 async def pause_terminal_session(session_id: str, request: Request):
     """Take-over lock: pause (or resume) an agent's control of a session so a
@@ -920,6 +1249,25 @@ async def pause_terminal_session(session_id: str, request: Request):
     if not ok:
         raise HTTPException(status_code=404, detail="No such session")
     return {"session_id": session_id, "paused": paused}
+
+
+@router.post("/api/v1/terminal/sessions/{session_id}/rename")
+async def rename_terminal_session(session_id: str, request: Request):
+    """Set a friendly display name on a session — the sidebar's "Your sessions"
+    Rename action. Body: {"name": "..."}. The name is per-user and shows on all
+    the user's devices (same field the WS `set_name` control sets). Admin-only."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = (body.get("name") or "").strip()
+    ok = await rename_session(session_id, uid, name)
+    if not ok:
+        raise HTTPException(status_code=404, detail="No such session")
+    return {"session_id": session_id, "name": name}
 
 
 # ── Terminal tunnel: the user drives a program directly through chat ──
@@ -1068,6 +1416,57 @@ async def list_quick_launches(request: Request) -> List[Dict[str, str]]:
     return _load_quick_launches()
 
 
+@router.get("/api/v1/terminal/claude-resume-target")
+async def claude_resume_target(request: Request) -> Dict[str, Any]:
+    """Resolve the "Resume Claude" quick-launch at click time: the newest Claude
+    conversation not already open, returned as a ready-to-run shell command
+    (`{command, name, session_id, cwd, fresh, open_count}`). Selection logic
+    lives in _compute_claude_resume_target."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    # Snapshot the conversations open in live web-terminal tabs ON the event loop
+    # (the registry is loop-owned) and hand them to the worker thread that does
+    # the blocking transcript/glob scan. Reap dead sessions first so a closed tab
+    # never lingers as "open".
+    async with _sessions_lock:
+        _reap_dead_locked()
+        live_open_ids = _live_terminal_claude_ids()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, _compute_claude_resume_target, live_open_ids,
+    )
+
+
+def _tmux_blocking(args: List[str], timeout: float) -> "subprocess.CompletedProcess":
+    """Run a short tmux command synchronously. Executed in a worker thread by
+    _run_tmux so it never touches the event loop."""
+    return subprocess.run(args, capture_output=True, timeout=timeout)
+
+
+async def _run_tmux(args: List[str], timeout: float = 3.0) -> Tuple[int, bytes, bytes]:
+    """Run a short ``tmux …`` command off the event loop and return
+    ``(returncode, stdout_bytes, stderr_bytes)``.
+
+    Uses a worker thread + blocking ``subprocess`` instead of
+    ``asyncio.create_subprocess_exec`` because the latter raises
+    ``NotImplementedError`` on a Windows ``SelectorEventLoop`` (the loop uvicorn
+    installs under ``reload=True``). That uncaught error 500'd every tmux
+    endpoint — including the sidebar's "Your sessions" list, which surfaced as
+    "Error: Internal server error". The thread path works on every loop.
+
+    Raises ``FileNotFoundError`` if tmux isn't installed and
+    ``asyncio.TimeoutError`` if the command runs past ``timeout`` — matching
+    what the call sites already handle.
+    """
+    loop = asyncio.get_event_loop()
+    try:
+        proc = await loop.run_in_executor(None, _tmux_blocking, list(args), timeout)
+    except subprocess.TimeoutExpired:
+        raise asyncio.TimeoutError
+    return proc.returncode, proc.stdout or b"", proc.stderr or b""
+
+
 @router.get("/api/v1/terminal/tmux-sessions")
 async def list_tmux_sessions(request: Request) -> List[Dict[str, Any]]:
     """List live tmux sessions on the host (whatever user the webagent runs
@@ -1078,20 +1477,12 @@ async def list_tmux_sessions(request: Request) -> List[Dict[str, Any]]:
         raise HTTPException(status_code=403, detail="Admin required")
     fmt = "#{session_name}|#{session_windows}|#{session_attached}|#{session_created}"
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "tmux", "ls", "-F", fmt,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        rc, stdout, _stderr = await _run_tmux(["tmux", "ls", "-F", fmt], timeout=3.0)
     except FileNotFoundError:
         return []
-    try:
-        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=3.0)
     except asyncio.TimeoutError:
-        try: proc.kill()
-        except Exception: pass
         return []
-    if proc.returncode != 0:
+    if rc != 0:
         # rc=1 with "no server running" is the normal empty case.
         return []
     out: List[Dict[str, Any]] = []
@@ -1109,6 +1500,211 @@ async def list_tmux_sessions(request: Request) -> List[Dict[str, Any]]:
         except ValueError:
             continue
     return out
+
+
+# Chip key-name → tmux key name. Only keys that a raw escape sequence can't
+# reliably trigger inside tmux are routed here. Shift+Tab is the case that
+# prompted this: a modern TUI (Claude Code) negotiates extended keys with tmux
+# and then ignores the legacy back-tab (\x1b[Z) the browser keybar would inject
+# raw — so we ask tmux to originate the key instead, and it emits whatever
+# encoding matches the pane's current keyboard mode. Ordinary keys (Tab, Esc,
+# arrows, Enter) stay on the raw-byte path; they aren't remapped under tmux.
+_TMUX_SENDKEYS_MAP: Dict[str, str] = {
+    "shift-tab": "BTab",
+}
+
+# tmux session names can't contain whitespace, '.' or ':'; the launchers
+# sanitise to this set. Validating here keeps the name safe to pass to the
+# subprocess (which we run argv-style, never through a shell) and rejects junk.
+_TMUX_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+@router.post("/api/v1/terminal/tmux-sessions/{name}/rename")
+async def rename_tmux_session(name: str, request: Request) -> Dict[str, Any]:
+    """Rename a running tmux session via `tmux rename-session -t <name> <new>`.
+    The 3-dot menu on a tmux row in the unified sidebar uses this. Admin-only."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    if not _TMUX_SESSION_RE.match(name):
+        raise HTTPException(status_code=400, detail="invalid session name")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    new_name = (body.get("name") or "").strip()
+    if not new_name or not _TMUX_SESSION_RE.match(new_name):
+        raise HTTPException(status_code=400, detail="invalid new name")
+    try:
+        rc, _stdout, stderr = await _run_tmux(
+            ["tmux", "rename-session", "-t", name, new_name], timeout=3.0)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="tmux not installed")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="tmux rename-session timed out")
+    if rc != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip() or "tmux rename-session failed"
+        raise HTTPException(status_code=409, detail=detail)
+    return {"name": new_name, "previous": name}
+
+
+@router.delete("/api/v1/terminal/tmux-sessions/{name}")
+async def delete_tmux_session(name: str, request: Request) -> Dict[str, Any]:
+    """Kill a running tmux session via `tmux kill-session -t <name>`.
+    The 3-dot menu on a tmux row in the unified sidebar uses this. Admin-only."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    if not _TMUX_SESSION_RE.match(name):
+        raise HTTPException(status_code=400, detail="invalid session name")
+    try:
+        rc, _stdout, stderr = await _run_tmux(
+            ["tmux", "kill-session", "-t", name], timeout=3.0)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="tmux not installed")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="tmux kill-session timed out")
+    if rc != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip() or "tmux kill-session failed"
+        raise HTTPException(status_code=409, detail=detail)
+    return {"killed": name}
+
+
+@router.post("/api/v1/terminal/tmux/send-keys")
+async def tmux_send_keys(request: Request) -> Dict[str, Any]:
+    """Send a single named key to a tmux session's active pane via
+    `tmux send-keys`. Lets the browser keybar deliver keys (Shift+Tab) that a
+    TUI running inside tmux only accepts in tmux's negotiated encoding. Body:
+    {"session": "<name>", "key": "shift-tab"}. Admin-only."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    session = (body.get("session") or "").strip()
+    key = (body.get("key") or "").strip()
+    if not session or not _TMUX_SESSION_RE.match(session):
+        raise HTTPException(status_code=400, detail="invalid session name")
+    tmux_key = _TMUX_SENDKEYS_MAP.get(key)
+    if not tmux_key:
+        raise HTTPException(status_code=400, detail=f"unsupported key: {key}")
+    try:
+        rc, _stdout, stderr = await _run_tmux(
+            ["tmux", "send-keys", "-t", session, tmux_key], timeout=3.0)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="tmux not installed")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="tmux send-keys timed out")
+    if rc != 0:
+        # rc=1 with "can't find session" is the usual case (session ended).
+        detail = stderr.decode("utf-8", errors="replace").strip() or "tmux send-keys failed"
+        raise HTTPException(status_code=409, detail=detail)
+    return {"sent": key, "session": session, "tmux_key": tmux_key}
+
+
+# ── Pasted-image relay ─────────────────────────────────────────────────────
+#
+# The web terminal is a text-only pipe: the browser, the WebSocket and the
+# shell only ever exchange keystrokes/bytes, so an image copied to the BROWSER
+# clipboard can't be "typed" in the way text can. Claude Code's own Ctrl+V
+# image paste is no help here either — it reads the OS clipboard of the machine
+# where `claude` runs (the SERVER), not the browser's clipboard, so it finds
+# nothing when the user is on a phone/laptop over the tunnel.
+#
+# This endpoint bridges the gap via Claude Code's other supported image route —
+# "a file path in your message". The browser POSTs the pasted (or dropped)
+# image bytes here; we save them to a real file on the server's disk and hand
+# back its absolute path. The frontend then types that path into the terminal,
+# and Claude Code (or any program that accepts an image path) reads it. Nothing
+# depends on a shared clipboard, so it works remotely.
+
+# Saved under data/uploads/ (already a gitignored runtime upload dir). A
+# dedicated subfolder keeps pasted images separate + easy to prune.
+_PASTE_IMAGE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "uploads", "terminal-paste",
+)
+_PASTE_MAX_BYTES = int(os.environ.get("TERMINAL_PASTE_MAX_MB", "25")) * 1024 * 1024
+# Pasted images are throwaway references; reap anything older than this on each
+# new paste so the folder can't grow without bound. 0 disables the sweep.
+_PASTE_RETENTION_SECS = int(
+    os.environ.get("TERMINAL_PASTE_RETENTION_HOURS", "24")
+) * 3600
+# MIME → extension for the common clipboard image types, so the saved file
+# carries an extension a program can recognise.
+_PASTE_EXT: Dict[str, str] = {
+    "image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg",
+    "image/gif": ".gif", "image/webp": ".webp", "image/bmp": ".bmp",
+    "image/svg+xml": ".svg",
+}
+
+
+def _prune_old_pastes() -> None:
+    """Best-effort: delete pasted-image files older than the retention window."""
+    if _PASTE_RETENTION_SECS <= 0:
+        return
+    cutoff = time.time() - _PASTE_RETENTION_SECS
+    try:
+        for nm in os.listdir(_PASTE_IMAGE_DIR):
+            fp = os.path.join(_PASTE_IMAGE_DIR, nm)
+            try:
+                if os.path.isfile(fp) and os.path.getmtime(fp) < cutoff:
+                    os.remove(fp)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+@router.post("/api/v1/terminal/paste-image")
+async def paste_image(
+    request: Request, file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    """Save a pasted/dropped image to a server file and return its absolute
+    path, so the frontend can type that path into the terminal for Claude Code
+    (or any program) to read as an image. Admin-only — same gate as the rest of
+    the terminal API."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty image")
+    if len(data) > _PASTE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Image too large (max {_PASTE_MAX_BYTES // (1024 * 1024)} MB)",
+        )
+
+    mime = (file.content_type or "").split(";")[0].strip().lower()
+    if mime and not mime.startswith("image/"):
+        raise HTTPException(status_code=400, detail=f"Not an image: {mime}")
+    ext = _PASTE_EXT.get(mime, "")
+    if not ext:
+        # No known MIME — fall back to the uploaded filename's extension, else png.
+        _root, fext = os.path.splitext(file.filename or "")
+        ext = fext.lower() if fext else ".png"
+
+    try:
+        os.makedirs(_PASTE_IMAGE_DIR, exist_ok=True)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not prepare paste dir: {e}")
+    _prune_old_pastes()
+
+    name = "paste-" + uuid.uuid4().hex + ext
+    abspath = os.path.abspath(os.path.join(_PASTE_IMAGE_DIR, name))
+    try:
+        with open(abspath, "wb") as fh:
+            fh.write(data)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not save image: {e}")
+
+    logger.info("Saved pasted terminal image %s (%d bytes) for user %s",
+                name, len(data), uid)
+    return {"path": abspath, "name": name, "size": len(data)}
 
 
 @router.websocket("/api/v1/terminal/ws")
@@ -1218,6 +1814,14 @@ async def terminal_websocket(websocket: WebSocket):
     name_param = (websocket.query_params.get("name") or "").strip()
     if name_param:
         session.name = name_param[:80]
+
+    # "Resume Claude" tabs tag themselves with the conversation id they're
+    # resuming so the quick-launch knows it's open (see _live_terminal_claude_ids).
+    # Set once and kept — a later reconnect (page reload) reattaches to this same
+    # backend session and the tag still stands even if the param isn't re-sent.
+    claude_param = (websocket.query_params.get("claude_session") or "").strip()
+    if claude_param:
+        session.claude_session_id = claude_param[:64]
 
     session.mark_attached()
 

@@ -74,6 +74,14 @@ class _Base(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp(prefix="webagent-enc-test-")
         self.db_path = os.path.join(self.tmpdir, "test.db")
 
+        # Redirect the persisted encryption-mode file to the tmp dir so the tests
+        # (set_level writes it; reset_for_tests deletes it) can NEVER touch the
+        # real app/encryption_mode.json — otherwise running this suite silently
+        # wipes a live install's encryption setting back to "none".
+        from app import encryption as _enc_mod
+        self._orig_enc_mode_file = _enc_mod._MODE_FILE
+        _enc_mod._MODE_FILE = os.path.join(self.tmpdir, "encryption_mode.json")
+
         # Patch the SecretsBackend factory before constructing anything that
         # touches secrets/encryption modules.
         from app import secrets as _secrets_mod
@@ -107,6 +115,11 @@ class _Base(unittest.TestCase):
         from app.encryption.vault_keys import reset_for_tests as _vkm_reset
         _enc_reset()
         _vkm_reset()
+
+        # Restore the real mode-file path AFTER the reset cleaned up the tmp one,
+        # so the live app/encryption_mode.json is never removed.
+        from app import encryption as _enc_mod
+        _enc_mod._MODE_FILE = self._orig_enc_mode_file
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 

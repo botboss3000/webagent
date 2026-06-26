@@ -11,24 +11,8 @@ __pycache__/
 *.egg-info/
 
 # generated at exe-build time (stamped into the bundle, then removed)
-webagent/_build.py
+tui_app/_build.py
 
-# local runtime data — lives in THIS project folder when run from source
-# (the SQLite store, config, watchdog config/alarms, and image attachments)
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
-config.json
-monitor.json
-alarms.json
-attachments/
-
-# keep-alive guardian + server lifecycle runtime files (per-machine, recreated)
-# guardian.pid / tui.pid / server.pid (PID + heartbeat), guardian.json (on/off
-# state), guardian.log / server.log, tui.clean_exit (deliberate-quit marker)
-*.pid
-guardian.json
-guardian.log
-server.log
-tui.clean_exit
+# local runtime data — lives in tui-runtime/ when run from source
+# (the SQLite store, config, watchdog config/alarms, logs, attachments, PIDs)
+tui-runtime/

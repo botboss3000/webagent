@@ -7,13 +7,19 @@ External services POST to:
 The webhook_id maps to a registration in the database.
 The payload is forwarded to the agent loop as a user message,
 and the agent's response is returned as the HTTP response.
+
+Also exposes:
+  PATCH /api/v1/webhooks/generic/{webhook_id} — edit registration
+  GET   /api/v1/webhooks/generic/{webhook_id}/log — event log
 """
 
 import json
 import logging
 import time
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from pydantic import BaseModel
+from typing import Optional
 
 from app.db import get_db
 from app.agent.loop import run_agent_loop_buffered
@@ -22,13 +28,130 @@ from app.agent.session_history import build_openai_history_from_session
 
 logger = logging.getLogger(__name__)
 
-
-def _now_iso() -> str:
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).isoformat()
-
-
 router = APIRouter(prefix="/api/v1/webhooks/generic", tags=["webhooks"])
+
+
+class UpdateWebhookBody(BaseModel):
+    user_id: str
+    name: Optional[str] = None
+    instructions: Optional[str] = None
+    active: Optional[bool] = None
+
+
+@router.patch("/{webhook_id}")
+async def patch_webhook(request: Request, webhook_id: str, body: UpdateWebhookBody):
+    """Edit a webhook registration (name, instructions, active toggle)."""
+    from app.auth.identity import assert_caller_is
+    uid = await assert_caller_is(request, body.user_id)
+    db = get_db()
+    reg = await db.get_webhook(webhook_id)
+    if not reg:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    if reg.get("user_id") != uid and not await db.is_user_admin(uid):
+        raise HTTPException(status_code=403, detail="Not the owner of this webhook.")
+    fields = {}
+    if body.name is not None:
+        fields["name"] = body.name
+    if body.instructions is not None:
+        fields["instructions"] = body.instructions
+    if body.active is not None:
+        fields["active"] = 1 if body.active else 0
+    if not fields:
+        return {"webhook": reg}
+    updated = await db.update_webhook(webhook_id, uid, **fields)
+    return {"webhook": updated}
+
+
+@router.get("/{webhook_id}/log")
+async def get_webhook_log(request: Request, webhook_id: str, user_id: str = Query(...)):
+    """Return recent event log entries for a webhook."""
+    from app.auth.identity import assert_caller_is
+    uid = await assert_caller_is(request, user_id)
+    db = get_db()
+    reg = await db.get_webhook(webhook_id)
+    if not reg:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    if reg.get("user_id") != uid and not await db.is_user_admin(uid):
+        raise HTTPException(status_code=403, detail="Not the owner of this webhook.")
+    events = await db.get_webhook_logs(webhook_id)
+    return {"events": events}
+
+
+class UpdateWebhookBody(BaseModel):
+    user_id: str
+    name: str | None = None
+    instructions: str | None = None
+    active: bool | None = None
+
+
+@router.patch("/{webhook_id}")
+async def patch_webhook(request: Request, webhook_id: str, body: UpdateWebhookBody):
+    """Edit a generic webhook registration (name, instructions, active toggle)."""
+    from app.auth.identity import assert_caller_is
+    uid = await assert_caller_is(request, body.user_id)
+    db = get_db()
+    reg = await db.get_webhook(webhook_id)
+    if not reg:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    if reg.get("user_id") != uid and not await db.is_user_admin(uid):
+        raise HTTPException(status_code=403, detail="Not the owner of this webhook.")
+
+    fields = {}
+    if body.name is not None:
+        fields["name"] = body.name
+    if body.instructions is not None:
+        fields["instructions"] = body.instructions
+    if body.active is not None:
+        fields["active"] = 1 if body.active else 0
+
+    if not fields:
+        return {"webhook": reg}
+
+    conn = db._get_conn()
+    try:
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [_now_iso(), webhook_id]
+        conn.execute(f"UPDATE webhook_registrations SET {sets}, updated_at = ? WHERE id = ?", vals)
+        conn.commit()
+    finally:
+        conn.close()
+
+    fresh = await db.get_webhook(webhook_id)
+    return {"webhook": fresh}
+
+
+@router.get("/{webhook_id}/log")
+async def get_webhook_log(request: Request, webhook_id: str, user_id: str = Query(...)):
+    """Return recent event log entries for a generic webhook."""
+    from app.auth.identity import assert_caller_is
+    uid = await assert_caller_is(request, user_id)
+    db = get_db()
+    reg = await db.get_webhook(webhook_id)
+    if not reg:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    if reg.get("user_id") != uid and not await db.is_user_admin(uid):
+        raise HTTPException(status_code=403, detail="Not the owner of this webhook.")
+
+    conn = db._get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT id, method, headers, payload, response_status,
+                      response_body, duration_ms, created_at
+               FROM webhook_event_log
+               WHERE webhook_id = ?
+               ORDER BY created_at DESC
+               LIMIT 20""",
+            (webhook_id,),
+        ).fetchall()
+        events = []
+        for r in rows:
+            d = dict(r)
+            d["payload"] = (d.get("payload") or "")[:500]
+            d["response_body"] = (d.get("response_body") or "")[:500]
+            events.append(d)
+        return {"events": events}
+    finally:
+        conn.close()
 
 
 @router.post("/{webhook_id}")
@@ -65,7 +188,6 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
         body_str = ""
 
     # 3. Build the user message from the webhook data
-    #    Format: concise summary + payload for the agent
     content_type = in_headers.get("content-type", "")
     if content_type.startswith("application/json") and body_str:
         try:
@@ -80,11 +202,10 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
 
     try:
         # 4. Ensure session exists, then save incoming interaction
-        session_id = user_id  # one session per user for webhooks
+        session_id = user_id
         try:
             await db.assert_session_owned(user_id, session_id)
         except PermissionError:
-            # Auto-create the session via raw client
             now = _now_iso()
             client = db.get_raw_client()
             client.table("sessions").insert({
@@ -104,33 +225,23 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
             }),
         )
 
-        # 5. Look up the user's agent. We no longer auto-create one — the user
-        # must set up an agent via the web UI before webhooks can run.
+        # 5. Look up the user's agent
         agent = await db.get_agent_for_user(user_id)
         if agent is None:
-            logger.warning(
-                "webhook %s: user %s has no agent assigned; skipping run",
-                webhook_id, user_id,
-            )
-            return Response(
-                content='{"error":"no agent assigned for user"}',
-                status_code=400,
-                media_type="application/json",
-            )
+            logger.warning("webhook %s: user %s has no agent assigned; skipping run", webhook_id, user_id)
+            return Response(content='{"error":"no agent assigned for user"}', status_code=400, media_type="application/json")
 
-        # 6. Fetch agent + context docs in one query
+        # 6. Fetch agent + context docs
         agent_with_ctx = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
         if agent_with_ctx:
             agent = agent_with_ctx
-
         if not agent.get("context_documents"):
             copied = await db.copy_defaults_to_agent(agent["id"])
             if copied > 0:
                 agent = await db.fetch_agent_with_context(user_id, CONTEXT_SECTION_TYPES)
-
         context_docs = agent.get("context_documents", [])
 
-        # 7. Build system prompt — inject webhook instructions as overlay
+        # 7. Build system prompt
         if instructions:
             webhook_block = (
                 "## [WEBHOOK INSTRUCTIONS]\n"
@@ -138,21 +249,14 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
                 f"{instructions}\n"
             )
             context_docs = [{"id": "_webhook_overlay", "content": webhook_block}] + context_docs
+        system_prompt = await build_system_prompt(context_docs, brain_context=None, user_id=user_id)
 
-        system_prompt = await build_system_prompt(
-            context_docs, brain_context=None, user_id=user_id,
-        )
-
-        # 8. History (exclude irrelevant prior webhook turns — keep last 20)
-        history = await build_openai_history_from_session(
-            db, user_id, session_id, exclude_interaction_ids=None,
-        )
-        # Trim history to last 20 to keep context manageable
+        # 8. History
+        history = await build_openai_history_from_session(db, user_id, session_id, exclude_interaction_ids=None)
         if len(history) > 20:
             history = history[-20:]
 
-        # 9. Run agent loop — supervised + recorded so a restart/freeze mid-run is
-        #    detected and re-ignited by the self-healing layer instead of lost.
+        # 9. Run agent loop
         from app.agent.runner import run_supervised_turn, RunOutcome
         _wh_agent_id = agent.get("id")
         _relaunch_ctx = {
@@ -162,13 +266,9 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
 
         async def _build_webhook_turn(replaced: bool) -> RunOutcome:
             _reply = await run_agent_loop_buffered(
-                user_id=user_id,
-                session_id=session_id,
-                user_message=user_message,
-                system_prompt=system_prompt,
-                history=history,
-                max_turns=agent.get("max_turn_count", 0),
-                channel="webhook",
+                user_id=user_id, session_id=session_id, user_message=user_message,
+                system_prompt=system_prompt, history=history,
+                max_turns=agent.get("max_turn_count", 0), channel="webhook",
             )
             return RunOutcome(status="complete", stop_cause="complete", reply=_reply)
 
@@ -178,7 +278,6 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
             build_turn=_build_webhook_turn, await_result=True, result_timeout=620,
         )
         reply = (_outcome.reply if _outcome else "") or ""
-
         duration_ms = int((time.time() - start) * 1000)
 
         # 10. Log the event
@@ -188,30 +287,17 @@ async def generic_webhook_handler(webhook_id: str, request: Request):
                 method=method,
                 headers=json.dumps({k: v for k, v in in_headers.items()
                                    if k.lower() not in ("authorization", "cookie", "x-api-key")}),
-                payload=body_str[:5000],
-                response_status=200,
-                response_body=reply[:5000],
+                payload=body_str[:5000], response_status=200, response_body=reply[:5000],
                 duration_ms=duration_ms,
             )
         except Exception as e:
             logger.warning("Failed to log webhook event: %s", e)
 
-        # 11. Return response
         return Response(
-            content=json.dumps({
-                "status": "ok",
-                "reply": reply,
-                "webhook_id": webhook_id,
-                "duration_ms": duration_ms,
-            }),
-            media_type="application/json",
-            status_code=200,
+            content=json.dumps({"status": "ok", "reply": reply, "webhook_id": webhook_id, "duration_ms": duration_ms}),
+            media_type="application/json", status_code=200,
         )
 
     except Exception as e:
         logger.error("Webhook handler error for %s: %s", webhook_id, e, exc_info=True)
-        return Response(
-            content=json.dumps({"status": "error", "message": str(e)}),
-            media_type="application/json",
-            status_code=500,
-        )
+        return Response(content=json.dumps({"status": "error", "message": str(e)}), media_type="application/json", status_code=500)

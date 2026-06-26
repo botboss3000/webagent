@@ -4,7 +4,7 @@ cd /d "%~dp0"
 setlocal enabledelayedexpansion
 
 :: One-click: build the portable webagent.exe (the Server Manager TUI) from
-:: source. Output: webagent.exe in THIS folder (webagent\).
+:: source. Output: webagent.exe in THIS folder (TUI\).
 :: A RUNNING webagent.exe locks the output file, so close any open one first.
 
 :: -- Ensure uv is installed (Astral's Python + venv manager) --

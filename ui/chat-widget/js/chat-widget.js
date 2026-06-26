@@ -1,0 +1,962 @@
+'use strict';
+
+// ── Chat widget — floating mini chat for task-scoped agent sessions ────────
+// createChatWidget(options) spawns a small floating card (bottom-right) that
+// runs an agent task in its OWN session, completely independent of the main
+// chat side-panel. It streams the agent's progress live (bubbles + tool-call
+// rows), has a mini chat-pill input so the user can answer agent questions,
+// Continue / Stop buttons, and collapses to a compact "Done" chip when the
+// task finishes (click the chip to re-expand). The card is draggable by its
+// header and resizable from any edge or corner.
+//
+// How it gets its events: ONE global WebSocket (ui/shared/js/agentWs.js)
+// carries every session's events for the user. The widget claims its session
+// via registerSessionSubscriber(sessionId, handler); unclaimed sessions
+// behave exactly as before. One handler per session — two widgets on the
+// same session is unsupported (last registration wins). Each widget owns a
+// fresh UUID session, so this never collides in practice.
+//
+// RELIABILITY — the WS is the smooth path, the DB is the durable one. Just
+// like the main panel (ui/chat-side-panel/js/chat-reconcile.js), the WS only
+// delivers when the browser socket and the running agent live in the SAME
+// server process. When they don't (dev port-stacking, prod multi-worker), or
+// when the socket is briefly silent, the widget polls a cheap DB-tail endpoint
+// (/api/v1/db/session-tail) — gated on WS silence so there's ZERO overhead
+// while the socket is delivering — and renders the same bubbles. This is what
+// makes updates land reliably right after a send and after Stop/Continue.
+//
+// Close ≠ Stop: closing the widget only detaches it — a running task keeps
+// going server-side and the session stays in the normal session list. Stop
+// interrupts the run.
+//
+// Widgets do not survive a page reload (deliberate): the task keeps running
+// server-side and its history is reachable from the main panel's session
+// dropdown. Widgets capture the user id at creation; close them on account
+// switch.
+
+import { app } from '../../shared/js/state.js';
+import { apiPath } from '../../shared/js/config.js';
+import { authHeaders } from '../../shared/js/left-login.js';
+import { randomUUID } from '../../shared/js/uuid.js';
+import { registerSessionSubscriber } from '../../shared/js/agentWs.js';
+import { icon } from '../../shared/js/icons.js';
+import { _fillAgentBubble } from '../../chat-side-panel/js/chat-bubble.js';
+import { buildToolRow } from '../../shared/js/chat-activity.js';
+
+// How often the reconcile gate is checked, and how long the WS must be silent
+// for this session before the DB poll engages (mirrors chat-reconcile.js).
+const RECONCILE_INTERVAL_MS = 800;
+const WS_SILENCE_MS = 1200;
+
+// Trim the trailing "[Tool calls: …]" annotation off a stored assistant row
+// (same as chat-stream.js _stripToolCalls).
+function _stripToolCalls(text) {
+  const idx = (text || '').indexOf('\n\n[Tool calls: ');
+  return idx !== -1 ? text.slice(0, idx) : text;
+}
+
+// ── Floating layer (singleton, stacks all docked widgets) ───────────────────
+
+let _layer = null;
+let _layerWired = false;
+
+function _repositionLayer() {
+  if (!_layer) return;
+  // Keep the docked widget stack clear of the main chat panel when it's open.
+  let inset = 16;
+  const panel = document.getElementById('chat-panel');
+  if (panel) {
+    const r = panel.getBoundingClientRect();
+    const visible = r.width > 0 && getComputedStyle(panel).display !== 'none';
+    if (visible) inset = Math.max(16, Math.round(window.innerWidth - r.left) + 16);
+  }
+  _layer.style.right = inset + 'px';
+}
+
+function _ensureLayer() {
+  // Already mounted on <body> → reuse it.
+  if (_layer && document.body.contains(_layer)) return _layer;
+  // The layer node still exists but got detached from <body> (a pathological
+  // page rebuild wiped its subtree). Re-attach the SAME node so any widget
+  // already running inside it survives — NEVER orphan a live task by spinning
+  // up a fresh empty layer.
+  if (_layer && _layer.querySelector('.chat-widget')) {
+    document.body.appendChild(_layer);
+    _guardLayer();
+    _repositionLayer();
+    return _layer;
+  }
+  _layer = document.createElement('div');
+  _layer.id = 'chat-widget-layer';
+  document.body.appendChild(_layer);
+  if (!_layerWired) {
+    _layerWired = true;
+    window.addEventListener('resize', _repositionLayer);
+    const panel = document.getElementById('chat-panel');
+    if (panel && typeof ResizeObserver === 'function') {
+      new ResizeObserver(_repositionLayer).observe(panel);
+    }
+  }
+  _guardLayer();
+  _repositionLayer();
+  return _layer;
+}
+
+// HARDENING — the widget layer must outlive ANY page navigation. It lives on
+// <body>, OUTSIDE every page (each page is just shown/hidden under #stage), so
+// a normal tab switch can't touch it. This watchdog covers the pathological
+// case where some code rebuilds <body>'s subtree and removes the layer out
+// from under a running widget: if the layer is removed while it STILL holds a
+// widget, we put it straight back as the last child (so it also stays on top).
+// It never fights a legitimate teardown — close()/_maybeRemoveLayer empty the
+// layer FIRST, so a removal with no .chat-widget child is left alone. One
+// observer for the app lifetime; the body-childList callback is a cheap guard
+// (tab content lives under #stage, not directly on <body>, so it rarely fires).
+let _layerGuard = null;
+function _guardLayer() {
+  if (_layerGuard || typeof MutationObserver !== 'function') return;
+  _layerGuard = new MutationObserver(() => {
+    if (_layer && !document.body.contains(_layer) && _layer.querySelector('.chat-widget')) {
+      document.body.appendChild(_layer);   // re-attach as last child → always on top
+      _repositionLayer();
+    }
+  });
+  _layerGuard.observe(document.body, { childList: true });
+}
+
+function _maybeRemoveLayer() {
+  if (_layer && !_layer.querySelector('.chat-widget')) {
+    _layer.remove();
+    _layer = null;
+  }
+}
+
+// ── Widget factory ──────────────────────────────────────────────────────────
+
+const STATUS_LABEL = {
+  starting: 'Starting…',
+  running: 'Working…',
+  done: 'Done',
+  interrupted: 'Stopped',
+  error: 'Error',
+  idle: '',
+};
+
+const RESIZE_DIRS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+
+export function createChatWidget(opts = {}) {
+  const {
+    title = 'Agent task',
+    iconName = 'sparkles',
+    agentId = null,
+    ensureAgent = null,        // async () => agentId — caller handles ability setup
+    initialMessage = '',
+    initialAttachmentIds = null,  // attachment_ids to ride the FIRST message only
+    appControl = null,            // App-Control fingerprint to ride the FIRST message
+                                  //   only (see ui/shared/js/app-control-point.js):
+                                  //   the backend turns it into a foldable app_control
+                                  //   tool chip and folds it to the agent for that turn.
+    executionMode = 'ask',
+    transformMessage = null,   // async (text) => sentText — wrap each outgoing message
+                               //   (e.g. Canvas tags every send with its page header);
+                               //   the user bubble still shows the raw typed text.
+    onDone = null,             // (finalText) => void — fires once per finished turn
+    onClose = null,            // () => void
+  } = opts;
+
+  const st = {
+    sessionId: randomUUID(),
+    userId: app.currentUserId,
+    agentId: agentId || null,
+    appControl: appControl || null,   // consumed on the first send, then cleared
+    status: 'idle',
+    closed: false,
+    minimized: false,
+    floating: false,           // user has dragged/resized → fixed positioning
+    hadTurn: false,            // at least one turn has run (controls Continue)
+    settled: true,             // current turn has reached a terminal state
+    unregister: null,
+    ready: null,               // promise resolving when agentId is known
+    turnBuffers: new Map(),    // key -> accumulated/absolute stream text
+    bubbles: new Map(),        // key -> agent bubble element
+    lastAgentText: '',         // most recent finalized agent text (for onDone)
+    toolCalls: [],             // current exchange's entries for buildToolRow
+    toolGroup: null,           // current exchange's collapsible tool group el
+    lastSeq: 0,                // DB-tail after_session_seq cursor
+    reconcileTimer: null,
+    reconcileInFlight: false,
+    collapseTimer: null,
+    els: {},
+  };
+
+  // ── DOM ──
+
+  function _build() {
+    const root = document.createElement('div');
+    root.className = 'chat-widget';
+
+    // Resize handles (one per edge/corner). Appended first so the header and
+    // its buttons paint above them and stay clickable.
+    RESIZE_DIRS.forEach((dir) => {
+      const h = document.createElement('div');
+      h.className = 'cw-resize cw-resize-' + dir;
+      h.dataset.dir = dir;
+      h.addEventListener('pointerdown', _onResizeDown);
+      root.appendChild(h);
+    });
+
+    const header = document.createElement('div');
+    header.className = 'cw-header';
+    header.innerHTML =
+      icon(iconName, { size: '16px', cls: 'cw-head-icon' }) +
+      '<span class="cw-title"></span>' +
+      '<span class="cw-status"></span>' +
+      '<span class="cw-dot idle" aria-hidden="true"></span>';
+    const minBtn = document.createElement('button');
+    minBtn.type = 'button';
+    minBtn.className = 'cw-icon-btn cw-min-btn';
+    minBtn.title = 'Minimize';
+    minBtn.innerHTML = icon('minus', { size: '15px' });
+    minBtn.addEventListener('click', (e) => { e.stopPropagation(); minimize(); });
+    header.appendChild(minBtn);
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'cw-icon-btn cw-close-btn';
+    closeBtn.title = 'Close (task keeps running; session stays in your history)';
+    closeBtn.innerHTML = icon('x', { size: '15px' });
+    closeBtn.addEventListener('click', (e) => { e.stopPropagation(); close(); });
+    header.appendChild(closeBtn);
+    // Drag to move; click (no drag) on a minimized chip restores it.
+    header.addEventListener('pointerdown', _onHeaderDown);
+    header.addEventListener('click', () => { if (st.minimized) restore(); });
+    root.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'cw-body';
+    root.appendChild(body);
+
+    const footer = document.createElement('div');
+    footer.className = 'cw-footer';
+
+    const actions = document.createElement('div');
+    actions.className = 'cw-actions';
+    // Spinning loader pinned to the left while the agent is working — the
+    // widget's echo of the main panel's live tool-call activity. Real loader
+    // icon (not a pulsing dot); the spin comes from the .cw-spinner animation.
+    const spinner = document.createElement('span');
+    spinner.className = 'cw-spinner';
+    spinner.innerHTML = icon('loader', { size: '15px' });
+    spinner.style.display = 'none';
+    actions.appendChild(spinner);
+    const contBtn = document.createElement('button');
+    contBtn.type = 'button';
+    contBtn.className = 'cw-action-btn cw-continue-btn';
+    contBtn.innerHTML = icon('play', { size: '12px' }) + ' Continue';
+    contBtn.title = 'Ask the agent to keep going';
+    contBtn.style.display = 'none';
+    contBtn.addEventListener('click', () => send('continue'));
+    actions.appendChild(contBtn);
+    const stopBtn = document.createElement('button');
+    stopBtn.type = 'button';
+    stopBtn.className = 'cw-action-btn cw-stop-btn';
+    stopBtn.innerHTML = icon('square', { size: '12px' }) + ' Stop';
+    stopBtn.style.display = 'none';
+    stopBtn.addEventListener('click', () => interrupt());
+    actions.appendChild(stopBtn);
+    footer.appendChild(actions);
+
+    // CHAT-PILL-SYNC: opts into the shared pill classes from app1.css —
+    // geometry/behaviour come from there, never re-styled here.
+    const pill = document.createElement('div');
+    pill.className = 'chat-pill no-voice cw-pill';
+    const input = document.createElement('textarea');
+    input.className = 'chat-pill-input';
+    input.rows = 1;
+    input.placeholder = 'Reply to the agent…';
+    input.autocomplete = 'off';
+    pill.appendChild(input);
+    const sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.className = 'chat-pill-send';
+    sendBtn.title = 'Send';
+    sendBtn.disabled = true;
+    sendBtn.innerHTML = icon('send', { size: '18px' });
+    pill.appendChild(sendBtn);
+    footer.appendChild(pill);
+    root.appendChild(footer);
+
+    input.addEventListener('input', () => {
+      pill.classList.toggle('has-text', !!input.value.trim());
+      sendBtn.disabled = !input.value.trim() || st.status === 'running' || st.status === 'starting';
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (!sendBtn.disabled) _sendFromInput();
+      }
+    });
+    sendBtn.addEventListener('click', _sendFromInput);
+
+    // A user reading/interacting with the card shouldn't be yanked into a chip.
+    root.addEventListener('pointerenter', () => {
+      if (st.collapseTimer) { clearTimeout(st.collapseTimer); st.collapseTimer = null; }
+    });
+
+    st.els = { root, header, body, footer, pill, input, sendBtn, stopBtn, contBtn,
+               actions, spinner,
+               title: header.querySelector('.cw-title'),
+               statusEl: header.querySelector('.cw-status'),
+               dot: header.querySelector('.cw-dot') };
+    st.els.title.textContent = title;
+    return root;
+  }
+
+  function _setStatus(status) {
+    if (st.closed) return;
+    st.status = status;
+    const { dot, statusEl, pill, stopBtn, contBtn, sendBtn, input, root, actions, spinner } = st.els;
+    dot.className = 'cw-dot ' + status;
+    statusEl.textContent = STATUS_LABEL[status] || '';
+    const busy = status === 'running' || status === 'starting';
+    pill.classList.toggle('thinking', busy);
+    spinner.style.display = busy ? '' : 'none';
+    stopBtn.style.display = status === 'running' ? '' : 'none';
+    // Continue is offered once a turn has finished and the agent is ready.
+    const canContinue = st.hadTurn && !!st.agentId && !busy;
+    contBtn.style.display = canContinue ? '' : 'none';
+    // Collapse the whole row (and its footer gap) when nothing in it shows —
+    // replaces the old .cw-actions:empty rule, which no longer matches now
+    // that the spinner is a permanent child of the row.
+    actions.style.display = (busy || canContinue) ? '' : 'none';
+    sendBtn.disabled = busy || !input.value.trim();
+    root.classList.toggle('cw-done', status === 'done');
+  }
+
+  function _scrollToBottom() {
+    const { body } = st.els;
+    body.scrollTop = body.scrollHeight;
+  }
+
+  // ── Bubble helpers (shared by the WS path AND the DB-reconcile path) ──
+
+  function _addBubble(role, text) {
+    const b = document.createElement('div');
+    b.className = 'cw-bubble ' + role;
+    b.textContent = text || '';
+    st.els.body.appendChild(b);
+    _scrollToBottom();
+    return b;
+  }
+
+  // SET absolute streaming text for `key` (idempotent). Creates the bubble if
+  // needed. Used by WS stream (accumulated buffer) and the DB poll (absolute
+  // row text) — both converge on the same element.
+  function _seedStreaming(key, text) {
+    if (!key) return;
+    let bubble = st.bubbles.get(key);
+    if (!bubble) {
+      bubble = _addBubble('agent', '');
+      bubble.classList.add('streaming');
+      bubble.dataset.cwKey = key;
+      st.bubbles.set(key, bubble);
+    }
+    st.turnBuffers.set(key, text);
+    bubble.textContent = text;        // plain text while streaming; markdown on finalize
+    _scrollToBottom();
+  }
+
+  function _finalizeKey(key, text) {
+    let bubble = key ? st.bubbles.get(key) : null;
+    const clean = (text || '').trim();
+    if (!clean) { if (bubble) { bubble.remove(); if (key) st.bubbles.delete(key); } return; }
+    if (!bubble) bubble = _addBubble('agent', '');
+    while (bubble.firstChild) bubble.removeChild(bubble.firstChild);
+    bubble.classList.remove('streaming');
+    if (key) bubble.dataset.cwKey = key;
+    _fillAgentBubble(bubble, clean);
+    if (key) { st.bubbles.set(key, bubble); st.turnBuffers.delete(key); }
+    st.lastAgentText = clean;
+    _scrollToBottom();
+  }
+
+  function _markInterruptedKey(key) {
+    let bubble = key ? st.bubbles.get(key) : null;
+    if (!bubble) {
+      const streaming = st.els.body.querySelectorAll('.cw-bubble.agent.streaming');
+      bubble = streaming[streaming.length - 1] || null;
+    }
+    if (bubble) {
+      const cur = (key && st.turnBuffers.get(key)) || bubble.textContent || '';
+      while (bubble.firstChild) bubble.removeChild(bubble.firstChild);
+      bubble.classList.remove('streaming');
+      _fillAgentBubble(bubble, cur ? cur + '\n\n_(stopped)_' : '_(stopped)_');
+    }
+    if (key) st.turnBuffers.delete(key);
+  }
+
+  // Any agent bubble still in the streaming state at turn end → finalize it
+  // from its buffer so a missed step/response event never leaves a stale stub.
+  function _finalizeDanglingStreams() {
+    st.els.body.querySelectorAll('.cw-bubble.agent.streaming').forEach((b) => {
+      const key = b.dataset.cwKey || '';
+      _finalizeKey(key, (key && st.turnBuffers.get(key)) || b.textContent || '');
+    });
+  }
+
+  // ── Tool-call group (one per exchange, rows via shared buildToolRow) ──
+
+  function _renderToolGroup() {
+    if (!st.toolGroup) {
+      const group = document.createElement('div');
+      group.className = 'cw-tools';
+      const head = document.createElement('button');
+      head.type = 'button';
+      head.className = 'cw-tools-head';
+      head.setAttribute('aria-expanded', 'false');
+      const panel = document.createElement('div');
+      panel.className = 'cw-tools-panel';
+      panel.hidden = true;
+      head.addEventListener('click', () => {
+        panel.hidden = !panel.hidden;
+        head.setAttribute('aria-expanded', panel.hidden ? 'false' : 'true');
+        group.classList.toggle('open', !panel.hidden);
+      });
+      group.appendChild(head);
+      group.appendChild(panel);
+      st.els.body.appendChild(group);
+      st.toolGroup = group;
+    }
+    const head = st.toolGroup.querySelector('.cw-tools-head');
+    const panel = st.toolGroup.querySelector('.cw-tools-panel');
+    const n = st.toolCalls.length;
+    const running = st.toolCalls.some((t) => t.status === 'running');
+    head.innerHTML = icon('wrench', { size: '12px' }) + ' '
+      + (n === 1 ? '1 tool call' : n + ' tool calls')
+      + (running ? '…' : '')
+      + ' <span class="cw-tools-chevron" aria-hidden="true">›</span>';
+    panel.innerHTML = '';
+    st.toolCalls.forEach((entry, i) => {
+      const row = buildToolRow(entry, i);
+      const rowHead = row.querySelector('.ca-tool-head');
+      if (rowHead) {
+        rowHead.addEventListener('click', (e) => {
+          e.stopPropagation();
+          entry.open = !entry.open;
+          row.classList.toggle('open', entry.open);
+          rowHead.setAttribute('aria-expanded', entry.open ? 'true' : 'false');
+        });
+      }
+      panel.appendChild(row);
+    });
+    _scrollToBottom();
+  }
+
+  // ── Turn lifecycle ──
+
+  function _beginTurn() {
+    st.settled = false;
+    st.toolCalls = [];
+    st.toolGroup = null;
+    if (st.collapseTimer) { clearTimeout(st.collapseTimer); st.collapseTimer = null; }
+    // Prime WS-liveness from "now" so the DB poll counts its silence window
+    // from here; if the WS delivers it keeps this fresh and the poll stays
+    // dormant, otherwise the poll engages after WS_SILENCE_MS.
+    if (!app._lastWsEventAt) app._lastWsEventAt = {};
+    app._lastWsEventAt[st.sessionId] = Date.now();
+    _startReconcile();
+  }
+
+  // Normal completion. Idempotent per turn (guarded by st.settled).
+  function _settleTurn(finalText) {
+    if (st.settled || st.closed) return;
+    st.settled = true;
+    st.hadTurn = true;
+    _finalizeDanglingStreams();
+    _stopReconcile();
+    if (typeof finalText === 'string' && finalText.trim()) st.lastAgentText = finalText.trim();
+    if (st.status !== 'interrupted' && st.status !== 'error') _setStatus('done');
+    if (typeof onDone === 'function') {
+      try { onDone(st.lastAgentText); } catch (_) { /* consumer callback — non-fatal */ }
+    }
+    // Shrink to the Done chip after a beat (cancelled if the pointer is over
+    // the card — see the pointerenter handler).
+    if (st.status === 'done') {
+      if (st.collapseTimer) clearTimeout(st.collapseTimer);
+      st.collapseTimer = setTimeout(() => {
+        st.collapseTimer = null;
+        if (!st.closed && st.status === 'done' && !st.els.root.matches(':hover')) minimize();
+      }, 1500);
+    }
+  }
+
+  // ── Live event renderer (per-instance — independent of the main panel) ──
+
+  function _handleEvent(ev) {
+    if (st.closed || !ev || !ev.type) return;
+    const key = ev.asst_id || ev.turn_id || '';
+    switch (ev.type) {
+      case 'user_message': {
+        const text = (ev.content || '').trim();
+        const users = st.els.body.querySelectorAll('.cw-bubble.user');
+        for (const u of users) { if (u.textContent.trim() === text) return; } // dedup optimistic
+        _addBubble('user', ev.content || '');
+        _beginTurn();           // a turn started (possibly from another device)
+        _setStatus('running');
+        break;
+      }
+      case 'stream': {
+        if (!key) break;
+        _seedStreaming(key, (st.turnBuffers.get(key) || '') + (ev.content || ''));
+        _setStatus('running');
+        break;
+      }
+      case 'agent_step_end':
+        _finalizeKey(key, ev.content || st.turnBuffers.get(key) || '');
+        st.hadTurn = true;
+        break;
+      case 'tool_call':
+        st.toolCalls.push({
+          tool: ev.tool || 'tool', args: ev.args, status: 'running',
+          result: '', durationMs: null, errorType: null, turn: 0, open: false,
+        });
+        _renderToolGroup();
+        _setStatus('running');
+        break;
+      case 'tool_result': {
+        for (let i = st.toolCalls.length - 1; i >= 0; i--) {
+          const t = st.toolCalls[i];
+          if (t.status === 'running' && t.tool === (ev.tool || 'tool')) {
+            t.status = ev.error ? 'error' : 'done';
+            t.result = ev.result || '';
+            t.durationMs = (typeof ev.duration_ms === 'number') ? ev.duration_ms : null;
+            t.errorType = ev.error_type || null;
+            break;
+          }
+        }
+        _renderToolGroup();
+        break;
+      }
+      case 'response':
+        _finalizeKey(key, ev.content || st.turnBuffers.get(key) || '');
+        _settleTurn(ev.content || '');
+        break;
+      case 'interrupted':
+        _markInterruptedKey(key);
+        _setStatus('interrupted');
+        st.hadTurn = true;
+        st.settled = true;
+        _stopReconcile();
+        break;
+      case 'resumed':
+        st.settled = false;
+        _setStatus('running');
+        _startReconcile();
+        break;
+      case 'error':
+        _addBubble('agent', 'Error: ' + (ev.message || 'unknown')).classList.add('cw-error');
+        _setStatus('error');
+        st.settled = true;
+        _stopReconcile();
+        break;
+      case 'session_title':
+        if (ev.status === 'done' && ev.title) st.els.title.textContent = ev.title;
+        break;
+      default:
+        break; // pipeline / db / attachment etc. — not rendered in the mini view
+    }
+  }
+
+  // ── DB-tail reconcile (durable path — see header comment) ──
+
+  function _startReconcile() {
+    if (st.reconcileTimer || st.closed) return;
+    st.reconcileTimer = setInterval(_reconcileTick, RECONCILE_INTERVAL_MS);
+  }
+
+  function _stopReconcile() {
+    if (st.reconcileTimer) { clearInterval(st.reconcileTimer); st.reconcileTimer = null; }
+  }
+
+  function _reconcileTick() {
+    if (st.closed) { _stopReconcile(); return; }
+    const active = st.status === 'running' || st.status === 'starting';
+    if (!active) { _stopReconcile(); return; }
+    const last = (app._lastWsEventAt && app._lastWsEventAt[st.sessionId]) || 0;
+    if (Date.now() - last < WS_SILENCE_MS) return;   // WS delivering → stay dormant
+    _reconcileOnce();
+  }
+
+  async function _reconcileOnce() {
+    if (st.reconcileInFlight) return;
+    st.reconcileInFlight = true;
+    try {
+      const token = localStorage.getItem('auth_token');
+      const url = apiPath(
+        `/api/v1/db/session-tail?db=local.db&session_id=${encodeURIComponent(st.sessionId)}`
+        + `&after_session_seq=${st.lastSeq}`
+        + (st.userId ? `&user_id=${encodeURIComponent(st.userId)}` : '')
+        + (token ? `&token=${encodeURIComponent(token)}` : ''),
+      );
+      let data;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return;
+        data = await res.json();
+      } catch (_) { return; }                          // network blip — next tick
+      if (st.closed || !data || data.restricted) return;
+
+      let maxSeq = st.lastSeq;
+      const msgs = Array.isArray(data.messages) ? data.messages : [];
+      for (const msg of msgs) {
+        if (typeof msg.session_seq === 'number') maxSeq = Math.max(maxSeq, msg.session_seq);
+        if (msg.role === 'user') { _reconcileUserRow(msg); continue; }
+        if (msg.role !== 'assistant') continue;        // tool rows arrive via WS only
+        st.hadTurn = true;                             // a real assistant row → a turn ran
+        const key = msg.id;
+        const text = _stripToolCalls(msg.content || '');
+        if (msg.status === 'streaming') _seedStreaming(key, text);
+        else if (msg.status === 'interrupted') _markInterruptedKey(key);
+        else if (msg.status === 'error') _finalizeKey(key, text);
+        else _finalizeKey(key, text);                  // 'complete' / legacy null
+      }
+
+      const run = data.run || null;
+      if (run && run.active) _setStatus('running');
+      st.lastSeq = Math.max(st.lastSeq, maxSeq,
+        (run && typeof run.latest_session_seq === 'number') ? run.latest_session_seq : 0);
+
+      // Server marked the run finished — settle even if the WS response was lost.
+      if (run && run.active === false && !st.settled && st.hadTurn) {
+        if (st.status !== 'interrupted' && st.status !== 'error') _settleTurn(st.lastAgentText);
+      }
+    } finally {
+      st.reconcileInFlight = false;
+    }
+  }
+
+  function _reconcileUserRow(msg) {
+    const mid = msg.id || '';
+    const cont = (msg.content || '').trim();
+    if (mid && st.els.body.querySelector(`.cw-bubble.user[data-msg-id="${CSS.escape(String(mid))}"]`)) return;
+    const users = st.els.body.querySelectorAll('.cw-bubble.user');
+    for (const u of users) {
+      if (u.textContent.trim() === cont) { if (mid) u.setAttribute('data-msg-id', String(mid)); return; }
+    }
+    const b = _addBubble('user', msg.content || '');
+    if (mid) b.setAttribute('data-msg-id', String(mid));
+    st.hadTurn = true;
+  }
+
+  // ── Send / interrupt ──
+
+  async function send(text, attachmentIds) {
+    const msg = (text || '').trim();
+    // A file-only first message (no text) is still a valid send.
+    const atts = Array.isArray(attachmentIds) ? attachmentIds.filter(Boolean) : [];
+    if ((!msg && !atts.length) || st.closed || !st.els.root) return; // open() first
+    if (st.ready) {
+      try { await st.ready; } catch (_) { return; } // open() already showed the error
+    }
+    if (!st.agentId || st.closed) return;
+    _beginTurn();
+    const userBubble = _addBubble('user', msg || (atts.length ? '(file attached)' : ''));
+    _setStatus('running');
+    // The user bubble shows what they typed (`msg`); the agent may receive a
+    // wrapped form (e.g. Canvas tags it with the page header) via transformMessage.
+    let outgoing = msg;
+    if (msg && typeof transformMessage === 'function') {
+      try { outgoing = await transformMessage(msg); } catch (_) { outgoing = msg; }
+      if (st.closed) return;
+    }
+    // The App-Control fingerprint (if any) rides the FIRST send only, then is
+    // cleared — exactly like the side-panel pill's pendingAppControl handoff.
+    const ac = st.appControl;
+    st.appControl = null;
+    try {
+      const resp = await fetch(apiPath('/api/v1/chat/send'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          message: outgoing,
+          session_id: st.sessionId,
+          user_id: st.userId,
+          agent_id: st.agentId,
+          execution_mode: executionMode,
+          ...(atts.length ? { attachment_ids: atts } : {}),
+          ...(ac ? { app_control: ac } : {}),
+        }),
+      });
+      if (!resp.ok) { _markFailed(userBubble, msg); return; }
+      const data = await resp.json().catch(() => ({}));
+      // Synchronous reply path (no WS streaming for this turn).
+      if (data && data.status === 'ok' && data.reply) {
+        _finalizeKey(data.turn_id || '', data.reply);
+        _settleTurn(data.reply);
+      }
+    } catch (_) {
+      _markFailed(userBubble, msg);
+    }
+  }
+
+  function _markFailed(bubble, msg) {
+    if (st.closed) return;
+    st.settled = true;
+    _stopReconcile();
+    _setStatus('error');
+    bubble.classList.add('failed');
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'cw-retry-btn';
+    retry.innerHTML = icon('refresh-cw', { size: '12px' }) + ' Retry';
+    retry.addEventListener('click', () => {
+      bubble.remove();
+      send(msg);
+    });
+    bubble.appendChild(retry);
+  }
+
+  function _sendFromInput() {
+    const { input, pill, sendBtn } = st.els;
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    pill.classList.remove('has-text');
+    sendBtn.disabled = true;
+    send(text);
+  }
+
+  async function interrupt() {
+    // Optimistic: reflect "stopping" immediately; the interrupted WS event or
+    // the DB poll confirms the final state. Keep the reconcile loop running so
+    // a cross-process stop still lands.
+    if (st.els.statusEl) st.els.statusEl.textContent = 'Stopping…';
+    try {
+      await fetch(apiPath('/api/v1/chat/interrupt'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ session_id: st.sessionId }),
+      });
+    } catch (_) { /* best-effort — the interrupted event/poll reflects state */ }
+  }
+
+  // ── Drag to move / resize from edges & corners ──
+
+  function _makeFloating() {
+    const { root } = st.els;
+    if (st.floating) return;
+    const r = root.getBoundingClientRect();
+    st.floating = true;
+    root.classList.add('cw-floating');
+    root.style.left = r.left + 'px';
+    root.style.top = r.top + 'px';
+    root.style.right = 'auto';
+    root.style.bottom = 'auto';
+    root.style.width = r.width + 'px';
+    root.style.height = r.height + 'px';
+  }
+
+  function _dragLoop(onMove) {
+    const up = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', up);
+      document.body.classList.remove('cw-dragging');
+    };
+    document.body.classList.add('cw-dragging');
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', up);
+  }
+
+  function _onHeaderDown(e) {
+    if (st.minimized) return;                          // chip click → restore
+    if (e.target.closest('.cw-icon-btn')) return;      // header buttons
+    if (e.button !== 0) return;
+    e.preventDefault();
+    _makeFloating();
+    const r = st.els.root.getBoundingClientRect();
+    const ox = e.clientX - r.left, oy = e.clientY - r.top;
+    _dragLoop((ev) => {
+      const nx = Math.max(0, Math.min(ev.clientX - ox, window.innerWidth - 48));
+      const ny = Math.max(0, Math.min(ev.clientY - oy, window.innerHeight - 30));
+      st.els.root.style.left = nx + 'px';
+      st.els.root.style.top = ny + 'px';
+    });
+  }
+
+  function _onResizeDown(e) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _makeFloating();
+    const dir = e.currentTarget.dataset.dir;
+    const r = st.els.root.getBoundingClientRect();
+    const s = { x: e.clientX, y: e.clientY, l: r.left, t: r.top, w: r.width, h: r.height };
+    const MINW = 260, MINH = 200;
+    _dragLoop((ev) => {
+      const dx = ev.clientX - s.x, dy = ev.clientY - s.y;
+      let l = s.l, t = s.t, w = s.w, h = s.h;
+      if (dir.includes('e')) w = s.w + dx;
+      if (dir.includes('s')) h = s.h + dy;
+      if (dir.includes('w')) { w = s.w - dx; l = s.l + dx; }
+      if (dir.includes('n')) { h = s.h - dy; t = s.t + dy; }
+      if (w < MINW) { if (dir.includes('w')) l = s.l + (s.w - MINW); w = MINW; }
+      if (h < MINH) { if (dir.includes('n')) t = s.t + (s.h - MINH); h = MINH; }
+      const root = st.els.root;
+      root.style.left = l + 'px'; root.style.top = t + 'px';
+      root.style.width = w + 'px'; root.style.height = h + 'px';
+    });
+  }
+
+  // ── Lifecycle ──
+
+  function open() {
+    if (st.closed || st.els.root) return widget;
+    const layer = _ensureLayer();
+    layer.appendChild(_build());
+    _setStatus('starting');
+    // Claim the session BEFORE the first send so no events are missed.
+    st.unregister = registerSessionSubscriber(st.sessionId, _handleEvent);
+    st.ready = (async () => {
+      if (!st.agentId) {
+        if (typeof ensureAgent !== 'function') throw new Error('No agent for chat widget');
+        st.agentId = await ensureAgent();
+      }
+      return st.agentId;
+    })();
+    st.ready
+      .then(() => {
+        if (st.closed) return;
+        if (initialMessage || (Array.isArray(initialAttachmentIds) && initialAttachmentIds.length)) {
+          send(initialMessage, initialAttachmentIds);
+        } else if (st.status === 'starting') _setStatus('idle');
+      })
+      .catch((e) => {
+        if (st.closed) return;
+        _addBubble('agent', 'Could not start the agent: ' + (e && e.message || e)).classList.add('cw-error');
+        _setStatus('error');
+      });
+    return widget;
+  }
+
+  function minimize() {
+    if (st.closed || st.minimized) return;
+    st.minimized = true;
+    const { root } = st.els;
+    // A floating card keeps its corner but lets the chip size to its content.
+    if (st.floating) {
+      st._floatSize = { w: root.style.width, h: root.style.height };
+      root.style.width = '';
+      root.style.height = '';
+    }
+    root.classList.add('minimized');
+  }
+
+  function restore() {
+    if (st.closed || !st.minimized) return;
+    st.minimized = false;
+    const { root } = st.els;
+    root.classList.remove('minimized');
+    if (st.floating && st._floatSize) {
+      root.style.width = st._floatSize.w;
+      root.style.height = st._floatSize.h;
+    }
+    if (st.collapseTimer) { clearTimeout(st.collapseTimer); st.collapseTimer = null; }
+    _scrollToBottom();
+  }
+
+  function close() {
+    if (st.closed) return;
+    st.closed = true;
+    if (st.collapseTimer) { clearTimeout(st.collapseTimer); st.collapseTimer = null; }
+    _stopReconcile();
+    if (st.unregister) { st.unregister(); st.unregister = null; }
+    if (st.els.root) st.els.root.remove();
+    _maybeRemoveLayer();
+    if (typeof onClose === 'function') {
+      try { onClose(); } catch (_) { /* consumer callback — non-fatal */ }
+    }
+  }
+
+  const widget = {
+    open, close, send, interrupt, minimize, restore,
+    get sessionId() { return st.sessionId; },
+    get status() { return st.status; },
+    get el() { return st.els.root || null; },
+  };
+  return widget;
+}
+
+// ── Shared: spawn a webAgent chat from an ability-table pill ───────────────────
+//
+// The hybrid search/chat pill above BOTH ability tables (per-agent Abilities tab
+// and admin Agent Settings) calls this on send. It opens a floating chat-widget
+// talking to webAgent the MANAGER (so it can build/configure agents and their
+// abilities), carrying any attached files on the first message. The text is
+// wrapped with the `agents_page_handoff` template from
+// app/defaults/app-prompts.json (same tag the old footer pill used), with a
+// hard-coded fallback. Resolving the manager + its session is delegated to
+// `app.startWebagentSession` via the widget's `ensureAgent` hook.
+//
+// @param {object} arg
+// @param {string} arg.text             - the user's typed message (may be empty if files attached)
+// @param {string[]} [arg.attachmentIds] - attachment_ids to ride the first message
+export async function spawnWebagentAbilityChat({ text, attachmentIds } = {}) {
+  const raw = (text || '').trim();
+  const atts = Array.isArray(attachmentIds) ? attachmentIds.filter(Boolean) : [];
+  if (!raw && !atts.length) return null;
+
+  // Tag with the source header from app-prompts.json (hard-coded fallback).
+  let tagged = raw;
+  try {
+    const resp = await fetch(apiPath('/api/v1/app-prompts'));
+    if (resp.ok) {
+      const data = await resp.json();
+      const tpl = (data.ui_handoffs || {}).agents_page_handoff?.template || '';
+      tagged = tpl ? tpl.replace(/\{text\}/g, raw) : `[webAgent Request | Source: Agents Page]: ${raw}`;
+    } else {
+      tagged = `[webAgent Request | Source: Agents Page]: ${raw}`;
+    }
+  } catch (_) {
+    tagged = `[webAgent Request | Source: Agents Page]: ${raw}`;
+  }
+
+  const w = createChatWidget({
+    title: 'webAgent',
+    iconName: 'bot',
+    ensureAgent: app.startWebagentSession,
+    initialMessage: tagged,
+    initialAttachmentIds: atts,
+  });
+  w.open();
+  return w;
+}
+
+// ── Shared: spawn a webAgent chat from a PAGE-ASSISTANT pill ───────────────────
+//
+// Generic sibling of spawnWebagentAbilityChat for the per-page "advanced chat
+// pill" assistants (App Settings, etc.). The CALLER assembles the full message —
+// typically a page-context intro + the hovered area's prompt + the user's words,
+// drawn from app/defaults/app-prompts.json → page_assistants.* — and passes it as
+// `message`. This just opens a floating chat-widget talking to webAgent the
+// MANAGER (so it can edit pages, look and config), carrying any attachments on
+// the first message. Resolving the manager + its session is delegated to
+// `app.startWebagentSession` via the widget's `ensureAgent` hook.
+//
+// @param {object} arg
+// @param {string} arg.message            - the fully-assembled message to send
+// @param {string[]} [arg.attachmentIds]  - attachment_ids to ride the first message
+// @param {string} [arg.title]            - widget title (defaults to "webAgent")
+export async function spawnWebagentPageChat({ message, attachmentIds, title } = {}) {
+  const msg = (message || '').trim();
+  const atts = Array.isArray(attachmentIds) ? attachmentIds.filter(Boolean) : [];
+  if (!msg && !atts.length) return null;
+
+  const w = createChatWidget({
+    title: title || 'webAgent',
+    iconName: 'bot',
+    ensureAgent: app.startWebagentSession,
+    initialMessage: msg,
+    initialAttachmentIds: atts,
+  });
+  w.open();
+  return w;
+}

@@ -1,0 +1,64 @@
+{
+  "comment": [
+    "Config for auto-syncing a filtered copy to the public repo.",
+    "THE DEV REPO is webagent-dev. This script lives there.",
+    "On every git push, a filtered snapshot is copied INTO the public_local_path below.",
+    "Edit and commit this file to change the exclude list."
+  ],
+
+  "public_local_path": "C:\\Users\\Alex R\\Projects\\webagent",
+  "public_remote_url": "https://github.com/your-org/webagent-public.git",
+
+  "exclude": [
+    "TUI/",
+    "terminal-launcher/",
+    "relay/",
+    "scripts/",
+    "tests/",
+    "migrations/",
+    "supabase/",
+    "logs/",
+    "data/",
+    "docs/",
+    "temp/",
+    "tmp/",
+    "attachments/",
+
+    "config.json",
+    "db_connection.json",
+    "remote_access.json",
+    "webagent.db",
+    "publish-public.json",
+
+    "webAgent.bat",
+    "launcher.bat",
+    "run.bat",
+    "kill_webagent.bat",
+    "build-exe.bat",
+    "export_agent_templates.bat",
+    "start_server_termux.sh",
+    "install-termux.sh",
+    "start-server-android.md",
+    "onboarding-guide.md",
+
+    "_bg_server.py",
+    "bg_pid.txt",
+    "server.log",
+    "nul",
+    "_dbdump.txt",
+    "req_no_playwright.txt",
+    "_envdump.txt",
+    "app-settings.json",
+    "nginx.json"
+  ],
+
+  "exclude_patterns": [
+    "*.bak",
+    "*.pid",
+    "*.log",
+    "*.db",
+    "*.db-journal",
+    "*.db-wal",
+    "*.db-shm"
+  ]
+}

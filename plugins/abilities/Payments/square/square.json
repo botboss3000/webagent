@@ -1,0 +1,12 @@
+{
+  "display_name": "Square",
+  "kind": "placeholder",
+  "icon": "square",
+  "color": "#9ece6a",
+  "description": "Accept Square payments.",
+  "note": "OAuth — free to integrate; per-transaction fees apply.",
+  "simple": false,
+  "placeholder": true,
+  "tools": [],
+  "order": 3
+}

@@ -121,26 +121,18 @@ def list_providers() -> list:
 
 
 def _construct(provider: str) -> SecretsBackend:
-    # Prefer the auto-discovered class (covers every drop-in file); the explicit
-    # branches below remain as a safety fallback if discovery somehow missed it.
+    # Auto-discovery (one class per drop-in file, keyed by `.name`) is the source
+    # of truth and already covers every built-in provider — no per-provider import
+    # list to maintain here.
     cls = _discovered().get(provider)
     if cls is not None:
         return cls()
+    # inline_db is the irreducible default: keep an explicit branch so it can
+    # always be constructed even if discovery itself failed (the get_secrets
+    # fallback below also depends on it).
     if provider == "inline_db":
         from app.secrets.inline_db_secrets import InlineDBSecrets
         return InlineDBSecrets()
-    if provider == "env":
-        from app.secrets.env_secrets import EnvSecrets
-        return EnvSecrets()
-    if provider == "os_keyring":
-        from app.secrets.keyring_secrets import OSKeyringSecrets
-        return OSKeyringSecrets()
-    if provider == "gcp_secret_manager":
-        from app.secrets.gcp_secrets import GCPSecretManager
-        return GCPSecretManager()
-    if provider == "aws_secrets_manager":
-        from app.secrets.aws_secrets import AWSSecretsManager
-        return AWSSecretsManager()
     raise ValueError(f"Unknown provider: {provider}")
 
 
@@ -169,3 +161,44 @@ def get_secrets_status() -> dict:
         "available": list(_all_providers()),
         "env_locked": os.environ.get("WEBAGENT_CONFIG_SOURCE", "").lower() == "env",
     }
+
+
+def mode_configured() -> bool:
+    """True if a provider has been explicitly persisted (the mode file exists).
+
+    Absent file = nobody has chosen yet (fresh install) — the signal the
+    first-boot security-defaults seeder uses to know it may act.
+    """
+    return os.path.exists(_MODE_FILE)
+
+
+def keyring_is_secure() -> bool:
+    """True only when the OS keyring resolves to a real, secure backend.
+
+    Used to decide whether the on-by-default encryption seed may fire: on a host
+    where `keyring` is missing, resolves to the no-op 'fail' backend, or falls
+    back to an insecure plaintext file store, we must NOT auto-enable encryption
+    (the keys would be unprotected or unwritable). This is a cheap class check;
+    the seeder still does a real write/read round-trip before committing.
+    """
+    try:
+        import keyring
+        import keyring.backends.fail as _fail
+    except Exception:
+        return False
+    try:
+        kr = keyring.get_keyring()
+    except Exception:
+        return False
+    if isinstance(kr, _fail.Keyring):
+        return False
+    mod = (type(kr).__module__ or "").lower()
+    name = type(kr).__name__.lower()
+    # Reject the alt plaintext / null fallbacks (defeat the purpose of a vault).
+    if "keyrings.alt" in mod or "plaintext" in name or "null" in name:
+        return False
+    # A chainer with no usable child backends behaves like the fail backend.
+    children = getattr(kr, "backends", None)
+    if children is not None and len(list(children)) == 0:
+        return False
+    return True

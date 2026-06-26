@@ -1,0 +1,26 @@
+{
+  "display_name": "Wiki Context",
+  "kind": "ability",
+  "icon": "database",
+  "color": "#7dcfff",
+  "description": "Lets the agent read, search, create, edit, and delete entries in the company-wide Wiki. Writes change shared data everyone sees, so grant per agent with care.",
+  "skill_summary": "How to search and read the company-wide Wiki to answer questions about app features, internal processes, and shared company knowledge. Load when a question might be answered by the Wiki — search first, read the promising articles, then synthesize and cite them.",
+  "skill_mode": "selectable",
+  "note": null,
+  "simple": true,
+  "placeholder": false,
+  "tools": [
+    "wiki_search",
+    "wiki_list",
+    "wiki_get",
+    "wiki_create",
+    "wiki_update",
+    "wiki_set_status",
+    "wiki_delete",
+    "wiki_history",
+    "wiki_get_revision",
+    "wiki_restore",
+    "wiki_backlinks"
+  ],
+  "order": 1
+}

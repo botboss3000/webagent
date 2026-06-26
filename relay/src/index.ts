@@ -43,6 +43,7 @@ interface Payload {
   body: string;
   email?: string | null;
   turnstile_token?: string | null;
+  website?: string | null;  // honeypot — must be empty for real users
   installation_id: string;
   app_version?: string;
   client_ip_hint?: string;
@@ -82,6 +83,13 @@ export default {
     }
     const err = validatePayload(p);
     if (err) return json({ error: err }, 400, corsHeaders);
+
+    // Honeypot: a non-empty decoy field means a bot. Pretend success so it
+    // can't detect the drop; never create an issue. Host-independent — works
+    // for every clone regardless of domain (unlike Turnstile's hostname lock).
+    if (p.website) {
+      return json({ ok: true, issue_url: null }, 200, corsHeaders);
+    }
 
     const ip =
       request.headers.get("CF-Connecting-IP") ||

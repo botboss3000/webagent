@@ -1,0 +1,83 @@
+<template data-slot="#ac-section-slot-user-management">
+<section id="ac-section-user-management" class="ac-section">
+  <div class="ac-section-header">
+    <i data-lucide="users" class="lucide-icon ac-section-icon"></i>
+    <div>
+      <h2 class="ac-section-title">Users</h2>
+      <p class="ac-section-desc">Control who can sign up and use the app.</p>
+    </div>
+  </div>
+
+  <div class="ac-card" id="ac-um-access-card">
+    <div id="ac-um-access-header" style="display:flex;align-items:center;cursor:pointer;user-select:none;gap:10px;">
+      <i data-lucide="key-round" class="lucide-icon" style="width:16px;height:16px;color:var(--fg-muted);"></i>
+      <div style="flex:1;">
+        <div class="ac-card-label" style="margin:0;">Access Mode</div>
+        <div class="ac-card-sublabel" style="margin:0;">Choose how new users can join this instance.</div>
+      </div>
+      <span id="ac-um-access-chevron" style="display:flex;align-items:center;transition:transform 0.2s;color:var(--fg-muted);transform:rotate(90deg);">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+      </span>
+    </div>
+
+    <div id="ac-um-access-body" style="margin-top:12px;">
+      <div id="ac-um-mode-group" style="display:flex;flex-direction:column;gap:10px;">
+        <label class="ac-um-radio">
+          <input type="radio" name="ac-um-access-mode" value="admin_approval" checked>
+          <div>
+            <div class="ac-um-radio-title">Private (Admin approval required)</div>
+            <div class="ac-um-radio-desc">New users register but cannot sign in until an admin approves them. <em>(default)</em></div>
+          </div>
+        </label>
+        <label class="ac-um-radio">
+          <input type="radio" name="ac-um-access-mode" value="public_registered">
+          <div>
+            <div class="ac-um-radio-title">Open Registration</div>
+            <div class="ac-um-radio-desc">Anyone can join and sign in themselves. "Remember me" on the sign-in screen keeps each device logged in. Anonymous user permissions are controlled per-agent, not at the app level.</div>
+          </div>
+        </label>
+      </div>
+
+      <div class="ac-actions" style="margin-top:14px;">
+        <button id="ac-um-save" class="ac-btn ac-btn-primary">Save</button>
+        <span id="ac-um-status" class="ac-status" style="display:none;"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Collapsible users list -->
+  <div class="ac-card" id="ac-um-users-card" style="margin-top:14px;">
+    <div id="ac-um-users-header" style="display:flex;align-items:center;cursor:pointer;user-select:none;gap:10px;">
+      <i data-lucide="users-round" class="lucide-icon" style="width:16px;height:16px;color:var(--fg-muted);"></i>
+      <div style="flex:1;">
+        <div class="ac-card-label" style="margin:0;">Current Users</div>
+        <div class="ac-card-sublabel" style="margin:0;" id="ac-um-users-summary">Loading…</div>
+      </div>
+      <span id="ac-um-users-chevron" style="display:flex;align-items:center;transition:transform 0.2s;color:var(--fg-muted);">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+      </span>
+    </div>
+    <div id="ac-um-users-body" style="display:none;margin-top:12px;">
+      <div style="overflow-x:auto;">
+        <table class="ac-stats-table" id="ac-um-users-table">
+          <thead>
+            <tr>
+              <th style="text-align:left;">User</th>
+              <th style="text-align:center;">Role</th>
+              <th style="text-align:center;">Status</th>
+              <th style="text-align:right;">Sessions</th>
+              <th style="text-align:right;">Messages</th>
+              <th style="text-align:left;">First seen</th>
+              <th style="text-align:left;">Last login</th>
+              <th style="text-align:center;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="ac-um-users-tbody">
+            <tr><td colspan="8" class="ac-table-empty">Loading users…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+</template>

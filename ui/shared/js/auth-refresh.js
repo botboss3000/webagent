@@ -1,0 +1,298 @@
+'use strict';
+
+/**
+ * Keep the logged-in user's access token fresh.
+ *
+ * The access token (JWT) lives for 24h (see app/auth/jwt.py). Nothing on the
+ * normal path refreshes it — a plain page load just trusts whatever
+ * `auth_token` is in localStorage. So once the token lapses while a tab is
+ * open (or the user comes back later in the day), the backend can no longer
+ * identify the caller from the stale token, and authenticated features break
+ * in two different ways:
+ *
+ *   1. Routes that resolve identity for an ACL check but don't hard-fail
+ *      return HTTP 200 with a "restricted" body. The worst offender is
+ *      GET /api/v1/db/session-messages: an unreadable token means the
+ *      participant check sees no identity and returns `{restricted: true}`,
+ *      and loadSessionChat() then *silently bounces the user into a fresh
+ *      empty session*. That is the visible "I can see the current chat but I
+ *      can't switch to a different session" bug — every session you pick
+ *      throws you into a new one.
+ *   2. Routes guarded by require_db_auth / _require_auth (DB viewer, agent
+ *      edits, profile, billing…) return HTTP 401.
+ *
+ * The already-open agent WebSocket authenticates only once at connect time,
+ * so live chat keeps working the whole time — which is why it looks like
+ * "chat is fine but everything else is broken", and why only a re-login (a
+ * fresh token) fixes it while a plain refresh does not (it reuses the stale
+ * token).
+ *
+ * This module fixes both at the source by keeping the token valid:
+ *
+ *   • Proactive refresh — decode the token's `exp` and, when it is expired or
+ *     about to expire, exchange the stored remember_token for a fresh JWT via
+ *     /api/v1/auth/recall (the same mechanism the multi-account switcher in
+ *     accounts.js already uses). Run at boot, on a periodic timer, and when
+ *     the tab regains focus. A valid token means the participant check and
+ *     every authed route just work — no restricted bounce, no 401.
+ *
+ *   • Reactive backstop — a window.fetch wrapper that, on any 401 from a
+ *     same-origin /api/ or /admin/ call, refreshes once and retries. Catches
+ *     the boundary race (token expires between the freshness check and the
+ *     call) and any path the proactive timer missed.
+ *
+ * On a successful refresh it fires `webagent-token-refreshed` (main.js
+ * reconnects the agent WebSocket with the new token); on an unrecoverable
+ * failure it fires `webagent-auth-expired`. It composes with the billing 402
+ * interceptor (billing.js): both wrap window.fetch and each guards against
+ * double-install with its own flag.
+ */
+
+import { getActive, upsertAccount } from './accounts.js';
+import { apiPath, appBasePath } from './config.js';
+
+// Real fetch, captured at module-load (before any wrapping). This module's
+// own calls — and the interceptor's retry — go straight here so we never
+// recurse through our own (or billing's) wrapper.
+const _nativeFetch = window.fetch.bind(window);
+
+// Refresh when the token has this much (or less) time left, so a request
+// never races a same-second expiry.
+const _SKEW_MS = 120000; // 2 minutes
+// How often the background timer re-checks freshness.
+const _CHECK_INTERVAL_MS = 60000; // 1 minute
+// Back-off after a recall genuinely fails (revoked/missing remember token, or
+// the server erred) so we don't hammer /auth/recall.
+const _COOLDOWN_MS = 30000;
+
+let _refreshPromise = null; // single-flight recall
+let _cooldownUntil = 0;
+let _started = false;       // startTokenAutoRefresh() idempotency
+
+// ── JWT helpers ──────────────────────────────────────────────────────────
+
+/** Read the `exp` claim (epoch ms) from a JWT without verifying it. */
+function _decodeJwtExpMs(token) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length < 2) return null;
+  try {
+    let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    const claims = JSON.parse(atob(b64));
+    return typeof claims.exp === 'number' ? claims.exp * 1000 : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _activeToken(acct) {
+  return (acct && acct.access_token) || localStorage.getItem('auth_token') || '';
+}
+
+// ── Core: exchange remember_token → fresh JWT ──────────────────────────────
+
+/**
+ * Recall a fresh JWT using the active account's remember_token. Returns the
+ * new access token, or null if we can't (no remember token, revoked, server
+ * error). Single-flight + short cooldown on failure.
+ */
+function _refreshToken() {
+  if (_refreshPromise) return _refreshPromise;
+  if (Date.now() < _cooldownUntil) return Promise.resolve(null);
+
+  const p = (async () => {
+    const acct = getActive();
+    const rememberToken = acct && acct.remember_token;
+    if (!rememberToken) {
+      // Anonymous visitors and "Remember me"-unchecked logins have no
+      // persistent credential — nothing we can silently do here.
+      _cooldownUntil = Date.now() + _COOLDOWN_MS;
+      return null;
+    }
+    try {
+      const res = await _nativeFetch(apiPath('/api/v1/auth/recall'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remember_token: rememberToken }),
+      });
+      if (!res.ok) {
+        _cooldownUntil = Date.now() + _COOLDOWN_MS;
+        // A 401 means the remember token itself is dead (e.g. rotated by a
+        // password change) — re-auth is genuinely required. Let listeners
+        // decide how to surface it; we don't force any UI here.
+        if (res.status === 401) {
+          try { window.dispatchEvent(new CustomEvent('webagent-auth-expired')); } catch (_) {}
+        }
+        return null;
+      }
+      const data = await res.json();
+      if (!data || !data.access_token) {
+        _cooldownUntil = Date.now() + _COOLDOWN_MS;
+        return null;
+      }
+      // Persist the fresh token. upsertAccount() also mirrors the legacy
+      // auth_token key, so the next WS (re)connect picks it up automatically.
+      upsertAccount({
+        ...acct,
+        access_token: data.access_token,
+        username: data.username || acct.username,
+        display_name: data.display_name || acct.display_name,
+      });
+      try {
+        window.dispatchEvent(new CustomEvent('webagent-token-refreshed', {
+          detail: { access_token: data.access_token },
+        }));
+      } catch (_) {}
+      return data.access_token;
+    } catch (_) {
+      _cooldownUntil = Date.now() + _COOLDOWN_MS;
+      return null;
+    }
+  })();
+
+  _refreshPromise = p;
+  // Reset single-flight once this burst's recall settles so a later expiry
+  // can recall again.
+  p.finally(() => { if (_refreshPromise === p) _refreshPromise = null; });
+  return p;
+}
+
+// ── Proactive freshness ────────────────────────────────────────────────────
+
+/**
+ * Ensure the access token is valid for at least the skew window; refresh it
+ * if it is missing/expired/about-to-expire. No-op (resolves immediately) when
+ * the token is still good or when there's nothing we can refresh from. Safe
+ * to call as often as you like.
+ */
+export async function ensureFreshToken() {
+  const acct = getActive();
+  // Only logged-in accounts with a persistent credential can be refreshed.
+  if (!acct || !acct.remember_token) return;
+  const expMs = _decodeJwtExpMs(_activeToken(acct));
+  // Unknown exp (malformed/missing token) → refresh; otherwise refresh only
+  // when we're inside the skew window.
+  if (expMs === null || (expMs - Date.now()) <= _SKEW_MS) {
+    await _refreshToken();
+  }
+}
+
+/**
+ * Start the background keep-fresh loop: a periodic freshness check plus a
+ * re-check whenever the tab regains focus (covers timers throttled while the
+ * tab was backgrounded / the machine asleep). Idempotent.
+ */
+export function startTokenAutoRefresh() {
+  if (_started) return;
+  _started = true;
+  setInterval(() => { ensureFreshToken(); }, _CHECK_INTERVAL_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') ensureFreshToken();
+  });
+}
+
+// ── Reactive backstop: refresh + retry on 401 ──────────────────────────────
+
+/**
+ * Decide whether a 401 from this request is worth a refresh + retry. Only
+ * same-origin app API calls; never /api/v1/auth/* (that would recurse, and
+ * switchTo()/_probeToken in accounts.js rely on seeing a raw 401 there).
+ */
+function _isRefreshableApiCall(input) {
+  const urlStr = (typeof input === 'string')
+    ? input
+    : (input && typeof input.url === 'string' ? input.url : '');
+  if (!urlStr) return false;
+
+  let path;
+  try {
+    const u = new URL(urlStr, window.location.origin);
+    if (u.origin !== window.location.origin) return false; // same-origin only
+    path = u.pathname;
+  } catch (_) {
+    path = urlStr.split('?')[0];
+  }
+
+  // Strip the subdirectory base (e.g. /webagent project-site hosting).
+  const base = appBasePath();
+  if (base && path.startsWith(base)) path = path.slice(base.length) || '/';
+
+  if (path.startsWith('/api/v1/auth/')) return false;
+  return path.startsWith('/api/') || path.startsWith('/admin/');
+}
+
+/** Replace the value of a `token=` query param if the URL carries one. */
+function _applyTokenToUrl(urlStr, token) {
+  try {
+    const u = new URL(urlStr, window.location.origin);
+    if (!u.searchParams.has('token')) return urlStr;
+    u.searchParams.set('token', token);
+    return u.toString();
+  } catch (_) {
+    return urlStr;
+  }
+}
+
+/** Return a copy of init with a fresh Authorization: Bearer header. */
+function _setAuthHeader(init, token) {
+  const next = Object.assign({}, init);
+  const headers = next.headers;
+  const bearer = 'Bearer ' + token;
+
+  if (headers instanceof Headers) {
+    const h = new Headers(headers);
+    h.set('Authorization', bearer);
+    next.headers = h;
+  } else if (Array.isArray(headers)) {
+    const h = headers.filter(([k]) => String(k).toLowerCase() !== 'authorization');
+    h.push(['Authorization', bearer]);
+    next.headers = h;
+  } else {
+    const h = Object.assign({}, headers);
+    for (const k of Object.keys(h)) {
+      if (k.toLowerCase() === 'authorization') delete h[k];
+    }
+    h['Authorization'] = bearer;
+    next.headers = h;
+  }
+  return next;
+}
+
+async function _patchedFetch(input, init) {
+  let resp;
+  try {
+    resp = await _nativeFetch(input, init);
+  } catch (e) {
+    // Network error (navigation, server restart, brief hiccup) — return a
+    // sentinel so every polling/background call handles it gracefully rather
+    // than throwing TypeError through every wrapper. 503 = Service Unavailable
+    // captures the intent and is a valid Response constructor status.
+    return new Response(null, { status: 503, statusText: "Server Unreachable" });
+  }
+  if (resp.status !== 401) return resp;
+  // Guard: never retry a request we already retried (belt-and-suspenders —
+  // the retry below goes through native fetch and won't re-enter here).
+  if (init && init.__webagentAuthRetried) return resp;
+  if (!_isRefreshableApiCall(input)) return resp;
+
+  const token = await _refreshToken();
+  if (!token) return resp; // couldn't refresh — surface the original 401
+
+  const retryInput = (typeof input === 'string')
+    ? _applyTokenToUrl(input, token)
+    : input;
+  const retryInit = _setAuthHeader(init || {}, token);
+  retryInit.__webagentAuthRetried = true;
+  return _nativeFetch(retryInput, retryInit);
+}
+
+/**
+ * Wrap window.fetch with the 401 → recall → retry behavior. Idempotent.
+ * Call once, early in boot, before any authenticated fetch fires.
+ */
+export function installAuthRefresh() {
+  if (window.fetch && window.fetch.__webagentAuthPatched) return;
+  _patchedFetch.__webagentAuthPatched = true;
+  window.fetch = _patchedFetch;
+}

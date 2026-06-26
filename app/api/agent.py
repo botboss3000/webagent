@@ -28,6 +28,11 @@ router = APIRouter()
 def _json_default(obj: Any) -> Any:
     if isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
         return obj.isoformat()
+    # Handle common agent objects
+    if hasattr(obj, 'to_dict'):
+        return obj.to_dict()
+    if hasattr(obj, '__dict__'):
+        return obj.__dict__
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
 
@@ -92,15 +97,25 @@ async def agent_websocket(websocket: WebSocket):
         # user A could subscribe with user_id=B and start receiving every
         # event broadcast for user B — full cross-tenant leak. The handshake
         # MUST carry a JWT whose subject matches `claimed_user_id`.
-        from app.auth.identity import verify_token_matches_user
-        verified = verify_token_matches_user(token, claimed_user_id)
-        if not verified:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": "Invalid or missing token, or token subject does not match user_id",
-            }, default=_json_default))
-            return
-        user_id = verified
+        #
+        # Exception: in "open" access mode (single-user / local convenience),
+        # there is only one user so no cross-tenant risk exists. This allows
+        # the subscriber to work over Cloudflare Tunnel etc. where the
+        # frontend cannot mint a fresh server-side JWT (open-login rejects
+        # non-localhost requests).
+        from app.admin.settings import get_access_mode
+        if get_access_mode() == "open":
+            user_id = claimed_user_id
+        else:
+            from app.auth.identity import verify_token_matches_user
+            verified = verify_token_matches_user(token, claimed_user_id)
+            if not verified:
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "message": "Invalid or missing token, or token subject does not match user_id",
+                }, default=_json_default))
+                return
+            user_id = verified
 
         # Register as a per-user listener — receives ALL events for this user
         register_user_listener(user_id, websocket)
@@ -214,6 +229,10 @@ async def agent_websocket(websocket: WebSocket):
 
     except (WebSocketDisconnect, ConnectionClosedOK):
         logger.info(f"User subscriber [{user_id}]: disconnected")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
     except json.JSONDecodeError:
         try:
             await websocket.send_text(json.dumps({

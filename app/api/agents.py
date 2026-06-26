@@ -21,7 +21,7 @@ GET  /api/v1/agents/{agent_id}/members  — list agent admins + members with sta
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.auth.identity import assert_caller_is
@@ -58,6 +58,8 @@ class UpdateAgentRequest(BaseModel):
     user_id: str
     name: Optional[str] = None
     description: Optional[str] = None
+    # Icon (stored in metadata['icon'] — the agents table has no icon column)
+    icon: Optional[str] = None
     max_turn_count: Optional[int] = None
     max_wall_seconds: Optional[float] = None
     max_identical_tool_calls: Optional[int] = None
@@ -72,8 +74,19 @@ class UpdateAgentRequest(BaseModel):
     loop_logic: Optional[List] = None
     safety_policy: Optional[Dict[str, Any]] = None
     user_mode: Optional[str] = None
+    # Default chat execution mode for NEW sessions with this agent: 'ask' | 'plan'
+    # | 'auto'. Stored in metadata['default_execution_mode']; the chat pill seeds a
+    # fresh session from it (ui/chat-side-panel/js/chat-ui.js). Blank ⇒ 'ask'.
+    default_execution_mode: Optional[str] = None
     # Per-agent LLM override (stored in metadata['llm_config'])
     llm_config: Optional[Dict[str, Any]] = None
+    # Per-agent chat UI copy override — partial dict of _CHAT_UI_KEYS, merged
+    # into metadata['chat_ui']. Blank value for a key clears it (use default).
+    chat_ui: Optional[Dict[str, Any]] = None
+    # Local Claude Code engine config — partial dict (folder/extra_flags/model/
+    # act_freely/append_persona), shallow-merged into metadata['claude_code'].
+    # Only meaningful on agents whose metadata.engine == "claude_code".
+    claude_code: Optional[Dict[str, Any]] = None
     # Prompt slots — admin-only. Full slot set when present; reconciled against existing.
     slots: Optional[List[SlotPayload]] = None
     # Per-slot wipe of all user override rows at save time.
@@ -139,6 +152,47 @@ _SYSTEM_UTILITY_IDS = {
 }
 
 
+# The per-agent chat UI copy an agent admin can override. Each falls back to
+# the app-wide default in app/defaults/app-prompts.json ("ui_messages.chat") when
+# left blank. Edited on the agent's Config tab; stored in metadata["chat_ui"];
+# consumed on the frontend by ui/shared/js/app-prompts.js (agentChatMsg).
+_CHAT_UI_KEYS = (
+    "welcome_bubble",
+    "new_session_bubble",
+    "switched_agent_bubble",
+    "pill_placeholder",
+    "pill_locked_placeholder",
+)
+_CHAT_UI_MAX_LEN = 2000
+
+
+def _merge_chat_ui(existing, incoming) -> dict:
+    """Merge an incoming partial chat_ui override into the stored one.
+
+    Only the known keys are kept; values are coerced to strings capped at
+    _CHAT_UI_MAX_LEN. A blank value clears that key, so the agent falls back to
+    the app-wide default for it. Merging (rather than replacing) lets each
+    Config-tab field save just its own key without clobbering the others.
+    """
+    out: dict = {}
+    if isinstance(existing, dict):
+        for k in _CHAT_UI_KEYS:
+            v = existing.get(k)
+            if isinstance(v, str) and v.strip():
+                out[k] = v
+    if isinstance(incoming, dict):
+        for k in _CHAT_UI_KEYS:
+            if k not in incoming:
+                continue
+            v = "" if incoming.get(k) is None else str(incoming.get(k))
+            v = v[:_CHAT_UI_MAX_LEN]
+            if v.strip():
+                out[k] = v
+            else:
+                out.pop(k, None)
+    return out
+
+
 def _safe_agent(agent: dict) -> dict:
     """Strip locked/internal fields before returning to client.
 
@@ -180,6 +234,44 @@ def _safe_agent(agent: dict) -> dict:
         except Exception:
             meta = {}
     result["llm_config"] = meta.get("llm_config") if isinstance(meta, dict) else {"use_default": True}
+    # Per-agent chat UI copy override (welcome/system bubbles + message-box
+    # hints). Empty dict ⇒ this agent uses the app-wide defaults from
+    # app/defaults/app-prompts.json. See _merge_chat_ui / _CHAT_UI_KEYS.
+    cu = meta.get("chat_ui") if isinstance(meta, dict) else None
+    result["chat_ui"] = cu if isinstance(cu, dict) else {}
+    # Alternate runtime engine (e.g. "claude_code") + its per-agent config. Absent
+    # ⇒ a normal webAgent-LLM agent. Drives the Config tab's "Claude Code" card and
+    # the loop's engine dispatch (app/agent/loop.py stream_agent_events).
+    result["engine"] = meta.get("engine") if isinstance(meta, dict) else None
+    cc = meta.get("claude_code") if isinstance(meta, dict) else None
+    result["claude_code"] = cc if isinstance(cc, dict) else {}
+    tc = meta.get("terminal_chat") if isinstance(meta, dict) else None
+    result["terminal_chat"] = tc if isinstance(tc, dict) else {}
+    # Icon from metadata (the agents table has no icon column; custom agents store
+    # it in metadata['icon']). Returns the raw string or empty string — the
+    # frontend falls back to the default 'bot' icon when icon is falsy.
+    result["icon"] = (meta.get("icon") or "") if isinstance(meta, dict) else ""
+    # Default chat execution mode for NEW sessions ('ask' | 'plan' | 'auto'). Edited
+    # on the Config tab and read by ui/chat-side-panel/js/chat-ui.js when seeding a
+    # fresh session. When UNSET, agents cloned from the default WebAgent template
+    # start in 'plan' (matches default.json metadata.default_execution_mode), so even
+    # pre-existing default agents created before this field honour it; everything
+    # else falls back to 'ask'. An explicit stored value always wins.
+    _dem = meta.get("default_execution_mode") if isinstance(meta, dict) else ""
+    if _dem not in ("ask", "plan", "auto"):
+        _engine = meta.get("engine") if isinstance(meta, dict) else None
+        if _engine == "claude_code":
+            # Claude Code agents had only a binary act_freely toggle before this
+            # field existed; surface its equivalent (True ⇒ Auto, False ⇒ Ask) so
+            # the pill + Config selector match what the engine actually does until
+            # the admin picks a mode. See engines/claude_code._resolve_permission_mode.
+            _cc = meta.get("claude_code") if isinstance(meta.get("claude_code"), dict) else {}
+            _dem = "auto" if _cc.get("act_freely", True) else "ask"
+        elif agent.get("template_id") == "default":
+            _dem = "plan"
+        else:
+            _dem = ""
+    result["default_execution_mode"] = _dem
     # Derive a single ``system`` flag the agents page uses to keep utility agents
     # (Suggested Replies / user-impersonator, source-controller, Agent Manager,
     # etc.) off the user's list by default, behind a "Show system agents" toggle.
@@ -206,20 +298,11 @@ async def _is_agent_admin(db, agent_id: str, user_id: str) -> bool:
     return user_id in roles["admin_users"]
 
 
-async def _require_connection_enabled(db, agent_id: str, connection_type: str) -> None:
-    """Raise 403 if the connection is not enabled on this agent."""
-    rows = await db.get_agent_connections(agent_id)
-    conn = next((r for r in rows if r["connection_type"] == connection_type), None)
-    if not conn or not conn.get("enabled"):
-        raise HTTPException(status_code=403, detail="This integration is not enabled by the agent admin.")
-
-
 async def _require_ability_enabled(db, agent_id: str, ability_id: str) -> None:
     """Raise 403 if the OAuth ability isn't enabled on this agent.
 
-    Distinct from `_require_connection_enabled`, which gates provider-level
-    rows in `agent_connections`. The ability check covers fine-grained
-    capabilities in `agent_abilities`.
+    Covers fine-grained capabilities in `agent_abilities` (distinct from the
+    provider-level rows in `agent_connections`).
     """
     if not hasattr(db, "get_agent_abilities"):
         return
@@ -244,9 +327,10 @@ def _parse_tutorial_prefs(raw):
 
 
 @router.get("/user/profile")
-async def get_user_profile(user_id: str = Query(...)):
+async def get_user_profile(request: Request, user_id: str = Query(...)):
     """Return user profile including is_admin flag and tutorial walkthrough state."""
     db = get_db()
+    user_id = await assert_caller_is(request, user_id)
     profile = await db.get_user_profile(user_id)
     if not profile:
         # Return a safe default rather than 404 — profile is auto-created on first write
@@ -304,7 +388,7 @@ async def list_agent_templates(
 
 
 @router.get("/agents")
-async def list_agents(user_id: str = Query(...), include_system: bool = Query(False),
+async def list_agents(request: Request, user_id: str = Query(...), include_system: bool = Query(False),
                       view: str = Query("active")):
     """
     List the user's own agents (the agents they added themselves).
@@ -321,10 +405,16 @@ async def list_agents(user_id: str = Query(...), include_system: bool = Query(Fa
     the Agents page (matching the same logic the chat pill uses in sessions.js).
     """
     db = get_db()
+    user_id = await assert_caller_is(request, user_id)
     bin_view = (view == "bin")
+    clones_view = (view == "clones")
     is_admin = await db.is_user_admin(user_id)
-    all_agents = await db.list_agents_for_user(user_id, include_admin=is_admin,
-                                               view=("bin" if bin_view else "active"))
+    if clones_view:
+        all_agents = await db.list_agents_for_user(user_id, include_admin=is_admin,
+                                                   view="clones")
+    else:
+        all_agents = await db.list_agents_for_user(user_id, include_admin=is_admin,
+                                                   view=("bin" if bin_view else "active"))
     out = []
     for a in all_agents:
         safe = _safe_agent(a)
@@ -343,7 +433,7 @@ async def list_agents(user_id: str = Query(...), include_system: bool = Query(Fa
     # completely empty. Clone the default template same as the chat pill does
     # in sessions.js (ensureWebagentAgent), so the agent square is present from
     # the very first visit.
-    if not out and not include_system and not bin_view:
+    if not out and not include_system and not bin_view and not clones_view:
         try:
             new_agent = await db.create_custom_agent(
                 user_id=user_id,
@@ -363,7 +453,7 @@ async def list_agents(user_id: str = Query(...), include_system: bool = Query(Fa
 
 
 @router.post("/agents/reorder")
-async def reorder_agents(req: ReorderAgentsRequest):
+async def reorder_agents(req: ReorderAgentsRequest, request: Request):
     """
     Persist the manual order of a user's custom agents (drag-to-reorder in the
     chat-header agent dropdown). Each id in ``order`` gets sort_order = its
@@ -371,6 +461,7 @@ async def reorder_agents(req: ReorderAgentsRequest):
     consumed by the Agents page so the two views stay in sync.
     """
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not hasattr(db, "reorder_agents"):
         raise HTTPException(status_code=501, detail="Reordering is not supported by the active storage backend.")
     updated = await db.reorder_agents(req.user_id, req.order)
@@ -378,12 +469,13 @@ async def reorder_agents(req: ReorderAgentsRequest):
 
 
 @router.post("/agents")
-async def create_agent(req: CreateAgentRequest):
+async def create_agent(req: CreateAgentRequest, request: Request):
     """
     Create a new custom agent cloned from the default template.
     Returns the new agent with editable fields only.
     """
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not req.name or not req.name.strip():
         raise HTTPException(status_code=400, detail="Agent name is required.")
     agent = await db.create_custom_agent(
@@ -400,7 +492,14 @@ async def create_agent(req: CreateAgentRequest):
             await _maybe_auto_exempt_agent(db, agent["id"], req.user_id)
     except Exception:
         pass
-    return {"agent": _safe_agent(agent)}
+    safe = _safe_agent(agent)
+    # Live-sync every open tab/device for this user so the Agents grid shows the
+    # new agent without a manual refresh.
+    from app.api.chat import notify_user
+    await notify_user(req.user_id, {
+        "type": "agent_created", "user_id": req.user_id, "agent": safe,
+    })
+    return {"agent": safe}
 
 
 async def _maybe_auto_exempt_agent(db, agent_id: str, granting_user_id: str) -> None:
@@ -430,9 +529,10 @@ async def _maybe_auto_exempt_agent(db, agent_id: str, granting_user_id: str) -> 
 
 
 @router.get("/agents/{agent_id}")
-async def get_agent(agent_id: str, user_id: str = Query(...)):
+async def get_agent(request: Request, agent_id: str, user_id: str = Query(...)):
     """Get a single custom agent by id (must be owned by user)."""
     db = get_db()
+    user_id = await assert_caller_is(request, user_id)
     # Check custom agents table
     agents = await db.list_agents_for_user(user_id)
     for a in agents:
@@ -442,7 +542,7 @@ async def get_agent(agent_id: str, user_id: str = Query(...)):
 
 
 @router.put("/agents/{agent_id}")
-async def update_agent(agent_id: str, req: UpdateAgentRequest):
+async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request):
     """
     Update editable fields on a custom agent. Caller must be an agent admin.
 
@@ -453,6 +553,7 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
         listed slot_names at save time.
     """
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Only agent admins can edit this agent.")
 
@@ -460,12 +561,29 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
     payload = req.dict()
     slots_in = payload.pop("slots", None)
     reset_for = payload.pop("reset_overrides_for", None)
+    icon_in = payload.pop("icon", None)
     llm_config_in = payload.pop("llm_config", None)
+    chat_ui_in = payload.pop("chat_ui", None)
+    claude_code_in = payload.pop("claude_code", None)
+    terminal_chat_in = payload.pop("terminal_chat", None)
+    exec_mode_in = payload.pop("default_execution_mode", None)
+    # Normalize the default chat mode (accept legacy read/write aliases) and reject
+    # anything else so the metadata only ever holds 'ask' | 'plan' | 'auto'.
+    if exec_mode_in is not None:
+        _m = str(exec_mode_in).strip().lower()
+        _m = {"read": "plan", "write": "ask"}.get(_m, _m)
+        if _m not in ("ask", "plan", "auto"):
+            raise HTTPException(status_code=400, detail="Invalid default_execution_mode.")
+        exec_mode_in = _m
     updates = {k: v for k, v in payload.items()
                if k not in ("user_id",) and v is not None}
 
-    # Merge llm_config into the agent's metadata blob.
-    if llm_config_in is not None:
+    # Merge metadata-backed blobs (llm_config, chat_ui, icon, default chat mode)
+    # into the agent's metadata. All are read-modify-write against the current
+    # metadata so they don't clobber each other or the rest of the blob.
+    if (llm_config_in is not None or chat_ui_in is not None or claude_code_in is not None
+            or terminal_chat_in is not None
+            or icon_in is not None or exec_mode_in is not None):
         current = await db.get_agent_by_id(agent_id)
         meta = {}
         if current:
@@ -477,7 +595,28 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest):
                     pass
             elif isinstance(meta_raw, dict):
                 meta = dict(meta_raw)
-        meta["llm_config"] = llm_config_in
+        if llm_config_in is not None:
+            meta["llm_config"] = llm_config_in
+        if chat_ui_in is not None:
+            meta["chat_ui"] = _merge_chat_ui(meta.get("chat_ui"), chat_ui_in)
+        if claude_code_in is not None:
+            # Shallow-merge so saving one field (e.g. just the folder) keeps the rest.
+            _cc = meta.get("claude_code")
+            _cc = dict(_cc) if isinstance(_cc, dict) else {}
+            _cc.update(claude_code_in)
+            meta["claude_code"] = _cc
+        if terminal_chat_in is not None:
+            # Shallow-merge so saving one field (e.g. just the command) keeps the rest.
+            _tc = meta.get("terminal_chat")
+            _tc = dict(_tc) if isinstance(_tc, dict) else {}
+            _tc.update(terminal_chat_in)
+            meta["terminal_chat"] = _tc
+        if icon_in is not None:
+            # Store icon in metadata — the agents table has no dedicated icon column.
+            # An empty/blank string means "clear the icon" (falls back to default).
+            meta["icon"] = icon_in.strip() or ""
+        if exec_mode_in is not None:
+            meta["default_execution_mode"] = exec_mode_in
         updates["metadata"] = meta
 
     updated = await db.update_agent_fields(
@@ -594,14 +733,39 @@ class UpdateSkillsRequest(BaseModel):
 
 
 @router.put("/agents/{agent_id}/skills")
-async def put_agent_skills_ep(agent_id: str, req: UpdateSkillsRequest):
+async def put_agent_skills_ep(agent_id: str, req: UpdateSkillsRequest, request: Request):
     """Replace the agent's full skills list (admin-only). Persists to the
     `__skills__` prompt slot in agent_prompts."""
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Only agent admins can edit skills.")
     saved = await db.set_agent_skills(agent_id, req.skills, updated_by=f"admin:{req.user_id}")
     return {"skills": saved}
+
+
+@router.get("/agents/{agent_id}/my-prompts")
+async def get_my_prompts(request: Request, agent_id: str, user_id: str = Query(...)):
+    """Return the caller's prompt slots with per-user override map.
+
+    Shape matches what the frontend prompt-slots panel expects:
+    ``{slots, overrides, user_role}``.
+    """
+    user_id = await assert_caller_is(request, user_id)
+    db = get_db()
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    slots = await db.list_slots(agent_id, user_id=user_id)
+    slots = [s for s in slots if s.get("slot_name") != "__skills__"]
+    overrides: Dict[str, str] = {}
+    for s in slots:
+        oc = s.get("override_content")
+        if oc is not None:
+            overrides[s["slot_name"]] = oc
+        del s["override_content"]
+    is_admin = await _is_agent_admin(db, agent_id, user_id)
+    return {"slots": slots, "overrides": overrides, "user_role": "admin" if is_admin else "member"}
 
 
 @router.put("/agents/{agent_id}/my-prompts")
@@ -807,6 +971,17 @@ async def delete_agent_automation(request: Request, agent_id: str, automation_id
         raise HTTPException(status_code=404, detail="Automation not found.")
     if row.get("owner_user_id") != user_id and not await db.is_user_admin(user_id):
         raise HTTPException(status_code=403, detail="Not the owner of this automation.")
+    # Clean up any dedicated clone agent this automation created
+    if row.get("runner_agent_id"):
+        try:
+            conn = db._get_conn()
+            if conn:
+                conn.execute("DELETE FROM agents WHERE id = ? AND status = 'clone'", (row["runner_agent_id"],))
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            logger.warning("Failed to clean up clone agent %s: %s", row["runner_agent_id"], e)
+
     deleted = await db.delete_automation(automation_id)
     return {"deleted": bool(deleted)}
 
@@ -1063,6 +1238,18 @@ async def delete_agent_event_subscription(
     except Exception as e:
         logger.warning("Provider unregister failed for %s (ignored): %s", sub_id, e)
 
+    # Clean up clone agent if this subscription had one
+    if row.get("runner_agent_id"):
+        try:
+            conn = db._get_conn()
+            try:
+                conn.execute("DELETE FROM agents WHERE id = ? AND status = 'clone'", (row["runner_agent_id"],))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning("Failed to clean up clone agent %s: %s", row.get("runner_agent_id"), e)
+
     deleted = await db.delete_event_subscription(sub_id)
     return {"deleted": bool(deleted)}
 
@@ -1111,7 +1298,7 @@ async def delete_my_prompt(request: Request, agent_id: str, slot_name: str, user
 
 
 @router.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: str, user_id: str = Query(...),
+async def delete_agent(request: Request, agent_id: str, user_id: str = Query(...),
                        permanent: bool = Query(False)):
     """
     Recycling-bin delete for a custom agent. Cannot touch system agents.
@@ -1125,27 +1312,41 @@ async def delete_agent(agent_id: str, user_id: str = Query(...),
     connections, abilities). This is irreversible.
     """
     db = get_db()
+    user_id = await assert_caller_is(request, user_id)
     if permanent:
         deleted = await db.delete_custom_agent(agent_id=agent_id, user_id=user_id)
     else:
         deleted = await db.trash_custom_agent(agent_id=agent_id, user_id=user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Agent not found, not owned by this user, or is a system agent.")
+    # Live-sync every open tab/device: a permanent delete drops the card from the
+    # bin view; a soft delete moves it out of the main grid into the bin.
+    from app.api.chat import notify_user
+    await notify_user(user_id, {
+        "type": "agent_deleted" if permanent else "agent_trashed",
+        "user_id": user_id, "agent_id": agent_id, "permanent": permanent,
+    })
     return {"deleted": True, "agent_id": agent_id, "permanent": permanent}
 
 
 @router.post("/agents/{agent_id}/restore")
-async def restore_agent(agent_id: str, user_id: str = Query(...)):
+async def restore_agent(request: Request, agent_id: str, user_id: str = Query(...)):
     """Restore a trashed agent from the recycling bin back to the Agents page."""
     db = get_db()
+    user_id = await assert_caller_is(request, user_id)
     restored = await db.restore_custom_agent(agent_id=agent_id, user_id=user_id)
     if not restored:
         raise HTTPException(status_code=404, detail="Agent not found in the bin, or not owned by this user.")
+    # Live-sync: the agent leaves the bin and reappears on the main grid.
+    from app.api.chat import notify_user
+    await notify_user(user_id, {
+        "type": "agent_restored", "user_id": user_id, "agent_id": agent_id,
+    })
     return {"restored": True, "agent_id": agent_id}
 
 
 @router.post("/agents/test")
-async def test_agent(req: TestAgentRequest):
+async def test_agent(req: TestAgentRequest, request: Request):
     """
     Run a sample message through an agent configuration and return the response.
     Used by the Agent Management panel test sandbox — does NOT create a persistent session.
@@ -1153,6 +1354,7 @@ async def test_agent(req: TestAgentRequest):
     """
     import uuid as _uuid_mod
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
 
     # Resolve the agent config
     agents = await db.list_agents_for_user(req.user_id, include_admin=await db.is_user_admin(req.user_id))
@@ -1268,10 +1470,8 @@ _CONNECTION_CATALOG = [
     # ── Agent Tools (host-side privileged capabilities) ──
     # DROP-IN: the host-ability rows are injected below from plugins/abilities/
     # (see app.abilities). Do NOT hardcode abilities here — drop a file in that
-    # folder instead. Only the non-ability credential providers stay literal:
-    # scraper needs an admin scraper_config; browser_session is per-user cookies.
-    {"connection_type": "scraper",          "section": "ability", "display_name": "Web Scraper",      "status": "available"},
-    {"connection_type": "browser_session",  "section": "ability", "display_name": "Browser Cookies",  "status": "available"},
+    # folder instead. (Web Scraper / Browser Cookies are now ordinary drop-in
+    # abilities under plugins/abilities/Web/, supplied via _inject_ability_rows.)
 ]
 
 
@@ -1308,15 +1508,233 @@ async def get_abilities_catalog():
     generically with no hardcoded per-ability constants.
     """
     try:
-        from app.abilities import ui_catalog
+        from app.abilities import ui_catalog, reload
+        # Re-scan plugins/abilities/ on each catalog fetch (once per page load) so
+        # a freshly-dropped or freshly-edited <id>.json descriptor appears with no
+        # server restart — the discovery scan is a handful of small dir reads.
+        # Mirrors the pages catalog above; keeps the drop-in story honest (edit a
+        # descriptor, reload the page, see the change) instead of "stale until
+        # restart".
+        reload()
         return ui_catalog()
     except Exception as e:
         logger.warning("Could not build abilities catalog: %s", e)
         return {"groups": [], "abilities": {}, "credential_members": []}
 
 
+@router.get("/pages/catalog")
+async def get_pages_catalog():
+    """Render-time metadata for the app shell's main header tabs and the Admin
+    Tools sidebar views. Built from the drop-in ``page.json`` descriptors under
+    ui/ and ui/admin-tools/, merged with the admin's order/label/icon/hidden
+    overrides in data/config/main-panel-pages.json + admin-panel-pages.json — so
+    the shell renders generically with no hardcoded per-page constants.
+    """
+    try:
+        from app import ui_pages
+        from app.admin import page_config
+        # Re-scan the ui/ folders on each catalog fetch (once per page load) so a
+        # freshly-dropped ui/<page>/page.json folder appears with no server
+        # restart — the discovery scan is a handful of small dir reads. Also drop
+        # the override cache so external edits to the *-panel-pages.json files
+        # (git pull, manual edit) are honoured; the admin write endpoints keep the
+        # cache in sync on their own.
+        ui_pages.reload()
+        page_config.reload()
+        return ui_pages.ui_catalog()
+    except Exception as e:
+        logger.warning("Could not build pages catalog: %s", e)
+        return {"main": [], "admin": []}
+
+
+@router.get("/abilities/{ability_id}/config-schema")
+async def get_ability_config_schema(ability_id: str):
+    """Return the per-ability config schema (the companion .json file beside
+    the .py plugin) so the frontend can render per-ability settings rows.
+    Returns 404 when the ability has no config schema."""
+    try:
+        from app.abilities import ability_config_schema
+        schema = ability_config_schema(ability_id)
+        # For each setting that declares a `ceiling` rule, attach the admin's
+        # current APP-LEVEL value as `ceiling_value` — the GLOBAL MAXIMUM the
+        # per-agent tree must clamp to (boolean lock / number cap). These are
+        # non-secret knobs, so it's safe on this public schema endpoint; the admin
+        # table ignores it. Falls back to the field default when the admin never
+        # set it. See app/admin/ability_config.effective_ability_config.
+        if isinstance(schema, dict) and isinstance(schema.get("settings"), list):
+            try:
+                from app.admin import ability_config as _abcfg
+                admin_vals = _abcfg.get_ability_config(ability_id)
+            except Exception:
+                admin_vals = {}
+            # COPY before annotating — `ability_config_schema` hands back the
+            # cached descriptor's settings list by reference, so mutating a field
+            # in place would pollute the shared catalog across requests.
+            schema = dict(schema)
+            new_settings = []
+            for field in schema["settings"]:
+                if isinstance(field, dict) and field.get("ceiling"):
+                    field = dict(field)
+                    field["ceiling_value"] = admin_vals.get(field.get("key"), field.get("default"))
+                new_settings.append(field)
+            schema["settings"] = new_settings
+        # Return null rather than 404 so browsers don't log this as a console
+        # error. Frontends check for null instead of relying on status code.
+        return schema or None
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("Could not load ability config schema for %s: %s", ability_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/abilities/{ability_id}/config")
+async def get_ability_config_values(
+    ability_id: str,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Return the stored APP-LEVEL (admin scope) non-secret config values for an
+    ability, as ``{ability_settings: {key: value}}`` — so the admin Agent Tools
+    panel can pre-fill the fields with what was previously saved. Empty map when
+    nothing has been saved yet. Backed by app/admin/ability_config.py."""
+    from app.admin import ability_config as _abcfg
+    from app.admin.integrations import resolve_user_id
+    db = get_db()
+    user_id = resolve_user_id(authorization or "", token or "")
+    await _require_admin(db, user_id)
+    # Auto-seed: make sure the repo-local config file exists (created/seeded from
+    # the vault on first access) before we read, so a missing file self-heals
+    # rather than returning stale emptiness.
+    try:
+        await _abcfg.ensure_bootstrapped(db)
+    except Exception as e:
+        logger.debug("ability_config ensure_bootstrapped (get) skipped: %s", e)
+    return {"ability_settings": _abcfg.get_ability_config(ability_id)}
+
+
+class AbilityConfigRequest(BaseModel):
+    """Save payload for an ability's non-secret APP-LEVEL config knobs (admin
+    scope). ``ability_settings`` is a flat ``{key: value}`` map matching the
+    ability's config-schema fields."""
+    ability_settings: Dict[str, Any] = {}
+
+
+@router.put("/abilities/{ability_id}/config")
+async def save_ability_config_values(
+    ability_id: str,
+    req: AbilityConfigRequest,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Persist an ability's APP-LEVEL (admin scope) non-secret config values into
+    the repo-local ``data/config/agent-abilities.json`` (NOT the vault — these are
+    non-secret knobs). The file is auto-created/seeded if missing, and the change
+    is written immediately. Backed by app/admin/ability_config.py
+    ``set_ability_config``."""
+    from app.admin import ability_config as _abcfg
+    from app.admin.integrations import resolve_user_id
+    db = get_db()
+    user_id = resolve_user_id(authorization or "", token or "")
+    await _require_admin(db, user_id)
+    # Auto-seed before writing: ensures the config file exists with its other
+    # sections (abilities/tools/order) intact, so saving config never clobbers a
+    # not-yet-loaded file. Self-heals if the file was deleted.
+    try:
+        await _abcfg.ensure_bootstrapped(db)
+    except Exception as e:
+        logger.debug("ability_config ensure_bootstrapped (put) skipped: %s", e)
+    settings = req.ability_settings if isinstance(req.ability_settings, dict) else {}
+    _abcfg.set_ability_config(ability_id, settings)
+    return {"status": "ok", "ability_settings": _abcfg.get_ability_config(ability_id)}
+
+
+class AbilityCredentialsRequest(BaseModel):
+    """Save payload for an ability's declarative credentials. ``values`` carries
+    one entry per declared field; a blank secret field leaves it unchanged."""
+    values: Dict[str, Any] = {}
+    agent_id: Optional[str] = None
+
+
+@router.get("/abilities/{ability_id}/credentials")
+async def get_ability_credentials(
+    ability_id: str,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Return the ability's credential fields + non-secret values + which secrets
+    are set (NEVER the secret values). Returns null when the ability declares no
+    ``credentials`` block. The caller is resolved from the Bearer token. See
+    app/abilities/credentials.py."""
+    from app.abilities import credentials as _creds
+    from app.admin.integrations import resolve_user_id
+    spec = _creds.ability_credentials_spec(ability_id)
+    if not spec:
+        return None
+    user_id = resolve_user_id(authorization or "", token or "")
+    db = get_db()
+    try:
+        is_admin = bool(user_id) and await db.is_user_admin(user_id)
+    except Exception:
+        is_admin = False
+    view = await _creds.public_view(ability_id, user_id=user_id)
+    if view is not None:
+        # admin-scope secrets are editable only by an admin; user/agent scope is
+        # the caller's own.
+        view["can_edit"] = bool(is_admin) or spec.get("scope") != "admin"
+    return view
+
+
+@router.post("/abilities/{ability_id}/credentials")
+async def save_ability_credentials(
+    ability_id: str,
+    req: AbilityCredentialsRequest,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Persist an ability's credentials into the encrypted vault (generic)."""
+    from app.abilities import credentials as _creds
+    from app.admin.integrations import resolve_user_id, ANONYMOUS_KEY
+    spec = _creds.ability_credentials_spec(ability_id)
+    if not spec:
+        raise HTTPException(status_code=404, detail="This ability has no credentials to configure.")
+    user_id = resolve_user_id(authorization or "", token or "")
+    db = get_db()
+    scope = spec.get("scope", "user")
+    if scope == "admin":
+        await _require_admin(db, user_id)
+    elif not user_id or user_id == ANONYMOUS_KEY:
+        raise HTTPException(status_code=401, detail="Sign in to save these credentials.")
+    ok = await _creds.save_credentials(
+        ability_id, req.values or {}, user_id=user_id, agent_id=req.agent_id or "",
+    )
+    return {"status": "ok" if ok else "error",
+            "configured": await _creds.is_configured(ability_id, user_id=user_id, agent_id=req.agent_id or "")}
+
+
+@router.delete("/abilities/{ability_id}/credentials")
+async def delete_ability_credentials(
+    ability_id: str,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+    agent_id: Optional[str] = Query(None),
+):
+    """Clear an ability's stored credentials."""
+    from app.abilities import credentials as _creds
+    from app.admin.integrations import resolve_user_id
+    spec = _creds.ability_credentials_spec(ability_id)
+    if not spec:
+        raise HTTPException(status_code=404, detail="This ability has no credentials to configure.")
+    user_id = resolve_user_id(authorization or "", token or "")
+    db = get_db()
+    if spec.get("scope") == "admin":
+        await _require_admin(db, user_id)
+    ok = await _creds.delete_credentials(ability_id, user_id=user_id, agent_id=agent_id or "")
+    return {"status": "ok" if ok else "error"}
+
+
 @router.get("/agents/{agent_id}/connections")
-async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
+async def get_agent_connections(request: Request, agent_id: str, user_id: str = Query(...)):
     """
     Return connections for an agent, filtered to those the admin has configured.
     Unconfigured providers are hidden so they can't be toggled on from the UI.
@@ -1326,8 +1744,27 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
     import json as _json
     from app.admin.integrations import get_admin_configured_providers
     db = get_db()
+    user_id = await assert_caller_is(request, user_id)
     rows = await db.get_agent_connections(agent_id)
     saved = {r["connection_type"]: r for r in rows}
+
+    # Per-agent ability + skill visibility (visible / discoverable) — surfaced on
+    # each ability connection so the Abilities tab can render its eye toggles.
+    try:
+        _ability_modes = await db.get_agent_ability_modes(agent_id)
+    except Exception:
+        _ability_modes = {}
+    try:
+        _skill_modes = await db.get_agent_skill_modes(agent_id)
+    except Exception:
+        _skill_modes = {}
+    # Per-agent ability ACCESS level (everyone / registered / admin) — surfaced on
+    # each ability connection so the Abilities tab can render its "Available to"
+    # control. Absent → everyone (no restriction).
+    try:
+        _ability_access = await db.get_agent_ability_access(agent_id)
+    except Exception:
+        _ability_access = {}
 
     # Only surface integrations the admin has configured (plus the per-agent/
     # per-user ones that need no admin OAuth setup). Unconfigured providers
@@ -1396,11 +1833,32 @@ async def get_agent_connections(agent_id: str, user_id: str = Query(...)):
                 tok = config["bot_token"]
                 config["bot_token"] = "•" * max(0, len(tok) - 4) + tok[-4:]
 
+        # A locked-on safety ability (e.g. Context Control) is always enabled —
+        # its toggle is fixed ON and cannot be turned off — regardless of whether
+        # a per-agent row exists or what it says.
+        _locked_on = bool(entry.get("locked_on"))
         item = {
             **entry,
-            "enabled": bool(row["enabled"]) if row else False,
+            "enabled": True if _locked_on else (bool(row["enabled"]) if row else False),
             "config": config,
         }
+
+        # Ability + bundled-skill visibility (per-agent discovery).
+        if entry.get("section") == "ability":
+            from app.tools.tool_modes import resolve_ability_mode, resolve_skill_mode, resolve_ability_access
+            item["ability_mode"] = resolve_ability_mode(ct, _ability_modes)
+            item["available_to"] = resolve_ability_access(ct, _ability_access)
+            try:
+                from app.abilities import ability_feature_with_skill
+                _feat = ability_feature_with_skill(ct)
+            except Exception:
+                _feat = None
+            if _feat:
+                item["has_skill"] = True
+                item["skill_summary"] = _feat.get("skill_summary") or ""
+                item["skill_mode"] = resolve_skill_mode(ct, _skill_modes, _feat.get("skill_mode"))
+            else:
+                item["has_skill"] = False
 
         # Merge OAuth account info for providers that use auth_elements
         if ct in _OAUTH_PROVIDERS:  # dict membership check
@@ -1424,6 +1882,7 @@ async def upsert_agent_connection(
     agent_id: str,
     connection_type: str,
     req: UpsertConnectionRequest,
+    request: Request,
 ):
     """
     Create or update a connection on an agent.
@@ -1433,6 +1892,7 @@ async def upsert_agent_connection(
     import json as _json
     db = get_db()
 
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Only agent admins can modify connection settings.")
 
@@ -1444,6 +1904,11 @@ async def upsert_agent_connection(
         raise HTTPException(status_code=400, detail=f"Unknown connection type: {connection_type}")
     if catalog_entry["status"] == "coming_soon":
         raise HTTPException(status_code=400, detail=f"{catalog_entry['display_name']} is not yet available.")
+
+    # A locked-on safety ability cannot be disabled — coerce any disable attempt
+    # back to enabled so the row stays on no matter what the client sends.
+    if catalog_entry.get("locked_on") and not req.enabled:
+        req.enabled = True
 
     # Refuse to enable a provider the admin hasn't configured. (Disable is
     # always allowed so the UI can clean up stale rows if creds were removed.)
@@ -1523,8 +1988,13 @@ class SetToolModeRequest(BaseModel):
     mode: str  # "always" | "discoverable" | (anything else clears the override)
 
 
+class SetAbilityAccessRequest(BaseModel):
+    user_id: str
+    level: str  # "everyone" | "registered" | "admin" | (anything else → everyone)
+
+
 @router.get("/agents/{agent_id}/tools")
-async def list_agent_tools(agent_id: str, user_id: str = Query(...)):
+async def list_agent_tools(request: Request, agent_id: str, user_id: str = Query(...)):
     """Return the agent's actual loaded tool set with each tool's exposure mode.
 
     Drives the per-agent Tools panel. The list comes from the real tool loader
@@ -1535,14 +2005,29 @@ async def list_agent_tools(agent_id: str, user_id: str = Query(...)):
     """
     import json as _json
     db = get_db()
+    user_id = await assert_caller_is(request, user_id)
     agent = await db.get_agent_by_id(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found.")
 
-    from app.tools.loader import load_tools
+    from app.tools.loader import load_tools, TIER_1_ALWAYS_ON
     from app.tools.tool_modes import (
         resolve_mode, is_locked, is_sent, ability_for_tool,
     )
+    from app.tools.tool_defaults import resolve_permission
+    # Display-only grouping for always-on core tools (no ability gates them, but a
+    # "virtual" row like Core ▸ Base lists them). Kept separate from
+    # ability_for_tool so these tools are never withheld by ability gating.
+    from app.abilities import virtual_ability_for_tool as _virtual_ability_for_tool
+
+    # App-wide global per-tool defaults — so the panel shows the EFFECTIVE
+    # inherited mode/permission (agent-override ▸ global ▸ built-in), not just
+    # the agent's own settings. Empty {} when unset.
+    try:
+        from app.admin.integrations import get_global_tool_defaults
+        global_defaults = await get_global_tool_defaults()
+    except Exception:
+        global_defaults = {}
 
     allowed = agent.get("allowed_tools")
     if isinstance(allowed, str):
@@ -1563,6 +2048,15 @@ async def list_agent_tools(agent_id: str, user_id: str = Query(...)):
         logger.warning("list_agent_tools: load_tools failed for %s: %s", agent_id, e)
         tools = {}
 
+    # ≈token estimator (the same char-based heuristic that drives the chat
+    # context gauge) — so the "see schema" preview can show each tool's cost in
+    # each visibility mode without a heavyweight tokenizer.
+    try:
+        from app.agent.context_control import estimate_tokens as _est
+    except Exception:
+        def _est(_msgs):
+            return 0
+
     modes = await db.get_agent_tool_modes(agent_id)
     out: list[dict] = []
     for name, info in sorted(tools.items()):
@@ -1570,15 +2064,48 @@ async def list_agent_tools(agent_id: str, user_id: str = Query(...)):
             desc = (info.handler.__doc__ or "").strip().split("\n")[0]
         except Exception:
             desc = ""
+        params = info.parameters if hasattr(info, "parameters") else {}
+        # "visible" = the full tool definition the model receives every turn;
+        # "discoverable" = just the one-line # [TOOLS] index entry.
+        try:
+            _vis_text = _json.dumps({"name": name, "description": desc, "parameters": params})
+        except Exception:
+            _vis_text = name
+        _disc_text = f"- `{name}` — {desc}" if desc else f"- `{name}`"
+        # The GLOBAL ceiling (admin per-tool default) — the floor of strictness
+        # this agent can't go below: Auto < Ask < Deny. A global "deny" on a
+        # Tier-1 always-on tool can't actually bind (it's never denied), so its
+        # ceiling shows as "auto". The per-agent UI greys out any looser option.
+        _g_perm = (global_defaults.get(name) or {}).get("permission")
+        if _g_perm == "deny" and name in TIER_1_ALWAYS_ON:
+            _ceiling = "auto"
+        elif _g_perm in ("auto", "ask", "deny"):
+            _ceiling = _g_perm
+        else:
+            _ceiling = "auto"
+        # A tool that inherently pauses for confirmation can't be shown — or set —
+        # looser than "Ask". Fold that built-in floor into the ceiling (take the
+        # stricter of the admin global limit and this floor). Auto < Ask < Deny.
+        if getattr(info, "requires_confirmation", False):
+            _rank = {"auto": 0, "ask": 1, "deny": 2}
+            if _rank.get(_ceiling, 0) < 1:
+                _ceiling = "ask"
         out.append({
             "name": name,
             "description": desc,
-            "ability": ability_for_tool(name),
-            "mode": resolve_mode(name, modes),
+            # Real gating ability first; fall back to a display-only virtual row
+            # (Core ▸ Base) so always-on core tools still group under a heading.
+            "ability": ability_for_tool(name) or _virtual_ability_for_tool(name),
+            "mode": resolve_mode(name, modes, global_defaults),
+            "permission": resolve_permission(name, agent, global_defaults),
+            "ceiling": _ceiling,
             "locked": is_locked(name),
-            "sent": is_sent(name, modes, []),
+            "sent": is_sent(name, modes, [], global_defaults),
             "destructive": bool(getattr(info, "destructive", False)
                                 or getattr(info, "requires_confirmation", False)),
+            "schema": params,
+            "tokens_visible": _est([{"content": _vis_text}]),
+            "tokens_discoverable": _est([{"content": _disc_text}]),
         })
     is_admin = await _is_agent_admin(db, agent_id, user_id)
     return {"tools": out, "count": len(out),
@@ -1587,12 +2114,13 @@ async def list_agent_tools(agent_id: str, user_id: str = Query(...)):
 
 @router.put("/agents/{agent_id}/tools/{tool_name}")
 async def set_agent_tool_mode_endpoint(
-    agent_id: str, tool_name: str, req: SetToolModeRequest,
+    agent_id: str, tool_name: str, req: SetToolModeRequest, request: Request,
 ):
     """Set how a tool is exposed to the agent: 'always' (full schema every turn)
     or 'discoverable' (load on demand). Any other value clears the override back
     to the default. Core tools cannot be changed."""
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Only agent admins can change tool settings.")
     from app.tools.tool_modes import is_locked, resolve_mode
@@ -1605,385 +2133,159 @@ async def set_agent_tool_mode_endpoint(
     return {"tool": {"name": tool_name, "mode": resolve_mode(tool_name, modes)}}
 
 
-@router.get("/agents/{agent_id}/connections/google/authorize")
-async def google_authorize_for_agent(request: Request, agent_id: str, user_id: str = Query(...)):
-    """Generate Google OAuth authorization URL for a user+agent pair."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "google")
-    from app.admin.integrations import get_google_creds, build_google_authorize_url
-    client_id, _ = await get_google_creds()
-    if not client_id:
-        return {"error": "Google OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_google_authorize_url(user_id=user_id, agent_id=agent_id, request=request)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/google/disconnect")
-async def google_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Google account for a user (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_google
-    deleted = await revoke_and_delete_google(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/microsoft/authorize")
-async def microsoft_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate Microsoft OAuth authorization URL for a user+agent pair."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "microsoft")
-    from app.admin.integrations import get_microsoft_creds, build_microsoft_authorize_url
-    client_id, _ = await get_microsoft_creds()
-    if not client_id:
-        return {"error": "Microsoft OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_microsoft_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/microsoft/disconnect")
-async def microsoft_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Microsoft account for a user (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_microsoft
-    deleted = await revoke_and_delete_microsoft(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/yahoo/authorize")
-async def yahoo_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate Yahoo OAuth authorization URL for a user+agent pair."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "yahoo")
-    from app.admin.integrations import get_yahoo_creds, build_yahoo_authorize_url
-    client_id, _ = await get_yahoo_creds()
-    if not client_id:
-        return {"error": "Yahoo OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_yahoo_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/yahoo/disconnect")
-async def yahoo_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Yahoo account for a user (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_yahoo
-    deleted = await revoke_and_delete_yahoo(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/dropbox/authorize")
-async def dropbox_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate Dropbox OAuth authorization URL for a user+agent pair."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "dropbox")
-    from app.admin.integrations import get_dropbox_creds, build_dropbox_authorize_url
-    client_id, _ = await get_dropbox_creds()
-    if not client_id:
-        return {"error": "Dropbox OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_dropbox_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/dropbox/disconnect")
-async def dropbox_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Dropbox account for a user (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_dropbox
-    deleted = await revoke_and_delete_dropbox(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-# ── Social Media OAuth routes ─────────────────────────────────────────────────
-# Meta covers both Facebook and Instagram via a single OAuth app.
-
-@router.get("/agents/{agent_id}/connections/facebook/authorize")
-async def facebook_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate Meta (Facebook/Instagram) OAuth authorization URL."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "facebook")
-    from app.admin.integrations import get_meta_creds, build_meta_authorize_url
-    client_id, _ = await get_meta_creds()
-    if not client_id:
-        return {"error": "Meta OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_meta_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/facebook/disconnect")
-async def facebook_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Meta account (removes Facebook + Instagram access, preserves admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_meta
-    deleted = await revoke_and_delete_meta(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/instagram/authorize")
-async def instagram_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate Meta (Facebook/Instagram) OAuth authorization URL."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "instagram")
-    from app.admin.integrations import get_meta_creds, build_meta_authorize_url
-    client_id, _ = await get_meta_creds()
-    if not client_id:
-        return {"error": "Meta OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_meta_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/instagram/disconnect")
-async def instagram_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Meta account (removes Facebook + Instagram access, preserves admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_meta
-    deleted = await revoke_and_delete_meta(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/twitter/authorize")
-async def twitter_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate Twitter/X OAuth authorization URL."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "twitter")
-    from app.admin.integrations import get_twitter_creds, build_twitter_authorize_url
-    client_id, _ = await get_twitter_creds()
-    if not client_id:
-        return {"error": "Twitter/X OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url, _ = await build_twitter_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/twitter/disconnect")
-async def twitter_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Twitter/X account (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_twitter
-    deleted = await revoke_and_delete_twitter(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/linkedin/authorize")
-async def linkedin_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate LinkedIn OAuth authorization URL."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "linkedin")
-    from app.admin.integrations import get_linkedin_creds, build_linkedin_authorize_url
-    client_id, _ = await get_linkedin_creds()
-    if not client_id:
-        return {"error": "LinkedIn OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_linkedin_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/linkedin/disconnect")
-async def linkedin_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect LinkedIn account (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_linkedin
-    deleted = await revoke_and_delete_linkedin(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/tiktok/authorize")
-async def tiktok_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate TikTok OAuth authorization URL."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "tiktok")
-    from app.admin.integrations import get_tiktok_creds, build_tiktok_authorize_url
-    client_id, _ = await get_tiktok_creds()
-    if not client_id:
-        return {"error": "TikTok OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url, _ = await build_tiktok_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/tiktok/disconnect")
-async def tiktok_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect TikTok account (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_tiktok
-    deleted = await revoke_and_delete_tiktok(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/pinterest/authorize")
-async def pinterest_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate Pinterest OAuth authorization URL."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "pinterest")
-    from app.admin.integrations import get_pinterest_creds, build_pinterest_authorize_url
-    client_id, _ = await get_pinterest_creds()
-    if not client_id:
-        return {"error": "Pinterest OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_pinterest_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/pinterest/disconnect")
-async def pinterest_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Pinterest account (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_pinterest
-    deleted = await revoke_and_delete_pinterest(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/reddit/authorize")
-async def reddit_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate Reddit OAuth authorization URL."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "reddit")
-    from app.admin.integrations import get_reddit_creds, build_reddit_authorize_url
-    client_id, _ = await get_reddit_creds()
-    if not client_id:
-        return {"error": "Reddit OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_reddit_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/reddit/disconnect")
-async def reddit_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Reddit account (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_reddit
-    deleted = await revoke_and_delete_reddit(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/snapchat/authorize")
-async def snapchat_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate Snapchat OAuth authorization URL."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "snapchat")
-    from app.admin.integrations import get_snapchat_creds, build_snapchat_authorize_url
-    client_id, _ = await get_snapchat_creds()
-    if not client_id:
-        return {"error": "Snapchat OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_snapchat_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/snapchat/disconnect")
-async def snapchat_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Snapchat account (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_snapchat
-    deleted = await revoke_and_delete_snapchat(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/twitch/authorize")
-async def twitch_authorize_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Generate Twitch OAuth authorization URL."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "twitch")
-    from app.admin.integrations import get_twitch_creds, build_twitch_authorize_url
-    client_id, _ = await get_twitch_creds()
-    if not client_id:
-        return {"error": "Twitch OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_twitch_authorize_url(user_id=user_id, agent_id=agent_id)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/twitch/disconnect")
-async def twitch_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Twitch account (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_twitch
-    deleted = await revoke_and_delete_twitch(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-# ── Marketplace OAuth routes ──────────────────────────────────────────────
-
-@router.get("/agents/{agent_id}/connections/ebay/authorize")
-async def ebay_authorize_for_agent(request: Request, agent_id: str, user_id: str = Query(...)):
-    """Generate eBay OAuth authorization URL for a user+agent pair."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "ebay")
-    from app.admin.integrations import get_ebay_creds, build_ebay_authorize_url
-    client_id, _ = await get_ebay_creds()
-    if not client_id:
-        return {"error": "eBay OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_ebay_authorize_url(user_id=user_id, agent_id=agent_id, request=request)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/ebay/disconnect")
-async def ebay_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect eBay account (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_ebay
-    deleted = await revoke_and_delete_ebay(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/etsy/authorize")
-async def etsy_authorize_for_agent(request: Request, agent_id: str, user_id: str = Query(...)):
-    """Generate Etsy OAuth authorization URL for a user+agent pair."""
-    db = get_db()
-    await _require_connection_enabled(db, agent_id, "etsy")
-    from app.admin.integrations import get_etsy_creds, build_etsy_authorize_url
-    client_id, _ = await get_etsy_creds()
-    if not client_id:
-        return {"error": "Etsy OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_etsy_authorize_url(user_id=user_id, agent_id=agent_id, request=request)
-    return {"authorize_url": authorize_url}
-
-
-@router.delete("/agents/{agent_id}/connections/etsy/disconnect")
-async def etsy_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Etsy account (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_etsy
-    deleted = await revoke_and_delete_etsy(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/shopify/authorize")
-async def shopify_authorize_for_agent(
-    request: Request,
-    agent_id: str,
-    user_id: str = Query(...),
-    shop: str = Query(..., description="Shopify shop domain, e.g. 'my-store' or 'my-store.myshopify.com'"),
+@router.put("/agents/{agent_id}/abilities/{ability_id}/visibility")
+async def set_agent_ability_visibility(
+    agent_id: str, ability_id: str, req: SetToolModeRequest, request: Request,
 ):
-    """Generate Shopify install URL for a specific shop. Requires shop domain."""
+    """Set how an ability is exposed to the agent: 'visible' (its tools + how-to
+    skill are shown now) or 'discoverable' (collapsed to one # [ABILITIES] entry;
+    the agent reveals it with load_ability). Any other value clears the override
+    back to the 'visible' default. Per-agent only — admins set the ceiling
+    (enable + permission), agents tune discovery for their role."""
     db = get_db()
-    await _require_connection_enabled(db, agent_id, "shopify")
-    from app.admin.integrations import get_shopify_creds, build_shopify_authorize_url
-    client_id, _ = await get_shopify_creds()
-    if not client_id:
-        return {"error": "Shopify OAuth not configured. Admin must set credentials in App Config → Integrations."}
-    if not shop:
-        return {"error": "Shop domain is required (e.g. 'my-store.myshopify.com')."}
-    try:
-        authorize_url = await build_shopify_authorize_url(
-            user_id=user_id, shop=shop, agent_id=agent_id, request=request,
-        )
-    except ValueError as e:
-        return {"error": str(e)}
-    return {"authorize_url": authorize_url}
+    req.user_id = await assert_caller_is(request, req.user_id)
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can change ability settings.")
+    from app.tools.tool_modes import resolve_ability_mode
+    modes = await db.set_agent_ability_mode(agent_id, ability_id, req.mode)
+    return {"ability": {"id": ability_id, "mode": resolve_ability_mode(ability_id, modes)}}
 
 
-@router.delete("/agents/{agent_id}/connections/shopify/disconnect")
-async def shopify_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Shopify shop (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_shopify
-    deleted = await revoke_and_delete_shopify(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
-
-
-@router.get("/agents/{agent_id}/connections/amazon/authorize")
-async def amazon_authorize_for_agent(
-    request: Request,
-    agent_id: str,
-    user_id: str = Query(...),
-    region: str = Query("NA", description="Amazon SP-API region: NA, EU, or FE"),
+@router.put("/agents/{agent_id}/abilities/{ability_id}/access")
+async def set_agent_ability_access(
+    agent_id: str, ability_id: str, req: SetAbilityAccessRequest, request: Request,
 ):
-    """Generate Amazon Seller Central authorization URL for a user+agent pair."""
+    """Set an ability's required caller-access level on this agent: 'everyone'
+    (anyone, incl. anonymous guests — the default), 'registered' (signed-in
+    accounts only), or 'admin' (admins only). 'everyone' (or any unknown value)
+    clears the restriction. Enforced server-side at tool-assembly time
+    (app/tools/loader.load_tools via app/agent/ability_access) — the gated
+    ability's tools are never built for a caller below the level, so it's a real
+    boundary, not a prompt hint. Per-agent only."""
     db = get_db()
-    await _require_connection_enabled(db, agent_id, "amazon")
-    from app.admin.integrations import get_amazon_creds, build_amazon_authorize_url
-    client_id, _ = await get_amazon_creds()
-    if not client_id:
-        return {"error": "Amazon LWA not configured. Admin must set credentials in App Config → Integrations."}
-    authorize_url = await build_amazon_authorize_url(
-        user_id=user_id, region=region, agent_id=agent_id, request=request,
+    req.user_id = await assert_caller_is(request, req.user_id)
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can change ability settings.")
+    from app.tools.tool_modes import resolve_ability_access
+    access = await db.set_agent_ability_access(agent_id, ability_id, req.level)
+    return {"ability": {"id": ability_id, "available_to": resolve_ability_access(ability_id, access)}}
+
+
+@router.put("/agents/{agent_id}/abilities/{ability_id}/skill-visibility")
+async def set_agent_skill_visibility(
+    agent_id: str, ability_id: str, req: SetToolModeRequest, request: Request,
+):
+    """Set how an ability's bundled **skill** is exposed to the agent: 'visible'
+    (its how-to body is shown every turn) or 'discoverable' (load on demand via
+    load_skill). Any other value clears the override back to the descriptor
+    default. Per-agent."""
+    db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
+    if not await _is_agent_admin(db, agent_id, req.user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can change skill settings.")
+    from app.tools.tool_modes import resolve_skill_mode
+    modes = await db.set_agent_skill_mode(agent_id, ability_id, req.mode)
+    return {"skill": {"ability_id": ability_id, "mode": resolve_skill_mode(ability_id, modes)}}
+
+
+@router.get("/agents/{agent_id}/abilities/{ability_id}/schema-preview")
+async def ability_schema_preview(request: Request, agent_id: str, ability_id: str, user_id: str = Query(...)):
+    """The ACTUAL text the agent receives for one ability, given its current
+    visibility config — so the Abilities tab can show exactly what's sent:
+
+    - ability **discoverable** → just the one-line `# [ABILITIES]` entry (hidden);
+    - ability **visible**, every tool+skill visible → the **complete** schema;
+    - ability **visible**, mixed → the real mix (visible tools' full schemas +
+      discoverable tools' one-line entries; skill body vs its load-on-demand line).
+
+    Returns `{state: hidden|partial|full, text, tokens}` (≈tokens via the same
+    char heuristic as the chat gauge).
+    """
+    import json as _json
+    db = get_db()
+    user_id = await assert_caller_is(request, user_id)
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+
+    from app.tools.tool_modes import (
+        resolve_mode, resolve_ability_mode, resolve_skill_mode, VISIBLE,
     )
-    return {"authorize_url": authorize_url}
+    from app.tools.loader import load_tools, ABILITY_TOOLS
+    from app.abilities import ui_catalog, ability_feature_with_skill
+    try:
+        from app.agent.context_control import estimate_tokens as _est
+    except Exception:
+        def _est(_m):
+            return 0
 
+    ab_modes = await db.get_agent_ability_modes(agent_id)
+    sk_modes = await db.get_agent_skill_modes(agent_id)
+    tool_modes = await db.get_agent_tool_modes(agent_id)
+    try:
+        from app.admin.integrations import get_global_tool_defaults
+        gdef = await get_global_tool_defaults()
+    except Exception:
+        gdef = {}
 
-@router.delete("/agents/{agent_id}/connections/amazon/disconnect")
-async def amazon_disconnect_for_agent(agent_id: str, user_id: str = Query(...)):
-    """Disconnect Amazon SP-API (revoke OAuth only, preserve admin toggle)."""
-    from app.admin.integrations import revoke_and_delete_amazon
-    deleted = await revoke_and_delete_amazon(user_id, agent_id)
-    return {"status": "ok", "deleted": deleted}
+    meta = (ui_catalog() or {}).get("abilities", {}).get(ability_id, {})
+    display = meta.get("display_name") or ability_id
+    summary = meta.get("skill_summary") or meta.get("description") or ""
+
+    # Discoverable ability → the agent only sees the one-line [ABILITIES] entry.
+    if resolve_ability_mode(ability_id, ab_modes) != VISIBLE:
+        text = f"# [ABILITIES]\n- `{ability_id}` — {display}: {summary}".strip()
+        return {"state": "hidden", "text": text, "tokens": _est([{"content": text}])}
+
+    # Visible ability → compose the real tool + skill text.
+    allowed = agent.get("allowed_tools")
+    if isinstance(allowed, str):
+        try:
+            allowed = _json.loads(allowed)
+        except Exception:
+            allowed = []
+    try:
+        tools = await load_tools(
+            user_id, agent_id=agent_id, agent_template_id=agent.get("template_id"),
+            allowed_tools=allowed or [], session_id="",
+        )
+    except Exception:
+        tools = {}
+
+    parts: list[str] = []
+    n_visible = 0
+    n_total = 0
+    for name in [n for n in ABILITY_TOOLS.get(ability_id, []) if n in tools]:
+        info = tools.get(name)
+        desc = ((info.handler.__doc__ or "").strip().split("\n")[0]
+                if info and hasattr(info, "handler") else "")
+        n_total += 1
+        if resolve_mode(name, tool_modes, gdef) == VISIBLE:
+            n_visible += 1
+            params = info.parameters if (info and hasattr(info, "parameters")) else {}
+            parts.append(_json.dumps({"name": name, "description": desc, "parameters": params}, indent=2))
+        else:
+            parts.append(f"- `{name}` — {desc}")
+
+    feat = ability_feature_with_skill(ability_id)
+    if feat:
+        n_total += 1
+        if resolve_skill_mode(ability_id, sk_modes, feat.get("skill_mode")) == VISIBLE:
+            n_visible += 1
+            parts.append(f"# [SKILL: {display}]\n{(feat.get('skill') or '').strip()}".strip())
+        else:
+            parts.append(f"# [SKILLS]\n- {display} (load on demand): {feat.get('skill_summary') or summary}".strip())
+
+    text = "\n\n".join(p for p in parts if p).strip() or "(this ability exposes no tools or skill)"
+    if n_total == 0:
+        state = "full"
+    elif n_visible == 0:
+        state = "hidden"
+    elif n_visible == n_total:
+        state = "full"
+    else:
+        state = "partial"
+    return {"state": state, "text": text, "tokens": _est([{"content": text}])}
 
 
 class ManageAdminRequest(BaseModel):
@@ -1992,9 +2294,10 @@ class ManageAdminRequest(BaseModel):
 
 
 @router.post("/agents/{agent_id}/admins")
-async def add_agent_admin(agent_id: str, req: ManageAdminRequest):
+async def add_agent_admin(agent_id: str, req: ManageAdminRequest, request: Request):
     """Add target_user_id to an agent's admin_users list. Caller must be an existing admin."""
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Admin access required.")
     added = await db.add_agent_admin(agent_id, req.target_user_id)
@@ -2003,7 +2306,7 @@ async def add_agent_admin(agent_id: str, req: ManageAdminRequest):
 
 
 @router.get("/agents/{agent_id}/members")
-async def list_agent_members(agent_id: str, user_id: str = Query(...)):
+async def list_agent_members(request: Request, agent_id: str, user_id: str = Query(...)):
     """
     List the agent's admin_users and member_users joined with profile + activity stats.
     Caller must be a global admin OR in the agent's admin_users list.
@@ -2014,6 +2317,7 @@ async def list_agent_members(agent_id: str, user_id: str = Query(...)):
     from app.auth.users import get_user_by_id as _auth_get_user_by_id
 
     db = get_db()
+    user_id = await assert_caller_is(request, user_id)
     if not await _is_agent_admin(db, agent_id, user_id):
         raise HTTPException(status_code=403, detail="Admin access required.")
 
@@ -2103,9 +2407,10 @@ class _AuthorizeRequest(BaseModel):
 
 
 @router.post("/agents/{agent_id}/members/{target_user_id}/authorize")
-async def authorize_agent_member(agent_id: str, target_user_id: str, req: _AuthorizeRequest):
+async def authorize_agent_member(agent_id: str, target_user_id: str, req: _AuthorizeRequest, request: Request):
     """Mark a user as authorized for this agent. Caller must be agent admin."""
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Admin access required.")
     authorized_users = await db.set_agent_authorized(agent_id, target_user_id, True)
@@ -2113,9 +2418,10 @@ async def authorize_agent_member(agent_id: str, target_user_id: str, req: _Autho
 
 
 @router.post("/agents/{agent_id}/members/{target_user_id}/restrict")
-async def restrict_agent_member(agent_id: str, target_user_id: str, req: _AuthorizeRequest):
+async def restrict_agent_member(agent_id: str, target_user_id: str, req: _AuthorizeRequest, request: Request):
     """Remove a user from the authorized list for this agent. Caller must be agent admin."""
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Admin access required.")
     authorized_users = await db.set_agent_authorized(agent_id, target_user_id, False)
@@ -2128,11 +2434,12 @@ class _SetUserModeRequest(BaseModel):
 
 
 @router.post("/agents/{agent_id}/user-mode")
-async def set_agent_user_mode(agent_id: str, req: _SetUserModeRequest):
+async def set_agent_user_mode(agent_id: str, req: _SetUserModeRequest, request: Request):
     """Set the agent's user_mode policy. Caller must be agent admin."""
     if req.user_mode not in ("anonymous", "register", "authorized"):
         raise HTTPException(status_code=400, detail="Invalid user_mode.")
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Admin access required.")
     conn = db._get_conn()
@@ -2207,7 +2514,7 @@ def _is_known_ability(ability_id: str) -> bool:
 
 
 @router.get("/agents/{agent_id}/abilities")
-async def list_agent_abilities(agent_id: str, user_id: str = Query(...)):
+async def list_agent_abilities(request: Request, agent_id: str, user_id: str = Query(...)):
     """Return every registered OAuth ability with its enabled/source/byo state for this agent.
 
     Merges three layers in one response so the agent admin UI can render the
@@ -2222,6 +2529,7 @@ async def list_agent_abilities(agent_id: str, user_id: str = Query(...)):
     from app.integrations.ability_registry import ABILITIES
     from app.admin.integrations import get_all_oauth_ability_configs
     db = get_db()
+    user_id = await assert_caller_is(request, user_id)
     rows = (await db.get_agent_abilities(agent_id)) if hasattr(db, "get_agent_abilities") else []
     by_id = {r["ability_id"]: r for r in rows}
 
@@ -2262,6 +2570,7 @@ async def upsert_agent_ability(
     agent_id: str,
     ability_id: str,
     req: UpsertAbilityRequest,
+    request: Request,
 ):
     """Toggle an ability on/off and/or switch source (platform vs BYO).
 
@@ -2273,6 +2582,7 @@ async def upsert_agent_ability(
     if not _is_known_ability(ability_id):
         raise HTTPException(status_code=404, detail=f"Unknown ability: {ability_id}")
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Only agent admins can change abilities.")
 
@@ -2343,11 +2653,13 @@ async def set_agent_ability_byo_creds(
     agent_id: str,
     ability_id: str,
     req: SetByoCredsRequest,
+    request: Request,
 ):
     """Set the agent admin's BYO OAuth client id + secret for this ability."""
     if not _is_known_ability(ability_id):
         raise HTTPException(status_code=404, detail=f"Unknown ability: {ability_id}")
     db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Only agent admins can set BYO credentials.")
     cid = (req.client_id or "").strip()

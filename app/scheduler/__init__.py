@@ -59,10 +59,6 @@ def _instantiate(provider: str) -> SchedulerBackend:
         except Exception:
             settings = {}
         return cls(settings)  # type: ignore[call-arg]
-    # Legacy stub kept for backwards-compat config files.
-    if p == "google":
-        from app.scheduler.google import GoogleScheduler
-        return GoogleScheduler()
     logger.warning("Unknown scheduler provider %r — falling back to local", provider)
     from app.scheduler.local import LocalScheduler
     return LocalScheduler()

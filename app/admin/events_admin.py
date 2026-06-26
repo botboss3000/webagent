@@ -29,7 +29,12 @@ router = APIRouter(prefix="/admin/events", tags=["admin-events"])
 
 
 async def _require_admin(db, user_id: str) -> None:
-    if not await db.is_user_admin(user_id):
+    # Routes through the shared chokepoint so 'open' access mode grants the
+    # bootstrap admin to a tokenless tunnel caller; non-open modes still require
+    # a real DB admin id. See app.auth.identity.resolve_admin_uid. (db arg kept
+    # for signature compatibility with existing call sites.)
+    from app.auth.identity import resolve_admin_uid
+    if not await resolve_admin_uid(user_id):
         raise HTTPException(status_code=403, detail="Admin access required.")
 
 

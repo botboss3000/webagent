@@ -9,8 +9,14 @@ Providers (case matches UI dropdown):
   - supabase           → SupabaseBackend (Supabase REST + service-role key)
   - postgres           → raw Postgres via asyncpg (PostgresBackend)
   - mysql              → MySQL (future PostgresBackend extension)
+  - aws_rds            → managed Postgres on Amazon RDS / Aurora (postgres dialect)
   - gcp_cloud_sql      → managed Postgres in GCP (uses postgres dialect)
+  - azure_postgres     → managed Postgres on Azure (Flexible Server, postgres dialect)
   - neon               → Neon serverless Postgres
+
+The managed-Postgres providers (aws_rds, gcp_cloud_sql, azure_postgres, neon)
+are all ordinary Postgres endpoints — they share the raw asyncpg backend and
+differ only in their UI label, default-field hints, and connection notes.
 """
 
 from __future__ import annotations
@@ -20,6 +26,8 @@ import logging
 import os
 from dataclasses import dataclass, field, asdict
 from typing import Optional
+
+from app.util.config_io import safe_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -31,18 +39,22 @@ PROVIDERS = (
     "supabase",
     "postgres",
     "mysql",
+    "aws_rds",
     "gcp_cloud_sql",
+    "azure_postgres",
     "neon",
 )
 
 # Map provider → SQLAlchemy-style URL scheme + canonical dialect
 PROVIDER_META = {
-    "sqlite":        {"dialect": "sqlite",   "needs_host": False, "default_port": None},
-    "supabase":      {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
-    "postgres":      {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
-    "mysql":         {"dialect": "mysql",    "needs_host": True,  "default_port": 3306},
-    "gcp_cloud_sql": {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
-    "neon":          {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
+    "sqlite":         {"dialect": "sqlite",   "needs_host": False, "default_port": None},
+    "supabase":       {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
+    "postgres":       {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
+    "mysql":          {"dialect": "mysql",    "needs_host": True,  "default_port": 3306},
+    "aws_rds":        {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
+    "gcp_cloud_sql":  {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
+    "azure_postgres": {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
+    "neon":           {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
 }
 
 
@@ -183,8 +195,7 @@ def save_config(cfg: DBConnectionConfig) -> None:
         logger.warning("Config is env-locked; not writing db_connection.json")
         return
     try:
-        with open(_CONFIG_FILE, "w") as f:
-            json.dump(cfg.to_dict(), f, indent=2)
+        safe_write_json(_CONFIG_FILE, cfg.to_dict())
     except Exception as e:
         logger.error("Failed to save db_connection.json: %s", e)
         raise
