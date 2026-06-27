@@ -22,4 +22,9 @@ while true; do
 done
 ' &
 echo "Launcher PID: $!"
-echo $! > /tmp/webagent_launcher.pid
+# Record the launcher pid in Termux's writable temp dir. Termux has no writable
+# top-level /tmp (it's read-only on Android), so fall back to $TMPDIR ($PREFIX/tmp)
+# — writing to /tmp here just printed a harmless "Permission denied". The inner
+# /tmp/webagent.pid above is fine: it's written INSIDE the Ubuntu proot, where /tmp
+# exists and is writable.
+echo $! > "${TMPDIR:-/tmp}/webagent_launcher.pid"

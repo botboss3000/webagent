@@ -52,6 +52,15 @@ _TEMPLATE = (
     "powershell -NoProfile -ExecutionPolicy Bypass -File \"$dir\\deploy\\windows-setup.ps1\""
 )
 
+# Run-only command: start the server when webAgent is ALREADY installed — no
+# clone, no rebuild. Static (no repo URL / token). Prefers the “webAgent”
+# Scheduled Task the installer registers; falls back to the keep-alive ps1 if the
+# task isn't there. Keep BYTE-IDENTICAL to deploy.js `_RUN_WINDOWS`.
+RUN_COMMAND = (
+    "if(Get-ScheduledTask -TaskName webAgent -EA SilentlyContinue){Start-ScheduledTask -TaskName webAgent}"
+    "else{powershell -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\webagent\\deploy\\start_server_windows.ps1\"}"
+)
+
 
 class WindowsProvider(BaseDeployProvider):
     id = "windows"
@@ -105,6 +114,7 @@ class WindowsProvider(BaseDeployProvider):
             "To stop it starting on login: 'Unregister-ScheduledTask -TaskName webAgent -Confirm:$false'.")
         reach_note = "http://localhost:8080 on this PC · http://THIS-PC-IP:8080 on the same network"
         return {"ok": True, "command": command, "clone_display": clone_display,
+                "run_command": RUN_COMMAND,
                 "steps": steps, "instructions": instructions, "reach_note": reach_note,
                 "private": r["private"], "placeholder_repo": r["placeholder_repo"],
                 "placeholder_token": r["placeholder_token"], "warning": r["warning"]}

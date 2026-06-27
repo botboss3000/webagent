@@ -214,7 +214,6 @@ function renderGitPanel(rootEl) {
     return;
   }
   body.innerHTML = renderRepoSelector() +
-                   renderHeader(s) +
                    renderChangesSection(s) +
                    renderCommitSection(s) +
                    renderSyncSection(s) +
@@ -239,8 +238,11 @@ function renderRepoSelector() {
   const folder = _esc(active ? active.folder : '');
   const rows = _repos.map((r) => {
     const isActive = !!r.active;
-    const tools = r.builtin ? '' : `
-        <button type="button" class="fg-repo-edit" data-id="${_esc(r.id)}" title="Edit this repository" aria-label="Edit repository"><i data-lucide="pencil" class="lucide-icon"></i></button>
+    // The built-in repo gets the same pencil (its GitHub address + key are
+    // editable) but no trash — it can't be removed.
+    const editBtn = `
+        <button type="button" class="fg-repo-edit" data-id="${_esc(r.id)}" title="Edit this repository" aria-label="Edit repository"><i data-lucide="pencil" class="lucide-icon"></i></button>`;
+    const tools = r.builtin ? editBtn : `${editBtn}
         <button type="button" class="fg-repo-remove" data-id="${_esc(r.id)}" title="Remove this repository" aria-label="Remove repository"><i data-lucide="trash-2" class="lucide-icon"></i></button>`;
     return `
       <div class="fg-repo-row${isActive ? ' active' : ''}" role="option" aria-selected="${isActive}">
@@ -253,16 +255,28 @@ function renderRepoSelector() {
         </button>${tools}
       </div>`;
   }).join('');
+  // Edit / Remove for the *active* repo live right on the always-visible header
+  // (next to the dropdown trigger) so the user can edit — or, for an added repo,
+  // remove — the current repo without expanding the list. Same classes as the
+  // in-menu buttons, so wireRepoSelector picks them up with no extra wiring. The
+  // built-in repo shows only the pencil (it can't be removed).
+  const activeId = active ? _esc(active.id) : '';
+  const activeTools = active ? (active.builtin ? `
+        <button type="button" class="fg-repo-edit" data-id="${activeId}" title="Edit this repository" aria-label="Edit repository"><i data-lucide="pencil" class="lucide-icon"></i></button>` : `
+        <button type="button" class="fg-repo-edit" data-id="${activeId}" title="Edit this repository" aria-label="Edit repository"><i data-lucide="pencil" class="lucide-icon"></i></button>
+        <button type="button" class="fg-repo-remove" data-id="${activeId}" title="Remove this repository" aria-label="Remove repository"><i data-lucide="trash-2" class="lucide-icon"></i></button>`) : '';
   return `
     <div class="fg-section fg-repo-selector">
-      <button type="button" class="fg-repo-trigger" id="fg-repo-trigger" title="Switch repository" aria-haspopup="listbox" aria-expanded="${_repoMenuOpen}">
-        <i data-lucide="folder-git-2" class="lucide-icon fg-repo-trigger-icon"></i>
-        <span class="fg-repo-active">
-          <span class="fg-repo-active-label">${label}</span>
-          <span class="fg-repo-active-folder" title="${folder}">${folder || 'No folder'}</span>
-        </span>
-        <i data-lucide="chevron-down" class="lucide-icon fg-repo-chev"></i>
-      </button>
+      <div class="fg-repo-trigger-row">
+        <button type="button" class="fg-repo-trigger" id="fg-repo-trigger" title="Switch repository" aria-haspopup="listbox" aria-expanded="${_repoMenuOpen}">
+          <i data-lucide="folder-git-2" class="lucide-icon fg-repo-trigger-icon"></i>
+          <span class="fg-repo-active">
+            <span class="fg-repo-active-label">${label}</span>
+            <span class="fg-repo-active-folder" title="${folder}">${folder || 'No folder'}</span>
+          </span>
+          <i data-lucide="chevron-down" class="lucide-icon fg-repo-chev"></i>
+        </button>${activeTools}
+      </div>
       <div class="fg-repo-menu" id="fg-repo-menu" ${_repoMenuOpen ? '' : 'hidden'} role="listbox" aria-label="Repositories">
         ${rows || '<div class="fg-branch-menu-loading">Loading…</div>'}
         <button type="button" class="fg-repo-add" id="fg-repo-add-btn"><i data-lucide="plus" class="lucide-icon"></i> Add repository…</button>
@@ -280,7 +294,8 @@ function renderRepoForm() {
   if (!_repoFormMode) return '';
   const editing = _repoFormMode !== 'add';
   const r = editing ? _repos.find((x) => x.id === _repoFormMode) : null;
-  const title = editing ? 'Edit repository' : 'Add repository';
+  const builtin = !!(r && r.builtin);
+  const title = editing ? (builtin ? 'Edit webAgent repository' : 'Edit repository') : 'Add repository';
   const saveLbl = editing ? 'Save' : 'Add';
   const label = _esc(r ? r.label : '');
   const folder = _esc(r ? r.folder : '');
@@ -288,17 +303,48 @@ function renderRepoForm() {
   const tokPlaceholder = (editing && r && r.has_token)
     ? 'GitHub key saved — leave blank to keep it'
     : 'GitHub key for this repo…';
-  return `
-    <div class="fg-repo-form" id="fg-repo-form">
-      <div class="fg-repo-form-title">${title}</div>
-      <input type="text" id="fg-repo-f-label" class="fg-input" placeholder="Name (e.g. My website)" value="${label}" autocomplete="off">
-      <div class="fg-repo-folder-row">
+  // The built-in repo's name + folder are this app's own and can't be changed —
+  // only its GitHub address and shared key are editable, so lock the first two.
+  const nameField = builtin
+    ? `<input type="text" id="fg-repo-f-label" class="fg-input" value="${label}" autocomplete="off" disabled>`
+    : `<input type="text" id="fg-repo-f-label" class="fg-input" placeholder="Name (e.g. My website)" value="${label}" autocomplete="off">`;
+  const folderRow = builtin
+    ? `<input type="text" id="fg-repo-f-folder" class="fg-input" value="${folder}" autocomplete="off" disabled title="This app's own folder — fixed">`
+    : `<div class="fg-repo-folder-row">
         <input type="text" id="fg-repo-f-folder" class="fg-input" placeholder="Local folder path…" value="${folder}" autocomplete="off" data-lpignore="true">
         <button type="button" class="fg-btn fg-repo-browse-btn" id="fg-repo-browse-btn" title="Browse folders on this computer">Browse…</button>
       </div>
-      <div class="fg-repo-browser" id="fg-repo-browser" hidden></div>
+      <div class="fg-repo-browser" id="fg-repo-browser" hidden></div>`;
+  return `
+    <div class="fg-repo-form" id="fg-repo-form">
+      <div class="fg-repo-form-title">${title}</div>
+      ${nameField}
+      ${folderRow}
       <input type="text" id="fg-repo-f-remote" class="fg-input" placeholder="GitHub address (https://github.com/you/repo.git)" value="${remote}" autocomplete="off" data-lpignore="true">
-      <input type="password" id="fg-repo-f-token" class="fg-input" placeholder="${tokPlaceholder}" autocomplete="off" data-lpignore="true" data-1p-ignore="true">
+      <!-- GitHub key + a "?" that toggles the token-creation help below (classic +
+           fine-grained steps). This help moved here from the old inline token row
+           under the repo selector, so the Edit form is now the single place a
+           repo's key is set. Wired in wireRepoSelector() → #fg-repo-token-help-btn. -->
+      <div class="fg-repo-token-row">
+        <input type="password" id="fg-repo-f-token" class="fg-input" placeholder="${tokPlaceholder}" autocomplete="off" data-lpignore="true" data-1p-ignore="true">
+        <button type="button" class="fg-token-help-link" id="fg-repo-token-help-btn" aria-expanded="false" aria-controls="fg-repo-token-help" title="How to create a GitHub token" aria-label="How to create a GitHub token">?</button>
+      </div>
+      <div id="fg-repo-token-help" class="fg-token-help" hidden>
+        <p class="fg-token-help-h">Create a <strong>classic</strong> token</p>
+        <ol>
+          <li>Open <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">github.com/settings/tokens</a></li>
+          <li>Click <strong>Generate new token (classic)</strong></li>
+          <li>Select the <strong>repo</strong> scope (full control)</li>
+          <li>Generate, copy it, and paste it above</li>
+        </ol>
+        <p class="fg-token-help-h">Or a <strong>fine-grained</strong> token</p>
+        <ol>
+          <li>Open <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">tokens (fine-grained)</a></li>
+          <li>Select this repository only</li>
+          <li>Permissions → <strong>Contents: Read and write</strong></li>
+          <li>Generate, copy it, and paste it above</li>
+        </ol>
+      </div>
       <div class="fg-repo-form-actions">
         <button type="button" class="fg-btn fg-btn-primary" id="fg-repo-save-btn">${saveLbl}</button>
         <button type="button" class="fg-btn" id="fg-repo-cancel-btn">Cancel</button>
@@ -347,6 +393,16 @@ function wireRepoSelector(rootEl) {
   if (cancelBtn) cancelBtn.addEventListener('click', (e) => { e.stopPropagation(); closeRepoForm(rootEl); });
   const browseBtn = body.querySelector('#fg-repo-browse-btn');
   if (browseBtn) browseBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleFolderBrowser(rootEl); });
+  // "?" toggles the inline token-creation help below the key field.
+  const tokHelpBtn = body.querySelector('#fg-repo-token-help-btn');
+  const tokHelp = body.querySelector('#fg-repo-token-help');
+  if (tokHelpBtn && tokHelp) tokHelpBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = tokHelp.hidden;             // about to open if currently hidden
+    tokHelp.hidden = !open;
+    tokHelpBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    tokHelpBtn.classList.toggle('is-open', open);
+  });
 
   // Close the dropdown on an outside click (registered once per body element).
   if (!body.__fgRepoCloser) {
@@ -536,68 +592,29 @@ async function prefillFromFolder(rootEl, path) {
   }
 }
 
-function renderHeader(s) {
-  const branch = _esc(s.branch || '—');
-  const remote = _esc(s.remote_url || 'no remote');
-  // The shared-token row is a webAgent-only control: other repos carry their own
-  // key, set from the selector's Edit form, so it hides when they're active.
-  const showToken = _isActiveBuiltin();
+// The branch picker (+ ahead/behind sync state) used to sit in its own header
+// directly under the repo selector, alongside the remote-URL and token rows. Those
+// two rows were redundant — the remote address and GitHub key are now edited from
+// the repo selector's Edit form — so they were removed, and the branch picker moved
+// DOWN next to the Commit graph (renderGraphSection), where switching branch and
+// reading history belong together. Returns the trigger + the (absolutely-positioned)
+// branch menu; the graph section wrapper is `position: relative` so the menu anchors.
+function renderBranchBar(s) {
+  const branch = _esc((s && s.branch) || '—');
   let sync = '';
-  if (s.has_remote && (s.ahead > 0 || s.behind > 0)) {
+  if (s && s.has_remote && (s.ahead > 0 || s.behind > 0)) {
     sync = `<span class="fg-ahead" title="ahead">↑${s.ahead}</span><span class="fg-behind" title="behind">↓${s.behind}</span>`;
-  } else if (s.has_remote) {
+  } else if (s && s.has_remote) {
     sync = '<span class="fg-sync-clean">in sync</span>';
   }
-  // WHEN-REMOTE-URL-EDIT: Double-click or long-press the remote URL in the
-  // source control header to edit it inline. The display div (#fg-remote-display)
-  // and input (#fg-remote-input) share the same flex slot. Enter/blur sends
-  // POST /api/v1/github/remote-url → git remote set-url origin <url>.
-  // Nav: renderHeader() → wireEvents() → backend app/api/github.py set_remote_url()
   return `
-    <div class="fg-section fg-section-header">
+    <div class="fg-branch-bar">
       <button type="button" class="fg-branch-row fg-branch-picker-trigger" id="fg-branch-picker-trigger" title="Switch branch">
         <i data-lucide="git-branch" class="lucide-icon"></i>
         <span class="fg-branch-name">${branch}</span>
         <i data-lucide="chevron-down" class="lucide-icon fg-branch-chev"></i>
         ${sync}
       </button>
-      <!-- Remote URL on its own row: orange, underlined, tooltip explains it -->
-      <div class="fg-remote-url-row">
-        <div class="fg-remote-row" id="fg-remote-display" title="Your repo's remote address on GitHub — double-click to change it">${remote}</div>
-        <input type="text" id="fg-remote-input" class="fg-input fg-remote-input-inline" value="${remote}" hidden autocomplete="off" data-lpignore="true" data-1p-ignore="true" title="Edit remote URL">
-      </div>
-      ${showToken ? `
-      <!-- GitHub token row lives below the remote URL. The "?" toggles the
-           inline token-creation help below (classic + fine-grained steps),
-           wired in wireEvents() → #fg-token-help-btn / #fg-token-help. This help
-           moved here from the former App Configuration ▸ Git Providers tab (now
-           removed) so Source Control is the single place to set the token. Shown
-           only for the built-in webAgent repo — other repos manage their own key
-           in the selector's Edit form. -->
-      <div class="fg-remote-token-row">
-        <span class="fg-token-status-dot" id="fg-token-status-label" title="Token status">—</span>
-        <input type="password" id="fg-token-input" class="fg-input fg-token-input-inline" placeholder="GitHub token…" autocomplete="off" data-lpignore="true" data-1p-ignore="true" title="GitHub token">
-        <button class="fg-btn fg-btn-primary fg-token-save-inline" id="fg-token-save-btn" title="Save GitHub token">Save</button>
-        <button type="button" class="fg-token-help-link" id="fg-token-help-btn" aria-expanded="false" aria-controls="fg-token-help" title="How to create a GitHub token" aria-label="How to create a GitHub token">?</button>
-      </div>
-      <div id="fg-token-result" class="fg-result fg-token-result-inline" hidden></div>
-      <div id="fg-token-help" class="fg-token-help" hidden>
-        <p class="fg-token-help-h">Create a <strong>classic</strong> token</p>
-        <ol>
-          <li>Open <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">github.com/settings/tokens</a></li>
-          <li>Click <strong>Generate new token (classic)</strong></li>
-          <li>Select the <strong>repo</strong> scope (full control)</li>
-          <li>Generate, copy it, and paste it above</li>
-        </ol>
-        <p class="fg-token-help-h">Or a <strong>fine-grained</strong> token</p>
-        <ol>
-          <li>Open <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">tokens (fine-grained)</a></li>
-          <li>Select this repository only</li>
-          <li>Permissions → <strong>Contents: Read and write</strong></li>
-          <li>Generate, copy it, and paste it above</li>
-        </ol>
-      </div>
-      ` : ''}
       <div class="fg-branch-menu" id="fg-branch-menu" hidden role="listbox" aria-label="Switch branch">
         <div class="fg-branch-menu-loading">Loading branches…</div>
       </div>
@@ -746,8 +763,11 @@ function renderProductionSection(s) {
 }
 
 function renderGraphSection(s, g, graphErr) {
+  // The branch picker rides at the top of the graph section now (see renderBranchBar).
+  const branchBar = renderBranchBar(s);
   if (graphErr) {
     return `<div class="fg-section fg-graph">
+      ${branchBar}
       <div class="fg-section-title">Commit graph <span class="fg-graph-hint">(all branches)</span></div>
       <div class="fg-graph-list">
         <div class="fg-error">${_esc(graphErr)} <button class="fg-btn" data-act="retry-graph">Retry</button></div>
@@ -755,11 +775,16 @@ function renderGraphSection(s, g, graphErr) {
     </div>`;
   }
   if (!g || !g.commits || !g.commits.length) {
-    return '<div class="fg-section fg-graph"><div class="fg-section-title">Commit graph</div><div class="fg-loading">Loading…</div></div>';
+    return `<div class="fg-section fg-graph">
+      ${branchBar}
+      <div class="fg-section-title">Commit graph</div>
+      <div class="fg-loading">Loading…</div>
+    </div>`;
   }
   const rows = g.commits.map((c, idx) => renderGraphRow(c, idx, g)).join('');
   return `
     <div class="fg-section fg-graph">
+      ${branchBar}
       <div class="fg-section-title">Commit graph <span class="fg-graph-hint">(all branches)</span></div>
       <div class="fg-graph-list" id="fg-graph-list" style="--lane-w:${GRAPH_LANE_W}px; --row-h:${GRAPH_ROW_H}px;">
         ${rows}
@@ -1046,43 +1071,6 @@ function wireEvents(rootEl, s, g) {
     document.addEventListener('click', body.__fgMenuCloser);
   }
 
-  const tokSave = body.querySelector('#fg-token-save-btn');
-  if (tokSave) tokSave.addEventListener('click', () => doSaveToken(rootEl));
-  // "?" toggles the inline token-creation help (classic + fine-grained steps).
-  const tokHelpBtn = body.querySelector('#fg-token-help-btn');
-  const tokHelp = body.querySelector('#fg-token-help');
-  if (tokHelpBtn && tokHelp) tokHelpBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const open = tokHelp.hidden; // about to open if currently hidden
-    tokHelp.hidden = !open;
-    tokHelpBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    tokHelpBtn.classList.toggle('is-open', open);
-  });
-  const tokInput = body.querySelector('#fg-token-input');
-  if (tokInput) {
-    tokInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSaveToken(rootEl); }
-    });
-    // When the user focuses while the masked saved value is shown, clear
-    // the field and switch back to password type so they can paste a new
-    // token. On blur with nothing typed, restore the mask so it stays
-    // visible that a token is configured.
-    tokInput.addEventListener('focus', () => {
-      const masked = tokInput.dataset.maskedValue;
-      if (masked && tokInput.value === masked) {
-        tokInput.value = '';
-        tokInput.type = 'password';
-      }
-    });
-    tokInput.addEventListener('blur', () => {
-      const masked = tokInput.dataset.maskedValue;
-      if (masked && !tokInput.value) {
-        tokInput.value = masked;
-        tokInput.type = 'text';
-      }
-    });
-  }
-
   // Commit graph rows → click the row to load full commit detail in the
   // git main panel. The sidebar row gets a `.selected` class to mark the
   // currently-displayed commit.
@@ -1101,88 +1089,8 @@ function wireEvents(rootEl, s, g) {
     });
   });
 
-  // Refresh token-status label
-  refreshTokenStatus(rootEl);
-
-  // ── Remote URL inline editing ────────────────────────────────────
-  // Double-click (or long-press on touch) the remote URL display to
-  // turn it into an editable text field. Save on Enter or blur.
-  const remoteDisplay = body.querySelector('#fg-remote-display');
-  const remoteInput = body.querySelector('#fg-remote-input');
-  if (remoteDisplay && remoteInput) {
-    let longPressTimer = null;
-
-    function beginEditRemote() {
-      remoteDisplay.hidden = true;
-      remoteInput.hidden = false;
-      remoteInput.value = remoteDisplay.title || remoteDisplay.textContent || '';
-      remoteInput.focus();
-      remoteInput.select();
-    }
-
-    function commitEditRemote() {
-      const newUrl = remoteInput.value.trim();
-      remoteInput.hidden = true;
-      remoteDisplay.hidden = false;
-      if (!newUrl || newUrl === remoteDisplay.title) return;
-      // Optimistically update the display
-      const prev = remoteDisplay.title;
-      remoteDisplay.title = newUrl;
-      remoteDisplay.textContent = newUrl;
-      // Save to backend
-      (async () => {
-        try {
-          await ghFetch('/api/v1/github/remote-url', {
-            method: 'POST', body: JSON.stringify({ url: newUrl }),
-          });
-        } catch (e) {
-          // Revert on failure
-          remoteDisplay.title = prev;
-          remoteDisplay.textContent = prev;
-          const result = body.querySelector('#fg-token-result');
-          if (result) { result.hidden = false; result.textContent = 'Failed to update remote URL: ' + e.message; result.classList.add('err'); }
-        }
-      })();
-    }
-
-    // Double-click to edit
-    remoteDisplay.addEventListener('dblclick', (e) => {
-      e.preventDefault();
-      beginEditRemote();
-    });
-
-    // Long-press on touch devices
-    remoteDisplay.addEventListener('pointerdown', (e) => {
-      // Only for touch (pointerType = touch)
-      if (e.pointerType !== 'touch') return;
-      longPressTimer = setTimeout(() => {
-        longPressTimer = null;
-        beginEditRemote();
-      }, 600);
-    });
-    remoteDisplay.addEventListener('pointerup', () => {
-      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-    });
-    remoteDisplay.addEventListener('pointerleave', () => {
-      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-    });
-
-    // Enter saves, Escape cancels
-    remoteInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        remoteInput.blur(); // triggers commitEditRemote
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        remoteInput.value = remoteDisplay.title || '';
-        remoteInput.hidden = true;
-        remoteDisplay.hidden = false;
-      }
-    });
-
-    // Blur = save
-    remoteInput.addEventListener('blur', commitEditRemote);
-  }
+  // (The remote-URL and GitHub-token rows that used to live here were removed —
+  // both are now edited from the repo selector's Edit form.)
 }
 
 function renderCommitDetail(d) {
@@ -1780,60 +1688,10 @@ async function applyPostSync(rootEl, resultEl, response, doneLabel) {
   await refreshGit(rootEl, { remote: true });
 }
 
-async function doSaveToken(rootEl) {
-  const body = rootEl.querySelector('#fg-body');
-  const input = body.querySelector('#fg-token-input');
-  const result = body.querySelector('#fg-token-result');
-  const token = (input.value || '').trim();
-  // The field auto-fills with the masked saved token (e.g. "ghp_****")
-  // on load — don't try to save that back, it's a marker, not a token.
-  if (!token || token === input.dataset.maskedValue) {
-    showResult(result, 'Enter a GitHub token', 'error');
-    return;
-  }
-  try {
-    await ghFetch('/api/v1/github/token', { method: 'POST', body: JSON.stringify({ token }) });
-    showResult(result, 'Token saved', 'success');
-    input.value = '';
-    await refreshTokenStatus(rootEl);
-  } catch (e) {
-    showResult(result, `Error: ${e.message}`, 'error');
-  }
-}
-
-async function refreshTokenStatus(rootEl) {
-  const label = rootEl.querySelector('#fg-token-status-label');
-  const input = rootEl.querySelector('#fg-token-input');
-  if (!label) return;
-  try {
-    const r = await ghFetch('/api/v1/github/token-status');
-    // Dot-only indicator now: tooltip carries the detail so the row
-    // stays one line even in a narrow sidebar.
-    label.title = r.configured ? `GitHub token configured (${r.masked})` : 'No GitHub token set';
-    label.textContent = '';
-    label.classList.toggle('ok', !!r.configured);
-    // Show the saved (masked) token in the input so it's visually obvious
-    // a token is configured. The mask is `ghp_****` — already safe to
-    // display. We switch the input to plain text while the mask is shown,
-    // and back to password as soon as the user focuses to enter a new
-    // value (see focus/blur wiring in wireEvents).
-    if (input) {
-      if (r.configured && r.masked) {
-        input.dataset.maskedValue = r.masked;
-        input.value = r.masked;
-        input.type = 'text';
-      } else {
-        delete input.dataset.maskedValue;
-        if (input.value === input.dataset.maskedValue) input.value = '';
-        input.type = 'password';
-      }
-    }
-  } catch (_) {
-    label.title = 'Token status unknown';
-    label.textContent = '';
-    label.classList.remove('ok');
-  }
-}
+// (doSaveToken / refreshTokenStatus were removed with the inline token row — the
+//  GitHub key is now saved through the repo selector's Edit form, which posts to
+//  POST /api/v1/github/repos/{id} and, for the built-in repo, writes the same
+//  shared provider.json key the old inline field did.)
 
 // ── Source-control ⭐: instant one-shot commit + push ───────────────
 //
@@ -1918,12 +1776,10 @@ async function refreshGit(rootEl, { remote = false, localOnly = false } = {}) {
   _state.loading = true;
   _state.err = null;
   _state.graphErr = null;
-  // Show a soft loading hint if we already have data
+  // If we have no data yet, show the loading placeholder; otherwise keep the
+  // current panel painted and let the refresh repaint it in place.
   const body = rootEl.querySelector('#fg-body');
-  if (body && _state.status) {
-    const h = body.querySelector('.fg-section-header');
-    if (h) h.classList.add('loading');
-  } else if (body) {
+  if (body && !_state.status) {
     body.innerHTML = '<div class="fg-loading">Loading…</div>';
   }
 
@@ -1948,15 +1804,8 @@ async function refreshGit(rootEl, { remote = false, localOnly = false } = {}) {
   _state.loading = false;
 
   // Stage 2: background live refresh so ahead/behind + branch tips catch up.
-  // Re-apply the soft "syncing" hint and clear it when the refresh lands.
-  const hdr = body ? body.querySelector('.fg-section-header') : null;
-  if (hdr) hdr.classList.add('loading');
   _loadGit(rootEl, true)
-    .catch(() => { /* offline: keep the local view we already painted */ })
-    .finally(() => {
-      const h2 = rootEl.querySelector('#fg-body .fg-section-header');
-      if (h2) h2.classList.remove('loading');
-    });
+    .catch(() => { /* offline: keep the local view we already painted */ });
 }
 
 let _opened = false;
@@ -2014,10 +1863,9 @@ function _gitSignature(s, g) {
   return parts.join('|');
 }
 
-// True when repainting now would disrupt the user — an open picker menu, an
-// in-progress inline remote edit, a typed-but-unsent commit note, or focus
-// sitting in any panel input. The poll defers (keeps the old signature) and
-// retries on the next tick once they're done.
+// True when repainting now would disrupt the user — an open picker menu, a
+// typed-but-unsent commit note, or focus sitting in any panel input. The poll
+// defers (keeps the old signature) and retries on the next tick once they're done.
 function _userIsBusy(rootEl) {
   const body = rootEl.querySelector('#fg-body');
   if (!body) return false;
@@ -2030,8 +1878,6 @@ function _userIsBusy(rootEl) {
   if (body.querySelector('#fg-repo-form')) return true;
   const cm = body.querySelector('#fg-commit-msg');
   if (cm && cm.value.trim()) return true;            // don't wipe a draft note
-  const ri = body.querySelector('#fg-remote-input');
-  if (ri && !ri.hidden) return true;                 // inline remote edit open
   const active = document.activeElement;
   if (active && body.contains(active) &&
       (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return true;

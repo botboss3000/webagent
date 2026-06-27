@@ -1656,8 +1656,34 @@ async def select_git_repo(req: RepoSelectRequest, request: Request):
 
 @router.post("/repos/{repo_id}")
 async def update_git_repo(repo_id: str, req: RepoUpdateRequest, request: Request):
-    """Edit a registered repo. A blank token keeps the existing key."""
+    """Edit a repo. A blank token keeps the existing key.
+
+    The built-in webAgent repo is a special case: its folder is pinned to this
+    app's own root and can't change, but its GitHub address (git ``origin``) and
+    its shared GitHub key (provider.json) ARE editable here — the same two things
+    the standalone remote-URL / key fields already change, surfaced through the
+    repo selector's Edit form for parity with added repos.
+    """
     _require_admin(request)
+    if repo_id == git_repos.BUILTIN_ID:
+        # Edit the GitHub address (origin) on this app's own repo, regardless of
+        # which repo is currently selected on the page.
+        if req.remote_url is not None and req.remote_url.strip():
+            _pin_to_project_root()
+            stdout, stderr, rc = _run_git(
+                ["remote", "set-url", "origin", req.remote_url.strip()], timeout=10)
+            if rc != 0 and "no such remote" in (stderr or "").lower():
+                stdout, stderr, rc = _run_git(
+                    ["remote", "add", "origin", req.remote_url.strip()], timeout=10)
+            if rc != 0:
+                _use_active_repo()
+                raise HTTPException(status_code=400,
+                                    detail=stderr.strip() or "Failed to set remote URL")
+        # Save the shared GitHub key (blank = keep the existing one).
+        if req.token:
+            _save_token(req.token)
+        _use_active_repo()
+        return {"status": "ok", "repos": git_repos.list_repos()}
     try:
         entry = git_repos.update_repo(
             repo_id, label=req.label, folder=req.folder,

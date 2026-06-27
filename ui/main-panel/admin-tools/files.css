@@ -2003,9 +2003,12 @@ body.admin-restricted #main-panel { display: flex !important; }
    on. Reuses .fg-section / .fg-input / .fg-btn / .fg-result and the same tokens +
    dropdown look as the branch menu, so it sits in visually in both themes. */
 .fg-repo-selector { position: relative; padding-top: 10px; padding-bottom: 8px; }
+/* Trigger + the active repo's Edit/Remove buttons sit on one always-visible row;
+   the trigger grows, the action buttons stay their natural size on the right. */
+.fg-repo-trigger-row { display: flex; align-items: stretch; gap: 4px; }
 .fg-repo-trigger {
   display: flex; align-items: center; gap: 8px;
-  width: 100%;
+  flex: 1 1 0; min-width: 0;
   background: var(--files-textarea-bg);
   border: var(--border-width) solid var(--files-border-strong);
   border-radius: 5px;
@@ -2161,16 +2164,10 @@ body.admin-restricted #main-panel { display: flex !important; }
 .fg-prod-actions { display: flex; align-items: center; gap: 6px; }
 
 /* Header (branch + remote) */
-.fg-section-header {
-  padding-top: 10px;
-  padding-bottom: 8px;
-  position: relative;
-  /* No bottom divider — the header flows visually into the Changes
-     section below it. The other section dividers stay; only this one
-     is removed. */
-  border-bottom: none;
-}
-.fg-section-header.loading { opacity: 0.7; }
+/* Branch picker bar — now rides at the top of the Commit graph section (moved
+   out of the old header). The graph section is position:relative so the
+   absolutely-positioned branch menu anchors to it. */
+.fg-branch-bar { position: relative; padding: 0 10px 8px; }
 .fg-branch-row {
   display: flex; align-items: center; gap: 6px;
   font-size: 12px;
@@ -2191,6 +2188,8 @@ body.admin-restricted #main-panel { display: flex !important; }
 .fg-branch-picker-trigger:hover { background: var(--files-row-hover); border-color: var(--files-border-strong); }
 .fg-ahead, .fg-behind { font-size: 11px; color: var(--files-text-muted); margin-left: 4px; }
 .fg-sync-clean { font-size: 11px; color: var(--files-text-faint); margin-left: auto; font-style: italic; }
+/* Base remote-address line — still used by the Production section's editable
+   Repo / Folder rows (fg-prod-display). */
 .fg-remote-row {
   flex: 1 1 auto;
   min-width: 0;
@@ -2199,49 +2198,8 @@ body.admin-restricted #main-panel { display: flex !important; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* Remote URL row — sits directly under the branch picker, before the token row.
-   Orange + underlined to signal it's clickable/tappable to edit. */
-.fg-remote-url-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-}
-.fg-remote-url-row .fg-remote-row {
-  flex: 1 1 0;
-  min-width: 30px;
-  font-size: 10px;
-  color: var(--warning, #f59e0b);
-  text-decoration: underline;
-  text-decoration-color: var(--warning, #f59e0b);
-  text-underline-offset: 2px;
-  cursor: pointer;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.fg-remote-url-row .fg-remote-row:hover {
-  color: var(--warning, #f59e0b);
-  text-decoration-thickness: 2px;
-}
-
-/* GitHub token row — below the remote URL.
-   Status dot + token input + save button + help link in one row. */
-.fg-remote-token-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-}
-/* Higher-specificity override: .fg-input sets min-width:0 later in the
-   file, which would otherwise let the inline token input collapse to
-   nothing when the remote URL is long. */
-input.fg-token-input-inline {
-  flex: 0 0 110px;
-  min-width: 110px;
-  padding: 2px 6px;
-  font-size: 11px;
-}
-/* Inline remote-URL edit input — replaces the display div when editing.
-   Uses the same layout slot so the row doesn't reflow. */
+/* Inline remote-URL edit input (Production section) — replaces the display div
+   when editing. Uses the same layout slot so the row doesn't reflow. */
 input.fg-remote-input-inline {
   flex: 1 1 0;
   min-width: 30px;
@@ -2253,19 +2211,13 @@ input.fg-remote-input-inline {
   border: 1px solid var(--warning, #f59e0b);
   border-radius: 3px;
 }
-.fg-token-save-inline {
-  padding: 2px 8px;
-  font-size: 11px;
-  flex-shrink: 0;
+/* GitHub key + "?" help row inside the repo selector's Edit form. */
+.fg-repo-token-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-.fg-token-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--files-text-faint);
-  flex-shrink: 0;
-}
-.fg-token-status-dot.ok { background: var(--success, #10b981); }
+.fg-repo-token-row .fg-input { flex: 1 1 0; min-width: 0; }
 /* The "?" is a toggle button (was an external link) — reveals the inline
    token-creation help below. Reset the button defaults so it keeps the
    round-badge look. */
@@ -2294,13 +2246,8 @@ input.fg-remote-input-inline {
   color: var(--files-text);
   border-color: var(--files-text-faint);
 }
-.fg-token-result-inline {
-  margin: 4px 0 0;
-  font-size: 10px;
-}
-
-/* Inline token-creation help, revealed by the "?" in the token row. Moved here
-   from the removed App Configuration ▸ Git Providers tab. */
+/* Inline token-creation help, revealed by the "?" next to the key field in the
+   repo selector's Edit form. */
 .fg-token-help {
   margin: 6px 0 0;
   padding: 8px 10px;

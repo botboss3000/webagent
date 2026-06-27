@@ -52,6 +52,19 @@ PLACEHOLDER_TOKEN = "YOUR_ACCESS_TOKEN"
 _BAD_URL = "'\";\n\r\\ &|`$(){}<>"
 _BAD_TOKEN = "'\";\n\r\\ &|`$(){}<>@/ "
 
+# Run-only command: start the server when webAgent is ALREADY installed on the
+# device — no clone, no rebuild. Static (no repo URL / token). It detects however
+# the install set things up and starts it the matching way: Termux → the proot
+# keep-alive launcher; a systemd Linux box → the webagent.service; otherwise the
+# nohup keep-alive loop. Keep BYTE-IDENTICAL to deploy.js `_RUN_TERMUX`.
+RUN_COMMAND = (
+    'if [ -n "$TERMUX_VERSION" ] || [ -d /data/data/com.termux ]; then '
+    'bash "$HOME/webagent/start_server_termux.sh"; '
+    'elif command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files webagent.service >/dev/null 2>&1; then '
+    'sudo systemctl start webagent; '
+    'else bash "$HOME/webagent/deploy/start_server_linux.sh" "$HOME/webagent"; fi'
+)
+
 
 def _safe(value: str, fallback: str) -> str:
     """Tidy a repo/branch the admin typed. The command runs on their own phone,
@@ -177,6 +190,7 @@ class TermuxProvider(BaseDeployProvider):
             "ubuntu -- pkill -f run.py', on Linux paste 'pkill -f run.py'.")
         reach_note = "http://localhost:8080 on the device · http://DEVICE-IP:8080 on the same network"
         return {"ok": True, "command": command, "clone_display": clone_display,
+                "run_command": RUN_COMMAND,
                 "steps": steps, "instructions": instructions, "reach_note": reach_note,
                 "private": private, "placeholder_repo": placeholder_repo,
                 "placeholder_token": placeholder_token, "warning": warning}

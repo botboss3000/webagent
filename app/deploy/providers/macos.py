@@ -49,6 +49,15 @@ _TEMPLATE = (
     "bash \"$D/deploy/macos-setup.sh\""
 )
 
+# Run-only command: start the server when webAgent is ALREADY installed — no
+# clone, no rebuild. Static (no repo URL / token). (Re)loads the launchd agent the
+# installer wrote (which also starts it at login); falls back to a kickstart if
+# it's already loaded. Keep BYTE-IDENTICAL to deploy.js `_RUN_MAC`.
+RUN_COMMAND = (
+    "launchctl load -w \"$HOME/Library/LaunchAgents/com.webagent.server.plist\" 2>/dev/null "
+    "|| launchctl kickstart -k \"gui/$(id -u)/com.webagent.server\""
+)
+
 
 class MacProvider(BaseDeployProvider):
     id = "macos"
@@ -103,6 +112,7 @@ class MacProvider(BaseDeployProvider):
             "it again: 'launchctl load -w ~/Library/LaunchAgents/com.webagent.server.plist'.")
         reach_note = "http://localhost:8080 on this Mac · http://THIS-MAC-IP:8080 on the same network"
         return {"ok": True, "command": command, "clone_display": clone_display,
+                "run_command": RUN_COMMAND,
                 "steps": steps, "instructions": instructions, "reach_note": reach_note,
                 "private": r["private"], "placeholder_repo": r["placeholder_repo"],
                 "placeholder_token": r["placeholder_token"], "warning": r["warning"]}
