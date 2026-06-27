@@ -104,7 +104,7 @@ class BaseDeployProvider:
     # A target that can ENUMERATE and MANAGE the servers already living in the
     # admin's cloud account (not just the single one it last deployed) sets
     # ``supports_instances = True`` and implements the two methods below. The
-    # Cloud VMs admin page (ui/admin-tools/cloud-vms/) lists every such target's
+    # Server Manager admin page (ui/admin-tools/server-manager/) lists every such target's
     # instances and offers per-server Start / Stop / Delete. A target that leaves
     # these at their defaults simply never appears on that page — the safe
     # "not supported" fallbacks mean adding the page broke nothing. This extends

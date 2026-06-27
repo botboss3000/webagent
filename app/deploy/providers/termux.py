@@ -89,8 +89,9 @@ class TermuxProvider(BaseDeployProvider):
     # The Deploy panel renders a BESPOKE row for Termux (its own GitHub-URL +
     # public/private + token fields, terminal command + QR), not the generic
     # provider form, so these lists are intentionally empty — the row drives
-    # `build_command()` below via POST /admin/deploy/termux/command. The non-secret
-    # github_url + visibility persist via the store; the token is transient.
+    # `build_command()` below via POST /admin/deploy/command (generic over every
+    # manual target). The non-secret github_url + visibility persist via the
+    # store; the token is transient.
     config_fields: List[Dict[str, Any]] = []
     credential_fields: List[Dict[str, Any]] = []      # no cloud key
     credential_required: List[str] = []

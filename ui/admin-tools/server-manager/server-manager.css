@@ -1,4 +1,4 @@
-/* Cloud VMs — styling for the drop-in Admin Tools view.
+/* Server Manager — styling for the drop-in Admin Tools view.
    Loaded via this folder's page.json `css` field (ui/shared/js/header-build.js
    __ensurePageStyles). Every colour routes through the design-system palette
    (ui/shared/css/design-system.css) so the view tracks dark/light automatically;
@@ -7,10 +7,12 @@
    (.upd-* in ui/admin-tools/update/update.css, .diag-* in
    ui/main-panel/admin-tools/files.css).
 
-   The sidebar is the account manager (add control + one expandable account row
-   per cloud, each holding its own login sub-menu); the main pane lists every
-   server across all added accounts, grouped per account.
-   REMOVE-WHEN: the Cloud VMs view is dropped from the admin page catalog. */
+   The sidebar holds the cloud-account manager (add control + one expandable
+   account row per cloud, each with its own login sub-menu) plus an "Add machine
+   or site" form; the main pane lists every source grouped: Cloud accounts,
+   Devices, Machines, Sites. Class names keep the historical `cvm-` prefix
+   (this view used to be "Cloud VMs"; internal only).
+   REMOVE-WHEN: the Server Manager view is dropped from the admin page catalog. */
 
 /* ── Sidebar panel ──────────────────────────────────────────────── */
 .cvm-side { display: flex; flex-direction: column; gap: 16px; padding: 12px; overflow-y: auto; }
@@ -187,3 +189,34 @@ textarea.cvm-connect-input { font-family: var(--font-mono); resize: vertical; li
 .cvm-key-status { font-size: 12px; color: var(--fg-3); }
 .cvm-key-ok { color: var(--success); }
 .cvm-key-err { color: var(--danger); }
+
+/* ── Add machine / site (sidebar) ───────────────────────────────── */
+/* The "+ Add machine or site" button (a full-width .cvm-btn) + the inline
+   add/edit form rendered into #cvm-entry-form by server-manager.js. */
+.cvm-btn-add { width: 100%; justify-content: center; }
+.cvm-entry-form {
+  display: flex; flex-direction: column; gap: 10px;
+  margin-top: 8px; padding: 10px; border-radius: 8px;
+  border: var(--border-width) solid var(--border); background: var(--bg-1);
+}
+select.cvm-connect-input { font-family: inherit; }
+
+/* ── The code-repo row on every card ────────────────────────────── */
+/* A small line under each card's meta showing which repo it runs, with a pencil
+   (cloud VMs + devices) to set/clear the repo as an annotation. */
+.cvm-repo { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--fg-3); max-width: 100%; }
+.cvm-repo svg { width: 13px; height: 13px; flex: 0 0 auto; opacity: 0.85; }
+.cvm-repo-link { color: var(--accent); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cvm-repo-link:hover { text-decoration: underline; }
+.cvm-repo-none { color: var(--fg-4); font-style: italic; }
+.cvm-repo-edit {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; color: var(--fg-4); cursor: pointer;
+  padding: 2px; border-radius: 4px; flex: 0 0 auto;
+}
+.cvm-repo-edit:hover { color: var(--accent); background: var(--bg-2); }
+.cvm-repo-edit svg { width: 12px; height: 12px; }
+
+/* A non-mono card name (devices, manual machines/sites — only cloud VM ids read
+   better in monospace). */
+.cvm-name-plain { font-family: inherit; word-break: normal; }

@@ -8,7 +8,7 @@
 import { app } from '../../../shared/js/state.js';
 import { authHeaders } from '../../../shared/js/left-login.js';
 import { icon } from '../../../shared/js/icons.js';
-import { fetchAllToolMeta, appendToolItem } from '../agent-loop/js/loop-logic.js';
+import { fetchAllToolMeta, appendToolItem, createLoopView } from '../agent-loop/js/loop-logic.js';
 import { NODE_PANEL_INFO } from '../agent-loop/js/loop-node-data.js';
 import { LOOP_W, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from '../agent-loop/js/loop-diagram.js';
 import {
@@ -26,6 +26,12 @@ let _lvActivePanelNodeId = null;
 // Panel UI state (kept local; the data state is in state.js)
 let _lvActivePanelEl = null;
 
+// The live loop-view controller mounted in THIS tab (one at a time). It streams
+// the active chat's loop, but only when the active chat's agent matches the agent
+// on this card (the gate); otherwise it shows the blueprint. See loop-logic.js
+// createLoopView + docs/claude/agent-loop.md.
+let _agentTabView = null;
+
 // ── Main render ───────────────────────────────────────────────────────────────
 
 export function _renderTestTab(body, agent) {
@@ -36,7 +42,7 @@ export function _renderTestTab(body, agent) {
   const area = document.createElement('div'); area.className = 'agents-test-area';
   area.innerHTML = `
     <div class="agents-test-input-row">
-      <input class="agents-input agents-test-input" placeholder="Type a test message and press Run to live-test this pipeline\u2026" />
+      <input class="agents-input agents-test-input" placeholder="Type a test message and press Run to fire a one-off test turn\u2026" />
       <button class="agents-btn primary agents-test-run">Run</button>
     </div>
     <div class="agents-test-status"></div>
@@ -44,14 +50,96 @@ export function _renderTestTab(body, agent) {
 
   const input = area.querySelector('.agents-test-input');
   const runBtn = area.querySelector('.agents-test-run');
-  const loopEl = area.querySelector('.agents-test-loop');
 
   runBtn.addEventListener('click', () => _runTest(agent, area));
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _runTest(agent, area); }
   });
   body.appendChild(area);
-  _drawAgentLoopDiagram(loopEl, new Map(), agent);
+  // Mount the shared live loop-view: streams the active chat's loop when its agent
+  // matches THIS card, otherwise shows the blueprint. (Run pill above = fallback.)
+  _mountLoopArea(area, agent);
+}
+
+// \u2500\u2500 Live loop-view mount \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Creates (or replaces) the shared streaming controller for this tab. The gate
+// makes it stream only when the active chat belongs to this same agent; when it
+// doesn't, onBlocked draws the static blueprint + a hint instead.
+function _mountLoopArea(area, agent) {
+  if (_agentTabView) { try { _agentTabView.destroy(); } catch (_) {} _agentTabView = null; }
+  const loopEl = area.querySelector('.agents-test-loop');
+  if (!loopEl) return;
+  _disconnectLoopObservers(loopEl);
+
+  _agentTabView = createLoopView({
+    markerPrefix: 'agl',
+    showOptimizer: true,
+    gate:        () => !!app.currentAgentId && app.currentAgentId === agent.id,
+    isAlive:     () => document.body.contains(loopEl),
+    getGraphArea: () => _ensureLiveScaffold(loopEl).graph,
+    getPages:     () => loopEl.querySelector('.agents-loop-pages'),
+    getSidebar:   () => null,
+    onBlocked:    () => _drawBlueprint(loopEl, agent),
+    onNodeClick:  (nd, el, root) => _lvShowPanel(nd, el, root, agent),
+    decorateNode: (nd, el) => {
+      if (agent?.source === 'custom' && nd.id !== 'user_input' && nd.id !== 'final_response' && nd.id !== 'validate_tools') el.classList.add('lv-node-editable');
+      if (TOGGLEABLE_NODES.has(nd.id)) el.classList.add('lv-node-toggleable');
+    },
+  });
+  _agentTabView.start();
+}
+
+// Build the live chrome (toolbar + pages bar + graph area) inside the loop panel
+// once; reuse it thereafter. Returns the graph + pages elements the view renders into.
+function _ensureLiveScaffold(loopEl) {
+  let container = loopEl.querySelector(':scope > .loop-visual-container');
+  if (!container) {
+    _disconnectLoopObservers(loopEl);
+    loopEl.classList.add('is-live');
+    loopEl.innerHTML = `
+      <div class="loop-visual-container">
+        <div class="loop-visual-toolbar">
+          <span class="agents-loop-live-label">${icon('repeat', { size: '12px' })} Agent Loop <span class="agents-loop-live-dot"></span> live from active chat</span>
+          <div class="loop-visual-pages agents-loop-pages"></div>
+          <div class="loop-visual-legend">
+            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#2a2a4a;"></span> idle</span>
+            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#7dcfff;"></span> active</span>
+            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#9ece6a;"></span> done</span>
+            <span class="lv-legend-item"><span class="lv-legend-dot" style="background:#f7768e;"></span> error</span>
+          </div>
+        </div>
+        <div class="loop-visual-graph-area"><div class="loop-visual-hint">Loading\u2026</div></div>
+      </div>`;
+    container = loopEl.querySelector(':scope > .loop-visual-container');
+  }
+  return {
+    graph: container.querySelector('.loop-visual-graph-area'),
+    pages: container.querySelector('.agents-loop-pages'),
+  };
+}
+
+// Blocked / fallback state \u2014 active chat isn't this agent: show the static
+// blueprint diagram (still clickable for editing) plus a hint.
+function _drawBlueprint(loopEl, agent) {
+  _disconnectLoopObservers(loopEl);
+  loopEl.classList.remove('is-live');
+  loopEl.innerHTML = '';
+  const hint = document.createElement('div');
+  hint.className = 'agents-loop-blueprint-hint';
+  hint.innerHTML = `${icon('info', { size: '12px' })} Open or switch your chat to this agent to watch its loop run live \u2014 showing the blueprint.`;
+  loopEl.appendChild(hint);
+  const host = document.createElement('div');
+  host.className = 'agents-loop-blueprint-host';
+  loopEl.appendChild(host);
+  _drawAgentLoopDiagram(host, new Map(), agent);
+}
+
+// Disconnect any ResizeObservers left on the loop panel by a prior mode (live
+// graph area or blueprint host) before we swap its contents.
+function _disconnectLoopObservers(loopEl) {
+  loopEl._lvRo?.disconnect();
+  loopEl.querySelector('.loop-visual-graph-area')?._lvRo?.disconnect();
+  loopEl.querySelector(':scope > .agents-loop-blueprint-host')?._lvRo?.disconnect();
 }
 
 async function _runTest(agent, areaEl) {
@@ -62,30 +150,42 @@ async function _runTest(agent, areaEl) {
   const msg = input.value.trim();
   if (!msg) return;
 
+  // A test run takes over the loop panel \u2014 tear down the live view and draw onto a
+  // plain surface. The Back button re-mounts (returns to live or blueprint).
+  _toBlueprintSurface(loopEl);
   status.innerHTML = `${icon('loader-2', { size: '13px' })} Running\u2026`;
   _drawAgentLoopDiagram(loopEl, new Map([
     ['user_input', 'active'], ['load_context', 'active'], ['memory_search', 'active'],
     ['build_prompt', 'active'], ['llm_call', 'active'],
   ]), agent);
 
-  const resetToBlueprint = () => { status.textContent = ''; _drawAgentLoopDiagram(loopEl, new Map(), agent); };
+  const back = () => { status.textContent = ''; _mountLoopArea(areaEl, agent); };
   try {
     const res = await fetch('/api/v1/agents/test', {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ user_id: app.currentUserId, agent_id: agent.id, message: msg }),
     });
     const data = await res.json();
-    if (!res.ok) { _drawAgentLoopDiagram(loopEl, new Map([['llm_call', 'error']]), agent); status.innerHTML = `Error ${res.status}: ${_esc(data.detail || 'unknown')} &nbsp;`; const resetBtn = _backBtn(); resetBtn.addEventListener('click', resetToBlueprint); status.appendChild(resetBtn); return; }
+    if (!res.ok) { _drawAgentLoopDiagram(loopEl, new Map([['llm_call', 'error']]), agent); status.innerHTML = `Error ${res.status}: ${_esc(data.detail || 'unknown')} &nbsp;`; const resetBtn = _backBtn(); resetBtn.addEventListener('click', back); status.appendChild(resetBtn); return; }
     const rows = data.interactions || [];
     _drawAgentLoopDiagram(loopEl, _interactionsToNodeStates(rows), agent);
     status.innerHTML = `\u2713 Complete \u2014 ${rows.length} step(s) &nbsp;`;
-    const resetBtn = _backBtn(); resetBtn.addEventListener('click', resetToBlueprint); status.appendChild(resetBtn);
-  } catch (e) { _drawAgentLoopDiagram(loopEl, new Map([['llm_call', 'error']]), agent); status.innerHTML = `Error: ${_esc(e.message)} &nbsp;`; const resetBtn = _backBtn(); resetBtn.addEventListener('click', resetToBlueprint); status.appendChild(resetBtn); }
+    const resetBtn = _backBtn(); resetBtn.addEventListener('click', back); status.appendChild(resetBtn);
+  } catch (e) { _drawAgentLoopDiagram(loopEl, new Map([['llm_call', 'error']]), agent); status.innerHTML = `Error: ${_esc(e.message)} &nbsp;`; const resetBtn = _backBtn(); resetBtn.addEventListener('click', back); status.appendChild(resetBtn); }
+}
+
+// Reset the loop panel to a plain drawing surface (used by a test run): drop the
+// live view + chrome so _drawAgentLoopDiagram can draw directly into it.
+function _toBlueprintSurface(loopEl) {
+  if (_agentTabView) { try { _agentTabView.destroy(); } catch (_) {} _agentTabView = null; }
+  _disconnectLoopObservers(loopEl);
+  loopEl.classList.remove('is-live');
+  loopEl.innerHTML = '';
 }
 
 function _backBtn() {
   const b = document.createElement('button'); b.className = 'agents-blueprint-back-inline';
-  b.textContent = '\u2190 Blueprint'; return b;
+  b.textContent = '\u2190 Back to loop'; return b;
 }
 
 // ── Loop diagram ──────────────────────────────────────────────────────────────

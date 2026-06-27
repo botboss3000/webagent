@@ -70,8 +70,9 @@ function _renderAll() {
   if (!_catalog) return;
   const sel = _qs('ac-deploy-provider');
   const providers = _catalog.providers || [];
-  // The cloud-deploy dropdown lists only CLOUD targets. "Manual" targets (Termux
-  // on a phone) get their own dedicated row below — see _initPhone / the phone row.
+  // The cloud-deploy dropdown lists only CLOUD targets. "Manual" targets
+  // (Linux/Termux, Windows, macOS) each get their own dedicated row below —
+  // see _initManualRows / MANUAL_ROWS.
   const cloud = providers.filter(p => !p.manual);
 
   const badge = _qs('ac-deploy-badge');

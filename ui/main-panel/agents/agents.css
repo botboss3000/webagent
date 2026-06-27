@@ -1565,6 +1565,49 @@ body.light-mode .skill-square-add:hover {
   background: var(--border-soft);
 }
 
+/* ── Live loop mount (shared controller hosted inside the loop panel) ──
+   When streaming the active chat's loop, the panel turns into a flex column so
+   the shared .loop-visual-container/.loop-visual-graph-area chrome fills it and
+   scrolls internally (the chrome owns its own padding/background). */
+.agents-test-loop.is-live {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;   /* keep a usable viewport even if the flex parent is short */
+}
+.agents-loop-live-label {
+  color: var(--fg-3);
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.agents-loop-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #9ece6a;
+  display: inline-block;
+  animation: agents-loop-pulse 1.8s infinite;
+}
+@keyframes agents-loop-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(158, 206, 106, 0.5); }
+  70%  { box-shadow: 0 0 0 5px rgba(158, 206, 106, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(158, 206, 106, 0); }
+}
+.agents-loop-blueprint-hint {
+  font-size: 11px;
+  color: var(--fg-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+.agents-loop-blueprint-host { position: relative; }
+
 /* Light mode */
 body.light-mode .agents-test-input              { background: var(--bg-0); border-color: var(--border); color: var(--fg-1); }
 body.light-mode .agents-test-input:focus        { border-color: var(--brand); }

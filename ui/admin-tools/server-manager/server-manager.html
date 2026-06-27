@@ -1,0 +1,84 @@
+<!-- Server Manager — drop-in Admin Tools view partial.
+     Two <template data-slot> blocks injected at boot by the partial loader
+     (ui/shared/js/partial-loader.js): a sidebar panel into #files-sidebar and a
+     main pane into #admin-tools. Discovered via
+     ui/admin-tools/server-manager/page.json; driven by server-manager.js
+     (startView/stopView); backed by server.py (/admin/server-manager/*).
+
+     A single hub for everything the admin runs: cloud VMs (live API control),
+     webAgent DEVICES (auto-discovered from the presence registry), and manually
+     tracked MACHINES and SITES — each recording which code repo it runs.
+
+     The SIDEBAR holds two managers: the cloud-account manager (a provider
+     dropdown + "+" to add an account, each row expanding into its own login
+     sub-menu) and an "Add machine or site" control. The MAIN pane lists every
+     source together, grouped: Cloud accounts, Devices, Machines, Sites.
+
+     NOTE: element/class names keep the historical `cvm-` prefix (internal only;
+     this view used to be "Cloud VMs"). Sister admin views: ui/admin-tools/update/,
+     ui/admin-tools/diagnostics/.
+     REMOVE-WHEN: the Server Manager view is dropped from the admin page catalog. -->
+<template data-slot="#files-sidebar">
+  <div class="files-sidebar-panel" id="files-panel-server-manager" data-view="server-manager" hidden>
+    <div class="files-sidebar-header">
+      <div class="files-sidebar-actions">
+        <button class="files-icon-btn" id="cvm-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+      </div>
+    </div>
+    <div class="cvm-side">
+      <!-- Cloud-account manager — pick a provider and press + to add it, then fill
+           in its login (id + key) in the row's sub-menu. Each provider that
+           supports server management shows up in the dropdown automatically. -->
+      <div class="cvm-side-section">
+        <div class="cvm-side-title">Cloud accounts</div>
+        <div class="cvm-add" id="cvm-add" hidden>
+          <select id="cvm-add-provider" class="cvm-input"></select>
+          <button id="cvm-add-btn" class="cvm-add-btn" title="Add this cloud account"><i data-lucide="plus"></i></button>
+        </div>
+        <div class="cvm-accounts" id="cvm-accounts"></div>
+      </div>
+
+      <!-- Manually-tracked machines & sites — anything that doesn't run webAgent
+           (a remote Linux/Termux/Windows/Mac box) or a hosted site/URL. The form
+           is rendered into #cvm-entry-form by server-manager.js (add + edit share
+           it). -->
+      <div class="cvm-side-section">
+        <div class="cvm-side-title">Machines &amp; sites</div>
+        <button class="cvm-btn cvm-btn-add" id="cvm-add-entry"><i data-lucide="plus"></i> Add machine or site</button>
+        <div class="cvm-entry-form" id="cvm-entry-form" hidden></div>
+      </div>
+
+      <div class="cvm-side-section">
+        <div class="cvm-side-title">Status</div>
+        <div class="cvm-legend">
+          <span class="cvm-legend-item"><span class="cvm-dot cvm-dot-run"></span> Running / online / reachable</span>
+          <span class="cvm-legend-item"><span class="cvm-dot cvm-dot-stop"></span> Stopped / offline</span>
+          <span class="cvm-legend-item"><span class="cvm-dot cvm-dot-busy"></span> Changing…</span>
+        </div>
+      </div>
+      <div class="cvm-side-section">
+        <div class="cvm-hint">One hub for every server you run. Machines running webAgent appear automatically under
+          <strong>Devices</strong>; the box running this app is marked <strong>This app</strong>. Cloud servers webAgent
+          created are marked <strong>webAgent</strong>. Each card shows the code repo it runs.</div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template data-slot="#admin-tools">
+  <main class="files-main" id="files-server-manager-main" data-view="server-manager" hidden>
+    <div id="cvm-container">
+      <div id="cvm-toolbar">
+        <span class="cvm-toolbar-label"><i data-lucide="server" style="width:13px;height:13px;"></i> Server Manager</span>
+        <span id="cvm-stats" class="cvm-stats"></span>
+        <span class="cvm-spacer"></span>
+        <button id="cvm-refresh-main" class="cvm-btn" title="Refresh"><i data-lucide="refresh-cw" style="width:13px;height:13px;"></i> Refresh</button>
+      </div>
+      <!-- Live log for a running Start / Stop / Delete (NDJSON stream). -->
+      <pre id="cvm-log" class="cvm-log" hidden></pre>
+      <div id="cvm-body">
+        <div class="cvm-hint cvm-main-hint">Open the Server Manager view to load your servers.</div>
+      </div>
+    </div>
+  </main>
+</template>

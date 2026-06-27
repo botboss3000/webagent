@@ -3219,10 +3219,12 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
   font-size: 11.5px;
   line-height: 1.55;
 }
-/* Termux phone row — the command box's button column (Copy + QR stacked) and the
-   click-to-show QR popover. The command is shown LIVE (built by deploy.js as the
-   fields change); the QR button toggles a popover (same code as a scannable QR),
-   mirroring Remote Access → Same network. */
+/* Manual install rows (Linux/Termux, Windows, macOS) — the command box's button
+   column (Copy + QR stacked) and the click-to-show QR popover. Shared by all
+   three rows (kept the `ac-tx-` names from the original Termux-only row). The
+   command is shown LIVE (built by deploy.js as the fields change); the QR button
+   toggles a popover (same code as a scannable QR), mirroring Remote Access →
+   Same network. */
 .ac-tx-cmd-btns {
   flex: 0 0 auto;
   align-self: center;

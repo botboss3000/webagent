@@ -73,6 +73,42 @@ def device_label() -> str:
     return _DEVICE_LABEL
 
 
+_REPO: Optional[Dict[str, str]] = None
+
+
+def _repo_info() -> Dict[str, str]:
+    """This instance's code repo — the git remote + branch of the project folder,
+    so the Server Manager hub can show which repo each device runs. Read once from
+    .git/config / .git/HEAD (no subprocess, no dependency) and cached. Safe when
+    git is absent: returns empty strings."""
+    global _REPO
+    if _REPO is not None:
+        return _REPO
+    repo, branch = "", ""
+    try:
+        # app/devices/identity.py → app/devices → app → repo root.
+        root = Path(__file__).resolve().parents[2]
+        cfg = root / ".git" / "config"
+        if cfg.exists():
+            in_origin = False
+            for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+                s = line.strip()
+                if s.startswith("["):
+                    in_origin = s.replace(" ", "").lower() == '[remote"origin"]'
+                elif in_origin and s.lower().startswith("url"):
+                    repo = s.split("=", 1)[1].strip() if "=" in s else ""
+                    break
+        head = root / ".git" / "HEAD"
+        if head.exists():
+            h = head.read_text(encoding="utf-8", errors="replace").strip()
+            if h.startswith("ref:"):
+                branch = h.rsplit("/", 1)[-1]
+    except Exception:
+        repo, branch = "", ""
+    _REPO = {"repo": repo, "branch": branch}
+    return _REPO
+
+
 def capabilities() -> Dict[str, object]:
     """What this device is / where it runs. Kept small; enrich as the feature
     grows (e.g. has_browser, has_terminal, on_battery)."""
@@ -80,4 +116,6 @@ def capabilities() -> Dict[str, object]:
         sysname = platform.system()
     except Exception:
         sysname = ""
-    return {"platform": sysname, "hostname": device_label()}
+    info = _repo_info()
+    return {"platform": sysname, "hostname": device_label(),
+            "repo": info["repo"], "branch": info["branch"]}

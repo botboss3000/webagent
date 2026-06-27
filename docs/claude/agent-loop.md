@@ -2,6 +2,22 @@
 
 Read this before adding, removing, or renaming any node in the agent loop pipeline or its diagram.
 
+## The live loop visualizer is ONE shared controller, two mounts
+
+The streaming loop visualizer (`ui/main-panel/agents/agent-loop/js/loop-logic.js`) is a reusable controller, **`createLoopView(opts)`** — do **not** fork it. Two places mount it:
+
+| Mount | File | Source | Gate |
+|-------|------|--------|------|
+| **Primary** — the agent card's **Agent Loop** tab | `ui/main-panel/agents/js/tab-agent-loop.js` | the active chat session | streams **only when** `app.currentAgentId === agent.id` (the active chat's agent matches the card); otherwise draws the static blueprint + a hint. Keeps node-click → edit panels and the Run test pill as a fallback. |
+| **Secondary** — the admin **Runtime Loop** page | `ui/admin-tools/runtime-loop/runtime-loop-view.js` | the active chat session | none (always follows the active session). |
+
+How it fits together:
+
+- `createLoopView(opts)` holds **all** per-view state (pages, buffers, node states, panels). Each mount passes its own `getGraphArea` / `getPages` / `getSidebar` elements, a `gate()`, an `onBlocked()` (what to show when gated off), `isAlive()` (auto-destroys when its DOM is gone), an optional `onNodeClick` override, and a unique `markerPrefix` (admin `lv`, agent tab `agl`) so two diagrams never clash on SVG marker IDs.
+- The old module functions — `initLoopVisual`, `startLoopVisual`, `stopLoopVisual`, `renderRuntimeLoopSidebar`, `loopVisualSessionChanged` — are **kept as thin wrappers**: they drive the admin view and fan session-changes out to **every** live view. Their callers (`main.js`, `files.js`, `session-init`/`session-core`, `optimizer-stats`) need no changes.
+- The WebSocket handler `app._loopVisualHandler` fans each event to **all** live views; each view's own `gate()` + `isAlive()` decide whether to act.
+- The graph chrome is styled by **both** id and class so the agent tab can host its own copy: every `#loop-visual-…` rule in `loop-visual.css` is paired with a `.loop-visual-…` class selector — keep them paired.
+
 ## Agent loop diagram — keep both views in sync
 
 The agent loop diagram (`ui/js/loop-diagram.js`) has **two completely independent, hardcoded layouts**. Adding or changing any node requires updating **both**:
