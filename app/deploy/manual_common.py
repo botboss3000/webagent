@@ -19,22 +19,37 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-# Shown in the live command when the admin hasn't typed a URL / token yet, so the
-# box always renders the SHAPE of the command. Deliberately obvious "fill me in"
-# tokens, valid-looking so the command still reads naturally.
-PLACEHOLDER_REPO = "https://github.com/YOUR-NAME/YOUR-REPO"
+# When the admin hasn't typed a repository, the command installs the STANDARD
+# webAgent repository — so the box always shows a command that is ready to run as
+# is. The admin only overrides this for their own fork. Mirror of deploy.js
+# `_MC_DEFAULT_REPO`.
+DEFAULT_REPO = "https://github.com/botboss3000/webagent"
+# Still shown when a PRIVATE repo is chosen but no token is typed yet, so the
+# command renders its shape; an obvious "fill me in" token.
 PLACEHOLDER_TOKEN = "YOUR_ACCESS_TOKEN"
+
+# Default install folder per platform — where the repo is cloned and run from when
+# the admin doesn't choose one. POSIX expands ``$HOME`` inside the double quotes we
+# wrap it in; Windows expands ``$env:USERPROFILE`` in PowerShell. Mirror of
+# deploy.js `_MC_DEFAULT_DIR_POSIX` / `_MC_DEFAULT_DIR_WINDOWS`.
+DEFAULT_DIR_POSIX = "$HOME/webagent"
+DEFAULT_DIR_WINDOWS = "$env:USERPROFILE\\webagent"
 
 # Characters that never legitimately appear in a repo URL / token but would break
 # (or worse, inject into) the one-liner if spliced in. Used to reject risky input.
 BAD_URL = "'\";\n\r\\ &|`$(){}<>"
 BAD_TOKEN = "'\";\n\r\\ &|`$(){}<>@/ "
+# Characters that would break the one-liner's quoting / structure if they appeared
+# in an install folder. Looser than BAD_URL because a real path legitimately
+# contains spaces, ``\``, ``:``, ``$`` (``$HOME``) and ``%`` (``%USERPROFILE%``) —
+# we only reject shell metacharacters. Mirror of deploy.js `_MC_BAD_DIR`.
+BAD_DIR = "\"'" + "`" + ";\n\r|&<>(){}*?"
 
 
 def _safe(value: str, fallback: str) -> str:
     """Tidy a repo/branch the admin typed. The command runs on the admin's own
     machine, but a URL/branch never legitimately contains shell-breaking
-    characters, so fall back to the placeholder rather than splice anything risky.
+    characters, so fall back to the default rather than splice anything risky.
     """
     v = (value or "").strip() or fallback
     if any(c in v for c in BAD_URL):
@@ -49,27 +64,51 @@ def strip_scheme(url: str) -> str:
     return url
 
 
+def resolve_dir(install_dir: str, default: str) -> str:
+    """Tidy the install folder the admin typed. Blank → the platform default;
+    anything with a shell metacharacter (which a real path never needs) → also the
+    default, so a stray character can't break the one-liner. Mirror of deploy.js
+    `_mcResolveDir`."""
+    d = (install_dir or "").strip()
+    if not d:
+        return default
+    if any(c in d for c in BAD_DIR):
+        return default
+    return d
+
+
 def resolve_clone(github_url: str, visibility: str = "public", token: str = "") -> Dict[str, Any]:
     """Work out the clone target from the admin's inputs — shared by every manual
     platform provider (only the surrounding shell command differs per platform).
 
-    NEVER errors: the row shows the command live as the admin types, so a blank
-    URL / not-yet-typed token must still resolve to the SHAPE of the command.
-    Missing pieces become obvious fill-in placeholders and are flagged so the row
-    can nudge the admin to finish them.
+    NEVER errors: the row shows the command live as the admin types. A blank
+    repository means "install the standard webAgent repository", so the command is
+    ALWAYS ready to run as is — the admin only types a URL to install their own
+    fork. A private repo with no token yet still renders the command's shape via an
+    obvious fill-in token, flagged so the row can nudge the admin to finish it.
 
-    Returns ``{repo, clone_url, private, placeholder_repo, placeholder_token,
+    Returns ``{repo, clone_url, private, default_repo, placeholder_token,
     warning}``. ``clone_url`` is what goes into ``git clone`` — for a PRIVATE repo
     the access token is embedded (``https://TOKEN@host/...``) so the device can
     fetch it; the token is never stored.
     """
     typed = (github_url or "").strip()
-    placeholder_repo = not typed
-    repo = PLACEHOLDER_REPO if placeholder_repo else _safe(typed, PLACEHOLDER_REPO)
+    default_repo = not typed
+    warning = ""
+    if default_repo:
+        repo = DEFAULT_REPO
+    elif any(c in typed for c in BAD_URL):
+        # A typo'd / risky URL: fall back to the standard repo rather than splice
+        # something that could break the command, and say so.
+        repo = DEFAULT_REPO
+        default_repo = True
+        warning = ("That repository address isn't a valid URL — using the standard "
+                   "webAgent repository instead.")
+    else:
+        repo = typed
     private = str(visibility or "public").lower() == "private"
 
     clone_url = repo
-    warning = ""
     placeholder_token = False
     if private:
         tok = (token or "").strip()
@@ -79,10 +118,10 @@ def resolve_clone(github_url: str, visibility: str = "public", token: str = "") 
         if not tok:
             tok = PLACEHOLDER_TOKEN
             placeholder_token = True
-        # repo is always https-shaped here (a real https URL or the placeholder),
-        # so the splice reads naturally.
+        # repo is always https-shaped here (a real https URL or the default), so
+        # the splice reads naturally.
         clone_url = "https://" + tok + "@" + strip_scheme(repo)
 
     return {"repo": repo, "clone_url": clone_url, "private": private,
-            "placeholder_repo": placeholder_repo, "placeholder_token": placeholder_token,
+            "default_repo": default_repo, "placeholder_token": placeholder_token,
             "warning": warning}

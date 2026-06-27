@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator, Dict, List, Tuple
 
+from app.deploy import manual_common as mc
 from app.deploy.base import BaseDeployProvider, done, ev
 from app.deploy.bootstrap import DEFAULT_BRANCH, DEFAULT_REPO_URL
 
@@ -40,48 +41,19 @@ FEATURE = {
 
 _PORT = 8080  # run.py is fixed to :8080
 
-# Shown in the live command when the admin hasn't typed a URL / token yet, so the
-# box always renders the SHAPE of the command (the row updates it live as they
-# type). Deliberately obvious "fill me in" tokens, valid-looking so the command
-# still reads naturally.
-PLACEHOLDER_REPO = "https://github.com/YOUR-NAME/YOUR-REPO"
-PLACEHOLDER_TOKEN = "YOUR_ACCESS_TOKEN"
-
-# Characters that never legitimately appear in a repo URL / token but would break
-# (or worse, inject into) the one-liner if spliced in. Used to reject risky input.
-_BAD_URL = "'\";\n\r\\ &|`$(){}<>"
-_BAD_TOKEN = "'\";\n\r\\ &|`$(){}<>@/ "
-
-# Run-only command: start the server when webAgent is ALREADY installed on the
-# device — no clone, no rebuild. Static (no repo URL / token). It detects however
-# the install set things up and starts it the matching way: Termux → the proot
-# keep-alive launcher; a systemd Linux box → the webagent.service; otherwise the
-# nohup keep-alive loop. Keep BYTE-IDENTICAL to deploy.js `_RUN_TERMUX`.
-RUN_COMMAND = (
-    'if [ -n "$TERMUX_VERSION" ] || [ -d /data/data/com.termux ]; then '
-    'bash "$HOME/webagent/start_server_termux.sh"; '
-    'elif command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files webagent.service >/dev/null 2>&1; then '
-    'sudo systemctl start webagent; '
-    'else bash "$HOME/webagent/deploy/start_server_linux.sh" "$HOME/webagent"; fi'
-)
-
-
-def _safe(value: str, fallback: str) -> str:
-    """Tidy a repo/branch the admin typed. The command runs on their own phone,
-    but a URL/branch never legitimately contains shell-breaking characters, so we
-    fall back to the default rather than splice anything risky into the one-liner.
-    """
-    v = (value or "").strip() or fallback
-    if any(c in v for c in _BAD_URL):
-        return fallback
-    return v
-
-
-def _strip_scheme(url: str) -> str:
-    for s in ("https://", "http://"):
-        if url.startswith(s):
-            return url[len(s):]
-    return url
+def _run_command(directory: str) -> str:
+    """Start the server when webAgent is ALREADY installed on the device — no
+    clone, no rebuild. Detects however the install set things up and starts it the
+    matching way: Termux → the proot keep-alive launcher; a systemd Linux box → the
+    webagent.service (folder-independent); otherwise the nohup keep-alive loop in
+    the install folder. Keep BYTE-IDENTICAL to deploy.js `_runTermux`."""
+    return (
+        'if [ -n "$TERMUX_VERSION" ] || [ -d /data/data/com.termux ]; then '
+        'bash "' + directory + '/start_server_termux.sh"; '
+        'elif command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files webagent.service >/dev/null 2>&1; then '
+        'sudo systemctl start webagent; '
+        'else bash "' + directory + '/deploy/start_server_linux.sh" "' + directory + '"; fi'
+    )
 
 
 class TermuxProvider(BaseDeployProvider):

@@ -35,17 +35,20 @@ FEATURE = {
     "requires": ["A Mac (macOS)", "~2 GB free storage"],
 }
 
-# The Terminal one-liner. ``__CLONE__`` / ``__BRANCH__`` are substituted below
-# (NOT str.format — the script is full of `$var`, `{}`, quotes that would collide).
-# Pure ASCII so it survives any terminal / QR. Keep BYTE-IDENTICAL to deploy.js
-# `_macBuild`.
+# The Terminal one-liner. ``__CLONE__`` / ``__BRANCH__`` / ``__DIR__`` are
+# substituted below (NOT str.format — the script is full of `$var`, `{}`, quotes
+# that would collide). If the folder already holds a clone it re-points its origin
+# at the chosen repo and lets macos-setup.sh pull (a graceful update); only a
+# missing folder is cloned fresh. Pure ASCII so it survives any terminal / QR.
+# Keep BYTE-IDENTICAL to deploy.js `_buildMac`.
 _TEMPLATE = (
-    "set -e; D=\"$HOME/webagent\"; "
+    "set -e; D=\"__DIR__\"; "
     "if ! command -v git >/dev/null 2>&1; then "
     "echo 'Installing the Command Line Tools (a dialog may appear)...'; "
     "xcode-select --install 2>/dev/null || true; "
     "echo 'If a dialog appeared, finish it, then paste this command again.'; fi; "
-    "{ [ -d \"$D/.git\" ] || git clone --depth 1 --branch __BRANCH__ __CLONE__ \"$D\"; } && "
+    "{ if [ -d \"$D/.git\" ]; then git -C \"$D\" remote set-url origin __CLONE__; "
+    "else git clone --depth 1 --branch __BRANCH__ __CLONE__ \"$D\"; fi; } && "
     "bash \"$D/deploy/macos-setup.sh\""
 )
 
@@ -86,14 +89,16 @@ class MacProvider(BaseDeployProvider):
 
     # ── command generation (the single source of truth) ──
     def build_command(self, github_url: str, visibility: str = "public",
-                      token: str = "", branch: str = "") -> Dict[str, Any]:
+                      token: str = "", branch: str = "", install_dir: str = "") -> Dict[str, Any]:
         """Build everything the Mac row needs. ALWAYS succeeds (never
         ``{ok: False}``) — see ``manual_common.resolve_clone`` for why. Returns
-        ``{ok, command, clone_display, steps, instructions, reach_note, private,
-        placeholder_repo, placeholder_token, warning}``."""
+        ``{ok, command, run_command, clone_display, steps, instructions,
+        reach_note, private, default_repo, placeholder_token, warning}``."""
         r = mc.resolve_clone(github_url, visibility, token)
         branch = mc._safe(branch, DEFAULT_BRANCH)
-        command = _TEMPLATE.replace("__CLONE__", r["clone_url"]).replace("__BRANCH__", branch)
+        directory = mc.resolve_dir(install_dir, mc.DEFAULT_DIR_POSIX)
+        command = (_TEMPLATE.replace("__CLONE__", r["clone_url"])
+                   .replace("__BRANCH__", branch).replace("__DIR__", directory))
         # A display copy that hides the token (for any logging / non-QR display).
         clone_display = command.replace(r["clone_url"], r["repo"]) if r["private"] else command
 
@@ -112,9 +117,9 @@ class MacProvider(BaseDeployProvider):
             "it again: 'launchctl load -w ~/Library/LaunchAgents/com.webagent.server.plist'.")
         reach_note = "http://localhost:8080 on this Mac · http://THIS-MAC-IP:8080 on the same network"
         return {"ok": True, "command": command, "clone_display": clone_display,
-                "run_command": RUN_COMMAND,
+                "run_command": RUN_COMMAND, "install_dir": directory,
                 "steps": steps, "instructions": instructions, "reach_note": reach_note,
-                "private": r["private"], "placeholder_repo": r["placeholder_repo"],
+                "private": r["private"], "default_repo": r["default_repo"],
                 "placeholder_token": r["placeholder_token"], "warning": r["warning"]}
 
     # ── test (nothing to connect to) ──

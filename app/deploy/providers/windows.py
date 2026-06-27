@@ -34,12 +34,14 @@ FEATURE = {
     "requires": ["A Windows 10 or 11 PC", "~2 GB free storage"],
 }
 
-# The PowerShell one-liner. ``__CLONE__`` / ``__BRANCH__`` are substituted below
-# (NOT str.format — the script is full of `$var`, `{}`, quotes that would collide).
-# Keep BYTE-IDENTICAL to deploy.js `_winBuild`.
+# The PowerShell one-liner. ``__CLONE__`` / ``__BRANCH__`` / ``__DIR__`` are
+# substituted below (NOT str.format — the script is full of `$var`, `{}`, quotes
+# that would collide). If the folder already holds a clone it re-points its origin
+# at the chosen repo and lets windows-setup.ps1 pull (a graceful update); only a
+# missing folder is cloned fresh. Keep BYTE-IDENTICAL to deploy.js `_buildWindows`.
 _TEMPLATE = (
     "$ErrorActionPreference='Stop'; "
-    "$repo='__CLONE__'; $dir=\"$env:USERPROFILE\\webagent\"; "
+    "$repo='__CLONE__'; $dir=\"__DIR__\"; "
     "if(-not(Get-Command git -EA SilentlyContinue)){Write-Host 'Installing Git...'; "
     "try{winget install --id Git.Git -e --source winget "
     "--accept-package-agreements --accept-source-agreements --silent}catch{}; "
@@ -48,18 +50,22 @@ _TEMPLATE = (
     "if(-not(Get-Command git -EA SilentlyContinue)){"
     "Write-Host 'Git is required. Install it from https://git-scm.com/download/win then run this again.'; "
     "return}; "
-    "if(-not(Test-Path \"$dir\\.git\")){git clone --depth 1 --branch __BRANCH__ $repo \"$dir\"}; "
+    "if(Test-Path \"$dir\\.git\"){git -C \"$dir\" remote set-url origin $repo}"
+    "else{git clone --depth 1 --branch __BRANCH__ $repo \"$dir\"}; "
     "powershell -NoProfile -ExecutionPolicy Bypass -File \"$dir\\deploy\\windows-setup.ps1\""
 )
 
-# Run-only command: start the server when webAgent is ALREADY installed — no
-# clone, no rebuild. Static (no repo URL / token). Prefers the “webAgent”
-# Scheduled Task the installer registers; falls back to the keep-alive ps1 if the
-# task isn't there. Keep BYTE-IDENTICAL to deploy.js `_RUN_WINDOWS`.
-RUN_COMMAND = (
-    "if(Get-ScheduledTask -TaskName webAgent -EA SilentlyContinue){Start-ScheduledTask -TaskName webAgent}"
-    "else{powershell -NoProfile -ExecutionPolicy Bypass -File \"$env:USERPROFILE\\webagent\\deploy\\start_server_windows.ps1\"}"
-)
+
+def _run_command(directory: str) -> str:
+    """Start the server when webAgent is ALREADY installed — no clone, no rebuild.
+    Prefers the “webAgent” Scheduled Task the installer registers (which is
+    folder-independent); falls back to the keep-alive ps1 in the install folder if
+    the task isn't there. Keep BYTE-IDENTICAL to deploy.js `_runWindows`."""
+    return (
+        "if(Get-ScheduledTask -TaskName webAgent -EA SilentlyContinue){Start-ScheduledTask -TaskName webAgent}"
+        "else{powershell -NoProfile -ExecutionPolicy Bypass -File \""
+        + directory + "\\deploy\\start_server_windows.ps1\"}"
+    )
 
 
 class WindowsProvider(BaseDeployProvider):
@@ -89,14 +95,16 @@ class WindowsProvider(BaseDeployProvider):
 
     # ── command generation (the single source of truth) ──
     def build_command(self, github_url: str, visibility: str = "public",
-                      token: str = "", branch: str = "") -> Dict[str, Any]:
+                      token: str = "", branch: str = "", install_dir: str = "") -> Dict[str, Any]:
         """Build everything the Windows row needs. ALWAYS succeeds (never
         ``{ok: False}``) — see ``manual_common.resolve_clone`` for why. Returns
-        ``{ok, command, clone_display, steps, instructions, reach_note, private,
-        placeholder_repo, placeholder_token, warning}``."""
+        ``{ok, command, run_command, clone_display, steps, instructions,
+        reach_note, private, default_repo, placeholder_token, warning}``."""
         r = mc.resolve_clone(github_url, visibility, token)
         branch = mc._safe(branch, DEFAULT_BRANCH)
-        command = _TEMPLATE.replace("__CLONE__", r["clone_url"]).replace("__BRANCH__", branch)
+        directory = mc.resolve_dir(install_dir, mc.DEFAULT_DIR_WINDOWS)
+        command = (_TEMPLATE.replace("__CLONE__", r["clone_url"])
+                   .replace("__BRANCH__", branch).replace("__DIR__", directory))
         # A display copy that hides the token (for any logging / non-QR display).
         clone_display = command.replace(r["clone_url"], r["repo"]) if r["private"] else command
 
@@ -114,9 +122,9 @@ class WindowsProvider(BaseDeployProvider):
             "To stop it starting on login: 'Unregister-ScheduledTask -TaskName webAgent -Confirm:$false'.")
         reach_note = "http://localhost:8080 on this PC · http://THIS-PC-IP:8080 on the same network"
         return {"ok": True, "command": command, "clone_display": clone_display,
-                "run_command": RUN_COMMAND,
+                "run_command": _run_command(directory), "install_dir": directory,
                 "steps": steps, "instructions": instructions, "reach_note": reach_note,
-                "private": r["private"], "placeholder_repo": r["placeholder_repo"],
+                "private": r["private"], "default_repo": r["default_repo"],
                 "placeholder_token": r["placeholder_token"], "warning": r["warning"]}
 
     # ── test (nothing to connect to) ──
