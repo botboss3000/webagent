@@ -128,11 +128,34 @@ set +e
     echo "[Termux] Keeping the device awake (wake-lock)…"
     termux-wake-lock || echo "  (wake-lock unavailable — the server may pause when the screen is off)"
 
-    if [ -d "$ROOTFS" ]; then
-      echo "[Termux 2/3] Ubuntu environment already installed."
+    # Is an Ubuntu container already usable? Ask proot-distro itself (the only
+    # authoritative source — it honours PROOT_DISTRO_HOME and whatever on-disk
+    # layout the installed version uses) by actually logging in and running a
+    # no-op. A bare path check is fragile: an interrupted earlier run, a custom
+    # PROOT_DISTRO_HOME, or an older 'containers/' layout all hide the container
+    # from one hardcoded path — and then 'proot-distro install' aborts with
+    # "container 'ubuntu' already exists", stranding the build.
+    ubuntu_usable() { proot-distro login "$DISTRO" -- true >/dev/null 2>&1; }
+
+    if ubuntu_usable; then
+      echo "[Termux 2/3] Ubuntu environment already installed — reusing it."
     else
-      echo "[Termux 2/3] Installing the Ubuntu environment (first time only — a few minutes)…"
-      proot-distro install "$DISTRO"
+      echo "[Termux 2/3] Preparing the Ubuntu environment (first time only — a few minutes)…"
+      # A container may be REGISTERED but broken (a previous run died mid-install).
+      # That's the "already exists" case: a plain install would abort. Detect any
+      # leftover (proot-distro's own list, or the known rootfs paths) and reset it
+      # to a clean state instead of giving up; only do a fresh install when there's
+      # genuinely nothing there.
+      if proot-distro list 2>/dev/null | grep -qiw "$DISTRO" \
+         || [ -d "$ROOTFS" ] \
+         || [ -d "$PREFIX/var/lib/proot-distro/containers/$DISTRO" ]; then
+        echo "  Found a half-finished Ubuntu install — resetting it cleanly…"
+        proot-distro reset "$DISTRO" \
+          || { proot-distro remove "$DISTRO" 2>/dev/null; proot-distro install "$DISTRO"; }
+      else
+        proot-distro install "$DISTRO"
+      fi
+      ubuntu_usable || { echo "ERROR: the Ubuntu environment is still not usable after setup." >&2; exit 1; }
     fi
 
     echo "[Termux 3/3] Installing Python dependencies inside Ubuntu (first run is slow)…"

@@ -53,7 +53,8 @@ class CredentialsBody(UserBody):
     values: dict = {}
 
 
-class TermuxCommandBody(UserBody):
+class ManualCommandBody(UserBody):
+    provider: str = "termux"       # any "manual" target: termux | windows | macos
     github_url: str = ""
     visibility: str = "public"     # "public" | "private"
     token: str = ""                # only for a private repo; never stored
@@ -132,26 +133,29 @@ async def test(body: SelectBody):
         return {"ok": False, "detail": str(e)}
 
 
-# ── Termux phone install — build the terminal command + a scannable QR ──
-# Its own bespoke row in the Deploy card (not the cloud-provider dropdown): the
-# admin gives a GitHub URL + public/private (+ a token for private), and we hand
-# back the one command to paste into Termux plus a QR of that command so they can
-# scan it onto the phone. The row shows the command LIVE as they type and calls
-# this on every (debounced) change, so it must never error — a blank URL / token
-# comes back as a placeholder command. The token is used only to build the
-# command (never stored); the non-secret github_url + visibility persist only
-# when ``persist`` is set (on blur), so live keystrokes don't churn the config.
-@router.post("/termux/command")
-async def termux_command(body: TermuxCommandBody):
+# ── Manual install (Linux/Termux, Windows, macOS) — build the command + QR ──
+# Each "manual" target gets its OWN bespoke row in the Deploy card (not the
+# cloud-provider dropdown): the admin gives a GitHub URL + public/private (+ a
+# token for private), and we hand back the one command to paste into a terminal /
+# PowerShell plus a QR of that command. The row shows the command LIVE as they
+# type and calls this on every (debounced) change, so it must never error — a
+# blank URL / token comes back as a placeholder command. The token is used only
+# to build the command (never stored); the non-secret github_url + visibility
+# persist only when ``persist`` is set (on blur), so keystrokes don't churn config.
+#
+# This is generic over ANY manual provider (it dispatches on ``body.provider``):
+# a new platform = a new drop-in provider with a ``build_command``, no edit here.
+async def _build_manual_command(body: ManualCommandBody):
     await _require_admin(body.requesting_user_id)
-    p = get_provider("termux")
-    if not p or not hasattr(p, "build_command"):
-        raise HTTPException(status_code=400, detail="Termux target unavailable")
+    provider_id = body.provider or "termux"
+    p = get_provider(provider_id)
+    if not p or not hasattr(p, "build_command") or not getattr(p, "manual", False):
+        raise HTTPException(status_code=400, detail="Unknown install target")
     plan = p.build_command(body.github_url, body.visibility, body.token)
     if body.persist:
         # Persist only the NON-secret choices so the row pre-fills next time.
-        store.save_config("termux", {"github_url": (body.github_url or "").strip(),
-                                     "visibility": body.visibility or "public"})
+        store.save_config(provider_id, {"github_url": (body.github_url or "").strip(),
+                                        "visibility": body.visibility or "public"})
     qr_svg = None
     try:
         from app.remote_access import netinfo
@@ -170,6 +174,18 @@ async def termux_command(body: TermuxCommandBody):
         "placeholder_token": plan.get("placeholder_token", False),
         "warning": plan.get("warning", ""),
     }
+
+
+@router.post("/command")
+async def manual_command(body: ManualCommandBody):
+    return await _build_manual_command(body)
+
+
+# Back-compat alias for the original Termux-only route (older cached clients).
+@router.post("/termux/command")
+async def termux_command(body: ManualCommandBody):
+    body.provider = body.provider or "termux"
+    return await _build_manual_command(body)
 
 
 # ── Deploy / tear down (streaming NDJSON) ──

@@ -8,7 +8,13 @@
    into new files — everywhere else uses the global palette (see design-system.css).
    Listed under "Known self-contained palette exceptions" in docs/claude/ui-guidance.md. */
 
-#loop-visual-container {
+/* The agent card's Agent Loop tab hosts a SECOND, class-based copy of this same
+   visualizer (the admin Runtime Loop page is the id-based one). Both render from
+   the shared controller in loop-logic.js (createLoopView). So every structural
+   container selector below matches BOTH the id (#loop-visual-…) and the class
+   (.loop-visual-…) — keep them paired when editing. */
+#loop-visual-container,
+.loop-visual-container {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -18,7 +24,8 @@
 }
 
 /* ── Toolbar ── */
-#loop-visual-toolbar {
+#loop-visual-toolbar,
+.loop-visual-toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -29,7 +36,8 @@
   flex-wrap: wrap;
 }
 
-#loop-visual-pages {
+#loop-visual-pages,
+.loop-visual-pages {
   display: flex;
   gap: 4px;
   margin-left: 12px;
@@ -65,7 +73,8 @@
 }
 
 /* ── Graph scroll area ── */
-#loop-visual-graph-area {
+#loop-visual-graph-area,
+.loop-visual-graph-area {
   flex: 1;
   overflow-x: hidden;
   overflow-y: auto;
@@ -332,7 +341,8 @@
 }
 
 /* ── Legend ── */
-#loop-visual-legend {
+#loop-visual-legend,
+.loop-visual-legend {
   display: flex;
   gap: 14px;
   padding: 2px 0;
@@ -342,12 +352,14 @@
   margin-left: auto;
   font-family: 'Fira Code', Menlo, monospace;
 }
-#loop-visual-legend .lv-legend-item {
+#loop-visual-legend .lv-legend-item,
+.loop-visual-legend .lv-legend-item {
   display: flex;
   align-items: center;
   gap: 5px;
 }
-#loop-visual-legend .lv-legend-dot {
+#loop-visual-legend .lv-legend-dot,
+.loop-visual-legend .lv-legend-dot {
   width: 9px;
   height: 9px;
   border-radius: 3px;
@@ -608,11 +620,14 @@ body.light-mode .lv-stage-label {
 }
 
 body.light-mode #loop-visual-container,
-body.light-mode #loop-visual-graph-area {
+body.light-mode .loop-visual-container,
+body.light-mode #loop-visual-graph-area,
+body.light-mode .loop-visual-graph-area {
   background: #f5f5f5;
 }
 
-body.light-mode #loop-visual-toolbar {
+body.light-mode #loop-visual-toolbar,
+body.light-mode .loop-visual-toolbar {
   background: #ebebeb;
   border-color: #d8d8d8;
 }

@@ -63,11 +63,14 @@ function _initAppSettings() {
   // owned by remote-access.js. (The former "On your phone" row was removed.)
   _wireBootRow('ac-ra-row-sn', null);
   _wireBootRow('ac-ra-row-net', null);
-  // Deploy card — two expandable rows (same head-click expand wiring): the cloud
-  // deploy row + the "Run on a phone (Termux)" row. Their body ids are owned by
-  // deploy.js (initDeploy below wires the buttons, fetch + phone command/QR).
+  // Deploy card — expandable rows (same head-click expand wiring): the cloud
+  // deploy row + the three manual install rows (Linux/Termux, Windows, macOS).
+  // Their body ids are owned by deploy.js (initDeploy below wires the buttons,
+  // fetch + each row's live command/QR).
   _wireBootRow('ac-deploy-row', null);
   _wireBootRow('ac-deploy-phone-row', null);
+  _wireBootRow('ac-deploy-win-row', null);
+  _wireBootRow('ac-deploy-mac-row', null);
   initDeploy();
   _initBootTooltip();
   _initBootSplash();

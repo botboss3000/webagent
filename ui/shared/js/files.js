@@ -441,16 +441,27 @@ function refreshProdMarks() {
   });
 }
 
+// True when the tree is rooted at the project root ("home"). The production
+// folder is defined relative to that root, so the dev-only checkboxes only make
+// sense there — once the user navigates into a subfolder we hide the preview.
+function _atProjectRoot() {
+  return !projectRoot || currentRoot === projectRoot;
+}
+
 // Reflect the dev/production view mode onto the tree container. In production-
 // preview mode the per-row checkboxes appear so the admin can tick exactly what
-// ships; dev view hides them again. The eye lives in the "More" popover now, so
-// there's no toolbar button to restyle here — just the tree + the status line.
+// ships; dev view hides them again. The preview only applies at the project root
+// (home) — away from home the checkboxes stay hidden even when the mode is 'prod'
+// so the persisted preference resumes when the user returns home. The eye lives
+// in the "More" popover now, so there's no toolbar button to restyle here — just
+// the tree + the status line.
 function applyProdViewClass() {
   const tree = document.getElementById('files-tree');
-  if (tree) tree.classList.toggle('prod-view', prodViewMode === 'prod');
+  const showing = prodViewMode === 'prod' && _atProjectRoot();
+  if (tree) tree.classList.toggle('prod-view', showing);
   // Leaving production-preview clears any lingering copy/push status line.
   const status = document.getElementById('files-prod-status');
-  if (status && prodViewMode !== 'prod') status.classList.remove('show');
+  if (status && !showing) status.classList.remove('show');
 }
 
 // Flip production-preview on/off (the eye / "Show dev checkboxes" menu item).
@@ -578,10 +589,17 @@ function pushToProduction() {
 // tab/context menus; the eye row shows a ✓ while production-preview is on.
 function openProductionMenu(anchorBtn) {
   const rect = anchorBtn.getBoundingClientRect();
-  const previewing = prodViewMode === 'prod';
+  const atHome = _atProjectRoot();
+  const previewing = prodViewMode === 'prod' && atHome;
   const items = [
-    { icon: previewing ? 'eye-off' : 'eye', label: 'Show dev checkboxes',
-      checked: previewing, action: toggleProdView },
+    // The production folder is defined relative to the project root, so the
+    // dev-only checkboxes only work at home. Away from home the row turns into a
+    // disabled hint telling the user where to go.
+    atHome
+      ? { icon: previewing ? 'eye-off' : 'eye', label: 'Show dev checkboxes',
+          checked: previewing, action: toggleProdView }
+      : { icon: 'eye-off', label: 'Dev checkboxes only in Project root',
+          disabled: true },
     { separator: true },
     // Production GitHub remote (owner/repo shorthand accepted). Persists on blur;
     // Sync/Push also send it as a backstop.
@@ -1075,6 +1093,9 @@ async function loadRoot() {
     currentRoot = data.path || currentRoot;
     if (data.project_root) projectRoot = data.project_root;
     renderBreadcrumb(currentRoot, data.parent);
+    // Hide/show the dev-only checkboxes now we know where the tree is rooted —
+    // they only apply at the project root (home).
+    applyProdViewClass();
 
     tree.innerHTML = '';
     if (!data.entries.length) {

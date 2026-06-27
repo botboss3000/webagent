@@ -158,11 +158,24 @@ def _git_env() -> dict:
     return env
 
 
+# Disable the host credential helper for EVERY production-mirror git call.
+# Auth here always rides on an in-memory tokenized clone/push URL (see
+# `_tokenize_url`), so the machine helper is never needed — and leaving it
+# active was actively harmful. On a tokenized push the host helper (on Windows,
+# Git Credential Manager) silently STORES the credential as an
+# `x-access-token@github.com` account; github.com then has two saved accounts
+# and GCM pops a blocking "Select an account" dialog on the next git operation
+# that a headless server can't answer. An empty `credential.helper=` value
+# resets the helper list, so git neither consults nor writes the host store.
+# Same fix as `app/api/github._run_git`.
+_NO_CRED_HELPER = ["-c", "credential.helper="]
+
+
 def _git(args: list[str], cwd: Path, timeout: int = 120) -> tuple[str, str, int]:
     """Run a git command in *cwd*. Returns (stdout, stderr, returncode)."""
     try:
         proc = subprocess.run(
-            ["git"] + args,
+            ["git"] + _NO_CRED_HELPER + args,
             cwd=str(cwd),
             capture_output=True,
             text=True,

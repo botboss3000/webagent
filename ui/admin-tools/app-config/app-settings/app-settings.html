@@ -503,6 +503,103 @@
             <div class="ac-deploy-cmd-note" id="ac-tx-note" hidden></div>
           </div>
         </div>
+
+        <!-- ── Run on Windows ── another SEPARATE manual row (sibling of the
+             Linux/Termux row). Same shape: GitHub URL + public/private (+ token
+             if private) → the one command to paste into PowerShell + a QR. The
+             command is built LIVE in deploy.js (_winBuild, a byte-mirror of
+             app/deploy/providers/windows.py build_command) so the box renders
+             even before the server restarts. Body ids owned by deploy.js
+             (MANUAL_ROWS[windows]); expand reuses _wireBootRow. -->
+        <div class="ac-row" id="ac-deploy-win-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="monitor" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Run webAgent on Windows</div>
+              <div class="ac-ability-desc">Install webAgent on a Windows 10 or 11 PC. Enter your repository, then copy or scan the command and paste it into PowerShell — no cloud account, nothing to pay for.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label" data-tip="The address of the webAgent code on GitHub. Leave the standard repository to install webAgent itself; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
+            <input id="ac-win-url" class="ac-input" type="text" placeholder="https://github.com/owner/repo" autocomplete="off" spellcheck="false">
+
+            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
+            <select id="ac-win-visibility" class="ac-input">
+              <option value="public">Public — anyone can clone it</option>
+              <option value="private">Private — needs an access token</option>
+            </select>
+
+            <div id="ac-win-token-wrap" style="display:none;margin-top:10px;">
+              <label class="ac-label" data-tip="A GitHub personal access token, used once to build the command so the device can download a private repository. It is never saved on the server — it only gets embedded in the command you copy or scan, then forgotten.">Access token</label>
+              <input id="ac-win-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
+              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the PC can download a private repository, then forgotten.</div>
+            </div>
+
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Paste this into Windows PowerShell</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-win-cmd"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-win-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                  <button id="ac-win-qr-btn" class="ac-btn ac-ra-icon-btn" type="button" title="Show QR code" aria-label="Show QR code"><i data-lucide="qr-code"></i></button>
+                </div>
+              </div>
+              <div id="ac-win-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
+            </div>
+
+            <ol class="ac-tx-steps" id="ac-win-steps"></ol>
+            <div class="ac-deploy-cmd-note" id="ac-win-note" hidden></div>
+          </div>
+        </div>
+
+        <!-- ── Run on macOS ── another SEPARATE manual row (sibling of the
+             Linux/Termux + Windows rows). Same shape: GitHub URL + public/private
+             (+ token if private) → the one command to paste into Terminal + a QR.
+             Built LIVE in deploy.js (_macBuild, a byte-mirror of
+             app/deploy/providers/macos.py build_command). Body ids owned by
+             deploy.js (MANUAL_ROWS[macos]); expand reuses _wireBootRow. -->
+        <div class="ac-row" id="ac-deploy-mac-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="laptop" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Run webAgent on a Mac</div>
+              <div class="ac-ability-desc">Install webAgent on a Mac. Enter your repository, then copy or scan the command and paste it into Terminal — no cloud account, nothing to pay for.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label" data-tip="The address of the webAgent code on GitHub. Leave the standard repository to install webAgent itself; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
+            <input id="ac-mac-url" class="ac-input" type="text" placeholder="https://github.com/owner/repo" autocomplete="off" spellcheck="false">
+
+            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
+            <select id="ac-mac-visibility" class="ac-input">
+              <option value="public">Public — anyone can clone it</option>
+              <option value="private">Private — needs an access token</option>
+            </select>
+
+            <div id="ac-mac-token-wrap" style="display:none;margin-top:10px;">
+              <label class="ac-label" data-tip="A GitHub personal access token, used once to build the command so the device can download a private repository. It is never saved on the server — it only gets embedded in the command you copy or scan, then forgotten.">Access token</label>
+              <input id="ac-mac-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
+              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the Mac can download a private repository, then forgotten.</div>
+            </div>
+
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Paste this into Terminal on your Mac</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-mac-cmd"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-mac-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                  <button id="ac-mac-qr-btn" class="ac-btn ac-ra-icon-btn" type="button" title="Show QR code" aria-label="Show QR code"><i data-lucide="qr-code"></i></button>
+                </div>
+              </div>
+              <div id="ac-mac-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
+            </div>
+
+            <ol class="ac-tx-steps" id="ac-mac-steps"></ol>
+            <div class="ac-deploy-cmd-note" id="ac-mac-note" hidden></div>
+          </div>
+        </div>
       </div><!-- /.ac-list -->
     </div><!-- /.ac-category-body -->
   </div>

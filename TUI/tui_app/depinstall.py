@@ -192,8 +192,25 @@ async def run_proot_distro(ctx: ToolContext, target: Path, log: LogFn) -> Result
 
 
 async def run_ubuntu(ctx: ToolContext, target: Path, log: LogFn) -> Result:
+    proot = _proot_bin()
+    # Already usable? (A container can be registered under a path the probe didn't
+    # spot — custom PROOT_DISTRO_HOME, older layout — so the only sure test is to
+    # log in and run a no-op.) If so, reuse it; don't trip over "already exists".
+    _out, code = await _step(log, "Checking for an existing Ubuntu environment…",
+                             [proot, "login", "ubuntu", "--", "true"], None, 120)
+    if code == 0:
+        return _finish(ctx, "install:ubuntu", True,
+                       "Ubuntu environment already installed — reusing it.", log)
     out, code = await _step(log, "Installing the Ubuntu environment (first run is slow)…",
-                            [_proot_bin(), "install", "ubuntu"], None, 2400)
+                            [proot, "install", "ubuntu"], None, 2400)
+    if code != 0:
+        # A registered-but-broken container (interrupted earlier run) makes 'install'
+        # abort with "already exists". Reset it cleanly rather than failing.
+        log("Existing Ubuntu install looks incomplete — resetting it cleanly…")
+        await _step(log, "Removing the broken Ubuntu environment…",
+                    [proot, "remove", "ubuntu"], None, 600)
+        out, code = await _step(log, "Reinstalling Ubuntu (slow)…",
+                                [proot, "install", "ubuntu"], None, 2400)
     return _finish(ctx, "install:ubuntu", code == 0, out, log)
 
 

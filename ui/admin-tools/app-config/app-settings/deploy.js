@@ -25,10 +25,11 @@ import { copyText } from '../../../shared/js/clipboard.js';
 let _catalog = null;        // last /catalog payload
 let _busy = false;          // a deploy / tear-down stream is running
 
-// ── Run-on-a-phone (Termux) row state ──
-let _txQrTimer = null;      // debounce timer for the (server-side) QR refresh
-let _txQrPop = null;        // the floating QR popover element, or null
-let _txQrAnchor = null;     // the QR button it was opened from
+// ── Manual install row state (one QR popover open at a time across all rows) ──
+let _qrTimer = null;        // debounce timer for the (server-side) QR refresh
+let _qrPop = null;          // the floating QR popover element, or null
+let _qrAnchor = null;       // the QR button it was opened from
+let _qrDesc = null;         // which manual-row descriptor the open QR belongs to
 
 function _qs(id) { return document.getElementById(id); }
 function _userId() { try { return localStorage.getItem('auth_user_id') || ''; } catch { return ''; } }
@@ -86,7 +87,7 @@ function _renderAll() {
     sel.value = want;
   }
   _renderProvider();
-  _renderPhonePrefill();
+  _renderManualPrefill();
 }
 
 function _renderProvider() {
@@ -195,97 +196,184 @@ function _flashCopied(btn) {
   }, 1500);
 }
 
-// ── Run on a phone (Termux) — the dedicated row ──────────────────────────────
-// Its own row below the cloud-deploy row: GitHub URL + public/private (+ token
-// for private) → the one command to paste into Termux on the phone, plus a QR
-// of that command to scan it across. Backed by POST /admin/deploy/termux/command
-// (no cloud account, nothing billable; the token is used to build the command
-// and never stored). The non-secret URL + visibility persist so the row pre-fills.
-function _syncTokenVisibility() {
-  const vis = _qs('ac-tx-visibility');
-  const wrap = _qs('ac-tx-token-wrap');
-  if (wrap) wrap.style.display = (vis && vis.value === 'private') ? '' : 'none';
-}
+// ── Manual install rows (Linux/Termux, Windows, macOS) ───────────────────────
+// Each is its OWN dedicated row below the cloud-deploy row (NOT a cloud provider
+// in the dropdown): GitHub URL + public/private (+ token for private) → the one
+// command to paste into a terminal / PowerShell, shown LIVE, plus a QR of that
+// command. Backed by POST /admin/deploy/command (no cloud account, nothing
+// billable; the token is used to build the command and never stored). The
+// non-secret URL + visibility persist so each row pre-fills.
+//
+// All three rows share ONE set of render / QR / copy / tips functions, driven by
+// a per-platform descriptor (MANUAL_ROWS): only the element ids, the command
+// builder, and the static steps/note text differ. Adding a platform = a drop-in
+// app/deploy/providers/<id>.py + one descriptor here + one row in the HTML.
 
-function _renderPhonePrefill() {
-  const t = (_catalog && (_catalog.providers || []).find(p => p.id === 'termux')) || null;
-  const cfg = (t && t.config) || {};
-  const url = _qs('ac-tx-url');
-  const vis = _qs('ac-tx-visibility');
-  if (url && !url.value) url.value = cfg.github_url || '';
-  if (vis && cfg.visibility) vis.value = cfg.visibility;
-  _syncTokenVisibility();
-  _refreshLucideIcons(_qs('ac-deploy-phone-row'));   // Copy / QR button icons
-  _txRender();                  // show the command straight away (placeholder if blank)
-}
-
-// Read the three phone-row inputs.
-function _txInputs() {
-  return {
-    github_url: (_qs('ac-tx-url')?.value || '').trim(),
-    visibility: _qs('ac-tx-visibility')?.value || 'public',
-    token: (_qs('ac-tx-token')?.value || '').trim(),
-  };
-}
-
-// ── Command builder (mirror of termux.build_command) ─────────────────────────
+// ── Shared command-building primitives (mirror app/deploy/manual_common.py) ──
 // The command is built RIGHT HERE in the browser so the box is NEVER empty and
 // updates the instant a field changes — no server round-trip to depend on (an
-// un-restarted / unreachable server must not leave the box blank). Keep this in
-// sync with app/deploy/providers/termux.py `build_command`. The QR is still made
-// server-side, on demand (see _txFetchQr).
-const _TX_PLACEHOLDER_REPO = 'https://github.com/YOUR-NAME/YOUR-REPO';
-const _TX_PLACEHOLDER_TOKEN = 'YOUR_ACCESS_TOKEN';
-const _TX_BRANCH = 'main';
-const _TX_BAD_URL = "'\";\n\r\\ &|`$(){}<>";
-const _TX_BAD_TOKEN = "'\";\n\r\\ &|`$(){}<>@/ ";
-const _TX_STEPS = [
-  'On a phone: install the free Termux app, then open it. On a Linux computer: open a terminal.',
-  'Scan the QR code or paste the command, then press Enter.',
-  'The first run takes a few minutes while it installs everything (on a phone it also sets up a small Ubuntu environment).',
-  'When it finishes, open http://localhost:8080 on that device, or http://DEVICE-IP:8080 from another device on the same network (the script prints the address).',
-];
-const _TX_NOTE = 'On a phone the command installs webAgent inside a small Ubuntu environment (the reliable way to run the full app on Android); on a Linux computer it installs straight onto the system. Either way it keeps running in the background and restarts itself if it stops. On a Linux computer it also restarts automatically after a reboot; on a phone, install the free Termux:Boot add-on to start it on boot. On a phone it also installs the Server Manager — type webagent in Termux to inspect, restart or diagnose the install. To stop it later: on a phone paste “proot-distro login ubuntu -- pkill -f run.py”, on Linux paste “pkill -f run.py”.';
+// un-restarted / unreachable server must not leave the box blank). Each builder
+// below is BYTE-IDENTICAL to its provider's `build_command`. The QR is still made
+// server-side, on demand (see _fetchQr).
+const _MC_PLACEHOLDER_REPO = 'https://github.com/YOUR-NAME/YOUR-REPO';
+const _MC_PLACEHOLDER_TOKEN = 'YOUR_ACCESS_TOKEN';
+const _MC_BRANCH = 'main';
+const _MC_BAD_URL = "'\";\n\r\\ &|`$(){}<>";
+const _MC_BAD_TOKEN = "'\";\n\r\\ &|`$(){}<>@/ ";
 
-function _txHasBad(s, bad) { for (const c of bad) if (s.indexOf(c) >= 0) return true; return false; }
-function _txStripScheme(u) { return u.replace(/^https?:\/\//, ''); }
+function _mcHasBad(s, bad) { for (const c of bad) if (s.indexOf(c) >= 0) return true; return false; }
+function _mcStripScheme(u) { return u.replace(/^https?:\/\//, ''); }
 
-function _txBuild(inp) {
+// Resolve the clone target from the row inputs (mirror manual_common.resolve_clone).
+function _mcResolve(inp) {
   const typed = (inp.github_url || '').trim();
   const placeholderRepo = !typed;
-  const repo = (placeholderRepo || _txHasBad(typed, _TX_BAD_URL)) ? _TX_PLACEHOLDER_REPO : typed;
+  const repo = (placeholderRepo || _mcHasBad(typed, _MC_BAD_URL)) ? _MC_PLACEHOLDER_REPO : typed;
   const priv = (inp.visibility || 'public') === 'private';
-  let clone = repo, warning = '', placeholderToken = false;
+  let cloneUrl = repo, warning = '', placeholderToken = false;
   if (priv) {
     let tok = (inp.token || '').trim();
-    if (tok && _txHasBad(tok, _TX_BAD_TOKEN)) { warning = 'That token contains characters that aren’t valid in a GitHub token.'; tok = ''; }
-    if (!tok) { tok = _TX_PLACEHOLDER_TOKEN; placeholderToken = true; }
-    clone = 'https://' + tok + '@' + _txStripScheme(repo);
+    if (tok && _mcHasBad(tok, _MC_BAD_TOKEN)) { warning = 'That token contains characters that aren’t valid in a GitHub token.'; tok = ''; }
+    if (!tok) { tok = _MC_PLACEHOLDER_TOKEN; placeholderToken = true; }
+    cloneUrl = 'https://' + tok + '@' + _mcStripScheme(repo);
   }
-  // ONE command for both Termux and plain Linux (mirror of termux.build_command):
-  // install git with whatever package manager is present (Termux `pkg`, or
-  // apt/dnf/pacman with sudo on a Linux box), clone, then hand off to the setup
-  // script which detects Termux vs Linux. Keep BYTE-IDENTICAL to the Python side.
+  return { repo, cloneUrl, placeholderRepo, placeholderToken, warning };
+}
+
+// Linux / Termux — mirror app/deploy/providers/termux.py build_command. ONE
+// command for both: install git with whatever package manager is present, clone,
+// then hand off to deploy/termux-setup.sh which detects Termux vs plain Linux.
+function _buildTermux(inp) {
+  const r = _mcResolve(inp);
   const command = 'SUDO=; [ "$(id -u 2>/dev/null)" = 0 ] || SUDO=sudo; '
     + 'if command -v git >/dev/null 2>&1; then :; '
     + 'elif command -v pkg >/dev/null 2>&1; then pkg install -y git; '
     + 'elif command -v apt-get >/dev/null 2>&1; then $SUDO apt-get update && $SUDO apt-get install -y git; '
     + 'elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y git; '
     + 'elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm git; fi; '
-    + '{ [ -d "$HOME/webagent/.git" ] || git clone --depth 1 --branch ' + _TX_BRANCH + ' ' + clone + ' "$HOME/webagent"; } && '
+    + '{ [ -d "$HOME/webagent/.git" ] || git clone --depth 1 --branch ' + _MC_BRANCH + ' ' + r.cloneUrl + ' "$HOME/webagent"; } && '
     + 'bash "$HOME/webagent/deploy/termux-setup.sh"';
-  return { command, placeholderRepo, placeholderToken, warning };
+  return { command, placeholderRepo: r.placeholderRepo, placeholderToken: r.placeholderToken, warning: r.warning };
 }
 
-// Build the command from the current inputs and paint it into the always-visible
-// box (instant, no network). If the QR popover is open, refresh its code too.
-function _txRender() {
-  const r = _txBuild(_txInputs());
-  const code = _qs('ac-tx-cmd');
+// Windows — mirror app/deploy/providers/windows.py build_command (a PowerShell
+// one-liner: ensure git via winget, clone to %USERPROFILE%\webagent, run the ps1).
+function _buildWindows(inp) {
+  const r = _mcResolve(inp);
+  const command = "$ErrorActionPreference='Stop'; "
+    + "$repo='" + r.cloneUrl + "'; $dir=\"$env:USERPROFILE\\webagent\"; "
+    + "if(-not(Get-Command git -EA SilentlyContinue)){Write-Host 'Installing Git...'; "
+    + "try{winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements --silent}catch{}; "
+    + "$env:Path=[Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')}; "
+    + "if(-not(Get-Command git -EA SilentlyContinue)){Write-Host 'Git is required. Install it from https://git-scm.com/download/win then run this again.'; return}; "
+    + "if(-not(Test-Path \"$dir\\.git\")){git clone --depth 1 --branch " + _MC_BRANCH + " $repo \"$dir\"}; "
+    + "powershell -NoProfile -ExecutionPolicy Bypass -File \"$dir\\deploy\\windows-setup.ps1\"";
+  return { command, placeholderRepo: r.placeholderRepo, placeholderToken: r.placeholderToken, warning: r.warning };
+}
+
+// macOS — mirror app/deploy/providers/macos.py build_command (a Terminal
+// one-liner: ensure git/Command Line Tools, clone to $HOME/webagent, run the sh).
+function _buildMac(inp) {
+  const r = _mcResolve(inp);
+  const command = 'set -e; D="$HOME/webagent"; '
+    + 'if ! command -v git >/dev/null 2>&1; then '
+    + "echo 'Installing the Command Line Tools (a dialog may appear)...'; "
+    + 'xcode-select --install 2>/dev/null || true; '
+    + "echo 'If a dialog appeared, finish it, then paste this command again.'; fi; "
+    + '{ [ -d "$D/.git" ] || git clone --depth 1 --branch ' + _MC_BRANCH + ' ' + r.cloneUrl + ' "$D"; } && '
+    + 'bash "$D/deploy/macos-setup.sh"';
+  return { command, placeholderRepo: r.placeholderRepo, placeholderToken: r.placeholderToken, warning: r.warning };
+}
+
+const _TERMUX_STEPS = [
+  'On a phone: install the free Termux app, then open it. On a Linux computer: open a terminal.',
+  'Scan the QR code or paste the command, then press Enter.',
+  'The first run takes a few minutes while it installs everything (on a phone it also sets up a small Ubuntu environment).',
+  'When it finishes, open http://localhost:8080 on that device, or http://DEVICE-IP:8080 from another device on the same network (the script prints the address).',
+];
+const _TERMUX_NOTE = 'On a phone the command installs webAgent inside a small Ubuntu environment (the reliable way to run the full app on Android); on a Linux computer it installs straight onto the system. Either way it keeps running in the background and restarts itself if it stops. On a Linux computer it also restarts automatically after a reboot; on a phone, install the free Termux:Boot add-on to start it on boot. On a phone it also installs the Server Manager — type webagent in Termux to inspect, restart or diagnose the install. To stop it later: on a phone paste “proot-distro login ubuntu -- pkill -f run.py”, on Linux paste “pkill -f run.py”.';
+
+const _WIN_STEPS = [
+  "Open PowerShell: click Start, type 'PowerShell', and open it.",
+  'Paste the command and press Enter. (If Windows offers to install Git, allow it.)',
+  'The first run takes a few minutes while it downloads Python and installs everything.',
+  'When it finishes, open http://localhost:8080 on this PC, or http://THIS-PC-IP:8080 from another device on the same network.',
+];
+const _WIN_NOTE = 'webAgent installs into a folder in your user profile and runs in the background as a Scheduled Task named “webAgent” — it starts automatically when you log in and restarts itself if it stops. It also installs the Server Manager — open a new terminal and type webagent to inspect, restart or diagnose it. To stop it later: paste “Stop-ScheduledTask -TaskName webAgent” into PowerShell; to stop it starting on login: “Unregister-ScheduledTask -TaskName webAgent -Confirm:$false”.';
+
+const _MAC_STEPS = [
+  "Open Terminal: press Cmd+Space, type 'Terminal', and open it.",
+  'Paste the command and press Enter. (The first time, macOS may ask to install the Command Line Tools — allow it, then paste the command again.)',
+  'The first run takes a few minutes while it installs everything.',
+  'When it finishes, open http://localhost:8080 on this Mac, or http://THIS-MAC-IP:8080 from another device on the same network.',
+];
+const _MAC_NOTE = 'webAgent installs into a folder in your home directory and runs in the background via launchd — it starts automatically when you log in and restarts itself if it stops. It also installs the Server Manager — type webagent to inspect, restart or diagnose it. To stop it later: paste “launchctl unload ~/Library/LaunchAgents/com.webagent.server.plist”; to start it again: “launchctl load -w ~/Library/LaunchAgents/com.webagent.server.plist”.';
+
+// One descriptor per manual platform: its row + field element ids, command
+// builder, and static steps/note. The build functions + step constants above are
+// referenced here, so this list must come AFTER them.
+const MANUAL_ROWS = [
+  { id: 'termux', row: 'ac-deploy-phone-row',
+    url: 'ac-tx-url', vis: 'ac-tx-visibility', tokenWrap: 'ac-tx-token-wrap', token: 'ac-tx-token',
+    cmd: 'ac-tx-cmd', copy: 'ac-tx-copy', qrBtn: 'ac-tx-qr-btn', status: 'ac-tx-status',
+    steps: 'ac-tx-steps', note: 'ac-tx-note',
+    build: _buildTermux, stepsText: _TERMUX_STEPS, noteText: _TERMUX_NOTE,
+    qrLabel: 'Scan this in Termux on the phone' },
+  { id: 'windows', row: 'ac-deploy-win-row',
+    url: 'ac-win-url', vis: 'ac-win-visibility', tokenWrap: 'ac-win-token-wrap', token: 'ac-win-token',
+    cmd: 'ac-win-cmd', copy: 'ac-win-copy', qrBtn: 'ac-win-qr-btn', status: 'ac-win-status',
+    steps: 'ac-win-steps', note: 'ac-win-note',
+    build: _buildWindows, stepsText: _WIN_STEPS, noteText: _WIN_NOTE,
+    qrLabel: 'Scan to copy the command to another device' },
+  { id: 'macos', row: 'ac-deploy-mac-row',
+    url: 'ac-mac-url', vis: 'ac-mac-visibility', tokenWrap: 'ac-mac-token-wrap', token: 'ac-mac-token',
+    cmd: 'ac-mac-cmd', copy: 'ac-mac-copy', qrBtn: 'ac-mac-qr-btn', status: 'ac-mac-status',
+    steps: 'ac-mac-steps', note: 'ac-mac-note',
+    build: _buildMac, stepsText: _MAC_STEPS, noteText: _MAC_NOTE,
+    qrLabel: 'Scan to copy the command to another device' },
+];
+
+// Read one row's three inputs.
+function _manualInputs(desc) {
+  return {
+    github_url: (_qs(desc.url)?.value || '').trim(),
+    visibility: _qs(desc.vis)?.value || 'public',
+    token: (_qs(desc.token)?.value || '').trim(),
+  };
+}
+
+// Show/hide the token field for one row (only when its repo is Private).
+function _manualSyncToken(desc) {
+  const vis = _qs(desc.vis);
+  const wrap = _qs(desc.tokenWrap);
+  if (wrap) wrap.style.display = (vis && vis.value === 'private') ? '' : 'none';
+}
+
+// Pre-fill every manual row from its saved (non-secret) config, then paint each.
+function _renderManualPrefill() {
+  MANUAL_ROWS.forEach(desc => {
+    const t = (_catalog && (_catalog.providers || []).find(p => p.id === desc.id)) || null;
+    const cfg = (t && t.config) || {};
+    const url = _qs(desc.url);
+    const vis = _qs(desc.vis);
+    if (url && !url.value) url.value = cfg.github_url || '';
+    if (vis && cfg.visibility) vis.value = cfg.visibility;
+    _manualSyncToken(desc);
+    _refreshLucideIcons(_qs(desc.row));   // Copy / QR button icons
+    _manualRender(desc);                  // show the command straight away
+  });
+}
+
+// Build one row's command from its current inputs and paint it into the
+// always-visible box (instant, no network). If this row's QR popover is open,
+// refresh its code too.
+function _manualRender(desc) {
+  const r = desc.build(_manualInputs(desc));
+  const code = _qs(desc.cmd);
   if (code) code.textContent = r.command;
 
   // A gentle nudge while something's still a placeholder; a real warning in red.
-  const status = _qs('ac-tx-status');
+  const status = _qs(desc.status);
   if (status) {
     if (r.warning) { status.textContent = r.warning; status.style.color = 'var(--danger)'; }
     else if (r.placeholderRepo) { status.textContent = 'Enter your repository address above — the command updates as you type.'; status.style.color = ''; }
@@ -294,85 +382,87 @@ function _txRender() {
   }
 
   // Steps + note never change — fill them once.
-  const steps = _qs('ac-tx-steps');
+  const steps = _qs(desc.steps);
   if (steps && !steps.dataset.filled) {
-    steps.innerHTML = _TX_STEPS.map(s => '<li>' + _esc(s) + '</li>').join('');
+    steps.innerHTML = desc.stepsText.map(s => '<li>' + _esc(s) + '</li>').join('');
     steps.dataset.filled = '1';
   }
-  const note = _qs('ac-tx-note');
+  const note = _qs(desc.note);
   if (note && !note.dataset.filled) {
-    note.hidden = false; note.textContent = _TX_NOTE; note.dataset.filled = '1';
+    note.hidden = false; note.textContent = desc.noteText; note.dataset.filled = '1';
   }
 
-  if (_txQrPop) _txFetchQr();   // keep an open QR in sync with the live command
+  if (_qrPop && _qrDesc === desc) _fetchQr(desc);   // keep an open QR in sync
 }
 
-// Save the non-secret choices so the row pre-fills next time (the token is never
+// Save one row's non-secret choices so it pre-fills next time (the token is never
 // sent here). Fire-and-forget; a missing endpoint just means no pre-fill.
-function _txPersist() {
+function _manualPersist(desc) {
   if (!isAdmin()) return;
-  const inp = _txInputs();
-  _post('/admin/deploy/config', { provider: 'termux', config: { github_url: inp.github_url, visibility: inp.visibility } }).catch(() => {});
+  const inp = _manualInputs(desc);
+  _post('/admin/deploy/config', { provider: desc.id, config: { github_url: inp.github_url, visibility: inp.visibility } }).catch(() => {});
 }
 
 // ── QR popover (mirrors Remote Access → Same network) ──
-// A small click-toggled card anchored to the QR button, showing the current
-// command as a scannable code on a white plate (so it reads in either theme).
-// The QR itself is generated server-side on demand; while the card is open,
-// changing any field re-fetches it so it stays in sync with the live command.
-function _txCloseQr() {
-  if (!_txQrPop) return;
-  document.removeEventListener('keydown', _txQrPop._onKey, true);
-  document.removeEventListener('mousedown', _txQrPop._onDoc, true);
-  window.removeEventListener('resize', _txQrPop._onReflow, true);
-  window.removeEventListener('scroll', _txQrPop._onReflow, true);
-  _txQrPop.remove();
-  _txQrPop = null;
-  _txQrAnchor = null;
+// A small click-toggled card anchored to a row's QR button, showing that row's
+// current command as a scannable code on a white plate (so it reads in either
+// theme). Only one is open at a time (across all rows). The QR itself is generated
+// server-side on demand; while the card is open, changing any field re-fetches it
+// so it stays in sync with the live command.
+function _closeQr() {
+  if (!_qrPop) return;
+  document.removeEventListener('keydown', _qrPop._onKey, true);
+  document.removeEventListener('mousedown', _qrPop._onDoc, true);
+  window.removeEventListener('resize', _qrPop._onReflow, true);
+  window.removeEventListener('scroll', _qrPop._onReflow, true);
+  _qrPop.remove();
+  _qrPop = null;
+  _qrAnchor = null;
+  _qrDesc = null;
 }
 
-function _txToggleQr(anchor) {
-  if (_txQrPop && _txQrAnchor === anchor) { _txCloseQr(); return; }
-  _txShowQr(anchor);
+function _toggleQr(desc, anchor) {
+  if (_qrPop && _qrAnchor === anchor) { _closeQr(); return; }
+  _showQr(desc, anchor);
 }
 
 // Put a status message (loading / error) on the QR plate.
-function _txQrMessage(msg) {
-  if (!_txQrPop) return;
-  const plate = _txQrPop.querySelector('.ac-ra-qr-plate');
+function _qrMessage(msg) {
+  if (!_qrPop) return;
+  const plate = _qrPop.querySelector('.ac-ra-qr-plate');
   if (plate) plate.innerHTML = '<div class="ac-hint" style="padding:22px 12px;text-align:center;color:#555;">' + _esc(msg) + '</div>';
 }
 
-function _txSetQrPlate(svg) {
-  if (!_txQrPop) return;
-  const plate = _txQrPop.querySelector('.ac-ra-qr-plate');
+function _setQrPlate(svg) {
+  if (!_qrPop) return;
+  const plate = _qrPop.querySelector('.ac-ra-qr-plate');
   if (!plate) return;
   plate.innerHTML = svg;
   const el = plate.querySelector('svg');
   if (el) { el.style.width = '100%'; el.style.height = 'auto'; el.style.display = 'block'; }
 }
 
-// Ask the server for a QR of the current command (debounced). Degrades to a
+// Ask the server for a QR of one row's current command (debounced). Degrades to a
 // clear message if the server can't make one (e.g. not yet restarted).
-function _txFetchQr() {
-  clearTimeout(_txQrTimer);
-  _txQrTimer = setTimeout(async () => {
-    if (!_txQrPop) return;
+function _fetchQr(desc) {
+  clearTimeout(_qrTimer);
+  _qrTimer = setTimeout(async () => {
+    if (!_qrPop) return;
     let r;
     try {
-      r = await _post('/admin/deploy/termux/command', { ..._txInputs(), persist: false });
+      r = await _post('/admin/deploy/command', { provider: desc.id, ..._manualInputs(desc), persist: false });
     } catch {
-      _txQrMessage('Couldn’t reach the server for the QR code. If you just updated webAgent, restart it and try again.');
+      _qrMessage('Couldn’t reach the server for the QR code. If you just updated webAgent, restart it and try again.');
       return;
     }
-    if (!_txQrPop) return;
-    if (r && r.qr_svg) _txSetQrPlate(r.qr_svg);
-    else _txQrMessage('QR codes need the “qrcode” package installed on the server.');
+    if (!_qrPop) return;
+    if (r && r.qr_svg) _setQrPlate(r.qr_svg);
+    else _qrMessage('QR codes need the “qrcode” package installed on the server.');
   }, 120);
 }
 
-function _txShowQr(anchor) {
-  _txCloseQr();
+function _showQr(desc, anchor) {
+  _closeQr();
   const panel = document.createElement('div');
   panel.className = 'ac-ra-qr-pop ac-tx-qr-pop';
 
@@ -383,20 +473,21 @@ function _txShowQr(anchor) {
   const label = document.createElement('div');
   label.className = 'ac-ra-qr-pop-url';
   label.style.whiteSpace = 'normal';
-  label.textContent = 'Scan this in Termux on the phone';
+  label.textContent = desc.qrLabel;
   panel.appendChild(label);
 
   document.body.appendChild(panel);
-  _txQrPop = panel;
-  _txQrAnchor = anchor;
-  _txQrMessage('Generating…');
-  _txFetchQr();
+  _qrPop = panel;
+  _qrAnchor = anchor;
+  _qrDesc = desc;
+  _qrMessage('Generating…');
+  _fetchQr(desc);
 
-  const place = () => _txPlaceQr(panel, anchor);
+  const place = () => _placeQr(panel, anchor);
   place();
-  const onDoc = ev => { if (panel.contains(ev.target) || anchor.contains(ev.target)) return; _txCloseQr(); };
-  const onKey = ev => { if (ev.key === 'Escape') _txCloseQr(); };
-  const onReflow = () => { if (_txQrPop) place(); };
+  const onDoc = ev => { if (panel.contains(ev.target) || anchor.contains(ev.target)) return; _closeQr(); };
+  const onKey = ev => { if (ev.key === 'Escape') _closeQr(); };
+  const onReflow = () => { if (_qrPop) place(); };
   document.addEventListener('mousedown', onDoc, true);
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', onReflow, true);
@@ -406,7 +497,7 @@ function _txShowQr(anchor) {
   panel._onReflow = onReflow;
 }
 
-function _txPlaceQr(panel, anchor) {
+function _placeQr(panel, anchor) {
   const a = anchor.getBoundingClientRect();
   const pw = panel.offsetWidth, ph = panel.offsetHeight;
   const gap = 6, margin = 8;
@@ -419,12 +510,13 @@ function _txPlaceQr(panel, anchor) {
   panel.style.top = Math.round(top) + 'px';
 }
 
-// Turn every `data-tip` label in the phone row into a circled "?" help badge,
-// the same affordance the cloud row's fields get (via _buildField). Bespoke here
-// because the phone row is hand-written markup, not built from field descriptors.
-// Idempotent — a `wired` flag stops re-runs from stacking badges.
-function _wirePhoneTips() {
-  document.querySelectorAll('#ac-deploy-phone-row .ac-label[data-tip]').forEach(lab => {
+// Turn every `data-tip` label across ALL manual rows into a circled "?" help
+// badge, the same affordance the cloud row's fields get (via _buildField).
+// Bespoke here because the manual rows are hand-written markup, not built from
+// field descriptors. Idempotent — a `wired` flag stops re-runs from stacking.
+function _wireManualTips() {
+  const sel = MANUAL_ROWS.map(d => '#' + d.row + ' .ac-label[data-tip]').join(', ');
+  document.querySelectorAll(sel).forEach(lab => {
     if (lab.dataset.tipWired) return;
     lab.dataset.tipWired = '1';
     const badge = _tipBadge(lab.dataset.tip);
@@ -432,31 +524,33 @@ function _wirePhoneTips() {
   });
 }
 
-function _initPhone() {
-  const url = _qs('ac-tx-url');
-  const vis = _qs('ac-tx-visibility');
-  const token = _qs('ac-tx-token');
+function _initManualRows() {
+  MANUAL_ROWS.forEach(desc => {
+    const url = _qs(desc.url);
+    const vis = _qs(desc.vis);
+    const token = _qs(desc.token);
 
-  if (url && !url.dataset.wired) {
-    url.dataset.wired = '1';
-    url.addEventListener('input', _txRender);                       // instant, client-side
-    url.addEventListener('change', () => { _txRender(); _txPersist(); });
-  }
-  if (token && !token.dataset.wired) {
-    token.dataset.wired = '1';
-    token.addEventListener('input', _txRender);
-  }
-  if (vis && !vis.dataset.wired) {
-    vis.dataset.wired = '1';
-    vis.addEventListener('change', () => { _syncTokenVisibility(); _txRender(); _txPersist(); });
-  }
-  _wireCopy(_qs('ac-tx-copy'), _qs('ac-tx-cmd'));   // idempotent (guards on its own flag)
-  const qrBtn = _qs('ac-tx-qr-btn');
-  if (qrBtn && !qrBtn.dataset.wired) {
-    qrBtn.dataset.wired = '1';
-    qrBtn.addEventListener('click', () => _txToggleQr(qrBtn));
-  }
-  _wirePhoneTips();             // circled "?" help badges on the row's labels
+    if (url && !url.dataset.wired) {
+      url.dataset.wired = '1';
+      url.addEventListener('input', () => _manualRender(desc));         // instant, client-side
+      url.addEventListener('change', () => { _manualRender(desc); _manualPersist(desc); });
+    }
+    if (token && !token.dataset.wired) {
+      token.dataset.wired = '1';
+      token.addEventListener('input', () => _manualRender(desc));
+    }
+    if (vis && !vis.dataset.wired) {
+      vis.dataset.wired = '1';
+      vis.addEventListener('change', () => { _manualSyncToken(desc); _manualRender(desc); _manualPersist(desc); });
+    }
+    _wireCopy(_qs(desc.copy), _qs(desc.cmd));   // idempotent (guards on its own flag)
+    const qrBtn = _qs(desc.qrBtn);
+    if (qrBtn && !qrBtn.dataset.wired) {
+      qrBtn.dataset.wired = '1';
+      qrBtn.addEventListener('click', () => _toggleQr(desc, qrBtn));
+    }
+  });
+  _wireManualTips();             // circled "?" help badges on every row's labels
 }
 
 // ── Field-help popover ───────────────────────────────────────────────────────
@@ -790,7 +884,7 @@ export function initDeploy() {
   _qs('ac-deploy-save')?.addEventListener('click', _saveSettings);
   _qs('ac-deploy-go')?.addEventListener('click', _deploy);
   _qs('ac-deploy-destroy')?.addEventListener('click', _destroy);
-  _initPhone();                 // the "Run on a phone (Termux)" row
+  _initManualRows();            // the Linux/Termux, Windows + macOS install rows
 
   // Re-load whenever the App Settings section is shown (wired in nav.js).
   window.__refreshDeploy = _load;
