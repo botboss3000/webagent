@@ -541,6 +541,12 @@ It is **deterministic**: a button runs the real command itself and streams progr
 into the transcript — **no AI key required**. (The older AI-driven flow survives as
 the in-panel **`[Let the assistant set this up]`** button.)
 
+Every install/manage step is also **captured** into a Setup activity log. A
+**`[Logs]`** button at the bottom of the dashboard opens a scrollable **Setup Logs**
+viewer of that captured output, with **`[Clear]`** (empty the log) and **`[Copy]`**
+(copy the whole log to the clipboard, e.g. to paste into a bug report) controls and
+**`[‹ Back]`** to return to the checklist.
+
 The checklist is **platform-aware**:
 
 - **Everywhere** — internet (GitHub + PyPI), git, Python 3.11/3.12, free disk.

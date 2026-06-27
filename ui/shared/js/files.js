@@ -9,6 +9,7 @@
 // lazily — each folder fetches its children on first expand.
 
 import { _refreshLucideIcons } from './dom-utils.js';
+import { copyText } from './clipboard.js';
 import { openGitPanel, renderGitMain, restartServerAndReload, startGitAutoRefresh, stopGitAutoRefresh, streamCopy, streamPush, _RELEASE_PHASE_LABELS } from './files-git.js';
 import { createTerminalInstance } from './terminal.js';
 import { randomUUID } from './uuid.js';
@@ -1656,22 +1657,10 @@ async function newInFolder(folderPath, kind) {
 }
 
 async function copyPath(path) {
+  // copyText handles insecure http://<ip> contexts (e.g. phones on the LAN)
+  // via an execCommand fallback; prompt() is the last resort if even that fails.
   try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(path);
-      return;
-    }
-  } catch (_) {}
-  // Fallback for insecure contexts where the Clipboard API is blocked
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = path;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    ta.remove();
+    await copyText(path);
   } catch (_) {
     prompt('Copy path:', path);
   }
@@ -2056,7 +2045,7 @@ function initTerminalKeybar() {
       } catch (_) {}
     }
     if (!text) return;
-    try { await navigator.clipboard.writeText(text); } catch (_) {}
+    try { await copyText(text); } catch (_) {}   // copyText: works in insecure contexts (phones)
   }
   async function chipPaste() {
     // Prefer the rich clipboard API so a pasted IMAGE (a screenshot, a copied
@@ -3494,7 +3483,7 @@ function showTerminalContextMenu(x, y, instance) {
   menu.appendChild(btn('Copy',       'copy',      async () => {
     try {
       const text = (instance.term.getSelection && instance.term.getSelection()) || '';
-      if (text) await navigator.clipboard.writeText(text);
+      if (text) await copyText(text);   // copyText: works in insecure contexts (phones)
     } catch (_) {}
     try { instance.focus(); } catch (_) {}
   }, !hasSel));

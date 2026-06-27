@@ -15,6 +15,7 @@
 import { apiPath } from './config.js';
 import { isAdmin } from './left-login.js';
 import { _refreshLucideIcons, _esc } from './dom-utils.js';
+import { copyText } from './clipboard.js';
 
 let _status = null;
 
@@ -77,21 +78,12 @@ async function _post(path, body) {
 
 function _copy(text) {
   if (!text || text === '—') return;
-  const done = () => _setStatus('Copied', 'ok');
-  try {
-    navigator.clipboard.writeText(text).then(done).catch(_fallbackCopy.bind(null, text, done));
-  } catch {
-    _fallbackCopy(text, done);
-  }
-}
-function _fallbackCopy(text, done) {
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-    document.body.appendChild(ta); ta.select();
-    document.execCommand('copy'); document.body.removeChild(ta);
-    done && done();
-  } catch { _setStatus('Copy failed — select the text manually', 'err'); }
+  // copyText (shared/js/clipboard.js) handles insecure http://<ip> contexts
+  // (e.g. a phone on the LAN) via an execCommand fallback — navigator.clipboard
+  // is undefined there.
+  copyText(text)
+    .then(() => _setStatus('Copied', 'ok'))
+    .catch(() => _setStatus('Copy failed — select the text manually', 'err'));
 }
 
 function _injectQr(containerId, svg) {

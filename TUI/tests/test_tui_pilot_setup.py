@@ -41,7 +41,7 @@ FIXED_DEPS = [
 ]
 
 
-def _check(install_ids, manage_ids, snap) -> None:
+def _check(install_ids, manage_ids, btn_actions, snap) -> None:
     assert install_ids == {"git", "repo"}, f"install buttons wrong: {install_ids}"
     assert "venv" not in install_ids, "blocked row should NOT offer an Install button"
     assert manage_ids == {"ubuntu_update", "ubuntu_remove"}, f"manage buttons wrong: {manage_ids}"
@@ -49,6 +49,18 @@ def _check(install_ids, manage_ids, snap) -> None:
     assert "[Install all" in snap, "Install all button missing"
     assert "git" in snap and "Ubuntu environment" in snap, "rows not rendered"
     assert "do the steps above first" in snap, "blocked-row hint missing"
+    # The Logs button sits below the visible fold, so assert on the widget, not text.
+    assert "setup_logs" in btn_actions, "Logs button missing from the setup panel"
+
+
+def _check_logs(snap, log_actions, copy_ids) -> None:
+    assert "SETUP LOGS" in snap, "setup-logs panel title missing"
+    # Buttons can clip in the narrow panel snapshot, so assert on the widgets.
+    assert "setup_logs_clear" in log_actions, "Clear button missing from the logs viewer"
+    assert "panel_setup" in log_actions, "Back button missing from the logs viewer"
+    assert copy_ids and any("Cloning webAgent" in (t or "") for t in copy_ids), \
+        "Copy button missing or carries the wrong payload"
+    assert "Cloning webAgent" in snap, "captured log lines not shown"
 
 
 async def main() -> str:
@@ -65,11 +77,22 @@ async def main() -> str:
 
         install_ids = {getattr(w, "_btn_value", None) for w in app.query(".dep-install-btn")}
         manage_ids = {getattr(w, "_btn_value", None) for w in app.query(".dep-manage-btn")}
+        btn_actions = {getattr(w, "_btn_action", None) for w in app.query(".panel-btn")}
         snap = snapshot(app)
 
+        # Now seed a couple of captured activity lines and render the Logs viewer.
+        app._setup_log = ["• Installing: repo", "Cloning webAgent into C:\\webagent…", "done"]
+        app._panel_kind = "setuplogs"
+        await app._render_panel("setuplogs")
+        await pilot.pause()
+        copy_ids = [getattr(w, "_copy_text", None) for w in app.query(".copy-btn")]
+        log_actions = {getattr(w, "_btn_action", None) for w in app.query(".panel-btn")}
+        snap_logs = snapshot(app)
+
     # Assert after the run_test block (printing inside routes through print-capture).
-    _check(install_ids, manage_ids, snap)
-    return snap
+    _check(install_ids, manage_ids, btn_actions, snap)
+    _check_logs(snap_logs, log_actions, copy_ids)
+    return snap + "\n\n--- SETUP LOGS ---\n\n" + snap_logs
 
 
 if __name__ == "__main__":

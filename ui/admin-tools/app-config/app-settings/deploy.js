@@ -20,6 +20,7 @@
 import { apiPath } from '../../../shared/js/config.js';
 import { isAdmin } from '../../../shared/js/left-login.js';
 import { _refreshLucideIcons, _esc } from '../../../shared/js/dom-utils.js';
+import { copyText } from '../../../shared/js/clipboard.js';
 
 let _catalog = null;        // last /catalog payload
 let _busy = false;          // a deploy / tear-down stream is running
@@ -159,12 +160,15 @@ function _wireCopy(btn, code) {
   btn.addEventListener('click', async () => {
     const text = code.textContent || '';
     try {
-      await navigator.clipboard.writeText(text);
-      const old = btn.textContent;
-      btn.textContent = 'Copied!';
-      setTimeout(() => { btn.textContent = old; }, 1500);
+      // Use the shared clipboard helper, NOT navigator.clipboard directly: on a
+      // phone this panel is reached over http://<device-ip>:8080 (the address the
+      // install steps tell you to open), a NON-secure context where
+      // navigator.clipboard is undefined — copyText falls back to an execCommand
+      // copy there so the button actually works on phones.
+      await copyText(text);
+      _flashCopied(btn);
     } catch {
-      // Clipboard blocked (e.g. non-secure context) — select the text instead.
+      // Last resort: select the text so it can be copied by hand.
       const range = document.createRange();
       range.selectNodeContents(code);
       const sel = window.getSelection();
@@ -172,6 +176,23 @@ function _wireCopy(btn, code) {
       sel.addRange(range);
     }
   });
+}
+
+// Briefly flash a green check on an icon-only button, then restore its icon.
+// We swap the inner Lucide <i>/<svg> rather than setting btn.textContent — the
+// latter would delete the icon SVG, leaving the button blank after one copy.
+function _flashCopied(btn) {
+  if (btn.dataset.flashing) return;
+  btn.dataset.flashing = '1';
+  btn.innerHTML = '<i data-lucide="check"></i>';
+  btn.style.color = 'var(--success)';
+  _refreshLucideIcons(btn);
+  setTimeout(() => {
+    btn.innerHTML = '<i data-lucide="copy"></i>';
+    btn.style.color = '';
+    _refreshLucideIcons(btn);
+    delete btn.dataset.flashing;
+  }, 1500);
 }
 
 // ── Run on a phone (Termux) — the dedicated row ──────────────────────────────

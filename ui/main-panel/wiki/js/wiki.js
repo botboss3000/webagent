@@ -28,6 +28,7 @@ import { app } from '../../../shared/js/state.js';
 import { apiPath } from '../../../shared/js/config.js';
 import { authHeaders } from '../../../shared/js/left-login.js';
 import { _esc } from '../../../shared/js/dom-utils.js';
+import { copyText } from '../../../shared/js/clipboard.js';
 
 // A signed-in member (not an anonymous visitor) — gates the write controls and
 // whether drafts are even returned by the API. Anonymous users get an 'anon_…'
@@ -1026,15 +1027,9 @@ async function _copyPublicLink() {
   if (!_current || !_current.slug) return;
   const url = `${location.origin}/wiki/${encodeURIComponent(_current.slug)}`;
   try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(url);
-    } else {
-      // Fallback for non-secure contexts where the async Clipboard API is absent.
-      const ta = document.createElement('textarea');
-      ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0';
-      document.body.appendChild(ta); ta.select();
-      document.execCommand('copy'); document.body.removeChild(ta);
-    }
+    // copyText handles non-secure http://<ip> contexts (e.g. a phone on the LAN),
+    // where the async Clipboard API is absent, via an execCommand fallback.
+    await copyText(url);
     _toast('Public link copied.');
   } catch (_) {
     _toast(url, false);   // last resort: show it so the user can copy manually

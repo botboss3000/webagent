@@ -11,6 +11,7 @@ import { app } from '../../shared/js/state.js';
 import { apiPath } from '../../shared/js/config.js';
 import { authHeaders } from '../../shared/js/left-login.js';
 import { icon } from '../../shared/js/icons.js';
+import { copyText } from '../../shared/js/clipboard.js';
 import { _formatRelativeTime } from './chat-bubble.js';
 
 // ── Per-turn model tag ──────────────────────────────────────────────────────
@@ -159,17 +160,9 @@ async function _copyBubble(btn, bubble) {
   const text = _getBubbleCopyText(bubble);
   if (!text) return;
   try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand('copy'); } finally { ta.remove(); }
-    }
+    // copyText handles insecure http://<ip> contexts (e.g. phones on the LAN),
+    // where navigator.clipboard is undefined, via an execCommand fallback.
+    await copyText(text);
     const origTitle = btn.title;
     btn.title = 'Copied!';
     btn.classList.add('copied');

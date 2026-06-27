@@ -680,6 +680,7 @@ class ServerManagerApp(App):
         self._deps_dots: str = ""                     # animated dots during checking/installing
         self._deps_timer = None                       # set_interval for the dots
         self._deps_target: str = ""                   # install folder ("" = recommended default)
+        self._setup_log: list[str] = []               # captured Setup install activity (for the Logs viewer)
         self._diag_text: str = ""                    # last diagnostics readout (sidebar view)
         self._logs_text: str = ""                    # last server-logs readout (sidebar view)
         self._playbook_key: str = ""                 # issue currently expanded in the Playbook view
@@ -1802,7 +1803,7 @@ class ServerManagerApp(App):
         c = self.cc
         title = {"admin": "ADMIN", "scene": "THEME", "server": "SERVER",
                  "git": "GIT", "connect": "WEBAGENT", "config": "APP CONFIG",
-                 "model": "MODEL SETTINGS", "setup": "SETUP",
+                 "model": "MODEL SETTINGS", "setup": "SETUP", "setuplogs": "SETUP LOGS",
                  "sessions": "ALL SESSIONS", "reset": "RESET",
                  "diag": "DIAGNOSTICS", "logs": "SERVER LOGS", "playbook": "PLAYBOOK",
                  "confirm": (self._confirm_state or {}).get("title", "CONFIRM")}.get(kind, kind.upper())
@@ -1824,6 +1825,8 @@ class ServerManagerApp(App):
             return out + self._reset_widgets()
         if kind == "setup":
             return out + self._setup_widgets()
+        if kind == "setuplogs":
+            return out + self._setup_logs_widgets()
         if kind == "git":
             return out + self._git_widgets()
         if kind == "connect":
@@ -2096,6 +2099,25 @@ class ServerManagerApp(App):
         # Fallback: let the AI assistant drive the install instead (needs a key).
         out.append(Static(Text("—", style=c["dim"]), classes="panel-sub", markup=False))
         out.append(self._panel_btn("[Let the assistant set this up]", "get_started_ai"))
+        n = len(self._setup_log)
+        out.append(self._panel_btn(f"[Logs ({n})]" if n else "[Logs]", "setup_logs"))
+        return out
+
+    def _setup_logs_widgets(self) -> list[Widget]:
+        """The Setup Logs viewer: a captured, scrollable record of every install /
+        manage step run from the dashboard, with Back / Clear / Copy controls."""
+        c = self.cc
+        body = "\n".join(self._setup_log)
+        out: list[Widget] = [
+            Horizontal(self._panel_btn("[‹ Back]", "panel_setup"),
+                       self._panel_btn("[Clear]", "setup_logs_clear"),
+                       self._copy_btn(body),
+                       classes="panel-row"),
+        ]
+        shown = body or ("(no setup activity yet — installs you run from the "
+                         "dashboard will be recorded here)")
+        out.append(Static(_linkify_text(Text(shown, style=c["dim"])),
+                          classes="readout-body", markup=False))
         return out
 
     # ── Playbook view (the self-healing issue knowledge base) ─────────────────
@@ -2390,6 +2412,16 @@ class ServerManagerApp(App):
         if not was_open and not self._deps and self._deps_state != "checking":
             self.run_worker(self._probe_deps(), group="deps", exclusive=True)
 
+    def action_setup_logs(self) -> None:
+        """Open the Setup Logs viewer (the captured install activity)."""
+        self._open_panel("setuplogs")
+
+    def action_setup_logs_clear(self) -> None:
+        """Empty the captured Setup activity log and re-render the viewer."""
+        self._setup_log.clear()
+        if self._panel_kind == "setuplogs":
+            self._rebuild_panel()
+
     def action_deps_recheck(self) -> None:
         if self._deps_busy:
             return
@@ -2441,6 +2473,29 @@ class ServerManagerApp(App):
                 pass
             self._deps_timer = None
 
+    # ── Setup activity log (captured install output, shown in the Logs viewer) ──
+    _SETUP_LOG_CAP = 800   # keep only the most recent lines
+
+    def _setup_record(self, text: str) -> None:
+        """Append a line/block to the Setup activity log, capped so it can't grow
+        without bound. The Logs viewer (action_setup_logs) reads this buffer."""
+        for ln in str(text).splitlines() or [str(text)]:
+            self._setup_log.append(ln)
+        if len(self._setup_log) > self._SETUP_LOG_CAP:
+            del self._setup_log[: -self._SETUP_LOG_CAP]
+
+    def _setup_log_block(self, text: str) -> None:
+        """Install-runner log callback: stream the block to the transcript AND record
+        it in the Setup activity log so the Logs viewer can show it later."""
+        self._setup_record(text)
+        self._log_block(text)
+
+    def _setup_log_line(self, markup: str) -> None:
+        """Record a header line in the Setup log (Rich markup stripped) and print it."""
+        plain = re.sub(r"\[/?[a-z#][^\]]*\]", "", markup) if "[" in markup else markup
+        self._setup_record(plain.strip())
+        self._log(markup)
+
     async def _probe_deps(self) -> None:
         """Probe the dependency checklist off-thread and re-render the panel."""
         import asyncio
@@ -2479,10 +2534,10 @@ class ServerManagerApp(App):
         self._start_deps_dots()
         if self._panel_kind == "setup":
             self._rebuild_panel()
-        self._log(f"[{self.cc['secondary']}]{G.BULLET} Installing: {dep_id}[/]")
+        self._setup_log_line(f"[{self.cc['secondary']}]{G.BULLET} Installing: {dep_id}[/]")
         ctx = self._admin_ctx()
         try:
-            ok, _msg = await depinstall.install_one(ctx, dep_id, self._deps_target, self._log_block)
+            ok, _msg = await depinstall.install_one(ctx, dep_id, self._deps_target, self._setup_log_block)
         finally:
             self._deps_busy = ""
             self._stop_deps_dots()
@@ -2492,7 +2547,7 @@ class ServerManagerApp(App):
 
     async def _run_install_all(self) -> None:
         from . import deps as deps_mod, depinstall
-        self._log(f"[{self.cc['secondary']}]{G.BULLET} Installing all missing dependencies…[/]")
+        self._setup_log_line(f"[{self.cc['secondary']}]{G.BULLET} Installing all missing dependencies…[/]")
         ctx = self._admin_ctx()
         attempted: set[str] = set()
         self._start_deps_dots()
@@ -2509,14 +2564,14 @@ class ServerManagerApp(App):
                 self._deps_busy = nxt.id
                 if self._panel_kind == "setup":
                     self._rebuild_panel()
-                ok, _msg = await depinstall.install_one(ctx, nxt.id, self._deps_target, self._log_block)
+                ok, _msg = await depinstall.install_one(ctx, nxt.id, self._deps_target, self._setup_log_block)
                 self._deps_busy = ""
                 await self._reprobe_quiet()
                 if self._panel_kind == "setup":
                     self._rebuild_panel()
                 if not ok:
-                    self._log(f"[{self.cc['tool']}]{G.WARN} Stopped — '{nxt.id}' didn't "
-                              f"complete. Fix it and run Install all again.[/]")
+                    self._setup_log_line(f"[{self.cc['tool']}]{G.WARN} Stopped — '{nxt.id}' didn't "
+                                         f"complete. Fix it and run Install all again.[/]")
                     break
         finally:
             self._deps_busy = ""
@@ -2524,7 +2579,7 @@ class ServerManagerApp(App):
         self._deps_state = "ready"
         if self._panel_kind == "setup":
             self._rebuild_panel()
-        self._log(f"[{self.cc['dim']}]{deps_mod.summary_line(self._deps)}[/]")
+        self._setup_log_line(f"[{self.cc['dim']}]{deps_mod.summary_line(self._deps)}[/]")
 
     async def _run_ubuntu_manage(self, op: str) -> None:
         from . import depinstall
@@ -2532,10 +2587,10 @@ class ServerManagerApp(App):
         self._start_deps_dots()
         if self._panel_kind == "setup":
             self._rebuild_panel()
-        self._log(f"[{self.cc['secondary']}]{G.BULLET} Ubuntu: {op.replace('ubuntu_', '')}[/]")
+        self._setup_log_line(f"[{self.cc['secondary']}]{G.BULLET} Ubuntu: {op.replace('ubuntu_', '')}[/]")
         ctx = self._admin_ctx()
         try:
-            await depinstall.manage_ubuntu(ctx, op, self._deps_target, self._log_block)
+            await depinstall.manage_ubuntu(ctx, op, self._deps_target, self._setup_log_block)
         finally:
             self._deps_busy = ""
             self._stop_deps_dots()
@@ -3138,6 +3193,7 @@ class ServerManagerApp(App):
                   "cfg_save_settings", "cfg_save_auth", "cfg_refresh",
                   "diag_refresh", "logs_refresh",
                   "setup_target_save", "deps_recheck", "deps_install_all",
+                  "setup_logs", "setup_logs_clear",
                   "playbook_back", "pb_refresh",
                   "pb_mode_document", "pb_mode_safe", "pb_mode_auto",
                   "guardian_toggle", "reset_do"}
