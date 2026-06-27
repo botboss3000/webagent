@@ -65,10 +65,12 @@ let projectRoot = '';          // absolute path of the project root (server-repo
 // (shared with the Git page) and mirrored here as absolute paths so tree rows
 // can show a "Dev" badge; the production-preview toggle reveals the per-row
 // checkboxes. The toolbar "More" button (#files-more-btn) opens a popover with
-// that toggle, the production repo (GitHub remote) + folder fields, a live
-// "in sync / N changes" line, and the two release halves — "Sync to production"
-// (one-way sync the trimmed tree into the sister repo + commit locally) and
-// "Push to GitHub" — the same engine the Git page's one-click Release runs.
+// that toggle, the production repo (GitHub remote) + GitHub key + folder fields,
+// a live "in sync / N changes" line, and the two release halves — "Sync to
+// production" (one-way sync the trimmed tree into the sister repo + commit
+// locally) and "Push to GitHub" — the same engine the Git page's Release runs.
+// The key is a secret: it's masked, never echoed back, and saved to the
+// encrypted vault; the repo + folder save to the local production config.
 let prodExcluded = new Set();  // absolute paths of dev-only folders
 let prodViewMode = 'dev';      // 'dev' | 'prod' (production preview hides them)
 let _prodActionBusy = false;   // guards against a double-fire while syncing/pushing
@@ -76,6 +78,8 @@ let _prodFolder = '';          // cached destination folder (editable in the Mor
 let _prodFolderDefault = '';   // backend's suggested default (placeholder when unset)
 let _prodRemote = '';          // cached production GitHub remote (editable in the More menu)
 let _prodRemoteDefault = '';   // backend's stored remote (for blank-field repopulation)
+let _prodToken = '';           // GitHub key typed this session (secret — sent as a backstop, never displayed)
+let _prodTokenSet = false;     // whether a key is stored in the vault (drives the field's placeholder)
 
 // Persisted state (across tab switches and reloads)
 const LS_SIDEBAR_WIDTH    = 'files.sidebarWidth';
@@ -202,6 +206,7 @@ async function loadProdConfig() {
     _prodFolderDefault = _prodFolder;
     _prodRemote = String(cfg.prod_remote_url || '');
     _prodRemoteDefault = _prodRemote;
+    _prodTokenSet = !!cfg.token_set;
   } catch (_) {
     // Non-fatal — the field just starts blank with its placeholder.
   }
@@ -236,6 +241,31 @@ async function saveProdRemote(value) {
   } catch (_) {
     // Non-fatal — sync/push also send the remote in their payload as a backstop.
   }
+}
+
+// Persist the production GitHub **key** to the encrypted vault (field blur/Enter).
+// A blank value is ignored so an untouched save never wipes the stored key; the
+// key is never read back from the server, so the field is never pre-filled.
+async function saveProdToken(value) {
+  const token = String(value || '').trim();
+  if (!token) return;                // blank = keep the stored key
+  _prodToken = token;                // cache for the action backstop
+  try {
+    await apiFetch('/api/v1/github/production/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ github_token: token }),
+    });
+    _prodTokenSet = true;            // a key is now stored
+  } catch (_) {
+    // Non-fatal — sync/push also send the key in their payload as a backstop.
+  }
+}
+
+// Placeholder for the GitHub key field — reflects whether a key is already
+// stored (without ever revealing it).
+function _prodTokenPlaceholder() {
+  return _prodTokenSet ? '•••••••• saved — blank keeps it' : 'ghp_… or fine-grained token';
 }
 
 // Friendly display of a GitHub remote: a standard https://github.com/owner/repo(.git)
@@ -470,7 +500,7 @@ async function _runProdAction(streamFn, confirmMsg, okStatuses) {
     // Send the current destination folder so the backend uses the freshest value
     // even if the field's auto-save is still in flight. The backend also auto-
     // generates the commit message. The stream helper adds {stream:true}.
-    await streamFn({ prod_folder: _prodFolder || undefined, prod_remote_url: _prodRemote || undefined }, (ev) => {
+    await streamFn({ prod_folder: _prodFolder || undefined, prod_remote_url: _prodRemote || undefined, github_token: _prodToken || undefined }, (ev) => {
       if (ev.phase === 'done') { result = ev.result || {}; return; }
       // The first copy clones the existing repo (~20s) — say so instead of a
       // generic "Building…" label that looks frozen.
@@ -526,9 +556,9 @@ function pushToProduction() {
 }
 
 // The toolbar "More" popover: the production-preview toggle, the production repo
-// (GitHub remote) + folder fields, a live in-sync/diff line, and the two release
-// halves. Reuses the shared floating-menu builder so it matches the tab/context
-// menus; the eye row shows a ✓ while production-preview is on.
+// (GitHub remote) + GitHub key + folder fields, a live in-sync/diff line, and the
+// two release halves. Reuses the shared floating-menu builder so it matches the
+// tab/context menus; the eye row shows a ✓ while production-preview is on.
 function openProductionMenu(anchorBtn) {
   const rect = anchorBtn.getBoundingClientRect();
   const previewing = prodViewMode === 'prod';
@@ -539,13 +569,19 @@ function openProductionMenu(anchorBtn) {
     // Production GitHub remote (owner/repo shorthand accepted). Persists on blur;
     // Sync/Push also send it as a backstop.
     { field: true, label: 'Production repo', value: _shortRemote(_prodRemote),
-      placeholder: 'owner/repo',
+      placeholder: 'owner/repo', fieldKey: 'remote',
       onInput: (v) => { _prodRemote = v.trim(); },
       onSave: (v) => saveProdRemote(v) },
+    // GitHub key (secret) → encrypted vault. Masked, NEVER pre-filled/echoed;
+    // blank keeps the stored key. Sync/Push also send it as a backstop.
+    { field: true, label: 'GitHub key', value: '', fieldType: 'password', fieldKey: 'token',
+      placeholder: _prodTokenPlaceholder(),
+      onInput: (v) => { _prodToken = v.trim(); },
+      onSave: (v) => saveProdToken(v) },
     // Destination folder field. Updates the cache per keystroke and persists on
     // blur/Enter; Sync/Push also send it as a backstop.
     { field: true, label: 'Production folder', value: _prodFolder,
-      placeholder: _prodFolderDefault || '…/your-repo-prod',
+      placeholder: _prodFolderDefault || '…/your-repo-prod', fieldKey: 'folder',
       onInput: (v) => { _prodFolder = v.trim(); },
       onSave: (v) => saveProdFolder(v) },
     { separator: true },
@@ -558,13 +594,17 @@ function openProductionMenu(anchorBtn) {
   loadProdDiff();
   // Refresh the folder + remote from the backend in case they changed elsewhere;
   // update an untouched, still-blank field in place if the value arrives while the
-  // menu is up. fields[0] = repo, fields[1] = folder (in DOM order).
+  // menu is up. Fields are matched by data-field (not index) so inserting the key
+  // field can't misalign them; the key field is never populated (it's a secret).
   loadProdConfig().then(() => {
     const menu = document.getElementById('files-floating-menu');
     if (!menu) return;
-    const fields = menu.querySelectorAll('.files-tab-menu-field input');
-    if (fields[0] && document.activeElement !== fields[0] && !fields[0].value) fields[0].value = _shortRemote(_prodRemote);
-    if (fields[1] && document.activeElement !== fields[1] && !fields[1].value) fields[1].value = _prodFolder;
+    const remoteInp = menu.querySelector('input[data-field="remote"]');
+    const folderInp = menu.querySelector('input[data-field="folder"]');
+    const tokenInp  = menu.querySelector('input[data-field="token"]');
+    if (remoteInp && document.activeElement !== remoteInp && !remoteInp.value) remoteInp.value = _shortRemote(_prodRemote);
+    if (folderInp && document.activeElement !== folderInp && !folderInp.value) folderInp.value = _prodFolder;
+    if (tokenInp  && document.activeElement !== tokenInp  && !tokenInp.value)  tokenInp.placeholder = _prodTokenPlaceholder();
   });
 }
 
@@ -1170,11 +1210,12 @@ function _openFloatingMenu(items, top, left) {
         wrap.appendChild(lab);
       }
       const inp = document.createElement('input');
-      inp.type = 'text';
+      inp.type = item.fieldType || 'text';   // 'password' masks a secret key
       inp.value = item.value || '';
       inp.placeholder = item.placeholder || '';
       inp.spellcheck = false;
-      inp.autocomplete = 'off';
+      inp.autocomplete = item.fieldType === 'password' ? 'new-password' : 'off';
+      if (item.fieldKey) inp.dataset.field = item.fieldKey;
       inp.addEventListener('click', (e) => e.stopPropagation());
       if (typeof item.onInput === 'function') {
         inp.addEventListener('input', () => item.onInput(inp.value));

@@ -9,7 +9,11 @@ two things:
 
 - **The shared config store** (``data/config/production-mirror.json``): the
   production folder path, the production remote URL, the **exclude list** (repo-
-  relative folders that never ship), and the last-release record.
+  relative folders that never ship), and the last-release record. The production
+  **GitHub key** is a secret, so it is NOT kept here — it lives in the encrypted
+  vault (``auth_elements``, service ``production_mirror``), with the shared
+  Git-page token as a fallback when none is stored (:func:`save_vault_token` /
+  :func:`get_vault_token` / :func:`_resolve_token`).
 - **The release engine**, in two composable halves so the work can run as one
   click *or* split into two:
   - :func:`copy_events` (the "Sync to production" step) — a one-way sync: list the
@@ -63,8 +67,21 @@ _SECRET_PATTERNS = [
 ]
 
 
-# ── Token (shared with the Git page) ────────────────────────────────────────
+# ── Token: production vault first, shared Git-page token as fallback ─────────
+# The address (remote URL) and folder live in production-mirror.json (plaintext,
+# gitignored). The GitHub **key** is a secret, so it lives in the encrypted vault
+# (``auth_elements.secret_ref`` — per-tenant Fernet when field encryption is on),
+# the SAME store the deploy panel uses, keyed by service ``production_mirror``. If
+# no production key is stored we fall back to the shared Git-page token from
+# ``provider.json`` so existing setups keep working with no key entered.
+_VAULT_USER = "admin"
+_VAULT_SERVICE = "production_mirror"
+_VAULT_LABEL = "default"
+
+
 def _get_token() -> str:
+    """The shared Git-page token from ``provider.json`` — the legacy fallback
+    used when no production-specific key is stored in the vault."""
     try:
         if _TOKEN_FILE.is_file():
             import json
@@ -75,17 +92,69 @@ def _get_token() -> str:
     return ""
 
 
+async def get_vault_token() -> str:
+    """The production-specific GitHub key from the encrypted vault, or ''."""
+    try:
+        from app.db import get_db
+        elem = await get_db().auth_element_get(_VAULT_USER, _VAULT_SERVICE, _VAULT_LABEL)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("production mirror: vault token read failed: %s", e)
+        return ""
+    return str((elem or {}).get("secret_ref") or "")
+
+
+async def save_vault_token(token: str) -> bool:
+    """Store the production GitHub key in the encrypted vault. A BLANK token
+    LEAVES the stored secret unchanged (the UI never echoes a key back to edit
+    it), matching the deploy-credential vault convention."""
+    token = (token or "").strip()
+    if not token:
+        return True
+    try:
+        from app.db import get_db
+        await get_db().auth_element_set(
+            user_id=_VAULT_USER, service=_VAULT_SERVICE,
+            config={}, secret_ref=token, label=_VAULT_LABEL,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("production mirror: vault token save failed: %s", e)
+        return False
+
+
+async def clear_vault_token() -> bool:
+    """Forget the stored production key (revert to the shared fallback)."""
+    try:
+        from app.db import get_db
+        return bool(await get_db().auth_element_delete(_VAULT_USER, _VAULT_SERVICE, _VAULT_LABEL))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("production mirror: vault token clear failed: %s", e)
+        return False
+
+
+async def token_is_set() -> bool:
+    """True when a usable key exists (production vault OR shared fallback)."""
+    return bool((await get_vault_token()) or _get_token())
+
+
+async def _resolve_token() -> str:
+    """The key to authenticate clone/push with: production vault first, the
+    shared ``provider.json`` token second."""
+    return (await get_vault_token()) or _get_token()
+
+
 def _git_env() -> dict:
-    """Environment for git calls — injects the shared token for HTTPS auth,
-    exactly like app/api/github.py's ``_run_git`` (so the production push
-    authenticates the same way the dev push already does on this machine)."""
+    """Environment for git calls. Always disables interactive credential prompts
+    so a missing/blank key fails fast instead of hanging headless; also injects
+    the shared token as a belt-and-suspenders fallback to the tokenized URL
+    (which is the real auth path here)."""
     env = os.environ.copy()
+    env["GIT_ASKPASS"] = ""
+    env["GIT_TERMINAL_PROMPT"] = "0"
     token = _get_token()
     if token:
         env["GIT_USERNAME"] = "token"
         env["GIT_PASSWORD"] = token
-        env["GIT_ASKPASS"] = ""
-        env["GIT_TERMINAL_PROMPT"] = "0"
     return env
 
 
@@ -435,17 +504,17 @@ def _set_identity(dest: Path) -> None:
     _git(["config", "user.email", email], cwd=dest, timeout=10)
 
 
-def _ensure_repo(dest: Path, remote_url: str) -> str:
+def _ensure_repo(dest: Path, remote_url: str, token: str) -> str:
     """Make *dest* a git repo wired to *remote_url* and return the branch to
     commit/push.
 
     On first setup this is non-destructive: if the remote already has history we
     **clone** it so the mirror's trimmed tree commits *on top* of the existing
     repo (a normal fast-forward push, nothing overwritten); only a genuinely
-    empty remote gets a fresh ``git init``. The token is used for the clone but
-    the stored ``origin`` is reset to the clean URL afterwards.
+    empty remote gets a fresh ``git init``. *token* (resolved from the vault, or
+    the shared fallback) is used for the clone but the stored ``origin`` is reset
+    to the clean URL afterwards.
     """
-    token = _get_token()
     auth_url = _tokenize_url(remote_url, token)
 
     # Already set up — just keep origin pointed at the clean URL.
@@ -513,15 +582,14 @@ def _sanitize(text: str, token: str) -> str:
     return text or ""
 
 
-def _push(dest: Path, branch: str, remote_url: str) -> tuple[str, str, int]:
+def _push(dest: Path, branch: str, remote_url: str, token: str) -> tuple[str, str, int]:
     """Push the mirror's current HEAD to *branch* on the production remote.
 
     Pushes to an explicit (in-memory tokenized) URL rather than the named
     ``origin`` so authentication never depends on a configured credential
     helper, and the token is never written to the mirror's git config. Only this
-    tool ever writes the mirror, so upstream tracking isn't needed.
-    """
-    token = _get_token()
+    tool ever writes the mirror, so upstream tracking isn't needed. *token* is the
+    resolved production key (vault first, shared fallback)."""
     push_url = _tokenize_url(remote_url, token)
     out, err, code = _git(
         ["push", push_url, f"HEAD:refs/heads/{branch}"], cwd=dest, timeout=300
@@ -573,6 +641,10 @@ async def copy_events(message: str = ""):
                "message": "The production folder must be different from the dev repo."}}
         return
 
+    # Resolve the auth key once (production vault first, shared token fallback);
+    # the first copy clones the existing remote, which needs it.
+    token = await _resolve_token()
+
     # ── List the dev project's real files (git-aware) ──
     yield {"phase": "scanning"}
     await asyncio.sleep(0)
@@ -594,7 +666,7 @@ async def copy_events(message: str = ""):
 
     def _materialize() -> tuple[int, str]:
         dest.mkdir(parents=True, exist_ok=True)
-        prod_branch = _ensure_repo(dest, remote_url)
+        prod_branch = _ensure_repo(dest, remote_url, token)
         _wipe_except_git(dest)
         return _copy_files(keep, dest), prod_branch
 
@@ -689,13 +761,16 @@ async def push_events():
                "message": "Nothing has been committed to the production folder yet — run Copy first."}}
         return
 
+    # Resolve the auth key (production vault first, shared token fallback).
+    token = await _resolve_token()
+
     # Normalize origin to the clean URL + learn the branch to push.
-    branch = await _to_thread(lambda: _ensure_repo(dest, remote_url))
+    branch = await _to_thread(lambda: _ensure_repo(dest, remote_url, token))
 
     # ── Push ──
     yield {"phase": "pushing"}
     await asyncio.sleep(0)
-    p_out, p_err, p_rc = await _to_thread(lambda: _push(dest, branch, remote_url))
+    p_out, p_err, p_rc = await _to_thread(lambda: _push(dest, branch, remote_url, token))
     if p_rc != 0:
         yield {"phase": "done", "result": {"status": "error",
                "message": f"Push failed: {(p_err or p_out).strip() or 'unknown error'}"}}

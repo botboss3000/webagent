@@ -271,6 +271,10 @@ class ProdConfigRequest(BaseModel):
     prod_folder: str | None = Field(None, max_length=1000)
     prod_remote_url: str | None = Field(None, max_length=500)
     auto_release_on_push: bool | None = None
+    # The GitHub key is a secret → stored in the encrypted vault, NOT the local
+    # config JSON. A blank string leaves the stored key unchanged (the UI never
+    # echoes it back); only a non-empty value updates it.
+    github_token: str | None = Field(None, max_length=500)
 
 
 class ProdExcludeRequest(BaseModel):
@@ -294,6 +298,9 @@ class ProdReleaseRequest(BaseModel):
     # Same backstop for the production repo (GitHub remote) field — an owner/repo
     # shorthand the engine expands to a full URL on save.
     prod_remote_url: str | None = Field(None, max_length=500)
+    # And for the GitHub key field — persisted to the encrypted vault (blank =
+    # keep) before the copy/push runs.
+    github_token: str | None = Field(None, max_length=500)
 
 
 # Multi-repo registry request models (the Source Control "repo selector").
@@ -1595,21 +1602,29 @@ async def delete_git_repo(repo_id: str, request: Request):
 
 @router.get("/production/config")
 async def get_production_config(request: Request):
-    """Production folder path, remote URL, exclude list, last-release record."""
+    """Production folder path, remote URL, exclude list, last-release record, plus
+    a ``token_set`` flag (whether a GitHub key is stored — never the key itself)."""
     _require_admin(request)
-    return production_mirror.load_config()
+    cfg = production_mirror.load_config()
+    cfg["token_set"] = await production_mirror.token_is_set()
+    return cfg
 
 
 @router.post("/production/config")
 async def set_production_config(req: ProdConfigRequest, request: Request):
-    """Update the production folder path / remote URL / auto-release toggle."""
+    """Update the production folder path / remote URL / auto-release toggle, and
+    (separately) the GitHub key into the encrypted vault. A blank key is ignored
+    so it's never wiped by a save that didn't touch it."""
     _require_admin(request)
     cfg = production_mirror.save_config({
         "prod_folder": req.prod_folder,
         "prod_remote_url": req.prod_remote_url,
         "auto_release_on_push": req.auto_release_on_push,
     })
-    return {"status": "ok", "config": cfg}
+    if req.github_token:
+        await production_mirror.save_vault_token(req.github_token)
+    token_set = await production_mirror.token_is_set()
+    return {"status": "ok", "config": cfg, "token_set": token_set}
 
 
 @router.get("/production/exclude")
@@ -1692,10 +1707,12 @@ async def release_to_production(req: ProdReleaseRequest, request: Request):
     return result
 
 
-def _persist_prod_overrides(req: "ProdReleaseRequest") -> None:
-    """Persist the folder + remote a Sync/Push request carries (the File
+async def _persist_prod_overrides(req: "ProdReleaseRequest") -> None:
+    """Persist the folder + remote + key a Sync/Push request carries (the File
     Explorer's More-menu fields) before the action runs, so it always uses the
-    freshest values even if the field's debounced auto-save hasn't landed yet."""
+    freshest values even if the field's debounced auto-save hasn't landed yet.
+    The folder + remote go to the local config; the GitHub key (if any) goes to
+    the encrypted vault."""
     overrides = {}
     if req.prod_folder:
         overrides["prod_folder"] = req.prod_folder
@@ -1703,6 +1720,8 @@ def _persist_prod_overrides(req: "ProdReleaseRequest") -> None:
         overrides["prod_remote_url"] = req.prod_remote_url
     if overrides:
         production_mirror.save_config(overrides)
+    if req.github_token:
+        await production_mirror.save_vault_token(req.github_token)
 
 
 @router.post("/production/copy")
@@ -1711,7 +1730,7 @@ async def copy_to_production(req: ProdReleaseRequest, request: Request):
     and commit it there LOCALLY (no push). The File Explorer's "Sync to
     production" calls this. Streams NDJSON progress when stream=true."""
     _require_admin(request)
-    _persist_prod_overrides(req)
+    await _persist_prod_overrides(req)
 
     if req.stream:
         async def _event_stream():
@@ -1742,7 +1761,7 @@ async def push_to_production(req: ProdReleaseRequest, request: Request):
     GitHub remote. The File Explorer's "Push to GitHub" calls this. Streams NDJSON
     progress when stream=true. (The request's ``message`` is ignored here.)"""
     _require_admin(request)
-    _persist_prod_overrides(req)
+    await _persist_prod_overrides(req)
 
     if req.stream:
         async def _event_stream():
