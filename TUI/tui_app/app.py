@@ -2313,8 +2313,36 @@ class ServerManagerApp(App):
         Model below; 'Custom' leaves them for manual entry."""
         c = self.cc
         p = self._cfg_provider
-        out: list[Widget] = [Static(Text("LLM provider + auth key",
-                                         style=f"bold {c['accent']}"), classes="panel-sub")]
+        # ── Agent-loop switch (sits right above the provider/model chooser) ──────
+        # Picks which brain drives ordinary turns. The two loops connect to the LLM
+        # in different ways, so flipping this also flips which LLM is used:
+        #   • webAgent loop → the linked checkout's REAL loop (its agents + abilities)
+        #     using the app's OWN provider config.
+        #   • Internal loop → the TUI's built-in brain using the provider/key set
+        #     in the fields below (keeps working even when the server is down).
+        mode = (self.cfg.engine_mode or "webagent")
+        out: list[Widget] = [Static(Text("Agent loop", style=f"bold {c['accent']}"),
+                                    classes="panel-sub")]
+        seg: list[Widget] = []
+        for label, val in (("Internal", "internal"), ("webAgent", "webagent")):
+            active = " panel-btn-active" if val == mode else ""
+            seg.append(self._value_btn(label, "engine_mode_pick",
+                                       "engine-mode-pick" + active, val))
+        out.append(Horizontal(*seg, classes="panel-row"))
+        if mode == "internal":
+            note = ("Internal: the TUI's own brain + the LLM set below. "
+                    "Works even when the server is down.")
+        else:
+            note = ("webAgent: the linked app's real loop — its agents & abilities, "
+                    "using the app's own LLM. The fields below are the internal "
+                    "loop's fallback.")
+        out.append(Static(Text(note, style=c["dim"]), classes="panel-sub"))
+        if self.project_root is None:
+            out.append(Static(Text("(No checkout linked — the internal loop runs "
+                                   "until you link one.)", style=c["dim"]),
+                              classes="panel-sub"))
+        out.append(Static(Text("LLM provider + auth key",
+                               style=f"bold {c['accent']}"), classes="panel-sub"))
         if not p:
             out.append(Static(Text("(loading… or Refresh)", style=c["dim"]), classes="panel-sub"))
         names = [n for n, _, _ in PROVIDER_PRESETS]
@@ -2727,6 +2755,26 @@ class ServerManagerApp(App):
 
     def action_toggle_manager(self) -> None:
         self.set_manager_muted(not self._manager_muted)
+        self._rebuild_panel()
+
+    @on(Click, ".engine-mode-pick")
+    def _on_engine_mode_pick(self, event: Click) -> None:
+        """Flip the Agent-loop switch (Internal ↔ webAgent), persist it, and — when
+        switching to the internal brain — stop any warm app-engine subprocess so the
+        next turn runs locally. Switching back re-launches the engine lazily."""
+        val = getattr(event.widget, "_btn_value", None)
+        if val not in ("internal", "webagent"):
+            return
+        if val == self.cfg.engine_mode:
+            return
+        self.cfg.engine_mode = val
+        self.cfg.save()
+        if val == "internal" and self._app_engine is not None:
+            engine, self._app_engine = self._app_engine, None
+            self.run_worker(engine.stop(), group="enginestop")
+        c = self.cc
+        where = "internal brain" if val == "internal" else "webAgent app loop"
+        self._log(f"[{c['secondary']}]{G.OK} agent loop → {where}.[/]")
         self._rebuild_panel()
 
     @on(Click, ".cfg-provider-pick")
@@ -4558,8 +4606,12 @@ class ServerManagerApp(App):
         async def on_event_engine(ev: AgentEvent) -> None:
             await on_event(ev)
 
+        # The Model Settings ▸ Agent loop switch picks the brain: "webagent" (the
+        # linked checkout's real loop) or "internal" (the TUI's own brain). With no
+        # checkout linked there is no app loop to drive, so internal is forced.
         use_engine = (self.project_root is not None and not synthetic
-                      and not images and bool(text))
+                      and not images and bool(text)
+                      and (self.cfg.engine_mode or "webagent") != "internal")
         ran_engine = False
         try:
             if use_engine:

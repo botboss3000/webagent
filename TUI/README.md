@@ -64,6 +64,18 @@ first, a codebase agent second:
   front door** (the checkout's real agent, shared app DB); the built-in brain keeps
   the management/recovery ability sets below and the linked repo's AI key.
 
+The brain used in managed mode is switchable from **Admin ▸ Model Settings ▸ Agent
+loop** (a toggle right above the LLM model chooser), saved as `engine_mode` in the
+TUI config:
+
+- **webAgent** (default) — drive the linked checkout's real loop (its agents,
+  abilities + the **app's own** provider config).
+- **Internal** — force the TUI's own built-in brain + the LLM resolved from Model
+  Settings, even with a checkout linked. Because the two loops connect to the LLM
+  differently, flipping the switch also flips which LLM is used. Handy when the
+  server/app code is broken: the internal brain keeps working offline. (With **no**
+  checkout linked the internal loop is always used regardless of the setting.)
+
 Every turn the built-in brain is handed a **live situation snapshot** — host OS,
 Python, git, whether a repo is linked, server health, and the AI key in use — so
 its guidance stays grounded instead of guessed.
@@ -402,7 +414,7 @@ pytest-asyncio dependency), run with the venv Python:
 | Style | What it drives | Files |
 |-------|----------------|-------|
 | **Logic / agent loop** | `ServerManagerAgent` directly with a `FakeLLM` — no UI, no network. Verifies the event-driven loop, subagents, and delegate tools. | `test_event_loop.py`, `test_subagents.py`, `test_delegate.py`, `test_playbook.py` |
-| **UI / Pilot** | The whole `ServerManagerApp` **headlessly** via Textual's `App.run_test()` → a `Pilot`. Boots into an off-screen buffer (no terminal opens), then types, presses keys, clicks widgets, inspects the tree, and takes **text** screenshots to verify appearance. | [`pilot_harness.py`](tests/pilot_harness.py) (reusable boot/snapshot/LLM helpers), [`test_tui_pilot.py`](tests/test_tui_pilot.py) (pure-UI smoke test), [`test_tui_pilot_repo_dir.py`](tests/test_tui_pilot_repo_dir.py) (Admin ▸ Repo directory field save/clear → DB), [`test_tui_pilot_admin_panels.py`](tests/test_tui_pilot_admin_panels.py) (every side panel builds without crashing — guards Admin ▸ Reset) |
+| **UI / Pilot** | The whole `ServerManagerApp` **headlessly** via Textual's `App.run_test()` → a `Pilot`. Boots into an off-screen buffer (no terminal opens), then types, presses keys, clicks widgets, inspects the tree, and takes **text** screenshots to verify appearance. | [`pilot_harness.py`](tests/pilot_harness.py) (reusable boot/snapshot/LLM helpers), [`test_tui_pilot.py`](tests/test_tui_pilot.py) (pure-UI smoke test), [`test_tui_pilot_repo_dir.py`](tests/test_tui_pilot_repo_dir.py) (Admin ▸ Repo directory field save/clear → DB), [`test_tui_pilot_admin_panels.py`](tests/test_tui_pilot_admin_panels.py) (every side panel builds without crashing — guards Admin ▸ Reset), [`test_tui_pilot_engine_switch.py`](tests/test_tui_pilot_engine_switch.py) (Model Settings ▸ Agent-loop switch flips `engine_mode` + the dispatch gate) |
 | **UI / Pilot + LLM** | A full chat turn driven **through the UI** with a scripted `FakeLLM` — prompt submit → agent loop → assistant bubble → token HUD → Stop pill — offline and deterministic. Use `use_fake_llm` + `drive_turn` from the harness. | [`test_tui_pilot_llm.py`](tests/test_tui_pilot_llm.py) |
 
 Run a Pilot test:
@@ -698,7 +710,7 @@ the header.
 | `[Setup]` | Open the **Setup dashboard** — the deterministic, button-driven dependency checklist (the same view the **Setup** header pill opens in onboarding mode). See [Setup dashboard](#setup-dashboard-the-first-open-dependency-checklist) |
 | `[Connect]` | Open the **Connect** view — browse the admin's agents, pick one, then pick (or start) a session to set the **target**, and flip the two mute toggles (see [Driving the running app](#driving-the-running-app-the-two-mutes)) |
 | `[App Config]` | Open the **App Config** view — edit `app-settings.json` (access mode, presentation mode, **render recorder** on/off — the browser flight-recorder that captures HTML snapshots / lag / JS errors), saved over the admin API; plus **Session naming** (TUI-local) — how the Sessions list names each conversation: **Summary (AI)** (LLM summary of the last ~10 messages, falling back to the latest user message), **Latest message**, or **Off** |
-| `[Model Settings]` | Open the **Model Settings** view — the app's **LLM provider + auth key** (provider quick-pick pills that fill base URL + model, then provider / base URL / model / API key), saved over the admin API. (Moved here out of App Config.) |
+| `[Model Settings]` | Open the **Model Settings** view — an **Agent loop** switch (Internal ↔ webAgent, see [Modes](#modes)) right above the **LLM provider + auth key** (provider quick-pick pills that fill base URL + model, then provider / base URL / model / API key), saved over the admin API. (Moved here out of App Config.) |
 | `[Commands]` | Print a user reference to the transcript — on-screen controls, keyboard shortcuts, plain-language things to ask the agent, and the terminal commands for install / launch / proot-Python / uninstall (tailored to Termux vs desktop) |
 | `[Update]` | Update the manager/repo — backs up, pulls (source) or rebuilds the exe (frozen), and restarts |
 | `[Install]` | Run the guided install (onboarding mode); in managed mode it points you at `[Update]` instead |

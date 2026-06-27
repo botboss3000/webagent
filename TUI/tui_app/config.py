@@ -271,6 +271,12 @@ class TuiConfig:
     provider: str = ""             # provider preset name chosen in the App panel (display)
     provider_override: bool = False  # True once the user Saves a key/provider in the UI →
                                      # the saved triple then wins over the repo's provider.json/.env
+    engine_mode: str = "webagent"    # which agent loop drives ordinary turns:
+                                     #   "webagent" = the linked checkout's REAL loop (its agents,
+                                     #     abilities + the app's own LLM) — the default once linked;
+                                     #   "internal" = the TUI's own built-in brain + the LLM resolved
+                                     #     from Model Settings (works even when the server is down).
+                                     # No checkout linked → the internal loop is always used.
     git_token: str = ""            # GitHub token used to authenticate fetch/pull/push (Git panel)
     autonomous: bool = False       # opt-in: act on mutating tools without per-call gating
     writes_enabled: bool = False   # interactive "armed" toggle for mutating tools

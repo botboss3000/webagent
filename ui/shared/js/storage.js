@@ -14,6 +14,7 @@ import { app } from './state.js';
 import { apiPath } from './config.js';
 import { isAdmin } from './left-login.js';
 import { _esc } from './dom-utils.js';
+import { tipBadge } from './field-tip.js';
 
 let PAGE = null;
 
@@ -136,6 +137,83 @@ const DB_NOTES = {
   ),
 };
 
+// ── "How to set up an account / where to find the details" guides ───────────
+// Rendered as a circled "?" help badge beside the Provider / Vault selectors
+// (see field-tip.js). These answer "I picked this provider — now how do I get
+// an account and the connection details to paste below?" — the same per-field
+// guidance the Deploy form grew, applied to the data backends.
+
+function setupGuide(intro, steps) {
+  const lis = steps.map(s => `<li style="margin:3px 0;">${s}</li>`).join('');
+  const head = intro ? `<div style="margin-bottom:6px;opacity:.85;">${intro}</div>` : '';
+  return { html: `${head}<ol style="margin:0;padding-left:16px;line-height:1.45;">${lis}</ol>`, wide: true };
+}
+
+const DB_SETUP = {
+  sqlite: { html: 'No account or setup needed. The database is a single file kept locally under <code>data/db/</code> — nothing to configure.' },
+  supabase: setupGuide('Free managed Postgres. ~2 minutes to a working URL + key:', [
+    'Go to <b>supabase.com</b> and sign up (GitHub login works).',
+    'Click <b>New project</b>, give it a name, set a strong database password, pick a region near your server, and create it. Wait ~1 min while it provisions.',
+    'Open <b>Project Settings → API</b> (gear icon, bottom-left).',
+    'Copy the <b>Project URL</b> (looks like <code>https://xxxx.supabase.co</code>) into the URL field below.',
+    'Under <b>Project API keys</b>, reveal and copy the <b>service_role</b> key into the Service role key field. (It bypasses row-level security — keep it secret, server-side only.)',
+    'Click <b>Test Connection</b>, then <b>Auto-Create Tables</b>, then <b>Activate</b>.',
+  ]),
+  postgres: setupGuide('Connect to any Postgres server you already run (self-hosted, on-prem, a VPS, etc.):', [
+    'Make sure the server is reachable from this machine and accepts TCP connections (check <code>listen_addresses</code> and <code>pg_hba.conf</code>).',
+    'Create a database and a user with rights on it (e.g. <code>CREATE DATABASE webagent;</code> and a role with full access).',
+    'Fill in the host, port (usually 5432), database name, username and password below.',
+    'Pick an SSL mode — use <b>require</b> or stronger for anything over a network.',
+    'Click <b>Test Connection</b>, then <b>Auto-Create Tables</b>, then <b>Activate</b>.',
+  ]),
+  aws_rds: setupGuide('Managed Postgres on AWS (RDS or Aurora):', [
+    'In the <b>AWS Console → RDS</b>, click <b>Create database</b> and choose <b>PostgreSQL</b> (or Aurora PostgreSQL).',
+    'Set a master username and password, and note the initial database name.',
+    'Under <b>Connectivity</b>, enable <b>Public access</b> (or place this app inside the same VPC), and open port 5432 in the security group to this server\'s IP.',
+    'After it finishes creating, open the instance and copy its <b>Endpoint</b> hostname.',
+    'Paste the endpoint, port, database name, username and password below, then <b>Test Connection</b> → <b>Auto-Create Tables</b> → <b>Activate</b>.',
+  ]),
+  gcp_cloud_sql: setupGuide('Managed Postgres on Google Cloud:', [
+    'In the <b>Google Cloud Console → SQL</b>, click <b>Create instance</b> → <b>PostgreSQL</b>.',
+    'Set an instance ID and a password for the <code>postgres</code> user; choose a region.',
+    'Under <b>Connections</b>, add this server\'s IP to <b>Authorized networks</b> (or run the Cloud SQL Auth Proxy and connect to it locally).',
+    'Create a database from the <b>Databases</b> tab.',
+    'Copy the instance\'s <b>Public IP</b> (or the proxy host) into the host field, fill in the rest, then <b>Test</b> → <b>Auto-Create Tables</b> → <b>Activate</b>.',
+  ]),
+  azure_postgres: setupGuide('Managed Postgres on Azure (Flexible Server):', [
+    'In the <b>Azure Portal</b>, create a resource → <b>Azure Database for PostgreSQL → Flexible Server</b>.',
+    'Set an admin username and password; choose a region and tier.',
+    'Under <b>Networking</b>, add a firewall rule for this server\'s IP (or allow public access for testing).',
+    'After deployment, open the server\'s <b>Overview</b> and copy the <b>Server name</b> (e.g. <code>myserver.postgres.database.azure.com</code>).',
+    'Paste it into the host field, fill in the database/username/password, then <b>Test</b> → <b>Auto-Create Tables</b> → <b>Activate</b>.',
+  ]),
+  neon: setupGuide('Serverless Postgres with a generous free tier:', [
+    'Go to <b>neon.tech</b> and sign up (GitHub login works).',
+    'Create a <b>Project</b> — a database and branch are created for you automatically.',
+    'On the project dashboard click <b>Connect</b> / <b>Connection Details</b> to reveal the connection string.',
+    'From that string, copy the <b>host</b> (e.g. <code>ep-xxxx.neon.tech</code>), database name, username (role) and password into the fields below.',
+    'Click <b>Test Connection</b>, then <b>Auto-Create Tables</b>, then <b>Activate</b>.',
+  ]),
+};
+
+const SECRETS_SETUP = {
+  inline_db: { html: 'No setup — secrets are stored in the app database. Fine for local dev only; switch to a real vault before production.' },
+  env: { html: 'No account. Secrets are read from environment variables your deployment injects (e.g. Docker / Cloud Run secrets). Read-only — the app can\'t write new tokens here.' },
+  os_keyring: { html: 'No account. Uses this machine\'s own credential store (Windows Credential Manager / macOS Keychain / freedesktop Secret Service). Nothing to configure — it just works on the host the app runs on.' },
+  gcp_secret_manager: setupGuide('Store secrets in Google Cloud Secret Manager:', [
+    'In the <b>Google Cloud Console</b>, enable the <b>Secret Manager API</b> for your project.',
+    'Create a <b>service account</b> with the <b>Secret Manager Admin</b> role and download its JSON key (or, if this app runs on GCP, attach the role to its workload identity).',
+    'Make the credentials available to the app via the <code>GOOGLE_APPLICATION_CREDENTIALS</code> environment variable pointing at that JSON key.',
+    'Click <b>Test</b> below to confirm the app can reach Secret Manager, then <b>Activate</b>.',
+  ]),
+  aws_secrets_manager: setupGuide('Store secrets in AWS Secrets Manager:', [
+    'In the <b>AWS Console</b>, no resource is needed up front — secrets are created on demand.',
+    'Create an <b>IAM user or role</b> with permission to <code>secretsmanager:*</code> on your secrets (or attach the role to this app\'s EC2/ECS/Lambda).',
+    'Provide its credentials to the app via the standard AWS environment variables (<code>AWS_ACCESS_KEY_ID</code>, <code>AWS_SECRET_ACCESS_KEY</code>, <code>AWS_REGION</code>) — or an instance role.',
+    'Click <b>Test</b> below to confirm access, then <b>Activate</b>.',
+  ]),
+};
+
 const SECRETS_NOTES = {
   inline_db: notesHtml(
     ['Zero setup — works out of the box on any DB backend.'],
@@ -203,6 +281,17 @@ function renderNotes(elt, map, key) {
   elt.innerHTML = html;
 }
 
+// Put a circled "?" account-setup guide beside a Provider/Vault <label>, swapped
+// to match the currently-selected provider. The label text stays put; only the
+// badge's guide changes, so we replace the single badge in place each time.
+function renderSetupTip(labelEl, map, key) {
+  if (!labelEl) return;
+  const old = labelEl.querySelector(':scope > .ac-field-tip');
+  if (old) old.remove();
+  const badge = tipBadge(map[key]);
+  if (badge) labelEl.appendChild(badge);
+}
+
 // ── Provider field templates ───────────────────────────────────────────────
 
 const FIELD_SPECS = {
@@ -212,49 +301,79 @@ const FIELD_SPECS = {
   // the backend falls back to DEFAULT_DB_PATH.
   sqlite: [],
   supabase: [
-    { key: 'supabase_url', label: 'Project URL', type: 'text', placeholder: 'https://xxxx.supabase.co', required: true },
-    { key: 'supabase_service_key', label: 'Service role key', type: 'password', placeholder: 'eyJhbGciOi...' },
+    { key: 'supabase_url', label: 'Project URL', type: 'text', placeholder: 'https://xxxx.supabase.co', required: true,
+      tip: 'Supabase dashboard → Project Settings → API → "Project URL". Looks like https://xxxx.supabase.co.' },
+    { key: 'supabase_service_key', label: 'Service role key', type: 'password', placeholder: 'eyJhbGciOi...',
+      tip: 'Project Settings → API → Project API keys → reveal and copy the "service_role" key (NOT the anon key). It bypasses row-level security, so keep it server-side only.' },
   ],
   postgres: [
-    { key: 'host', label: 'Host', type: 'text', required: true },
-    { key: 'port', label: 'Port', type: 'number', placeholder: '5432' },
-    { key: 'database', label: 'Database name', type: 'text', required: true },
-    { key: 'username', label: 'Username', type: 'text', required: true },
-    { key: 'password', label: 'Password', type: 'password' },
-    { key: 'ssl_mode', label: 'SSL mode', type: 'select', options: ['disable','require','verify-ca','verify-full'] },
+    { key: 'host', label: 'Host', type: 'text', required: true,
+      tip: 'Hostname or IP of your Postgres server — from your provider\'s connection details. Use localhost only if Postgres runs on this same machine.' },
+    { key: 'port', label: 'Port', type: 'number', placeholder: '5432',
+      tip: 'TCP port Postgres listens on. The default is 5432; leave blank to use it.' },
+    { key: 'database', label: 'Database name', type: 'text', required: true,
+      tip: 'The database to use inside the server. Create one first (e.g. "webagent") if it does not exist yet.' },
+    { key: 'username', label: 'Username', type: 'text', required: true,
+      tip: 'A Postgres role that can read/write that database. Auto-Create Tables also needs rights to create tables.' },
+    { key: 'password', label: 'Password', type: 'password',
+      tip: 'Password for that role. Leave blank only if the server allows password-less (trust) auth.' },
+    { key: 'ssl_mode', label: 'SSL mode', type: 'select', options: ['disable','require','verify-ca','verify-full'],
+      tip: 'How strictly to encrypt the connection. Use "require" or stronger for anything reached over a network; "disable" is for localhost only.' },
   ],
   aws_rds: [
-    { key: 'host', label: 'Endpoint (e.g. mydb.xxxx.us-east-1.rds.amazonaws.com)', type: 'text', required: true },
-    { key: 'port', label: 'Port', type: 'number', placeholder: '5432' },
-    { key: 'database', label: 'Database name', type: 'text', required: true },
-    { key: 'username', label: 'Username', type: 'text', required: true },
-    { key: 'password', label: 'Password', type: 'password' },
+    { key: 'host', label: 'Endpoint (e.g. mydb.xxxx.us-east-1.rds.amazonaws.com)', type: 'text', required: true,
+      tip: 'AWS Console → RDS → your instance → Connectivity & security → "Endpoint". Make sure its security group allows port 5432 from this server.' },
+    { key: 'port', label: 'Port', type: 'number', placeholder: '5432',
+      tip: 'Shown next to the endpoint in RDS. Default 5432.' },
+    { key: 'database', label: 'Database name', type: 'text', required: true,
+      tip: 'The "Initial database name" you set when creating the instance (or one you created afterwards).' },
+    { key: 'username', label: 'Username', type: 'text', required: true,
+      tip: 'The master username you set when creating the RDS instance (or a user you granted access to).' },
+    { key: 'password', label: 'Password', type: 'password',
+      tip: 'The master password you set at creation. Reset it from the RDS console if you have lost it.' },
   ],
   gcp_cloud_sql: [
-    { key: 'host', label: 'Public IP / Cloud SQL proxy host', type: 'text', required: true },
-    { key: 'port', label: 'Port', type: 'number', placeholder: '5432' },
-    { key: 'database', label: 'Database name', type: 'text', required: true },
-    { key: 'username', label: 'Username', type: 'text', required: true },
-    { key: 'password', label: 'Password', type: 'password' },
+    { key: 'host', label: 'Public IP / Cloud SQL proxy host', type: 'text', required: true,
+      tip: 'Cloud Console → SQL → your instance → "Public IP address". Add this server\'s IP under Connections → Authorized networks, or use the Cloud SQL Auth Proxy and put its host here.' },
+    { key: 'port', label: 'Port', type: 'number', placeholder: '5432',
+      tip: 'Postgres port. Default 5432.' },
+    { key: 'database', label: 'Database name', type: 'text', required: true,
+      tip: 'A database created under the instance\'s Databases tab.' },
+    { key: 'username', label: 'Username', type: 'text', required: true,
+      tip: 'A database user from the instance\'s Users tab (e.g. the default "postgres" user).' },
+    { key: 'password', label: 'Password', type: 'password',
+      tip: 'The password set for that user when the instance or user was created.' },
   ],
   azure_postgres: [
-    { key: 'host', label: 'Server name (e.g. myserver.postgres.database.azure.com)', type: 'text', required: true },
-    { key: 'port', label: 'Port', type: 'number', placeholder: '5432' },
-    { key: 'database', label: 'Database name', type: 'text', required: true },
-    { key: 'username', label: 'Username', type: 'text', required: true },
-    { key: 'password', label: 'Password', type: 'password' },
+    { key: 'host', label: 'Server name (e.g. myserver.postgres.database.azure.com)', type: 'text', required: true,
+      tip: 'Azure Portal → your PostgreSQL flexible server → Overview → "Server name". Add a firewall rule for this server\'s IP under Networking.' },
+    { key: 'port', label: 'Port', type: 'number', placeholder: '5432',
+      tip: 'Postgres port. Default 5432.' },
+    { key: 'database', label: 'Database name', type: 'text', required: true,
+      tip: 'A database on the server (the default is often "postgres"); create one under the Databases blade.' },
+    { key: 'username', label: 'Username', type: 'text', required: true,
+      tip: 'The admin username you set when creating the server (Entra ID auth is also possible but not used here).' },
+    { key: 'password', label: 'Password', type: 'password',
+      tip: 'The admin password set at creation; reset it from the server\'s Overview if needed.' },
   ],
   neon: [
-    { key: 'host', label: 'Endpoint (e.g. ep-xxxx.neon.tech)', type: 'text', required: true },
-    { key: 'port', label: 'Port', type: 'number', placeholder: '5432' },
-    { key: 'database', label: 'Database name', type: 'text', required: true },
-    { key: 'username', label: 'Username', type: 'text', required: true },
-    { key: 'password', label: 'Password', type: 'password' },
+    { key: 'host', label: 'Endpoint (e.g. ep-xxxx.neon.tech)', type: 'text', required: true,
+      tip: 'Neon dashboard → your project → Connect / Connection Details. Copy the host part of the connection string (ends in .neon.tech).' },
+    { key: 'port', label: 'Port', type: 'number', placeholder: '5432',
+      tip: 'Postgres port. Default 5432.' },
+    { key: 'database', label: 'Database name', type: 'text', required: true,
+      tip: 'The database name from the same Connection Details panel (often "neondb").' },
+    { key: 'username', label: 'Username', type: 'text', required: true,
+      tip: 'The role/username shown in the connection string.' },
+    { key: 'password', label: 'Password', type: 'password',
+      tip: 'The password shown in Neon\'s Connection Details (click "Show password"). You can roll it from the dashboard.' },
   ],
 };
 
 function renderFields(m, provider, existing) {
   if (!m || !m.fields) return;
+  // Account-setup guide beside the "Provider" label (changes with the choice).
+  renderSetupTip(m.provider && m.provider.previousElementSibling, DB_SETUP, provider);
   m.fields.innerHTML = '';
   const specs = FIELD_SPECS[provider] || [];
   for (const spec of specs) {
@@ -263,6 +382,8 @@ function renderFields(m, provider, existing) {
     const lbl = document.createElement('label');
     lbl.textContent = spec.label + (spec.required ? ' *' : '');
     lbl.style.cssText = 'display:block;font-size:11px;margin-bottom:2px;opacity:0.8;';
+    const fieldTip = tipBadge(spec.tip);     // "where do I find this value?" "?" badge
+    if (fieldTip) lbl.appendChild(fieldTip);
     wrap.appendChild(lbl);
     let input;
     if (spec.type === 'select') {
@@ -324,6 +445,7 @@ function applyState(m, state) {
   const sec = state.secrets || {};
   m.secretsProv.value = sec.provider || 'inline_db';
   renderNotes(m.secretsNotes, SECRETS_NOTES, m.secretsProv.value);
+  renderSetupTip(m.secretsProv.previousElementSibling, SECRETS_SETUP, m.secretsProv.value);
   m.secretsBadge.textContent = `active: ${sec.provider || 'inline_db'}`;
   m.secretsWarn.style.display = (sec.provider === 'inline_db') ? 'block' : 'none';
   const pgs = state.canvases || {};
@@ -488,6 +610,7 @@ function wire(m) {
   if (m.secretsProv) {
     m.secretsProv.addEventListener('change', () => {
       renderNotes(m.secretsNotes, SECRETS_NOTES, m.secretsProv.value);
+      renderSetupTip(m.secretsProv.previousElementSibling, SECRETS_SETUP, m.secretsProv.value);
     });
   }
 
