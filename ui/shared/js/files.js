@@ -508,6 +508,11 @@ async function _runProdAction(streamFn, confirmMsg, okStatuses) {
         setProdStatus('Setting up the production repo (first run — cloning, ~20s)…', 'info');
         return;
       }
+      if (ev.phase === 'message_ready') {
+        // Show the AI-written title (mirrors the ⭐ commit&push step display).
+        setProdStatus(ev.title ? `Message: "${ev.title}"` : 'Message ready', 'info');
+        return;
+      }
       const label = _RELEASE_PHASE_LABELS[ev.phase];
       if (label) setProdStatus(label, 'info');
     });

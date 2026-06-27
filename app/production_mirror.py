@@ -597,6 +597,29 @@ def _push(dest: Path, branch: str, remote_url: str, token: str) -> tuple[str, st
     return _sanitize(out, token), _sanitize(err, token), code
 
 
+async def _auto_commit_message(dest: Path, staged_diff: str,
+                               fallback: str) -> tuple[str, str]:
+    """Auto-write the production commit message with the SAME lightweight LLM
+    writer the dev commit path (the ⭐ commit&push button) uses, fed the production
+    repo's already-staged diff. Returns ``(message, source)``: ``source`` is
+    ``"llm"`` when the model produced the note, or ``"fallback"`` when we keep the
+    deterministic release line (writer unavailable, empty reply, timeout, or no
+    diff). The import is lazy so this module never depends on the API layer at load
+    time (``app/api/github.py`` already imports this module)."""
+    import asyncio
+
+    try:
+        stat_out, _, _ = await asyncio.to_thread(
+            lambda: _git(["diff", "--cached", "--stat"], cwd=dest, timeout=60))
+        from app.api.github import _generate_commit_message
+        msg, source, _detail = await _generate_commit_message(stat_out, staged_diff, [])
+        if source == "llm" and msg.strip():
+            return msg.strip(), "llm"
+    except Exception:  # noqa: BLE001
+        logger.warning("production mirror: auto commit-message writer failed", exc_info=True)
+    return fallback, "fallback"
+
+
 async def copy_events(message: str = ""):
     """Async generator: build the trimmed production tree in the sister folder and
     **commit it locally — WITHOUT pushing**. This is the first half of a release;
@@ -604,7 +627,8 @@ async def copy_events(message: str = ""):
     stage what ships, review it, then push separately.
 
     Phases: preparing → scanning(file listing) → copying → safety(secret scan)
-    → committing → done. Terminal statuses: ``copied`` (a local commit is staged
+    → message(auto-write the note when blank) → committing → done. Terminal
+    statuses: ``copied`` (a local commit is staged
     in the production folder, ready to push), ``nothing`` (production already
     matches dev — nothing new to commit), ``blocked`` (a secret was found before
     committing), ``error``. The terminal event is always
@@ -697,16 +721,30 @@ async def copy_events(message: str = ""):
                "message": "Production folder already matches dev — nothing to sync."}}
         return
 
-    # ── Commit (locally only — no push) ──
-    yield {"phase": "committing"}
-    await asyncio.sleep(0)
+    # ── Compose the commit message (mirrors the Git page's ⭐ commit&push) ──
+    # A blank note means "auto-write one": we reuse the SAME lightweight LLM writer
+    # the dev commit path uses, fed the production repo's already-staged diff, so a
+    # release gets a real conventional-commit summary of what actually changed. On
+    # any writer failure we keep the deterministic "Release from dev…" line. The
+    # message / message_ready / message_fallback phases mirror the ⭐ exactly.
     dev_short = _dev_head_short()
+    ex_note = (", ".join(sorted(excludes)) if excludes else "none")
+    deterministic = (f"Release from dev {dev_short or '(uncommitted)'} — {copied} files\n\n"
+                     f"Generated production mirror. Excluded folders: {ex_note}.")
     if message and message.strip():
         commit_msg = message.strip()
     else:
-        ex_note = (", ".join(sorted(excludes)) if excludes else "none")
-        commit_msg = (f"Release from dev {dev_short or '(uncommitted)'} — {copied} files\n\n"
-                      f"Generated production mirror. Excluded folders: {ex_note}.")
+        yield {"phase": "message"}
+        await asyncio.sleep(0)
+        commit_msg, msg_source = await _auto_commit_message(dest, diff_out, deterministic)
+        if msg_source == "llm":
+            yield {"phase": "message_ready", "title": commit_msg.splitlines()[0]}
+        else:
+            yield {"phase": "message_fallback"}
+
+    # ── Commit (locally only — no push) ──
+    yield {"phase": "committing"}
+    await asyncio.sleep(0)
     _, c_err, c_rc = await _to_thread(lambda: _git(["commit", "-m", commit_msg], cwd=dest, timeout=120))
     if c_rc != 0:
         yield {"phase": "done", "result": {"status": "error",

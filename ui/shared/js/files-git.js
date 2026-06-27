@@ -1463,6 +1463,8 @@ export const _RELEASE_PHASE_LABELS = {
   scanning:   'Listing project files…',
   copying:    'Building the trimmed copy…',
   safety:     'Safety-checking for secrets…',
+  message:    'Writing a release message…',
+  message_fallback: 'AI message writer unavailable — using a file-list summary',
   committing: 'Committing the mirror…',
   pushing:    'Pushing to GitHub…',
 };
@@ -1559,6 +1561,12 @@ async function doReleaseToProduction(rootEl) {
   try {
     await streamRelease({ message: note }, (ev) => {
       if (ev.phase === 'done') { result = ev.result || {}; return; }
+      if (ev.phase === 'message_ready') {
+        // Show the AI-written title (mirrors the ⭐ commit&push step display).
+        setStickyResult(rootEl, 'fg-prod-result',
+          ev.title ? `Message: "${ev.title}"` : 'Message ready', 'info', { spin: true });
+        return;
+      }
       const label = _RELEASE_PHASE_LABELS[ev.phase];
       if (label) setStickyResult(rootEl, 'fg-prod-result', label, 'info', { spin: true });
     });
