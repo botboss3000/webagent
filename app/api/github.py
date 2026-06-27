@@ -776,6 +776,96 @@ async def get_commit_detail(commit_hash: str, request: Request):
     }
 
 
+def _count_new_file_lines(path: Path, max_bytes: int = 2_000_000) -> int | None:
+    """Line count of a brand-new (untracked) file, for its +N badge.
+
+    `git diff` doesn't see untracked files, so for those we count the lines
+    ourselves and treat them all as additions. Returns None — meaning "show no
+    count" — for anything that shouldn't get a number: a binary file (a NUL byte
+    near the top), a file too big to bother reading, or one that's gone /
+    unreadable. An empty file is 0."""
+    try:
+        if not path.is_file() or path.stat().st_size > max_bytes:
+            return None
+        data = path.read_bytes()
+    except Exception:  # noqa: BLE001
+        return None
+    if b"\x00" in data[:8192]:
+        return None
+    if not data:
+        return 0
+    # Trailing newline shouldn't count as an extra (empty) line.
+    return data.count(b"\n") + (0 if data.endswith(b"\n") else 1)
+
+
+@router.get("/line-stats")
+async def get_line_stats(request: Request):
+    """Per-file +/- line counts for everything changed since the last commit.
+
+    Powers the green +N / red -N badges in the File Explorer tree. The returned
+    map is keyed by **repo-relative path** and covers:
+      • tracked edits — staged AND unstaged together, via `git diff --numstat
+        HEAD`, so a badge reflects the whole working tree vs the last commit;
+      • untracked files — counted as all-additions (a brand-new file reads +N).
+    `--no-renames` keeps a rename as a delete (old path) + add (new path), so
+    each side gets a clean per-path count instead of an `old => new` line to
+    parse. `core.quotePath=false` stops git octal-escaping non-ASCII names so the
+    paths match the tree's.
+
+    Pinned to THIS app's own repo (the file tree's root) so the counts always
+    line up with the tree even when Source Control has another repo selected.
+    Read-only — the Files page is already admin-gated."""
+    _pin_to_project_root()
+
+    stats: dict[str, dict[str, int]] = {}
+
+    # 1. Tracked changes vs HEAD (staged + unstaged combined). On a fresh repo
+    #    with no commit yet this fails — tolerated; we still report untracked.
+    out, _, rc = _run_git(
+        ["-c", "core.quotePath=false", "diff", "--numstat", "--no-renames", "HEAD"],
+        timeout=20,
+    )
+    if rc == 0:
+        for line in out.split("\n"):
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            cols = line.split("\t")
+            if len(cols) < 3:
+                continue
+            added, removed, path = cols[0], cols[1], cols[2]
+            if added == "-" and removed == "-":
+                continue  # binary — no meaningful line count
+            stats[path] = {
+                "added": int(added) if added.isdigit() else 0,
+                "removed": int(removed) if removed.isdigit() else 0,
+            }
+
+    # 2. Untracked files — every line is an addition. `-uall` lists files inside
+    #    untracked directories individually (not just the directory name). Capped
+    #    so a huge accidentally-untracked tree can't make this read forever.
+    st_out, _, _ = _run_git(
+        ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all"],
+        timeout=20,
+    )
+    root = _ACTIVE_REPO
+    processed = 0
+    for line in st_out.split("\n"):
+        if not line.startswith("?? "):
+            continue
+        if processed >= 4000:
+            break
+        rel = line[3:].strip().strip('"')
+        if not rel:
+            continue
+        added = _count_new_file_lines(root / rel)
+        if added is not None:
+            stats[rel] = {"added": added, "removed": 0}
+        processed += 1
+
+    return {"project_root": str(root).replace("\\", "/"), "stats": stats}
+
+
 @router.post("/push")
 async def push_to_remote(request: Request):
     """Push commits to the remote."""

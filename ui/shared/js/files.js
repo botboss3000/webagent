@@ -73,6 +73,17 @@ let projectRoot = '';          // absolute path of the project root (server-repo
 // encrypted vault; the repo + folder save to the local production config.
 let prodExcluded = new Set();  // absolute paths of dev-only folders
 let prodViewMode = 'dev';      // 'dev' | 'prod' (production preview hides them)
+
+// Git line-change badges: every tree row shows how many lines it gained (+N
+// green) / lost (-N red) since the last commit. Data comes from
+// GET /api/v1/github/line-stats (keyed by repo-relative path) and is mirrored
+// here as absolute paths so a row can look itself up. A FILE shows its own
+// count; a FOLDER shows the SUM of every changed file beneath it — but only
+// while collapsed: an expanded folder defers to its now-visible children (CSS
+// hides the open folder's own badge) so the counts never double up.
+let gitLineStats = {};   // absolute file path -> { added, removed } since HEAD
+let gitFolderStats = {}; // absolute folder path -> summed { added, removed } of its descendants
+let gitStatsRoot = '';   // repo root the stats are keyed under (aggregation boundary)
 let _prodActionBusy = false;   // guards against a double-fire while syncing/pushing
 let _prodFolder = '';          // cached destination folder (editable in the More menu)
 let _prodFolderDefault = '';   // backend's suggested default (placeholder when unset)
@@ -613,6 +624,123 @@ function openProductionMenu(anchorBtn) {
   });
 }
 
+// ── Git line-change badges (+N / -N since last commit) ────────────
+// Fetch the per-file added/removed map from the backend (one call, whole repo),
+// remap it to absolute paths, roll the files up into folder sums, then repaint
+// the badges on every rendered row. Non-fatal throughout: no data → no badges.
+
+async function loadLineStats() {
+  try {
+    const data = await apiFetch('/api/v1/github/line-stats');
+    const root = String(data.project_root || projectRoot || '').replace(/\/+$/, '');
+    gitStatsRoot = root;
+    const raw = data.stats || {};
+    const map = {};
+    for (const rel in raw) {
+      const abs = root ? root + '/' + rel : rel;
+      map[abs] = { added: raw[rel].added || 0, removed: raw[rel].removed || 0 };
+    }
+    gitLineStats = map;
+    rebuildFolderStats();
+    refreshLineStatMarks();
+  } catch (_) {
+    // Non-fatal — without the stats we simply render no counts.
+  }
+}
+
+// Sum each changed file's counts into every ancestor folder up to (and
+// including) the repo root, so a collapsed folder can show its subtree total.
+function rebuildFolderStats() {
+  const folders = {};
+  const boundary = gitStatsRoot || projectRoot || '';
+  for (const abs in gitLineStats) {
+    const st = gitLineStats[abs];
+    let idx = abs.lastIndexOf('/');
+    while (idx > 0) {
+      const folder = abs.slice(0, idx);
+      // Stop once we'd climb above the repo root (those folders aren't shown).
+      if (boundary && (folder.length < boundary.length || !folder.startsWith(boundary))) break;
+      const agg = folders[folder] || (folders[folder] = { added: 0, removed: 0 });
+      agg.added += st.added;
+      agg.removed += st.removed;
+      idx = folder.lastIndexOf('/');
+    }
+  }
+  gitFolderStats = folders;
+}
+
+// Paint one row's badge span from a { added, removed } record (or clear it when
+// there's no change). The span is always present in the DOM so it can be
+// updated in place after a refresh without rebuilding the row.
+function applyLineStat(span, st) {
+  if (!span) return;
+  span.textContent = '';
+  if (!st || (!st.added && !st.removed)) { span.classList.remove('show'); return; }
+  if (st.added) {
+    const a = document.createElement('span');
+    a.className = 'files-tree-stat-add';
+    a.textContent = '+' + st.added;
+    span.appendChild(a);
+  }
+  if (st.removed) {
+    const r = document.createElement('span');
+    r.className = 'files-tree-stat-del';
+    r.textContent = '-' + st.removed;
+    span.appendChild(r);
+  }
+  const parts = [];
+  if (st.added) parts.push(st.added + ' added');
+  if (st.removed) parts.push(st.removed + ' removed');
+  span.title = parts.join(', ') + ' since last commit';
+  span.classList.add('show');
+}
+
+// The current stat record for a path: files use their own count, folders the
+// rolled-up subtree sum.
+function lineStatFor(path, isDir) {
+  return isDir ? gitFolderStats[path] : gitLineStats[path];
+}
+
+// Resync every rendered row's badge to the current maps — called after a fresh
+// fetch (the tree itself isn't rebuilt). Lazily-expanded children pick up their
+// badge at render time straight from the maps, so this only needs to touch what
+// is already on screen.
+function refreshLineStatMarks() {
+  const tree = document.getElementById('files-tree');
+  if (!tree) return;
+  tree.querySelectorAll('.files-tree-node').forEach((node) => {
+    const path = node.dataset.path;
+    if (!path) return;
+    const row = node.querySelector(':scope > .files-tree-row');
+    if (!row) return;
+    const span = row.querySelector('.files-tree-stat');
+    if (span) applyLineStat(span, lineStatFor(path, node.dataset.kind === 'dir'));
+  });
+}
+
+// Keep the +/- badges live while the Explorer tree is open: re-fetch the counts
+// on a timer so commits/edits made elsewhere (the agent, the terminal, another
+// device) show up without a manual reload. Paused while the browser tab is
+// hidden or the active sidebar view isn't the tree, and only one timer ever
+// runs (start is idempotent). Mirrors the Source-Control auto-refresh.
+const LINE_STATS_REFRESH_MS = 20000;   // 20s
+let _lineStatsTimer = null;
+
+function startLineStatsAutoRefresh() {
+  if (_lineStatsTimer) return;          // already polling
+  _lineStatsTimer = setInterval(() => {
+    if (document.hidden) return;        // browser tab not visible → skip the round-trip
+    if (!isAdmin) return;
+    const sb = document.getElementById('files-sidebar');
+    if (sb && sb.dataset.view !== 'explorer') return;  // only while the tree is the active view
+    loadLineStats();                    // cheap re-fetch; repaints badges in place
+  }, LINE_STATS_REFRESH_MS);
+}
+
+function stopLineStatsAutoRefresh() {
+  if (_lineStatsTimer) { clearInterval(_lineStatsTimer); _lineStatsTimer = null; }
+}
+
 function renderTreeRow(entry, depth) {
   const row = document.createElement('div');
   row.className = 'files-tree-row';
@@ -704,6 +832,13 @@ function renderTreeRow(entry, depth) {
   badge.textContent = 'Dev';
   badge.title = 'Excluded from production';
   row.appendChild(badge);
+
+  // Git +N/-N change badge (filled now from the loaded maps; an expanded folder's
+  // own badge is hidden by CSS so its visible children carry the counts instead).
+  const stat = document.createElement('span');
+  stat.className = 'files-tree-stat';
+  applyLineStat(stat, lineStatFor(entry.path, entry.is_dir));
+  row.appendChild(stat);
   return row;
 }
 
@@ -949,6 +1084,9 @@ async function loadRoot() {
       }
     }
     _refreshLucideIcons(tree);
+    // Fire-and-forget: fetch the git +/- line counts and paint the badges once
+    // they land (the tree is already visible — counts fill in a beat later).
+    loadLineStats();
     try { localStorage.setItem(LS_CURRENT_ROOT, currentRoot); } catch (_) {}
   } catch (e) {
     tree.innerHTML = '<div class="files-tree-empty">Error: ' + (e.message || 'failed') + '</div>';
@@ -2924,6 +3062,8 @@ async function saveTab(path) {
     tab.dirty = false;
     renderTabs();
     updateStatusBar(tab);
+    // Saving changes the file's line count vs HEAD — refresh the tree badges.
+    loadLineStats();
   } catch (e) {
     alert('Save failed: ' + e.message);
   }
@@ -3983,11 +4123,19 @@ function applySidebarView(view) {
   // database, git, interactions, runtime-loop and diagnostics are drop-ins now
   // — their start/stop run via the dynamic dispatch at the end of this
   // function.)
+  // The git +/- badge poll only runs while the tree is the active view — stop it
+  // on every switch, then (re)start it below when landing on Explorer.
+  stopLineStatsAutoRefresh();
   if (view === 'terminal') {
     // Refit the active terminal once the main becomes visible — xterm
     // can't measure a display:none host.
     const tab = getActiveTerminalTab();
     if (tab && tab.instance) setTimeout(() => tab.instance.fit(), 30);
+  } else if (view === 'explorer') {
+    // Returning to the tree (e.g. after committing in Source Control) — refresh
+    // the +/- badges now and keep them live on a 20s timer while it's open.
+    loadLineStats();
+    startLineStatsAutoRefresh();
   }
   // Drop-in admin views (not built-in): stop the one we navigated away from,
   // then start the active one via its descriptor entry/start/stop. Mirrors the
@@ -4843,6 +4991,8 @@ export function stopAdminTools() {
   // Leaving Admin Tools: drop the restricted full-screen layout so the chat
   // panel returns on whatever tab the user switches to.
   _clearRestrictedLayout();
+  // Stop the Explorer +/- badge poll (it resumes when Explorer is reopened).
+  stopLineStatsAutoRefresh();
   // Quiet background loops; the view stays selected so polling resumes when the
   // user returns. Every admin view is a drop-in now, so the active view's
   // descriptor stop (e.g. Settings' stopView → stopAppConfig/stopBilling)

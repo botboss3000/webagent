@@ -76,20 +76,20 @@ fi
 TUI_DIR="$REPO/TUI"
 [ -d "$TUI_DIR" ] || die "No TUI/ found in $REPO."
 
-# ── 3. Install the TUI ───────────────────────────────────────────────────────
+# ── 3. Install the TUI's runtime deps (minimal — run from source) ─────────────
+# We deliberately DON'T `pip install -e .`: that pulls playwright + pywinpty from
+# pyproject, which Termux can't build and the manager doesn't need (browser
+# automation is off on phones; the terminal tools use the stdlib pty). Instead we
+# install only what the TUI imports to launch — textual + httpx — plus websockets
+# (loaded lazily when it talks to a running server). The launcher below runs the
+# app straight from this checkout via PYTHONPATH, so no editable install is needed.
+# This keeps the manager install fast and reliable even when the heavier server
+# stack can't be built.
 PYVER="$(python -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo '?')"
-say "Python $PYVER detected."
+say "Python $PYVER detected — installing the manager's dependencies (textual, httpx, websockets)…"
 python -m pip install --upgrade pip >/dev/null 2>&1 || true
-case "$PYVER" in
-  3.11|3.12)
-    say "Installing webagent (editable)…"
-    ( cd "$TUI_DIR" && python -m pip install -e . ) || die "'pip install -e .' failed."
-    ;;
-  *)
-    warn "Python $PYVER is outside the tested 3.11–3.12 range — installing dependencies only and running from source."
-    python -m pip install "textual>=0.83.0" "httpx>=0.27.0" || die "pip install of textual+httpx failed."
-    ;;
-esac
+python -m pip install "textual>=0.83.0" "httpx>=0.27.0" "websockets>=12.0" \
+  || die "Could not install the manager's dependencies. Try 'pkg update && pkg upgrade' first, then re-run."
 
 # ── 4. `webagent` launcher on PATH ───────────────────────────────────────
 LAUNCHER="$PREFIX/bin/webagent"
@@ -108,7 +108,7 @@ cat > "$LAUNCHER" <<EOF
 export WEBAGENT_PROJECT="$REPO"
 export PYTHONPATH="$TUI_DIR:\${PYTHONPATH:-}"
 $SUPERVISE_LINE
-exec python -m webagent "\$@"
+exec python -m tui_app "\$@"
 EOF
 chmod +x "$LAUNCHER"
 
@@ -121,10 +121,10 @@ exec "$LAUNCHER"
 EOF
 chmod +x "$SHORTCUTS/webagent.sh"
 
-# Tidy the redundant `tui-app` console script pip's editable install creates from
-# pyproject (pyproject exposes both `tui-app` and `webagent`; our hand-written
-# `webagent` launcher above — which sets WEBAGENT_PROJECT/PYTHONPATH — is the one to
-# keep). Leave the `webagent` launcher AND its home-screen shortcut in place.
+# Clear any stale console scripts a previous `pip install -e .` may have left on
+# PATH (pyproject exposes both `tui-app` and `webagent`). Our hand-written
+# `webagent` launcher above — which sets WEBAGENT_PROJECT/PYTHONPATH and runs from
+# source — is the one to keep, so drop the leftover `tui-app` if present.
 rm -f "$PREFIX/bin/tui-app"
 
 # ── 6. API-key check ─────────────────────────────────────────────────────────

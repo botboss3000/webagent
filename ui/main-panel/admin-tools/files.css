@@ -428,6 +428,31 @@ body {
 }
 .files-tree-badge.dev-only.show { display: inline-block; }
 
+/* ── Git change counts: +N (green) / -N (red) since the last commit ──
+   A file shows its own added/removed counts; a folder shows the SUM of every
+   changed file beneath it. The badge sits at the far right of the row (the
+   label is flex:1 and pushes it over). It's empty (and `.show` removed) when
+   there's no change, so unchanged rows show nothing.
+   No double counting: an EXPANDED folder hands the counts to its now-visible
+   children, so we hide the open folder's OWN badge (the last rule below). Its
+   children's rows live in `.files-tree-children`, a sibling of this row, so the
+   `> .files-tree-row` reach only ever hides the folder's own badge. */
+.files-tree-stat {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  display: none;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.files-tree-stat.show { display: inline-flex; }
+.files-tree-stat-add { color: var(--success); }
+.files-tree-stat-del { color: var(--danger); }
+.files-tree-node.expanded > .files-tree-row .files-tree-stat { display: none; }
+
 /* Per-row production-preview checkbox: hidden in dev view, revealed in
    prod-view. Folders are tri-state — a native indeterminate dash means "some
    items inside are dev-only" (the dash inherits accent-color below). A disabled
