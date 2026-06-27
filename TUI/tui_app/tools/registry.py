@@ -125,6 +125,27 @@ def _base_specs() -> list[ToolSpec]:
             "properties": {"target": _STR},
             "required": ["target"],
         }, install.verify_install, mutating=True, needs_project=False),
+        ToolSpec("check_dependencies", (
+            "Read-only dependency checklist for getting webAgent running on THIS "
+            "device — the same list the Setup dashboard shows: internet, git, Python, "
+            "disk, on Android/Termux the Ubuntu proot-distro sandbox (proot_distro / "
+            "ubuntu / ubuntu_toolchain), then repo / venv / browser / config / verify. "
+            "Each row says what it needs first. Pass the install folder as target "
+            "(optional). Run this before install_dependency."), {
+            "type": "object",
+            "properties": {"target": {**_STR, "default": ""}},
+        }, install.check_dependencies, needs_project=False),
+        ToolSpec("install_dependency", (
+            "Install ONE dependency by id, deterministically (runs the real command — "
+            "the same engine the Setup dashboard's Install buttons use). ids: git, "
+            "python, proot_distro, ubuntu, ubuntu_toolchain, repo, venv, browser, "
+            "config, verify; plus Ubuntu management ops ubuntu_update, ubuntu_reinstall, "
+            "ubuntu_remove. Use check_dependencies first to see what's missing and the "
+            "right order. Pass the install folder as target. Mutating."), {
+            "type": "object",
+            "properties": {"id": _STR, "target": {**_STR, "default": ""}},
+            "required": ["id"],
+        }, install.install_dependency, mutating=True, needs_project=False),
         # ── Server lifecycle (managed) ─────────────────────────────────────
         ToolSpec("server_status", "Is the local webAgent server up? Read-only.", {
             "type": "object", "properties": {},

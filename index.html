@@ -863,6 +863,10 @@
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links/lib/addon-web-links.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-search/lib/addon-search.js"></script>
 <script src="./ui/shared/js/db-select.js"></script>
+<!-- Shared "target device" picker (multi-device fleet). Classic script so
+     window.DevicePicker is available to the chat pill, the automations "Run on"
+     column, and the sessions device badge alike. See ui/shared/js/device-picker.js. -->
+<script src="./ui/shared/js/device-picker.js"></script>
 <script type="module">
 	  // Boot the partial loader, wait for every HTML partial to be injected,
 	  // then dynamically import the main JS modules so their getElementById

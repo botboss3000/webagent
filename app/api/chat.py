@@ -157,12 +157,19 @@ async def _ensure_session(db, user_id: str, session_id: str, title: str = None) 
     if row is None:
         # Session doesn't exist — create it
         try:
+            meta = {}
+            try:
+                from app.devices import identity as _identity
+                meta["device"] = {"id": _identity.device_id(), "label": _identity.device_label()}
+            except Exception:
+                pass
             raw = db.get_raw_client()
             raw.table("sessions").insert({
                 "id": session_id,
                 "user_id": user_id,
                 "title": title or "New Session",
                 "pinned": 1,
+                "metadata": json.dumps(meta),
             }).execute()
             logger.info(f"Created session {session_id[:12]} for user {user_id[:12]}")
         except Exception as create_err:
@@ -364,6 +371,24 @@ async def _handle_compact_command(user_id: str, session_id: str, db) -> str:
             "nothing to summarise. Send a message to the agent first, then run "
             "`/compact`."
         )
+
+    # An alternate engine (e.g. Local Claude Code) keeps its memory OUTSIDE webAgent,
+    # so /compact means "compact & restart" for it: after the fold below, hand off to
+    # the engine's hook to reshape what happens next. Generic lookup — no per-engine
+    # branching here (the core stays small; engines are drop-in plug-ins).
+    compact_hook = None
+    try:
+        agent_rec = await db.get_agent_by_id(agent_id)
+        _eng_meta = (agent_rec or {}).get("metadata") or {}
+        if isinstance(_eng_meta, str):
+            _eng_meta = json.loads(_eng_meta or "{}")
+        _engine_id = str((_eng_meta or {}).get("engine") or "").strip()
+        if _engine_id and _engine_id != "default":
+            from plugins.engines import get_engine_compact_hook
+            compact_hook = get_engine_compact_hook(_engine_id)
+    except Exception:
+        compact_hook = None
+
     try:
         from app.agent.context_control import get_context_settings
         from app.agent.compaction import maybe_compact
@@ -377,6 +402,17 @@ async def _handle_compact_command(user_id: str, session_id: str, db) -> str:
     except Exception as e:
         logger.warning("/compact failed for %s: %s", session_id, e)
         return f"Couldn't compact this session — {e}"
+
+    # Alternate engine: hand the fold result to its /compact behaviour. The Claude
+    # Code engine uses this to compact-and-restart even when nothing was folded (a
+    # short chat still seeds a fresh, clean session), so this runs before the
+    # native "nothing to compact" short-circuit below.
+    if compact_hook is not None:
+        try:
+            return await compact_hook(db, user_id, session_id, agent_id, info)
+        except Exception as e:
+            logger.warning("/compact engine hook failed for %s: %s", session_id, e)
+            return f"Couldn't restart this session — {e}"
 
     if not info:
         return (
@@ -2110,6 +2146,36 @@ async def chat_send(request: ChatRequest, fastapi_request: Request):
         return {"status": "tunnelled", "session_id": request.session_id}
     if "slash_result" in prep:
         return {"status": "ok", "session_id": request.session_id, "reply": prep["slash_result"]}
+
+    # ── Cross-device hand-off ──
+    # If this turn targets another device, enqueue it for that device's worker to
+    # run inside THIS session. The user turn is already saved (above), and the
+    # reply is appended here over the shared DB when the target finishes. The
+    # atomic claim guarantees exactly one device runs it. Targeting our own
+    # device id just falls through to the normal local run.
+    target_device = getattr(request, "target_device", None)
+    if target_device:
+        from app.devices import dispatch as _dispatch
+        from app.devices import identity as _identity
+        dev = await _dispatch.resolve_target(target_device)
+        target_instance = (dev or {}).get("instance_id") or target_device
+        target_label = (dev or {}).get("label") or target_device
+        if target_instance != _identity.device_id():
+            job_id = await _dispatch.enqueue(
+                owner_user_id=request.user_id,
+                prompt=request.message or "",
+                agent_id=prep["agent"]["id"],
+                target_instance=target_instance,
+                target_label=target_label,
+                payload={"run_in_session": request.session_id,
+                         "execution_mode": getattr(request, "execution_mode", "ask") or "ask",
+                         "source": "chat"},
+            )
+            logger.info("Chat turn handed to device %s (job %s, session %s)",
+                        target_label, job_id[:8], request.session_id[:12])
+            return {"status": "queued", "session_id": request.session_id,
+                    "turn_id": prep["user_interaction_id"], "job_id": job_id,
+                    "device": target_label}
 
     # ── TUI bridge path: forward to the TUI agent instead of running the
     # normal agent loop. The TUI processes the message and streams the reply

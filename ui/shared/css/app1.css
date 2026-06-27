@@ -1155,6 +1155,92 @@ body.light-mode .chat-mode-btn:hover {
     border-color: rgba(var(--brand-rgb), 0.45);
   }
 
+/* ── Chat target-device pill — sets which device runs the next turn ────────
+   Sibling of .chat-mode-btn; opens the shared DevicePicker. Resting = a subtle
+   monitor icon (runs locally on THIS device); active = brand-tinted with the
+   chosen device's label shown. See ui/chat-side-panel/js/chat-ui.js. */
+.chat-target-btn {
+    display: inline-flex; align-items: center; gap: 6px; align-self: center;
+    background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent));
+    border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    color: var(--fg-3); font-size: 13px; font-weight: 600;
+    padding: 5px 12px; border-radius: 14px; cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s;
+    line-height: 1.5; user-select: none; -webkit-user-select: none; font-family: inherit;
+  }
+.chat-target-btn:hover { border-color: rgba(var(--brand-rgb), 0.45); color: var(--fg-1); }
+.chat-target-btn svg { width: 16px; height: 16px; }
+.chat-target-btn .chat-target-label {
+    display: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+.chat-target-btn.targeting {
+    color: var(--brand); border-color: rgba(var(--brand-rgb), 0.5);
+    background: color-mix(in oklab, var(--brand) 12%, var(--chat-pill-bg, transparent));
+  }
+.chat-target-btn.targeting .chat-target-label { display: inline; }
+
+/* ── Shared target-device picker (ui/shared/js/device-picker.js) ──────────
+   Floating fleet menu reused by the chat pill, the automations "Run on"
+   column, and the sessions badge. Themed from the design-system palette so it
+   is correct in dark AND light mode. */
+.device-picker-backdrop { position: fixed; inset: 0; z-index: 9998; background: transparent; }
+.device-picker-pop {
+    position: fixed; z-index: 9999; min-width: 220px; max-width: 300px;
+    background: var(--bg-elev); color: var(--fg-1);
+    border: var(--border-width) solid var(--border); border-radius: 14px;
+    box-shadow: 0 14px 36px rgba(0,0,0,0.30); padding: 8px; font-size: 13px;
+  }
+.device-picker-head {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--fg-3); padding: 2px 6px 7px;
+  }
+.device-picker-list { display: flex; flex-direction: column; gap: 2px; max-height: 264px; overflow-y: auto; }
+.device-picker-row {
+    display: flex; align-items: center; gap: 9px; width: 100%;
+    background: transparent; border: none; cursor: pointer; padding: 7px 8px;
+    border-radius: 9px; color: var(--fg-1); font-size: 13px; text-align: left; font-family: inherit;
+  }
+.device-picker-row:hover { background: color-mix(in oklab, var(--brand) 12%, transparent); }
+.device-picker-row.selected { background: color-mix(in oklab, var(--brand) 16%, transparent); }
+.device-picker-row .dp-label { flex: 1; display: flex; flex-direction: column; line-height: 1.25; }
+.device-picker-row .dp-sub { font-size: 11px; color: var(--fg-3); font-weight: 400; }
+.device-picker-row .dp-check { width: 15px; height: 15px; color: var(--brand); flex: 0 0 auto; }
+.device-picker-pop .dp-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.device-picker-pop .dp-dot.online { background: var(--success); box-shadow: 0 0 0 3px rgba(var(--success-rgb), 0.25); }
+.device-picker-pop .dp-dot.offline { background: var(--fg-3); opacity: .5; }
+.device-picker-empty { padding: 9px; color: var(--fg-3); font-size: 12px; text-align: center; }
+.device-picker-offline { margin-top: 8px; padding-top: 8px; border-top: var(--border-width) solid var(--border); }
+.dp-offline-title { font-size: 11px; color: var(--fg-3); padding: 0 6px 6px; }
+.dp-offline-seg { display: flex; gap: 5px; padding: 0 4px; }
+.dp-off-opt {
+    flex: 1; padding: 5px 0; border-radius: 8px; cursor: pointer;
+    background: color-mix(in oklab, var(--bg-elev) 60%, transparent);
+    border: var(--border-width) solid var(--border); color: var(--fg-3);
+    font-size: 12px; font-weight: 600; font-family: inherit;
+  }
+.dp-off-opt.on {
+    background: color-mix(in oklab, var(--brand) 18%, transparent);
+    color: var(--brand); border-color: rgba(var(--brand-rgb), .45);
+  }
+
+/* Sessions device badge + automations "Run on" chip — shared compact look. */
+.sess-device-badge, .auto-device-chip {
+    display: inline-flex; align-items: center; gap: 4px; vertical-align: middle;
+    font-size: 11px; color: var(--fg-3); padding: 1px 7px; border-radius: 999px;
+    border: var(--border-width) solid var(--border);
+    background: color-mix(in oklab, var(--bg-elev) 70%, transparent);
+    max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+.auto-device-chip { cursor: pointer; }
+.auto-device-chip:hover { color: var(--fg-1); border-color: rgba(var(--brand-rgb), .4); }
+.auto-device-chip.targeting {
+    color: var(--brand); border-color: rgba(var(--brand-rgb), .5);
+    background: color-mix(in oklab, var(--brand) 12%, transparent);
+  }
+.auto-device-chip svg, .sess-device-badge svg { width: 11px; height: 11px; flex: 0 0 auto; }
+
 /* Model switcher pill — sibling of the mode pill; shows the active model's short
    name and opens the model picker. Muted (secondary) vs. the brand mode pill, and
    truncates long model ids. */

@@ -234,6 +234,11 @@ async def _make_session(db, *, runner_agent_id: str, user_id: str, label: str,
     session_id = f"auto-{uuid.uuid4().hex[:12]}"
     title = (label or "Automation")[:60]
     meta = {"source": source}
+    try:
+        from app.devices import identity as _dev_identity
+        meta["device"] = {"id": _dev_identity.device_id(), "label": _dev_identity.device_label()}
+    except Exception:
+        pass
     if mode == "headless":
         meta["hidden"] = True
     try:
@@ -464,6 +469,60 @@ async def _on_skip(db, row: Dict[str, Any], table: str, reason: str) -> None:
     await _update_row(db, row_id, table, **fields)
 
 
+async def _dispatch_to_device(db, row: Dict[str, Any], *, table: str, run_id: str,
+                              kind: str, agent_id: str, user_id: str, label: str,
+                              target: str) -> Dict[str, Any]:
+    """Hand a run to another device instead of running it here.
+
+    Honors the per-row offline policy: ``target_offline='skip'`` drops this
+    occurrence when the target is offline at fire time; 'wait' (the default)
+    queues the job until the target wakes and claims it (capped by the worker's
+    staleness limit so it never fires absurdly late). The schedule is advanced
+    either way — a skipped occurrence via the normal skip bookkeeping, a handed
+    -off one via the success bookkeeping. Returns a run_one-style result dict.
+
+    Note: clone run-modes and delivery specs apply to LOCAL runs only — a
+    dispatched run uses the base agent and runs in the target's own session.
+    """
+    from app.devices import dispatch as _dispatch
+
+    dev = await _dispatch.resolve_target(target)
+    online = bool(dev and dev.get("online"))
+    policy = (row.get("target_offline") or "wait").strip().lower()
+    target_label = (dev or {}).get("label") or target
+
+    if not online and policy == "skip":
+        await db.finish_automation_run(
+            run_id, status="skipped",
+            reply_excerpt=f"Target device '{target_label}' offline; run skipped.",
+            session_id=None)
+        await _on_skip(db, row, table, "target device offline")
+        logger.info("Automation %s skipped: target device %s offline",
+                    row["id"], target_label)
+        return {"ok": False, "skipped": "target offline",
+                "device": target_label, "dispatched": False}
+
+    target_instance = (dev or {}).get("instance_id") or target
+    job_id = await _dispatch.enqueue(
+        owner_user_id=user_id,
+        prompt=row.get("prompt") or "",
+        agent_id=agent_id,
+        target_instance=target_instance,
+        target_label=target_label,
+        payload={"automation_id": row["id"], "kind": kind,
+                 "source": "automation", "execution_mode": "auto"},
+    )
+    await db.finish_automation_run(
+        run_id, status="dispatched",
+        reply_excerpt=f"Handed to device '{target_label}' (job {job_id[:8]}).",
+        session_id=None)
+    await _on_success(db, row, table, None, None)
+    logger.info("Automation %s dispatched to device %s (job %s)",
+                row["id"], target_label, job_id[:8])
+    return {"ok": True, "dispatched": True, "device": target_label,
+            "job_id": job_id, "session_id": None}
+
+
 # ── the single execution entry point ─────────────────────────────────────────
 
 async def run_one(
@@ -506,6 +565,25 @@ async def run_one(
         subscription_id=row_id if table == "subscription" else None,
         run_mode=row.get("run_mode") or "inline",
     )
+
+    # ── Cross-device dispatch ──
+    # If this row targets another device, hand the whole run to it rather than
+    # running here. (The scheduler is leader-gated so this fires once, and the
+    # device claim is exactly-once, so the work lands on exactly one machine.)
+    target = (row.get("target_device") or "").strip()
+    if target:
+        try:
+            return await _dispatch_to_device(
+                db, row, table=table, run_id=run_id, kind=kind,
+                agent_id=agent_id, user_id=user_id, label=label, target=target)
+        except Exception as e:
+            logger.exception("Cross-device dispatch for %s failed: %s", row_id, e)
+            try:
+                await db.finish_automation_run(run_id, status="error", error=str(e))
+            except Exception:
+                pass
+            await _on_failure(db, row, table, str(e))
+            return {"ok": False, "error": str(e)}
 
     try:
         spec = delivery.parse_spec(

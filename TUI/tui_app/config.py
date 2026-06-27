@@ -287,6 +287,7 @@ class TuiConfig:
     session_name_mode: str = "summary"  # how sessions are auto-named: summary | message | off
     bridge_enabled: bool = True    # auto-start the TUI bridge server on launch
     bridge_port: int = 0           # 0 = pick a free port automatically
+    first_run_seen: bool = False   # True once the Setup dashboard has auto-opened once
 
     @classmethod
     def load(cls) -> "TuiConfig":

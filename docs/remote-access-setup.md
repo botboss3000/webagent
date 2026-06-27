@@ -27,9 +27,13 @@ guidance because the app can't install them for you.
 ## One-time setup per method
 
 ### Same network
-Nothing to set up. The card shows the address + a QR code. Note it's plain
-`http://`, so secure-context browser features (Google sign-in, clipboard, voice)
-won't work over it — use a tunnel for those.
+Nothing to set up. The card shows the address + a QR code. Only real LAN
+addresses a phone on the same Wi-Fi can reach are listed — virtual-adapter
+addresses (WSL, Hyper-V's Default Switch, Docker, VirtualBox/VMware host-only
+networks) are filtered out so the list isn't cluttered with addresses that only
+exist inside this PC. Note it's plain `http://`, so secure-context browser
+features (Google sign-in, clipboard, voice) won't work over it — use a tunnel
+for those.
 
 ### ngrok
 1. Install ngrok and create a free ngrok account.

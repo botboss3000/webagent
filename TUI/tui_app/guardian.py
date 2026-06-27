@@ -1,6 +1,6 @@
 """The external **keep-alive guardian** — a supervisor that outlives the TUI.
 
-The Server-Manager TUI (``python -m webagent``) auto-starts the webAgent web
+The Server-Manager TUI (``python -m tui_app``) auto-starts the webAgent web
 server and watches it via the *in-process* ``watchdog.py``. But that watchdog is
 a TUI worker: it dies the instant the TUI dies, which is exactly when the server
 it launched is most likely to fall over too. This module is the answer — a

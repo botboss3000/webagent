@@ -55,6 +55,7 @@ async function switchToSession(sid) {
 
   // Reload execution mode for this session (per-session key)
   if (typeof app.reloadExecutionMode === 'function') app.reloadExecutionMode();
+  if (typeof app.reloadTargetDevice === 'function') app.reloadTargetDevice();
 
   _teardownVirtualScroll();
   if (app.chatMessages) {
@@ -142,6 +143,7 @@ async function deleteSession(sid) {
           // Fresh session → reset the execution-mode pill (per-session key, defaults
           // to Ask) so it doesn't inherit the deleted session's leftover mode.
           if (typeof app.reloadExecutionMode === 'function') app.reloadExecutionMode();
+  if (typeof app.reloadTargetDevice === 'function') app.reloadTargetDevice();
           _teardownVirtualScroll();
           app.chatMessages.innerHTML = '';
           app.addChatBubble('agent', 'Session deleted. New session created.');

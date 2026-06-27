@@ -489,14 +489,21 @@ function _sendNew(customText) {
 }
 
 // ── Should this spot defer to the native / built-in behaviour? ───────────────
-// Bails (→ leave default) for editable fields, our own panel, and the surfaces
-// that own their right-click: the Browser page (its own point-and-ask) and
-// Admin Tools (file / DB menus + the embedded terminal, which lives inside
-// #tab-admin-tools).
+// Bails (→ leave default) for editable fields, our own panel, and the few
+// surfaces that genuinely OWN their right-click:
+//   • the Browser page — its own point-and-ask drives the remote browser;
+//   • the Admin Tools FILE TREE (#files-tree) — per-row rename/delete/… menu;
+//   • any embedded terminal (.files-terminal-pane / .xterm) — native (desktop)
+//     or long-press (touch) copy / paste.
+// NOTE: this used to bail on the WHOLE #tab-admin-tools tab, which wrongly killed
+// point-and-share across every Admin Tools sub-page (App Settings, Cloud VMs,
+// Deploy, DB viewer, Source Control). Those are ordinary main panels with no
+// right-click menu of their own, so they now get the panel like everywhere else —
+// only the file tree and terminals (which DO own right-click) still defer.
 function _bailTarget(t) {
   if (!t || t.nodeType !== 1 || typeof t.closest !== 'function') return true;
   if (t.closest('input, textarea, select') || t.isContentEditable) return true;
-  if (t.closest('#tab-browser, #tab-admin-tools')) return true;
+  if (t.closest('#tab-browser, #files-tree, .files-terminal-pane, .xterm')) return true;
   if (_panel && _panel.contains(t)) return true;
   return false;
 }

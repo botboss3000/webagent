@@ -233,16 +233,23 @@ def _swap_and_relaunch_helper(pid: int, staged: Optional[Path], exe: Path) -> Pa
 
 
 def _relaunch_source_helper(pid: int, python: str, project_dir: Optional[str]) -> Path:
-    """Helper that waits for our process to exit then relaunches the source TUI."""
+    """Helper that waits for our process to exit then relaunches the source TUI.
+
+    Relaunches via ``python -m tui_app`` (there is no ``webagent`` module) and puts
+    the TUI project dir on PYTHONPATH (mirrors install-termux.sh) so ``tui_app`` —
+    and any guardian it then spawns — is importable no matter what cwd the helper
+    runs from. ``project_dir`` is the TUI project dir (selfinfo.tui_project_dir)."""
     cd_win = f'cd /d "{project_dir}"\n' if project_dir else ""
     cd_sh = f'cd "{project_dir}"\n' if project_dir else ""
+    pp_win = f'set "PYTHONPATH={project_dir};%PYTHONPATH%"\n' if project_dir else ""
+    pp_sh = f'export PYTHONPATH="{project_dir}:${{PYTHONPATH:-}}"\n' if project_dir else ""
     if _IS_WIN:
-        body = ("@echo off\n" + _win_wait_block(pid) + cd_win
-                + f'start "" "{python}" -m webagent\n' + 'del "%~f0"\n')
+        body = ("@echo off\n" + _win_wait_block(pid) + cd_win + pp_win
+                + f'start "" "{python}" -m tui_app\n' + 'del "%~f0"\n')
     else:
         body = ("#!/bin/sh\n"
                 f"while kill -0 {pid} 2>/dev/null; do sleep 1; done\n"
-                + cd_sh + f'"{python}" -m webagent &\n' + 'rm -- "$0"\n')
+                + cd_sh + pp_sh + f'"{python}" -m tui_app &\n' + 'rm -- "$0"\n')
     return _write_helper("relaunch", body)
 
 

@@ -673,6 +673,13 @@ class ServerManagerApp(App):
         self._server_panel_state: str = "idle"       # idle | loading | loaded
         self._server_loading_dots: str = ""           # animated dots during loading
         self._loading_timer = None                    # set_interval for dots
+        # ── Setup / dependency dashboard state ────────────────────────────────
+        self._deps: list = []                         # last probed dependency rows (deps.Dep)
+        self._deps_state: str = "idle"                # idle | checking | ready
+        self._deps_busy: str = ""                     # id currently installing (or "ubuntu")
+        self._deps_dots: str = ""                     # animated dots during checking/installing
+        self._deps_timer = None                       # set_interval for the dots
+        self._deps_target: str = ""                   # install folder ("" = recommended default)
         self._diag_text: str = ""                    # last diagnostics readout (sidebar view)
         self._logs_text: str = ""                    # last server-logs readout (sidebar view)
         self._playbook_key: str = ""                 # issue currently expanded in the Playbook view
@@ -861,6 +868,13 @@ class ServerManagerApp(App):
         self._refresh_status()
         self._refresh_tabs()
         self._update_hud()
+        # First open with no checkout linked → auto-show the Setup dashboard once,
+        # so a new device lands on the dependency checklist + install buttons.
+        if self.project_root is None and not self.cfg.first_run_seen:
+            self.cfg.first_run_seen = True
+            self.cfg.save()
+            self._open_panel("setup")
+            self.run_worker(self._probe_deps(), group="deps", exclusive=True)
         # Load past messages for the resumed session (it may have history from
         # before this restart). The welcome banner stays at the top; history is
         # appended below.
@@ -1196,6 +1210,8 @@ class ServerManagerApp(App):
         self._add_hdr(bar, Text(mode, style=f"bold {mcol}"), "mode_cycle")
 
         cat("Admin", "admin", "panel_admin")
+        if not self.project_root:
+            cat("Setup", "setup", "panel_setup")   # first-open dependency dashboard
         if self.project_root:
             cat("Git", "git", "panel_git")   # source control: fetch / pull / push
             cat("Playbook", "playbook", "panel_playbook")   # self-healing issue knowledge base
@@ -1406,9 +1422,19 @@ class ServerManagerApp(App):
         self.action_get_started()
 
     def action_get_started(self) -> None:
+        """Open the Setup dashboard — the deterministic, button-driven checklist of
+        every dependency webAgent needs, with per-row Install + an Install-all. This
+        is the primary onboarding path (no AI key required). The AI-driven install
+        stays available from the panel's "Let the assistant set this up" button."""
+        if self.project_root is not None:
+            return
+        self._hide_cta()
+        self.action_panel_setup()
+
+    def action_get_started_ai(self) -> None:
         """Hand the agent a kickoff message that drives the full guided install.
         The tap is explicit consent, so we enable writes (the install steps are
-        mutating) and hide the button, then run the turn."""
+        mutating), then run the turn."""
         if self.project_root is not None:
             return
         if not self.provider.configured:
@@ -1776,7 +1802,7 @@ class ServerManagerApp(App):
         c = self.cc
         title = {"admin": "ADMIN", "scene": "THEME", "server": "SERVER",
                  "git": "GIT", "connect": "WEBAGENT", "config": "APP CONFIG",
-                 "model": "MODEL SETTINGS",
+                 "model": "MODEL SETTINGS", "setup": "SETUP",
                  "sessions": "ALL SESSIONS", "reset": "RESET",
                  "diag": "DIAGNOSTICS", "logs": "SERVER LOGS", "playbook": "PLAYBOOK",
                  "confirm": (self._confirm_state or {}).get("title", "CONFIRM")}.get(kind, kind.upper())
@@ -1796,6 +1822,8 @@ class ServerManagerApp(App):
             return out
         if kind == "reset":
             return out + self._reset_widgets()
+        if kind == "setup":
+            return out + self._setup_widgets()
         if kind == "git":
             return out + self._git_widgets()
         if kind == "connect":
@@ -1835,7 +1863,8 @@ class ServerManagerApp(App):
                          style=c["dim"]), classes="panel-sub", markup=False))
         ka_label = f"[Keep-alive: {'ON' if guardian.read_enabled() else 'OFF'}]"
         specs = {
-            "admin": [("[App Config]", "panel_config"),
+            "admin": [("[Setup]", "panel_setup"),
+                      ("[App Config]", "panel_config"),
                       ("[Model Settings]", "panel_model"),
                       ("[Commands]", "help"), ("[Update]", "admin_update"),
                       ("[Install]", "install"), ("[Reset]", "admin_reset"),
@@ -1994,6 +2023,79 @@ class ServerManagerApp(App):
         body = text or "(loading…)"
         out.append(Static(_linkify_text(Text(body, style=c["dim"])),
                           classes="readout-body", markup=False))
+        return out
+
+    # ── Setup view (the first-open dependency dashboard) ──────────────────────
+    _DEP_GLYPH = {"ok": "✓", "missing": "✗", "warn": "⚠",
+                  "na": "–", "unknown": "?", "checking": "…"}
+
+    def _dep_color(self, status: str) -> str:
+        c = self.cc
+        return {"ok": c["success"], "missing": c["error"], "warn": c["tool"],
+                "na": c["dim"], "unknown": c["dim"]}.get(status, c["fg"])
+
+    def _setup_widgets(self) -> list[Widget]:
+        """The Setup dashboard: an install-folder field + Re-check / Install-all, then
+        one row per dependency (status icon + detail + an [Install] / manage button).
+        Deterministic — the buttons run real installs (depinstall), no AI key needed."""
+        from . import deps as deps_mod
+        c = self.cc
+        out: list[Widget] = []
+        # Install folder (where webAgent will be cloned / built).
+        shown_target = self._deps_target or self._recommended_install_path()
+        out.append(Static(Text("Install folder", style=c["dim"]), classes="panel-sub"))
+        out.append(ClipInput(value=shown_target, id="setup-target-input",
+                             placeholder="folder for webAgent, e.g. C:\\webagent…"))
+        out.append(Horizontal(self._panel_btn("[Save]", "setup_target_save"),
+                              self._panel_btn("[Re-check]", "deps_recheck"),
+                              classes="panel-row"))
+
+        if self._deps_state == "checking" or (not self._deps and self._deps_state != "ready"):
+            dots = self._deps_dots or "."
+            out.append(Static(Text(f"  Checking dependencies{dots}", style=c["dim"]),
+                              classes="panel-sub", markup=False))
+            return out
+
+        deps = self._deps
+        index = deps_mod.status_index(deps)
+        out.append(Static(Text(deps_mod.summary_line(deps), style=f"bold {c['accent']}"),
+                          classes="panel-sub", markup=False))
+        pending = deps_mod.pending_install_ids(deps)
+        if pending and not self._deps_busy:
+            out.append(self._panel_btn(f"[Install all ({len(pending)})]", "deps_install_all"))
+        elif self._deps_busy:
+            dots = self._deps_dots or "."
+            out.append(Static(Text(f"  Working{dots}", style=c["tool"]),
+                              classes="panel-sub", markup=False))
+
+        for d in deps:
+            glyph = self._DEP_GLYPH.get(d.status, "?")
+            out.append(Static(Text(f"  {glyph} {d.label}", style=self._dep_color(d.status)),
+                              classes="panel-sub", markup=False))
+            if d.detail:
+                out.append(Static(Text(f"     {d.detail}", style=c["dim"]),
+                                  classes="panel-sub", markup=False))
+            busy_here = self._deps_busy == d.id or (self._deps_busy == "ubuntu" and d.id == "ubuntu")
+            if busy_here:
+                out.append(Static(Text("     installing…", style=c["tool"]),
+                                  classes="panel-sub", markup=False))
+                continue
+            if self._deps_busy:
+                continue   # one action at a time — hide other buttons while working
+            blocked = deps_mod.is_blocked(d, index) and not d.satisfied
+            if d.installable and d.status in (deps_mod.MISSING, deps_mod.WARN):
+                if blocked:
+                    out.append(Static(Text("     (do the steps above first)", style=c["dim"]),
+                                      classes="panel-sub", markup=False))
+                else:
+                    out.append(self._value_btn("[Install]", "dep_install",
+                                               "dep-install-btn", d.id))
+            for label, op in d.manage_actions:
+                out.append(self._value_btn(f"[{label}]", "dep_manage", "dep-manage-btn", op))
+
+        # Fallback: let the AI assistant drive the install instead (needs a key).
+        out.append(Static(Text("—", style=c["dim"]), classes="panel-sub", markup=False))
+        out.append(self._panel_btn("[Let the assistant set this up]", "get_started_ai"))
         return out
 
     # ── Playbook view (the self-healing issue knowledge base) ─────────────────
@@ -2278,6 +2380,167 @@ class ServerManagerApp(App):
                 pass
             self._loading_timer = None
         if self._panel_kind == "server":
+            self._rebuild_panel()
+
+    # ── Setup dashboard: probe + deterministic installs ───────────────────────
+    def action_panel_setup(self) -> None:
+        """Open (toggle) the Setup dashboard; probe dependencies the first time."""
+        was_open = self._panel_kind == "setup"
+        self._open_panel("setup")
+        if not was_open and not self._deps and self._deps_state != "checking":
+            self.run_worker(self._probe_deps(), group="deps", exclusive=True)
+
+    def action_deps_recheck(self) -> None:
+        if self._deps_busy:
+            return
+        self.run_worker(self._probe_deps(), group="deps", exclusive=True)
+
+    def action_setup_target_save(self) -> None:
+        try:
+            val = self.query_one("#setup-target-input", ClipInput).value.strip()
+        except Exception:
+            val = ""
+        self._deps_target = val
+        self.run_worker(self._probe_deps(), group="deps", exclusive=True)
+
+    def action_deps_install_all(self) -> None:
+        if self._deps_busy:
+            return
+        self.run_worker(self._run_install_all(), group="deps", exclusive=True)
+
+    def action_dep_install(self, dep_id: str) -> None:
+        if self._deps_busy:
+            return
+        self.run_worker(self._run_dep_install(dep_id), group="deps", exclusive=True)
+
+    def action_ubuntu_manage(self, op: str) -> None:
+        if self._deps_busy:
+            return
+        self.run_worker(self._run_ubuntu_manage(op), group="deps", exclusive=True)
+
+    def _tick_deps_dots(self) -> None:
+        d = self._deps_dots
+        self._deps_dots = "." if len(d) >= 3 else d + "."
+        if self._panel_kind == "setup":
+            self._rebuild_panel()
+
+    def _start_deps_dots(self) -> None:
+        self._deps_dots = "."
+        if self._deps_timer is not None:
+            try:
+                self._deps_timer.stop()
+            except Exception:
+                pass
+        self._deps_timer = self.set_interval(0.5, self._tick_deps_dots)
+
+    def _stop_deps_dots(self) -> None:
+        if self._deps_timer is not None:
+            try:
+                self._deps_timer.stop()
+            except Exception:
+                pass
+            self._deps_timer = None
+
+    async def _probe_deps(self) -> None:
+        """Probe the dependency checklist off-thread and re-render the panel."""
+        import asyncio
+        from . import deps as deps_mod
+        self._deps_state = "checking"
+        self._start_deps_dots()
+        if self._panel_kind == "setup":
+            self._rebuild_panel()
+        try:
+            result = await asyncio.to_thread(
+                deps_mod.probe_dependencies, self._deps_target, self.facts)
+            self._deps = result
+        except Exception as e:
+            self._log(f"[{self.cc['error']}]Couldn't check dependencies: {e}[/]")
+        finally:
+            # Always settle + stop the ticker, even if the worker is cancelled
+            # mid-probe (a rapid re-click cancels this exclusive worker).
+            self._deps_state = "ready"
+            self._stop_deps_dots()
+        if self._panel_kind == "setup":
+            self._rebuild_panel()
+
+    async def _reprobe_quiet(self) -> None:
+        """Re-probe without the checking animation (used between install steps)."""
+        import asyncio
+        from . import deps as deps_mod
+        try:
+            self._deps = await asyncio.to_thread(
+                deps_mod.probe_dependencies, self._deps_target, self.facts)
+        except Exception:
+            pass
+
+    async def _run_dep_install(self, dep_id: str) -> None:
+        from . import depinstall
+        self._deps_busy = dep_id
+        self._start_deps_dots()
+        if self._panel_kind == "setup":
+            self._rebuild_panel()
+        self._log(f"[{self.cc['secondary']}]{G.BULLET} Installing: {dep_id}[/]")
+        ctx = self._admin_ctx()
+        try:
+            ok, _msg = await depinstall.install_one(ctx, dep_id, self._deps_target, self._log_block)
+        finally:
+            self._deps_busy = ""
+            self._stop_deps_dots()
+        await self._reprobe_quiet()
+        if self._panel_kind == "setup":
+            self._rebuild_panel()
+
+    async def _run_install_all(self) -> None:
+        from . import deps as deps_mod, depinstall
+        self._log(f"[{self.cc['secondary']}]{G.BULLET} Installing all missing dependencies…[/]")
+        ctx = self._admin_ctx()
+        attempted: set[str] = set()
+        self._start_deps_dots()
+        try:
+            for _ in range(len(self._deps) + 2):
+                index = deps_mod.status_index(self._deps)
+                nxt = next((d for d in self._deps
+                            if d.installable and d.status in (deps_mod.MISSING, deps_mod.WARN)
+                            and d.id not in attempted
+                            and not deps_mod.is_blocked(d, index)), None)
+                if nxt is None:
+                    break
+                attempted.add(nxt.id)
+                self._deps_busy = nxt.id
+                if self._panel_kind == "setup":
+                    self._rebuild_panel()
+                ok, _msg = await depinstall.install_one(ctx, nxt.id, self._deps_target, self._log_block)
+                self._deps_busy = ""
+                await self._reprobe_quiet()
+                if self._panel_kind == "setup":
+                    self._rebuild_panel()
+                if not ok:
+                    self._log(f"[{self.cc['tool']}]{G.WARN} Stopped — '{nxt.id}' didn't "
+                              f"complete. Fix it and run Install all again.[/]")
+                    break
+        finally:
+            self._deps_busy = ""
+            self._stop_deps_dots()
+        self._deps_state = "ready"
+        if self._panel_kind == "setup":
+            self._rebuild_panel()
+        self._log(f"[{self.cc['dim']}]{deps_mod.summary_line(self._deps)}[/]")
+
+    async def _run_ubuntu_manage(self, op: str) -> None:
+        from . import depinstall
+        self._deps_busy = "ubuntu"
+        self._start_deps_dots()
+        if self._panel_kind == "setup":
+            self._rebuild_panel()
+        self._log(f"[{self.cc['secondary']}]{G.BULLET} Ubuntu: {op.replace('ubuntu_', '')}[/]")
+        ctx = self._admin_ctx()
+        try:
+            await depinstall.manage_ubuntu(ctx, op, self._deps_target, self._log_block)
+        finally:
+            self._deps_busy = ""
+            self._stop_deps_dots()
+        await self._reprobe_quiet()
+        if self._panel_kind == "setup":
             self._rebuild_panel()
 
     def action_panel_git(self) -> None:
@@ -2868,12 +3131,13 @@ class ServerManagerApp(App):
     # ── panel interactions: button clicks, click-outside, settings, AI key ──
     # Buttons whose action should NOT close the panel (they edit it in place).
     _KEEP_OPEN = {"panel_expand",
-                  "panel_connect", "panel_config", "panel_model",
+                  "panel_connect", "panel_config", "panel_model", "panel_setup",
                   "repo_dir_save", "repo_dir_clear",
                   "git_token_save", "git_token_clear",
                   "toggle_webagent", "toggle_manager", "connect_refresh",
                   "cfg_save_settings", "cfg_save_auth", "cfg_refresh",
                   "diag_refresh", "logs_refresh",
+                  "setup_target_save", "deps_recheck", "deps_install_all",
                   "playbook_back", "pb_refresh",
                   "pb_mode_document", "pb_mode_safe", "pb_mode_auto",
                   "guardian_toggle", "reset_do"}
@@ -2900,6 +3164,18 @@ class ServerManagerApp(App):
         pid = getattr(event.widget, "_btn_value", None)
         if pid and isinstance(pid, int):
             self.action_server_kill_pid(pid)
+
+    @on(Click, ".dep-install-btn")
+    def _on_dep_install(self, event: Click) -> None:
+        dep_id = getattr(event.widget, "_btn_value", None)
+        if dep_id:
+            self.action_dep_install(dep_id)
+
+    @on(Click, ".dep-manage-btn")
+    def _on_dep_manage(self, event: Click) -> None:
+        op = getattr(event.widget, "_btn_value", None)
+        if op:
+            self.action_ubuntu_manage(op)
 
     def on_click(self, event: Click) -> None:
         # Click-outside does not close the panel — re-clicking its own category

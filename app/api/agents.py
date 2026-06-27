@@ -899,6 +899,8 @@ class UpdateAutomationBody(BaseModel):
     silent: Optional[bool] = None
     channel: Optional[str] = None
     channel_recipient: Optional[str] = None
+    target_device: Optional[str] = None      # device instance-id to run on; '' clears it (run locally)
+    target_offline: Optional[str] = None      # 'wait' | 'skip' when the target is offline at fire time
 
 
 @router.patch("/agents/{agent_id}/automations/{automation_id}")
@@ -920,6 +922,11 @@ async def patch_agent_automation(request: Request, agent_id: str, automation_id:
         fields["channel"] = body.channel or None
     if body.channel_recipient is not None:
         fields["channel_recipient"] = body.channel_recipient or None
+    if body.target_device is not None:
+        # '' / whitespace clears the target (run on the firing device locally).
+        fields["target_device"] = body.target_device.strip() or None
+    if body.target_offline is not None:
+        fields["target_offline"] = "skip" if body.target_offline == "skip" else "wait"
     updated = await db.update_automation(automation_id, **fields)
     return {"task": updated}
 

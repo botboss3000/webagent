@@ -2075,6 +2075,136 @@ class SupabaseBackend(StorageBackend):
             logger.error("doc_chunk_search ILIKE fallback error: %s", e)
             return []
 
+    # ── Multi-device coordination (see app/devices/) ──────────────────────────
+    # Mirrors the LocalBackend methods (same signatures) so the device worker and
+    # the run_on_device ability work identically on a shared Supabase database.
+    # The atomic claim relies on PostgREST compiling each conditional UPDATE to a
+    # single `UPDATE ... WHERE id=? AND status='pending' RETURNING *` — Postgres
+    # row-locks + READ COMMITTED re-check guarantee exactly one device wins each
+    # row (a non-empty `.data` = we claimed it), exactly like the SQLite path.
+    # NOTE: the device_presence / device_jobs tables must exist — create them on
+    # Supabase via the Storage modal's "Auto-Create Tables" (they're in tables.py).
+
+    async def device_heartbeat(self, instance_id, label=None, capabilities=None,
+                               endpoint=None):
+        from datetime import datetime, timezone
+        import json as _json
+        caps = capabilities if isinstance(capabilities, str) else _json.dumps(capabilities or {})
+        data = {
+            "instance_id": instance_id,
+            "label": label,
+            "capabilities": caps,
+            "endpoint": endpoint,
+            "last_seen": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            self._client.table("device_presence").upsert(
+                data, on_conflict="instance_id").execute()
+        except Exception as e:
+            logger.error("device_heartbeat error: %s", e)
+
+    async def list_devices(self, online_within_seconds=60):
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(seconds=int(online_within_seconds))).isoformat()
+        try:
+            res = (self._client.table("device_presence")
+                   .select("*").order("last_seen", desc=True).execute())
+            rows = res.data or []
+        except Exception as e:
+            logger.error("list_devices error: %s", e)
+            return []
+        for d in rows:
+            d["online"] = bool(d.get("last_seen") and d["last_seen"] >= cutoff)
+        return rows
+
+    async def enqueue_device_job(self, *, owner_user_id, prompt, agent_id=None,
+                                 target_instance=None, target_label=None,
+                                 created_by_instance=None, payload=None):
+        import json as _json
+        import uuid as _uuid_mod
+        job_id = _uuid_mod.uuid4().hex
+        pl = payload if isinstance(payload, str) else _json.dumps(payload or {})
+        data = {
+            "id": job_id,
+            "created_by_instance": created_by_instance,
+            "target_instance": target_instance,
+            "target_label": target_label,
+            "owner_user_id": owner_user_id,
+            "agent_id": agent_id,
+            "prompt": prompt or "",
+            "payload": pl,
+            "status": "pending",
+        }
+        try:
+            self._client.table("device_jobs").insert(data).execute()
+        except Exception as e:
+            logger.error("enqueue_device_job error: %s", e)
+            raise
+        return job_id
+
+    async def claim_device_jobs(self, instance_id, *, limit=4, lease_seconds=600):
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        now_s = now.isoformat()
+        exp_s = (now + timedelta(seconds=int(lease_seconds))).isoformat()
+        claimed = []
+        try:
+            res = (self._client.table("device_jobs")
+                   .select("id")
+                   .eq("status", "pending")
+                   .or_(f"target_instance.eq.{instance_id},target_instance.is.null")
+                   .order("created_at", desc=False)
+                   .limit(int(limit))
+                   .execute())
+            candidates = res.data or []
+        except Exception as e:
+            logger.error("claim_device_jobs select error: %s", e)
+            return []
+        for c in candidates:
+            jid = c.get("id")
+            try:
+                upd = (self._client.table("device_jobs")
+                       .update({"status": "claimed", "claimed_by": instance_id,
+                                "claimed_at": now_s, "lease_expires_at": exp_s,
+                                "updated_at": now_s})
+                       .eq("id", jid).eq("status", "pending").execute())
+                if upd.data:
+                    claimed.append(upd.data[0])
+            except Exception as e:
+                logger.debug("claim_device_jobs update %s failed: %s", jid, e)
+        return claimed
+
+    async def finish_device_job(self, job_id, *, status, result_excerpt=None,
+                                error=None, session_id=None):
+        from datetime import datetime, timezone
+        try:
+            self._client.table("device_jobs").update({
+                "status": status,
+                "result_excerpt": (result_excerpt or "")[:2000],
+                "error": error,
+                "session_id": session_id,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", job_id).execute()
+        except Exception as e:
+            logger.error("finish_device_job error: %s", e)
+
+    async def reclaim_expired_device_jobs(self):
+        from datetime import datetime, timezone
+        now_s = datetime.now(timezone.utc).isoformat()
+        try:
+            res = (self._client.table("device_jobs")
+                   .update({"status": "pending", "claimed_by": None,
+                            "claimed_at": None, "lease_expires_at": None,
+                            "updated_at": now_s})
+                   .eq("status", "claimed")
+                   .lt("lease_expires_at", now_s)
+                   .execute())
+            return len(res.data or [])
+        except Exception as e:
+            logger.error("reclaim_expired_device_jobs error: %s", e)
+            return 0
+
 
 # ── Backward-compatible alias ────────────────────────────────────────────────
 # The old SupabaseClient used static methods directly.

@@ -96,6 +96,15 @@ function _linkBadges(s) {
   return html || '<span class="sess-link-none">—</span>';
 }
 
+// Which device ran this session (stamped at creation; see app/devices/). Shown
+// as a compact badge beside the agent so a multi-device fleet is legible at a
+// glance. Rendered only when the session carries a device label.
+function _deviceBadge(s) {
+  if (!s.device_label) return '';
+  return `<span class="sess-device-badge" title="Ran on device: ${_esc(s.device_label)}">
+    <i data-lucide="monitor" style="width:11px;height:11px;"></i>${_esc(s.device_label)}</span>`;
+}
+
 // ── State & wiring guard ───────────────────────────────────────────
 
 let _initialized = false;
@@ -227,6 +236,7 @@ function _renderRow(s, { childCount = 0, isChild = false } = {}) {
           ${_agentIconHtml(s.agent_icon, s.agent_engine, '12px')}
           ${_esc(agentLabel)}
         </span>
+        ${_deviceBadge(s)}
       </td>
       <td class="col-title" title="${_esc(s.title)}">${titleInner}</td>
       <td class="col-status">${_statusBadge(s.run_status)}</td>

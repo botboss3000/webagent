@@ -36,13 +36,13 @@ async def setup_launch_shortcut(ctx: ToolContext) -> str:
 
     Android/Termux only. Creates ``~/.shortcuts/webagent.sh`` (the directory the
     Termux:Widget add-on reads) pointing at the installed ``webagent`` command, or
-    ``python -m webagent`` as a fallback. Returns the next steps for the user
+    ``python -m tui_app`` as a fallback. Returns the next steps for the user
     (install the Termux:Widget add-on, add the widget, tap it). Mutating.
     """
     if not _is_termux():
         return ("Home-screen shortcuts are an Android/Termux feature, and this device "
                 "isn't Termux — nothing to set up here. On desktop, launch the manager "
-                "from its launcher/.exe or with 'python -m webagent'.")
+                "from its launcher/.exe or with 'python -m tui_app'.")
     if not ctx.writes_enabled:
         return WRITES_DISABLED_MSG
     prefix = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
@@ -52,7 +52,14 @@ async def setup_launch_shortcut(ctx: ToolContext) -> str:
     if launcher.exists():
         body = f"#!{prefix}/bin/bash\nexec {launcher}\n"
     else:
-        body = f"#!{prefix}/bin/bash\nexec python -m webagent\n"
+        # No installed launcher to defer to — run the package straight from the
+        # checkout. There is no ``webagent`` module, so we run ``-m tui_app`` and
+        # put the TUI project dir on PYTHONPATH (mirrors install-termux.sh) so the
+        # ``tui_app`` package is importable regardless of cwd.
+        from ..selfinfo import tui_project_dir
+        tui_dir = tui_project_dir()
+        pp = (f'export PYTHONPATH="{tui_dir}:${{PYTHONPATH:-}}"\n' if tui_dir else "")
+        body = f"#!{prefix}/bin/bash\n{pp}exec python -m tui_app\n"
     try:
         shortcuts.mkdir(parents=True, exist_ok=True)
         sc = shortcuts / "webagent.sh"

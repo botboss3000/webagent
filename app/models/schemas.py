@@ -36,6 +36,7 @@ class ChatRequest(BaseModel):
     agent_template_id: Optional[str] = None  # request a specific agent template for this session
     agent_id: Optional[str] = None  # request a specific custom agent by ID for this session
     execution_mode: Optional[str] = 'ask'  # 'ask' | 'plan' | 'auto' (legacy 'read'/'write' accepted) — controls tool execution permission
+    target_device: Optional[str] = None  # optional device instance-id to run this turn on instead of locally; the target device's worker claims & runs it in THIS session, reply flows back over the shared DB (see app/devices/)
 
 
 class ChatResponse(BaseModel):

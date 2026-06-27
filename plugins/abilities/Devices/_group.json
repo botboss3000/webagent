@@ -1,0 +1,7 @@
+{
+  "name": "Devices",
+  "icon": "monitor-smartphone",
+  "color": "#7aa2f7",
+  "desc": "Coordinate the user's webAgent instances across multiple devices that share one database.",
+  "order": 80
+}

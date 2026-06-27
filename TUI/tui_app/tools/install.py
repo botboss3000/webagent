@@ -244,6 +244,40 @@ async def seed_config(ctx: ToolContext, target: str) -> str:
     return f"[seed] .env + provider.json + db_connection.json written (local SQLite DB). {note}. Next: verify_install."
 
 
+# ── dependency dashboard (shared with the Setup panel) ───────────────────────
+async def check_dependencies(ctx: ToolContext, target: str = "") -> str:
+    """Read-only: the full dependency checklist the Setup dashboard shows.
+
+    Lazy imports keep the deps/depinstall ↔ install modules free of a circular
+    import (deps reuses helpers from this module)."""
+    from ..deps import probe_dependencies, render_text
+    return render_text(probe_dependencies(target))
+
+
+async def install_dependency(ctx: ToolContext, id: str, target: str = "") -> str:
+    """Install ONE dependency by id (deterministic — the same runners the Setup
+    panel's buttons use). Also accepts the Ubuntu management ops. Mutating."""
+    if not ctx.writes_enabled:
+        return WRITES_DISABLED_MSG
+    from ..depinstall import INSTALLABLE_IDS, install_one, manage_ubuntu
+
+    def _log(s: str) -> None:
+        try:
+            ctx.log(s)
+        except Exception:
+            pass
+
+    if id in ("ubuntu_update", "ubuntu_reinstall", "ubuntu_remove"):
+        _ok, msg = await manage_ubuntu(ctx, id, target, _log)
+        return msg
+    if id not in INSTALLABLE_IDS:
+        return (f"Unknown dependency '{id}'. Installable ids: "
+                f"{', '.join(sorted(INSTALLABLE_IDS))} (plus ubuntu_update / "
+                "ubuntu_reinstall / ubuntu_remove). Run check_dependencies first.")
+    _ok, msg = await install_one(ctx, id, target, _log)
+    return msg
+
+
 async def verify_install(ctx: ToolContext, target: str) -> str:
     if not ctx.writes_enabled:
         return WRITES_DISABLED_MSG

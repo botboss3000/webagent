@@ -81,6 +81,10 @@ errors, docs, solutions, and current information.
   `setup_environment`, `seed_config`, `verify_install` (clone
   `github.com/botboss3000/webagent` → build the venv + deps + browser → seed
   config & AI key → verify), plus `link_project` to adopt an existing copy.
+  `check_dependencies` / `install_dependency` are the **agent-side mirror of the
+  Setup dashboard** (see [Setup dashboard](#setup-dashboard-the-first-open-dependency-checklist)):
+  the read-only checklist and the deterministic per-id installers — including the
+  Android/Termux Ubuntu sandbox — share one engine with the buttons.
 - **Server (local)** — `server_status`, `server_start`, `server_stop`,
   `server_restart`, `server_logs`. Runs `run.py` from the checkout's venv as a
   detached process on port 8080; PID + log live in the manager's data dir.
@@ -451,12 +455,12 @@ it always reflects the latest code, no `.exe` rebuild needed).
 ```bash
 cd webagent
 pip install -e .
-WEBAGENT_PROJECT=/path/to/webagent python -m webagent
+WEBAGENT_PROJECT=/path/to/webagent python -m tui_app
 ```
 
 Already have the `.venv` from a previous run? Just launch with it directly —
-`.venv\Scripts\python.exe -m webagent` (Windows) or
-`.venv/bin/python -m webagent` (macOS/Linux) — no reinstall needed.
+`.venv\Scripts\python.exe -m tui_app` (Windows) or
+`.venv/bin/python -m tui_app` (macOS/Linux) — no reinstall needed.
 
 **Install as a global `webagent` command (uv).** The package exposes two console
 scripts — `tui-app` and `webagent` (both launch the TUI). To put `webagent` on
@@ -516,15 +520,55 @@ features are off** (no Chromium on Android), so it's a codebase / source-control
 diagnostics manager there. Give it a key inline (`LLM_API_KEY=… webagent`) or
 in the checkout's `.env`; the installer prints exactly what to set if none is found.
 
-### Guided onboarding (tap to start)
+### Setup dashboard (the first-open dependency checklist)
 
-When no checkout is linked, the onboarding screen shows a tappable **`Click here to
-get started`** button under the host/model details. Tapping it enables writes for
-the session and hands the agent a kickoff message that runs the whole guided install
-(readiness → clone → environment → seed → verify → link), explains the Android
-browser skip, fixes issues as they arise, and on Termux finishes by writing the
-home-screen shortcut (the `setup_launch_shortcut` tool) with instructions to add the
-Termux:Widget. It's deliberately tap-driven, because a terminal app **cannot raise
+The **first time** the manager opens with no checkout linked, it auto-shows a
+**Setup dashboard** — a deterministic, button-driven checklist of everything
+webAgent needs to run on this device. It auto-opens **once** (gated by
+`first_run_seen` in `config.json`, so it never nags afterwards) and is reachable
+any time from the **Setup** header pill (onboarding mode) or **Admin ▸ `[Setup]`**
+(managed mode).
+
+Each dependency is a **row**: a status icon (✓ ready · ✗ missing · ⚠ optional ·
+– not-applicable), a one-line detail, and an **`[Install]`** button on the ones
+that are missing and installable. A top **`[Install all]`** runs every missing row
+**in order** (prerequisites first — a row whose prerequisites aren't met yet shows
+"do the steps above first" instead of a button), **`[Re-check]`** re-probes, and an
+**Install folder** field sets where webAgent is cloned/built (defaults to
+`C:\webagent` / `~/webagent`).
+
+It is **deterministic**: a button runs the real command itself and streams progress
+into the transcript — **no AI key required**. (The older AI-driven flow survives as
+the in-panel **`[Let the assistant set this up]`** button.)
+
+The checklist is **platform-aware**:
+
+- **Everywhere** — internet (GitHub + PyPI), git, Python 3.11/3.12, free disk.
+- **Android/Termux** — the Ubuntu **`proot-distro`** sandbox the full app runs
+  inside on a phone: **proot-distro** → the **Ubuntu environment** → Ubuntu's
+  **python/venv/build tools**. The Ubuntu row also offers **Update / Reinstall /
+  Remove**. This mirrors the web app's **Termux deploy command**
+  (`deploy/termux-setup.sh`) exactly, so the two install paths stay in lock-step.
+- **The webAgent install itself** — clone the code → build the environment +
+  dependencies (inside Ubuntu on Termux, on the host otherwise) → the headless
+  browser (desktop only; off on Android) → seed config + AI key → verify.
+
+The engine is `tui_app/deps.py` (the read-only probe) + `tui_app/depinstall.py`
+(the per-id installers, reusing the onboarding tools in `tools/install.py` and the
+proot helpers in `tools/server.py`). The agent gets the **same** capability via the
+`check_dependencies` and `install_dependency` tools, so "check / install my
+dependencies" by voice and the buttons run one engine.
+
+### Guided onboarding (let the assistant do it)
+
+The onboarding screen also shows a tappable **`Click here to get started`** button
+under the host/model details. It now **opens the Setup dashboard** above (the
+button-driven path). To instead hand the whole install to the **agent** — readiness
+→ clone → environment → seed → verify → link, fixing issues as they arise and on
+Termux writing the home-screen shortcut (the `setup_launch_shortcut` tool) — tap
+**`[Let the assistant set this up]`** inside the Setup panel; that enables writes for
+the session and runs the guided turn. The AI path is deliberately tap-driven, because
+a terminal app **cannot raise
 the Android soft keyboard** — that's controlled by Termux, not the program (raise it
 from the **Termux left-edge drawer ▸ KEYBOARD** toggle, or **Volume-Up + K**, if you
 need to type; the footer's **⌨ Keyboard** shortcut focuses the input and, on Termux,
@@ -629,7 +673,8 @@ agent re-reads each session's history by id, so its context follows the active t
 | Header item | Action |
 |-------------|--------|
 | **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Maps to the App panel's **Ask / Plan / Auto** pill (plan↔read, ask↔write). |
-| **Admin** | a **Repo directory** field (paste a folder path → `[Save]` / `[Clear]`) at the top, then opens `[Connect]` · `[App Config]` · `[Model Settings]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` · `[Keep-alive: ON/OFF]` |
+| **Setup** (onboarding mode only) | the **first-open dependency dashboard** — every dependency webAgent needs, each with a live status + an `[Install]` button when one applies, plus `[Install all]` (see [Setup dashboard](#setup-dashboard-the-first-open-dependency-checklist)). Also reachable from **Admin ▸ `[Setup]`** in managed mode. |
+| **Admin** | a **Repo directory** field (paste a folder path → `[Save]` / `[Clear]`) at the top, then opens `[Setup]` · `[App Config]` · `[Model Settings]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` · `[Keep-alive: ON/OFF]` |
 | **Git** (managed mode only) | source control: a **GitHub token** field with `[Save]` / `[Clear]` (used to authenticate network ops; stored in the TUI's own config, never written into the repo's `.git/config`), then `[Fetch]` · `[Pull]` · `[Push]`. Each button hands the agent a plain-language request so it runs the matching `git_tool` op under the usual op-safety rules (force-push blocked); Pull/Push arm writes first since the click is the consent. |
 | **Playbook** (managed mode only) | the self-healing **issue knowledge base**: a **remediation-mode** selector (`[Document]` / `[Safe-auto]` / `[Autonomous]`), then the list of learned issues (occurrences, status, best remedy + confidence). Click an issue to drill in: its remedies with helped/didn't stats, recent incidents, and `[Approve]` / `[Disable]` / `[Forget]` controls. See [The Playbook](#the-playbook-self-healing-issue-knowledge-base). |
 | **App** | the **AI provider** block — **Provider** as a grid of **pill buttons** (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom); clicking one highlights it and fills the **Base URL** + **Model** to match (Custom leaves them as typed). Then a plain-text **AI key** field, `[Save]` / `[Clear]`; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`). **Keys are shown in clear text** (not masked) so you can verify what you pasted. |
@@ -644,6 +689,7 @@ the header.
 | Button | Action |
 |--------|--------|
 | **Repo directory** (field, top of the panel) | Paste the folder a webAgent checkout lives in (or should live in), e.g. `C:\webagent`, and `[Save]`. The path is stored as an entry in the manager's own SQLite store (`settings` table, key `repo_dir`) and the agent is handed a message — *"the repo directory X has been saved"* — telling it to **link** an existing checkout there, or **install** one if the folder is empty. The field is pasteable and pre-fills from the saved entry; it's also written whenever the agent links a checkout itself, so it always reflects the directory in play. `[Clear]` forgets it. (If no AI key is set yet the path is still saved, with a nudge to set a provider first.) |
+| `[Setup]` | Open the **Setup dashboard** — the deterministic, button-driven dependency checklist (the same view the **Setup** header pill opens in onboarding mode). See [Setup dashboard](#setup-dashboard-the-first-open-dependency-checklist) |
 | `[Connect]` | Open the **Connect** view — browse the admin's agents, pick one, then pick (or start) a session to set the **target**, and flip the two mute toggles (see [Driving the running app](#driving-the-running-app-the-two-mutes)) |
 | `[App Config]` | Open the **App Config** view — edit `app-settings.json` (access mode, presentation mode, **render recorder** on/off — the browser flight-recorder that captures HTML snapshots / lag / JS errors), saved over the admin API; plus **Session naming** (TUI-local) — how the Sessions list names each conversation: **Summary (AI)** (LLM summary of the last ~10 messages, falling back to the latest user message), **Latest message**, or **Off** |
 | `[Model Settings]` | Open the **Model Settings** view — the app's **LLM provider + auth key** (provider quick-pick pills that fill base URL + model, then provider / base URL / model / API key), saved over the admin API. (Moved here out of App Config.) |
@@ -818,9 +864,14 @@ self-contained). The active theme persists to config. Force emoji on/off with
   its own code, backing up first — source pull or frozen-exe rebuild + swap); and
   the **Android/Termux one-line install** (`install-termux.sh`, also served by the
   app at `/termux` — installs python+git, the TUI, a `webagent` launcher + a
-  Termux:Widget home-screen shortcut); **guided onboarding** — a tap-to-start button
-  that runs the whole install, driven by a **live onboarding guide fetched from the
-  repo** (`onboarding-guide.md`), plus the `setup_launch_shortcut` Termux:Widget tool.
+  Termux:Widget home-screen shortcut); the **Setup dashboard** — a first-open,
+  deterministic dependency checklist with per-row Install + Install-all buttons that
+  also installs & manages the Android/Termux Ubuntu `proot-distro` sandbox
+  (`tui_app/deps.py` + `tui_app/depinstall.py`; mirrored to the agent via
+  `check_dependencies` / `install_dependency`); **guided onboarding** — a tap-to-start
+  button (now opening that dashboard) and a "let the assistant do it" path driven by a
+  **live onboarding guide fetched from the repo** (`onboarding-guide.md`), plus the
+  `setup_launch_shortcut` Termux:Widget tool.
 - **Planned next** — **keyless web search** + page reading, a secure **credential
   prompt** (ask-and-seed a key when a context has none), general-coding in any
   folder, live **progress streaming** for long installs (incl. the self-update

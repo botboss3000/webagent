@@ -410,6 +410,51 @@ CREATE TABLE IF NOT EXISTS background_leader (
     expires_at TEXT
 );
 
+-- ── Multi-device coordination (see app/devices/) ───────────────────────────
+-- A SHARED database lets several webAgent instances (one user's devices) see
+-- one another. Two tables make that useful:
+--   • device_presence — a heartbeat/registry: which devices are online right now
+--     and what each can do (its capabilities). A device upserts its own row every
+--     few seconds; a stale last_seen means it went away.
+--   • device_jobs — a cross-device dispatch QUEUE. One device enqueues "run this
+--     prompt on agent X", optionally addressed to a specific target_instance
+--     (NULL = any device may take it). EXACTLY ONE device claims each job via an
+--     atomic UPDATE (same serialise-the-writer idiom as background_leader above),
+--     runs it locally, and records the result. Unlike background_leader (which
+--     elects ONE global leader), EVERY instance runs its own device worker and
+--     claims only the jobs addressed to its own instance_id (or broadcast jobs).
+--     A claimed job carries a TTL'd lease so a crashed claimer's job is reclaimed.
+CREATE TABLE IF NOT EXISTS device_presence (
+    instance_id TEXT PRIMARY KEY,
+    label TEXT,                                  -- friendly name (hostname)
+    capabilities TEXT NOT NULL DEFAULT '{}',     -- JSON: platform, has_browser, …
+    endpoint TEXT,                               -- reachable base URL for nudges (optional)
+    last_seen TEXT,                              -- ISO heartbeat; stale = offline
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS device_jobs (
+    id TEXT PRIMARY KEY,
+    created_by_instance TEXT,                    -- which device enqueued it
+    target_instance TEXT,                        -- NULL = any device may claim (broadcast)
+    target_label TEXT,                           -- friendly target shown in the UI
+    owner_user_id TEXT NOT NULL,
+    agent_id TEXT,                               -- agent to run on the target device
+    prompt TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '{}',          -- JSON extras
+    status TEXT NOT NULL DEFAULT 'pending',      -- pending | claimed | done | error
+    claimed_by TEXT,                             -- instance that won the claim
+    claimed_at TEXT,
+    lease_expires_at TEXT,                       -- TTL'd; expired+claimed = reclaimable
+    result_excerpt TEXT,
+    error TEXT,
+    session_id TEXT,                             -- session the run created on the target
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_device_jobs_claim ON device_jobs(status, target_instance);
+CREATE INDEX IF NOT EXISTS idx_device_jobs_created ON device_jobs(created_at);
+CREATE INDEX IF NOT EXISTS idx_device_presence_seen ON device_presence(last_seen);
+
 -- Diagnostic flight-recorder (see app/agent/diagnostics.py). A rolling,
 -- auto-pruned log of server warnings/errors, agent-loop pipeline problems and
 -- run outcomes, queryable by an operator or a diagnostic AI agent. session_id /
@@ -709,6 +754,11 @@ CREATE TABLE IF NOT EXISTS agent_automations (
     next_retry_at       TEXT,
     memory_json         TEXT NOT NULL DEFAULT '{}',
     origin              TEXT NOT NULL DEFAULT 'slot',
+    -- Cross-device targeting (see app/devices/): run this automation on another
+    -- device instead of the firing box. NULL/'' = run locally. target_offline
+    -- decides what happens when the target is offline at fire time.
+    target_device       TEXT,
+    target_offline      TEXT DEFAULT 'wait',   -- 'wait' (queue until it wakes) | 'skip'
     -- Recycling-bin marker: NULL = active, ISO timestamp = soft-deleted (in the
     -- Automations bin). Recycling also flips enabled=0 so the scheduler never
     -- fires a binned row (see trash_automation). Permanent delete removes the row.
@@ -1773,6 +1823,48 @@ class LocalBackend(StorageBackend):
                     expires_at TEXT
                 )"""
             )
+            # ── Migration: multi-device coordination (see app/devices/) ──
+            # For DBs created before cross-device dispatch existed.
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS device_presence (
+                    instance_id TEXT PRIMARY KEY,
+                    label TEXT,
+                    capabilities TEXT NOT NULL DEFAULT '{}',
+                    endpoint TEXT,
+                    last_seen TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS device_jobs (
+                    id TEXT PRIMARY KEY,
+                    created_by_instance TEXT,
+                    target_instance TEXT,
+                    target_label TEXT,
+                    owner_user_id TEXT NOT NULL,
+                    agent_id TEXT,
+                    prompt TEXT NOT NULL DEFAULT '',
+                    payload TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    claimed_by TEXT,
+                    claimed_at TEXT,
+                    lease_expires_at TEXT,
+                    result_excerpt TEXT,
+                    error TEXT,
+                    session_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_device_jobs_claim ON device_jobs(status, target_instance)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_device_jobs_created ON device_jobs(created_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_device_presence_seen ON device_presence(last_seen)"
+            )
             conn.commit()
 
             # ── Migration: self-healing/auto-resume columns on session_runs ──
@@ -2029,6 +2121,21 @@ class LocalBackend(StorageBackend):
                 conn.commit()
             except Exception as _e:
                 logger.warning("automation 030 (deleted_at) migration failed: %s", _e)
+
+            # ── Migration 031: cross-device targeting on automations (app/devices/) ──
+            # target_device = device instance-id to run on (NULL/'' = local);
+            # target_offline = 'wait' | 'skip' when the target is offline at fire time.
+            try:
+                cur = conn.execute("PRAGMA table_info(agent_automations)")
+                have = {row[1] for row in cur.fetchall()}
+                if have:
+                    if "target_device" not in have:
+                        conn.execute("ALTER TABLE agent_automations ADD COLUMN target_device TEXT")
+                    if "target_offline" not in have:
+                        conn.execute("ALTER TABLE agent_automations ADD COLUMN target_offline TEXT DEFAULT 'wait'")
+                    conn.commit()
+            except Exception as _e:
+                logger.warning("automation 031 (target_device) migration failed: %s", _e)
 
             # ── Migration: backfill 'automation' admin-base slot for every agent ──
             try:
@@ -5133,6 +5240,94 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
+    # ── Local Claude Code engine: one-shot "compact & restart" (/compact) ──
+    # A Claude Code agent's memory lives inside the `claude` CLI's own session,
+    # resumed each turn — it only ever grows. The /compact command arms a one-shot
+    # reseed: webAgent's Context Control folds this chat into a compact recap, we
+    # stash it here AND drop the stored Claude id, so the engine's next turn starts
+    # a BRAND-NEW Claude session seeded with the recap instead of resuming the old
+    # bloated thread. Consumed (cleared) by the engine on that next turn.
+    # See plugins/engines/claude_code/claude_code.py + the /compact handler.
+
+    async def set_session_claude_reseed(self, session_id: str, seed: str) -> None:
+        """Arm a one-shot compact-and-restart: store the recap, forget the old id."""
+        if not session_id:
+            return
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                meta["claude_reseed_context"] = seed or ""
+                # Forget the old Claude thread so the next turn does NOT --resume it.
+                meta.pop("claude_session_id", None)
+                conn.execute(
+                    "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), session_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def get_session_claude_reseed(self, session_id: str) -> Optional[str]:
+        """Return the pending compact-and-restart recap for this session, or None."""
+        if not session_id:
+            return None
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row:
+                return None
+            try:
+                meta = json.loads(row["metadata"]) if row["metadata"] else {}
+            except (json.JSONDecodeError, TypeError):
+                return None
+            if not isinstance(meta, dict):
+                return None
+            seed = meta.get("claude_reseed_context")
+            return seed if isinstance(seed, str) and seed else None
+        finally:
+            conn.close()
+
+    async def clear_session_claude_reseed(self, session_id: str) -> None:
+        """Drop a consumed recap once the fresh Claude session has been seeded."""
+        if not session_id:
+            return
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                if "claude_reseed_context" in meta:
+                    meta.pop("claude_reseed_context", None)
+                    conn.execute(
+                        "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(meta), _now_iso(), session_id),
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+
     # ── On-demand abilities: per-session active list (sessions.metadata) ──
     # "active_abilities" = ids of discoverable abilities the agent has pulled in
     # this conversation via load_ability. While listed, the ability's tools +
@@ -6554,6 +6749,166 @@ class LocalBackend(StorageBackend):
                     (holder_id,),
                 )
                 conn.commit()
+            finally:
+                conn.close()
+
+    # ── Multi-device coordination (see app/devices/) ──────────────────────────
+    # A shared DB lets one user's several webAgent instances ("devices") see each
+    # other and hand work back and forth. device_heartbeat / list_devices power
+    # the presence registry; enqueue/claim/finish/reclaim are the cross-device
+    # dispatch QUEUE. The claim is atomic (SQLite serialises the UPDATE, exactly
+    # like background_leader_acquire) so EXACTLY ONE device runs each job even when
+    # several share the database — but UNLIKE the leader lock, every device runs
+    # its own worker and claims only jobs addressed to its own instance_id.
+
+    async def device_heartbeat(self, instance_id, label=None, capabilities=None,
+                               endpoint=None):
+        """Upsert THIS device's presence row, stamping last_seen=now."""
+        import json as _json
+        now = _now_iso()
+        caps = capabilities if isinstance(capabilities, str) else _json.dumps(capabilities or {})
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT INTO device_presence
+                         (instance_id, label, capabilities, endpoint, last_seen, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT (instance_id) DO UPDATE SET
+                         label=excluded.label,
+                         capabilities=excluded.capabilities,
+                         endpoint=excluded.endpoint,
+                         last_seen=excluded.last_seen""",
+                    (instance_id, label, caps, endpoint, now, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def list_devices(self, online_within_seconds=60):
+        """All known devices, newest heartbeat first, each tagged online/offline."""
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(seconds=int(online_within_seconds))).isoformat()
+        conn = self._get_conn()
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM device_presence ORDER BY last_seen DESC"
+            ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["online"] = bool(d.get("last_seen") and d["last_seen"] >= cutoff)
+                out.append(d)
+            return out
+        finally:
+            conn.close()
+
+    async def enqueue_device_job(self, *, owner_user_id, prompt, agent_id=None,
+                                 target_instance=None, target_label=None,
+                                 created_by_instance=None, payload=None):
+        """Insert a pending cross-device job; returns its id."""
+        import json as _json
+        job_id = _uuid()
+        now = _now_iso()
+        pl = payload if isinstance(payload, str) else _json.dumps(payload or {})
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT INTO device_jobs
+                         (id, created_by_instance, target_instance, target_label,
+                          owner_user_id, agent_id, prompt, payload, status,
+                          created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                    (job_id, created_by_instance, target_instance, target_label,
+                     owner_user_id, agent_id, prompt or "", pl, now, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return job_id
+
+    async def claim_device_jobs(self, instance_id, *, limit=4, lease_seconds=600):
+        """Atomically claim up to ``limit`` pending jobs addressed to this device
+        (target_instance == instance_id) OR broadcast jobs (target_instance NULL).
+
+        Multi-instance safe: each candidate is flipped pending→claimed with a
+        conditional UPDATE, so when several devices race, only one wins each row
+        (SQLite serialises the writer; everyone else sees rowcount 0). Returns the
+        rows THIS device now owns, each as a dict."""
+        now = datetime.now(timezone.utc)
+        now_s = now.isoformat()
+        exp_s = (now + timedelta(seconds=int(lease_seconds))).isoformat()
+        claimed = []
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.row_factory = sqlite3.Row
+                candidates = conn.execute(
+                    """SELECT id FROM device_jobs
+                       WHERE status='pending'
+                         AND (target_instance = ? OR target_instance IS NULL)
+                       ORDER BY created_at ASC
+                       LIMIT ?""",
+                    (instance_id, int(limit)),
+                ).fetchall()
+                for row in candidates:
+                    jid = row["id"]
+                    cur = conn.execute(
+                        """UPDATE device_jobs
+                           SET status='claimed', claimed_by=?, claimed_at=?,
+                               lease_expires_at=?, updated_at=?
+                           WHERE id=? AND status='pending'""",
+                        (instance_id, now_s, exp_s, now_s, jid),
+                    )
+                    if cur.rowcount > 0:
+                        full = conn.execute(
+                            "SELECT * FROM device_jobs WHERE id=?", (jid,)
+                        ).fetchone()
+                        if full is not None:
+                            claimed.append(dict(full))
+                conn.commit()
+            finally:
+                conn.close()
+        return claimed
+
+    async def finish_device_job(self, job_id, *, status, result_excerpt=None,
+                                error=None, session_id=None):
+        """Close out a claimed job (status: done | error)."""
+        now = _now_iso()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """UPDATE device_jobs
+                       SET status=?, result_excerpt=?, error=?, session_id=?, updated_at=?
+                       WHERE id=?""",
+                    (status, (result_excerpt or "")[:2000], error, session_id, now, job_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def reclaim_expired_device_jobs(self):
+        """Return claimed-but-stalled jobs (lease expired, never finished) to the
+        pending pool so another device retries them after a crash. Returns the
+        number reclaimed."""
+        now_s = datetime.now(timezone.utc).isoformat()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    """UPDATE device_jobs
+                       SET status='pending', claimed_by=NULL, claimed_at=NULL,
+                           lease_expires_at=NULL, updated_at=?
+                       WHERE status='claimed'
+                         AND lease_expires_at IS NOT NULL
+                         AND lease_expires_at < ?""",
+                    (now_s, now_s),
+                )
+                conn.commit()
+                return cur.rowcount or 0
             finally:
                 conn.close()
 
@@ -9344,6 +9699,8 @@ class LocalBackend(StorageBackend):
         memory_json: str = "{}",
         origin: str = "tool",
         enabled: bool = True,
+        target_device: Optional[str] = None,
+        target_offline: str = "wait",
     ) -> dict:
         """Create an imperative automation (tool / dashboard / timer).
 
@@ -9371,15 +9728,17 @@ class LocalBackend(StorageBackend):
                         delivery_json, run_mode, runner_agent_id, clone_abilities,
                         max_per_day, disable_after_failures, expires_at,
                         retry_max, retry_backoff_seconds, memory_json, origin,
+                        target_device, target_offline,
                         created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?,
-                               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (row_id, agent_id, owner_user_id, task_label, prompt,
                      schedule_cron, schedule_natural, schedule_kind, timezone,
                      1 if enabled else 0, next_run_at, source_hash,
                      delivery_json, run_mode, runner_agent_id, clone_abilities,
                      max_per_day, disable_after_failures, expires_at,
                      retry_max, retry_backoff_seconds, memory_json, origin,
+                     (target_device or None), (target_offline or "wait"),
                      now, now),
                 )
                 conn.commit()
@@ -9409,6 +9768,8 @@ class LocalBackend(StorageBackend):
             "fail_count", "disable_after_failures", "expires_at",
             "retry_max", "retry_backoff_seconds", "next_retry_at",
             "memory_json", "origin",
+            # ── cross-device targeting ──
+            "target_device", "target_offline",
         }
         # JSON-encode dict/list values destined for *_json / clone_abilities columns.
         _json_cols = {"delivery_json", "memory_json", "clone_abilities"}

@@ -254,8 +254,28 @@ function _renderRowCells(row, agentName, agentId, agentIcon, agentEngine) {
     <td class="col-last">${last}</td>
     <td class="col-next">${next}</td>
     <td class="col-count">${count}</td>
+    <td class="col-device">${_deviceCell(row, agentId)}</td>
     <td class="col-enabled">${enabledCell}</td>
   </tr>`;
+}
+
+// ── "Run on" device chip ───────────────────────────────────────────
+// Cross-device targeting (app/devices/) is wired for SCHEDULED automations
+// only (the runner's firing seam), so other row types show a dash. The chip
+// opens the shared DevicePicker; the label is resolved from the device list.
+function _deviceCell(row, agentId) {
+  if (row.type !== 'scheduled') return '<span class="auto-tz">—</span>';
+  const target = row.target_device || '';
+  const offline = (row.target_offline === 'skip') ? 'skip' : 'wait';
+  const label = target
+    ? ((window.DevicePicker && window.DevicePicker.labelFor) ? window.DevicePicker.labelFor(target) : target)
+    : 'This device';
+  const cls = 'auto-device-chip' + (target ? ' targeting' : '');
+  const title = target
+    ? `Runs on ${_esc(label)} — click to change`
+    : 'Runs on this device — click to send it to another device';
+  return `<span class="${cls}" data-id="${_esc(row.id)}" data-agent-id="${_esc(agentId || '')}" data-target="${_esc(target)}" data-offline="${offline}" title="${title}">
+    <i data-lucide="monitor" style="width:11px;height:11px;"></i><span class="auto-device-text">${_esc(label)}</span></span>`;
 }
 
 // ── Render the table ───────────────────────────────────────────────
@@ -329,6 +349,11 @@ async function _loadAndRender() {
   if (typeof data.completed_count === 'number') _completedCount = data.completed_count;
   _populateFilter();
   _renderTable();
+  // Resolve device names for any "Run on" chips that rendered before the
+  // device list was cached (best-effort; non-fatal if the fleet API is absent).
+  if (window.DevicePicker && window.DevicePicker.load) {
+    window.DevicePicker.load().then(() => _refreshDeviceChipLabels()).catch(() => {});
+  }
   // Re-render rebuilt every row, so any selection is gone — clear the header
   // toggle and repaint the toolbar (resting recycle icon, back/restore states).
   const checkAll = _qs('automations-check-all');
@@ -397,6 +422,66 @@ async function _toggleEnabled(input) {
     input.checked = !enabled;  // revert
     _showToast('Update failed');
   }
+}
+
+// ── Run-on device targeting ────────────────────────────────────────
+
+function _openDeviceChip(chip) {
+  if (!window.DevicePicker || !window.DevicePicker.open) return;
+  window.DevicePicker.open(chip, {
+    title: 'Run this automation on',
+    currentInstance: chip.dataset.target || '',
+    currentOffline: chip.dataset.offline || 'wait',
+    showOffline: true,
+    onSelect: (sel) => _setAutomationTarget(
+      { id: chip.dataset.id, agentId: chip.dataset.agentId }, chip, sel),
+  });
+}
+
+async function _setAutomationTarget(ref, chip, sel) {
+  const target = sel.is_self ? '' : (sel.instance_id || '');
+  const offline = (sel.offline === 'skip') ? 'skip' : 'wait';
+  const token = localStorage.getItem('auth_token');
+  let url = `/api/v1/agents/${encodeURIComponent(ref.agentId)}/automations/${encodeURIComponent(ref.id)}`;
+  if (token) url += `?token=${encodeURIComponent(token)}`;
+  try {
+    const res = await fetch(apiPath(url), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: app.currentUserId, target_device: target, target_offline: offline }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    // Keep the local model in sync so a re-render doesn't flip it back.
+    const found = _findRow(ref.id, 'scheduled');
+    if (found && found.row) { found.row.target_device = target; found.row.target_offline = offline; }
+    // Repaint this chip in place.
+    const label = target
+      ? ((window.DevicePicker && window.DevicePicker.labelFor) ? window.DevicePicker.labelFor(target) : target)
+      : 'This device';
+    chip.dataset.target = target;
+    chip.dataset.offline = offline;
+    chip.classList.toggle('targeting', !!target);
+    const txt = chip.querySelector('.auto-device-text');
+    if (txt) txt.textContent = label;
+    chip.title = target ? `Runs on ${label} — click to change`
+      : 'Runs on this device — click to send it to another device';
+    _showToast(target ? `Runs on ${label}` + (offline === 'skip' ? ' (skip if offline)' : '') : 'Runs on this device');
+  } catch (e) {
+    console.warn('[Automations] Set target failed:', e);
+    _showToast('Update failed');
+  }
+}
+
+// After the device list loads, fill chips that rendered before names resolved.
+function _refreshDeviceChipLabels() {
+  document.querySelectorAll('#automations-table .auto-device-chip[data-target]').forEach(chip => {
+    const t = chip.dataset.target || '';
+    if (!t) return;
+    const lbl = (window.DevicePicker && window.DevicePicker.labelFor) ? window.DevicePicker.labelFor(t) : t;
+    const txt = chip.querySelector('.auto-device-text');
+    if (txt) txt.textContent = lbl;
+    chip.title = `Runs on ${lbl} — click to change`;
+  });
 }
 
 // ── Delete selected ────────────────────────────────────────────────
@@ -569,6 +654,8 @@ function _wireDom() {
   const tbody = _qs('automations-table-body');
   if (tbody) {
     tbody.addEventListener('click', (e) => {
+      const deviceChip = e.target.closest('.auto-device-chip');
+      if (deviceChip) { _openDeviceChip(deviceChip); return; }
       const checkCell = e.target.closest('.auto-check-cell');
       if (checkCell) { _toggleCheck(checkCell); return; }
     });

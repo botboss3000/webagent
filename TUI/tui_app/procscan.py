@@ -160,7 +160,7 @@ def scan_webagent_processes(port: int = 8080) -> list[dict]:
         cmd_short = cmd
         if "python" in cmd_short or "python3" in cmd_short:
             # try to show just the meaningful tail
-            for marker in ("run.py", "webagent", "-m webagent"):
+            for marker in ("run.py", "-m tui_app", "-m webagent", "tui_app", "webagent"):
                 idx = cmd_short.find(marker)
                 if idx != -1:
                     cmd_short = cmd_short[idx:]

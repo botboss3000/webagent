@@ -19,7 +19,7 @@ from pathlib import Path
 from pilot_harness import boot
 
 # Every kind `_render_panel` knows how to build (see app.py `_render_panel`).
-PANEL_KINDS = ["admin", "reset", "git", "connect", "sessions", "config",
+PANEL_KINDS = ["admin", "reset", "setup", "git", "connect", "sessions", "config",
                "model", "scene", "diag", "logs", "playbook", "server"]
 
 

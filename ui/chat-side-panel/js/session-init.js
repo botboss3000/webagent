@@ -345,6 +345,7 @@ export function initSessions() {
     // in-memory mode (e.g. a leftover Auto) while the pill shows the wrong label —
     // so the message would silently send a different mode than the pill displays.
     if (typeof app.reloadExecutionMode === 'function') app.reloadExecutionMode();
+    if (typeof app.reloadTargetDevice === 'function') app.reloadTargetDevice();
     _teardownVirtualScroll();
     app.chatMessages.innerHTML = '';
     // Empty-state placeholder — drops away the moment the user sends (chat-send.js).
@@ -616,6 +617,7 @@ export function initSessions() {
       // Re-sync the execution-mode pill for this fresh session (per-session key,
       // defaults to Ask) so it can't inherit the previous session's leftover mode.
       if (typeof app.reloadExecutionMode === 'function') app.reloadExecutionMode();
+    if (typeof app.reloadTargetDevice === 'function') app.reloadTargetDevice();
       _teardownVirtualScroll();
       app.chatMessages.innerHTML = '';
       // Empty-state placeholder — drops away the moment the user sends (chat-send.js).

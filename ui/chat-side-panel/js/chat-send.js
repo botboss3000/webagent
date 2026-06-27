@@ -207,6 +207,7 @@ async function _retryEntry(entry) {
       payload.agent_id = entry.agent_id || app.currentAgentId;
     }
     if (entry.app_control) payload.app_control = entry.app_control;
+    if (entry.target_device) payload.target_device = entry.target_device;
     const resp = await fetch(apiPath('/api/v1/chat/send'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -491,6 +492,9 @@ async function sendMessage() {
     timestamp: new Date().toISOString(),
   };
   if (_appControl) outboxEntry.app_control = _appControl;
+  // Target device for this turn (the chat pill). '' = run locally; an instance
+  // id routes the turn to that device's worker (see chat-ui.js / app/devices/).
+  if (app.targetDevice) outboxEntry.target_device = app.targetDevice;
   _addToOutbox(outboxEntry);
 
   app.chatInput.value = '';

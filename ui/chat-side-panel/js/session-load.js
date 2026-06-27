@@ -602,6 +602,7 @@ export function _syncTerminalChat(sessionId) {
 export async function loadSessionChat(sessionId) {
   // Restore per-session execution mode (Ask/Plan/Auto) when loading any session
   if (typeof app.reloadExecutionMode === 'function') app.reloadExecutionMode();
+  if (typeof app.reloadTargetDevice === 'function') app.reloadTargetDevice();
 
   if (typeof app.refreshActiveAbilities === 'function') {
     try { app.refreshActiveAbilities(); } catch (_) { /* best-effort */ }
@@ -700,6 +701,7 @@ export async function loadSessionChat(sessionId) {
       // reloadExecutionMode() ran for the old id — re-sync the pill for the new id
       // (per-session key, defaults to Ask) so it can't carry a stale mode.
       if (typeof app.reloadExecutionMode === 'function') app.reloadExecutionMode();
+  if (typeof app.reloadTargetDevice === 'function') app.reloadTargetDevice();
       _teardownVirtualScroll();
       app.chatMessages.innerHTML = '';
       // Empty-state placeholder — drops away the moment the user sends (chat-send.js).

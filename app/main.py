@@ -149,6 +149,7 @@ try:
 except ImportError:
     tasks_router = None
 from app.api.canvas import router as canvases_router
+from app.api.devices import router as devices_router
 from app.api.wiki import router as wiki_router
 from app.api.ability_delete import router as ability_delete_router
 
@@ -462,6 +463,9 @@ if tasks_router is not None:
 
 # Register Canvas router
 app.include_router(canvases_router)
+
+# Register Devices router (presence list for the target-device picker)
+app.include_router(devices_router)
 
 # Register ability deletion API
 app.include_router(ability_delete_router)
@@ -907,6 +911,12 @@ async def shutdown():
     try:
         from app.coordination.leader import get_leader
         await get_leader().stop()
+    except Exception:
+        pass
+    # Stop the per-instance device worker (multi-device dispatch). See app/devices/.
+    try:
+        from app.devices import stop_device_worker
+        await stop_device_worker()
     except Exception:
         pass
 
@@ -1476,6 +1486,19 @@ async def startup():
         await _leader.start()
     except Exception as _leader_err:
         logger.warning("Failed to start background leader: %s", _leader_err)
+
+    # ── Device worker — runs on EVERY instance (NOT leader-gated) ──
+    # Multi-device: when several instances share one database, each runs its own
+    # worker that heartbeats presence and claims only the dispatch jobs addressed
+    # to its own device id. Deliberately outside the leader block above (those are
+    # GLOBAL singletons elected to one worker; this one is per-device by design).
+    # See app/devices/. Harmless on a single, unshared instance — there are simply
+    # no other devices, so it just heartbeats itself.
+    try:
+        from app.devices import start_device_worker
+        await start_device_worker()
+    except Exception as _dev_err:
+        logger.warning("Failed to start device worker: %s", _dev_err)
 
     # ── Seed LLM config from env vars into auth_elements (cloud-first deploy) ──
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")

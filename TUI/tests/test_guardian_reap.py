@@ -50,8 +50,10 @@ def test_is_server_proc_excludes_tui_and_guardian_and_scanners():
     assert _is_server_proc(r"C:\proj\.venv\Scripts\python.exe run.py")
     assert _is_server_proc("uv run python run.py")
     assert _is_server_proc("python -m app.main")
-    assert not _is_server_proc("python -m webagent.guardian")
-    assert not _is_server_proc("python -m webagent")
+    assert not _is_server_proc("python -m webagent.guardian")     # legacy module name
+    assert not _is_server_proc("python -m webagent")              # legacy module name
+    assert not _is_server_proc("python -m tui_app.guardian")      # current module name
+    assert not _is_server_proc("python -m tui_app")              # current module name
     assert not _is_server_proc("powershell -NoProfile -Command Get-CimInstance Win32_Process")
     assert not _is_server_proc("")
 

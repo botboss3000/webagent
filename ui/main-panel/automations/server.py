@@ -153,6 +153,10 @@ def _decorate_automation(row: dict) -> dict:
         "last_session_id": row.get("last_session_id"),
         # run count isn't stored directly on automations; estimate from last_status presence
         "run_count": 1 if row.get("last_run_at") else 0,
+        # Cross-device targeting (see app/devices/): which device runs it + the
+        # offline policy. The label is resolved client-side from /api/v1/devices.
+        "target_device": row.get("target_device") or "",
+        "target_offline": row.get("target_offline") or "wait",
         "created_at": _fmt_time(row.get("created_at")),
     }
 

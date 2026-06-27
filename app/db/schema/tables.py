@@ -824,6 +824,9 @@ TABLES: List[Table] = [
         Column("next_retry_at", "TEXT"),
         Column("memory_json", "TEXT", nullable=False, default="'{}'"),       # per-automation persistent state
         Column("origin", "TEXT", nullable=False, default="'slot'"),          # slot | tool | dashboard | timer
+        # ── Cross-device targeting (see app/devices/) ──
+        Column("target_device", "TEXT"),                                     # device instance-id to run on; NULL/'' = run on the firing device locally
+        Column("target_offline", "TEXT", default="'wait'"),                  # when the target is offline at fire time: 'wait' (queue until it wakes) | 'skip'
         Column("deleted_at", "TEXT"),  # NULL = active; set = in the Automations recycling bin (also enabled=0)
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
@@ -932,6 +935,40 @@ TABLES: List[Table] = [
     ], constraints=[
         "UNIQUE(user_id, slug)",
     ]),
+
+    # ── Multi-device coordination (see app/devices/) ──
+    # Presence registry + cross-device dispatch queue. A shared DB lets one user's
+    # several instances ("devices") see each other and hand work back and forth.
+    # Every device runs its own worker and claims only jobs addressed to its own
+    # instance_id (or broadcast jobs, target_instance NULL) via an atomic claim.
+    Table("device_presence", [
+        Column("instance_id", "TEXT", nullable=False, primary_key=True),
+        Column("label", "TEXT"),                                              # friendly name (hostname)
+        Column("capabilities", "TEXT", nullable=False, default="'{}'"),       # JSON: platform, has_browser, …
+        Column("endpoint", "TEXT"),                                           # reachable base URL for nudges
+        Column("last_seen", "TEXT"),                                          # ISO heartbeat; stale = offline
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
+    Table("device_jobs", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("created_by_instance", "TEXT"),                               # which device enqueued it
+        Column("target_instance", "TEXT"),                                   # NULL = any device may claim
+        Column("target_label", "TEXT"),                                      # friendly target for the UI
+        Column("owner_user_id", "TEXT", nullable=False),
+        Column("agent_id", "TEXT"),                                          # agent to run on the target
+        Column("prompt", "TEXT", nullable=False, default="''"),
+        Column("payload", "TEXT", nullable=False, default="'{}'"),           # JSON extras
+        Column("status", "TEXT", nullable=False, default="'pending'"),       # pending|claimed|done|error
+        Column("claimed_by", "TEXT"),                                        # instance that won the claim
+        Column("claimed_at", "TEXT"),
+        Column("lease_expires_at", "TEXT"),                                  # TTL'd; expired+claimed = reclaimable
+        Column("result_excerpt", "TEXT"),
+        Column("error", "TEXT"),
+        Column("session_id", "TEXT"),                                        # session the run created on the target
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
 ]
 
 # NOTE: the company-wide Wiki lives in its OWN dedicated SQLite file
@@ -1034,6 +1071,10 @@ INDEXES: List[Index] = [
     Index("idx_automation_runs_sub", "automation_runs", "subscription_id, created_at DESC"),
     Index("idx_automation_runs_owner", "automation_runs", "owner_user_id, created_at DESC"),
     Index("idx_canvases_user", "canvases", "user_id"),
+    # Multi-device coordination
+    Index("idx_device_jobs_claim", "device_jobs", "status, target_instance"),
+    Index("idx_device_jobs_created", "device_jobs", "created_at"),
+    Index("idx_device_presence_seen", "device_presence", "last_seen"),
 ]
 
 

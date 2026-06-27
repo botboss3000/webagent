@@ -262,6 +262,75 @@ export function initChat() {
   // Export reload so session-core.js can call it on session switch
   app.reloadExecutionMode = _applyExecutionMode;
 
+  // ── Target-device pill (per-session) ──
+  // Picks which device in the fleet runs the next message. '' = this device
+  // (runs locally, exactly like before); a chosen instance-id is sent as
+  // request.target_device so the backend hands the turn to that device's worker
+  // to run inside THIS session (the reply flows back over the shared DB). The
+  // choice is remembered per session, like the execution mode above.
+  app.targetDevice = '';
+  const targetBtn = document.getElementById('chat-target-btn');
+
+  function _renderTargetPill() {
+    if (!targetBtn) return;
+    const labelEl = targetBtn.querySelector('.chat-target-label');
+    const inst = app.targetDevice || '';
+    if (inst) {
+      targetBtn.classList.add('targeting');
+      const lbl = (window.DevicePicker && window.DevicePicker.labelFor)
+        ? window.DevicePicker.labelFor(inst) : inst;
+      if (labelEl) labelEl.textContent = lbl;
+      targetBtn.title = 'Running on ' + lbl + ' — click to change';
+    } else {
+      targetBtn.classList.remove('targeting');
+      if (labelEl) labelEl.textContent = '';
+      targetBtn.title = 'Run on… choose which device runs your next message';
+    }
+  }
+
+  function _applyTargetDevice() {
+    const sid = app.currentSessionId;
+    app.targetDevice = '';
+    if (sid) {
+      try {
+        const saved = localStorage.getItem('chat_target_device_' + sid);
+        if (saved) app.targetDevice = saved;
+      } catch (_) { /* best-effort */ }
+    }
+    _renderTargetPill();
+  }
+
+  if (targetBtn) {
+    _applyTargetDevice();
+    // Warm the device list so the pill can show the chosen device's real name.
+    if (window.DevicePicker && window.DevicePicker.load) {
+      window.DevicePicker.load().then(_renderTargetPill).catch(() => {});
+    }
+    targetBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (!window.DevicePicker || !window.DevicePicker.open) return;
+      window.DevicePicker.open(targetBtn, {
+        title: 'Run this chat on',
+        currentInstance: app.targetDevice || '',
+        onSelect: (sel) => {
+          app.targetDevice = sel.is_self ? '' : (sel.instance_id || '');
+          const sid = app.currentSessionId;
+          if (sid) {
+            try {
+              if (app.targetDevice) localStorage.setItem('chat_target_device_' + sid, app.targetDevice);
+              else localStorage.removeItem('chat_target_device_' + sid);
+            } catch (_) { /* best-effort */ }
+          }
+          _renderTargetPill();
+        },
+      });
+    });
+  }
+
+  // Export reload so session switches re-read the per-session target (mirrors
+  // app.reloadExecutionMode).
+  app.reloadTargetDevice = _applyTargetDevice;
+
   // ── Agent-driven mode switch (set_execution_mode tool → WS echo) ──
   // The backend broadcasts an `execution_mode` event when the agent flips the
   // mode mid-conversation (e.g. Plan→Auto after the user approves a plan).

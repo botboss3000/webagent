@@ -2359,8 +2359,19 @@ async def session_stats(
             }
             # Enrich with agent_name and run_status if available
             try:
-                cur.execute('SELECT agent_id FROM sessions WHERE id = ?', (sid,))
+                cur.execute('SELECT agent_id, metadata FROM sessions WHERE id = ?', (sid,))
                 srow = cur.fetchone()
+                # Which device this session ran on (stamped at creation; see
+                # app/devices/) — surfaced as the Sessions page device badge.
+                try:
+                    if srow and srow["metadata"]:
+                        _smeta = json.loads(srow["metadata"])
+                        _dev = (_smeta or {}).get("device") if isinstance(_smeta, dict) else None
+                        if isinstance(_dev, dict) and _dev.get("label"):
+                            entry["device_id"] = _dev.get("id")
+                            entry["device_label"] = _dev.get("label")
+                except Exception:
+                    pass
                 if srow and srow["agent_id"]:
                     entry["agent_id"] = srow["agent_id"]
                     cur2 = conn.cursor()

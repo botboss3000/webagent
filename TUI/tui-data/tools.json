@@ -36,6 +36,16 @@
       "enabled": true,
       "description": "Verify a fresh install imports cleanly and its local DB initialises. Mutating (creates the local database)."
     },
+    "check_dependencies": {
+      "category": "install",
+      "enabled": true,
+      "description": "Read-only dependency checklist for getting webAgent running on THIS device — the same list the Setup dashboard shows: internet, git, Python, disk, on Android/Termux the Ubuntu proot-distro sandbox (proot_distro / ubuntu / ubuntu_toolchain), then repo / venv / browser / config / verify. Each row says what it needs first. Pass the install folder as target (optional). Run this before install_dependency."
+    },
+    "install_dependency": {
+      "category": "install",
+      "enabled": true,
+      "description": "Install ONE dependency by id, deterministically (runs the real command — the same engine the Setup dashboard's Install buttons use). ids: git, python, proot_distro, ubuntu, ubuntu_toolchain, repo, venv, browser, config, verify; plus Ubuntu management ops ubuntu_update, ubuntu_reinstall, ubuntu_remove. Use check_dependencies first to see what's missing and the right order. Pass the install folder as target. Mutating."
+    },
     "server_status": {
       "category": "server",
       "enabled": true,

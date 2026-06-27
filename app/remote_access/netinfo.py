@@ -8,6 +8,7 @@ package isn't installed the card just shows the address text).
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import socket
 from typing import List, Optional
@@ -41,17 +42,49 @@ def get_lan_ip() -> str:
             pass
 
 
+def _is_reachable_lan_ip(ip: str, *, is_primary: bool = False) -> bool:
+    """True if ``ip`` is plausibly reachable by another device on the same Wi-Fi.
+
+    The primary (internet-facing) address is always trusted. For the *extra*
+    addresses the OS reports we drop the ones that belong to virtual adapters —
+    WSL, Hyper-V's Default Switch, Docker, VirtualBox, VMware — which build
+    private NAT networks that only exist *inside* this PC. A phone on the Wi-Fi
+    can never reach those, so listing them just muddies "which one do I use".
+
+    The tell: a virtual switch makes the Windows host the *gateway* of its NAT
+    subnet, so the host's own address ends in ``.1``. A real DHCP-assigned
+    Wi-Fi/Ethernet address is never ``.1`` (that's the router) — so a private
+    ``.1`` address we did *not* route the internet through is a virtual adapter.
+    """
+    try:
+        addr = ipaddress.IPv4Address(ip)
+    except (ipaddress.AddressValueError, ValueError):
+        return False
+    if addr.is_loopback or addr.is_link_local or addr.is_unspecified or addr.is_multicast:
+        return False
+    if is_primary:
+        return True
+    if addr.is_private and (int(addr) & 0xFF) == 1:
+        return False
+    return True
+
+
 def list_lan_ips() -> List[str]:
-    """All non-loopback IPv4 addresses, primary first (best-effort)."""
+    """Real LAN IPv4 addresses a same-Wi-Fi device can reach, primary first.
+
+    Virtual-adapter addresses (WSL / Hyper-V / Docker / VM host-only networks)
+    are filtered out — see :func:`_is_reachable_lan_ip` — so the Remote Access
+    card only lists addresses a phone on the same Wi-Fi can actually open.
+    """
     ips: List[str] = []
     primary = get_lan_ip()
-    if primary and not primary.startswith("127."):
+    if primary and _is_reachable_lan_ip(primary, is_primary=True):
         ips.append(primary)
     try:
         host = socket.gethostname()
         for info in socket.getaddrinfo(host, None, socket.AF_INET):
             ip = info[4][0]
-            if ip and not ip.startswith("127.") and ip not in ips:
+            if ip and ip not in ips and _is_reachable_lan_ip(ip):
                 ips.append(ip)
     except Exception:
         pass
