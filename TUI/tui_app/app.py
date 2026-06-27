@@ -4736,7 +4736,8 @@ class ServerManagerApp(App):
         self._log_block("\n".join(lines))
         if stale:
             svc = self._watchdog
-            if svc is not None and svc.enabled and self.provider.configured:
+            wd_enabled = bool(svc.snapshot().get("enabled")) if svc is not None else False
+            if svc is not None and wd_enabled and self.provider.configured:
                 body = ("Stale webAgent processes found — holding port 8080 without serving /health, "
                         "or a leftover run.py from a crashed launch:\n\n"
                         + "\n".join(f"  • pid {p['pid']}  {p['cmdline'][:64]}" for p in stale)

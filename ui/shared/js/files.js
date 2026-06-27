@@ -10,7 +10,7 @@
 
 import { _refreshLucideIcons } from './dom-utils.js';
 import { copyText } from './clipboard.js';
-import { openGitPanel, renderGitMain, restartServerAndReload, startGitAutoRefresh, stopGitAutoRefresh, streamCopy, streamPush, _RELEASE_PHASE_LABELS } from './files-git.js';
+import { openGitPanel, renderGitMain, restartServerAndReload, startGitAutoRefresh, stopGitAutoRefresh, streamCopy, streamPush, streamRelease, _RELEASE_PHASE_LABELS } from './files-git.js';
 import { createTerminalInstance } from './terminal.js';
 import { randomUUID } from './uuid.js';
 import { startAutoRefresh, stopAutoRefresh } from './pagination.js';
@@ -583,6 +583,18 @@ function pushToProduction() {
   );
 }
 
+// "Sync and push": the full one-click release — sync the shipping set into the
+// production folder AND push it to GitHub in a single step (the same trim→copy→
+// commit→push the Git page's Release button runs). Saves doing Sync then Push by
+// hand when you just want to publish.
+function syncAndPushToProduction() {
+  return _runProdAction(
+    streamRelease,
+    'Sync and push?\n\nThis one-way syncs the shipping set (every file NOT marked dev-only) from dev into the production folder, commits it, AND pushes it to the production GitHub remote — in one step.',
+    ['released'],
+  );
+}
+
 // The toolbar "More" popover: the production-preview toggle, the production repo
 // (GitHub remote) + GitHub key + folder fields, a live in-sync/diff line, and the
 // two release halves. Reuses the shared floating-menu builder so it matches the
@@ -624,6 +636,7 @@ function openProductionMenu(anchorBtn) {
     { info: true, id: 'files-prod-diff', label: 'Checking for changes…' },
     { icon: 'refresh-cw',   label: 'Sync to production', disabled: _prodActionBusy, action: syncToProduction },
     { icon: 'upload-cloud', label: 'Push to GitHub',     disabled: _prodActionBusy, action: pushToProduction },
+    { icon: 'cloud-upload', label: 'Sync and push',      disabled: _prodActionBusy, action: syncAndPushToProduction },
   ];
   _openFloatingMenu(items, rect.bottom + 2, rect.right - 240);
   loadProdDiff();

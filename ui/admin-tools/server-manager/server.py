@@ -204,11 +204,17 @@ async def devices(requesting_user_id: str = ""):
                 return {}
         return raw or {}
 
+    # The live facts for THIS machine — used to fill in the self row even if the
+    # heartbeat that last wrote it came from an older build (or another local
+    # instance sharing this machine's device id) that didn't report the repo yet.
+    my_caps = identity.capabilities()
+
     out: List[Dict[str, Any]] = []
     seen_self = False
     for d in rows:
         iid = d.get("instance_id")
-        if iid == me:
+        is_self = iid == me
+        if is_self:
             seen_self = True
         caps = _caps(d.get("capabilities"))
         key = "device:%s" % iid
@@ -218,11 +224,11 @@ async def devices(requesting_user_id: str = ""):
             "label": ann.get("label") or d.get("label") or iid,
             "online": bool(d.get("online")),
             "last_seen": d.get("last_seen"),
-            "is_self": iid == me,
-            "platform": caps.get("platform", ""),
+            "is_self": is_self,
+            "platform": caps.get("platform") or (my_caps.get("platform", "") if is_self else ""),
             "endpoint": caps.get("endpoint") or d.get("endpoint") or "",
-            "repo": ann.get("repo") or caps.get("repo", ""),
-            "branch": caps.get("branch", ""),
+            "repo": ann.get("repo") or caps.get("repo") or (my_caps.get("repo", "") if is_self else ""),
+            "branch": caps.get("branch") or (my_caps.get("branch", "") if is_self else ""),
             "annotation_key": key,
         })
     # Surface THIS device even before its first heartbeat lands (mirrors
