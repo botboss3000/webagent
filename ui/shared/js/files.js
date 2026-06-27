@@ -578,7 +578,7 @@ function syncToProduction() {
 function pushToProduction() {
   return _runProdAction(
     streamPush,
-    "Push to GitHub?\n\nThis pushes the production folder's latest commit to the production GitHub remote.",
+    null,  // no confirm — push runs immediately
     ['pushed'],
   );
 }
@@ -590,7 +590,7 @@ function pushToProduction() {
 function syncAndPushToProduction() {
   return _runProdAction(
     streamRelease,
-    'Sync and push?\n\nThis one-way syncs the shipping set (every file NOT marked dev-only) from dev into the production folder, commits it, AND pushes it to the production GitHub remote — in one step.',
+    null,  // no confirm — sync + push runs immediately
     ['released'],
   );
 }
