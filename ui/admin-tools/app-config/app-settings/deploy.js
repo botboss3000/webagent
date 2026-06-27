@@ -310,6 +310,25 @@ const _MAC_STEPS = [
 ];
 const _MAC_NOTE = 'webAgent installs into a folder in your home directory and runs in the background via launchd — it starts automatically when you log in and restarts itself if it stops. It also installs the Server Manager — type webagent to inspect, restart or diagnose it. To stop it later: paste “launchctl unload ~/Library/LaunchAgents/com.webagent.server.plist”; to start it again: “launchctl load -w ~/Library/LaunchAgents/com.webagent.server.plist”.';
 
+// ── Run-only commands (start the server when it's ALREADY installed) ──────────
+// Static per platform — no repo URL / token, nothing to clone or rebuild. Each is
+// BYTE-IDENTICAL to its provider's RUN_COMMAND (termux/windows/macos.py) so the
+// copy box matches what the backend would build. They detect however the server
+// was installed and start it the matching way:
+//   • Linux/Termux — Termux → start_server_termux.sh (proot keep-alive); a systemd
+//     Linux box → systemctl start webagent; otherwise the nohup keep-alive loop.
+//   • Windows — the “webAgent” Scheduled Task if present, else the keep-alive ps1.
+//   • macOS — (re)load the launchd agent, falling back to a kickstart if loaded.
+const _RUN_TERMUX = 'if [ -n "$TERMUX_VERSION" ] || [ -d /data/data/com.termux ]; then '
+  + 'bash "$HOME/webagent/start_server_termux.sh"; '
+  + 'elif command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files webagent.service >/dev/null 2>&1; then '
+  + 'sudo systemctl start webagent; '
+  + 'else bash "$HOME/webagent/deploy/start_server_linux.sh" "$HOME/webagent"; fi';
+const _RUN_WINDOWS = 'if(Get-ScheduledTask -TaskName webAgent -EA SilentlyContinue){Start-ScheduledTask -TaskName webAgent}'
+  + 'else{powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\\webagent\\deploy\\start_server_windows.ps1"}';
+const _RUN_MAC = 'launchctl load -w "$HOME/Library/LaunchAgents/com.webagent.server.plist" 2>/dev/null '
+  + '|| launchctl kickstart -k "gui/$(id -u)/com.webagent.server"';
+
 // One descriptor per manual platform: its row + field element ids, command
 // builder, and static steps/note. The build functions + step constants above are
 // referenced here, so this list must come AFTER them.
@@ -317,18 +336,21 @@ const MANUAL_ROWS = [
   { id: 'termux', row: 'ac-deploy-phone-row',
     url: 'ac-tx-url', vis: 'ac-tx-visibility', tokenWrap: 'ac-tx-token-wrap', token: 'ac-tx-token',
     cmd: 'ac-tx-cmd', copy: 'ac-tx-copy', qrBtn: 'ac-tx-qr-btn', status: 'ac-tx-status',
+    run: 'ac-tx-run', runCopy: 'ac-tx-run-copy', runText: _RUN_TERMUX,
     steps: 'ac-tx-steps', note: 'ac-tx-note',
     build: _buildTermux, stepsText: _TERMUX_STEPS, noteText: _TERMUX_NOTE,
     qrLabel: 'Scan this in Termux on the phone' },
   { id: 'windows', row: 'ac-deploy-win-row',
     url: 'ac-win-url', vis: 'ac-win-visibility', tokenWrap: 'ac-win-token-wrap', token: 'ac-win-token',
     cmd: 'ac-win-cmd', copy: 'ac-win-copy', qrBtn: 'ac-win-qr-btn', status: 'ac-win-status',
+    run: 'ac-win-run', runCopy: 'ac-win-run-copy', runText: _RUN_WINDOWS,
     steps: 'ac-win-steps', note: 'ac-win-note',
     build: _buildWindows, stepsText: _WIN_STEPS, noteText: _WIN_NOTE,
     qrLabel: 'Scan to copy the command to another device' },
   { id: 'macos', row: 'ac-deploy-mac-row',
     url: 'ac-mac-url', vis: 'ac-mac-visibility', tokenWrap: 'ac-mac-token-wrap', token: 'ac-mac-token',
     cmd: 'ac-mac-cmd', copy: 'ac-mac-copy', qrBtn: 'ac-mac-qr-btn', status: 'ac-mac-status',
+    run: 'ac-mac-run', runCopy: 'ac-mac-run-copy', runText: _RUN_MAC,
     steps: 'ac-mac-steps', note: 'ac-mac-note',
     build: _buildMac, stepsText: _MAC_STEPS, noteText: _MAC_NOTE,
     qrLabel: 'Scan to copy the command to another device' },
@@ -372,6 +394,11 @@ function _manualRender(desc) {
   const r = desc.build(_manualInputs(desc));
   const code = _qs(desc.cmd);
   if (code) code.textContent = r.command;
+
+  // The run-only (already-installed) command is static — no inputs — so just
+  // paint it; it never changes as the repo fields change.
+  const runCode = _qs(desc.run);
+  if (runCode && desc.runText) runCode.textContent = desc.runText;
 
   // A gentle nudge while something's still a placeholder; a real warning in red.
   const status = _qs(desc.status);
@@ -544,7 +571,8 @@ function _initManualRows() {
       vis.dataset.wired = '1';
       vis.addEventListener('change', () => { _manualSyncToken(desc); _manualRender(desc); _manualPersist(desc); });
     }
-    _wireCopy(_qs(desc.copy), _qs(desc.cmd));   // idempotent (guards on its own flag)
+    _wireCopy(_qs(desc.copy), _qs(desc.cmd));         // idempotent (guards on its own flag)
+    _wireCopy(_qs(desc.runCopy), _qs(desc.run));      // the run-only command's Copy
     const qrBtn = _qs(desc.qrBtn);
     if (qrBtn && !qrBtn.dataset.wired) {
       qrBtn.dataset.wired = '1';

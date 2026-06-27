@@ -499,6 +499,20 @@
               <div id="ac-tx-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
             </div>
 
+            <!-- Run-only command: start the server when webAgent is ALREADY
+                 installed on this device (no clone, no rebuild). Static per
+                 platform — deploy.js fills the code + wires Copy (_manualRender /
+                 _initManualRows, RUN_* constants; the run field on MANUAL_ROWS). -->
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Already installed? Just start the server</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-tx-run"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-tx-run-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                </div>
+              </div>
+            </div>
+
             <ol class="ac-tx-steps" id="ac-tx-steps"></ol>
             <div class="ac-deploy-cmd-note" id="ac-tx-note" hidden></div>
           </div>
@@ -548,6 +562,17 @@
               <div id="ac-win-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
             </div>
 
+            <!-- Run-only command: start the server when it's ALREADY installed. -->
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Already installed? Just start the server</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-win-run"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-win-run-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                </div>
+              </div>
+            </div>
+
             <ol class="ac-tx-steps" id="ac-win-steps"></ol>
             <div class="ac-deploy-cmd-note" id="ac-win-note" hidden></div>
           </div>
@@ -594,6 +619,17 @@
                 </div>
               </div>
               <div id="ac-mac-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
+            </div>
+
+            <!-- Run-only command: start the server when it's ALREADY installed. -->
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Already installed? Just start the server</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-mac-run"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-mac-run-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                </div>
+              </div>
             </div>
 
             <ol class="ac-tx-steps" id="ac-mac-steps"></ol>
