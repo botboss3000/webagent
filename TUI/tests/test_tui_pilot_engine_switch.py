@@ -7,9 +7,17 @@ Also asserts the dispatch gate the switch controls: with a checkout linked,
 """
 
 import asyncio
+import os
+import tempfile
 from pathlib import Path
 
-from pilot_harness import boot, snapshot
+# Isolate this test's config + DB in a throwaway data dir BEFORE the app boots, so
+# saving the model/key never touches the developer's real TUI config. data_dir()
+# reads WEBAGENT_DATA_DIR at app-construction time.
+_TMP_DATA = tempfile.mkdtemp(prefix="wa-engine-switch-")
+os.environ["WEBAGENT_DATA_DIR"] = _TMP_DATA
+
+from pilot_harness import boot, snapshot  # noqa: E402
 
 
 def _engine_pick(app, value: str):
@@ -21,7 +29,19 @@ def _engine_pick(app, value: str):
 
 
 async def main() -> None:
+    try:
+        await _run()
+    finally:
+        import shutil
+        shutil.rmtree(_TMP_DATA, ignore_errors=True)
+
+
+async def _run() -> None:
     async with boot(size=(110, 40)) as (app, pilot):
+        # The dataclass default is webAgent; pin a deterministic baseline so the test
+        # doesn't depend on whatever engine_mode happens to be on disk.
+        assert __import__("tui_app.config", fromlist=["TuiConfig"]).TuiConfig().engine_mode == "webagent"
+        app.cfg.engine_mode = "webagent"
         # Open Model Settings (where the model chooser lives).
         app.action_panel_model()
         await pilot.pause()
@@ -32,8 +52,7 @@ async def main() -> None:
         assert "Internal" in shot and "webAgent" in shot, shot
         assert "LLM provider" in shot, shot
 
-        # Default preserves today's behaviour: webAgent loop selected.
-        assert (app.cfg.engine_mode or "webagent") == "webagent"
+        # webAgent loop is the active selection.
         web_pill = _engine_pick(app, "webagent")
         assert web_pill.has_class("panel-btn-active")
 
@@ -62,9 +81,53 @@ async def main() -> None:
 
         assert use_engine() is False  # internal → built-in brain
 
-        # Flip back to webAgent.
-        await pilot.click(_engine_pick(app, "webagent"))
-        await pilot.pause()
+        # In internal mode, saving the model fields must write to the TUI's OWN
+        # config and NEVER call the web-app server. Stub set_provider to catch leaks.
+        called = {"web": 0}
+
+        async def _boom(_cfg):
+            called["web"] += 1
+            return _cfg
+
+        app._webapp.set_provider = _boom  # type: ignore[assignment]
+
+        # Stub the web-app reads so the later flip back to webAgent (which reloads
+        # config from the server) stays offline and instant — no real HTTP, no hang.
+        async def _empty_settings():
+            return {}
+
+        async def _empty_provider():
+            return {}
+
+        app._webapp.get_app_settings = _empty_settings  # type: ignore[assignment]
+        app._webapp.get_provider = _empty_provider      # type: ignore[assignment]
+        # The model panel is already open in internal mode — wait for its fields to
+        # render (the rebuild after the toggle flip is a worker), then type into them.
+        from textual.widgets import Input
+        for _ in range(40):
+            if app.query("#cfg-model"):
+                break
+            await asyncio.sleep(0.05)   # yield without waiting for screen idle
+        app.query_one("#cfg-model", Input).value = "test/internal-model"
+        app.query_one("#cfg-apikey", Input).value = "sk-internal-test"
+        app.action_cfg_save_auth()
+        for _ in range(40):
+            if app.cfg.model == "test/internal-model":
+                break
+            await asyncio.sleep(0.05)
+        assert called["web"] == 0, "internal save must not touch the web app server"
+        assert app.cfg.model == "test/internal-model"
+        assert app.cfg.api_key == "sk-internal-test"
+        assert app.cfg.provider_override is True
+        # The live internal LLM picked it up immediately.
+        assert app.provider.model == "test/internal-model"
+        assert TuiConfig.load().model == "test/internal-model"
+
+        # Flip back to webAgent via the real handler (the click path is covered above
+        # for internal). Drive it with a synthetic widget so we don't query the live
+        # tree mid-rebuild; the handler only reads ``_btn_value`` and sets the gate.
+        fake_widget = type("W", (), {"_btn_value": "webagent"})()
+        app._on_engine_mode_pick(type("E", (), {"widget": fake_widget})())
         assert app.cfg.engine_mode == "webagent"
         assert use_engine() is True   # webagent → app loop
 

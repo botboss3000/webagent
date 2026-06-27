@@ -216,74 +216,106 @@ function _flashCopied(btn) {
 // un-restarted / unreachable server must not leave the box blank). Each builder
 // below is BYTE-IDENTICAL to its provider's `build_command`. The QR is still made
 // server-side, on demand (see _fetchQr).
-const _MC_PLACEHOLDER_REPO = 'https://github.com/YOUR-NAME/YOUR-REPO';
+// Blank repository → install the STANDARD webAgent repository, so the command is
+// always ready to run as is (the admin only types a URL for their own fork).
+const _MC_DEFAULT_REPO = 'https://github.com/botboss3000/webagent';
 const _MC_PLACEHOLDER_TOKEN = 'YOUR_ACCESS_TOKEN';
 const _MC_BRANCH = 'main';
+// Default install folder per platform (where the repo is cloned + run from when
+// the admin doesn't choose one). POSIX expands $HOME / Windows expands
+// $env:USERPROFILE inside the double quotes the command wraps them in.
+const _MC_DEFAULT_DIR_POSIX = '$HOME/webagent';
+const _MC_DEFAULT_DIR_WINDOWS = '$env:USERPROFILE\\webagent';
 const _MC_BAD_URL = "'\";\n\r\\ &|`$(){}<>";
 const _MC_BAD_TOKEN = "'\";\n\r\\ &|`$(){}<>@/ ";
+// Looser than _MC_BAD_URL: a real path legitimately has spaces, \\, :, $, % — only
+// reject shell metacharacters. Mirror of manual_common.BAD_DIR.
+const _MC_BAD_DIR = "\"'" + "`" + ";\n\r|&<>(){}*?";
 
 function _mcHasBad(s, bad) { for (const c of bad) if (s.indexOf(c) >= 0) return true; return false; }
 function _mcStripScheme(u) { return u.replace(/^https?:\/\//, ''); }
 
+// Resolve the install folder from the row input (mirror manual_common.resolve_dir).
+function _mcResolveDir(dir, def) {
+  const d = (dir || '').trim();
+  if (!d) return def;
+  if (_mcHasBad(d, _MC_BAD_DIR)) return def;
+  return d;
+}
+
 // Resolve the clone target from the row inputs (mirror manual_common.resolve_clone).
 function _mcResolve(inp) {
   const typed = (inp.github_url || '').trim();
-  const placeholderRepo = !typed;
-  const repo = (placeholderRepo || _mcHasBad(typed, _MC_BAD_URL)) ? _MC_PLACEHOLDER_REPO : typed;
+  let defaultRepo = !typed, warning = '', repo;
+  if (defaultRepo) { repo = _MC_DEFAULT_REPO; }
+  else if (_mcHasBad(typed, _MC_BAD_URL)) {
+    repo = _MC_DEFAULT_REPO; defaultRepo = true;
+    warning = 'That repository address isn’t a valid URL — using the standard webAgent repository instead.';
+  } else { repo = typed; }
   const priv = (inp.visibility || 'public') === 'private';
-  let cloneUrl = repo, warning = '', placeholderToken = false;
+  let cloneUrl = repo, placeholderToken = false;
   if (priv) {
     let tok = (inp.token || '').trim();
     if (tok && _mcHasBad(tok, _MC_BAD_TOKEN)) { warning = 'That token contains characters that aren’t valid in a GitHub token.'; tok = ''; }
     if (!tok) { tok = _MC_PLACEHOLDER_TOKEN; placeholderToken = true; }
     cloneUrl = 'https://' + tok + '@' + _mcStripScheme(repo);
   }
-  return { repo, cloneUrl, placeholderRepo, placeholderToken, warning };
+  return { repo, cloneUrl, defaultRepo, placeholderToken, warning };
 }
 
 // Linux / Termux — mirror app/deploy/providers/termux.py build_command. ONE
-// command for both: install git with whatever package manager is present, clone,
-// then hand off to deploy/termux-setup.sh which detects Termux vs plain Linux.
+// command for both: install git with whatever package manager is present; if the
+// folder already holds a clone, re-point its origin at the chosen repo (a graceful
+// update — the setup script then pulls), else clone fresh; then hand off to
+// deploy/termux-setup.sh which detects Termux vs plain Linux.
 function _buildTermux(inp) {
   const r = _mcResolve(inp);
+  const directory = _mcResolveDir(inp.install_dir, _MC_DEFAULT_DIR_POSIX);
   const command = 'SUDO=; [ "$(id -u 2>/dev/null)" = 0 ] || SUDO=sudo; '
+    + 'D="' + directory + '"; '
     + 'if command -v git >/dev/null 2>&1; then :; '
     + 'elif command -v pkg >/dev/null 2>&1; then pkg install -y git; '
     + 'elif command -v apt-get >/dev/null 2>&1; then $SUDO apt-get update && $SUDO apt-get install -y git; '
     + 'elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y git; '
     + 'elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm git; fi; '
-    + '{ [ -d "$HOME/webagent/.git" ] || git clone --depth 1 --branch ' + _MC_BRANCH + ' ' + r.cloneUrl + ' "$HOME/webagent"; } && '
-    + 'bash "$HOME/webagent/deploy/termux-setup.sh"';
-  return { command, placeholderRepo: r.placeholderRepo, placeholderToken: r.placeholderToken, warning: r.warning };
+    + '{ if [ -d "$D/.git" ]; then git -C "$D" remote set-url origin ' + r.cloneUrl + '; '
+    + 'else git clone --depth 1 --branch ' + _MC_BRANCH + ' ' + r.cloneUrl + ' "$D"; fi; } && '
+    + 'bash "$D/deploy/termux-setup.sh"';
+  return { command, directory, defaultRepo: r.defaultRepo, placeholderToken: r.placeholderToken, warning: r.warning };
 }
 
 // Windows — mirror app/deploy/providers/windows.py build_command (a PowerShell
-// one-liner: ensure git via winget, clone to %USERPROFILE%\webagent, run the ps1).
+// one-liner: ensure git via winget; re-point an existing clone or clone fresh;
+// run the ps1).
 function _buildWindows(inp) {
   const r = _mcResolve(inp);
+  const directory = _mcResolveDir(inp.install_dir, _MC_DEFAULT_DIR_WINDOWS);
   const command = "$ErrorActionPreference='Stop'; "
-    + "$repo='" + r.cloneUrl + "'; $dir=\"$env:USERPROFILE\\webagent\"; "
+    + "$repo='" + r.cloneUrl + "'; $dir=\"" + directory + "\"; "
     + "if(-not(Get-Command git -EA SilentlyContinue)){Write-Host 'Installing Git...'; "
     + "try{winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements --silent}catch{}; "
     + "$env:Path=[Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')}; "
     + "if(-not(Get-Command git -EA SilentlyContinue)){Write-Host 'Git is required. Install it from https://git-scm.com/download/win then run this again.'; return}; "
-    + "if(-not(Test-Path \"$dir\\.git\")){git clone --depth 1 --branch " + _MC_BRANCH + " $repo \"$dir\"}; "
+    + "if(Test-Path \"$dir\\.git\"){git -C \"$dir\" remote set-url origin $repo}else{git clone --depth 1 --branch " + _MC_BRANCH + " $repo \"$dir\"}; "
     + "powershell -NoProfile -ExecutionPolicy Bypass -File \"$dir\\deploy\\windows-setup.ps1\"";
-  return { command, placeholderRepo: r.placeholderRepo, placeholderToken: r.placeholderToken, warning: r.warning };
+  return { command, directory, defaultRepo: r.defaultRepo, placeholderToken: r.placeholderToken, warning: r.warning };
 }
 
 // macOS — mirror app/deploy/providers/macos.py build_command (a Terminal
-// one-liner: ensure git/Command Line Tools, clone to $HOME/webagent, run the sh).
+// one-liner: ensure git/Command Line Tools; re-point an existing clone or clone
+// fresh; run the sh).
 function _buildMac(inp) {
   const r = _mcResolve(inp);
-  const command = 'set -e; D="$HOME/webagent"; '
+  const directory = _mcResolveDir(inp.install_dir, _MC_DEFAULT_DIR_POSIX);
+  const command = 'set -e; D="' + directory + '"; '
     + 'if ! command -v git >/dev/null 2>&1; then '
     + "echo 'Installing the Command Line Tools (a dialog may appear)...'; "
     + 'xcode-select --install 2>/dev/null || true; '
     + "echo 'If a dialog appeared, finish it, then paste this command again.'; fi; "
-    + '{ [ -d "$D/.git" ] || git clone --depth 1 --branch ' + _MC_BRANCH + ' ' + r.cloneUrl + ' "$D"; } && '
+    + '{ if [ -d "$D/.git" ]; then git -C "$D" remote set-url origin ' + r.cloneUrl + '; '
+    + 'else git clone --depth 1 --branch ' + _MC_BRANCH + ' ' + r.cloneUrl + ' "$D"; fi; } && '
     + 'bash "$D/deploy/macos-setup.sh"';
-  return { command, placeholderRepo: r.placeholderRepo, placeholderToken: r.placeholderToken, warning: r.warning };
+  return { command, directory, defaultRepo: r.defaultRepo, placeholderToken: r.placeholderToken, warning: r.warning };
 }
 
 const _TERMUX_STEPS = [
@@ -311,23 +343,31 @@ const _MAC_STEPS = [
 const _MAC_NOTE = 'webAgent installs into a folder in your home directory and runs in the background via launchd — it starts automatically when you log in and restarts itself if it stops. It also installs the Server Manager — type webagent to inspect, restart or diagnose it. To stop it later: paste “launchctl unload ~/Library/LaunchAgents/com.webagent.server.plist”; to start it again: “launchctl load -w ~/Library/LaunchAgents/com.webagent.server.plist”.';
 
 // ── Run-only commands (start the server when it's ALREADY installed) ──────────
-// Static per platform — no repo URL / token, nothing to clone or rebuild. Each is
-// BYTE-IDENTICAL to its provider's RUN_COMMAND (termux/windows/macos.py) so the
-// copy box matches what the backend would build. They detect however the server
-// was installed and start it the matching way:
+// No repo URL / token, nothing to clone or rebuild. Each is BYTE-IDENTICAL to its
+// provider's run command (termux/windows/macos.py) so the copy box matches what
+// the backend would build. They detect however the server was installed and start
+// it the matching way:
 //   • Linux/Termux — Termux → start_server_termux.sh (proot keep-alive); a systemd
 //     Linux box → systemctl start webagent; otherwise the nohup keep-alive loop.
 //   • Windows — the “webAgent” Scheduled Task if present, else the keep-alive ps1.
 //   • macOS — (re)load the launchd agent, falling back to a kickstart if loaded.
-const _RUN_TERMUX = 'if [ -n "$TERMUX_VERSION" ] || [ -d /data/data/com.termux ]; then '
-  + 'bash "$HOME/webagent/start_server_termux.sh"; '
-  + 'elif command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files webagent.service >/dev/null 2>&1; then '
-  + 'sudo systemctl start webagent; '
-  + 'else bash "$HOME/webagent/deploy/start_server_linux.sh" "$HOME/webagent"; fi';
-const _RUN_WINDOWS = 'if(Get-ScheduledTask -TaskName webAgent -EA SilentlyContinue){Start-ScheduledTask -TaskName webAgent}'
-  + 'else{powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\\webagent\\deploy\\start_server_windows.ps1"}';
-const _RUN_MAC = 'launchctl load -w "$HOME/Library/LaunchAgents/com.webagent.server.plist" 2>/dev/null '
-  + '|| launchctl kickstart -k "gui/$(id -u)/com.webagent.server"';
+// Termux/Windows reference the install folder (so they follow a custom location);
+// macOS uses the launchd agent, which is folder-independent.
+function _runTermux(dir) {
+  return 'if [ -n "$TERMUX_VERSION" ] || [ -d /data/data/com.termux ]; then '
+    + 'bash "' + dir + '/start_server_termux.sh"; '
+    + 'elif command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files webagent.service >/dev/null 2>&1; then '
+    + 'sudo systemctl start webagent; '
+    + 'else bash "' + dir + '/deploy/start_server_linux.sh" "' + dir + '"; fi';
+}
+function _runWindows(dir) {
+  return 'if(Get-ScheduledTask -TaskName webAgent -EA SilentlyContinue){Start-ScheduledTask -TaskName webAgent}'
+    + 'else{powershell -NoProfile -ExecutionPolicy Bypass -File "' + dir + '\\deploy\\start_server_windows.ps1"}';
+}
+function _runMac() {
+  return 'launchctl load -w "$HOME/Library/LaunchAgents/com.webagent.server.plist" 2>/dev/null '
+    + '|| launchctl kickstart -k "gui/$(id -u)/com.webagent.server"';
+}
 
 // One descriptor per manual platform: its row + field element ids, command
 // builder, and static steps/note. The build functions + step constants above are
@@ -335,33 +375,37 @@ const _RUN_MAC = 'launchctl load -w "$HOME/Library/LaunchAgents/com.webagent.ser
 const MANUAL_ROWS = [
   { id: 'termux', row: 'ac-deploy-phone-row',
     url: 'ac-tx-url', vis: 'ac-tx-visibility', tokenWrap: 'ac-tx-token-wrap', token: 'ac-tx-token',
+    dir: 'ac-tx-dir', defaultDir: _MC_DEFAULT_DIR_POSIX,
     cmd: 'ac-tx-cmd', copy: 'ac-tx-copy', qrBtn: 'ac-tx-qr-btn', status: 'ac-tx-status',
-    run: 'ac-tx-run', runCopy: 'ac-tx-run-copy', runText: _RUN_TERMUX,
+    run: 'ac-tx-run', runCopy: 'ac-tx-run-copy', runBuild: _runTermux,
     steps: 'ac-tx-steps', note: 'ac-tx-note',
     build: _buildTermux, stepsText: _TERMUX_STEPS, noteText: _TERMUX_NOTE,
     qrLabel: 'Scan this in Termux on the phone' },
   { id: 'windows', row: 'ac-deploy-win-row',
     url: 'ac-win-url', vis: 'ac-win-visibility', tokenWrap: 'ac-win-token-wrap', token: 'ac-win-token',
+    dir: 'ac-win-dir', defaultDir: _MC_DEFAULT_DIR_WINDOWS,
     cmd: 'ac-win-cmd', copy: 'ac-win-copy', qrBtn: 'ac-win-qr-btn', status: 'ac-win-status',
-    run: 'ac-win-run', runCopy: 'ac-win-run-copy', runText: _RUN_WINDOWS,
+    run: 'ac-win-run', runCopy: 'ac-win-run-copy', runBuild: _runWindows,
     steps: 'ac-win-steps', note: 'ac-win-note',
     build: _buildWindows, stepsText: _WIN_STEPS, noteText: _WIN_NOTE,
     qrLabel: 'Scan to copy the command to another device' },
   { id: 'macos', row: 'ac-deploy-mac-row',
     url: 'ac-mac-url', vis: 'ac-mac-visibility', tokenWrap: 'ac-mac-token-wrap', token: 'ac-mac-token',
+    dir: 'ac-mac-dir', defaultDir: _MC_DEFAULT_DIR_POSIX,
     cmd: 'ac-mac-cmd', copy: 'ac-mac-copy', qrBtn: 'ac-mac-qr-btn', status: 'ac-mac-status',
-    run: 'ac-mac-run', runCopy: 'ac-mac-run-copy', runText: _RUN_MAC,
+    run: 'ac-mac-run', runCopy: 'ac-mac-run-copy', runBuild: _runMac,
     steps: 'ac-mac-steps', note: 'ac-mac-note',
     build: _buildMac, stepsText: _MAC_STEPS, noteText: _MAC_NOTE,
     qrLabel: 'Scan to copy the command to another device' },
 ];
 
-// Read one row's three inputs.
+// Read one row's inputs (repo URL + visibility + token + optional install folder).
 function _manualInputs(desc) {
   return {
     github_url: (_qs(desc.url)?.value || '').trim(),
     visibility: _qs(desc.vis)?.value || 'public',
     token: (_qs(desc.token)?.value || '').trim(),
+    install_dir: (_qs(desc.dir)?.value || '').trim(),
   };
 }
 
@@ -379,8 +423,11 @@ function _renderManualPrefill() {
     const cfg = (t && t.config) || {};
     const url = _qs(desc.url);
     const vis = _qs(desc.vis);
+    const dir = _qs(desc.dir);
     if (url && !url.value) url.value = cfg.github_url || '';
     if (vis && cfg.visibility) vis.value = cfg.visibility;
+    if (dir && !dir.value) dir.value = cfg.install_dir || '';
+    if (dir && !dir.placeholder) dir.placeholder = desc.defaultDir;
     _manualSyncToken(desc);
     _refreshLucideIcons(_qs(desc.row));   // Copy / QR button icons
     _manualRender(desc);                  // show the command straight away
@@ -395,17 +442,18 @@ function _manualRender(desc) {
   const code = _qs(desc.cmd);
   if (code) code.textContent = r.command;
 
-  // The run-only (already-installed) command is static — no inputs — so just
-  // paint it; it never changes as the repo fields change.
+  // The run-only (already-installed) command follows the chosen install folder
+  // (Termux/Windows); macOS ignores it. Paint it from the same resolved folder.
   const runCode = _qs(desc.run);
-  if (runCode && desc.runText) runCode.textContent = desc.runText;
+  if (runCode && desc.runBuild) runCode.textContent = desc.runBuild(r.directory);
 
-  // A gentle nudge while something's still a placeholder; a real warning in red.
+  // A real warning in red; otherwise a gentle note about which repo/folder is in
+  // use, or a nudge to finish a private repo's token.
   const status = _qs(desc.status);
   if (status) {
     if (r.warning) { status.textContent = r.warning; status.style.color = 'var(--danger)'; }
-    else if (r.placeholderRepo) { status.textContent = 'Enter your repository address above — the command updates as you type.'; status.style.color = ''; }
     else if (r.placeholderToken) { status.textContent = 'Enter your access token above to finish the command.'; status.style.color = ''; }
+    else if (r.defaultRepo) { status.textContent = 'Installing the standard webAgent repository — enter an address above only to install your own fork.'; status.style.color = ''; }
     else { status.textContent = ''; status.style.color = ''; }
   }
 
@@ -428,7 +476,7 @@ function _manualRender(desc) {
 function _manualPersist(desc) {
   if (!isAdmin()) return;
   const inp = _manualInputs(desc);
-  _post('/admin/deploy/config', { provider: desc.id, config: { github_url: inp.github_url, visibility: inp.visibility } }).catch(() => {});
+  _post('/admin/deploy/config', { provider: desc.id, config: { github_url: inp.github_url, visibility: inp.visibility, install_dir: inp.install_dir } }).catch(() => {});
 }
 
 // ── QR popover (mirrors Remote Access → Same network) ──
@@ -557,11 +605,17 @@ function _initManualRows() {
     const url = _qs(desc.url);
     const vis = _qs(desc.vis);
     const token = _qs(desc.token);
+    const dir = _qs(desc.dir);
 
     if (url && !url.dataset.wired) {
       url.dataset.wired = '1';
       url.addEventListener('input', () => _manualRender(desc));         // instant, client-side
       url.addEventListener('change', () => { _manualRender(desc); _manualPersist(desc); });
+    }
+    if (dir && !dir.dataset.wired) {
+      dir.dataset.wired = '1';
+      dir.addEventListener('input', () => _manualRender(desc));
+      dir.addEventListener('change', () => { _manualRender(desc); _manualPersist(desc); });
     }
     if (token && !token.dataset.wired) {
       token.dataset.wired = '1';

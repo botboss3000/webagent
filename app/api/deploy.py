@@ -58,8 +58,9 @@ class ManualCommandBody(UserBody):
     github_url: str = ""
     visibility: str = "public"     # "public" | "private"
     token: str = ""                # only for a private repo; never stored
-    persist: bool = False          # save the non-secret URL+visibility (on blur,
-                                   # NOT on every live-preview keystroke)
+    install_dir: str = ""          # optional folder to install into (blank = default)
+    persist: bool = False          # save the non-secret URL+visibility+folder (on
+                                   # blur, NOT on every live-preview keystroke)
 
 
 # ── Catalog (status) ──
@@ -151,11 +152,13 @@ async def _build_manual_command(body: ManualCommandBody):
     p = get_provider(provider_id)
     if not p or not hasattr(p, "build_command") or not getattr(p, "manual", False):
         raise HTTPException(status_code=400, detail="Unknown install target")
-    plan = p.build_command(body.github_url, body.visibility, body.token)
+    plan = p.build_command(body.github_url, body.visibility, body.token,
+                           install_dir=body.install_dir)
     if body.persist:
         # Persist only the NON-secret choices so the row pre-fills next time.
         store.save_config(provider_id, {"github_url": (body.github_url or "").strip(),
-                                        "visibility": body.visibility or "public"})
+                                        "visibility": body.visibility or "public",
+                                        "install_dir": (body.install_dir or "").strip()})
     qr_svg = None
     try:
         from app.remote_access import netinfo
@@ -169,8 +172,10 @@ async def _build_manual_command(body: ManualCommandBody):
         "steps": plan.get("steps", []),
         "instructions": plan.get("instructions", ""),
         "reach_note": plan.get("reach_note", ""),
+        "run_command": plan.get("run_command", ""),
+        "install_dir": plan.get("install_dir", ""),
         "private": plan.get("private", False),
-        "placeholder_repo": plan.get("placeholder_repo", False),
+        "default_repo": plan.get("default_repo", False),
         "placeholder_token": plan.get("placeholder_token", False),
         "warning": plan.get("warning", ""),
     }

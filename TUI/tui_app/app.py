@@ -2330,12 +2330,11 @@ class ServerManagerApp(App):
                                        "engine-mode-pick" + active, val))
         out.append(Horizontal(*seg, classes="panel-row"))
         if mode == "internal":
-            note = ("Internal: the TUI's own brain + the LLM set below. "
-                    "Works even when the server is down.")
+            note = ("Internal: the TUI's own brain. The fields below set ITS LLM, "
+                    "saved locally — works even when the server is down.")
         else:
-            note = ("webAgent: the linked app's real loop — its agents & abilities, "
-                    "using the app's own LLM. The fields below are the internal "
-                    "loop's fallback.")
+            note = ("webAgent: the linked app's real loop — its agents & abilities. "
+                    "The fields below edit the APP's own LLM, saved to the server.")
         out.append(Static(Text(note, style=c["dim"]), classes="panel-sub"))
         if self.project_root is None:
             out.append(Static(Text("(No checkout linked — the internal loop runs "
@@ -2644,7 +2643,23 @@ class ServerManagerApp(App):
     def action_panel_model(self) -> None:
         self._open_panel("model")
         if self._panel_kind == "model":
-            self.run_worker(self._load_config(), group="cfgload", exclusive=True)
+            if (self.cfg.engine_mode or "webagent") == "internal":
+                # Internal loop → edit the TUI's OWN provider locally; no server call.
+                self._load_internal_provider()
+                self._rebuild_panel()
+            else:
+                self.run_worker(self._load_config(), group="cfgload", exclusive=True)
+
+    def _load_internal_provider(self) -> None:
+        """Populate the Model Settings fields from the TUI's OWN provider config —
+        the LLM the internal brain uses — without touching the web-app server. The
+        key is never echoed back (blank = keep the current one)."""
+        self._cfg_provider = {
+            "provider": self.cfg.provider or provider_name_for_base(self.provider.base_url),
+            "base_url": self.provider.base_url,
+            "model": self.provider.model,
+            "api_key": "",
+        }
 
     def action_panel_playbook(self) -> None:
         if self.project_root is None:
@@ -2775,7 +2790,14 @@ class ServerManagerApp(App):
         c = self.cc
         where = "internal brain" if val == "internal" else "webAgent app loop"
         self._log(f"[{c['secondary']}]{G.OK} agent loop → {where}.[/]")
-        self._rebuild_panel()
+        # The model chooser now points at the selected loop's LLM: the TUI's own
+        # provider (internal, local) or the web app's provider (webAgent, server).
+        if val == "internal":
+            self._load_internal_provider()
+            self._rebuild_panel()
+        else:
+            self.run_worker(self._load_config(), group="cfgload", exclusive=True)
+            self._rebuild_panel()
 
     @on(Click, ".cfg-provider-pick")
     def _on_cfg_provider_pick(self, event: Click) -> None:
@@ -3161,6 +3183,12 @@ class ServerManagerApp(App):
         self._rebuild_panel()
 
     def action_cfg_refresh(self) -> None:
+        # In the Model Settings panel with the internal loop selected, Refresh
+        # reloads the TUI's own provider locally (the server may be down by design).
+        if self._panel_kind == "model" and (self.cfg.engine_mode or "webagent") == "internal":
+            self._load_internal_provider()
+            self._rebuild_panel()
+            return
         self.run_worker(self._load_config(), group="cfgload", exclusive=True)
 
     def action_cfg_save_settings(self) -> None:
@@ -3213,6 +3241,11 @@ class ServerManagerApp(App):
         self.run_worker(self._save_auth(prov, base, model, key), group="cfgsave", exclusive=True)
 
     async def _save_auth(self, provider: str, base_url: str, model: str, api_key: str) -> None:
+        # Internal loop → save to the TUI's OWN config (the internal brain's LLM),
+        # NOT the web-app server. The web app keeps its own provider untouched.
+        if (self.cfg.engine_mode or "webagent") == "internal":
+            self._save_internal_auth(provider, base_url, model, api_key)
+            return
         try:
             cfg = dict(self._cfg_provider or await self._webapp.get_provider())
             if provider:
@@ -3229,6 +3262,28 @@ class ServerManagerApp(App):
                       + (" (key updated)" if api_key else "") + ".[/]")
         except WebAppError as e:
             self._log(f"[{self.cc['error']}]{G.ERR} {e}[/]")
+        self._rebuild_panel()
+
+    def _save_internal_auth(self, provider: str, base_url: str, model: str,
+                            api_key: str) -> None:
+        """Persist the LLM into the TUI's OWN config so the internal brain uses it.
+        Sets ``provider_override`` so the saved triple wins over the repo's
+        provider.json/.env, rebuilds the live LLM client immediately, and never
+        touches the web-app server (which keeps its own provider)."""
+        if provider:
+            self.cfg.provider = provider
+        if base_url:
+            self.cfg.base_url = base_url
+        if model:
+            self.cfg.model = model
+        if api_key:
+            self.cfg.api_key = api_key
+        self.cfg.provider_override = True
+        self.cfg.save()
+        self._apply_provider()               # rebuild self.llm / self.agent.llm now
+        self._load_internal_provider()       # re-read the fields from the saved config
+        self._log(f"[{self.cc['secondary']}]{G.OK} internal-brain LLM saved"
+                  + (" (key updated)" if api_key else "") + ".[/]")
         self._rebuild_panel()
 
     # ── panel interactions: button clicks, click-outside, settings, AI key ──

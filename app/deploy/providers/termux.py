@@ -86,62 +86,54 @@ class TermuxProvider(BaseDeployProvider):
 
     # ── command generation (the single source of truth) ──
     def build_command(self, github_url: str, visibility: str = "public",
-                      token: str = "", branch: str = "") -> Dict[str, Any]:
+                      token: str = "", branch: str = "", install_dir: str = "") -> Dict[str, Any]:
         """Build everything the phone row needs from the admin's inputs.
 
-        ALWAYS succeeds (never ``{ok: False}``): the row shows this command live
-        as the admin types, so a blank URL / not-yet-typed token must still render
-        the SHAPE of the command rather than an error. Missing pieces become
-        obvious fill-in placeholders (``PLACEHOLDER_REPO`` / ``PLACEHOLDER_TOKEN``)
-        and are flagged so the row can nudge the admin to finish them.
+        ALWAYS succeeds (never ``{ok: False}``): the row shows this command live as
+        the admin types. A blank repository installs the STANDARD webAgent
+        repository (so the command is ready to run as is); a private repo with no
+        token yet renders the command's shape via an obvious fill-in token, flagged
+        so the row can nudge. The install folder defaults to ``$HOME/webagent`` and
+        can be overridden.
 
-        Returns ``{ok: True, command, clone_display, steps, instructions,
-        reach_note, private, placeholder_repo, placeholder_token, warning}``. The
-        command installs git + proot-distro, clones the repo to ``$HOME/webagent``,
-        and hands off to the repo's ``deploy/termux-setup.sh`` (Ubuntu build +
-        launch + keep-alive). For a PRIVATE repo the access token is embedded in
-        the clone URL so the phone can fetch it; the token is never stored here.
+        Returns ``{ok: True, command, run_command, install_dir, clone_display,
+        steps, instructions, reach_note, private, default_repo, placeholder_token,
+        warning}``. The command installs git, then — if the folder already holds a
+        clone — re-points its origin at the chosen repo and lets
+        ``deploy/termux-setup.sh`` pull it (a graceful update); otherwise it clones
+        fresh. The setup script then does the Ubuntu/venv build + keep-alive. For a
+        PRIVATE repo the access token is embedded in the clone URL so the device can
+        fetch it; the token is never stored here.
         """
-        typed = (github_url or "").strip()
-        placeholder_repo = not typed
-        repo = PLACEHOLDER_REPO if placeholder_repo else _safe(typed, PLACEHOLDER_REPO)
-        branch = _safe(branch, DEFAULT_BRANCH)
-        private = str(visibility or "public").lower() == "private"
-
-        clone_url = repo
-        warning = ""
-        placeholder_token = False
-        if private:
-            tok = (token or "").strip()
-            if tok and any(c in tok for c in _BAD_TOKEN):
-                # Don't splice a risky token; show the placeholder and warn instead.
-                warning = "That token contains characters that aren't valid in a GitHub token."
-                tok = ""
-            if not tok:
-                tok = PLACEHOLDER_TOKEN
-                placeholder_token = True
-            # Embed the token in the clone URL (the proven way to fetch a private
-            # repo non-interactively). repo is always https-shaped here (a real
-            # https URL or the placeholder), so the splice reads naturally.
-            clone_url = "https://" + tok + "@" + _strip_scheme(repo)
+        r = mc.resolve_clone(github_url, visibility, token)
+        clone_url = r["clone_url"]
+        branch = mc._safe(branch, DEFAULT_BRANCH)
+        directory = mc.resolve_dir(install_dir, mc.DEFAULT_DIR_POSIX)
 
         # ONE command for both Termux and plain Linux: install git with whatever
         # package manager is present (Termux's `pkg`, or apt/dnf/pacman with sudo
-        # on a Linux box — sudo only when not already root), clone the repo, then
-        # hand off to the setup script, which detects Termux vs Linux and installs
-        # accordingly. `:` is a no-op for the "git already installed" case.
+        # on a Linux box — sudo only when not already root). If the folder already
+        # holds a clone, re-point its origin at the chosen repo (the setup script
+        # then pulls) — a graceful update; otherwise clone fresh. Then hand off to
+        # the setup script, which detects Termux vs Linux. `:` is a no-op for the
+        # "git already installed" case. Keep BYTE-IDENTICAL to deploy.js `_buildTermux`.
         command = (
             'SUDO=; [ "$(id -u 2>/dev/null)" = 0 ] || SUDO=sudo; '
+            f'D="{directory}"; '
             'if command -v git >/dev/null 2>&1; then :; '
             'elif command -v pkg >/dev/null 2>&1; then pkg install -y git; '
             'elif command -v apt-get >/dev/null 2>&1; then $SUDO apt-get update && $SUDO apt-get install -y git; '
             'elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y git; '
             'elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm git; fi; '
-            f'{{ [ -d "$HOME/webagent/.git" ] || git clone --depth 1 --branch {branch} {clone_url} "$HOME/webagent"; }} && '
-            'bash "$HOME/webagent/deploy/termux-setup.sh"'
+            f'{{ if [ -d "$D/.git" ]; then git -C "$D" remote set-url origin {clone_url}; '
+            f'else git clone --depth 1 --branch {branch} {clone_url} "$D"; fi; }} && '
+            'bash "$D/deploy/termux-setup.sh"'
         )
         # A display copy that hides the token (for any logging / non-QR display).
-        clone_display = command.replace(clone_url, repo) if private else command
+        clone_display = command.replace(clone_url, r["repo"]) if r["private"] else command
+        private = r["private"]
+        placeholder_token = r["placeholder_token"]
+        warning = r["warning"]
 
         steps = [
             "On a phone: install the free Termux app, then open it. On a Linux computer: open a terminal.",
@@ -162,9 +154,9 @@ class TermuxProvider(BaseDeployProvider):
             "ubuntu -- pkill -f run.py', on Linux paste 'pkill -f run.py'.")
         reach_note = "http://localhost:8080 on the device · http://DEVICE-IP:8080 on the same network"
         return {"ok": True, "command": command, "clone_display": clone_display,
-                "run_command": RUN_COMMAND,
+                "run_command": _run_command(directory), "install_dir": directory,
                 "steps": steps, "instructions": instructions, "reach_note": reach_note,
-                "private": private, "placeholder_repo": placeholder_repo,
+                "private": private, "default_repo": r["default_repo"],
                 "placeholder_token": placeholder_token, "warning": warning}
 
     # ── test (nothing to connect to) ──

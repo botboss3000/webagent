@@ -21,7 +21,11 @@
 # ============================================================================
 set -e
 
-REPO_DIR="$HOME/webagent"
+# Where the repo actually lives. Derive it from THIS script's own location
+# (deploy/macos-setup.sh → its parent is the repo root) so a CUSTOM install folder
+# chosen in the Deploy panel works, not just the default. Fall back to the default.
+REPO_DIR="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+[ -d "$REPO_DIR/.git" ] || REPO_DIR="$HOME/webagent"
 PORT=8080
 INSTALL_LOG="$HOME/webagent-install.log"
 PLIST="$HOME/Library/LaunchAgents/com.webagent.server.plist"

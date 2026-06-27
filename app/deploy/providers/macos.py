@@ -55,7 +55,8 @@ _TEMPLATE = (
 # Run-only command: start the server when webAgent is ALREADY installed — no
 # clone, no rebuild. Static (no repo URL / token). (Re)loads the launchd agent the
 # installer wrote (which also starts it at login); falls back to a kickstart if
-# it's already loaded. Keep BYTE-IDENTICAL to deploy.js `_RUN_MAC`.
+# it's already loaded. Folder-independent (launchd), so it takes no directory.
+# Keep BYTE-IDENTICAL to deploy.js `_runMac`.
 RUN_COMMAND = (
     "launchctl load -w \"$HOME/Library/LaunchAgents/com.webagent.server.plist\" 2>/dev/null "
     "|| launchctl kickstart -k \"gui/$(id -u)/com.webagent.server\""
