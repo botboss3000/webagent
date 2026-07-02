@@ -504,6 +504,59 @@ async def setup_admin(req: SetupAdminRequest, request: Request):
     )
 
 
+class SetupBundleRequest(BaseModel):
+    code: str
+    # The source install's admin password — decrypts the code AND becomes this
+    # install's admin password (it also rides inside the bundle's admin section).
+    password: str
+
+
+@router.post("/setup-bundle", response_model=SetupAdminResponse)
+async def setup_bundle(req: SetupBundleRequest):
+    """Provision a FRESH install from a pasted setup code, on the setup page.
+
+    Same one-time gate as ``setup_admin`` (refused once an admin exists). The
+    password both decrypts the bundle and becomes the admin login — so one typed
+    value unlocks the keys AND claims the box. Applies DB/vault/LLM/admin and
+    returns a token so the setup page logs straight in."""
+    if admin_exists():
+        raise HTTPException(status_code=400, detail="Admin already exists")
+
+    from app.admin import bootstrap_bundle as bb
+    try:
+        bundle = bb.decode_bundle(req.code, req.password)
+    except bb.BundleError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Fresh box → apply everything and switch the DB on. Sections use overwrite so
+    # the bundle wins outright on a blank install.
+    sections = (bundle.get("sections") or {})
+    choices = {k: bb.MERGE_OVERWRITE for k in sections}
+    await bb.apply_bundle(bundle, choices, activate_db=True)
+
+    # Guarantee an admin exists even if the bundle didn't carry one: the password
+    # they typed becomes the admin password.
+    if not admin_exists():
+        register_user("admin", req.password, "Admin", user_id=_BOOTSTRAP_ADMIN_ID)
+
+    user = get_user_by_id(_BOOTSTRAP_ADMIN_ID)
+    if user is None:
+        raise HTTPException(status_code=500, detail="Setup failed to create an admin account")
+
+    from app.auth.jwt import create_access_token
+    token = create_access_token(user.username, user.user_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    await db.upsert_user_profile(user.user_id, last_login_at=now_iso)
+
+    return SetupAdminResponse(
+        access_token=token,
+        username=user.username,
+        user_id=user.user_id,
+        display_name=user.display_name,
+    )
+
+
 class GuestLoginRequest(BaseModel):
     browser_id: str | None = None
 

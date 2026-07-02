@@ -23,6 +23,15 @@ MANIFEST
 # Environments
 .env
 provider.json
+
+# First-run setup bundle dropped next to a clone (holds an encrypted setup code
+# or a plaintext bundle → LLM key / DB / vault / admin). Per-machine, never
+# tracked. Ship bootstrap.example.json (blank) instead. The ".applied.json"
+# variant is the renamed file left after a successful boot provision.
+bootstrap.json
+bootstrap.applied.json
+data/bootstrap.json
+data/bootstrap.applied.json
 scheduler_config.json
 suggestions.json
 data/config/suggestions.json

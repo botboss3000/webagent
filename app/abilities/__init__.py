@@ -862,6 +862,100 @@ def ability_ids(kind: Optional[str] = "ability") -> List[str]:
     return [aid for aid, e in cat.items() if e.get("kind") == kind]
 
 
+def _seedable_ability_ids() -> List[str]:
+    """Toggleable abilities that make sense to pre-enable on an agent — every
+    kind="ability" entry EXCEPT display-only ``virtual`` rows (Core ▸ Base),
+    which gate nothing so a connection row for them would be inert. Placeholder
+    (coming-soon) abilities are already excluded (kind="placeholder"). Catalog
+    order is preserved."""
+    return [
+        aid for aid, e in _load().items()
+        if e.get("kind") == "ability" and not e.get("virtual")
+    ]
+
+
+def expand_ability_selectors(selectors: List[str]) -> List[str]:
+    """Expand a template's ability list (``pre_enabled_connections`` /
+    ``abilities``) — resolving wildcards to concrete ability ids.
+
+    Supported wildcard tokens (case-insensitive):
+      • ``"*"`` / ``"all"``          → every seedable ability (all groups)
+      • ``"<Group>/*"``              → every seedable ability in that group,
+        ``"group:<Group>"``            e.g. ``"Core/*"`` or ``"group:web"``.
+        ``"<Group>:*"``                Group is matched by its normalized id OR
+                                       its on-disk folder name, case-insensitive.
+
+    Any other token is treated as a LITERAL id and passes through unchanged, so
+    ordinary ability ids and integration connection-types (``gmail``, …) still
+    work. Order is preserved and duplicates are dropped. A wildcard naming an
+    unknown group expands to nothing (logged) rather than erroring — fail-open so
+    a typo can never break agent creation.
+    """
+    if not selectors:
+        return []
+    cat = _load()
+    seedable = _seedable_ability_ids()
+
+    def _resolve_group(token: str) -> Optional[str]:
+        norm = _normalize_group_id(token)
+        if norm in _GROUP_META:
+            return norm
+        # Fall back to matching the folder name (e.g. "Core") case-insensitively.
+        for gid, meta in _GROUP_META.items():
+            if _normalize_group_id(meta.get("_folder", "")) == norm:
+                return gid
+        return None
+
+    out: List[str] = []
+    seen: set = set()
+
+    def _add(aid: str) -> None:
+        if aid and aid not in seen:
+            seen.add(aid)
+            out.append(aid)
+
+    for raw in selectors:
+        if not isinstance(raw, str):
+            continue
+        tok = raw.strip()
+        if not tok:
+            continue
+        low = tok.lower()
+
+        # ── "everything" ──
+        if low in ("*", "all", "__all__"):
+            for aid in seedable:
+                _add(aid)
+            continue
+
+        # ── group wildcard ──
+        grp: Optional[str] = None
+        if low.startswith("group:"):
+            grp = tok.split(":", 1)[1]
+        elif tok.endswith("/*"):
+            grp = tok[:-2]
+        elif tok.endswith(":*"):
+            grp = tok[:-2]
+        if grp is not None:
+            gid = _resolve_group(grp.strip())
+            if gid is None:
+                logger.warning(
+                    "Ability selector %r names an unknown group — expands to "
+                    "nothing (known groups: %s)",
+                    raw, ", ".join(sorted(_GROUP_META)) or "none",
+                )
+                continue
+            for aid in seedable:
+                if cat[aid].get("group") == gid:
+                    _add(aid)
+            continue
+
+        # ── literal id ──
+        _add(tok)
+
+    return out
+
+
 def ability_entry(ability_id: str) -> Optional[Dict[str, Any]]:
     """Return the raw catalog entry for an ability id (or None)."""
     return _load().get(ability_id)

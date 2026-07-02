@@ -84,8 +84,21 @@ to accept its default** (sent + auto). Only list the tools you want to change.
 ### Abilities & connections
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `metadata.pre_enabled_connections` | array | `[]` | Ability/connection ids switched **on** at creation (creates the `agent_connections` rows). This is the operative list. |
+| `metadata.pre_enabled_connections` | array | `[]` | Ability/connection ids switched **on** at creation (creates the `agent_connections` rows). This is the operative list. Supports **wildcards** (see below). |
 | `abilities` | array | (ignored) | A readable mirror for authors; the seeder acts on `metadata.pre_enabled_connections`, so keep the two in sync. |
+
+**Wildcards** — instead of listing every id, `pre_enabled_connections` may contain:
+
+| Token | Expands to |
+|---|---|
+| `"*"` (or `"all"`) | **every** ability, all groups — this is how the shipped `default` agent enables all abilities, and it auto-includes any ability added later |
+| `"Core/*"` / `"group:core"` / `"Core:*"` | every ability in that **group** (folder under `plugins/abilities/`); group matched by folder name or normalized id, case-insensitive |
+
+Wildcards expand to concrete ids at creation time. Plain ids and integration
+connection-types (`gmail`, …) still work and can be mixed with wildcards, e.g.
+`["Core/*", "web_access"]`. An unknown group name expands to nothing (logged),
+never an error. Only real, non-placeholder abilities are seeded — coming-soon
+and display-only (Core ▸ Base) entries are skipped.
 
 ### Prompts (slots)
 Each becomes an editable prompt slot. All default to `""`.

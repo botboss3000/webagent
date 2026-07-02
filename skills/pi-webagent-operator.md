@@ -283,10 +283,10 @@ project, query the brain first. Save important findings with `gbrain_put`.
 | Plugin abilities (codebase admin, web access, etc.) | `plugins/abilities/` |
 | App control (show/hide chat panel) | `plugins/abilities/Core/app_control.py` |
 | Admin Tools sidebar views | `ui/admin-tools/` |
-| File Explorer | `ui/admin-tools/file-manager.html` |
+| File Explorer | `ui/admin-tools/explorer/explorer.html` |
 | Source Control / Git | `ui/admin-tools/source-control.html` |
 | Database viewer | `ui/admin-tools/database.html` |
-| Terminal Launcher | `ui/admin-tools/terminal.html` |
+| Terminal Launcher | `ui/admin-tools/terminal/terminal.html` |
 | Interactions / Pipeline | `ui/admin-tools/interactions.html` |
 | Runtime Loop | `ui/admin-tools/runtime.html` |
 | Diagnostics | `ui/admin-tools/diagnostics.html` |

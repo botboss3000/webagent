@@ -58,6 +58,8 @@ async def build_catalog() -> Dict[str, Any]:
             "configured": cred_view["configured"],
             "deployment": store.get_deployment(p.id),
             "saved_servers": bool(getattr(p, "saved_servers", False)),
+            # Staged form reveal (project → key → rest); see deploy.js.
+            "progressive": bool(getattr(p, "progressive", False)),
         }
         # A profile-aware target (the SSH one) also carries its list of saved
         # servers + which is currently loaded, so the panel can render the picker.

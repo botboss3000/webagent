@@ -312,10 +312,10 @@ from a flat listing:
 | Session/agent list dropdown in chat header, pinning, renaming | `ui/chat-side-panel/js/session-*.js` (+ `ui/shared/js/ordering.js`) |
 | Main Panel CSS, layout vars, dark/light modes | `ui/shared/css/app1.css` |
 | Admin Tools sidebar — all views live under the Admin Tools tab | `ui/admin-tools/` (each file is a `<template>` loaded into sidebar + main panel) |
-| → File Explorer (folder-tree icon) | `ui/admin-tools/file-manager.html` — sidebar file tree + main editor with open-file tabs |
+| → File Explorer (folder-tree icon) | `ui/admin-tools/explorer/explorer.html` — sidebar file tree + main editor with open-file tabs |
 | → Source Control / Git (git-branch icon) | `ui/admin-tools/git/source-control.html` — sidebar status/diff list + main commit/diff/compare view |
 | → Database (database icon) | `ui/admin-tools/database/database.html` — sidebar table list + main table viewer with pagination, reset, download |
-| → Terminal Launcher (terminal icon) | `ui/admin-tools/terminal.html` — sidebar launcher/sessions list + main terminal tabs with xterm + keybar |
+| → Terminal Launcher (terminal icon) | `ui/admin-tools/terminal/terminal.html` — sidebar launcher/sessions list + main terminal tabs with xterm + keybar |
 | → Interactions / Pipeline (square-menu icon) | `ui/admin-tools/interactions/interactions.html` — sidebar event-type filter + turn list + main pipeline visualizer |
 | → Runtime Loop (repeat icon) | `ui/admin-tools/runtime-loop/runtime.html` — sidebar run-history scrubber + node list + main loop graph visualizer |
 | → Diagnostics (stethoscope icon) | `ui/admin-tools/diagnostics/diagnostics.html` — sidebar severity/category filters + main searchable log feed with live refresh |

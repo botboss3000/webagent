@@ -116,6 +116,109 @@ function fmtPrice(inCost, outCost) {
   return '';
 }
 
+// ── Hold-to-cancel guard for the saved-model capability checkboxes ───────────
+// A capability box (Txt / Txt+ / In / Out) commits its change to the server the
+// instant it's ticked. To stop an accidental DOUBLE-CLICK from silently flipping
+// it straight back, the box LOCKS the moment it's toggled: the underlying
+// checkbox is disabled and a hazard triangle drops on TOP of it (blocking a
+// second click) while the save runs. The ONLY way to reverse the change is a
+// deliberate LONG-PRESS of that triangle — the same hold-to-confirm affordance
+// the delete buttons use (ui/shared/js/admin-ability-table.js) — which reverts
+// the box and persists the reverted value. Once the save lands (or the hold
+// cancels it) the triangle settles to the shared green ✓ / orange ⚠ save overlay
+// (dom-utils `_flashSaveCheck`), so it still speaks the app-wide save language.
+const _HAZ_MIN_MS = 900;    // keep the hazard (its cancel window) up at least this long
+const _HAZ_HOLD_MS = 600;   // long-press duration that triggers a cancel
+
+const _HAZ_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
+
+// Drop the hazard cover onto a cap cell and wire its long-press. `onHoldComplete`
+// fires after a full _HAZ_HOLD_MS press; releasing early resets the fill. The
+// returned node carries `_holding` (a hold is in progress) and `_teardown()`.
+function _buildCapHazard(cell, onHoldComplete) {
+  const haz = document.createElement('span');
+  haz.className = 'ac-cap-hazard';
+  haz.title = 'Hold to undo';
+  const fill = document.createElement('span'); fill.className = 'ac-cap-hazard-fill';
+  const ico = document.createElement('span'); ico.className = 'ac-cap-hazard-icon'; ico.innerHTML = _HAZ_SVG;
+  haz.appendChild(fill); haz.appendChild(ico);
+  cell.appendChild(haz);
+  requestAnimationFrame(() => haz.classList.add('show'));
+
+  let raf = null, startAt = 0;
+  haz._holding = false;
+  const _stop = () => { if (raf) { cancelAnimationFrame(raf); raf = null; } };
+  const step = () => {
+    const pct = Math.min(100, ((Date.now() - startAt) / _HAZ_HOLD_MS) * 100);
+    fill.style.height = pct + '%';
+    if (pct >= 100) { _stop(); haz._holding = false; onHoldComplete(); return; }
+    raf = requestAnimationFrame(step);
+  };
+  const startHold = (e) => {
+    if (e && e.button != null && e.button !== 0) return;   // left button / touch only
+    haz._holding = true; startAt = Date.now(); fill.style.height = '0%'; step();
+  };
+  const cancelHold = () => { if (!haz._holding) return; haz._holding = false; _stop(); fill.style.height = '0%'; };
+  haz.addEventListener('pointerdown', startHold);
+  haz.addEventListener('pointerup', cancelHold);
+  haz.addEventListener('pointerleave', cancelHold);
+  haz.addEventListener('pointercancel', cancelHold);
+  // Swallow the click so a completed/aborted hold never bubbles to the row's
+  // expand toggle or re-triggers the checkbox.
+  haz.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); });
+
+  haz._teardown = () => { _stop(); haz.remove(); };
+  return haz;
+}
+
+// Run a capability-checkbox change behind the hold-to-cancel guard.
+//   writeFlag(v)  — set the model's in-memory flag to v (applied, then prev on revert)
+//   save()        — returns the persist Promise for the current in-memory state
+//   afterChange() — optional: re-sync dependent UI (e.g. default-radio eligibility)
+function guardCapToggle(cb, { writeFlag, save, afterChange }) {
+  const cell = cb && cb.closest('.ac-saved-cap');
+  const applied = !!(cb && cb.checked);
+  const prev = !applied;
+  writeFlag(applied);
+  if (afterChange) afterChange();
+  if (!cell) { Promise.resolve(save()); return; }   // no cell to cover — just persist
+
+  cb.disabled = true;                 // block a flip-back click for the whole window
+  let cancelled = false, settled = false;
+  const unlock = () => { cb.disabled = false; };
+
+  const haz = _buildCapHazard(cell, () => {
+    if (settled || cancelled) return;
+    cancelled = true;
+    haz._teardown();
+    writeFlag(prev); cb.checked = prev; if (afterChange) afterChange();
+    _markSaving(cell);                // compensating save of the reverted value
+    Promise.resolve(save())
+      .then(() => _flashSaveCheck(cell, true))
+      .catch((e) => _flashSaveCheck(cell, false, (e && e.message) || 'Save failed'))
+      .finally(unlock);
+  });
+
+  const startAt = Date.now();
+  Promise.resolve(save())
+    .then(() => {
+      if (cancelled) return;
+      const settle = () => {
+        if (cancelled) return;
+        if (haz._holding) { setTimeout(settle, 120); return; }   // don't yank the box mid-hold
+        settled = true; haz._teardown(); _flashSaveCheck(cell, true); unlock();
+      };
+      setTimeout(settle, Math.max(0, _HAZ_MIN_MS - (Date.now() - startAt)));
+    })
+    .catch((e) => {
+      if (cancelled) return;
+      settled = true; haz._teardown();
+      writeFlag(prev); cb.checked = prev; if (afterChange) afterChange();
+      _flashSaveCheck(cell, false, (e && e.message) || 'Save failed');
+      unlock();
+    });
+}
+
 let _mtInstanceSeq = 0;
 
 export function mountModelTable(host, opts = {}) {
@@ -669,35 +772,30 @@ export function mountModelTable(host, opts = {}) {
     const defCell = defaultCell(p, checked, readOnly);
     const defInput = defCell.querySelector('.ac-saved-def-input');
     row.appendChild(defCell);
-    // Persist a capability change without rebuilding the list. While the save is
-    // in flight a spinner shows OVER the box; on confirm it settles to a green ✓,
-    // then fades to reveal the updated box. On failure it shows an orange ⚠ (with
-    // a small "Not saved" popup) and reverts both the in-memory flag and the
-    // checkbox so the row stays truthful.
-    const persistCap = (key, v, cb) => {
-      const prev = p[key]; p[key] = v;
-      const slot = cb ? cb.closest('.ac-saved-cap') : null;
-      if (slot) _markSaving(slot);
-      Promise.resolve(adapter.saveRoster({ providers: S.providers }))
-        .then(() => { if (slot) _flashSaveCheck(slot, true); })
-        .catch((e) => {
-          p[key] = prev; if (cb) cb.checked = prev;
-          if (slot) _flashSaveCheck(slot, false, (e && e.message) || 'Save failed');
-        });
+    // Persist a capability change without rebuilding the list — behind the
+    // hold-to-cancel guard so an accidental double-click can't flip it back. The
+    // box locks the moment it's ticked (hazard triangle on top); the save runs,
+    // then settles to a green ✓ (or an orange ⚠ + revert on failure). A deliberate
+    // long-press of the triangle reverts the box and saves the reverted value.
+    // `afterChange` re-syncs dependent UI (default-radio eligibility) on both the
+    // optimistic flip AND any revert. (guardCapToggle reads the flipped state off
+    // the checkbox, so `v` is passed only to keep the call sites self-documenting.)
+    const persistCap = (key, v, cb, afterChange) => {
+      guardCapToggle(cb, {
+        writeFlag: (val) => { p[key] = val; },
+        save: () => adapter.saveRoster({ providers: S.providers }),
+        afterChange,
+      });
     };
-    // Persist a per-agent opt-out on an INHERITED (app-default) model. Same
-    // spinner→✓/⚠ feedback as own rows, but writes the agent's chosen subset of the
-    // app-wide ceiling (saveInheritedOverride) instead of the agent's own roster.
-    const persistInherited = (key, v, cb) => {
-      const prev = p[key]; p[key] = v;
-      const slot = cb ? cb.closest('.ac-saved-cap') : null;
-      if (slot) _markSaving(slot);
-      Promise.resolve(adapter.saveInheritedOverride ? adapter.saveInheritedOverride(p) : null)
-        .then(() => { if (slot) _flashSaveCheck(slot, true); })
-        .catch((e) => {
-          p[key] = prev; if (cb) cb.checked = prev;
-          if (slot) _flashSaveCheck(slot, false, (e && e.message) || 'Save failed');
-        });
+    // Persist a per-agent opt-out on an INHERITED (app-default) model. Same guard +
+    // feedback as own rows, but writes the agent's chosen subset of the app-wide
+    // ceiling (saveInheritedOverride) instead of the agent's own roster.
+    const persistInherited = (key, v, cb, afterChange) => {
+      guardCapToggle(cb, {
+        writeFlag: (val) => { p[key] = val; },
+        save: () => (adapter.saveInheritedOverride ? adapter.saveInheritedOverride(p) : null),
+        afterChange,
+      });
     };
     // Toggling the Text column flips this model's eligibility to be the default —
     // enable/disable the default radio live so the two columns stay consistent.
@@ -713,8 +811,11 @@ export function mountModelTable(host, opts = {}) {
                           : 'Tick the Text column to make this model selectable as the default';
       if (!ok) defInput.checked = false;
     };
-    const onTextToggle = (v, cb) => { persistCap('enabled', v, cb); syncDefaultEligibility(); };
-    const onInhTextToggle = (v, cb) => { persistInherited('enabled', v, cb); syncDefaultEligibility(); };
+    // Text toggles pass syncDefaultEligibility as the guard's afterChange, so the
+    // default radio's enabled/disabled state stays consistent on the optimistic
+    // flip AND on a hold-to-cancel revert.
+    const onTextToggle = (v, cb) => persistCap('enabled', v, cb, syncDefaultEligibility);
+    const onInhTextToggle = (v, cb) => persistInherited('enabled', v, cb, syncDefaultEligibility);
     // Inherited rows whose admin ceiling is known render INTERACTIVE ceiling cells
     // (opt in/out within the app-wide allowance); all other rows (the agent's own
     // models, or inherited rows on a pre-ceiling backend) use the standard cells.

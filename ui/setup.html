@@ -137,6 +137,22 @@ body {
   color: var(--fg-4);
   margin-top: 4px;
 }
+/* Optional bootstrap-code paste field — paste an encrypted bundle from another
+   install (Admin Tools → Deployment → "This app") to provision this one. */
+.form-group textarea {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg-0);
+  border: var(--border-width) solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-1);
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  outline: none;
+  resize: vertical;
+  word-break: break-all;
+}
+.form-group textarea:focus { border-color: var(--brand); }
 </style>
 </head>
 <body>
@@ -153,16 +169,17 @@ body {
       <div class="password-hint">The name you'll sign in with. Leave as <code>admin</code> or pick your own.</div>
     </div>
     <div class="form-group">
-      <label for="display-name">Display Name <span style="color:var(--fg-4);">(optional)</span></label>
-      <input type="text" id="display-name" placeholder="Admin" autocomplete="name">
-    </div>
-    <div class="form-group">
       <label for="password">Password</label>
       <input type="password" id="password" placeholder="At least 6 characters" autocomplete="new-password" required>
     </div>
     <div class="form-group">
       <label for="confirm-password">Confirm Password</label>
       <input type="password" id="confirm-password" placeholder="Repeat your password" autocomplete="new-password" required>
+    </div>
+    <div class="form-group">
+      <label for="setup-code">Bootstrap code <span style="color:var(--fg-4);">(optional)</span></label>
+      <textarea id="setup-code" rows="3" placeholder="Paste a WABOOT1… code from another WebAgent"></textarea>
+      <div class="password-hint">Paste a bootstrap code created in another install’s <strong>Admin Tools → Deployment → “This app”</strong> to copy its database, AI model + key, and secrets vault here. The <strong>Password</strong> above must be that install’s admin password — it unlocks the code and becomes this admin’s password.</div>
     </div>
     <button type="submit" class="btn-setup" id="setup-btn">Complete Setup</button>
     <div class="error-msg" id="error-msg"></div>
@@ -192,9 +209,10 @@ body {
 document.getElementById('setup-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const username = document.getElementById('username').value.trim() || 'admin';
-  const displayName = document.getElementById('display-name').value.trim() || 'Admin';
+  const displayName = 'Admin';
   const password = document.getElementById('password').value;
   const confirm = document.getElementById('confirm-password').value;
+  const setupCode = (document.getElementById('setup-code').value || '').trim();
   const btn = document.getElementById('setup-btn');
   const error = document.getElementById('error-msg');
   const loading = document.getElementById('loading');
@@ -217,14 +235,24 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
 
   btn.disabled = true;
   loading.style.display = 'block';
-  loading.textContent = 'Setting up your admin account…';
+  // A pasted setup code takes the bundle path: the password unlocks it AND
+  // becomes the admin password. Otherwise the plain create-admin path runs.
+  loading.textContent = setupCode
+    ? 'Unlocking your setup code…'
+    : 'Setting up your admin account…';
 
   try {
-    const res = await fetch('/api/v1/auth/setup-admin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, display_name: displayName }),
-    });
+    const res = setupCode
+      ? await fetch('/api/v1/auth/setup-bundle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: setupCode, password }),
+        })
+      : await fetch('/api/v1/auth/setup-admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, display_name: displayName }),
+        });
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));

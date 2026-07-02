@@ -4024,11 +4024,14 @@ const VIEW_SWITCH = {
 
 // Each sidebar view has a dedicated <main> on the right side. Switching
 // the strip swaps which main is visible.
-// Only the views whose lifecycles are STILL wired inline here remain built-in:
-// Explorer + Terminal (shared tab engine, split in a later phase). Every other
-// admin view — including Settings — is a drop-in driven from its descriptor
-// entry/start/stop; listing one here would mark it built-in and skip that
-// dynamic dispatch, so keep this map to the inline-wired views only.
+// Explorer + Terminal share ONE inline tab engine (this file): they are the
+// only views whose lifecycles are still wired inline here, so their ids stay in
+// this map. (Their HTML partials now ship as normal folder drop-ins from
+// explorer/ and terminal/ — only the JS engine is still shared; that engine
+// split is a separate, later phase.) Every OTHER admin view — including
+// Settings — is a drop-in driven from its descriptor entry/start/stop; listing
+// one here would mark it inline and skip that dynamic dispatch, so keep this map
+// to the two inline-wired views only.
 const VIEW_MAIN_ID = {
   explorer:       'files-explorer-main',
   terminal:       'files-terminal-main',

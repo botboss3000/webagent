@@ -59,6 +59,7 @@ export function _showSection(section) {
   if (section === 'data-settings' && typeof window.__refreshDeploy === 'function') window.__refreshDeploy();
   if (section === 'data-settings' && typeof window.__refreshAppAccess === 'function') window.__refreshAppAccess();
   if (section === 'data-settings' && typeof window.__refreshSocialAuth === 'function') window.__refreshSocialAuth();
+  if (section === 'data-settings' && typeof window.__refreshDangerZone === 'function') window.__refreshDangerZone();
   // Fire the per-section lifecycle hook (registered by each tab module)
   if (_sectionHooks[section]) _sectionHooks[section]();
   // Notify broadcast subscribers (lazy data-load on first show)

@@ -32,6 +32,13 @@ load_dotenv(dotenv_path=_DOTENV_PATH)
 from app.provider_boot import apply_provider_config
 apply_provider_config()
 
+# Consume a one-shot Danger-Zone reset marker BEFORE the DB / stores open, so the
+# selected data groups (database / vault / attachments / genui / logs) can be
+# wiped while nothing holds them. A missing marker is a no-op; any error is
+# swallowed so a bad marker can never brick boot. See app/util/reset_boot.py.
+from app.util.reset_boot import run_pending_reset
+run_pending_reset()
+
 import traceback
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1312,6 +1319,20 @@ async def startup():
         start_idle_gc()
     except Exception as _gc_err:
         logger.warning("Failed to start terminal idle GC: %s", _gc_err)
+
+    # First-boot: provision from a bootstrap.json dropped next to the clone (an
+    # encrypted setup bundle → DB + vault + LLM + admin). Runs BEFORE the security
+    # and LLM-from-env seeds below so the bundle's choices win; a strict freshness
+    # gate (no LLM configured yet) makes it a no-op on any real install, and the
+    # file is renamed once applied so it never re-fires. See
+    # app/admin/bootstrap_bundle.py.
+    try:
+        from app.admin.bootstrap_bundle import apply_boot_file
+        _boot_res = await apply_boot_file()
+        if _boot_res:
+            logger.info("Bootstrap file provisioned fresh install: %s", _boot_res.get("results"))
+    except Exception as _boot_err:
+        logger.warning("Bootstrap-file provisioning at startup failed: %s", _boot_err)
 
     # Seed agent templates from JSON (manifest-gated short-circuit makes this
     # cheap when unchanged). LocalBackend self-seeds in __init__, so this call

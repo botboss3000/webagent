@@ -3,5 +3,6 @@
   "kind": "admin",
   "label": "File Manager",
   "icon": "folder-tree",
-  "order": 2
+  "order": 2,
+  "html": "explorer.html"
 }

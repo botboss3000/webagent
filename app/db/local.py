@@ -6676,6 +6676,13 @@ class LocalBackend(StorageBackend):
                     target_id=agent_id,
                     now=now,
                 )
+                # Seed the template's pre-enabled abilities (expanding "*" /
+                # group wildcards) so an agent materialized straight from a
+                # template — e.g. a session bound to "default" with no
+                # pre-created agent row — gets the same ability set as one made
+                # via create_custom_agent. Without this the default agent would
+                # materialize with zero abilities.
+                self._seed_pre_enabled_connections(conn, agent_id, _meta_str, now)
                 conn.commit()
             except Exception as e:
                 logger.error("Error materializing agent: %s", e)
@@ -8341,6 +8348,61 @@ class LocalBackend(StorageBackend):
 
     # ── Custom agent CRUD ─────────────────────────────────────────────────────
 
+    def _seed_pre_enabled_connections(self, conn, agent_id: str, metadata, now: str) -> int:
+        """Create enabled ``agent_connections`` 'ability' rows for the ids in a
+        template's ``metadata.pre_enabled_connections``, so the agent's tools are
+        available at runtime.
+
+        ``metadata`` may be the raw JSON string or an already-parsed dict.
+        Wildcards in the list are expanded first — ``"*"`` (every ability),
+        ``"Core/*"`` / ``"group:web"`` (every ability in a group) — via
+        ``abilities.expand_ability_selectors``, so a template can ask for "all
+        abilities" (or "all in a group") without naming each id, and newly
+        dropped-in abilities are auto-included. Existing rows are left untouched
+        (idempotent). Fail-open: an expansion error falls back to the literal
+        list. Returns the number of rows inserted.
+
+        Shared by every create/materialize path (create_custom_agent + the
+        session-agent materializer) so the default agent ends up with the same
+        ability set no matter which path built it.
+        """
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            return 0
+        _pec = metadata.get("pre_enabled_connections")
+        if not (_pec and isinstance(_pec, list)):
+            return 0
+        try:
+            from app import abilities as _abilities_mgr
+            _pec = _abilities_mgr.expand_ability_selectors(_pec)
+        except Exception as _exp_e:
+            logger.warning(
+                "Ability selector expansion failed (%s) — seeding literal list",
+                _exp_e,
+            )
+        inserted = 0
+        for _ct in _pec:
+            if not isinstance(_ct, str) or not _ct.strip():
+                continue
+            _existing = conn.execute(
+                "SELECT 1 FROM agent_connections WHERE agent_id = ? AND connection_type = ?",
+                (agent_id, _ct),
+            ).fetchone()
+            if _existing:
+                continue
+            conn.execute(
+                """INSERT INTO agent_connections
+                       (id, agent_id, connection_type, section, enabled, config, created_at, updated_at)
+                   VALUES (?, ?, ?, 'ability', 1, '{}', ?, ?)""",
+                (_uuid(), agent_id, _ct, now, now),
+            )
+            inserted += 1
+        return inserted
+
     async def create_custom_agent(
         self, user_id: str, name: str, description: str = "", template_id: str = "default",
         seed_abilities: bool = True,
@@ -8468,36 +8530,14 @@ class LocalBackend(StorageBackend):
                 self._clone_template_slots(conn, source_id=template_id, target_id=agent_id, now=now)
 
             # ── Seed pre-enabled connections ──
-            # If the template's metadata specifies pre_enabled_connections, create
-            # agent_connections rows so the tools are available at runtime.
             # Skipped entirely for a bare agent (seed_abilities=False): the caller
             # adds only the abilities it deliberately selected.
-            _pec = None
-            _meta_raw = tpl.get("metadata", "{}") if seed_abilities else "{}"
-            if isinstance(_meta_raw, str):
-                try:
-                    _meta = json.loads(_meta_raw)
-                    if isinstance(_meta, dict):
-                        _pec = _meta.get("pre_enabled_connections")
-                except Exception:
-                    pass
-            if _pec and isinstance(_pec, list):
-                now = now or _now_iso()
-                for _ct in _pec:
-                    if not isinstance(_ct, str) or not _ct.strip():
-                        continue
-                    _existing = conn.execute(
-                        "SELECT 1 FROM agent_connections WHERE agent_id = ? AND connection_type = ?",
-                        (agent_id, _ct),
-                    ).fetchone()
-                    if _existing:
-                        continue
-                    conn.execute(
-                        """INSERT INTO agent_connections
-                               (id, agent_id, connection_type, section, enabled, config, created_at, updated_at)
-                           VALUES (?, ?, ?, 'ability', 1, '{}', ?, ?)""",
-                        (_uuid(), agent_id, _ct, now, now),
-                    )
+            now = now or _now_iso()
+            self._seed_pre_enabled_connections(
+                conn, agent_id,
+                tpl.get("metadata", "{}") if seed_abilities else "{}",
+                now,
+            )
 
             conn.commit()
             row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()

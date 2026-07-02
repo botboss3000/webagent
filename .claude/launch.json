@@ -41,6 +41,27 @@
       "autoPort": false
     },
     {
+      "name": "webagent-verify-deploy",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8096"],
+      "port": 8096,
+      "autoPort": false
+    },
+    {
+      "name": "webagent-verify-boot",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8188"],
+      "port": 8188,
+      "autoPort": false
+    },
+    {
+      "name": "webagent-verify-target",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8194"],
+      "port": 8194,
+      "autoPort": false
+    },
+    {
       "name": "web-terminal",
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "7654", "--directory", "app/web-terminal"],

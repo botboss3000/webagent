@@ -25,6 +25,14 @@ import { copyText } from '../../../shared/js/clipboard.js';
 let _catalog = null;        // last /catalog payload
 let _busy = false;          // a deploy / tear-down stream is running
 
+// Typed cloud-form values carried across a save / activate reload. A successful
+// deploy auto-forgets the cloud key (default on), which would make _load() re-render
+// the form empty and — for a staged target (Google VM) — collapse the key/VM fields
+// + action buttons back to stage 1. We snapshot what the admin typed before the
+// reload and re-apply it in _renderProvider, so the JSON key stays put and the
+// staged fields stay revealed. Cleared on a real provider switch (see _onProviderChange).
+let _preserve = null;       // {provider, cfg:{}, cred:{}} | null
+
 // ── Manual install row state (one QR popover open at a time across all rows) ──
 let _qrTimer = null;        // debounce timer for the (server-side) QR refresh
 let _qrPop = null;          // the floating QR popover element, or null
@@ -47,6 +55,7 @@ function _readSharedRepo() {
     github_url: (_qs('ac-deploy-repo-url')?.value || '').trim(),
     visibility: _qs('ac-deploy-repo-visibility')?.value || 'public',
     token: (_qs('ac-deploy-repo-token')?.value || '').trim(),
+    branch: (_qs('ac-deploy-repo-branch')?.value || '').trim(),
     admin_password: _qs('ac-deploy-repo-admin-pw')?.value || '',
   };
 }
@@ -56,10 +65,19 @@ function _syncSharedToken() {
   const wrap = _qs('ac-deploy-repo-token-wrap');
   if (wrap) wrap.style.display = (vis && vis.value === 'private') ? '' : 'none';
 }
+// Echo the chosen repo on the collapsed Repo-details bar, so "Repo details: <repo>"
+// is visible without expanding it. Blank → the standard WebAgent repo; the scheme
+// is trimmed for brevity.
+function _updateRepoHead() {
+  const head = _qs('ac-deploy-repo-head');
+  if (!head) return;
+  const url = (_qs('ac-deploy-repo-url')?.value || '').trim() || _MC_DEFAULT_REPO;
+  head.textContent = ': ' + url.replace(/^https?:\/\//, '');
+}
 
 // Cloud config/cred keys now OWNED by the shared Repo-details bar — skipped when
-// rendering a cloud target's own forms, then injected on save/deploy. `branch` is
-// dropped from the UI entirely (defaults to main, like the manual targets).
+// rendering a cloud target's own forms, then injected on save/deploy (repo_url +
+// branch + visibility into config; github_token + admin_password into the vault).
 const SHARED_CLOUD_KEYS = new Set(['repo_url', 'branch', 'visibility', 'github_token', 'admin_password', 'github_url']);
 
 // The five deploy-target panels revealed by the #ac-deploy-target dropdown. The
@@ -73,8 +91,12 @@ const TARGET_PANELS = [
   { target: 'macos', panel: 'ac-deploy-mac-panel' },
 ];
 function _syncTargetPanel() {
-  const t = _qs('ac-deploy-target')?.value || 'cloud';
+  // The picker lives in the row header. Empty value = the "Select an option"
+  // placeholder → hide every panel + collapse the row; a real target reveals its
+  // panel and opens the row body (no chevron drives this row anymore).
+  const t = _qs('ac-deploy-target')?.value || '';
   TARGET_PANELS.forEach(p => { const el = _qs(p.panel); if (el) el.hidden = (p.target !== t); });
+  _qs('ac-deploy-target-row')?.classList.toggle('expanded', !!t);
   const desc = MANUAL_ROWS.find(d => d.id === t);   // re-render the newly-shown command
   if (desc) _manualRender(desc);
 }
@@ -154,19 +176,18 @@ function _prefillSharedRepo() {
   const repo = (_catalog && _catalog.shared_repo) || {};
   const url = _qs('ac-deploy-repo-url');
   const vis = _qs('ac-deploy-repo-visibility');
+  const branch = _qs('ac-deploy-repo-branch');
   if (url && !url.value && repo.github_url) url.value = repo.github_url;
   if (vis && repo.visibility) vis.value = repo.visibility;
+  if (branch && !branch.value && repo.branch) branch.value = repo.branch;
+  _updateRepoHead();
 }
 
 function _renderProvider() {
   _hideTip();                    // drop any help bubble from the old form
   const p = _current();
-  const blurb = _qs('ac-deploy-blurb');
-  const requires = _qs('ac-deploy-requires');
   const cfgHost = _qs('ac-deploy-config');
   const credHost = _qs('ac-deploy-creds');
-  const keyNote = _qs('ac-deploy-key-note');
-  const result = _qs('ac-deploy-result');
   const destroyBtn = _qs('ac-deploy-destroy');
   if (!p) {
     if (cfgHost) cfgHost.innerHTML = '';
@@ -174,57 +195,139 @@ function _renderProvider() {
     return;
   }
 
-  if (blurb) blurb.textContent = p.summary || '';
-  if (requires) {
-    requires.innerHTML = (p.requires && p.requires.length)
-      ? 'You’ll need: ' + p.requires.map(_esc).join(' · ')
-      : '';
-  }
-  if (!p.available && blurb) {
-    blurb.innerHTML = '<span style="color:var(--danger);">' + _esc(p.unavailable_reason || 'This target is unavailable here.') + '</span>';
-  }
-
-  // Settings form (non-secret)
-  if (cfgHost) {
-    cfgHost.innerHTML = '';
-    (p.config_fields || []).forEach(f => cfgHost.appendChild(_buildField(f, (p.config || {})[f.key], 'cfg')));
-  }
-  // The optional admin password gets its OWN slot (rendered ABOVE the cloud key),
-  // not the generic cloud-key list — it isn't a cloud credential, it's a deploy
-  // setting. It's still a secret (rides the vault, discarded after deploy), so it's
-  // gathered as a 'cred'. Rendered here from the same credential_fields descriptor.
-  const adminHost = _qs('ac-deploy-admin');
-  if (adminHost) {
-    adminHost.innerHTML = '';
-    const af = (p.credential_fields || []).find(f => f.key === 'admin_password');
-    if (af) {
-      const isSet = !!(p.credentials_set || {})[af.key];
-      adminHost.appendChild(_buildField(af, '', 'cred', isSet));
-    }
-  }
+  // Settings form (non-secret). The repo URL / visibility / branch are NOT shown
+  // here — they come from the shared Repo-details bar (SHARED_CLOUD_KEYS), injected
+  // on save/deploy. A `progressive` target (Google VM) renders ONLY its first
+  // config field (the project) into the main host and every OTHER setting into the
+  // "rest" host below the key, so the reveal runs project → key → rest.
+  const restHost = _qs('ac-deploy-config-rest');
+  const cfgFields = (p.config_fields || []).filter(f => !SHARED_CLOUD_KEYS.has(f.key));
+  const gateKey = (p.progressive && cfgFields.length) ? cfgFields[0].key : null;
+  if (cfgHost) cfgHost.innerHTML = '';
+  if (restHost) restHost.innerHTML = '';
+  cfgFields.forEach(f => {
+    const host = (gateKey && f.key !== gateKey && restHost) ? restHost : cfgHost;
+    if (host) host.appendChild(_buildField(f, (p.config || {})[f.key], 'cfg'));
+  });
   // Cloud-key form (secret); a "set" secret shows a placeholder, never the value.
-  // admin_password is skipped here — it lives in its own slot above.
+  // The GitHub token + admin password are skipped here — they ride the shared
+  // Repo-details bar and are injected on save/deploy.
   if (credHost) {
     credHost.innerHTML = '';
     (p.credential_fields || []).forEach(f => {
-      if (f.key === 'admin_password') return;
+      if (SHARED_CLOUD_KEYS.has(f.key)) return;
       const isSet = !!(p.credentials_set || {})[f.key];
       credHost.appendChild(_buildField(f, '', 'cred', isSet));
     });
   }
-  if (keyNote) {
-    keyNote.textContent = p.configured
-      ? 'A cloud key is saved. Deploying will use it; leave the field blank to keep it.'
-      : 'No cloud key saved yet — paste one to enable Deploy.';
+  // Any field can carry a project-ID-driven "link" (e.g. the Service-Accounts
+  // page for the entered project). Refresh them — and re-evaluate the staged
+  // reveal — whenever the project ID or the key changes.
+  const pidInput = cfgHost && cfgHost.querySelector('[data-key="project_id"]');
+  if (pidInput) {
+    pidInput.addEventListener('input', () => { _syncDynLinks(); _applyCloudStages(); });
   }
+  const saInput = credHost && credHost.querySelector('[data-key="service_account_json"]');
+  if (saInput) saInput.addEventListener('input', _applyCloudStages);
+  _restorePreserved();           // re-apply values typed before a save / activate reload
+  _syncDynLinks();
+  _applyCloudStages();           // set the initial stage visibility for this target
+  _resetMorePanel();             // collapse the advanced-actions panel on (re)render
   _renderServers(p);            // the "Saved servers" picker (SSH target only)
 
   // Tear-down only when there's a recorded server
   const dep = p.deployment || {};
   if (destroyBtn) destroyBtn.style.display = dep.server ? '' : 'none';
-  if (result) result.innerHTML = _deploymentLine(dep);
+  _renderDeployResult(dep);      // live address of the current deployment (if any)
   _setStatus('');
   if (window.lucide) { try { lucide.createIcons(); } catch {} }
+}
+
+// ── Staged (progressive) reveal ──────────────────────────────────────────────
+// For a `progressive` target the deploy form is shown one step at a time so it
+// never overwhelms: (1) only the project field, (2) once a project ID is typed,
+// the key field appears, (3) once a key is present (typed now or already saved),
+// the rest of the settings + the action buttons appear. Non-progressive targets
+// (SSH) render everything into the main host and show it all at once.
+function _applyCloudStages() {
+  const p = _current();
+  const cfgHost = _qs('ac-deploy-config');
+  const credHost = _qs('ac-deploy-creds');
+  const restHost = _qs('ac-deploy-config-rest');
+  const show = (id, on) => { const el = _qs(id); if (el) el.style.display = on ? '' : 'none'; };
+
+  const prog = !!(p && p.progressive);
+  if (!prog) {
+    // Everything visible; the two section labels head their groups as before.
+    show('ac-deploy-settings-label', true);
+    show('ac-deploy-key-label', true);
+    if (credHost) credHost.style.display = '';
+    if (restHost) restHost.style.display = '';
+    show('ac-deploy-actions', true);
+    return;
+  }
+
+  const pid = (cfgHost && cfgHost.querySelector('[data-key="project_id"]')?.value || '').trim();
+  const saVal = (credHost && credHost.querySelector('[data-key="service_account_json"]')?.value || '').trim();
+  const keyDone = !!saVal || !!p.configured;      // typed now OR a key already saved
+  const stage2 = !!pid;                            // reveal the key
+  const stage3 = stage2 && keyDone;                // reveal the rest + buttons
+
+  // The section labels are redundant in the staged flow — each field self-labels.
+  show('ac-deploy-settings-label', false);
+  show('ac-deploy-key-label', false);
+  if (credHost) credHost.style.display = stage2 ? '' : 'none';
+  if (restHost) restHost.style.display = stage3 ? '' : 'none';
+  show('ac-deploy-actions', stage3);
+}
+
+// Snapshot the currently-typed config + cloud-key values so a save / activate
+// reload doesn't wipe them (see _preserve). Keyed by provider so it never leaks
+// across targets.
+function _captureForm() {
+  _preserve = { provider: _provider(), cfg: _gather('cfg'), cred: _gather('cred') };
+}
+
+// Re-apply a preserved snapshot into the freshly-rendered fields of the SAME
+// provider. Only fills from a non-blank captured value, so it never clobbers a
+// server-loaded default with an empty string. Called from _renderProvider before
+// the staged-reveal check, so the restored key keeps the VM fields visible.
+function _restorePreserved() {
+  if (!_preserve || _preserve.provider !== _provider()) return;
+  const put = (hosts, vals) => {
+    Object.entries(vals || {}).forEach(([k, v]) => {
+      if (v === '' || v == null || v === false) return;
+      let inp = null;
+      for (const h of hosts) { inp = document.querySelector(h + ' [data-key="' + k + '"]'); if (inp) break; }
+      if (!inp) return;
+      if (inp.dataset.type === 'checkbox') inp.checked = !!v;
+      else inp.value = v;
+    });
+  };
+  put(['#ac-deploy-config', '#ac-deploy-config-rest'], _preserve.cfg);
+  put(['#ac-deploy-creds'], _preserve.cred);
+}
+
+// Show the live address of the current deployment below the status line — set on
+// a successful Activate and rebuilt from the saved deployment record on reload, so
+// it survives the re-render. Blank record → hidden.
+function _renderDeployResult(dep) {
+  const el = _qs('ac-deploy-result');
+  if (!el) return;
+  const url = ((dep && dep.public_url) || (dep && dep.ip ? 'http://' + dep.ip : '')).trim();
+  if (!url) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = 'Deployment successful: '
+    + '<a href="' + _escAttr(url) + '" target="_blank" rel="noopener" class="ac-deploy-current-link">' + _esc(url) + '</a>';
+}
+
+// Collapse the "More" advanced-actions panel (called on every (re)render so a
+// panel left open on one target doesn't carry over to the next).
+function _resetMorePanel() {
+  const panel = _qs('ac-deploy-more-panel');
+  const btn = _qs('ac-deploy-more-btn');
+  if (panel) panel.hidden = true;
+  if (btn) { btn.setAttribute('aria-expanded', 'false'); btn.textContent = 'More ▾'; }
 }
 
 // ── Saved servers (profile-aware targets, e.g. the SSH one) ──────────────────
@@ -261,6 +364,7 @@ function _renderServers(p) {
 // Pick a saved server (or "New server…") → load it into the working form.
 async function _onServerSelect() {
   if (!isAdmin()) return;
+  _preserve = null;              // loading a saved server's own values — those win
   const server_id = (_qs('ac-deploy-servers') || {}).value || '';
   _setStatus(server_id ? 'Loading server…' : 'Cleared — enter a new server below.');
   try {
@@ -358,6 +462,18 @@ function _instBar(i) {
   const meta = '<span class="ac-deploy-meta-port">Port ' + _esc(String(i.port)) + '</span>'
     + '<span class="ac-deploy-meta-folder">' + _esc(i.folder) + '</span>';
 
+  // Hold-to-restart control — the hub (this app) only. Press and HOLD it: after a
+  // beat it arms to the hazard icon (mirroring the app's delete buttons), a fill
+  // sweeps it, and at the end the server restarts. See _beginResetHold; the hold IS
+  // the confirmation, so there's no extra dialog. A sibling can't restart itself
+  // from here — use its Start / Stop actions instead.
+  const resetBtn = i.builtin
+    ? '<button class="ac-deploy-reset-btn" type="button" data-hub-reset title="Hold to restart this server">'
+      + '<span class="ac-deploy-reset-fill"></span>'
+      + '<span class="ac-deploy-reset-ico"><i data-lucide="rotate-ccw"></i></span>'
+      + '</button>'
+    : '';
+
   return '<div class="ac-row ac-deploy-inst' + (expanded ? ' expanded' : '') + '" data-inst="' + _escAttr(i.id) + '">'
     + '<div class="ac-ability-row">'
     +   '<span class="ac-ability-icon"><span class="ac-deploy-dot ' + _instDotClass(i.status) + '" title="' + _escAttr(_instStatusLabel(i.status)) + '"></span></span>'
@@ -367,13 +483,17 @@ function _instBar(i) {
     +     '</div>'
     +     '<div class="ac-ability-desc">' + meta + '</div>'
     +   '</div>'
+    +   resetBtn
     +   '<span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>'
     + '</div>'
     + '<div class="ac-ability-body">' + (i.builtin ? _hubBody(i) : _siblingBody(i)) + '</div>'
     + '</div>';
 }
 
-// The hub's body: change this app's own port (persist + relaunch).
+// The hub's body: change this app's own port (persist + relaunch), then the
+// SETUP BUNDLE tools — share THIS install's config as one encrypted code, or
+// import a code from another install. See app/admin/bootstrap_bundle.py; the
+// former per-row DB "Share (QR)" folded in here (database is one section).
 function _hubBody(i) {
   return '<label class="ac-label">Change this app’s port</label>'
     + '<input class="ac-input" type="number" min="1024" max="65535" data-hub-port value="' + _escAttr(String(i.port)) + '">'
@@ -381,6 +501,64 @@ function _hubBody(i) {
     + '<div class="ac-ra-actions" style="margin-top:10px;">'
     +   '<button class="ac-btn ac-deploy-go-btn" type="button" data-hub-save>Change &amp; relaunch</button>'
     +   '<span class="ac-hint" data-hub-status style="margin-left:6px;"></span>'
+    + '</div>'
+    + _bootShareBody()
+    + _bootImportBody();
+}
+
+// The four things a setup bundle can carry — checkbox order = display order.
+const _BOOT_SECTIONS = [
+  { id: 'admin',    label: 'Admin login', desc: 'the admin username + password' },
+  { id: 'llm',      label: 'AI model & key', desc: 'provider, preset model, the saved-model table + API key' },
+  { id: 'database', label: 'Database', desc: 'the app database connection (+ password)' },
+  { id: 'vault',    label: 'Secrets vault', desc: 'which vault backend and its connection' },
+];
+
+// ── Share this app's setup ──────────────────────────────────────────────────
+// Tick what to include, type this app's admin password (authorises + encrypts),
+// Create → an encrypted code + QR appear inline. Anyone with the code AND the
+// password can provision a new install, so the result box says so plainly.
+function _bootShareBody() {
+  const checks = _BOOT_SECTIONS.map(s =>
+    '<label class="ac-boot-check" style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;cursor:pointer;">'
+    + '<input type="checkbox" data-boot-sec="' + s.id + '" checked style="margin-top:2px;">'
+    + '<span><strong>' + _esc(s.label) + '</strong> — <span style="color:var(--fg-3);">' + _esc(s.desc) + '</span></span>'
+    + '</label>').join('');
+  return '<div style="margin-top:16px;border-top:var(--border-width) solid var(--border);padding-top:12px;">'
+    + '<div style="font-weight:600;font-size:12px;margin-bottom:2px;">Clone this app’s setup</div>'
+    + '<div class="ac-hint" style="font-size:11px;margin-bottom:8px;line-height:1.5;">Package this install’s configuration into one code, then paste it into a freshly-cloned WebAgent (on its setup page, or here) so it comes up ready. The code is encrypted with this app’s admin password.</div>'
+    + checks
+    + '<label class="ac-label" style="margin-top:10px;">This app’s admin password</label>'
+    + '<input class="ac-input" type="password" data-boot-share-pw autocomplete="off" placeholder="unlocks + encrypts the code">'
+    + '<div class="ac-ra-actions" style="margin-top:10px;">'
+    +   '<button class="ac-btn ac-deploy-go-btn" type="button" data-boot-share><i data-lucide="share-2"></i> Create setup code</button>'
+    +   '<span class="ac-hint" data-boot-share-status style="margin-left:6px;"></span>'
+    + '</div>'
+    + '<div data-boot-share-result style="display:none;margin-top:12px;">'
+    +   '<div class="ac-info-banner" style="border-left-color:var(--warning);font-size:11px;line-height:1.5;margin-bottom:8px;">Anyone with this code <em>and</em> the admin password can configure a new install with these keys. Treat it like a password — share it privately.</div>'
+    +   '<div data-boot-qr style="max-width:220px;margin:0 auto 8px;"></div>'
+    +   '<textarea data-boot-code readonly rows="3" style="width:100%;padding:6px 8px;border:var(--border-width) solid var(--border);border-radius:4px;font-size:11px;font-family:var(--font-mono,monospace);background:transparent;color:inherit;resize:vertical;word-break:break-all;"></textarea>'
+    +   '<div class="ac-ra-actions" style="margin-top:6px;"><button class="ac-btn" type="button" data-boot-copy><i data-lucide="copy"></i> Copy code</button></div>'
+    + '</div>'
+    + '</div>';
+}
+
+// ── Import a setup code ─────────────────────────────────────────────────────
+// Paste a code + the SOURCE admin password → Preview shows, per section, what it
+// carries and whether this install already has it (fill / overwrite / skip) →
+// Apply runs it through the same save paths the admin UI uses.
+function _bootImportBody() {
+  return '<div style="margin-top:14px;border-top:var(--border-width) solid var(--border);padding-top:12px;">'
+    + '<div style="font-weight:600;font-size:12px;margin-bottom:2px;">Import a setup code</div>'
+    + '<div class="ac-hint" style="font-size:11px;margin-bottom:8px;line-height:1.5;">Paste a code from another WebAgent to bring its configuration into this install. Enter the <em>source</em> install’s admin password to unlock it.</div>'
+    + '<textarea data-boot-import-code rows="3" placeholder="Paste the setup code (WABOOT1…) here" style="width:100%;padding:6px 8px;border:var(--border-width) solid var(--border);border-radius:4px;font-size:11px;font-family:var(--font-mono,monospace);background:transparent;color:inherit;resize:vertical;word-break:break-all;"></textarea>'
+    + '<label class="ac-label" style="margin-top:8px;">Source admin password</label>'
+    + '<input class="ac-input" type="password" data-boot-import-pw autocomplete="off" placeholder="the admin password of the app you copied from">'
+    + '<div class="ac-ra-actions" style="margin-top:10px;">'
+    +   '<button class="ac-btn" type="button" data-boot-preview><i data-lucide="eye"></i> Preview</button>'
+    +   '<span class="ac-hint" data-boot-import-status style="margin-left:6px;"></span>'
+    + '</div>'
+    + '<div data-boot-preview-result style="display:none;margin-top:12px;"></div>'
     + '</div>';
 }
 
@@ -423,6 +601,10 @@ function _onInstClick(e) {
   if (e.target.closest('[data-remove]')) { _instRemove(id); return; }
   if (e.target.closest('[data-inst-save]')) { _instSave(id, row); return; }
   if (e.target.closest('[data-hub-save]')) { _hubSave(row); return; }
+  if (e.target.closest('[data-boot-share]')) { _bootShare(row); return; }
+  if (e.target.closest('[data-boot-copy]')) { _bootCopy(row, e.target.closest('[data-boot-copy]')); return; }
+  if (e.target.closest('[data-boot-preview]')) { _bootPreview(row); return; }
+  if (e.target.closest('[data-boot-apply]')) { _bootApply(row); return; }
   const head = e.target.closest('.ac-ability-row');
   if (head && head.parentElement === row) {
     if (e.target.closest('input, textarea, select, button, a, label')) return;
@@ -499,6 +681,102 @@ async function _hubSave(row) {
   } catch (e) { setStatus(e.message, true); }
 }
 
+// ── Setup bundle: share / import (on the "This app" hub row) ──────────────────
+// All server-side (crypto in Python): browser crypto.subtle is unavailable on
+// plain-http LAN addresses, and moving config between devices is the whole point.
+
+async function _bootShare(row) {
+  const status = row.querySelector('[data-boot-share-status]');
+  const pw = row.querySelector('[data-boot-share-pw]')?.value || '';
+  const sections = Array.from(row.querySelectorAll('[data-boot-sec]:checked')).map(el => el.dataset.bootSec);
+  const set = (m, err) => { if (status) { status.textContent = m || ''; status.style.color = err ? 'var(--danger)' : ''; } };
+  if (!sections.length) return set('Pick at least one thing to include.', true);
+  if (!pw) return set('Enter this app’s admin password.', true);
+  set('Creating…');
+  let r;
+  try { r = await _post('/admin/storage/bootstrap/export', { sections, admin_password: pw }); }
+  catch (e) { return set(e.message, true); }
+  if (!r.ok) return set(r.error || 'Could not create the code.', true);
+  set('');
+  const result = row.querySelector('[data-boot-share-result]');
+  const codeEl = row.querySelector('[data-boot-code]');
+  if (codeEl) codeEl.value = r.code;
+  if (result) result.style.display = '';
+  // Fetch a QR of the code (same server generator the deploy/remote-access cards use).
+  const qrHost = row.querySelector('[data-boot-qr]');
+  if (qrHost) {
+    qrHost.innerHTML = '<div class="ac-hint" style="text-align:center;padding:10px;">Generating QR…</div>';
+    try {
+      const q = await _post('/admin/storage/qr', { text: r.code });
+      if (q && q.qr_svg) {
+        qrHost.innerHTML = q.qr_svg;
+        const svg = qrHost.querySelector('svg');
+        if (svg) { svg.style.width = '100%'; svg.style.height = 'auto'; svg.style.display = 'block'; }
+      } else {
+        qrHost.innerHTML = '<div class="ac-hint" style="text-align:center;padding:10px;">QR needs the “qrcode” package — copy the code instead.</div>';
+      }
+    } catch { qrHost.innerHTML = ''; }
+  }
+}
+
+async function _bootCopy(row, btn) {
+  const code = row.querySelector('[data-boot-code]')?.value || '';
+  if (!code) return;
+  try { await copyText(code); _flashCopied(btn); } catch {}
+}
+
+async function _bootPreview(row) {
+  const status = row.querySelector('[data-boot-import-status]');
+  const code = row.querySelector('[data-boot-import-code]')?.value?.trim() || '';
+  const pw = row.querySelector('[data-boot-import-pw]')?.value || '';
+  const set = (m, err) => { if (status) { status.textContent = m || ''; status.style.color = err ? 'var(--danger)' : ''; } };
+  if (!code) return set('Paste a setup code.', true);
+  if (!pw) return set('Enter the source admin password.', true);
+  set('Decoding…');
+  let r;
+  try { r = await _post('/admin/storage/bootstrap/preview', { code, password: pw }); }
+  catch (e) { return set(e.message, true); }
+  if (!r.ok) return set(r.error || 'Could not decode the code.', true);
+  set('');
+  const host = row.querySelector('[data-boot-preview-result]');
+  if (!host) return;
+  const rows = (r.sections || []).map(s =>
+    '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:var(--border-width) solid var(--border);">'
+    + '<div style="flex:1;min-width:0;font-size:12px;">' + _esc(s.summary)
+    +   (s.present_now ? ' <span class="ac-deploy-badge ac-deploy-badge-warn" style="margin-left:4px;">already set</span>' : '')
+    + '</div>'
+    + '<select class="ac-input" data-boot-choice="' + _escAttr(s.section) + '" style="width:auto;flex:0 0 auto;font-size:11px;padding:4px 6px;">'
+    +   (s.present_now
+        ? '<option value="fill">Fill blanks only</option><option value="overwrite">Overwrite</option><option value="skip">Skip</option>'
+        : '<option value="overwrite" selected>Import</option><option value="skip">Skip</option>')
+    + '</select>'
+    + '</div>').join('');
+  host.innerHTML = rows
+    + '<div class="ac-ra-actions" style="margin-top:12px;">'
+    +   '<button class="ac-btn ac-deploy-go-btn" type="button" data-boot-apply><i data-lucide="download"></i> Apply to this install</button>'
+    +   '<span class="ac-hint" data-boot-apply-status style="margin-left:6px;"></span>'
+    + '</div>';
+  host.style.display = '';
+  _refreshLucideIcons(host);
+}
+
+async function _bootApply(row) {
+  const status = row.querySelector('[data-boot-apply-status]');
+  const code = row.querySelector('[data-boot-import-code]')?.value?.trim() || '';
+  const pw = row.querySelector('[data-boot-import-pw]')?.value || '';
+  const set = (m, err) => { if (status) { status.textContent = m || ''; status.style.color = err ? 'var(--danger)' : ''; } };
+  const choices = {};
+  row.querySelectorAll('[data-boot-choice]').forEach(el => { choices[el.dataset.bootChoice] = el.value; });
+  if (!window.confirm('Apply this setup to this install?\n\nSections set to Overwrite replace your current settings.')) return;
+  set('Applying…');
+  let r;
+  try { r = await _post('/admin/storage/bootstrap/apply', { code, password: pw, choices }); }
+  catch (e) { return set(e.message, true); }
+  if (r.ok === false) return set(r.error || 'Apply failed.', true);
+  const lines = Object.entries(r.results || {}).map(([k, v]) => k + ': ' + v).join(' · ');
+  set(lines || 'Done.');
+}
+
 // ── Register a local checkout (the add form) ─────────────────────────────────
 function _nextFreePort() {
   const used = new Set(_insts.map(i => i.port));
@@ -542,27 +820,127 @@ async function _registerAdd() {
     if (_qs('ac-inst-label')) _qs('ac-inst-label').value = '';
     if (_qs('ac-inst-port')) _qs('ac-inst-port').value = '';
     setStatus('Added.', 'ok');
-    _qs('ac-deploy-register-row')?.classList.remove('expanded');
     await _loadInstances();
   } catch (e) { setStatus(e.message, 'err'); }
 }
 
+// ── Hold-to-restart (the hub row's reset button) ─────────────────────────────
+// Press and HOLD the reset button: after _RESET_HAZARD_MS the icon flips to the
+// hazard triangle + tints red (the same cue the app's delete buttons use), while
+// a fill sweeps the button; hold the whole _RESET_HOLD_MS and the server restarts.
+// Release / pointer-cancel before the end aborts with no side effect — the
+// deliberate hold IS the confirmation, so there's no extra dialog. Restarting
+// drops this connection; the relauncher brings the server back on the same port
+// and we reload once it answers again. The fill duration in CSS
+// (.ac-deploy-reset-btn.holding .ac-deploy-reset-fill) MUST match _RESET_HOLD_MS.
+const _RESET_HAZARD_MS = 350;    // hold this long → arm (show the hazard icon)
+const _RESET_HOLD_MS = 1200;     // total hold → fire the restart
+let _resetHold = null;           // {btn, hazardTimer, fireTimer} while a hold is live
+
+function _resetSetIcon(btn, name, spin) {
+  const ico = btn.querySelector('.ac-deploy-reset-ico');
+  if (!ico) return;
+  ico.classList.toggle('session-status-running', !!spin);
+  ico.innerHTML = '<i data-lucide="' + name + '"></i>';
+  _refreshLucideIcons(ico);
+}
+
+// Stop the active hold. `revert` restores the resting reset icon (an abort);
+// leave it false when the restart is firing (the button becomes a spinner).
+function _resetCancel(revert) {
+  const h = _resetHold; _resetHold = null;
+  if (!h) return;
+  clearTimeout(h.hazardTimer); clearTimeout(h.fireTimer);
+  window.removeEventListener('pointerup', _resetRelease, true);
+  window.removeEventListener('pointercancel', _resetRelease, true);
+  if (h.btn && revert) {
+    h.btn.classList.remove('holding', 'warning');
+    h.btn.title = 'Hold to restart this server';
+    _resetSetIcon(h.btn, 'rotate-ccw');
+  }
+}
+function _resetRelease() { _resetCancel(true); }
+
+function _beginResetHold(btn) {
+  if (_resetHold || _instBusy) return;
+  const hazardTimer = setTimeout(() => {
+    btn.classList.add('warning');
+    btn.title = 'Keep holding to restart…';
+    _resetSetIcon(btn, 'alert-triangle');
+  }, _RESET_HAZARD_MS);
+  const fireTimer = setTimeout(() => {
+    _resetCancel(false);           // clear timers/listeners, keep the button as-is
+    _doServerReset(btn);
+  }, _RESET_HOLD_MS);
+  _resetHold = { btn, hazardTimer, fireTimer };
+  // Kick the CSS fill on the next frame so the transition actually animates.
+  requestAnimationFrame(() => { if (_resetHold && _resetHold.btn === btn) btn.classList.add('holding'); });
+  window.addEventListener('pointerup', _resetRelease, true);
+  window.addEventListener('pointercancel', _resetRelease, true);
+}
+
+// Fire the restart. On success the server exits a beat later; we spin the button
+// and poll until it answers again, then reload. A 409 (host can't self-revive)
+// leaves the server up — surface it and reset the button.
+async function _doServerReset(btn) {
+  _instBusy = true;
+  btn.classList.remove('holding');
+  _resetSetIcon(btn, 'loader-2', true);
+  try {
+    await _post('/admin/storage/server/restart', {});
+    _resetShowRestarting(btn);
+  } catch (e) {
+    _instBusy = false;
+    btn.classList.remove('warning');
+    btn.title = 'Hold to restart this server';
+    _resetSetIcon(btn, 'rotate-ccw');
+    window.alert('Could not restart the server:\n\n' + e.message);
+  }
+}
+
+// Reflect the restart in the hub row (busy dot + "Restarting…"), then poll the
+// catalog endpoint; the first success after the process has cycled → reload.
+function _resetShowRestarting(btn) {
+  const row = btn.closest('.ac-deploy-inst');
+  const dot = row && row.querySelector('.ac-deploy-dot');
+  const statusEl = row && row.querySelector('.ac-deploy-inst-status');
+  if (dot) dot.className = 'ac-deploy-dot ac-deploy-dot-busy';
+  if (statusEl) statusEl.textContent = 'Restarting…';
+  const ping = async () => {
+    try {
+      const res = await fetch(apiPath('/admin/deploy/catalog?requesting_user_id=' + encodeURIComponent(_userId())), { cache: 'no-store' });
+      if (res.ok) { window.location.reload(); return; }
+    } catch { /* still down — keep waiting */ }
+    setTimeout(ping, 1500);
+  };
+  // Wait past the relauncher's own exit delay before the first probe, so we don't
+  // catch the old process still answering and reload into a server that's going down.
+  setTimeout(ping, 3000);
+}
+
+// Delegated press-and-hold on the reset button (pointerdown here; release is
+// handled on window inside _beginResetHold). stopPropagation keeps the click from
+// toggling the row open.
+function _onInstPointerDown(e) {
+  const btn = e.target.closest('[data-hub-reset]');
+  if (!btn) return;
+  if (e.button != null && e.button !== 0) return;   // primary button / touch only
+  e.preventDefault();
+  e.stopPropagation();
+  _beginResetHold(btn);
+}
+
 function _initInstances() {
   const host = _qs('ac-deploy-instances');
-  if (host && !host.dataset.wired) { host.dataset.wired = '1'; host.addEventListener('click', _onInstClick); }
+  if (host && !host.dataset.wired) {
+    host.dataset.wired = '1';
+    host.addEventListener('click', _onInstClick);
+    host.addEventListener('pointerdown', _onInstPointerDown);
+  }
   const folder = _qs('ac-inst-folder');
   if (folder && !folder.dataset.wired) { folder.dataset.wired = '1'; folder.addEventListener('blur', _checkRegisterFolder); }
   const add = _qs('ac-inst-add');
   if (add && !add.dataset.wired) { add.dataset.wired = '1'; add.addEventListener('click', _registerAdd); }
-}
-
-function _deploymentLine(dep) {
-  if (!dep || !dep.server) return '';
-  const url = dep.public_url || (dep.ip ? ('http://' + dep.ip) : '');
-  const state = dep.state === 'installing' ? ' (installing…)' : '';
-  let html = 'Last server: <strong>' + _esc(dep.server) + '</strong>' + _esc(state);
-  if (url) html += ' — <a href="' + _esc(url) + '" target="_blank" rel="noopener" style="color:var(--accent);">' + _esc(url) + '</a>';
-  return html;
 }
 
 // Wire a "Copy" button to copy a code element's text. Re-run safe (the button
@@ -655,6 +1033,14 @@ function _mcResolveDir(dir, def) {
   return d;
 }
 
+// Tidy the branch the admin typed (mirror manual_common._safe). Blank → main;
+// anything with a shell-breaking character → also main, so it can't break the
+// one-liner's quoting.
+function _mcSafeBranch(branch) {
+  const b = (branch || '').trim() || _MC_BRANCH;
+  return _mcHasBad(b, _MC_BAD_URL) ? _MC_BRANCH : b;
+}
+
 // Resolve the clone target from the row inputs (mirror manual_common.resolve_clone).
 function _mcResolve(inp) {
   const typed = (inp.github_url || '').trim();
@@ -709,6 +1095,7 @@ function _mcAdminPrefixWin(a) {
 function _buildTermux(inp) {
   const r = _mcResolve(inp);
   const a = _mcResolveAdmin(inp.admin_password);
+  const branch = _mcSafeBranch(inp.branch);
   const directory = _mcResolveDir(inp.install_dir, _MC_DEFAULT_DIR_POSIX);
   const command = 'SUDO=; [ "$(id -u 2>/dev/null)" = 0 ] || SUDO=sudo; '
     + 'D="' + directory + '"; '
@@ -718,7 +1105,7 @@ function _buildTermux(inp) {
     + 'elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y git; '
     + 'elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm git; fi; '
     + '{ if [ -d "$D/.git" ]; then git -C "$D" remote set-url origin ' + r.cloneUrl + '; '
-    + 'else git clone --depth 1 --branch ' + _MC_BRANCH + ' ' + r.cloneUrl + ' "$D"; fi; } && '
+    + 'else git clone --depth 1 --branch ' + branch + ' ' + r.cloneUrl + ' "$D"; fi; } && '
     + _mcAdminPrefixPosix(a) + 'bash "$D/deploy/termux-setup.sh"';
   return { command, directory, defaultRepo: r.defaultRepo, placeholderToken: r.placeholderToken,
     warning: [r.warning, a.warning].filter(Boolean).join(' '), prewire: a.prewire };
@@ -730,6 +1117,7 @@ function _buildTermux(inp) {
 function _buildWindows(inp) {
   const r = _mcResolve(inp);
   const a = _mcResolveAdmin(inp.admin_password);
+  const branch = _mcSafeBranch(inp.branch);
   const directory = _mcResolveDir(inp.install_dir, _MC_DEFAULT_DIR_WINDOWS);
   const command = "$ErrorActionPreference='Stop'; "
     + "$repo='" + r.cloneUrl + "'; $dir=\"" + directory + "\"; "
@@ -737,7 +1125,7 @@ function _buildWindows(inp) {
     + "try{winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements --silent}catch{}; "
     + "$env:Path=[Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')}; "
     + "if(-not(Get-Command git -EA SilentlyContinue)){Write-Host 'Git is required. Install it from https://git-scm.com/download/win then run this again.'; return}; "
-    + "if(Test-Path \"$dir\\.git\"){git -C \"$dir\" remote set-url origin $repo}else{git clone --depth 1 --branch " + _MC_BRANCH + " $repo \"$dir\"}; "
+    + "if(Test-Path \"$dir\\.git\"){git -C \"$dir\" remote set-url origin $repo}else{git clone --depth 1 --branch " + branch + " $repo \"$dir\"}; "
     + _mcAdminPrefixWin(a)
     + "powershell -NoProfile -ExecutionPolicy Bypass -File \"$dir\\deploy\\windows-setup.ps1\"";
   return { command, directory, defaultRepo: r.defaultRepo, placeholderToken: r.placeholderToken,
@@ -750,6 +1138,7 @@ function _buildWindows(inp) {
 function _buildMac(inp) {
   const r = _mcResolve(inp);
   const a = _mcResolveAdmin(inp.admin_password);
+  const branch = _mcSafeBranch(inp.branch);
   const directory = _mcResolveDir(inp.install_dir, _MC_DEFAULT_DIR_POSIX);
   const command = 'set -e; D="' + directory + '"; '
     + 'if ! command -v git >/dev/null 2>&1; then '
@@ -757,7 +1146,7 @@ function _buildMac(inp) {
     + 'xcode-select --install 2>/dev/null || true; '
     + "echo 'If a dialog appeared, finish it, then paste this command again.'; fi; "
     + '{ if [ -d "$D/.git" ]; then git -C "$D" remote set-url origin ' + r.cloneUrl + '; '
-    + 'else git clone --depth 1 --branch ' + _MC_BRANCH + ' ' + r.cloneUrl + ' "$D"; fi; } && '
+    + 'else git clone --depth 1 --branch ' + branch + ' ' + r.cloneUrl + ' "$D"; fi; } && '
     + _mcAdminPrefixPosix(a) + 'bash "$D/deploy/macos-setup.sh"';
   return { command, directory, defaultRepo: r.defaultRepo, placeholderToken: r.placeholderToken,
     warning: [r.warning, a.warning].filter(Boolean).join(' '), prewire: a.prewire };
@@ -814,29 +1203,30 @@ function _runMac() {
     + '|| launchctl kickstart -k "gui/$(id -u)/com.webagent.server"';
 }
 
-// One descriptor per manual platform: its row + field element ids, command
-// builder, and static steps/note. The build functions + step constants above are
-// referenced here, so this list must come AFTER them.
+// One descriptor per manual platform: its panel + field element ids, command
+// builder, and static steps/note. The repo URL / visibility / token / admin
+// password are NO LONGER per-row — they live in the shared Repo-details bar
+// (_readSharedRepo); only the install folder is per-platform. `row` is the target
+// PANEL id (so _wireManualTips finds the install-location label; _syncTargetPanel
+// maps a dropdown value to its command). The build functions + step constants
+// above are referenced here, so this list must come AFTER them.
 const MANUAL_ROWS = [
-  { id: 'termux', row: 'ac-deploy-phone-row',
-    url: 'ac-tx-url', vis: 'ac-tx-visibility', tokenWrap: 'ac-tx-token-wrap', token: 'ac-tx-token',
-    dir: 'ac-tx-dir', defaultDir: _MC_DEFAULT_DIR_POSIX, adminPw: 'ac-tx-admin-pw',
+  { id: 'termux', row: 'ac-deploy-linux-panel',
+    dir: 'ac-tx-dir', defaultDir: _MC_DEFAULT_DIR_POSIX,
     cmd: 'ac-tx-cmd', copy: 'ac-tx-copy', qrBtn: 'ac-tx-qr-btn', status: 'ac-tx-status',
     run: 'ac-tx-run', runCopy: 'ac-tx-run-copy', runBuild: _runTermux,
     steps: 'ac-tx-steps', note: 'ac-tx-note',
     build: _buildTermux, stepsText: _TERMUX_STEPS, noteText: _TERMUX_NOTE,
     qrLabel: 'Scan this in Termux on the phone' },
-  { id: 'windows', row: 'ac-deploy-win-row',
-    url: 'ac-win-url', vis: 'ac-win-visibility', tokenWrap: 'ac-win-token-wrap', token: 'ac-win-token',
-    dir: 'ac-win-dir', defaultDir: _MC_DEFAULT_DIR_WINDOWS, adminPw: 'ac-win-admin-pw',
+  { id: 'windows', row: 'ac-deploy-win-panel',
+    dir: 'ac-win-dir', defaultDir: _MC_DEFAULT_DIR_WINDOWS,
     cmd: 'ac-win-cmd', copy: 'ac-win-copy', qrBtn: 'ac-win-qr-btn', status: 'ac-win-status',
     run: 'ac-win-run', runCopy: 'ac-win-run-copy', runBuild: _runWindows,
     steps: 'ac-win-steps', note: 'ac-win-note',
     build: _buildWindows, stepsText: _WIN_STEPS, noteText: _WIN_NOTE,
     qrLabel: 'Scan to copy the command to another device' },
-  { id: 'macos', row: 'ac-deploy-mac-row',
-    url: 'ac-mac-url', vis: 'ac-mac-visibility', tokenWrap: 'ac-mac-token-wrap', token: 'ac-mac-token',
-    dir: 'ac-mac-dir', defaultDir: _MC_DEFAULT_DIR_POSIX, adminPw: 'ac-mac-admin-pw',
+  { id: 'macos', row: 'ac-deploy-mac-panel',
+    dir: 'ac-mac-dir', defaultDir: _MC_DEFAULT_DIR_POSIX,
     cmd: 'ac-mac-cmd', copy: 'ac-mac-copy', qrBtn: 'ac-mac-qr-btn', status: 'ac-mac-status',
     run: 'ac-mac-run', runCopy: 'ac-mac-run-copy', runBuild: _runMac,
     steps: 'ac-mac-steps', note: 'ac-mac-note',
@@ -844,38 +1234,30 @@ const MANUAL_ROWS = [
     qrLabel: 'Scan to copy the command to another device' },
 ];
 
-// Read one row's inputs (repo URL + visibility + token + optional install folder
-// + the optional pre-set admin password).
+// Read one manual target's inputs: the SHARED repo details (URL/visibility/token/
+// admin password) merged with this platform's own install folder.
 function _manualInputs(desc) {
+  const repo = _readSharedRepo();
   return {
-    github_url: (_qs(desc.url)?.value || '').trim(),
-    visibility: _qs(desc.vis)?.value || 'public',
-    token: (_qs(desc.token)?.value || '').trim(),
+    github_url: repo.github_url,
+    visibility: repo.visibility,
+    token: repo.token,
+    branch: repo.branch,
     install_dir: (_qs(desc.dir)?.value || '').trim(),
-    admin_password: _qs(desc.adminPw)?.value || '',
+    admin_password: repo.admin_password,
   };
 }
 
-// Show/hide the token field for one row (only when its repo is Private).
-function _manualSyncToken(desc) {
-  const vis = _qs(desc.vis);
-  const wrap = _qs(desc.tokenWrap);
-  if (wrap) wrap.style.display = (vis && vis.value === 'private') ? '' : 'none';
-}
-
-// Pre-fill every manual row from its saved (non-secret) config, then paint each.
+// Pre-fill every manual panel's install folder from its saved (non-secret) config
+// (the repo URL/visibility now live in the shared bar, not per-panel), then paint
+// each command.
 function _renderManualPrefill() {
   MANUAL_ROWS.forEach(desc => {
     const t = (_catalog && (_catalog.providers || []).find(p => p.id === desc.id)) || null;
     const cfg = (t && t.config) || {};
-    const url = _qs(desc.url);
-    const vis = _qs(desc.vis);
     const dir = _qs(desc.dir);
-    if (url && !url.value) url.value = cfg.github_url || '';
-    if (vis && cfg.visibility) vis.value = cfg.visibility;
     if (dir && !dir.value) dir.value = cfg.install_dir || '';
     if (dir && !dir.placeholder) dir.placeholder = desc.defaultDir;
-    _manualSyncToken(desc);
     _refreshLucideIcons(_qs(desc.row));   // Copy / QR button icons
     _manualRender(desc);                  // show the command straight away
   });
@@ -918,14 +1300,21 @@ function _manualRender(desc) {
   if (_qrPop && _qrDesc === desc) _fetchQr(desc);   // keep an open QR in sync
 }
 
-// Save one row's non-secret choices so it pre-fills next time (the token is never
-// sent here). Fire-and-forget; a missing endpoint just means no pre-fill.
+// Save one manual panel's install folder so it pre-fills next time (the repo URL/
+// visibility live in the shared bar and persist via _persistSharedRepo; the token +
+// admin password are never sent). Fire-and-forget; a missing endpoint = no pre-fill.
 function _manualPersist(desc) {
   if (!isAdmin()) return;
-  const inp = _manualInputs(desc);
-  // Only the non-secret repo/visibility/folder are remembered; the admin PASSWORD
-  // is never sent here (it only ever lives in the shown command).
-  _post('/admin/deploy/config', { provider: desc.id, config: { github_url: inp.github_url, visibility: inp.visibility, install_dir: inp.install_dir } }).catch(() => {});
+  _post('/admin/deploy/config', { provider: desc.id, config: { install_dir: (_qs(desc.dir)?.value || '').trim() } }).catch(() => {});
+}
+
+// Save the shared non-secret repo details (URL + visibility only) to the reserved
+// "_repo" slot so the Repo-details bar pre-fills next time. The token + admin
+// password are never persisted.
+function _persistSharedRepo() {
+  if (!isAdmin()) return;
+  const r = _readSharedRepo();
+  _post('/admin/deploy/config', { provider: '_repo', config: { github_url: r.github_url, visibility: r.visibility, branch: r.branch } }).catch(() => {});
 }
 
 // ── QR popover (mirrors Remote Access → Same network) ──
@@ -1035,12 +1424,14 @@ function _placeQr(panel, anchor) {
   panel.style.top = Math.round(top) + 'px';
 }
 
-// Turn every `data-tip` label across ALL manual rows into a circled "?" help
-// badge, the same affordance the cloud row's fields get (via _buildField).
-// Bespoke here because the manual rows are hand-written markup, not built from
-// field descriptors. Idempotent — a `wired` flag stops re-runs from stacking.
+// Turn every `data-tip` label in the shared Repo-details bar + the manual panels'
+// install-location labels into a circled "?" help badge — the same affordance the
+// cloud fields get (via _buildField). Bespoke here because this markup is hand-
+// written, not built from field descriptors. Idempotent — a `wired` flag stops
+// re-runs from stacking.
 function _wireManualTips() {
-  const sel = MANUAL_ROWS.map(d => '#' + d.row + ' .ac-label[data-tip]').join(', ');
+  const sel = ['#ac-deploy-repo-row .ac-label[data-tip]']
+    .concat(MANUAL_ROWS.map(d => '#' + d.row + ' .ac-label[data-tip]')).join(', ');
   document.querySelectorAll(sel).forEach(lab => {
     if (lab.dataset.tipWired) return;
     lab.dataset.tipWired = '1';
@@ -1049,35 +1440,50 @@ function _wireManualTips() {
   });
 }
 
+// Wire the shared Repo-details bar: any edit re-renders the currently-selected
+// manual command; the URL/visibility also persist (non-secret). Idempotent.
+function _initSharedRepo() {
+  const rerenderActive = () => {
+    const desc = MANUAL_ROWS.find(d => d.id === (_qs('ac-deploy-target')?.value || ''));
+    if (desc) _manualRender(desc);
+  };
+  const url = _qs('ac-deploy-repo-url');
+  if (url && !url.dataset.wired) {
+    url.dataset.wired = '1';
+    url.addEventListener('input', () => { _updateRepoHead(); rerenderActive(); });  // instant, client-side
+    url.addEventListener('change', () => { rerenderActive(); _persistSharedRepo(); });
+  }
+  const vis = _qs('ac-deploy-repo-visibility');
+  if (vis && !vis.dataset.wired) {
+    vis.dataset.wired = '1';
+    vis.addEventListener('change', () => { _syncSharedToken(); rerenderActive(); _persistSharedRepo(); });
+  }
+  const branch = _qs('ac-deploy-repo-branch');
+  if (branch && !branch.dataset.wired) {
+    branch.dataset.wired = '1';
+    branch.addEventListener('input', rerenderActive);
+    branch.addEventListener('change', () => { rerenderActive(); _persistSharedRepo(); });
+  }
+  const token = _qs('ac-deploy-repo-token');
+  if (token && !token.dataset.wired) {
+    token.dataset.wired = '1';
+    token.addEventListener('input', rerenderActive);                       // never persisted
+  }
+  const pw = _qs('ac-deploy-repo-admin-pw');
+  if (pw && !pw.dataset.wired) {
+    pw.dataset.wired = '1';
+    pw.addEventListener('input', rerenderActive);                          // never persisted
+  }
+  _updateRepoHead();             // show the default repo on the bar before any load
+}
+
 function _initManualRows() {
   MANUAL_ROWS.forEach(desc => {
-    const url = _qs(desc.url);
-    const vis = _qs(desc.vis);
-    const token = _qs(desc.token);
     const dir = _qs(desc.dir);
-
-    if (url && !url.dataset.wired) {
-      url.dataset.wired = '1';
-      url.addEventListener('input', () => _manualRender(desc));         // instant, client-side
-      url.addEventListener('change', () => { _manualRender(desc); _manualPersist(desc); });
-    }
     if (dir && !dir.dataset.wired) {
       dir.dataset.wired = '1';
       dir.addEventListener('input', () => _manualRender(desc));
       dir.addEventListener('change', () => { _manualRender(desc); _manualPersist(desc); });
-    }
-    if (token && !token.dataset.wired) {
-      token.dataset.wired = '1';
-      token.addEventListener('input', () => _manualRender(desc));
-    }
-    if (vis && !vis.dataset.wired) {
-      vis.dataset.wired = '1';
-      vis.addEventListener('change', () => { _manualSyncToken(desc); _manualRender(desc); _manualPersist(desc); });
-    }
-    const adminPw = _qs(desc.adminPw);
-    if (adminPw && !adminPw.dataset.wired) {
-      adminPw.dataset.wired = '1';
-      adminPw.addEventListener('input', () => _manualRender(desc));   // never persisted
     }
     _wireCopy(_qs(desc.copy), _qs(desc.cmd));         // idempotent (guards on its own flag)
     _wireCopy(_qs(desc.runCopy), _qs(desc.run));      // the run-only command's Copy
@@ -1087,7 +1493,8 @@ function _initManualRows() {
       qrBtn.addEventListener('click', () => _toggleQr(desc, qrBtn));
     }
   });
-  _wireManualTips();             // circled "?" help badges on every row's labels
+  _initSharedRepo();             // the shared Repo-details bar
+  _wireManualTips();             // circled "?" help badges on the repo bar + panels
 }
 
 // ── Field-help popover ───────────────────────────────────────────────────────
@@ -1100,6 +1507,58 @@ function _initManualRows() {
 let _tipPop = null;        // the shared floating bubble element
 let _tipAnchor = null;     // badge it's currently pointing at
 let _tipPinned = false;    // true when opened by click/tap (stays until dismissed)
+let _tipHideTimer = null;  // delayed-hide handle so the pointer can cross into the bubble
+
+// A tip can be a plain string OR a rich descriptor {text, images, link}. The rich
+// bubble carries screenshots and a (possibly project-ID-driven) link, so we give
+// the pointer a moment to travel from the "?" badge into the bubble before hiding
+// it — otherwise its link/images would be unreachable.
+function _scheduleHideTip() {
+  clearTimeout(_tipHideTimer);
+  _tipHideTimer = setTimeout(_hideTip, 160);
+}
+
+// ── Screenshot lightbox ──────────────────────────────────────────────────────
+// One shared full-screen viewer (appended to <body>, above the tip bubble) that a
+// help-bubble screenshot opens when clicked. Click anywhere on it — or press
+// Escape — to close.
+let _lightbox = null;
+function _openLightbox(src) {
+  if (!_lightbox) {
+    _lightbox = document.createElement('div');
+    _lightbox.className = 'ac-tip-lightbox';
+    _lightbox.hidden = true;
+    const img = document.createElement('img');
+    img.alt = '';
+    _lightbox.appendChild(img);
+    _lightbox.addEventListener('click', _closeLightbox);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') _closeLightbox(); });
+    document.body.appendChild(_lightbox);
+  }
+  _lightbox.querySelector('img').src = src;
+  _lightbox.hidden = false;
+  requestAnimationFrame(() => _lightbox && _lightbox.classList.add('show'));
+}
+function _closeLightbox() {
+  if (!_lightbox) return;
+  _lightbox.classList.remove('show');
+  _lightbox.hidden = true;
+}
+
+// Resolve a link descriptor {url, label, dynamic?}. A dynamic link substitutes
+// {project_id} from the live project-ID field and returns null while it's blank —
+// so the Service-Accounts links simply don't appear until a project is entered.
+function _resolveDyn(desc) {
+  if (!desc || !desc.url) return null;
+  const label = desc.label || desc.url;
+  if (!desc.dynamic) return { url: desc.url, label };
+  const pid = _projectId();
+  if (!pid) return null;
+  return {
+    url: desc.url.replace(/\{project_id\}/g, encodeURIComponent(pid)),
+    label: label.replace(/\{project_id\}/g, pid),
+  };
+}
 
 function _ensureTipPop() {
   if (_tipPop) return _tipPop;
@@ -1108,30 +1567,89 @@ function _ensureTipPop() {
   _tipPop.setAttribute('role', 'tooltip');
   _tipPop.hidden = true;
   document.body.appendChild(_tipPop);
-  // Dismiss a pinned bubble on outside click, Escape, scroll or resize.
+  // Dismiss a pinned bubble on outside click, Escape, scroll or resize. Clicks
+  // INSIDE the bubble (its link) don't dismiss — so the link stays clickable.
   document.addEventListener('click', (e) => {
     if (!_tipPinned) return;
     if (e.target === _tipAnchor) return;
+    if (_tipPop.contains(e.target)) return;
     _hideTip();
   }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') _hideTip(); });
-  window.addEventListener('scroll', () => { if (!_tipPop.hidden) _hideTip(); }, true);
+  // Dismiss on page scroll, but NOT when the scroll happens INSIDE the bubble
+  // itself (a tall image bubble scrolls internally) — capture:true would otherwise
+  // catch that inner scroll and close it.
+  window.addEventListener('scroll', (e) => {
+    if (_tipPop.hidden) return;
+    if (e.target === _tipPop || (_tipPop.contains && _tipPop.contains(e.target))) return;
+    _hideTip();
+  }, true);
   window.addEventListener('resize', () => { if (!_tipPop.hidden) _hideTip(); });
+  // Keep a rich bubble alive while the pointer is over it (so its link/images are
+  // reachable); a badge's mouseleave only schedules a delayed hide we cancel here.
+  _tipPop.addEventListener('mouseenter', () => { clearTimeout(_tipHideTimer); });
+  _tipPop.addEventListener('mouseleave', () => { if (!_tipPinned) _hideTip(); });
   return _tipPop;
 }
 
 function _hideTip() {
+  clearTimeout(_tipHideTimer);
   if (_tipAnchor) _tipAnchor.classList.remove('is-open');
   _tipPinned = false;
   _tipAnchor = null;
-  if (_tipPop) { _tipPop.hidden = true; _tipPop.classList.remove('show'); }
+  if (_tipPop) {
+    _tipPop.hidden = true;
+    _tipPop.classList.remove('show', 'is-rich');
+    _tipPop.style.maxWidth = '';
+    _tipPop.style.maxHeight = '';
+  }
 }
 
 function _showTip(anchor, pinned) {
-  const tip = anchor.dataset.tip || '';
-  if (!tip) return;
+  clearTimeout(_tipHideTimer);
+  const data = anchor._tipData || null;                 // rich payload, if any
+  const text = data ? (data.text || '') : (anchor.dataset.tip || '');
+  const link = data ? _resolveDyn(data.link) : null;    // null while dynamic + no ID
+  const images = (data && data.images) || [];
+  if (!text && !link && !images.length) return;
   const pop = _ensureTipPop();
-  pop.textContent = tip;
+  const rich = !!(link || images.length);
+  pop.classList.toggle('is-rich', rich);
+  if (rich) {
+    pop.textContent = '';
+    if (text) {
+      const t = document.createElement('div');
+      t.className = 'ac-tip-text';
+      t.textContent = text;
+      pop.appendChild(t);
+    }
+    if (link) {
+      const a = document.createElement('a');
+      a.className = 'ac-tip-link';
+      a.href = link.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      a.textContent = link.label;
+      pop.appendChild(a);
+    }
+    if (images.length) {
+      const g = document.createElement('div');
+      g.className = 'ac-tip-gallery';
+      images.forEach((src) => {
+        const im = document.createElement('img');
+        im.src = src; im.alt = ''; im.loading = 'lazy';
+        im.title = 'Click to enlarge';
+        im.onerror = () => im.remove();      // hide a not-yet-added screenshot
+        // Click a thumbnail → open it full-size in the shared lightbox. stopProp so
+        // the outside-click dismiss doesn't also fire on this same click.
+        im.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); _openLightbox(src); });
+        g.appendChild(im);
+      });
+      pop.appendChild(g);
+    }
+    pop.style.maxWidth = '400px';
+  } else {
+    pop.textContent = text;
+    pop.style.maxWidth = '';
+  }
   pop.hidden = false;                       // make it measurable before placing
   _tipAnchor = anchor;
   _tipPinned = pinned || _tipPinned;
@@ -1139,14 +1657,22 @@ function _showTip(anchor, pinned) {
   // even if a hover had already previewed the bubble.
   document.querySelectorAll('.ac-field-tip.is-open').forEach(el => { if (el !== anchor) el.classList.remove('is-open'); });
   anchor.classList.toggle('is-open', _tipPinned);
-  const margin = 8;
+  const margin = 8, gap = 8;
   const r = anchor.getBoundingClientRect();
-  const pr = pop.getBoundingClientRect();
+  // Place the bubble on whichever side of the badge has more vertical room, and
+  // cap its height to that room so a tall image bubble scrolls inside itself
+  // rather than running off the top or bottom of the screen.
+  const spaceBelow = window.innerHeight - r.bottom - margin - gap;
+  const spaceAbove = r.top - margin - gap;
+  const placeAbove = spaceAbove > spaceBelow;
+  pop.style.maxHeight = Math.max(120, Math.floor(placeAbove ? spaceAbove : spaceBelow)) + 'px';
+  const pr = pop.getBoundingClientRect();   // measure AFTER capping the height
   let left = r.left + r.width / 2 - pr.width / 2;
-  let top = r.bottom + 8;
   if (left < margin) left = margin;
   if (left + pr.width > window.innerWidth - margin) left = window.innerWidth - margin - pr.width;
-  if (top + pr.height > window.innerHeight - margin) top = r.top - pr.height - 8;   // flip up
+  let top = placeAbove ? (r.top - gap - pr.height) : (r.bottom + gap);
+  if (top < margin) top = margin;
+  if (top + pr.height > window.innerHeight - margin) top = window.innerHeight - margin - pr.height;
   pop.style.left = Math.round(Math.max(margin, left)) + 'px';
   pop.style.top = Math.round(Math.max(margin, top)) + 'px';
   pop.classList.add('show');
@@ -1162,14 +1688,19 @@ function _toggleTip(b) {
 // duplicating the popover system. The returned badge closes over this module's
 // single shared bubble, so all field tips across Data Settings share one popover.
 export function _tipBadge(tip) {
-  if (!tip) return null;
+  // `tip` is a plain string OR a rich descriptor {text, images, link}.
+  const isObj = tip && typeof tip === 'object';
+  const text = isObj ? (tip.text || '') : (tip || '');
+  const hasExtra = isObj && (((tip.images || []).length) || tip.link);
+  if (!text && !hasExtra) return null;
   const b = document.createElement('span');
   b.className = 'ac-field-tip';
   b.textContent = '?';
-  b.dataset.tip = tip;
+  b.dataset.tip = text;                     // plain-text fallback (hover + aria)
+  if (isObj) b._tipData = tip;              // rich payload consumed by _showTip
   b.tabIndex = 0;
   b.setAttribute('role', 'button');
-  b.setAttribute('aria-label', 'Help: ' + tip);
+  b.setAttribute('aria-label', 'Help: ' + (text || 'more information'));
   // preventDefault+stopPropagation so a badge inside a checkbox <label> doesn't
   // toggle the checkbox, and so the outside-click dismiss doesn't fight us.
   b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); _toggleTip(b); });
@@ -1177,15 +1708,81 @@ export function _tipBadge(tip) {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _toggleTip(b); }
   });
   b.addEventListener('mouseenter', () => { if (!_tipPinned) _showTip(b, false); });
-  b.addEventListener('mouseleave', () => { if (!_tipPinned) _hideTip(); });
+  b.addEventListener('mouseleave', () => { if (!_tipPinned) _scheduleHideTip(); });
   b.addEventListener('blur', () => { if (!_tipPinned) _hideTip(); });
   return b;
+}
+
+// ── Dynamic field links + drag-drop key file ────────────────────────────────
+// The live value of the project-ID field (drives the Service-Accounts links).
+function _projectId() {
+  const el = document.querySelector('#ac-deploy-config [data-key="project_id"]');
+  return (el && el.value ? el.value.trim() : '');
+}
+
+// A helper link shown UNDER a field (e.g. "Open the Google Cloud console"). A
+// `dynamic` link is built from the project ID and hidden until one is entered.
+function _fieldLink(desc) {
+  const a = document.createElement('a');
+  a.className = 'ac-field-link';
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  if (desc.dynamic) {
+    a.dataset.dyn = '1';
+    a.dataset.urlTpl = desc.url;
+    a.dataset.labelTpl = desc.label || desc.url;
+    _applyDynLink(a);
+  } else {
+    a.href = desc.url;
+    a.textContent = desc.label || desc.url;
+  }
+  return a;
+}
+// Fill/hide one dynamic link from the current project ID.
+function _applyDynLink(a) {
+  const pid = _projectId();
+  if (!pid) { a.style.display = 'none'; return; }
+  a.href = a.dataset.urlTpl.replace(/\{project_id\}/g, encodeURIComponent(pid));
+  a.textContent = a.dataset.labelTpl.replace(/\{project_id\}/g, pid);
+  a.style.display = '';
+}
+// Re-resolve every dynamic link after the project ID changes.
+function _syncDynLinks() {
+  document.querySelectorAll('.ac-field-link[data-dyn]').forEach(_applyDynLink);
+}
+
+// Let the admin drop the downloaded service-account .json file onto the box; we
+// read it as text and drop it in as if pasted (then fire `input` so any listeners
+// and the save-gather see it).
+function _wireDropzone(ta) {
+  ta.classList.add('ac-dropzone');
+  const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+  ta.addEventListener('dragenter', (e) => { stop(e); ta.classList.add('is-dragover'); });
+  ta.addEventListener('dragover', (e) => { stop(e); ta.classList.add('is-dragover'); });
+  ta.addEventListener('dragleave', (e) => { stop(e); ta.classList.remove('is-dragover'); });
+  ta.addEventListener('drop', (e) => {
+    stop(e);
+    ta.classList.remove('is-dragover');
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      ta.value = (typeof reader.result === 'string') ? reader.result : '';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      try { ta.focus(); } catch {}
+    };
+    reader.readAsText(file);
+  });
 }
 
 // Build one labelled input for a field descriptor {key,label,type,tip,...}.
 function _buildField(f, value, kind, isSet) {
   const wrap = document.createElement('div');
   if (f.type === 'textarea' || f.full || f.hint || f.tip) wrap.style.gridColumn = '1 / -1';
+
+  // A helper link (static, or built live from the project ID) sits directly
+  // under the field TITLE — above the input — so it reads label → link → field.
+  const linkEl = (f.link && f.link.url) ? _fieldLink(f.link) : null;
 
   if (f.type !== 'checkbox') {
     const lab = document.createElement('label');
@@ -1194,6 +1791,7 @@ function _buildField(f, value, kind, isSet) {
     const tip = _tipBadge(f.tip);
     if (tip) lab.appendChild(tip);
     wrap.appendChild(lab);
+    if (linkEl) wrap.appendChild(linkEl);
   }
 
   let inp;
@@ -1304,6 +1902,7 @@ function _buildField(f, value, kind, isSet) {
     inp.value = (value != null ? value : '');
     if (isSet) inp.placeholder = '••• saved — leave blank to keep';
     else if (f.placeholder) inp.placeholder = f.placeholder;
+    if (f.dropzone) _wireDropzone(inp);
   } else {
     inp = document.createElement('input');
     inp.type = (f.type === 'password' || kind === 'cred') ? 'password' : (f.type === 'number' ? 'number' : 'text');
@@ -1316,6 +1915,9 @@ function _buildField(f, value, kind, isSet) {
   if (inp) { inp.dataset.key = f.key; inp.dataset.kind = kind; }
   if (inp && f.type !== 'checkbox') wrap.appendChild(inp);
   if (noteEl) wrap.appendChild(noteEl);
+
+  // Checkbox rows have no separate title line — keep their link (rare) below.
+  if (linkEl && !linkEl.parentNode) wrap.appendChild(linkEl);
 
   if (f.hint) {
     const h = document.createElement('div');
@@ -1330,11 +1932,13 @@ function _buildField(f, value, kind, isSet) {
 
 function _gather(kind) {
   const out = {};
-  // Secrets live in two hosts: the cloud-key list AND the standalone admin-password
-  // slot (rendered separately, above the key). Config reads only the settings host.
+  // Config reads the settings host AND the progressive "rest" host (a staged
+  // target splits its settings across both); secrets read the cloud-key list. The
+  // admin password + GitHub token are no longer gathered here — they ride the
+  // shared Repo-details bar and are injected in _saveSettings.
   const sel = kind === 'cfg'
-    ? '#ac-deploy-config [data-key]'
-    : '#ac-deploy-creds [data-key], #ac-deploy-admin [data-key]';
+    ? '#ac-deploy-config [data-key], #ac-deploy-config-rest [data-key]'
+    : '#ac-deploy-creds [data-key]';
   document.querySelectorAll(sel).forEach(inp => {
     const key = inp.dataset.key;
     if (!key) return;
@@ -1400,6 +2004,7 @@ async function _stream(path, body, onDone) {
 
 // ── Actions ────────────────────────────────────────────────────────────────
 async function _onProviderChange() {
+  _preserve = null;              // a real target switch — don't carry values across
   _renderProvider();
   if (!isAdmin()) return;
   try { await _post('/admin/deploy/select', { provider: _provider() }); } catch {}
@@ -1409,13 +2014,26 @@ async function _saveSettings() {
   if (!isAdmin()) return false;
   _setStatus('Saving…');
   try {
-    await _post('/admin/deploy/config', { provider: _provider(), config: _gather('cfg') });
+    // Inject the shared repo details into the cloud target: the repo URL +
+    // visibility ride the (non-secret) config; the access token (private only) +
+    // admin password ride the vault. The provider then clones that repo (see its
+    // deploy()); the token/password are auto-discarded with the cloud key.
+    const repo = _readSharedRepo();
+    const config = { ..._gather('cfg'), repo_url: repo.github_url, visibility: repo.visibility };
+    if (repo.branch) config.branch = repo.branch;   // blank → provider default (main)
+    await _post('/admin/deploy/config', { provider: _provider(), config });
     const creds = _gather('cred');
-    // Only POST credentials when the admin typed something (blank = keep stored).
+    if (repo.admin_password) creds.admin_password = repo.admin_password;
+    if (repo.visibility === 'private' && repo.token) creds.github_token = repo.token;
+    // Only POST credentials when something is set (blank = keep stored).
     if (Object.values(creds).some(v => String(v || '').trim())) {
       await _post('/admin/deploy/credentials', { provider: _provider(), values: creds });
     }
+    // Remember the shared repo (URL + visibility) for next time, independent of
+    // which cloud target this was.
+    _persistSharedRepo();
     _setStatus('Saved.', 'ok');
+    _captureForm();              // keep the typed key + VM fields across the reload
     await _load();
     return true;
   } catch (e) { _setStatus(e.message, 'err'); return false; }
@@ -1457,6 +2075,7 @@ async function _deploy() {
       if (result.ok) {
         _logLine(result.message || 'Done.', 'ok');
         _setStatus('Deployed.', 'ok');
+        _renderDeployResult(result);   // show the new address at once (reload re-renders it too)
       } else {
         _logLine(result.message || 'Failed.', 'err');
         _setStatus(result.message || 'Failed', 'err');
@@ -1504,10 +2123,29 @@ export function initDeploy() {
   _qs('ac-deploy-save')?.addEventListener('click', _saveSettings);
   _qs('ac-deploy-go')?.addEventListener('click', _deploy);
   _qs('ac-deploy-destroy')?.addEventListener('click', _destroy);
+  // "More" toggles the advanced-actions panel (test / save / tear-down).
+  const moreBtn = _qs('ac-deploy-more-btn');
+  if (moreBtn && !moreBtn.dataset.wired) {
+    moreBtn.dataset.wired = '1';
+    moreBtn.addEventListener('click', () => {
+      const panel = _qs('ac-deploy-more-panel');
+      if (!panel) return;
+      const opening = panel.hidden;
+      panel.hidden = !opening;
+      moreBtn.setAttribute('aria-expanded', String(opening));
+      moreBtn.textContent = opening ? 'More ▴' : 'More ▾';
+    });
+  }
   // Saved-servers picker (shown only for the profile-aware SSH target).
   _qs('ac-deploy-servers')?.addEventListener('change', _onServerSelect);
   _qs('ac-deploy-server-save')?.addEventListener('click', _onServerSave);
   _qs('ac-deploy-server-delete')?.addEventListener('click', _onServerDelete);
+  // Deploy-target dropdown → reveal one panel (cloud / local / linux / win / mac).
+  const target = _qs('ac-deploy-target');
+  if (target && !target.dataset.wired) {
+    target.dataset.wired = '1';
+    target.addEventListener('change', _syncTargetPanel);
+  }
   _initManualRows();            // the Linux/Termux, Windows + macOS install rows
   _initInstances();             // the local-deployments list + register-a-checkout form
   _loadInstances();             // paint the hub + siblings straight away

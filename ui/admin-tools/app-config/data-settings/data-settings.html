@@ -24,7 +24,10 @@
          1. LOCAL DEPLOYMENTS (#ac-deploy-instances) — the current app (the
             hub) plus any registered sibling checkouts on this machine, each an
             expandable bar built by deploy.js `_renderInstances`: a live status
-            dot + a "Port N · folder" line. The HUB bar expands to a port editor
+            dot + a "Port N · folder" line. The HUB bar also carries a right-hand
+            HOLD-TO-RESTART button (press and hold → arms to the hazard icon → the
+            fill sweeps → the server restarts; no confirm dialog, the hold is the
+            confirm — deploy.js `_beginResetHold`), and expands to a port editor
             (change this app's port → it persists + relaunches on the new port);
             a SIBLING bar expands to Open / Start / Stop / edit / Remove. Backed
             by /admin/deploy/instances/* (app/local_instances.py — the same
@@ -41,9 +44,11 @@
                 / the one-shot cloud deploy; the admin password only pre-sets the
                 first admin).
               • DEPLOY TARGET (#ac-deploy-target-row) — a #ac-deploy-target
-                dropdown (Cloud · Local checkout · Linux/Android · Windows · Mac)
-                revealing ONE `.ac-deploy-target-panel` at a time (deploy.js
-                `_syncTargetPanel`):
+                dropdown SITTING IN THE ROW HEADER (Select an option · Cloud Server ·
+                This device · Linux or Android (Termux) · Windows · Mac). Picking a
+                target both reveals ONE `.ac-deploy-target-panel` in the body AND
+                opens the row; the placeholder collapses it (deploy.js
+                `_syncTargetPanel` toggles the panel + the row's `expanded` class):
                   – Cloud (#ac-deploy-cloud-panel) → the provider sub-picker
                     ("Where to deploy", rendered from GET /admin/deploy/catalog),
                     a dynamic SETTINGS form (non-secret config_fields), a CLOUD
@@ -113,7 +118,7 @@
           <div class="ac-ability-row">
             <span class="ac-ability-icon"><i data-lucide="git-branch" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
             <div class="ac-ability-label">
-              <div class="ac-ability-name">Repo details</div>
+              <div class="ac-ability-name">Repo details<span id="ac-deploy-repo-head" style="color:var(--fg-muted);font-weight:400;"></span></div>
               <div class="ac-ability-desc">The code to install and how to sign in — entered once and used for whichever target you pick below.</div>
             </div>
             <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
@@ -121,6 +126,9 @@
           <div class="ac-ability-body">
             <label class="ac-label" data-tip="The address of the WebAgent code on GitHub. Leave blank to install the standard WebAgent app; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
             <input id="ac-deploy-repo-url" class="ac-input" type="text" placeholder="https://github.com/botboss3000/webagent" autocomplete="off" spellcheck="false">
+
+            <label class="ac-label" style="margin-top:10px;" data-tip="Which line of the code to install. 'main' is the stable release — leave it unless you specifically need a different branch. Used by every target (the cloud deploy and the Linux/Windows/Mac commands alike).">Version (git branch)</label>
+            <input id="ac-deploy-repo-branch" class="ac-input" type="text" placeholder="main" autocomplete="off" spellcheck="false">
 
             <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
             <select id="ac-deploy-repo-visibility" class="ac-input">
@@ -143,27 +151,28 @@
           </div>
         </div>
 
-        <!-- ── Deploy target ── pick where to install; deploy.js _syncTargetPanel
-             reveals ONE `.ac-deploy-target-panel` below the dropdown. Expand wired by
-             _wireBootRow('ac-deploy-target-row'). -->
+        <!-- ── Deploy target ── the install-target picker lives RIGHT IN THE ROW
+             header (no expand chevron): choosing a target both reveals its matching
+             `.ac-deploy-target-panel` in the body below AND opens the row; the
+             "Select an option" placeholder collapses it. deploy.js _syncTargetPanel
+             drives the panel switch + the row's `expanded` class off the dropdown's
+             value, so this row is NOT wired with _wireBootRow. -->
         <div class="ac-row" id="ac-deploy-target-row">
           <div class="ac-ability-row">
             <span class="ac-ability-icon"><i data-lucide="rocket" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
             <div class="ac-ability-label">
               <div class="ac-ability-name">Deploy target</div>
-              <div class="ac-ability-desc">Where to install WebAgent — the cloud, another checkout on this machine, or a Linux/Android, Windows or Mac device.</div>
             </div>
-            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
-          </div>
-          <div class="ac-ability-body">
-            <label class="ac-label">Where to install</label>
-            <select id="ac-deploy-target" class="ac-input">
-              <option value="cloud">The cloud (create a server)</option>
-              <option value="local">A local checkout (this machine)</option>
+            <select id="ac-deploy-target" class="ac-input ac-deploy-target-select" aria-label="Deploy target">
+              <option value="" selected>Select an option</option>
+              <option value="cloud">Cloud Server</option>
+              <option value="local">This device</option>
               <option value="termux">Linux or Android (Termux)</option>
               <option value="windows">Windows</option>
               <option value="macos">Mac</option>
             </select>
+          </div>
+          <div class="ac-ability-body">
 
             <!-- ── Cloud panel ── the provider sub-picker + settings + cloud key +
                  saved servers + actions + live NDJSON log. The shared repo (URL/
@@ -172,8 +181,6 @@
             <div class="ac-deploy-target-panel" id="ac-deploy-cloud-panel" data-target="cloud" style="margin-top:12px;">
             <label class="ac-label">Where to deploy</label>
             <select id="ac-deploy-provider" class="ac-input"></select>
-            <div id="ac-deploy-blurb" class="ac-hint" style="line-height:1.5;"></div>
-            <div id="ac-deploy-requires" class="ac-hint" style="line-height:1.5;color:var(--fg-3);"></div>
 
             <!-- ── Saved servers ── shown only for a profile-aware target (the SSH
                  one, p.saved_servers). Pick a saved server to fill the form, name +
@@ -196,23 +203,46 @@
               </div>
             </div>
 
-            <label class="ac-label" style="margin-top:10px;">Settings</label>
+            <!-- Settings + Cloud-key + rest + actions. A `progressive` target (the
+                 Google VM) reveals these in STAGES so the form isn't overwhelming:
+                 deploy.js puts ONLY the project field in #ac-deploy-config, the key
+                 in #ac-deploy-creds, and every OTHER setting in #ac-deploy-config-rest
+                 (which sits AFTER the key), then gates each stage on the one before
+                 (_applyCloudStages). The two section labels are hidden for a staged
+                 target — each field carries its own label. Non-staged targets (SSH)
+                 render every setting into #ac-deploy-config and show it all at once. -->
+            <label id="ac-deploy-settings-label" class="ac-label" style="margin-top:10px;">Settings</label>
             <div id="ac-deploy-config" class="ac-ra-fields"></div>
 
-            <label class="ac-label" style="margin-top:10px;">Cloud key</label>
+            <label id="ac-deploy-key-label" class="ac-label" style="margin-top:10px;">Cloud key</label>
             <div id="ac-deploy-creds" class="ac-ra-fields"></div>
-            <div id="ac-deploy-key-note" class="ac-hint" style="font-size:11px;"></div>
 
-            <div class="ac-ra-actions" style="margin-top:10px;">
-              <button id="ac-deploy-test" class="ac-btn" type="button">Test connection</button>
-              <button id="ac-deploy-save" class="ac-btn" type="button">Save settings</button>
-              <button id="ac-deploy-go" class="ac-btn ac-deploy-go-btn" type="button">Deploy now</button>
-              <button id="ac-deploy-destroy" class="ac-btn" type="button">Tear down</button>
+            <!-- Progressive-only "rest of the settings" host — the non-gate config
+                 fields render here (after the key) so a staged form reveals in the
+                 order project → key → rest. Empty + unused for non-staged targets. -->
+            <div id="ac-deploy-config-rest" class="ac-ra-fields"></div>
+
+            <!-- Primary action = Activate (deploy); the advanced actions (test /
+                 save / tear-down) live behind "More" so they don't clutter the
+                 completion step. Button ids unchanged so their wiring is untouched. -->
+            <div id="ac-deploy-actions" class="ac-ra-actions" style="margin-top:10px;">
+              <button id="ac-deploy-go" class="ac-btn ac-deploy-go-btn" type="button">Activate</button>
+              <button id="ac-deploy-more-btn" class="ac-btn" type="button" aria-expanded="false" aria-controls="ac-deploy-more-panel">More ▾</button>
               <span id="ac-deploy-status" class="ac-hint" style="margin-left:6px;"></span>
             </div>
+            <div id="ac-deploy-more-panel" class="ac-deploy-more-panel" hidden>
+              <button id="ac-deploy-test" class="ac-btn" type="button">Test connection</button>
+              <button id="ac-deploy-save" class="ac-btn" type="button">Save settings</button>
+              <button id="ac-deploy-destroy" class="ac-btn" type="button">Tear down</button>
+            </div>
+
+            <!-- After a successful Activate, the live address of the deployment,
+                 shown below the status line as a new-tab link. Populated by
+                 deploy.js (_renderDeployResult) from the deploy result and rebuilt
+                 from the saved deployment record on reload, so it persists. -->
+            <div id="ac-deploy-result" class="ac-hint" style="margin-top:8px;" hidden></div>
 
             <pre id="ac-deploy-log" class="ac-deploy-log" hidden></pre>
-            <div id="ac-deploy-result" class="ac-hint" style="margin-top:8px;font-size:12px;line-height:1.5;"></div>
             </div><!-- /#ac-deploy-cloud-panel -->
 
             <!-- ── Local-checkout panel ── point at another WebAgent repo folder on
@@ -546,31 +576,11 @@
               <button id="ac-storage-db-show-sql" class="ac-btn">Show Schema SQL</button>
               <button id="ac-storage-db-bootstrap" class="ac-btn">Auto-Create Tables</button>
               <button id="ac-storage-db-activate" class="ac-btn ac-btn-primary">Activate</button>
-              <!-- Share the current connection config to another device. "Share (QR)"
-                   opens a QR popover (a scannable code + a Copy-code button, mirroring
-                   the Remote Access / Deploy "Same network" QR); "Paste Config" opens
-                   the import row below to pre-fill these fields from a pasted code.
-                   Both are driven by storage.js (wire(): _shareCfgQr / import panel). -->
-              <button id="ac-storage-db-share-qr" class="ac-btn" title="Show a QR code / copy a code that carries these database details to another device">
-                <i data-lucide="qr-code" style="width:14px;height:14px;"></i> Share (QR)
-              </button>
-              <button id="ac-storage-db-import-toggle" class="ac-btn" title="Paste a config code from another device to pre-fill these fields">
-                <i data-lucide="clipboard-paste" style="width:14px;height:14px;"></i> Paste Config
-              </button>
-            </div>
-
-            <!-- Import row (hidden until "Paste Config" is clicked). Paste the code
-                 produced by another device's "Share (QR)" here, then Import to
-                 pre-fill the provider + fields above. Nothing is saved/activated by
-                 importing — the admin still reviews, then Save / Activate as usual. -->
-            <div id="ac-storage-db-import-panel" style="display:none;margin-top:10px;">
-              <label class="ac-label" for="ac-storage-db-import-text">Paste config code</label>
-              <textarea id="ac-storage-db-import-text" rows="3" placeholder="Paste the code from the other device (or scan its QR and paste the result)…"
-                style="width:100%;padding:6px 8px;border:var(--border-width) solid var(--border);border-radius:4px;font-size:11px;font-family:var(--font-mono,monospace);background:transparent;color:inherit;resize:vertical;word-break:break-all;"></textarea>
-              <div style="display:flex;gap:6px;margin-top:6px;">
-                <button id="ac-storage-db-import-apply" class="ac-btn ac-btn-primary">Import</button>
-                <button id="ac-storage-db-import-cancel" class="ac-btn">Cancel</button>
-              </div>
+              <!-- Sharing this connection to another device FOLDED into the app-level
+                   setup bundle: the "This app" row (Deployment card) now shares DB +
+                   vault + LLM + admin as one encrypted code, so the old per-row
+                   "Share (QR)" / "Paste Config" were removed. See deploy.js
+                   (_bootShareBody / _bootImportBody) + app/admin/bootstrap_bundle.py. -->
             </div>
 
             <!-- Output box for Test / Show Schema SQL / Activate, with a Copy
@@ -889,6 +899,141 @@
       </div><!-- /.ac-list -->
     </div><!-- /.ac-category-body -->
   </div><!-- /#ac-database-card -->
+
+  <!-- ════════════════════════════════════════════════════════════════
+       DANGER ZONE — reset selected data groups, or delete the whole install.
+       A `.ac-category-group` (same shell as the cards above) with a DANGER-tinted
+       heading. Two destructive actions, both admin-only + confirm-gated:
+
+         1. RESET DATA — a `.ac-list` of five tick-rows (database · vault ·
+            attachments · genui · logs), each an `.ac-ability-row` with a checkbox
+            on the right (mirrors the App-Access radio rows). "Reset selected"
+            can't wipe in-process (the app holds its own DB/vault open), so it
+            writes a one-shot marker + self-restarts; the fresh boot wipes the
+            picked groups before anything opens them, keeping a backup under temp/.
+            Backed by POST /admin/storage/reset (app/admin/storage.py →
+            app/util/reset_boot.py). After the reboot that ran it, GET
+            /admin/storage/reset/info returns the outcome, shown in #ac-dz-last.
+
+         2. DELETE INSTALLATION — self-destruct. Removes the entire app folder
+            from disk (stops + destroys this running app). Extra-guarded: the admin
+            must type the install folder's name (shown by the info fetch) to arm
+            the button. Backed by POST /admin/storage/delete-install, which spawns
+            a detached helper OUTSIDE the repo that deletes the folder once the
+            server exits.
+
+       All wiring lives in the sibling danger-zone.js (initDangerZone), init'd from
+       data-settings.js. data-pa-area reuses "database" so the page-assistant pill
+       keeps working (no new prompt-catalog area needed).
+       ════════════════════════════════════════════════════════════════ -->
+  <div class="ac-category-group ac-dz-card" id="ac-danger-card" data-pa-area="database">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="triangle-alert" class="lucide-icon" style="width:16px;height:16px;color:var(--danger);"></i>
+      <span class="ac-category-title" style="color:var(--danger);">Danger Zone</span>
+    </div>
+    <div class="ac-category-body">
+
+      <!-- Outcome of the reset that just ran (filled + shown by danger-zone.js from
+           GET /admin/storage/reset/info after the reboot). Dismissable. -->
+      <div id="ac-dz-last" class="ac-info-banner" style="display:none;margin-bottom:12px;border-left-color:var(--success);font-size:11.5px;line-height:1.55;"></div>
+
+      <!-- Host-can't-self-restart banner (shown when auto_restart is false). -->
+      <div id="ac-dz-norestart" class="ac-info-banner" style="display:none;margin-bottom:12px;border-left-color:var(--warning);color:var(--warning);font-size:11.5px;line-height:1.55;"></div>
+
+      <div class="ac-hint" style="margin-bottom:10px;line-height:1.55;">
+        Wipe selected data and start fresh. The app restarts and rebuilds a clean database
+        (with the default admin + default agent) on the way back up. A copy of the removed files
+        is kept under <code>temp/</code> so a reset is reversible — except a shared (Postgres)
+        database, whose schema is dropped and <strong>cannot</strong> be undone.
+      </div>
+
+      <!-- ── Reset targets ── one tick-row per group. Checkbox on the right; the
+           whole row toggles it (wired in danger-zone.js). -->
+      <div class="ac-list" id="ac-dz-list">
+
+        <label class="ac-ability-row ac-dz-row">
+          <span class="ac-ability-icon"><i data-lucide="database" class="lucide-icon" style="width:18px;height:18px;color:var(--danger);"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">App database</div>
+            <div class="ac-ability-desc">Chat sessions, agents, users, memories, automations — everything in the app database. Reseeds a default admin + agent on restart.</div>
+          </div>
+          <span class="ac-ability-status ac-dz-check-cell">
+            <input type="checkbox" id="ac-dz-db" class="ac-dz-check" value="db" aria-label="Reset app database">
+          </span>
+        </label>
+
+        <label class="ac-ability-row ac-dz-row">
+          <span class="ac-ability-icon"><i data-lucide="key-round" class="lucide-icon" style="width:18px;height:18px;color:var(--danger);"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Secrets vault</div>
+            <div class="ac-ability-desc">API keys, OAuth tokens, and encryption keys. The app loses its LLM key until it's re-entered.</div>
+          </div>
+          <span class="ac-ability-status ac-dz-check-cell">
+            <input type="checkbox" id="ac-dz-secrets" class="ac-dz-check" value="secrets" aria-label="Reset secrets vault">
+          </span>
+        </label>
+
+        <label class="ac-ability-row ac-dz-row">
+          <span class="ac-ability-icon"><i data-lucide="paperclip" class="lucide-icon" style="width:18px;height:18px;color:var(--danger);"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Chat attachments</div>
+            <div class="ac-ability-desc">Uploaded images, voice notes, and dropped files on disk.</div>
+          </div>
+          <span class="ac-ability-status ac-dz-check-cell">
+            <input type="checkbox" id="ac-dz-attachments" class="ac-dz-check" value="attachments" aria-label="Reset chat attachments">
+          </span>
+        </label>
+
+        <label class="ac-ability-row ac-dz-row">
+          <span class="ac-ability-icon"><i data-lucide="layout-template" class="lucide-icon" style="width:18px;height:18px;color:var(--danger);"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Gen UI pages</div>
+            <div class="ac-ability-desc">All generated Gen UI pages stored on disk.</div>
+          </div>
+          <span class="ac-ability-status ac-dz-check-cell">
+            <input type="checkbox" id="ac-dz-genui" class="ac-dz-check" value="genui" aria-label="Reset Gen UI pages">
+          </span>
+        </label>
+
+        <label class="ac-ability-row ac-dz-row">
+          <span class="ac-ability-icon"><i data-lucide="scroll-text" class="lucide-icon" style="width:18px;height:18px;color:var(--danger);"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Logs &amp; diagnostics</div>
+            <div class="ac-ability-desc">Server logs, diagnostics, and tool-execution history (logs.db / recordings.db).</div>
+          </div>
+          <span class="ac-ability-status ac-dz-check-cell">
+            <input type="checkbox" id="ac-dz-logs" class="ac-dz-check" value="logs" aria-label="Reset logs and diagnostics">
+          </span>
+        </label>
+
+      </div><!-- /#ac-dz-list -->
+
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px;">
+        <button id="ac-dz-reset-btn" class="ac-btn ac-deploy-danger-btn" type="button" disabled>Reset selected data</button>
+        <span id="ac-dz-reset-status" class="ac-hint" style="margin-left:2px;font-size:11.5px;"></span>
+      </div>
+
+      <!-- ── Delete entire installation (self-destruct) ── separated + extra
+           guarded: the admin must type the folder name to arm the button. -->
+      <div class="ac-dz-nuke" style="margin-top:20px;border-top:var(--border-width) solid var(--border);padding-top:16px;">
+        <div class="ac-ability-name" style="color:var(--danger);display:flex;align-items:center;gap:6px;">
+          <i data-lucide="trash-2" class="lucide-icon" style="width:15px;height:15px;"></i>Delete entire installation
+        </div>
+        <div class="ac-hint" style="margin-top:6px;line-height:1.55;">
+          Permanently deletes this app's whole folder from the machine and shuts the server down.
+          <strong>This stops and destroys the app itself</strong> — it does not restart. There is no backup.
+          To confirm, type the installation folder's name below.
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;">
+          <input id="ac-dz-nuke-phrase" class="ac-input" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="type the folder name to confirm" style="flex:1 1 220px;min-width:0;max-width:320px;">
+          <button id="ac-dz-nuke-btn" class="ac-btn ac-deploy-danger-btn" type="button" disabled>Delete installation</button>
+          <span id="ac-dz-nuke-status" class="ac-hint" style="margin-left:2px;font-size:11.5px;"></span>
+        </div>
+      </div>
+
+    </div><!-- /.ac-category-body -->
+  </div><!-- /#ac-danger-card -->
 
 </section>
 </template>

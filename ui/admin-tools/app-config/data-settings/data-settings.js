@@ -26,6 +26,7 @@ import { spawnWebagentPageChat } from '../../../chat-widget/js/chat-widget.js';
 import { initDeploy } from './deploy.js';
 import { initAppAccess } from './app-access.js';
 import { initSocialAuth } from './social-auth.js';
+import { initDangerZone } from './danger-zone.js';
 
 // Wire one expandable row: clicking the head expands/collapses it, except when
 // the click lands on a control inside the head. Same behaviour as App Settings'
@@ -91,17 +92,16 @@ function _wireDatabaseRows() {
 }
 
 export function init() {
-  // Deployment card — expandable rows. A static "Current deployment" info bar (no
-  // expand), then a "+ New deployment" group that opens to reveal the four install
-  // targets: the cloud deploy row + the three manual install rows (Linux/Termux,
-  // Windows, macOS). Their body ids are owned by deploy.js (initDeploy below wires
-  // the buttons, fetch + each row's live command/QR + the Current-deployment bar).
+  // Deployment card — expandable rows. The local-deployments list (built by
+  // deploy.js), then a "+ New deployment" group that opens to reveal TWO bars: the
+  // shared Repo-details row and the Deploy-target row (its dropdown reveals the
+  // per-target panels — cloud / local checkout / Linux / Windows / Mac). Their body
+  // ids are owned by deploy.js (initDeploy below wires the buttons, the fetch, each
+  // panel's live command/QR, the target-panel switch + the Current-deployment bar).
   _wireBootRow('ac-deploy-new-row');
-  _wireBootRow('ac-deploy-register-row');
-  _wireBootRow('ac-deploy-row');
-  _wireBootRow('ac-deploy-phone-row');
-  _wireBootRow('ac-deploy-win-row');
-  _wireBootRow('ac-deploy-mac-row');
+  _wireBootRow('ac-deploy-repo-row');
+  // NB: ac-deploy-target-row is NOT wired here — its in-header dropdown drives the
+  // row's expand/collapse (deploy.js _syncTargetPanel), not a header click.
   initDeploy();
   // App Access card — the access-mode radios (moved out of the Users page). Owns
   // its own /admin/settings/app load + auto-save; sets window.__refreshAppAccess
@@ -115,6 +115,11 @@ export function init() {
   // here from Data Management. Their control drivers (storage.js, data-management.js)
   // bind by id and load on App-Config open (settings-view.js); we only wire the rows.
   _wireDatabaseRows();
+  // Danger Zone card (very bottom) — reset selected data groups (self-restart +
+  // boot-time wipe) or delete the whole install. Owns its own /admin/storage/reset*
+  // fetch + confirm dialogs; sets window.__refreshDangerZone (called on section-show
+  // in nav.js) so the last-reset banner appears after the reboot. See ./danger-zone.js.
+  initDangerZone();
   // Page-assistant chat pill (bottom of the section) — steered toward helping the
   // admin get users signed in. Owns the static #ac-ds-pa-* composer; the per-area
   // placeholder swaps follow the data-pa-area groups above. See ../page-assistant.js.

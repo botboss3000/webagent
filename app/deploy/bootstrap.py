@@ -48,8 +48,8 @@ APP_DIR="/opt/webagent"
 APP_USER="webagent"
 
 apt-get update
-apt-get install -y python3 python3-venv python3-pip git curl \
-    debian-keyring debian-archive-keyring apt-transport-https
+apt-get install -y python3 python3-venv python3-pip python3-dev git curl \
+    build-essential debian-keyring debian-archive-keyring apt-transport-https
 
 # ── Caddy (official apt repo) ──
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
@@ -89,7 +89,7 @@ cat > "$STATUS_DIR/index.html" <<'STATUSEOF'
   .muted { color:#8b949e; font-size:.85rem; margin-top:1.6rem; }
   code { background:#161b22; padding:.15rem .4rem; border-radius:4px; font-size:.85em; }
 </style></head>
-<body><div class="card">
+<body><!--WEBAGENT-HOLDING--><div class="card">
   <h1><span class="dot"></span>Installing WebAgent…</h1>
   <p>Your server is up and setting itself up. This usually takes <b>3&ndash;8 minutes</b> on a small VM.</p>
   <p>This page refreshes itself &mdash; when the app is ready it appears here automatically. Nothing to do.</p>
@@ -144,7 +144,7 @@ on_error() {
   p  { line-height:1.6; margin:.6rem 0; color:#c9d1d9; }
   code { background:#161b22; padding:.15rem .4rem; border-radius:4px; font-size:.85em; }
 </style></head>
-<body><div class="card">
+<body><!--WEBAGENT-INSTALL-FAILED--><div class="card">
   <h1>The WebAgent install didn't finish</h1>
   <p>The server was created, but setting up the app ran into a problem.</p>
   <p>Connect to the VM and read <code>/var/log/webagent-bootstrap.log</code> for the exact error,
@@ -162,16 +162,51 @@ rm -rf "$APP_DIR"
 git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$APP_DIR"
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR"
 
-# ── Python venv + dependencies ──
+# ── Python venv + dependencies (forgiving: optional packages never abort) ──
+# The server boots fine WITHOUT several optional packages — SQLCipher at-rest
+# encryption, the Playwright browser build, the Telegram/Twilio channels, the
+# MySQL connector. So a single optional wheel with no binary for this platform
+# must NOT kill the whole deploy (the old single `pip install -r` under `set -e`
+# did exactly that). We install best-effort, fall back to the lighter
+# no-Playwright manifest, then guarantee the handful of packages the app cannot
+# even import without. What actually decides success is the post-start
+# self-check further down — not whether every last wheel installed.
+PIP="$APP_DIR/.venv/bin/pip"
+PY="$APP_DIR/.venv/bin/python"
 sudo -u "$APP_USER" python3 -m venv "$APP_DIR/.venv"
-sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install --upgrade pip wheel
-sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+sudo -u "$APP_USER" "$PIP" install --upgrade pip wheel setuptools
+
+# `if !` and `|| true` keep every line below exempt from `set -e`, so a failing
+# optional wheel is tolerated instead of aborting the install.
+if ! sudo -u "$APP_USER" "$PIP" install -r "$APP_DIR/requirements.txt"; then
+  echo "Full requirements install hit a snag — retrying with the lighter set."
+  [ -f "$APP_DIR/req_no_playwright.txt" ] && \
+    sudo -u "$APP_USER" "$PIP" install -r "$APP_DIR/req_no_playwright.txt" || true
+  # The non-negotiable core the web server needs just to start + serve.
+  sudo -u "$APP_USER" "$PIP" install \
+    fastapi "uvicorn[standard]" wsproto pydantic python-dotenv python-multipart \
+    "python-jose[cryptography]" bcrypt httpx openai tiktoken numpy Pillow tzdata \
+    "psycopg[binary]" asyncpg || true
+fi
+
+# The Playwright pip package alone can't drive a browser — it needs the Chromium
+# build plus a set of shared libraries. Best-effort AFTER the core is in: if it
+# fails the browser tools simply stay unavailable and the server still runs. The
+# OS libs go in as root; the browser itself downloads as the app user so it lands
+# in that user's cache where the service (running as that user) will find it.
+if sudo -u "$APP_USER" "$PY" -c "import playwright" 2>/dev/null; then
+  "$APP_DIR/.venv/bin/playwright" install-deps chromium || true
+  sudo -u "$APP_USER" "$APP_DIR/.venv/bin/playwright" install chromium || true
+fi
 
 # ── .env (minimal; LLM keys are set in-app) ──
 # A QUOTED heredoc delimiter ('ENVEOF') so nothing inside is shell-expanded —
 # the admin-password line (when present) is written byte-for-byte, never
-# re-interpreted. The whole body is substituted from Python (__ENV_BODY__), so
-# the port and the optional admin line are already baked in.
+# re-interpreted. The whole body is substituted from Python (the env-body slot
+# just below), so the port and the optional admin line are already baked in.
+# NOTE: do NOT write the literal placeholder token in this comment — the
+# renderer replaces every occurrence, and a multi-line body (port + admin
+# password) would split this comment and leave a stray shell line.
 cat > "$APP_DIR/.env" <<'ENVEOF'
 __ENV_BODY__
 ENVEOF
@@ -206,6 +241,29 @@ systemctl restart webagent
 # Caddy was already configured up top (holding page → app). A reload re-asserts
 # the config; the status page now auto-yields to the live backend.
 systemctl reload caddy 2>/dev/null || systemctl restart caddy
+
+# ── Prove the app actually answers before declaring success ──
+# `systemctl restart` returns immediately; the app may still be importing, or may
+# crash-loop on a bad/missing dependency. Poll the local port for up to ~2 min.
+# If it never answers we deliberately trip the ERR trap (honest error page +
+# non-zero exit), so a broken install shows as "didn't finish" — never a false
+# "complete". The `if` test exempts the probe from `set -e` while it warms up.
+echo "Waiting for the app to answer on 127.0.0.1:$PORT …"
+# ANY HTTP response means uvicorn is up — even a 401/403 auth gate. We must NOT
+# use `curl -f` here (it treats 4xx as failure), or an app that gates '/' behind
+# auth would be mis-read as down. curl returns non-zero only when it can't
+# connect at all (refused / timeout) — exactly the "not up yet" signal we want.
+APP_UP=0
+for _try in $(seq 1 60); do
+  if curl -sS -o /dev/null --max-time 3 "http://127.0.0.1:$PORT/"; then APP_UP=1; break; fi
+  sleep 2
+done
+if [ "$APP_UP" != "1" ]; then
+  echo "The app did not answer on port $PORT after ~2 minutes. Recent service log:"
+  journalctl -u webagent --no-pager -n 50 || true
+  false      # → ERR trap → honest error page + non-zero exit
+fi
+echo "App answered on port $PORT — WebAgent is live."
 
 # ── Server Manager TUI (the `webagent` command, installed alongside) ──
 # Put the standalone Server Manager TUI on the box so an admin who SSHes in can

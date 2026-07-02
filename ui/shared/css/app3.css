@@ -1513,6 +1513,29 @@ live/scheduled) */
   flex-shrink: 0;
 }
 
+/* Danger Zone (Data Settings) — a checkbox VARIANT of the shared toggle-list.
+   Each reset target is a `.ac-ability-row` wrapped in a <label> (so the whole row
+   toggles its checkbox), with a danger-tinted native checkbox on the right. A
+   ticked row gets a subtle danger wash so the current selection reads at a glance.
+   The card heading + icons are danger-coloured to signal the destructive intent.
+   See danger-zone.js + the #ac-danger-card block in data-settings.html. */
+.ac-dz-row { cursor: pointer; }
+.ac-dz-row:has(.ac-dz-check:checked) {
+  background: rgba(var(--danger-rgb, 220, 80, 80), 0.07);
+}
+.ac-dz-check-cell {
+  display: flex;
+  align-items: center;
+  padding-top: 1px;
+}
+.ac-dz-check {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--danger);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 /* ── App Access · Social sign-in (data-settings.html) ──
    The social providers live in the SAME `.ac-list` tree as the access-mode
    radios, styled like the ability tree: a "Sign in with" group-header row over
@@ -1946,7 +1969,7 @@ live/scheduled) */
   white-space: nowrap;
 }
 .ac-saved-usage-th { text-align: right; }
-.ac-saved-cap { display: flex; align-items: center; justify-content: center; }
+.ac-saved-cap { display: flex; align-items: center; justify-content: center; position: relative; }
 /* Save-status overlay for a saved-model box (capability checkbox / Default radio):
    the shared `.ac-save-overlay` fills its container, but a cap cell is a wide
    28×15 grid slot, so a stretched overlay reads as a wide rectangle around a 15px
@@ -1960,6 +1983,52 @@ live/scheduled) */
   height: 18px;
   transform: translate(-50%, -50%);
   border-radius: 4px;
+}
+/* Hold-to-cancel hazard cover for a capability checkbox. The instant a box is
+   ticked it LOCKS (the underlying checkbox is disabled) and this cover drops on
+   top so an accidental double-click can't flip it back. The change has already
+   been sent to the server; the ONLY way to reverse it is a deliberate long-press
+   of this triangle (the same hold-to-confirm gesture the delete buttons use — a
+   rising fill tracks the press), which reverts the box and saves the reverted
+   value. It then settles to the shared green ✓ / orange ⚠ save overlay. */
+.ac-cap-hazard {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  color: var(--warning);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px rgba(var(--warning-rgb), 0.55);
+  cursor: pointer;
+  overflow: hidden;
+  z-index: 7;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+.ac-cap-hazard.show { opacity: 1; }
+.ac-cap-hazard-fill {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 0%;
+  background: rgba(var(--warning-rgb), 0.38);
+  pointer-events: none;
+}
+.ac-cap-hazard-icon {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  line-height: 0;
 }
 /* RTL flow so an over-long name truncates at the START — the ellipsis sits on
    the left and the END of the name (the distinguishing version suffix) stays
@@ -3383,6 +3452,48 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
   font-weight: 500;
   color: var(--fg-muted, var(--fg-3));
 }
+/* Hold-to-restart button on the "This app" hub row (deploy.js _beginResetHold).
+   Press and hold: after a beat it arms to the hazard triangle + tints red — the
+   same cue the app's delete buttons use — while the fill sweeps left→right; hold
+   to the end and the server restarts (no confirm dialog; the hold is the confirm).
+   The .holding fill duration MUST match _RESET_HOLD_MS in deploy.js. */
+.ac-deploy-reset-btn {
+  position: relative;
+  align-self: center;          /* centre on the title line (row is flex-start) */
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: var(--border-width) solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-muted, var(--fg-3));
+  cursor: pointer;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;          /* let a touch-hold work without triggering scroll */
+}
+.ac-deploy-reset-btn:hover { color: var(--fg-1); border-color: var(--border-strong, var(--border)); }
+.ac-deploy-reset-btn.warning { color: var(--danger); border-color: rgba(var(--danger-rgb, 220, 80, 80), 0.6); }
+.ac-deploy-reset-btn .ac-deploy-reset-ico { position: relative; z-index: 1; display: inline-flex; }
+.ac-deploy-reset-btn .ac-deploy-reset-ico svg { width: 14px; height: 14px; }
+.ac-deploy-reset-fill {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: rgba(var(--danger-rgb, 220, 80, 80), 0.22);
+  transition: transform 150ms ease;   /* quick snap-back on release / abort */
+}
+.ac-deploy-reset-btn.holding .ac-deploy-reset-fill {
+  transform: scaleX(1);
+  transition: transform 1200ms linear; /* == _RESET_HOLD_MS in deploy.js */
+}
 /* Small pill badges after the name ("This app", "Needs update"). */
 .ac-deploy-badge {
   display: inline-block;
@@ -3449,6 +3560,22 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Deploy-target picker that lives IN the Deploy-target row header (not a
+   full-width body field): a compact select pushed to the right edge, on the
+   title line, with the description dropping to its own line below. On narrow
+   screens it wraps under the title and stretches full width. */
+.ac-deploy-target-select {
+  width: auto;
+  flex: 0 0 auto;
+  min-width: 190px;
+  max-width: 260px;
+  margin-left: auto;
+  align-self: flex-start;
+}
+@media (max-width: 560px) {
+  .ac-deploy-target-select { flex: 1 1 100%; max-width: none; margin-left: 38px; }
 }
 
 /* Generated copy-paste command box — shown by "manual" deploy targets (e.g.
@@ -3559,7 +3686,11 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
 .ac-tip-pop {
   position: fixed;
   z-index: 9999;
-  max-width: 260px;
+  max-width: 300px;
+  /* JS caps max-height to the room above/below the badge, so a tall image bubble
+     scrolls inside itself instead of running off the top/bottom of the screen. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 9px 11px;
   border: var(--border-width) solid var(--border-strong, var(--border));
   border-radius: 8px;
@@ -3587,6 +3718,98 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
   line-height: 1.5;
 }
 .ac-field-note:empty { display: none; }
+
+/* A clickable helper link rendered directly under a Deploy field's TITLE, above
+   the input (e.g. "Open the Google Cloud console"). Dynamic ones (built from the
+   project ID) hide themselves until the value they depend on is filled in — see
+   deploy.js _applyDynLink. `display:block` keeps it on its own line between the
+   label and the field; the bottom margin separates it from the input. */
+.ac-field-link {
+  display: block;
+  margin-top: 4px;
+  margin-bottom: 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-word;
+}
+.ac-field-link:hover { text-decoration: underline; }
+
+/* Rich help bubble — carries a paragraph, an optional (project-ID-driven) link,
+   and screenshot thumbnails, not just one line of text. Made clickable (the plain
+   bubble is pointer-events:none) so the link inside can be followed. */
+.ac-tip-pop.is-rich { pointer-events: auto; }
+.ac-tip-pop .ac-tip-text { margin-bottom: 8px; }
+.ac-tip-pop .ac-tip-link {
+  display: inline-block;
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-all;
+}
+.ac-tip-pop .ac-tip-link:hover { text-decoration: underline; }
+.ac-tip-pop .ac-tip-gallery { display: flex; flex-direction: column; gap: 8px; }
+.ac-tip-pop .ac-tip-gallery img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: var(--border-width) solid var(--border);
+  border-radius: 6px;
+  cursor: zoom-in;                /* click to open full-size in the lightbox */
+  transition: border-color .12s ease;
+}
+.ac-tip-pop .ac-tip-gallery img:hover { border-color: var(--accent); }
+
+/* Full-screen image viewer opened by clicking a screenshot inside a help bubble.
+   One shared element appended to <body>, above every panel and the tip bubble
+   itself (z-index over .ac-tip-pop). Click anywhere (or Escape) to close. */
+.ac-tip-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.8);
+  cursor: zoom-out;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.ac-tip-lightbox.show { opacity: 1; }
+.ac-tip-lightbox[hidden] { display: none; }
+.ac-tip-lightbox img {
+  max-width: 92vw;
+  max-height: 92vh;
+  border: var(--border-width) solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 44px rgba(0, 0, 0, 0.55);
+}
+
+/* Advanced-actions panel revealed by the Deploy form's "More" button — the
+   less-common actions (test / save / tear-down) tucked away so the completion
+   step shows only the primary "Activate" button. */
+.ac-deploy-more-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+  border: var(--border-width) solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-tint);
+}
+.ac-deploy-more-panel[hidden] { display: none; }
+
+/* Drag-and-drop affordance on the Service-account JSON box: dropping the
+   downloaded key file fills the box as if pasted (deploy.js _wireDropzone). */
+textarea.ac-dropzone.is-dragover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-line);
+}
 .ac-ra-check-lbl {
   display: flex;
   align-items: center;

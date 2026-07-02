@@ -324,6 +324,72 @@ async def make_qr(body: QrBody):
     return {"ok": bool(svg), "qr_svg": svg}
 
 
+# ── Routes: bootstrap setup bundle ──────────────────────────────────────────
+# One encrypted "setup code" that carries this install's DB + vault + LLM (key +
+# preset model roster) + admin login to a freshly-cloned install. The code is
+# encrypted with the admin password (see app/admin/bootstrap_bundle.py) — export
+# verifies it, import/preview require it to decode. The unauthenticated
+# first-run variant lives in app/auth/__init__.py (setup_bundle) since a fresh
+# install has no admin to gate on yet. The former per-row DB "Share (QR)" folded
+# into this bundle (database is now just one selectable section).
+
+
+class BootstrapExportBody(BaseModel):
+    requesting_user_id: str
+    # Which sections to include: any of admin/llm/database/vault.
+    sections: list = []
+    # The admin password — both authorises the export AND encrypts the code.
+    admin_password: str = ""
+
+
+class BootstrapImportBody(BaseModel):
+    requesting_user_id: str
+    code: str = ""
+    # The SOURCE install's admin password, needed to decrypt the code.
+    password: str = ""
+    # section → "fill" | "overwrite" | "skip" (apply only). Absent = fill-blanks.
+    choices: Dict[str, str] = {}
+
+
+@router.post("/bootstrap/export")
+async def bootstrap_export(body: BootstrapExportBody):
+    """Package the chosen sections of THIS install into an encrypted setup code."""
+    await _require_admin(body.requesting_user_id)
+    from app.admin import bootstrap_bundle as bb
+    try:
+        code = await bb.export_code(body.sections or list(bb.ALL_SECTIONS), body.admin_password)
+    except bb.BundleError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "code": code}
+
+
+@router.post("/bootstrap/preview")
+async def bootstrap_preview(body: BootstrapImportBody):
+    """Decode a pasted code (needs the source admin password) and report, per
+    section, what it carries and whether this install already has it — WITHOUT
+    applying anything."""
+    await _require_admin(body.requesting_user_id)
+    from app.admin import bootstrap_bundle as bb
+    try:
+        return {"ok": True, **await bb.preview(body.code, body.password)}
+    except bb.BundleError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/bootstrap/apply")
+async def bootstrap_apply(body: BootstrapImportBody):
+    """Apply a pasted code's sections, each honouring its merge choice."""
+    await _require_admin(body.requesting_user_id)
+    if _env_locked():
+        raise HTTPException(status_code=403, detail="Config is env-locked; edit deployment env vars to change.")
+    from app.admin import bootstrap_bundle as bb
+    try:
+        bundle = bb.decode_bundle(body.code, body.password)
+    except bb.BundleError as e:
+        return {"ok": False, "error": str(e)}
+    return await bb.apply_bundle(bundle, body.choices or {})
+
+
 # ── Routes: DB provider operations ──────────────────────────────────────────
 
 
@@ -1218,3 +1284,135 @@ async def config_library_seed(body: ConfigSeedBody):
     await _require_admin(body.requesting_user_id)
     from app.util.config_seed import seed_missing
     return seed_missing()
+
+
+# ── Danger Zone: reset selected data groups / delete the whole install ────────
+# Backs the "Danger Zone" card at the bottom of Data Settings. A reset can't run
+# in-process (the app holds its own DB/vault open), so it writes a one-shot marker
+# and self-restarts; the fresh boot wipes the selected file groups before anything
+# opens them (see app/util/reset_boot.py + the run_pending_reset() call in
+# app/main.py). Self-destruct spawns a detached helper OUTSIDE the repo that
+# removes the whole folder once this server exits. Both are admin-only and gated
+# behind an explicit confirmation the frontend collects (a hazard dialog for the
+# reset; a typed folder-name phrase for the delete).
+
+
+class ResetBody(BaseModel):
+    requesting_user_id: str
+    # Any subset of reset_boot.GROUPS ("db", "secrets", "attachments", "genui",
+    # "logs"). Anything else is ignored server-side.
+    groups: list[str] = []
+
+
+class DeleteInstallBody(BaseModel):
+    requesting_user_id: str
+    # Must equal the install folder's name (returned by GET /reset/info) — a
+    # deliberate speed-bump so this can never fire from a stray click.
+    confirm_phrase: str = ""
+
+
+@router.get("/reset/info")
+async def reset_info(requesting_user_id: str = Query(...)):
+    """Facts the Danger Zone needs to render: the install folder name (the phrase
+    that must be typed to delete it), the active DB backend, whether a self-restart
+    is even possible on this host, and the outcome of the LAST reset (so the card
+    can report it after the reboot that ran it)."""
+    await _require_admin(requesting_user_id)
+    import json as _json
+    from app.util import reset_boot
+    from app.relauncher import auto_restart_available
+
+    last = None
+    try:
+        if reset_boot.RESULT_PATH.is_file():
+            last = _json.loads(reset_boot.RESULT_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        last = None
+    can_restart, restart_reason = auto_restart_available()
+    return {
+        "ok": True,
+        "folder_name": reset_boot.repo_root().name,
+        "provider": load_config().provider,
+        "groups": list(reset_boot.GROUPS),
+        "auto_restart": can_restart,
+        "restart_reason": restart_reason,
+        "last": last,
+    }
+
+
+@router.post("/reset/dismiss")
+async def reset_dismiss(body: ActivateBody):
+    """Clear the stored last-reset result so the card stops showing the banner."""
+    await _require_admin(body.requesting_user_id)
+    from app.util import reset_boot
+    try:
+        if reset_boot.RESULT_PATH.is_file():
+            reset_boot.RESULT_PATH.unlink()
+    except OSError:
+        pass
+    return {"ok": True}
+
+
+@router.post("/reset")
+async def reset_data(body: ResetBody):
+    """Schedule a reset of the selected data groups: write the one-shot marker,
+    then self-restart so the fresh boot wipes the files/schema before anything
+    opens them. Env-locked installs refuse (the config is externally managed)."""
+    await _require_admin(body.requesting_user_id)
+    if _env_locked():
+        return JSONResponse(status_code=409, content={
+            "ok": False,
+            "error": "Configuration is locked to environment variables — reset is disabled in this UI.",
+        })
+    from app.util import reset_boot
+    valid = [g for g in body.groups if g in reset_boot.GROUPS]
+    if not valid:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "error": "Select at least one thing to reset.",
+        })
+
+    from app.relauncher import auto_restart_available, trigger_restart
+    can_restart, reason = auto_restart_available()
+    if not can_restart:
+        return JSONResponse(status_code=409, content={
+            "ok": False,
+            "error": ("This host can't restart itself automatically, so the reset can't run: "
+                      + reason + " Start the server via run.py / the supervisor and try again."),
+        })
+
+    reset_boot.write_marker(valid, requested_by=body.requesting_user_id)
+    logger.warning("[reset] scheduled by %s — groups=%s", body.requesting_user_id, valid)
+    result = trigger_restart()
+    return {
+        "ok": True,
+        "scheduled": valid,
+        "restart": result,
+        "message": ("Reset scheduled. The server is restarting now; the selected data is wiped "
+                    "on the way back up (a backup is kept under temp/)."),
+    }
+
+
+@router.post("/delete-install")
+async def delete_install(body: DeleteInstallBody):
+    """Self-destruct: delete the entire installation folder. Requires the typed
+    confirm phrase to equal the folder name. Spawns a detached helper (outside the
+    repo) that removes the folder once this server exits, then exits."""
+    await _require_admin(body.requesting_user_id)
+    if _env_locked():
+        return JSONResponse(status_code=409, content={
+            "ok": False,
+            "error": "Configuration is env-locked — installation delete is disabled in this UI.",
+        })
+    from app.util import reset_boot
+    expected = reset_boot.repo_root().name
+    if (body.confirm_phrase or "").strip() != expected:
+        return JSONResponse(status_code=400, content={
+            "ok": False,
+            "error": f'To delete the installation, type its folder name exactly: "{expected}".',
+        })
+    logger.warning("[reset] SELF-DESTRUCT requested by %s — deleting %s",
+                   body.requesting_user_id, reset_boot.repo_root())
+    result = reset_boot.spawn_self_destruct()
+    if result.get("status") == "error":
+        return JSONResponse(status_code=500, content={"ok": False, "error": result.get("reason")})
+    return {"ok": True, **result}

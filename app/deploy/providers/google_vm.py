@@ -158,13 +158,30 @@ class GoogleVMProvider(BaseDeployProvider):
     # The Cloud VMs sign-in panel collects this "id" (the project) plus the
     # service-account "key" below — enough to connect and list every VM.
     connect_config_keys = ["project_id"]
+    # Reveal the deploy form in STAGES so it never overwhelms: first only the
+    # project ID (config_fields[0]), then the key (the first credential field),
+    # then the rest of the settings + the action buttons. Honoured by deploy.js
+    # (_renderProvider splits the fields; _applyCloudStages gates the reveal).
+    progressive = True
 
     config_fields = [
         {"key": "project_id", "label": "Google Cloud project ID", "type": "text",
          "required": True, "placeholder": "my-project-123456",
-         "tip": "Your project's ID (not its display name). Find it in the Google "
-                "Cloud console top-bar project picker, or at console.cloud.google.com. "
-                "No project yet? Create one there first — creating a project is free."},
+         # A clickable helper link under the field + a rich tip whose bubble carries
+         # two screenshots of where the ID appears in the console (deploy.js renders
+         # `link` and the {text, images} tip; see _buildField / _showTip).
+         "link": {"url": "https://console.cloud.google.com/",
+                  "label": "Open the Google Cloud console ↗"},
+         "tip": {
+             "text": "Your project's ID (not its display name). Find it in the "
+                     "Google Cloud console top-bar project picker, or on the welcome "
+                     "page. No project yet? Create one there first — creating a "
+                     "project is free.",
+             "images": [
+                 "/ui/admin-tools/app-config/data-settings/img/gcp-project-welcome.png",
+                 "/ui/admin-tools/app-config/data-settings/img/gcp-project-picker.png",
+             ],
+         }},
         # A dropdown of common worldwide zones (pick by where your users are), plus
         # a "Custom…" entry that reveals a text box so ANY of Google's ~40 zones can
         # still be typed — see deploy.js `_buildField` (the `custom` select branch).
@@ -255,11 +272,36 @@ class GoogleVMProvider(BaseDeployProvider):
     credential_fields = [
         {"key": "service_account_json", "label": "Service-account key (JSON)",
          "type": "textarea", "secret": True, "required": True,
-         "placeholder": "Paste the whole JSON key file here",
-         "tip": "In the Cloud console: IAM & Admin → Service Accounts → create one "
-                "with the 'Compute Admin' role, then open it → Keys → Add key → JSON "
-                "and download the file. Paste the file's entire contents here. It's "
-                "stored encrypted, and (with the option above) deleted after deploy."},
+         "placeholder": "Paste the whole JSON key file here — or drag the downloaded "
+                        ".json file onto this box",
+         # Accept the downloaded key file dragged straight onto the box (deploy.js
+         # _wireDropzone reads it as text and fills the field as if pasted).
+         "dropzone": True,
+         # A DYNAMIC helper link: the Service-Accounts page for the entered project.
+         # {project_id} is substituted from the project-ID field live, and the link
+         # stays hidden until an ID is typed (deploy.js _applyDynLink).
+         "link": {"dynamic": True,
+                  "url": "https://console.cloud.google.com/iam-admin/serviceaccounts"
+                         "?authuser=2&project={project_id}",
+                  "label": "Open Service Accounts for “{project_id}” ↗"},
+         "tip": {
+             "text": "In the Cloud console: IAM & Admin → Service Accounts → create "
+                     "one with the 'Compute Admin' role, then open it → Keys → Add "
+                     "key → JSON and download the file. Paste the file's entire "
+                     "contents here (or drag the downloaded file straight onto the "
+                     "box). It's stored encrypted, and (with the option above) "
+                     "deleted after deploy.",
+             # A dynamic "create one" deep-link (also built from the project ID) plus
+             # two screenshots of the create-role + add-key steps.
+             "link": {"dynamic": True,
+                      "url": "https://console.cloud.google.com/iam-admin/"
+                             "serviceaccounts/create?authuser=2&project={project_id}",
+                      "label": "Create a service account for “{project_id}” ↗"},
+             "images": [
+                 "/ui/admin-tools/app-config/data-settings/img/gcp-sa-create-role.png",
+                 "/ui/admin-tools/app-config/data-settings/img/gcp-sa-keys-addkey.png",
+             ],
+         }},
         # OPTIONAL GitHub access token for a PRIVATE repository. Supplied by the shared
         # "Repo details" bar (hidden from this cloud form). A SECRET so it rides the
         # encrypted vault and is auto-discarded after a successful deploy with the
@@ -340,6 +382,40 @@ class GoogleVMProvider(BaseDeployProvider):
             import asyncio
             await asyncio.sleep(2)
         return {"status": "TIMEOUT"}
+
+    async def _poll_app_health(self, ip: str, *, timeout_s: int = 600) -> str:
+        """Watch a freshly-created raw-IP VM until its app actually answers.
+
+        Returns one of:
+          * ``"running"``    — the app responded (a real, non-holding response);
+          * ``"failed"``     — the box's holding page flipped to the bootstrap's
+                               error marker (the install aborted);
+          * ``"installing"`` — still going when we stopped waiting (honest, not a
+                               failure — the on-box holding page carries on).
+
+        Only usable on the plain-IP path: with a custom domain Caddy serves over
+        HTTPS on the domain and needs the admin's DNS first, so there is nothing
+        to poll yet. The bootstrap tags its holding page ``WEBAGENT-HOLDING`` and
+        its failure page ``WEBAGENT-INSTALL-FAILED`` so we can tell
+        install-in-progress and install-broken apart from the live app."""
+        import asyncio
+        probe = f"http://{ip}/"
+        deadline = time.time() + timeout_s
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as hc:
+            while time.time() < deadline:
+                await asyncio.sleep(8)
+                try:
+                    r = await hc.get(probe)
+                except Exception:
+                    continue          # Caddy / network not up yet — keep waiting
+                body = r.text or ""
+                if "WEBAGENT-INSTALL-FAILED" in body:
+                    return "failed"
+                if "WEBAGENT-HOLDING" in body:
+                    continue          # still installing — the holding page is up
+                if r.status_code < 500:
+                    return "running"  # a real (non-holding) response → the app is up
+        return "installing"
 
     # ── deploy ──
     async def deploy(self, config: Dict[str, Any], creds: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
@@ -458,6 +534,31 @@ class GoogleVMProvider(BaseDeployProvider):
 
         public_url = (f"https://{domain}" if domain else (f"http://{ip}" if ip else ""))
         yield ev("VM created. It is now installing WebAgent — this takes a few minutes.", phase="installing", level="ok")
+
+        # Don't claim success until the app actually answers. The old code returned
+        # "installing" the instant the VM existed, having verified nothing — so a
+        # bootstrap that later failed still showed a green "Deployed". Now we watch
+        # the box until its app responds (or its holding page flips to the error
+        # marker, or we stop waiting). Only pollable on the raw-IP path: a custom
+        # domain needs the admin's DNS before Caddy will serve it, so we keep the
+        # honest "installing + point your DNS" messaging in that case.
+        state = "installing"
+        if ip and not domain:
+            yield ev("Verifying the app comes up on the server (this can take a few minutes)…", phase="verify")
+            try:
+                state = await self._poll_app_health(ip)
+            except Exception:
+                logger.exception("google_vm health poll failed")
+                state = "installing"
+            if state == "running":
+                yield ev("The app is up and answering — WebAgent is live.", phase="live", level="ok")
+            elif state == "failed":
+                yield ev("The VM was created, but the install reported a problem on the box. Open its "
+                         "address to see the error, or delete it and try again.", phase="failed", level="err")
+            else:
+                yield ev("Still installing — it's taking longer than usual. The server's address shows "
+                         "live progress and turns into the app when it's ready.", phase="installing", level="warn")
+
         if domain:
             yield ev(f"Point your domain {domain} at {ip or 'the server IP'} so HTTPS can be issued.", phase="dns", level="warn")
         if admin_password:
@@ -485,15 +586,28 @@ class GoogleVMProvider(BaseDeployProvider):
             yield ev("Couldn't read the VM's IP, so it wasn't added to your SSH servers — "
                      "you can add it by hand once it has an address.", phase="linked", level="warn")
 
+        # A verified failure returns ok=False so the manager keeps the cloud key
+        # (needed to tear the box down) and doesn't stamp a "live" deployment. The
+        # VM still appears on the Cloud VMs page, so it's one click to delete.
+        ok = state != "failed"
+        if state == "running":
+            msg = "WebAgent is live on the server."
+        elif state == "failed":
+            msg = (f"The VM '{name}' was created but the install didn't finish. Open "
+                   f"{public_url or 'its address'} for the exact error (or read "
+                   f"/var/log/webagent-bootstrap.log on the box), then delete it from the "
+                   f"Cloud VMs page and try again.")
+        else:
+            msg = "Server created. WebAgent is installing and will be live in a few minutes."
         result = {
-            "ok": True,
+            "ok": ok,
             "server": name,
             "ip": ip,
             "zone": zone,
             "project": project,
             "public_url": public_url,
-            "state": "installing",
-            "message": "Server created. WebAgent is installing and will be live in a few minutes.",
+            "state": state,
+            "message": msg,
         }
         yield done(result)
 

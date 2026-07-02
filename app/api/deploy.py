@@ -76,6 +76,7 @@ class ManualCommandBody(UserBody):
     github_url: str = ""
     visibility: str = "public"     # "public" | "private"
     token: str = ""                # only for a private repo; never stored
+    branch: str = ""               # git branch (blank = main); shared with cloud targets
     install_dir: str = ""          # optional folder to install into (blank = default)
     admin_password: str = ""       # optional; when set it is embedded in the command
                                    # (in plain text), never stored server-side
@@ -238,7 +239,7 @@ async def _build_manual_command(body: ManualCommandBody):
     if not p or not hasattr(p, "build_command") or not getattr(p, "manual", False):
         raise HTTPException(status_code=400, detail="Unknown install target")
     plan = p.build_command(body.github_url, body.visibility, body.token,
-                           install_dir=body.install_dir,
+                           branch=body.branch, install_dir=body.install_dir,
                            admin_password=body.admin_password)
     if body.persist:
         # Persist only the NON-secret choices so the row pre-fills next time. The

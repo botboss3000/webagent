@@ -30,27 +30,28 @@ function topLevelFromCatalog(mainPages) {
 }
 
 const ADMIN_SUB_PAGES = [
-  // The last built-in views whose partials still ship at fixed paths. Every
-  // other admin view (Settings/app-config, database, source-control/git,
-  // interactions, runtime, diagnostics) is a drop-in: its partials live in its
-  // folder and load from the catalog via dropInAdminPartials(). Explorer +
-  // Terminal remain built-in until their shared tab engine is split.
-  './ui/admin-tools/file-manager.html',
-  './ui/admin-tools/terminal.html',
+  // Empty: EVERY admin view now ships its partial inside its own
+  // ui/admin-tools/<id>/ folder and loads from the catalog via
+  // dropInAdminPartials(). Explorer + Terminal were the last fixed-path
+  // built-ins; their HTML now lives in explorer/ and terminal/ like the rest.
+  // (Their JS lifecycle is still the shared inline "Files" engine in files.js —
+  //  that engine split is a separate, later phase — but nothing loads from a
+  //  fixed root path any more.) A new admin view = drop a folder; no edit here.
 ];
 
-// The two built-in views above ship their partials at fixed paths. A DROP-IN
-// admin view (any catalog `admin` page whose id isn't a built-in) carries its
-// own partial(s) inside its folder, loaded from its descriptor — so a new
-// ui/admin-tools/<id>/ folder needs no edit here. Its main partial (`html`)
-// must expose <template data-slot="#admin-tools"> (a <main class="files-main"
-// id="files-<id>-main" data-view="<id>">) and optionally a <template
-// data-slot="#files-sidebar"> panel, just like the built-ins. A multi-section
-// view (Settings) additionally lists section partials in its descriptor
-// `partials` array; those load right after its `html`.
-const BUILTIN_ADMIN_IDS = new Set([
-  'explorer', 'terminal',
-]);
+// Every admin view is a DROP-IN: it carries its own partial(s) inside its
+// ui/admin-tools/<id>/ folder and loads from its descriptor — so a new folder
+// needs no edit here. Its main partial (`html`) must expose <template
+// data-slot="#admin-tools"> (a <main class="files-main" id="files-<id>-main"
+// data-view="<id>">) and optionally a <template data-slot="#files-sidebar">
+// panel. A multi-section view (Settings) additionally lists section partials in
+// its descriptor `partials` array; those load right after its `html`.
+//
+// This set is the escape hatch for any view whose partial should NOT be loaded
+// from its folder here (it ships elsewhere). It is empty now that Explorer +
+// Terminal moved their HTML into explorer/ and terminal/ — those two still
+// share one inline JS engine (files.js), but their partials load like any other.
+const BUILTIN_ADMIN_IDS = new Set([]);
 
 function dropInAdminPartials(adminPages) {
   const urls = [];
@@ -172,8 +173,8 @@ export const partialsReady = (async () => {
   const topHtml = await Promise.all(TOP_LEVEL.map(p => fetchHtml(p.url)));
   TOP_LEVEL.forEach((p, i) => injectIntoMount(topHtml[i], p.mount));
 
-  // Phase 2: load admin sub-pages in parallel (slots now exist) — the built-in
-  // views plus any drop-in admin view partials discovered in the catalog.
+  // Phase 2: load admin sub-pages in parallel (slots now exist) — every admin
+  // view partial is discovered from the catalog (ADMIN_SUB_PAGES is empty).
   const adminUrls = ADMIN_SUB_PAGES.concat(dropInAdminPartials(catalog.admin));
   const subHtml = await Promise.all(adminUrls.map(fetchHtml));
   adminUrls.forEach((url, i) => injectSlotsFromHtml(subHtml[i], url));
