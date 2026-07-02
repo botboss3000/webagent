@@ -41,6 +41,13 @@ function bindMount(prefix) {
     btnBootstrap: qs(`${prefix}db-bootstrap`),
     btnSave: qs(`${prefix}db-save`),
     btnActivate: qs(`${prefix}db-activate`),
+    // Share / import the current DB connection config across devices (QR + paste code).
+    shareQrBtn: qs(`${prefix}db-share-qr`),
+    importToggle: qs(`${prefix}db-import-toggle`),
+    importPanel: qs(`${prefix}db-import-panel`),
+    importText: qs(`${prefix}db-import-text`),
+    importApply: qs(`${prefix}db-import-apply`),
+    importCancel: qs(`${prefix}db-import-cancel`),
     output: qs(`${prefix}db-output`),
     outputCopy: qs(`${prefix}db-output-copy`),
     secretsBadge: qs(`${prefix}secrets-badge`),
@@ -1327,6 +1334,154 @@ function buildBody(m, extra) {
   return JSON.stringify({ requesting_user_id: uid(), ...collectFields(m), ...(extra || {}) });
 }
 
+// ── Config share / import (QR + paste code) ─────────────────────────────────
+// Lets an admin carry the Application Data connection details to another device:
+// "Share (QR)" encodes the current provider + fields into a compact code, shown
+// as a scannable QR (generated server-side via /admin/storage/qr, the same
+// generator Remote Access + Deploy use) with a Copy button; "Paste Config" on the
+// other device decodes that code back into the fields. The QR value and the copied
+// code are the SAME string, so scanning a phone camera and pasting the result
+// works identically to copy/paste between two browsers.
+
+const CFG_CODE_PREFIX = 'WADBCFG1.';   // marker + version, so a stray paste is rejected cleanly
+
+// Unicode-safe base64 (btoa only handles Latin-1) so non-ASCII passwords survive.
+function _b64encode(str) { return btoa(unescape(encodeURIComponent(str))); }
+function _b64decode(b64) { return decodeURIComponent(escape(atob(b64))); }
+
+function encodeDbConfig(m) {
+  return CFG_CODE_PREFIX + _b64encode(JSON.stringify(collectFields(m)));
+}
+
+// Parse a pasted code back into a config object, or null if it isn't ours.
+function decodeDbConfig(code) {
+  const s = (code || '').trim();
+  if (!s.startsWith(CFG_CODE_PREFIX)) return null;
+  try {
+    const obj = JSON.parse(_b64decode(s.slice(CFG_CODE_PREFIX.length)));
+    return (obj && typeof obj === 'object' && obj.provider) ? obj : null;
+  } catch { return null; }
+}
+
+// ── Config-share QR popover (mirrors Remote Access / Deploy "Same network") ──
+let _cfgQrPop = null;      // the floating panel, or null
+let _cfgQrAnchor = null;   // the button it was opened from
+
+function _closeCfgQr() {
+  if (!_cfgQrPop) return;
+  document.removeEventListener('keydown', _cfgQrPop._onKey, true);
+  document.removeEventListener('mousedown', _cfgQrPop._onDoc, true);
+  window.removeEventListener('resize', _cfgQrPop._onReflow, true);
+  window.removeEventListener('scroll', _cfgQrPop._onReflow, true);
+  _cfgQrPop.remove();
+  _cfgQrPop = null;
+  _cfgQrAnchor = null;
+}
+
+function _placeCfgQr(panel, anchor) {
+  const a = anchor.getBoundingClientRect();
+  const pw = panel.offsetWidth, ph = panel.offsetHeight;
+  const gap = 6, margin = 8;
+  let left = a.right - pw;                       // right edges aligned
+  let top = a.bottom + gap;                      // below the button
+  if (top + ph + margin > window.innerHeight) top = a.top - ph - gap;   // flip up
+  left = Math.max(margin, Math.min(left, window.innerWidth - pw - margin));
+  top = Math.max(margin, top);
+  panel.style.left = Math.round(left) + 'px';
+  panel.style.top = Math.round(top) + 'px';
+}
+
+async function _showCfgQr(m, anchor) {
+  _closeCfgQr();
+  const code = encodeDbConfig(m);
+
+  const panel = document.createElement('div');
+  panel.className = 'ac-ra-qr-pop';
+  panel.style.maxWidth = '260px';
+
+  const plate = document.createElement('div');
+  plate.className = 'ac-ra-qr-plate';
+  plate.innerHTML = '<div class="ac-hint" style="padding:22px 12px;text-align:center;color:#555;">Generating…</div>';
+  panel.appendChild(plate);
+
+  const label = document.createElement('div');
+  label.className = 'ac-ra-qr-pop-url';
+  label.style.whiteSpace = 'normal';
+  label.textContent = 'Scan this on the other device, or copy the code and paste it there.';
+  panel.appendChild(label);
+
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'ac-btn';
+  copyBtn.type = 'button';
+  copyBtn.innerHTML = '<i data-lucide="copy" style="width:14px;height:14px;"></i> Copy code';
+  copyBtn.addEventListener('click', () => {
+    copyText(code).then(() => flashCopied(copyBtn, true)).catch(() => flashCopied(copyBtn, false));
+  });
+  panel.appendChild(copyBtn);
+
+  document.body.appendChild(panel);
+  _cfgQrPop = panel;
+  _cfgQrAnchor = anchor;
+  _refreshLucideIcons(panel);
+
+  const place = () => _placeCfgQr(panel, anchor);
+  place();
+
+  const onDoc = ev => { if (panel.contains(ev.target) || anchor.contains(ev.target)) return; _closeCfgQr(); };
+  const onKey = ev => { if (ev.key === 'Escape') _closeCfgQr(); };
+  const onReflow = () => { if (_cfgQrPop) place(); };
+  document.addEventListener('mousedown', onDoc, true);
+  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('resize', onReflow, true);
+  window.addEventListener('scroll', onReflow, true);
+  panel._onDoc = onDoc;
+  panel._onKey = onKey;
+  panel._onReflow = onReflow;
+
+  // Fetch the QR server-side (same generator as Remote Access / Deploy).
+  let r;
+  try {
+    r = await call('/admin/storage/qr', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requesting_user_id: uid(), text: code }),
+    });
+  } catch {
+    if (_cfgQrPop === panel) plate.innerHTML = '<div class="ac-hint" style="padding:22px 12px;text-align:center;color:#555;">Couldn’t reach the server for the QR code.</div>';
+    return;
+  }
+  if (_cfgQrPop !== panel) return;   // closed while we waited
+  const svg = r.body && r.body.qr_svg;
+  if (svg) {
+    plate.innerHTML = svg;
+    const el = plate.querySelector('svg');
+    if (el) { el.style.width = '100%'; el.style.height = 'auto'; el.style.display = 'block'; }
+    place();   // QR changed the panel size — re-anchor
+  } else {
+    plate.innerHTML = '<div class="ac-hint" style="padding:22px 12px;text-align:center;color:#555;">QR codes need the “qrcode” package installed on the server — you can still Copy the code.</div>';
+  }
+}
+
+function _toggleCfgQr(m, anchor) {
+  if (_cfgQrPop && _cfgQrAnchor === anchor) { _closeCfgQr(); return; }
+  _showCfgQr(m, anchor);
+}
+
+// Apply a pasted code into the form (provider + fields). Does not save/activate.
+function importDbConfig(m) {
+  const cfg = decodeDbConfig(m.importText ? m.importText.value : '');
+  if (!cfg) {
+    out(m.output, 'That code isn’t a valid database config. Copy it again from the other device’s “Share (QR)”.', false);
+    return;
+  }
+  m.provider.value = cfg.provider || 'sqlite';
+  renderFields(m, m.provider.value, cfg);
+  renderNotes(m.dbNotes, DB_NOTES, m.provider.value);
+  renderVaultRecommendation(m);
+  if (m.importPanel) m.importPanel.style.display = 'none';
+  if (m.importText) m.importText.value = '';
+  out(m.output, `Imported ${cfg.provider} config. Review the fields, then Test / Save / Activate.`, true);
+}
+
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 function wire(m) {
@@ -1495,6 +1650,23 @@ function wire(m) {
       out(m.output, r.body || { error: 'no response' }, ok);
     }
     loadConfig(m).then(s => applyState(m, s));
+  });
+
+  // Share the current connection config to another device (QR + copy code).
+  m.shareQrBtn && m.shareQrBtn.addEventListener('click', () => _toggleCfgQr(m, m.shareQrBtn));
+
+  // Paste Config — reveal the import row, or apply / cancel it.
+  if (m.importToggle && m.importPanel) {
+    m.importToggle.addEventListener('click', () => {
+      const open = m.importPanel.style.display === 'none' || !m.importPanel.style.display;
+      m.importPanel.style.display = open ? 'block' : 'none';
+      if (open && m.importText) m.importText.focus();
+    });
+  }
+  m.importApply && m.importApply.addEventListener('click', () => importDbConfig(m));
+  m.importCancel && m.importCancel.addEventListener('click', () => {
+    if (m.importPanel) m.importPanel.style.display = 'none';
+    if (m.importText) m.importText.value = '';
   });
 
   // Persist the selected provider's connection fields + token (only for

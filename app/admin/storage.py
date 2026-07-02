@@ -263,6 +263,14 @@ class ActivateBody(BaseModel):
     requesting_user_id: str
 
 
+class QrBody(BaseModel):
+    requesting_user_id: str
+    # Arbitrary text to render as a scannable QR. Used by the Application Data
+    # "Share (QR)" button to hand the current DB connection config to another
+    # device (the payload is a compact base64 blob built in ui/shared/js/storage.js).
+    text: str = ""
+
+
 class SchemaSQLBody(BaseModel):
     requesting_user_id: str
     dialect: str = "postgres"
@@ -299,6 +307,21 @@ async def get_storage_config(requesting_user_id: str = Query(...)):
         "secrets": get_secrets_status(),
         "genui": get_genui_status(),
     }
+
+
+@router.post("/qr")
+async def make_qr(body: QrBody):
+    """Render arbitrary text as an inline SVG QR code (admin-only).
+
+    Reuses app.remote_access.netinfo.qr_svg — the same server-side generator the
+    Remote Access + Deploy cards use — so the config-share QR matches those in
+    look and dependency handling. Returns qr_svg=None when the optional ``qrcode``
+    package isn't installed (the frontend then shows a clear "install qrcode" hint).
+    """
+    await _require_admin(body.requesting_user_id)
+    from app.remote_access import netinfo
+    svg = netinfo.qr_svg(body.text or "")
+    return {"ok": bool(svg), "qr_svg": svg}
 
 
 # ── Routes: DB provider operations ──────────────────────────────────────────

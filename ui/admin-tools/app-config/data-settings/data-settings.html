@@ -588,6 +588,31 @@
               <button id="ac-storage-db-show-sql" class="ac-btn">Show Schema SQL</button>
               <button id="ac-storage-db-bootstrap" class="ac-btn">Auto-Create Tables</button>
               <button id="ac-storage-db-activate" class="ac-btn ac-btn-primary">Activate</button>
+              <!-- Share the current connection config to another device. "Share (QR)"
+                   opens a QR popover (a scannable code + a Copy-code button, mirroring
+                   the Remote Access / Deploy "Same network" QR); "Paste Config" opens
+                   the import row below to pre-fill these fields from a pasted code.
+                   Both are driven by storage.js (wire(): _shareCfgQr / import panel). -->
+              <button id="ac-storage-db-share-qr" class="ac-btn" title="Show a QR code / copy a code that carries these database details to another device">
+                <i data-lucide="qr-code" style="width:14px;height:14px;"></i> Share (QR)
+              </button>
+              <button id="ac-storage-db-import-toggle" class="ac-btn" title="Paste a config code from another device to pre-fill these fields">
+                <i data-lucide="clipboard-paste" style="width:14px;height:14px;"></i> Paste Config
+              </button>
+            </div>
+
+            <!-- Import row (hidden until "Paste Config" is clicked). Paste the code
+                 produced by another device's "Share (QR)" here, then Import to
+                 pre-fill the provider + fields above. Nothing is saved/activated by
+                 importing — the admin still reviews, then Save / Activate as usual. -->
+            <div id="ac-storage-db-import-panel" style="display:none;margin-top:10px;">
+              <label class="ac-label" for="ac-storage-db-import-text">Paste config code</label>
+              <textarea id="ac-storage-db-import-text" rows="3" placeholder="Paste the code from the other device (or scan its QR and paste the result)…"
+                style="width:100%;padding:6px 8px;border:var(--border-width) solid var(--border);border-radius:4px;font-size:11px;font-family:var(--font-mono,monospace);background:transparent;color:inherit;resize:vertical;word-break:break-all;"></textarea>
+              <div style="display:flex;gap:6px;margin-top:6px;">
+                <button id="ac-storage-db-import-apply" class="ac-btn ac-btn-primary">Import</button>
+                <button id="ac-storage-db-import-cancel" class="ac-btn">Cancel</button>
+              </div>
             </div>
 
             <!-- Output box for Test / Show Schema SQL / Activate, with a Copy
