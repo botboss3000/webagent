@@ -1,20 +1,19 @@
 """Server Manager — drop-in BACKEND for the Server Manager admin page:
 /admin/server-manager/*
 
-A single hub for every machine, server and hosted site the admin runs:
+A single hub for the cloud servers + manually-tracked boxes the admin runs:
 
   • Cloud VMs    — live API control of servers in a cloud account (start / stop /
                    delete), reusing the deploy subsystem. Today: Google Compute.
-  • Devices      — every computer running webAgent against the shared database
-                   (the device-presence system, app/devices/). Auto-discovered,
-                   online/offline, each self-reporting its platform + code repo.
-  • Machines     — manually-tracked boxes that do NOT run webAgent (a remote
+  • Machines     — manually-tracked boxes that do NOT run WebAgent (a remote
                    Linux/Termux/Windows/Mac host): name, address, repo, notes,
                    plus a reachability ping.
   • Sites        — manually-tracked hosted sites / URLs: name, url, repo, notes,
                    plus an HTTP health ping.
 
-This is the evolution of the old "Cloud VMs" page, which only saw cloud servers.
+Linked WebAgent DEVICES (the presence registry) moved to their own page —
+ui/admin-tools/database-devices/ — framed as "who else is signed in to the shared
+database". This is the evolution of the old "Cloud VMs" page.
 
 Discovered + mounted by the page catalog (app/ui_pages/__init__.py
 discover_routers, via this folder's page.json `router` field), so the API comes
@@ -62,7 +61,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _STORE_FILE = _PROJECT_ROOT / "data" / "config" / "server-manager.json"
 
 # The kinds a manually-tracked entry may take. "site" is a hosted URL; the rest
-# are physical/remote machines that don't run webAgent (so can't auto-discover).
+# are physical/remote machines that don't run WebAgent (so can't auto-discover).
 _MACHINE_KINDS = {"linux", "termux", "windows", "mac", "other"}
 _ENTRY_KINDS = _MACHINE_KINDS | {"site"}
 
@@ -186,70 +185,10 @@ async def instances(provider: str = Query(...), requesting_user_id: str = ""):
     return res
 
 
-# ── webAgent devices (the presence registry), with repo overlay ──
-@router.get("/devices")
-async def devices(requesting_user_id: str = ""):
-    await _require_admin(requesting_user_id)
-    from app.devices import dispatch, identity
-
-    me = identity.device_id()
-    rows = await dispatch.list_devices(online_within_seconds=60)
-    store_data = _load_store()
-
-    def _caps(raw):
-        if isinstance(raw, str):
-            try:
-                return json.loads(raw or "{}")
-            except Exception:
-                return {}
-        return raw or {}
-
-    # The live facts for THIS machine — used to fill in the self row even if the
-    # heartbeat that last wrote it came from an older build (or another local
-    # instance sharing this machine's device id) that didn't report the repo yet.
-    my_caps = identity.capabilities()
-
-    out: List[Dict[str, Any]] = []
-    seen_self = False
-    for d in rows:
-        iid = d.get("instance_id")
-        is_self = iid == me
-        if is_self:
-            seen_self = True
-        caps = _caps(d.get("capabilities"))
-        key = "device:%s" % iid
-        ann = _annotation(store_data, key)
-        out.append({
-            "instance_id": iid,
-            "label": ann.get("label") or d.get("label") or iid,
-            "online": bool(d.get("online")),
-            "last_seen": d.get("last_seen"),
-            "is_self": is_self,
-            "platform": caps.get("platform") or (my_caps.get("platform", "") if is_self else ""),
-            "endpoint": caps.get("endpoint") or d.get("endpoint") or "",
-            "repo": ann.get("repo") or caps.get("repo") or (my_caps.get("repo", "") if is_self else ""),
-            "branch": caps.get("branch") or (my_caps.get("branch", "") if is_self else ""),
-            "annotation_key": key,
-        })
-    # Surface THIS device even before its first heartbeat lands (mirrors
-    # app/api/devices.py), so the local machine is never missing from the hub.
-    if not seen_self:
-        caps = identity.capabilities()
-        key = "device:%s" % me
-        ann = _annotation(store_data, key)
-        out.insert(0, {
-            "instance_id": me,
-            "label": ann.get("label") or identity.device_label(),
-            "online": True,
-            "last_seen": None,
-            "is_self": True,
-            "platform": caps.get("platform", ""),
-            "endpoint": caps.get("endpoint", ""),
-            "repo": ann.get("repo") or caps.get("repo", ""),
-            "branch": caps.get("branch", ""),
-            "annotation_key": key,
-        })
-    return {"devices": out, "self": me}
+# NOTE: the WebAgent DEVICES list (presence registry) moved to its own page —
+# ui/admin-tools/database-devices/ (GET /admin/database-devices/devices) — which
+# frames devices as "who else is signed in to the shared database". Server Manager
+# now covers cloud VMs + manually-tracked machines/sites only.
 
 
 # ── Manually-tracked machines + sites ──

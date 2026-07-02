@@ -1,7 +1,7 @@
 """Dependency model + probe for the Setup dashboard.
 
 Textual-free and unit-testable. ``probe_dependencies()`` returns an ORDERED,
-platform-aware list of the things webAgent needs — from bare-device host tools
+platform-aware list of the things WebAgent needs — from bare-device host tools
 (git, Python, on Termux the Ubuntu ``proot-distro`` sandbox) all the way to a
 verified install (clone → environment → config → verify). The Setup panel renders
 each as a row with a status icon + an [Install] button when one applies; the
@@ -169,7 +169,7 @@ def probe_dependencies(target: str = "",
                        machine: Optional[MachineProbe] = None) -> List[Dep]:
     """Return the ordered, platform-aware dependency checklist for ``target``.
 
-    ``target`` is the folder webAgent will live in (defaults to the recommended
+    ``target`` is the folder WebAgent will live in (defaults to the recommended
     path). Pass a pre-computed ``machine`` probe to avoid re-running it.
     """
     f = machine or probe_machine()
@@ -192,7 +192,7 @@ def probe_dependencies(target: str = "",
     deps.append(Dep(
         "git", "git",
         OK if f.git_present else MISSING,
-        "found on PATH" if f.git_present else "missing — needed to download webAgent",
+        "found on PATH" if f.git_present else "missing — needed to download WebAgent",
         installable=not f.git_present, required=True))
 
     # 3) host Python 3.11/3.12 — desktop only (on Termux the server's Python lives
@@ -204,7 +204,7 @@ def probe_dependencies(target: str = "",
             "python", "Python 3.11 / 3.12",
             OK if ok else MISSING,
             f"found ({py})" if ok else
-            f"none found (system Python is {f.system_python or 'absent'}; webAgent needs 3.11 or 3.12)",
+            f"none found (system Python is {f.system_python or 'absent'}; WebAgent needs 3.11 or 3.12)",
             installable=not ok, required=True))
 
     # 4) disk space at the target
@@ -235,7 +235,7 @@ def probe_dependencies(target: str = "",
             "ubuntu", "Ubuntu environment",
             OK if ub else MISSING,
             (f"installed{f' (~{size} MB)' if size else ''}" if ub
-             else "not installed — webAgent runs inside it on Android"),
+             else "not installed — WebAgent runs inside it on Android"),
             installable=not ub, required=True, blocked_by=["proot_distro"],
             manage_actions=([("Update", "ubuntu_update"),
                              ("Reinstall", "ubuntu_reinstall"),
@@ -250,10 +250,10 @@ def probe_dependencies(target: str = "",
              else "needs the Ubuntu environment first"),
             installable=ub and not tc, required=True, blocked_by=["ubuntu"]))
 
-    # ── the webAgent install itself ──
+    # ── the WebAgent install itself ──
     repo = _repo_present(tgt)
     deps.append(Dep(
-        "repo", "webAgent code",
+        "repo", "WebAgent code",
         OK if repo else MISSING,
         f"cloned at {tgt}" if repo else f"not present — will clone into {tgt}",
         installable=not repo, required=True, blocked_by=["git", "internet"]))
@@ -267,7 +267,7 @@ def probe_dependencies(target: str = "",
         else "not built yet (the venv + app dependencies)",
         installable=not venv_ok, required=True, blocked_by=venv_block))
 
-    # browser — desktop only, optional (webAgent runs without it; browser tools off)
+    # browser — desktop only, optional (WebAgent runs without it; browser tools off)
     if is_termux:
         deps.append(Dep(
             "browser", "Headless browser", NA,

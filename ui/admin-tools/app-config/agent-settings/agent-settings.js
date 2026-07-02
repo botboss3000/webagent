@@ -59,6 +59,15 @@ import { _markSaving, _flashSaveCheck, buildAbilitySearchPill } from '../../../s
 
 let _modelTable = null;
 
+// Timestamp of the last full Agent-Settings data load (model table + suggestions
+// + integrations). init() kicks these off when the Admin tab initialises; load()
+// fires again the moment the App Config view is activated — on a first open both
+// happen within the same tick, which used to double every fetch (including the
+// slow /admin/integrations and the model-usage N+1). load() consults this stamp
+// and skips the redundant re-fetch when init() just triggered one, while still
+// refreshing on genuine later re-activations.
+let _lastAgentLoadAt = 0;
+
 function _adminModelAdapter() {
   const headers = { 'Content-Type': 'application/json' };
   return {
@@ -966,7 +975,7 @@ async function _initIntegrations() {
 // Mount the SHARED hybrid search/chat pill at the BOTTOM of this page (App-Settings
 // page-assistant style) instead of inline above the ability table. Typing live-
 // filters the ability tree via the table's exposed runFilter; send / Enter / attach
-// chats with webAgent the manager, with the message wrapped by the hovered section's
+// chats with WebAgent the manager, with the message wrapped by the hovered section's
 // context (createPageAssistant in attached mode — it owns only the placeholder swap,
 // suggestions/typewriter, Tab-to-fill and buildMessage; the pill itself already
 // wires send/voice/uploads/filter). The bar host (#ac-as-pa-bar) is a sibling below
@@ -1009,7 +1018,7 @@ function _intAdminGetSession() {
   return fresh;
 }
 
-// Each visit to the Agent Settings section starts a brand-new webAgent session,
+// Each visit to the Agent Settings section starts a brand-new WebAgent session,
 // so the chat there is a fresh conversation (matching the page chat pills).
 // Clears the cached session id + the inline transcript.
 function _intAdminResetSession() {
@@ -1093,13 +1102,13 @@ async function _intAdminSend() {
     }
   } catch (_) { /* fall through — use raw text */ }
 
-  // This chat targets the shared webAgent (the `default` template), same as the
-  // Agents / Canvas / Source Control pills. Resolve (or create) that agent first.
+  // This chat targets the shared WebAgent (the `default` template), same as the
+  // Agents / Gen UI / Source Control pills. Resolve (or create) that agent first.
   let agentId;
   try {
     agentId = await app.ensureWebagentAgent(app.currentUserId);
   } catch (e) {
-    _intAdminShowError('Could not start webAgent: ' + (e.message || e));
+    _intAdminShowError('Could not start WebAgent: ' + (e.message || e));
     return;
   }
 
@@ -1697,6 +1706,27 @@ function _wireAutomationRows() {
   }
 }
 
+// ── Templates and prompts rows ─────────────────────────────────────────────
+// The "Templates and prompts" group (see agent-settings.html) is one `.ac-list`
+// of expandable `.ac-row`s — the Global system prompt and the Agent Prompt
+// Templates (moved here from Data Management). Same expand/collapse behaviour as
+// _wireAutomationRows above; a click on a control inside a body never collapses
+// the row. The row controls themselves bind by element id and are driven
+// elsewhere (global-prompt textarea + Save → app-settings.js; the `ac-tpl-*`
+// template controls → ui/shared/js/storage.js), so there is nothing to load
+// lazily here — just the toggle.
+function _wireTemplatesRows() {
+  const list = document.getElementById('ac-templates-prompts-list');
+  if (!list) return;
+  for (const row of list.querySelectorAll(':scope > .ac-row')) {
+    const head = row.querySelector(':scope > .ac-ability-row');
+    head?.addEventListener('click', (e) => {
+      if (e.target.closest('select, input, button, a, label, pre, textarea')) return;
+      row.classList.toggle('expanded');
+    });
+  }
+}
+
 // ── Public API ───────────────────────────────────────────────────────────
 
 export function init() {
@@ -1716,6 +1746,7 @@ export function init() {
   initSchedulerPanel();
   initEventSourcesPanel();
   _wireAutomationRows();
+  _wireTemplatesRows();
 
   // `_initIntegrations` is the async structural build (ability table +
   // integration relocation) that the `is-building` gate waits on. Drop the gate
@@ -1732,6 +1763,7 @@ export function init() {
   // beat before the data lands — the "transient incorrect view". load() still
   // refreshes the data on each later activation; that's just an idempotent
   // re-fetch over the already-revealed tables.
+  _lastAgentLoadAt = Date.now();
   _initIntegrations()
     .then(() => _loadIntegrations())
     .catch(() => {})
@@ -1762,6 +1794,11 @@ function _clearBuildGate() {
 }
 
 export function load() {
+  // Skip the re-fetch when init() just kicked off the same three loads (first
+  // open fires init() then load() in the same tick). Anything past a couple of
+  // seconds is a real re-activation, so refresh normally.
+  if (Date.now() - _lastAgentLoadAt < 2000) return;
+  _lastAgentLoadAt = Date.now();
   _modelTable?.reload();
   _loadSuggestionsCheckbox();
   _loadIntegrations();

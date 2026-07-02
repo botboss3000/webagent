@@ -1,6 +1,6 @@
 """Local server lifecycle — start / stop / restart / status / logs.
 
-The webAgent server is one launcher (``run.py``) bound to port 8080, with a
+The WebAgent server is one launcher (``run.py``) bound to port 8080, with a
 ``/health`` endpoint. These tools run it from the linked checkout's own virtual
 environment as a **detached** background process so it outlives a single tool
 call, recording the PID + a captured log in the manager's per-user data dir
@@ -93,7 +93,7 @@ def _proot_project_path(host_path: Path) -> str:
 
     Termux binds /data/data/com.termux/files/home -> /data/data/com.termux/files/home
     (identity mount for the Termux home), so host paths inside the user's home
-    are the same inside the proot.  The webAgent clone lives on the Termux
+    are the same inside the proot.  The WebAgent clone lives on the Termux
     filesystem, not under the proot's own rootfs.
     """
     return str(host_path)
@@ -346,7 +346,7 @@ async def server_start(ctx: ToolContext) -> str:
     _kill_listeners_on_port(PORT)
     runpy = ctx.project_root / "run.py"
     if not runpy.exists():
-        return "Error: run.py not found in the checkout — is this a complete webAgent install?"
+        return "Error: run.py not found in the checkout — is this a complete WebAgent install?"
     try:
         if _is_termux():
             distro = _proot_distro()
@@ -364,7 +364,7 @@ async def server_start(ctx: ToolContext) -> str:
         ctx.audit("server_start", {}, False, str(e))
         return f"Error: failed to launch the server: {e}"
     # Poll /health until healthy so we report a real outcome, not just "spawned".
-    # A cold webAgent boot (FastAPI + uvicorn + a headless-browser import + the
+    # A cold WebAgent boot (FastAPI + uvicorn + a headless-browser import + the
     # first-run DB build) routinely takes well over 10s; the launcher waits up to
     # 60s. Wait ~30s here with a tolerant per-probe timeout so a slow-but-fine
     # startup isn't reported as a failure. (The status dot polls independently,
@@ -413,13 +413,36 @@ async def server_stop(ctx: ToolContext) -> str:
 
 async def server_kill_all(ctx: ToolContext) -> str:
     """Force-kill EVERY process on port 8080 (not just the tracked server) plus any
-    run.py / proot wrappers. Like kill.bat: finds all listeners on 8080, sends SIGKILL,
-    clears the tracked PID state. Returns a list of what was killed."""
+    run.py / proot wrappers. Like kill_webagent.bat: the server stays DOWN — the
+    keep-alive guardian is turned off and its process stopped FIRST so it can't
+    relaunch the server we're about to kill. Returns a list of what was killed."""
     if not ctx.writes_enabled:
         return WRITES_DISABLED_MSG
     killed: list[int] = []
     warnings: list[str] = []
     my_pid = os.getpid()
+
+    # 0) Disable + stop the keep-alive guardian BEFORE killing anything, so it
+    #    can't auto-relaunch the server within its supervision window. Persisting
+    #    the off switch (guardian.json) means the server stays down across ticks
+    #    and TUI restarts until keep-alive is deliberately turned back on — the
+    #    in-TUI equivalent of kill_webagent.bat killing the guardian outright.
+    guardian_stopped = False
+    try:
+        from .. import guardian
+        guardian.write_enabled(False)
+        guardian_stopped = guardian.stop_guardian()
+    except Exception as exc:  # never let a guardian hiccup block the kill sweep
+        warnings.append(f"Phase 0 (stop guardian) failed: {exc}")
+    # Also tell the TUI's in-process watchdog to stand down, so it doesn't
+    # auto-restart the server we're about to kill (it's the second supervisor).
+    try:
+        from ..watchdog import active_watchdog
+        wd = active_watchdog()
+        if wd is not None:
+            wd.suppress_recovery()
+    except Exception as exc:
+        warnings.append(f"Phase 0 (suppress watchdog) failed: {exc}")
 
     # 1) Every listener on port 8080 — kill every PID holding the port
     if _IS_WIN:
@@ -488,9 +511,12 @@ async def server_kill_all(ctx: ToolContext) -> str:
             warnings.append(f"Phase 3 (ps aux sweep) failed: {exc}")
 
     killed.sort()
-    ctx.audit("server_kill_all", {"pids": killed, "warnings": warnings}, bool(killed), "done")
+    ctx.audit("server_kill_all",
+              {"pids": killed, "warnings": warnings, "guardian_stopped": guardian_stopped},
+              bool(killed), "done")
     msg = (f"[server] force-killed {len(killed)} process(es) on port 8080"
            + (f" (pids {killed})" if killed else " — nothing found."))
+    msg += " — keep-alive guardian OFF, the server will stay down until you turn it back on."
     if warnings:
         msg += f"  ⚠ {len(warnings)} warning(s): " + "; ".join(warnings)
     return msg

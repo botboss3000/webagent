@@ -5,7 +5,7 @@
  * chat pill" assistants (App Settings, Agent Settings, …).
  *
  * A page-assistant pill floats at the bottom of an admin config page and hands the
- * user's request to webAgent the MANAGER. Two things make it "context-aware":
+ * user's request to WebAgent the MANAGER. Two things make it "context-aware":
  *   • the pill's PLACEHOLDER changes to match the section the mouse is over
  *     (each section carries `data-pa-area="<key>"`), animated like a typewriter
  *     through a few LLM-generated example requests for that section; and
@@ -100,7 +100,7 @@ export function createPageAssistant(opts = {}) {
   }
 
   function title() {
-    return (config && config.title) || 'webAgent';
+    return (config && config.title) || 'WebAgent';
   }
 
   // ── Suggestions (rotating example requests per area) ────────────────────────
@@ -125,7 +125,7 @@ export function createPageAssistant(opts = {}) {
     const a = area && areas[area];
     input.placeholder = (a && a.placeholder)
       || (config && config.default_placeholder)
-      || 'Tell webAgent what to change on this page…';
+      || 'Tell WebAgent what to change on this page…';
   }
 
   // Ask the backend for a few example requests for one area. Cached per area, so

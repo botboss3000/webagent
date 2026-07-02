@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 
 _USAGE = (
-    "webAgent Server Manager (TUI)\n"
+    "WebAgent Server Manager (TUI)\n"
     "\n"
     "Usage: python -m tui_app\n"
     "\n"

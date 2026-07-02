@@ -71,20 +71,20 @@ function _statusBadge(status) {
   return `<span class="sess-status ${_esc(cls)}">${_esc(status)}</span>`;
 }
 
-// Small icon badges marking sessions that built/edited a canvas (has_canvas)
+// Small icon badges marking sessions that built/edited a genui (has_genui)
 // and/or drove the live web browser (has_browser). Both are derived server-side
 // from the tool_executions log. Renders an em-dash when neither applies.
 // The badges are clickable: a click switches the chat to that session and opens
-// the Canvas or Browser tab so you can jump straight to the artifact
+// the Gen UI or Browser tab so you can jump straight to the artifact
 // the session produced. (Handled by the delegated tbody click in _wireDom.)
 function _linkBadges(s) {
   const sid = _esc(s.session_id);
   const aid = _esc(s.agent_id || '');
   let html = '';
-  if (s.has_canvas) {
-    html += `<span class="sess-link-badge canvas" role="button" tabindex="0"
-      data-link-kind="canvas" data-session-id="${sid}" data-agent-id="${aid}"
-      title="Open this session's canvas">
+  if (s.has_genui) {
+    html += `<span class="sess-link-badge genui" role="button" tabindex="0"
+      data-link-kind="genui" data-session-id="${sid}" data-agent-id="${aid}"
+      title="Open this session's genui">
       <i data-lucide="layout-dashboard" style="width:12px;height:12px;"></i></span>`;
   }
   if (s.has_browser) {
@@ -286,7 +286,7 @@ async function _loadAndRender() {
 // ── Row click: switch to that session ──────────────────────────────
 
 // Make `sessionId` the active chat session (switching agent if needed) and
-// optionally jump to a main-panel tab afterwards ('canvas' = Canvas,
+// optionally jump to a main-panel tab afterwards ('genui' = Gen UI,
 // 'browser' = Browser page). Shared by row clicks and the Links badges.
 function _switchToSession(sessionId, agentId, { tab = null, title = null } = {}) {
   if (_binView || !sessionId) return;  // recycled sessions aren't loadable
@@ -590,11 +590,11 @@ function _wireDom() {
         _toggleCheck(checkCell);
         return;
       }
-      // Links column: open the canvas / browser for that session.
+      // Links column: open the genui / browser for that session.
       const linkBadge = e.target.closest('.sess-link-badge');
       if (linkBadge) {
         e.stopPropagation();
-        const tab = linkBadge.dataset.linkKind === 'canvas' ? 'canvas' : 'browser';
+        const tab = linkBadge.dataset.linkKind === 'genui' ? 'genui' : 'browser';
         _switchToSession(linkBadge.dataset.sessionId, linkBadge.dataset.agentId, { tab });
         return;
       }

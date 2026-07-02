@@ -158,7 +158,7 @@ export function createChatWidget(opts = {}) {
                                   //   tool chip and folds it to the agent for that turn.
     executionMode = 'ask',
     transformMessage = null,   // async (text) => sentText — wrap each outgoing message
-                               //   (e.g. Canvas tags every send with its page header);
+                               //   (e.g. Gen UI tags every send with its page header);
                                //   the user bubble still shows the raw typed text.
     onDone = null,             // (finalText) => void — fires once per finished turn
     onClose = null,            // () => void
@@ -662,7 +662,7 @@ export function createChatWidget(opts = {}) {
     const userBubble = _addBubble('user', msg || (atts.length ? '(file attached)' : ''));
     _setStatus('running');
     // The user bubble shows what they typed (`msg`); the agent may receive a
-    // wrapped form (e.g. Canvas tags it with the page header) via transformMessage.
+    // wrapped form (e.g. Gen UI tags it with the page header) via transformMessage.
     let outgoing = msg;
     if (msg && typeof transformMessage === 'function') {
       try { outgoing = await transformMessage(msg); } catch (_) { outgoing = msg; }
@@ -885,11 +885,11 @@ export function createChatWidget(opts = {}) {
   return widget;
 }
 
-// ── Shared: spawn a webAgent chat from an ability-table pill ───────────────────
+// ── Shared: spawn a WebAgent chat from an ability-table pill ───────────────────
 //
 // The hybrid search/chat pill above BOTH ability tables (per-agent Abilities tab
 // and admin Agent Settings) calls this on send. It opens a floating chat-widget
-// talking to webAgent the MANAGER (so it can build/configure agents and their
+// talking to WebAgent the MANAGER (so it can build/configure agents and their
 // abilities), carrying any attached files on the first message. The text is
 // wrapped with the `agents_page_handoff` template from
 // app/defaults/app-prompts.json (same tag the old footer pill used), with a
@@ -911,16 +911,16 @@ export async function spawnWebagentAbilityChat({ text, attachmentIds } = {}) {
     if (resp.ok) {
       const data = await resp.json();
       const tpl = (data.ui_handoffs || {}).agents_page_handoff?.template || '';
-      tagged = tpl ? tpl.replace(/\{text\}/g, raw) : `[webAgent Request | Source: Agents Page]: ${raw}`;
+      tagged = tpl ? tpl.replace(/\{text\}/g, raw) : `[WebAgent Request | Source: Agents Page]: ${raw}`;
     } else {
-      tagged = `[webAgent Request | Source: Agents Page]: ${raw}`;
+      tagged = `[WebAgent Request | Source: Agents Page]: ${raw}`;
     }
   } catch (_) {
-    tagged = `[webAgent Request | Source: Agents Page]: ${raw}`;
+    tagged = `[WebAgent Request | Source: Agents Page]: ${raw}`;
   }
 
   const w = createChatWidget({
-    title: 'webAgent',
+    title: 'WebAgent',
     iconName: 'bot',
     ensureAgent: app.startWebagentSession,
     initialMessage: tagged,
@@ -930,13 +930,13 @@ export async function spawnWebagentAbilityChat({ text, attachmentIds } = {}) {
   return w;
 }
 
-// ── Shared: spawn a webAgent chat from a PAGE-ASSISTANT pill ───────────────────
+// ── Shared: spawn a WebAgent chat from a PAGE-ASSISTANT pill ───────────────────
 //
 // Generic sibling of spawnWebagentAbilityChat for the per-page "advanced chat
 // pill" assistants (App Settings, etc.). The CALLER assembles the full message —
 // typically a page-context intro + the hovered area's prompt + the user's words,
 // drawn from app/defaults/app-prompts.json → page_assistants.* — and passes it as
-// `message`. This just opens a floating chat-widget talking to webAgent the
+// `message`. This just opens a floating chat-widget talking to WebAgent the
 // MANAGER (so it can edit pages, look and config), carrying any attachments on
 // the first message. Resolving the manager + its session is delegated to
 // `app.startWebagentSession` via the widget's `ensureAgent` hook.
@@ -944,14 +944,14 @@ export async function spawnWebagentAbilityChat({ text, attachmentIds } = {}) {
 // @param {object} arg
 // @param {string} arg.message            - the fully-assembled message to send
 // @param {string[]} [arg.attachmentIds]  - attachment_ids to ride the first message
-// @param {string} [arg.title]            - widget title (defaults to "webAgent")
+// @param {string} [arg.title]            - widget title (defaults to "WebAgent")
 export async function spawnWebagentPageChat({ message, attachmentIds, title } = {}) {
   const msg = (message || '').trim();
   const atts = Array.isArray(attachmentIds) ? attachmentIds.filter(Boolean) : [];
   if (!msg && !atts.length) return null;
 
   const w = createChatWidget({
-    title: title || 'webAgent',
+    title: title || 'WebAgent',
     iconName: 'bot',
     ensureAgent: app.startWebagentSession,
     initialMessage: msg,

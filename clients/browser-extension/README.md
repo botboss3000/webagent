@@ -1,7 +1,7 @@
-# webAgent Browser Connector (extension)
+# WebAgent Browser Connector (extension)
 
 Client half of the **connector** browser backend. Install this in your own Chrome
-and your webAgent server can drive *this* browser — navigate, click, type, read,
+and your WebAgent server can drive *this* browser — navigate, click, type, read,
 screenshot — in your real, logged-in session, even when the server is on another
 machine across the internet. You watch every action happen and can pause anytime.
 
@@ -14,7 +14,7 @@ The server half lives in the main repo:
 ## How it fits
 
 ```
-This browser (extension) ──WebSocket──► webAgent server
+This browser (extension) ──WebSocket──► WebAgent server
   • holds one authed socket               • agent + browser_action (unchanged)
   • runs commands on real tabs            • routes to you when a browser session's
   • returns text / screenshots              backend is "connector"
@@ -29,7 +29,7 @@ always does; it never knows which backend ran it.
 1. Open `chrome://extensions`.
 2. Turn on **Developer mode** (top-right).
 3. Click **Load unpacked** and choose this `clients/browser-extension/` folder.
-4. In the webAgent app, open the **Browser** page and click the **plug** icon
+4. In the WebAgent app, open the **Browser** page and click the **plug** icon
    (“Pair extension”). It shows a **Server URL** and a long-lived **Token** — copy
    both. (This is how you get a token without touching any developer tools; the
    token is scoped to your account and lasts ~1 year.)
@@ -46,7 +46,7 @@ always does; it never knows which backend ran it.
 
 ## Use it
 
-1. In the webAgent app, open the **Browser** page, pick (or create) a browser
+1. In the WebAgent app, open the **Browser** page, pick (or create) a browser
    session shared with an agent, and switch its backend to **“My browser
    (extension)”**.
 2. Ask the agent to browse. It opens/drives a visible tab here; the badge shows a
@@ -75,7 +75,7 @@ behind a per-action Allow prompt**).
   auto-reconnects, but brief drops are normal. A command issued while disconnected
   returns a clear "extension not connected" error.
 - **Content-restricted pages**: strict-CSP sites can block `evaluate`; cross-origin
-  iframes and some shadow-DOM/canvas apps may not be fully driveable from a content
+  iframes and some shadow-DOM/genui apps may not be fully driveable from a content
   script.
 - **Screenshots** capture only the visible portion of the active tab (no full-page
   / background-tab capture yet).

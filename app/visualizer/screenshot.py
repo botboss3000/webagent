@@ -1,10 +1,10 @@
 """
-screenshot_canvas — give the design agent *eyes* on a canvas it built.
+screenshot_genui — give the design agent *eyes* on a genui it built.
 
-An agent writes canvas HTML, but that HTML only renders client-side (in the
+An agent writes genui HTML, but that HTML only renders client-side (in the
 user's browser, inside a shadow root). The agent never sees the visual result,
 so it cannot catch a layout that came out wrong — not full-width, bad spacing,
-illegible in light mode. This module renders the saved canvas **headlessly, the
+illegible in light mode. This module renders the saved genui **headlessly, the
 same way the app mounts it**, then hands back:
 
   • a real PNG screenshot, saved as a session attachment so the USER sees it in
@@ -12,11 +12,11 @@ same way the app mounts it**, then hands back:
   • plain-text **signals** (width-fill %, console errors, blank-render hint) so
     the agent gets the most important verdicts even without a vision call.
 
-It is a sibling of ``render_visual`` / ``get_canvas`` in the **Visualizer**
+It is a sibling of ``render_visual`` / ``get_genui`` in the **Visualizer**
 ability and is auto-discovered — no core file is touched. Because first-class
-canvases run agent-authored page code with the user's own app trust, this tool
-follows the same gate as the live canvas render (app/auth `canvas_first_class` →
-``user_may_access_page``): the Canvas page's VISIBILITY setting, enforced
+genui run agent-authored page code with the user's own app trust, this tool
+follows the same gate as the live genui render (app/auth `genui_first_class` →
+``user_may_access_page``): the Gen UI page's VISIBILITY setting, enforced
 server-side — registration-required by default ("auth"), "all" includes
 anonymous, "off" is admins-only; admins and 'open' single-user mode always pass.
 A caller the setting excludes gets a disabled error and never launches a browser.
@@ -42,20 +42,20 @@ _VIEWPORT_H = 900
 # Below this fraction of the viewport, content reads as unintentionally narrow.
 _NARROW_THRESHOLD = 0.75
 
-# Map Playwright console message types onto the canvas log's levels (matches the
-# live-browser capture in canvas.js: log/info/warn/error/debug).
+# Map Playwright console message types onto the genui log's levels (matches the
+# live-browser capture in genui.js: log/info/warn/error/debug).
 _PW_LEVEL = {"log": "log", "info": "info", "debug": "debug", "error": "error",
              "warning": "warn", "warn": "warn"}
 
-# The exact base style the live app injects into every canvas shadow root BEFORE
-# the agent's own CSS (canvas.js `_CANVAS_BASE_STYLE`). Kept in sync so the
-# headless render matches what the user sees. (grep: SISTER-SYNC: CANVAS-BASE-STYLE)
-_CANVAS_BASE_STYLE = (
+# The exact base style the live app injects into every genui shadow root BEFORE
+# the agent's own CSS (genui.js `_GENUI_BASE_STYLE`). Kept in sync so the
+# headless render matches what the user sees. (grep: SISTER-SYNC: GENUI-BASE-STYLE)
+_GENUI_BASE_STYLE = (
     ":host{display:block;width:100%;min-height:100%;background:transparent;"
     "font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
     "color:#c0caf5;-webkit-font-smoothing:antialiased;}"
     "*,*::before,*::after{box-sizing:border-box;}"
-    ".wa-canvas-body{min-height:100%;}"  # private wrapper class — matches canvas.js (WA-CANVAS-BODY)
+    ".wa-genui-body{min-height:100%;}"  # private wrapper class — matches genui.js (WA-GENUI-BODY)
 )
 
 
@@ -66,75 +66,75 @@ def _repo_root() -> Path:
 
 def _design_tokens_css() -> str:
     """The app's global design-system stylesheet, inlined so every ``var(--token)``
-    a canvas consumes (colours, borders, shadows, fonts) resolves exactly as it
+    a genui consumes (colours, borders, shadows, fonts) resolves exactly as it
     does in the live app — and so the dark/light flip works. Without it the tokens
     are empty and the shot is unstyled garbage."""
     css_path = _repo_root() / "ui" / "shared" / "css" / "design-system.css"
     try:
         return css_path.read_text(encoding="utf-8")
     except Exception as e:  # pragma: no cover - defensive
-        logger.warning("screenshot_canvas: could not read design-system.css: %s", e)
+        logger.warning("screenshot_genui: could not read design-system.css: %s", e)
         return ""
 
 
 def _shell_html(theme: str, design_css: str) -> str:
     """The blank page: app design tokens inlined + the theme class on <body>. The
-    canvas itself is grafted in afterwards via page.evaluate(_BOOTSTRAP_JS, ...) so
-    the canvas markup never passes through the HTML parser of this document — a
-    canvas containing its own `</script>` would otherwise break an inline script."""
+    genui itself is grafted in afterwards via page.evaluate(_BOOTSTRAP_JS, ...) so
+    the genui markup never passes through the HTML parser of this document — a
+    genui containing its own `</script>` would otherwise break an inline script."""
     body_class = "light-mode" if theme == "light" else ""
     return (
         "<!doctype html><html><head><meta charset=\"utf-8\">"
         "<style>" + design_css + "</style>"
         "<style>html,body{margin:0;padding:0;min-height:100vh;background:var(--bg-0,#16161e);}"
-        "#canvas-shot-host{width:100%;}</style>"
+        "#genui-shot-host{width:100%;}</style>"
         "</head><body class=\"" + body_class + "\"></body></html>"
     )
 
 
-# Reconstructs the real canvas runtime, mirroring canvas.js `mountCanvas`: a
-# host div with an OPEN shadow root, the base style first, the canvas's own
-# <style>/<link> lifted in, the body markup wrapped in `<div class="wa-canvas-body">`,
-# then the canvas's <script>s re-created so they execute and mount via any of the
-# three live forms: `WebagentCanvas.register(fn)`, a top-level `mount(root, api)`,
-# or inline use of `WebagentCanvas.root`/`.api`. A stub `api` (the real verbs as
-# no-ops) lets a contract-compliant canvas wire up. Receives {raw, base, theme} as ONE argument
-# so the canvas HTML arrives as data, never as parsed markup.
+# Reconstructs the real genui runtime, mirroring genui.js `mountGenui`: a
+# host div with an OPEN shadow root, the base style first, the genui's own
+# <style>/<link> lifted in, the body markup wrapped in `<div class="wa-genui-body">`,
+# then the genui's <script>s re-created so they execute and mount via any of the
+# three live forms: `WebagentGenui.register(fn)`, a top-level `mount(root, api)`,
+# or inline use of `WebagentGenui.root`/`.api`. A stub `api` (the real verbs as
+# no-ops) lets a contract-compliant genui wire up. Receives {raw, base, theme} as ONE argument
+# so the genui HTML arrives as data, never as parsed markup.
 _BOOTSTRAP_JS = """
 (arg) => {
   const { raw, base, theme, data } = arg;
-  window.__canvasErrors = window.__canvasErrors || [];
-  // Bake the canvas's data bag in just like the live /html endpoint does, so a
+  window.__genuiErrors = window.__genuiErrors || [];
+  // Bake the genui's data bag in just like the live /html endpoint does, so a
   // page that reads api.getData() renders its real content in the screenshot.
-  window.__CANVAS_DATA = (data && typeof data === 'object') ? data : {};
+  window.__GENUI_DATA = (data && typeof data === 'object') ? data : {};
   const host = document.createElement('div');
-  host.id = 'canvas-shot-host';
+  host.id = 'genui-shot-host';
   host.className = theme;
   host.style.cssText = 'display:block;width:100%;min-height:100%;';
   document.body.appendChild(host);
   const shadow = host.attachShadow({ mode: 'open' });
-  window.__canvasShadow = shadow;
+  window.__genuiShadow = shadow;
   const baseEl = document.createElement('style'); baseEl.textContent = base; shadow.appendChild(baseEl);
   let doc = null;
   try { doc = new DOMParser().parseFromString(raw, 'text/html'); } catch (e) { doc = null; }
   const STUB = {
     theme: theme, getTheme: () => theme, onTheme: () => {}, onStatus: () => {},
     chat: () => {}, send: () => {}, action: () => {}, refresh: () => {},
-    getData: () => window.__CANVAS_DATA || {},
+    getData: () => window.__GENUI_DATA || {},
     storeCredential: () => Promise.resolve(false),
   };
-  // Mirror the live engine's three mount forms (canvas.js): register(), a
-  // top-level drop-in mount(root, api), or inline use of WebagentCanvas.root/.api.
+  // Mirror the live engine's three mount forms (genui.js): register(), a
+  // top-level drop-in mount(root, api), or inline use of WebagentGenui.root/.api.
   let __mounted = false;
   const __runMount = (fn) => {
     if (typeof fn !== 'function') return;
     __mounted = true;
     try { fn(shadow, STUB); }
-    catch (e) { window.__canvasErrors.push('mount: ' + (e && e.message || e)); }
+    catch (e) { window.__genuiErrors.push('mount: ' + (e && e.message || e)); }
   };
-  window.WebagentCanvas = {
+  window.WebagentGenui = {
     root: shadow, api: STUB,
-    getData: () => window.__CANVAS_DATA || {},
+    getData: () => window.__GENUI_DATA || {},
     register(fn) { __runMount(fn); },
     onCleanup() {},
   };
@@ -142,7 +142,7 @@ _BOOTSTRAP_JS = """
   if (!doc) return;
   doc.querySelectorAll('style').forEach((st) => { const s = document.createElement('style'); s.textContent = st.textContent; shadow.appendChild(s); });
   doc.querySelectorAll('link[rel="stylesheet"]').forEach((ln) => { const l = document.createElement('link'); l.rel = 'stylesheet'; if (ln.getAttribute('href')) l.href = ln.getAttribute('href'); shadow.appendChild(l); });
-  const root = document.createElement('div'); root.className = 'wa-canvas-body';
+  const root = document.createElement('div'); root.className = 'wa-genui-body';
   root.innerHTML = doc.body ? doc.body.innerHTML : raw;
   root.querySelectorAll('script').forEach((s) => s.remove());
   shadow.appendChild(root);
@@ -164,12 +164,12 @@ _BOOTSTRAP_JS = """
 _MEASURE_JS = """
 () => {
   const out = { hostWidth: 0, contentSpan: 0, fillPct: 0, contentHeight: 0, blockCount: 0 };
-  const shadow = window.__canvasShadow;
+  const shadow = window.__genuiShadow;
   if (!shadow) return out;
-  const host = document.getElementById('canvas-shot-host');
+  const host = document.getElementById('genui-shot-host');
   const hb = host ? host.getBoundingClientRect() : { left: 0, right: 0, width: 0 };
   out.hostWidth = Math.round(hb.width);
-  const rootEl = shadow.querySelector('.wa-canvas-body');
+  const rootEl = shadow.querySelector('.wa-genui-body');
   if (!rootEl) return out;
   let minL = Infinity, maxR = -Infinity, maxB = -Infinity, n = 0;
   const walk = (el, depth) => {
@@ -193,13 +193,13 @@ _MEASURE_JS = """
 """
 
 
-# Clicks an element INSIDE the canvas shadow root (where the agent's markup lives) so
+# Clicks an element INSIDE the genui shadow root (where the agent's markup lives) so
 # the agent can verify an interaction — a name opening a profile panel, a calendar day
 # expanding, a tab switching. Returns true if the selector matched something. Runs in
 # the shadow, never `document`, mirroring the real mount scope.
 _CLICK_JS = """
 (sel) => {
-  const sh = window.__canvasShadow;
+  const sh = window.__genuiShadow;
   if (!sh) return false;
   let el = null;
   try { el = sh.querySelector(sel); } catch (e) { return false; }
@@ -211,7 +211,7 @@ _CLICK_JS = """
 """
 
 
-# A coarse "what is visible right now" signature of the canvas, used to tell whether a
+# A coarse "what is visible right now" signature of the genui, used to tell whether a
 # click actually CHANGED anything (opened a panel, expanded a row, swapped a tab). A click
 # can match an element and fire with no effect — a mis-wired handler, the wrong element
 # toggled, an `.open` class that never reveals — and the geometric signals + a flaky vision
@@ -220,9 +220,9 @@ _CLICK_JS = """
 # tab/content swap changes it). Equal before and after a click that LANDED ⇒ likely broken.
 _CHANGE_SIG_JS = """
 () => {
-  const sh = window.__canvasShadow;
+  const sh = window.__genuiShadow;
   if (!sh) return null;
-  const root = sh.querySelector('.wa-canvas-body') || sh;
+  const root = sh.querySelector('.wa-genui-body') || sh;
   let vis = 0;
   const els = root.querySelectorAll('*');
   for (const el of els) {
@@ -249,12 +249,12 @@ def _normalize_clicks(click) -> List[str]:
     return []
 
 
-async def _render_one(playwright, canvas_html: str, theme: str, design_css: str,
+async def _render_one(playwright, genui_html: str, theme: str, design_css: str,
                       clicks: Optional[List[str]] = None,
-                      canvas_data: Optional[Dict] = None) -> Dict:
+                      genui_data: Optional[Dict] = None) -> Dict:
     """Render one theme, returning {png, signals, errors, clicked, missed}.
 
-    If ``clicks`` is given, each selector is clicked inside the canvas (in order, with
+    If ``clicks`` is given, each selector is clicked inside the genui (in order, with
     a short settle between) AFTER the initial mount but BEFORE the measure/shot — so the
     screenshot, signals and vision review all reflect the POST-click state (the opened
     panel / popover / swapped content), which is how the agent verifies an interaction."""
@@ -265,7 +265,7 @@ async def _render_one(playwright, canvas_html: str, theme: str, design_css: str,
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            # Synthetic webcam/mic so getUserMedia-using canvases mount instead of
+            # Synthetic webcam/mic so getUserMedia-using genui mount instead of
             # prompting or throwing.
             "--use-fake-ui-for-media-stream",
             "--use-fake-device-for-media-stream",
@@ -273,8 +273,8 @@ async def _render_one(playwright, canvas_html: str, theme: str, design_css: str,
     )
     errors: List[str] = []
     # Every console message at every level (not just errors), so this headless render
-    # can feed the same per-canvas console.log the live browser writes — letting the
-    # agent read a build's output via get_canvas_logs right after rendering, with no
+    # can feed the same per-genui console.log the live browser writes — letting the
+    # agent read a build's output via get_genui_logs right after rendering, with no
     # live user session. `errors` stays the errors-only list the width/blank notes use.
     console_entries: List[Dict] = []
     try:
@@ -299,13 +299,13 @@ async def _render_one(playwright, canvas_html: str, theme: str, design_css: str,
 
         await page.set_content(_shell_html(theme, design_css), wait_until="load")
         host_theme = "light" if theme == "light" else "dark"
-        # Graft the canvas in as DATA (one argument), never as parsed markup, so a
-        # canvas carrying its own </script> can't break the injection.
+        # Graft the genui in as DATA (one argument), never as parsed markup, so a
+        # genui carrying its own </script> can't break the injection.
         await page.evaluate(_BOOTSTRAP_JS, {
-            "raw": canvas_html,
-            "base": _CANVAS_BASE_STYLE,
+            "raw": genui_html,
+            "base": _GENUI_BASE_STYLE,
             "theme": host_theme,
-            "data": canvas_data if isinstance(canvas_data, dict) else {},
+            "data": genui_data if isinstance(genui_data, dict) else {},
         })
         # Let CDN assets, fonts and any rAF-driven first paint settle.
         try:
@@ -338,14 +338,14 @@ async def _render_one(playwright, canvas_html: str, theme: str, design_css: str,
                 missed.append(sel)
             # A click may have triggered a new script error — keep capturing.
             try:
-                more = await page.evaluate("() => (window.__canvasErrors || [])")
+                more = await page.evaluate("() => (window.__genuiErrors || [])")
                 for e in (more or []):
                     if str(e) not in errors:
                         errors.append(str(e))
             except Exception:
                 pass
 
-        # Did the click(s) actually change the visible canvas? Compare the signature.
+        # Did the click(s) actually change the visible genui? Compare the signature.
         # None => couldn't measure (don't claim either way). True/False only when we have
         # both a landed click and a usable before/after reading.
         click_changed: Optional[bool] = None
@@ -358,19 +358,19 @@ async def _render_one(playwright, canvas_html: str, theme: str, design_css: str,
                 click_changed = (sig_after != sig_before)
 
         signals = await page.evaluate(_MEASURE_JS)
-        # Any errors the canvas script pushed onto window.__canvasErrors.
+        # Any errors the genui script pushed onto window.__genuiErrors.
         _seen_console = {ce.get("text") for ce in console_entries}
         try:
-            mount_errors = await page.evaluate("() => (window.__canvasErrors || [])")
+            mount_errors = await page.evaluate("() => (window.__genuiErrors || [])")
             for e in (mount_errors or []):
                 errors.append(str(e))
-                if str(e) not in _seen_console:  # also record on the per-canvas log
+                if str(e) not in _seen_console:  # also record on the per-genui log
                     console_entries.append({"level": "error", "text": str(e)})
                     _seen_console.add(str(e))
         except Exception:
             pass
 
-        host = page.locator("#canvas-shot-host")
+        host = page.locator("#genui-shot-host")
         try:
             png = await host.screenshot(type="png")
         except Exception:
@@ -393,7 +393,7 @@ def _interpret(signals: Dict, errors: List[str], png_len: int) -> List[str]:
     host_w = signals.get("hostWidth") or _VIEWPORT_W
     if fill and fill < int(_NARROW_THRESHOLD * 100):
         notes.append(
-            "WIDTH: content fills only {}% of the {}px-wide canvas — that is a DEFECT, not a "
+            "WIDTH: content fills only {}% of the {}px-wide genui — that is a DEFECT, not a "
             "style choice. Do NOT rationalize it as a 'balanced' or 'intentional 2-column' "
             "layout: a dashboard with a large empty side gutter is wrong and must be fixed before "
             "you call this done. Usual causes: fixed-width columns or a max-width cap instead of "
@@ -403,10 +403,10 @@ def _interpret(signals: Dict, errors: List[str], png_len: int) -> List[str]:
             "re-screenshot — this note must be gone.".format(fill, host_w)
         )
     elif fill:
-        notes.append("WIDTH: content fills {}% of the canvas width — good.".format(fill))
+        notes.append("WIDTH: content fills {}% of the genui width — good.".format(fill))
     if (signals.get("blockCount") or 0) == 0 or png_len < 2000:
         notes.append(
-            "BLANK: almost nothing rendered (the shot is near-empty). The canvas "
+            "BLANK: almost nothing rendered (the shot is near-empty). The genui "
             "may have a script error or its markup never mounted — check the errors."
         )
     if errors:
@@ -424,24 +424,24 @@ def _interpret(signals: Dict, errors: List[str], png_len: int) -> List[str]:
         if "null" in low or "undefined" in low:
             note += (" A 'Cannot ... properties of null/undefined' here is almost always the "
                      "shadow-scope bug: you used document.getElementById / document.querySelector "
-                     "(which find NOTHING inside the canvas's shadow root) or ran setup at script "
-                     "top-level. Query through the `root` handed to WebagentCanvas.register(root, api) "
+                     "(which find NOTHING inside the genui's shadow root) or ran setup at script "
+                     "top-level. Query through the `root` handed to WebagentGenui.register(root, api) "
                      "and do ALL setup inside that callback, then re-screenshot until this is gone.")
         notes.append(note)
     return notes
 
 
-def _palette_lint(canvas_html: str) -> Optional[str]:
-    """Flag hardcoded hex colours that AREN'T var() fallbacks — they freeze the canvas
+def _palette_lint(genui_html: str) -> Optional[str]:
+    """Flag hardcoded hex colours that AREN'T var() fallbacks — they freeze the genui
     against a theme re-skin. This is the #1 follow-up palette mistake after a self-defined
     :host block: hardcoding status / level / avatar colours (green/amber/red/purple) with
     literal hex instead of the app's status + accent tokens. Source-level, theme-independent
     — computed once and attached to every shot's notes so it rides the same verify loop as
     WIDTH / CONSOLE ERRORS that the agent already fixes against."""
-    if not canvas_html:
+    if not genui_html:
         return None
     # Remove var(--x, #hex) fallbacks first — a literal hex IS allowed there.
-    stripped = re.sub(r"var\([^()]*\)", "", canvas_html)
+    stripped = re.sub(r"var\([^()]*\)", "", genui_html)
     distinct: List[str] = []
     for h in re.findall(r"#[0-9a-fA-F]{6}\b", stripped):
         hl = h.lower()
@@ -454,7 +454,7 @@ def _palette_lint(canvas_html: str) -> Optional[str]:
     return (
         "PALETTE: {} distinct hardcoded hex colour(s) in your CSS that are NOT var() "
         "fallbacks (e.g. {}) — these are frozen and will NOT follow a theme re-skin or the "
-        "App-Settings palette override, so the canvas drifts from the app on any recolour. "
+        "App-Settings palette override, so the genui drifts from the app on any recolour. "
         "This is a DEFECT to fix, not a style choice: drive status/level colours from the app "
         "tokens var(--success) / var(--warning) / var(--danger), brand & categorical accents "
         "from var(--accent) (and --accent-soft/-mid), surfaces from var(--bg-elev), text from "
@@ -489,7 +489,7 @@ async def _resolve_vision_model(user_id: str):
         caps = await load_llm_capabilities_for_user(user_id)
         return pick_vision_model(caps)
     except Exception as e:  # pragma: no cover - defensive
-        logger.warning("screenshot_canvas: could not resolve vision model: %s", e)
+        logger.warning("screenshot_genui: could not resolve vision model: %s", e)
         return None
 
 
@@ -517,7 +517,7 @@ async def _vision_review(db, vision, att_id: str, theme: str) -> str:
         from app.agent.model_worker import ask_model
         att = await db.get_attachment(att_id)
         if not att:
-            logger.warning("screenshot_canvas: vision review skipped — attachment %s not found", att_id)
+            logger.warning("screenshot_genui: vision review skipped — attachment %s not found", att_id)
             return _unavailable("screenshot attachment could not be re-read")
         question = (
             "This dashboard/page is rendered in {} mode. An overlay panel, popover, or "
@@ -533,30 +533,30 @@ async def _vision_review(db, vision, att_id: str, theme: str) -> str:
             # it does not raise, so log here or the failure is invisible.
             model_name = (vision or {}).get("model", "?")
             logger.warning(
-                "screenshot_canvas: vision review empty (model=%s, theme=%s) — "
+                "screenshot_genui: vision review empty (model=%s, theme=%s) — "
                 "Image-in model returned no text (check App Config -> Models)", model_name, theme)
             return _unavailable("the Image-in model returned no text — check it is configured "
                                 "and reachable in App Config -> Models")
         return out.strip()
     except Exception as e:  # pragma: no cover - defensive
-        logger.warning("screenshot_canvas: vision review failed: %s", e)
+        logger.warning("screenshot_genui: vision review failed: %s", e)
         return _unavailable("vision review errored: {}".format(e))
 
 
-async def screenshot_canvas(
+async def screenshot_genui(
     slug: str,
     theme: str = "dark",
     click=None,
     user_id: str = "default",
     session_id: str = "",
 ) -> str:
-    """Render a saved canvas headlessly and return a screenshot + signals.
+    """Render a saved genui headlessly and return a screenshot + signals.
 
     Args:
-        slug:    Which saved canvas to render (same store get_canvas reads).
+        slug:    Which saved genui to render (same store get_genui reads).
         theme:   "dark" | "light" | "both".
         click:   Optional CSS selector (or list of selectors, clicked in order) to
-                 trigger INSIDE the canvas before the shot — so the screenshot,
+                 trigger INSIDE the genui before the shot — so the screenshot,
                  signals and vision review capture the OPENED state (a profile panel,
                  popover, expanded day, switched tab). Use it to verify an interaction
                  actually works, not just that the page looks right at rest.
@@ -565,18 +565,18 @@ async def screenshot_canvas(
     """
     from app.auth.identity import user_may_access_page
 
-    # Same gate as the live canvas render (app/auth/__init__.py `canvas_first_class`
-    # → caller_may_access_page): a canvas runs agent-authored code with the user's
-    # own app trust, so access follows the Canvas page's VISIBILITY setting,
+    # Same gate as the live genui render (app/auth/__init__.py `genui_first_class`
+    # → caller_may_access_page): a genui runs agent-authored code with the user's
+    # own app trust, so access follows the Gen UI page's VISIBILITY setting,
     # enforced server-side — registration-required by default, "all" includes
     # anonymous, "off" is admins-only. Admins and 'open' single-user/local mode
     # always pass. The session's user_id is injected by the ability.
-    if not await user_may_access_page(user_id, "main", "canvas"):
+    if not await user_may_access_page(user_id, "main", "genui"):
         return json.dumps({
             "status": "error",
             "code": "disabled_on_hosted",
-            "message": ("Canvas isn't enabled for this account — first-class canvases "
-                        "run agent-authored code, so they follow the Canvas page's "
+            "message": ("Gen UI isn't enabled for this account — first-class genui "
+                        "run agent-authored code, so they follow the Gen UI page's "
                         "visibility (registration required by default)."),
         })
 
@@ -587,27 +587,27 @@ async def screenshot_canvas(
 
     clicks = _normalize_clicks(click)
 
-    from app.visualizer.canvas import get_canvas_html, get_canvas_data
-    canvas_html = await get_canvas_html(user_id=user_id, slug=slug)
-    if not canvas_html:
-        return json.dumps({"status": "error", "message": "Canvas '{}' not found or empty.".format(slug)})
+    from app.visualizer.genui import get_genui_html, get_genui_data
+    genui_html = await get_genui_html(user_id=user_id, slug=slug)
+    if not genui_html:
+        return json.dumps({"status": "error", "message": "Gen UI '{}' not found or empty.".format(slug)})
     # The page's content lives in its data bag; bake it into the headless render
     # so the screenshot shows real data, not empty slots.
-    canvas_data = await get_canvas_data(user_id=user_id, slug=slug)
+    genui_data = await get_genui_data(user_id=user_id, slug=slug)
 
     try:
         from playwright.async_api import async_playwright  # lazy: heavy import
     except ImportError:
         return json.dumps({
             "status": "error",
-            "message": ("Playwright is not installed on this host, so the canvas "
+            "message": ("Playwright is not installed on this host, so the genui "
                         "cannot be rendered. Install it (the browser_control ability uses it too)."),
         })
 
     design_css = _design_tokens_css()
 
     # Source-level palette check (same for every theme) — computed once, attached below.
-    palette_note = _palette_lint(canvas_html)
+    palette_note = _palette_lint(genui_html)
 
     from app.db.attachments.file_store import store_file
     from app.db import get_db
@@ -619,15 +619,15 @@ async def screenshot_canvas(
 
     shots: List[Dict] = []
     # Console output captured across every theme this call renders — written to the
-    # canvas's own console.log at the end so get_canvas_logs reflects this headless
+    # genui's own console.log at the end so get_genui_logs reflects this headless
     # render (not only a live user session).
     headless_logs: List[Dict] = []
     try:
         async with async_playwright() as pw:
             for th in themes:
                 try:
-                    result = await _render_one(pw, canvas_html, th, design_css, clicks=clicks,
-                                               canvas_data=canvas_data)
+                    result = await _render_one(pw, genui_html, th, design_css, clicks=clicks,
+                                               genui_data=genui_data)
                 except Exception as e:
                     shots.append({"theme": th, "error": "render failed: {}".format(e)})
                     continue
@@ -635,7 +635,7 @@ async def screenshot_canvas(
                 png = result["png"]
                 signals = result["signals"]
                 errors = result["errors"]
-                # Collect this theme's console output for the per-canvas log. Tag the
+                # Collect this theme's console output for the per-genui log. Tag the
                 # theme when both are rendered so the agent can tell them apart.
                 for ce in (result.get("console_entries") or []):
                     txt = ce.get("text", "")
@@ -653,12 +653,12 @@ async def screenshot_canvas(
                     if did:
                         notes.append("CLICKED before shot: {} — this shot shows the resulting "
                                      "state. Confirm the panel/popover/content actually opened.".format(", ".join(did)))
-                    # Click landed but the canvas looks identical before/after → the
+                    # Click landed but the genui looks identical before/after → the
                     # interaction probably isn't wired right (the geometric/vision checks
                     # can't catch a click that fires with no effect; this can).
                     if result.get("click_changed") is False:
                         notes.append(
-                            "CLICK NO EFFECT: {} matched and was clicked, but NOTHING on the canvas "
+                            "CLICK NO EFFECT: {} matched and was clicked, but NOTHING on the genui "
                             "changed (same visible elements + text before and after) — so the shot is "
                             "effectively the resting state. This is a DEFECT for a click meant to OPEN "
                             "a panel / expand a row / switch a tab: the handler isn't firing or toggles "
@@ -674,7 +674,7 @@ async def screenshot_canvas(
                                      "selector/id matches your markup; the shot is the UNchanged "
                                      "state.".format(", ".join(missed)))
 
-                name = "canvas-{}-{}.png".format(slug, th)
+                name = "genui-{}-{}.png".format(slug, th)
                 stored = await store_file(
                     user_id=user_id, session_id=session_id,
                     file_bytes=png, filename=name, mime_type="image/png",
@@ -688,11 +688,11 @@ async def screenshot_canvas(
                         mime_type="image/png",
                         size_bytes=len(png or b""),
                         storage_path=stored.get("storage_path"),
-                        metadata={"kind": "canvas_screenshot", "slug": slug, "theme": th, "signals": signals},
+                        metadata={"kind": "genui_screenshot", "slug": slug, "theme": th, "signals": signals},
                         storage_provider=stored.get("storage_provider", "local"),
                     )
                 except Exception as e:
-                    logger.warning("screenshot_canvas: insert_attachment failed: %s", e)
+                    logger.warning("screenshot_genui: insert_attachment failed: %s", e)
 
                 # Fold in the vision verdict (same path as image_vision) so the agent
                 # gets an actual "looked at it" critique in this single call. When a
@@ -717,18 +717,18 @@ async def screenshot_canvas(
                     "missed": result.get("missed") or [],
                 })
     except Exception as e:
-        logger.exception("screenshot_canvas failed")
+        logger.exception("screenshot_genui failed")
         return json.dumps({"status": "error", "message": "Rendering failed: {}".format(e)})
 
-    # Feed this headless render's console output into the canvas's own log so the agent
-    # can read it via get_canvas_logs right after a build (no live browser needed).
+    # Feed this headless render's console output into the genui's own log so the agent
+    # can read it via get_genui_logs right after a build (no live browser needed).
     # replace_source='headless' refreshes only the headless entries each call — live
     # user-session entries are kept, and a clean render clears stale headless errors.
     try:
-        from app.visualizer.canvas import append_canvas_logs
-        append_canvas_logs(user_id, slug, headless_logs, replace_source="headless")
+        from app.visualizer.genui import append_genui_logs
+        append_genui_logs(user_id, slug, headless_logs, replace_source="headless")
     except Exception as e:
-        logger.warning("screenshot_canvas: could not write per-canvas logs: %s", e)
+        logger.warning("screenshot_genui: could not write per-genui logs: %s", e)
 
     # The screenshot is already the latest image in this chat (the user sees it) AND
     # each shot carries a `review` — the vision model's written critique of the actual

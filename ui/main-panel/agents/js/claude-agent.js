@@ -8,7 +8,7 @@
  * Agents — Local Claude Code: its OWN create tile + stripped-down agent card.
  *
  * A "Local Claude Code" agent runs the machine's `claude` CLI instead of the
- * webAgent LLM loop (engine === 'claude_code'; see plugins/engines/claude_code/claude_code.py).
+ * WebAgent LLM loop (engine === 'claude_code'; see plugins/engines/claude_code/claude_code.py).
  * It is deliberately DISTINCT from a normal agent — it shares almost none of the
  * normal tabbed agent panel:
  *   • it is created from the unified "New Agent" card by picking the **Claude**

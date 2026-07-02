@@ -59,17 +59,17 @@ const TOUR = [
     title: 'Create your own',
     body: 'The first card is a blank agent. Click it, give it a name, pick a template, then click "Create Agent" to save it.' },
 
-  { tab: 'canvas', selector: '#canvas-new-page-btn',
-    title: 'AI-built canvases',
-    body: 'Canvases are custom UIs the AI builds for you. Hit + to create one — give it a name like "My Dashboard".' },
+  { tab: 'genui', selector: '#genui-new-page-btn',
+    title: 'AI-built genui',
+    body: 'Gen UI are custom UIs the AI builds for you. Hit + to create one — give it a name like "My Dashboard".' },
 
-  { tab: 'canvas', selector: '#canvas-prompt-input',
+  { tab: 'genui', selector: '#genui-prompt-input',
     title: 'Tell the Visualizer what to build',
     body: 'Describe what you want - e.g. "Add three stat cards showing my goals" - and the Visualizer agent generates it. The preview above refreshes after each change.' },
 
-  { tab: 'canvas', selector: '#canvas-page-dropdown-trigger',
-    title: 'Switch and manage canvases',
-    body: 'Jump between your canvases here. Each row\'s ⋮ menu has rename and delete.' },
+  { tab: 'genui', selector: '#genui-page-dropdown-trigger',
+    title: 'Switch and manage genui',
+    body: 'Jump between your genui here. Each row\'s ⋮ menu has rename and delete.' },
 
   { tab: 'admin-tools', selector: '.files-sidebar-strip',
     title: 'Sidebar views',
@@ -555,7 +555,7 @@ function _openPopover(badge, step, stepNum, total) {
 
   // Append to the overlay (a fixed, body-level container) rather than body
   // directly. A global index.html rule forces `position: relative` on every
-  // direct body child except the stargaze canvas/overlay, which would clobber
+  // direct body child except the stargaze genui/overlay, which would clobber
   // this popover's `position: fixed` and render it after the body's last block
   // (i.e. far below the viewport, inaccessible).
   _ensureOverlay().appendChild(pop);

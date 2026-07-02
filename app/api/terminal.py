@@ -186,7 +186,7 @@ def _load_quick_launches() -> List[Dict[str, str]]:
 #          close the tab and the conversation is resumable again.
 #       2. Any live process is holding its transcript file open OR a
 #          `claude --resume <id>` command line carries its id. This reads /proc,
-#          so it also catches conversations opened by hand outside webAgent — but
+#          so it also catches conversations opened by hand outside WebAgent — but
 #          only on Linux/Termux (the phone). On hosts without /proc this second
 #          signal is empty and only signal 1 applies.
 #   • Fallbacks: if there are no conversations, or every recent one is already
@@ -1188,9 +1188,6 @@ async def _verify_admin_token(token: str) -> Optional[str]:
         payload = decode_token(token)
         if payload:
             user_id = payload.get("user_id") or payload.get("sub")
-    if not user_id:
-        from app.auth.identity import open_mode_admin_id
-        user_id = open_mode_admin_id()
     if not user_id:
         return None
     if not await _is_admin(user_id):

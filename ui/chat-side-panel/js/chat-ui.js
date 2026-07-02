@@ -36,6 +36,7 @@ import {
   _renderPendingBubbles,
   _startOutboxPoll,
   _outboxHasPending,
+  _prewarm,
 } from './chat-send.js';
 import { initChatTunnel } from '../../shared/js/chatTunnel.js';
 import { initTaskFrames } from './chat-task-frames.js';
@@ -179,6 +180,11 @@ export function initChat() {
     }
   });
 
+  // Prewarm the next send's read-only prep the moment the user engages the pill,
+  // so the remote DB reads (tools/history/data-sources) happen DURING typing
+  // instead of on the critical path. Throttled per session inside _prewarm.
+  app.chatInput.addEventListener('focus', () => { _prewarm(); });
+
   // Terminal-tunnel UI
   try { initChatTunnel(); } catch (_) { /* non-fatal */ }
   try { initTaskFrames(); } catch (_) { /* non-fatal */ }
@@ -192,6 +198,8 @@ export function initChat() {
     app.chatSend.disabled = !app.chatInput.value.trim();
     _updateInputRowState();
     _saveDraft();
+    // Keep the warmed prep fresh while a long message is composed (throttled).
+    _prewarm();
   });
 
   // ── Execution mode toggle (per-session key) ──

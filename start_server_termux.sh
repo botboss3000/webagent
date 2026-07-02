@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Start webAgent server inside proot and keep the session alive.
+# Start WebAgent server inside proot and keep the session alive.
 # Derive the project root from THIS script's own location (it sits at the repo
 # root) so a custom install folder works; fall back to the default.
 PROJECT_ROOT="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"

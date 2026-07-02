@@ -1,10 +1,10 @@
-"""Read the webAgent app's diagnostics — its flight-recorder of server
+"""Read the WebAgent app's diagnostics — its flight-recorder of server
 warnings/errors (with tracebacks), agent-loop problems, run outcomes, tool
 errors, every HTTP request (access) and WebSocket lifecycle (ws).
 
 Read STRAIGHT from the linked checkout's **dedicated logs database**
 (``app/db/logs.db`` — the ``diagnostics`` table), so it works even when the
-server is **down** — exactly when you need it. Newer webAgent builds keep
+server is **down** — exactly when you need it. Newer WebAgent builds keep
 diagnostics in this isolated logs DB (own WAL, separate from ``local.db``);
 older builds wrote them into ``local.db``, so we fall back to that when no
 ``logs.db`` exists. Strictly read-only (opens the DB read-only, never writes).

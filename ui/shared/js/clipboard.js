@@ -22,13 +22,13 @@
 //     interrupt to the shell, not copy, and the terminal already implements
 //     its own copy/paste. We bail out the moment the event comes from inside a
 //     terminal surface.
-//   • First-class canvases (ui/main-panel/canvas). A canvas now renders in a
+//   • First-class genui (ui/main-panel/genui). A genui now renders in a
 //     shadow root in THIS document (no iframe), so its keydown events DO reach
-//     here — but they're retargeted to the canvas host, not the inner field, so
+//     here — but they're retargeted to the genui host, not the inner field, so
 //     editableField() sees a non-editable element and the net bails. That hands
 //     the field back to the browser's native copy/paste, which is correct: a
-//     canvas runs local-only over a secure (localhost) origin where native
-//     clipboard works, and the canvas owns its own inputs.
+//     genui runs local-only over a secure (localhost) origin where native
+//     clipboard works, and the genui owns its own inputs.
 //
 // The copy/read helpers fall back to the legacy execCommand path when the
 // modern async Clipboard API is unavailable (non-secure http://<ip> contexts),

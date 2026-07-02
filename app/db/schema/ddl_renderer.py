@@ -25,6 +25,12 @@ from app.db.schema.tables import (
 
 DIALECTS = ("sqlite", "postgres", "mysql")
 
+# Bump this whenever the rendered SQL changes in a way worth tracking. It is
+# stamped into the first comment line of every rendered script so a copied SQL
+# blob can be identified at a glance (e.g. to tell a freshly-served script from a
+# stale browser-cached copy). Format: YYYY.MM.DD-N.
+SCHEMA_SQL_VERSION = "2026.06.29-2"
+
 
 _TYPE_MAP = {
     "sqlite": {
@@ -91,15 +97,54 @@ def _render_column(c: Column, dialect: str) -> str:
     return " ".join(parts)
 
 
-def _render_table(t: Table, dialect: str) -> str:
+def _render_table(t: Table, dialect: str, idempotent: bool = True) -> str:
     col_lines = [f"    {_render_column(c, dialect)}" for c in t.columns]
     for con in t.constraints:
         col_lines.append(f"    {con}")
     body = ",\n".join(col_lines)
-    return f"CREATE TABLE IF NOT EXISTS {t.name} (\n{body}\n);"
+    # `idempotent=False` drops the `IF NOT EXISTS` guard. This exists ONLY for the
+    # Supabase SQL-Editor copy: its pre-run linter naively reads the word AFTER
+    # "CREATE TABLE" as the table name, so "CREATE TABLE IF NOT EXISTS x" makes it
+    # think the table is literally named "IF", fail to find RLS for "IF", and warn
+    # ("...may be able to access IF"). Dropping IF NOT EXISTS lets it read the real
+    # name and match the ENABLE ROW LEVEL SECURITY line. Every EXECUTION path keeps
+    # idempotent=True (re-runnable; tolerates an already-created schema).
+    exists = "IF NOT EXISTS " if idempotent else ""
+    return f"CREATE TABLE {exists}{t.name} (\n{body}\n);"
 
 
-def _render_index(idx: Index, dialect: str) -> str:
+def _render_rls(t: Table, idempotent: bool = True) -> str:
+    """Postgres-only: lock a table to privileged roles AND satisfy Supabase's linters.
+
+    Per table:
+      1. ``ENABLE ROW LEVEL SECURITY`` — turns RLS on. Clears Supabase's
+         'RLS disabled in public' error. The role WebAgent connects with bypasses
+         RLS (Supabase 'service_role'; a self-hosted table owner bypasses by
+         default), so the app keeps full access and is unaffected.
+      2. ``CREATE POLICY … USING (false)`` — a deny-all policy for the public role
+         group (anon/authenticated). Adding ANY policy clears Supabase's softer
+         'RLS enabled, no policy' note, and ``USING (false)`` grants those keys
+         nothing, so the lockdown is fully preserved. service_role/owner ignore
+         the policy (they bypass RLS).
+
+    ``idempotent=True`` (every EXECUTION path) prepends ``DROP POLICY IF EXISTS``
+    so a re-run doesn't fail on ``CREATE POLICY`` (which has no IF NOT EXISTS).
+    ``idempotent=False`` (the Supabase SQL-Editor copy) OMITS the DROP: Supabase's
+    pre-run linter flags any ``DROP`` as a "destructive operation", and a one-time
+    setup script on a fresh project has no policy to drop anyway.
+    """
+    pol = f"{t.name}_no_public_access"
+    lines = [f"ALTER TABLE {t.name} ENABLE ROW LEVEL SECURITY;"]
+    if idempotent:
+        lines.append(f"DROP POLICY IF EXISTS {pol} ON {t.name};")
+    lines.append(
+        f"CREATE POLICY {pol} ON {t.name} AS PERMISSIVE FOR ALL\n"
+        f"    TO public USING (false) WITH CHECK (false);"
+    )
+    return "\n".join(lines)
+
+
+def _render_index(idx: Index, dialect: str, idempotent: bool = True) -> str:
     unique = "UNIQUE " if idx.unique else ""
     cols = idx.columns
     # SQLite tolerates COLLATE NOCASE / DESC inline; postgres/mysql do too for basic forms.
@@ -108,7 +153,12 @@ def _render_index(idx: Index, dialect: str) -> str:
         # with no length spec. The schema doesn't use any such indexes today; if added later,
         # encode the length in the columns string (e.g. "name(64)").
         pass
-    return f"CREATE {unique}INDEX IF NOT EXISTS {idx.name} ON {idx.table}({cols});"
+    # idempotent=False (Supabase copy) drops `IF NOT EXISTS` here too: a one-time
+    # script must contain NO `IF NOT EXISTS` anywhere, because Supabase's pre-run
+    # linter misreads the `IF` token (even in CREATE INDEX) as a table name and
+    # warns "...may be able to access IF".
+    exists = "IF NOT EXISTS " if idempotent else ""
+    return f"CREATE {unique}INDEX {exists}{idx.name} ON {idx.table}({cols});"
 
 
 def _render_fts_sqlite(f: FtsTable) -> str:
@@ -127,13 +177,14 @@ def _render_fts_sqlite(f: FtsTable) -> str:
     )
 
 
-def _render_fts_postgres(f: FtsTable) -> str:
+def _render_fts_postgres(f: FtsTable, idempotent: bool = True) -> str:
     # tsvector column lives on the content table; query layer uses to_tsvector inline.
     # Render as GIN expression index instead of a separate FTS table.
     expr = " || ' ' || ".join(f"coalesce({c}, '')" for c in f.indexed_columns)
+    exists = "IF NOT EXISTS " if idempotent else ""  # see _render_index (Supabase copy = none)
     return (
         f"-- {f.name} (postgres GIN FTS index on {f.content_table})\n"
-        f"CREATE INDEX IF NOT EXISTS {f.name}_gin ON {f.content_table}\n"
+        f"CREATE INDEX {exists}{f.name}_gin ON {f.content_table}\n"
         f"    USING GIN (to_tsvector('english', {expr}));"
     )
 
@@ -192,21 +243,49 @@ def _sort_tables_by_deps(tables: List[Table]) -> List[Table]:
     return ordered
 
 
-def _render_all(dialect: str) -> str:
+def _render_all(dialect: str, idempotent: bool = True) -> str:
     parts: List[str] = []
-    parts.append(f"-- webAgent canonical schema — dialect: {dialect}\n")
+    # NB: keep this text free of the literal tokens a naive SQL linter scans for
+    # (no "CREATE TABLE", no "IF"+"EXISTS", no "DROP") so the header comment can't
+    # itself trip Supabase's pre-run check.
+    variant = ("re-runnable / idempotent — safe to run repeatedly"
+               if idempotent else
+               "one-time setup — Supabase SQL-Editor friendly")
+    parts.append(
+        f"-- WebAgent schema SQL  |  version {SCHEMA_SQL_VERSION}  |  "
+        f"dialect: {dialect}  |  {variant}\n"
+    )
 
-    for t in _sort_tables_by_deps(TABLES):
-        parts.append(_render_table(t, dialect))
+    ordered = _sort_tables_by_deps(TABLES)
+
+    # Postgres: any embedding column uses pgvector's `vector` type, which does
+    # not exist until the extension is enabled. Emit the enable FIRST (before any
+    # CREATE TABLE that declares a vector column) so a fresh database / the
+    # Supabase SQL Editor doesn't fail with `type "vector" does not exist`.
+    # IF NOT EXISTS is the standard, linter-safe form for extensions (Supabase's
+    # own docs use it) — the pre-run linter only mis-parses it on CREATE TABLE.
+    if dialect == "postgres" and any(
+        c.type == "VECTOR" for t in ordered for c in t.columns
+    ):
+        parts.append("CREATE EXTENSION IF NOT EXISTS vector;")
+
+    for t in ordered:
+        parts.append(_render_table(t, dialect, idempotent))
+        # Postgres: immediately after each table, enable RLS + a deny-all policy
+        # (see _render_rls). Co-located with the CREATE so Supabase's editor sees
+        # the lock right next to the table it guards. Harmless self-hosted (the
+        # owner bypasses RLS); the app is unaffected on both backends.
+        if dialect == "postgres":
+            parts.append(_render_rls(t, idempotent))
 
     for idx in INDEXES:
-        parts.append(_render_index(idx, dialect))
+        parts.append(_render_index(idx, dialect, idempotent))
 
     for f in FTS_TABLES:
         if dialect == "sqlite":
             parts.append(_render_fts_sqlite(f))
         elif dialect == "postgres":
-            parts.append(_render_fts_postgres(f))
+            parts.append(_render_fts_postgres(f, idempotent))
         elif dialect == "mysql":
             parts.append(_render_fts_mysql(f))
 
@@ -221,15 +300,22 @@ def render_sqlite() -> str:
     return _render_all("sqlite")
 
 
-def render_postgres() -> str:
-    return _render_all("postgres")
+def render_postgres(idempotent: bool = True) -> str:
+    """Render the Postgres schema.
+
+    ``idempotent=True`` (default; every execution path) → re-runnable DDL
+    (CREATE TABLE IF NOT EXISTS + DROP-guarded policies). ``idempotent=False`` →
+    a clean one-time-setup script for the Supabase SQL Editor whose pre-run
+    linter chokes on IF NOT EXISTS and DROP (see _render_table / _render_rls).
+    """
+    return _render_all("postgres", idempotent)
 
 
 def render_mysql() -> str:
     return _render_all("mysql")
 
 
-def render(dialect: str) -> str:
+def render(dialect: str, idempotent: bool = True) -> str:
     if dialect not in DIALECTS:
         raise ValueError(f"Unknown dialect: {dialect}. Must be one of {DIALECTS}")
-    return _render_all(dialect)
+    return _render_all(dialect, idempotent)

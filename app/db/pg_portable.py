@@ -1,7 +1,7 @@
 """
 PgPortableConnection — a sqlite3-compatible connection facade over Postgres.
 
-The webAgent storage layer (LocalBackend) is written against the sqlite3 API:
+The WebAgent storage layer (LocalBackend) is written against the sqlite3 API:
 `conn = _get_conn(); conn.execute(sql, params).fetchone(); conn.commit()`, with
 SQLite-dialect SQL (`?` placeholders, `INSERT OR IGNORE`, `datetime('now')`,
 `json_each`, …). Rather than rewrite ~150 call sites + 60 backend methods, the
@@ -17,10 +17,37 @@ Connections are borrowed from a psycopg connection pool and returned on close().
 from __future__ import annotations
 
 import logging
+import os
 import re
+import time
 from typing import Any, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
+
+# ── Per-query latency trace (TEMPORARY diagnostic) ────────────────────────────
+# DIAGNOSTIC: when WEBAGENT_PERF_TRACE is on, log any pool-borrow (getconn) or
+# query (execute) that takes longer than _PG_SLOW_MS to the diagnostics "perf"
+# log (plaintext logs/perf.log). Lets us tell apart 'connection churn' (slow
+# getconn) from 'high round-trip latency' (slow execute), and count how many
+# round-trips one chat message really makes. REMOVE-WHEN: latency diagnosis done.
+_PG_TRACE = (os.environ.get("WEBAGENT_PERF_TRACE", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
+try:
+    _PG_SLOW_MS = int(os.environ.get("WEBAGENT_PG_SLOW_MS") or 150)
+except ValueError:
+    _PG_SLOW_MS = 150
+
+
+def _pg_perf(mark: str, ms: int, **extra) -> None:
+    if not _PG_TRACE:
+        return
+    try:
+        from app.agent.diagnostics import record
+        detail = {"mark": mark, "ms": ms}
+        if extra:
+            detail.update(extra)
+        record("info", "perf", f"[pg] {mark} {ms}ms", source="pg.query", detail=detail)
+    except Exception:
+        pass
 
 
 # ── Primary-key lookup (for INSERT OR REPLACE → ON CONFLICT) ──────────────────
@@ -243,7 +270,7 @@ class PgCursor:
 
     @property
     def lastrowid(self):
-        return None  # webAgent uses UUID PKs, never lastrowid
+        return None  # WebAgent uses UUID PKs, never lastrowid
 
     def _colnames(self) -> List[str]:
         if self._cur.description is None:
@@ -251,13 +278,26 @@ class PgCursor:
         return [d.name for d in self._cur.description]
 
     def execute(self, sql: str, params: Sequence[Any] = ()):
-        params = tuple(params) if params else ()
+        # Empty params → pass None (NOT an empty tuple), so psycopg does not scan
+        # the SQL for %-placeholders at all. With an empty tuple psycopg STILL
+        # interpolates and chokes on a literal '%' (e.g. LIKE 'spawn-%'), while
+        # translate_sql only escapes '%'→'%%' when params are bound (has_params) —
+        # so the two must agree that "no params" == None. When they disagreed, any
+        # param-less query containing a literal '%' raised, and the admin session
+        # list (which filters `id NOT LIKE 'spawn-%'`) silently returned empty on
+        # a Postgres backend.
+        params = tuple(params) if params else None
         tsql = translate_sql(sql, has_params=bool(params))
+        _t = time.monotonic()
         try:
             self._cur.execute(tsql, params)
         except Exception:
             logger.debug("PG execute failed for SQL: %s", tsql)
             raise
+        finally:
+            _ms = int((time.monotonic() - _t) * 1000)
+            if _PG_TRACE and _ms >= _PG_SLOW_MS:
+                _pg_perf("query_slow", _ms, sql=(sql or "")[:80].replace("\n", " "))
         return self
 
     def executemany(self, sql: str, seq_of_params: Sequence[Sequence[Any]]):
@@ -311,7 +351,11 @@ class PgPortableConnection:
             self._conn = conn
             self._standalone = True
         else:
+            _t = time.monotonic()
             self._conn = pool.getconn()
+            _ms = int((time.monotonic() - _t) * 1000)
+            if _ms >= _PG_SLOW_MS:
+                _pg_perf("getconn_slow", _ms)
             self._standalone = False
         self._closed = False
         # Accept callers that set row_factory = sqlite3.Row (no-op; we always

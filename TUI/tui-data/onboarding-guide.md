@@ -1,20 +1,20 @@
-# webAgent onboarding guide (context for the Server Manager agent)
+# WebAgent onboarding guide (context for the Server Manager agent)
 
 This document is **fetched live from the public repo** and handed to you (the
-webAgent Server Manager agent) as context whenever you are in **onboarding mode**
-(no webAgent checkout linked yet). It is the single source of truth for guiding a
-user through installing, running, and — if they ask — removing webAgent on their
+WebAgent Server Manager agent) as context whenever you are in **onboarding mode**
+(no WebAgent checkout linked yet). It is the single source of truth for guiding a
+user through installing, running, and — if they ask — removing WebAgent on their
 device. Editing this file in the repo updates onboarding for every installed
 manager, with **no app update or reinstall**. Keep your guidance consistent with it.
 
 ## Your goal in onboarding
 
-Get the user from "nothing installed" to "a running, linked webAgent server" with
+Get the user from "nothing installed" to "a running, linked WebAgent server" with
 as little friction as possible — ideally by **tapping, not typing** (some users
 are on a phone keyboard that is awkward to summon). Narrate each step in one short
 plain-language sentence. Act with your tools; don't just describe them.
 
-## What webAgent is (say it briefly only if asked)
+## What WebAgent is (say it briefly only if asked)
 
 A self-hostable AI-agent harness: a chat UI plus an agent runtime (tool-calling
 loops, a live WebSocket stream, multiple agent types, skills, memory, and
@@ -56,7 +56,7 @@ automatically, so you can proceed without making them toggle anything.
     (use the `deadsnakes` PPA if `python3.11` isn't in Ubuntu's default repos).
   - Then do the clone / venv / pip / run **inside that Ubuntu proot** — that's where
     Python 3.11/3.12 lives. The repo's **`start_agent.sh`** already launches the
-    webAgent app this way (via `proot-distro` into Ubuntu), so it's the supported
+    WebAgent app this way (via `proot-distro` into Ubuntu), so it's the supported
     pattern: Python 3.11/3.12 comes from Ubuntu proot, not directly from Termux.
   - Tell the user this is a one-time setup that takes a few minutes and uses extra
     storage (~hundreds of MB for the Ubuntu rootfs). If they'd rather not, explain
@@ -103,9 +103,9 @@ that outlives the TUI and revives **both** the server and the TUI window if eith
 crashes. It's on by default; toggle it from **Admin ▸ Keep-alive**. Turning it off
 leaves whatever is running in place — it just stops auto-reviving.
 
-## Uninstalling (only if the user asks to remove webAgent)
+## Uninstalling (only if the user asks to remove WebAgent)
 
-On Termux, removing webAgent means deleting four things. Always **confirm first**,
+On Termux, removing WebAgent means deleting four things. Always **confirm first**,
 and warn that the repo folder and data folder are unrecoverable once removed. With
 writes enabled you may do this via `run_command`; otherwise give the user these to paste:
 

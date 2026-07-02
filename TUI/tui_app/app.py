@@ -1,10 +1,10 @@
-"""Textual TUI for the webAgent Server Manager.
+"""Textual TUI for the WebAgent Server Manager.
 
 A single chat screen: a transcript pane that streams the agent's text, tool
 calls, and tool results, plus an input. Mutating tools are gated behind an
 "Allow writes" toggle (Ctrl+W) unless Autonomous mode (Ctrl+A) is on.
 
-The look-and-feel (23 themes + emoji/ASCII glyphs) is shared with the webAgent
+The look-and-feel (23 themes + emoji/ASCII glyphs) is shared with the WebAgent
 launcher: theme/glyph assets are vendored alongside this package so the .exe
 stays self-contained while feeling like the same product. Ctrl+T cycles themes.
 Transcript text is Rich-drawn, so its colors are resolved to concrete hex from
@@ -82,20 +82,20 @@ _URL_RE = re.compile(r'https?://[^\s\]\)>"\'`]+[^\s\]\)>"\'`.,;:!?]')
 from .resources import load_manager_file  # noqa: E402
 
 _WATCHDOG_PROMPT = (load_manager_file("watchdog_prompt.md") or """\
-You are the webAgent watchdog agent — a focused autonomous fixer.
+You are the WebAgent watchdog agent — a focused autonomous fixer.
 When the watchdog surfaces an issue, diagnose + fix + record the remedy.
 Do NOT chat with the user — your session is for watchdog work only.
 """)
 
 _SYSTEM_PROMPT = """\
-You are the **webAgent Server Manager**.
+You are the **WebAgent Server Manager**.
 
-You manage a webAgent server install: diagnose issues, restart the server, read
-and edit code, run git, and help the user set up or maintain their webAgent.
+You manage a WebAgent server install: diagnose issues, restart the server, read
+and edit code, run git, and help the user set up or maintain their WebAgent.
 
 Your general mandate:
 - Keep the server running and healthy
-- Help the user debug, extend, and maintain their webAgent install
+- Help the user debug, extend, and maintain their WebAgent install
 - Explain things in plain language (the user is not a coder)
 - When you change code, verify by running it
 - Land working changes in git cleanly
@@ -409,7 +409,8 @@ class ServerStatusWidget(Widget):
         self._sync()
 
     def _loading(self) -> bool:
-        return self._state in ("checking", "starting", "unknown")
+        # "killing" spins like "starting" — it's an in-flight action, just red.
+        return self._state in ("checking", "starting", "unknown", "killing")
 
     def _sync(self) -> None:
         if self._timer is not None:
@@ -422,11 +423,18 @@ class ServerStatusWidget(Widget):
 
     def render(self) -> Text:
         cc = getattr(self.app, "cc", {})
+        err = cc.get('error', '#ff5f56')
         if self._state == "running":
             return Text(f"{G.DOT_LIVE} live", style=f"bold {cc.get('success', '#7be06a')}")
+        if self._state == "dead":
+            # Deliberately killed (Kill All) — red, stays put until restarted.
+            return Text(f"{G.DOT_DEAD} dead", style=f"bold {err}")
         if self._state == "stopped":
-            return Text(f"{G.DOT_DEAD} stopped", style=f"bold {cc.get('error', '#ff5f56')}")
+            return Text(f"{G.DOT_DEAD} stopped", style=f"bold {err}")
         spin = self.FRAMES[self._frame % len(self.FRAMES)]
+        if self._state == "killing":
+            # Kill sweep in flight — red spinner so it reads as a teardown.
+            return Text(f"{spin} killing", style=f"bold {err}")
         return Text(f"{spin} starting", style=f"bold {cc.get('tool', '#ff9d2f')}")
 
 
@@ -601,7 +609,7 @@ class ConfirmModal(ModalScreen[bool]):
 
 class ServerManagerApp(App):
     CSS_PATH = "styles.tcss"
-    TITLE = "webAgent Server Manager"
+    TITLE = "WebAgent Server Manager"
 
     # Esc stops the running agent turn; Ctrl+Q quits the app. The editing
     # keys (Ctrl+A/C/V) are handled by the focused input. Theme stays on Ctrl+T (not
@@ -894,7 +902,7 @@ class ServerManagerApp(App):
         self.query_one("#prompt", PromptInput).focus()
         # Keep the server dot live in managed mode (cheap localhost /health poll).
         self.set_interval(3.0, self._poll_server)
-        # Scan for running webAgent server PIDs (and stale/zombie ones) on open.
+        # Scan for running WebAgent server PIDs (and stale/zombie ones) on open.
         self.run_worker(self._scan_pids_on_open(), group="pidscan", exclusive=True)
         # Auto-start the managed server on open, so a manual Launch is unnecessary.
         if self._do_autostart and self.project_root is not None:
@@ -963,7 +971,7 @@ class ServerManagerApp(App):
     def _render_welcome(self, server_status: str) -> None:
         c = self.cc
         if self.project_root:
-            self._log(f"[b {c['primary']}]{G.ADMIN} webAgent Server Manager[/] "
+            self._log(f"[b {c['primary']}]{G.ADMIN} WebAgent Server Manager[/] "
                       f"[{c['dim']}]— managing your checkout[/]")
             self._log(f"[{c['dim']}]project:[/] {self.project_root}")
             self._log(self._host_line())
@@ -977,7 +985,7 @@ class ServerManagerApp(App):
             self._log(f"[{c['dim']}]Ask me to check status, diagnose an issue, change code, "
                       f"run it, or manage git.[/]")
         else:
-            self._log(f"[b {c['primary']}]{G.ADMIN} webAgent Server Manager[/] "
+            self._log(f"[b {c['primary']}]{G.ADMIN} WebAgent Server Manager[/] "
                       f"[{c['dim']}]— let's get you set up[/]")
             self._log(self._host_line())
             if self.provider.configured:
@@ -985,10 +993,10 @@ class ServerManagerApp(App):
             else:
                 self._log(f"[{c['tool']}]{G.WARN} No AI key configured yet.[/] "
                           "Set the app key (LLM_API_KEY) to power onboarding.")
-            self._log(f"[{c['dim']}]No webAgent repo is linked yet. I can:[/]")
-            self._log(f"  {G.BULLET} install webAgent for you (recommended: {self._recommended_install_path()})")
+            self._log(f"[{c['dim']}]No WebAgent repo is linked yet. I can:[/]")
+            self._log(f"  {G.BULLET} install WebAgent for you (recommended: {self._recommended_install_path()})")
             self._log(f"  {G.BULLET} link an existing copy — tell me its folder and I'll manage it")
-            self._log(f"  {G.BULLET} tell you about webAgent, or help with general questions")
+            self._log(f"  {G.BULLET} tell you about WebAgent, or help with general questions")
             self._log(f"[{c['accent']}]{G.BULLET} New here? Tap [b]Click here to get started[/] "
                       f"below and I'll install and set everything up.[/]")
         self._log(self._tip_line())
@@ -1007,7 +1015,7 @@ class ServerManagerApp(App):
         lines = [
             f"- Host: {f.os_label} ({f.arch}); Python {py}{pyflag}; "
             f"git {'present' if f.git_present else 'MISSING'}; headless browser {browser}.",
-            f"- Mode: {'MANAGED - a webAgent checkout is linked.' if has else 'ONBOARDING - no webAgent repo linked yet.'}",
+            f"- Mode: {'MANAGED - a WebAgent checkout is linked.' if has else 'ONBOARDING - no WebAgent repo linked yet.'}",
             f"- Project: {self.project_root if has else '(none)'}.",
             f"- Server: {status}" + (" at http://localhost:8080." if status == "running" else "."),
             f"- AI key: {key}.",
@@ -1023,7 +1031,7 @@ class ServerManagerApp(App):
         return "\n".join(lines)
 
     async def _link_project(self, path: str) -> str:
-        """Link to an existing webAgent checkout (the agent's set_project hook).
+        """Link to an existing WebAgent checkout (the agent's set_project hook).
         Re-picks the AI key live so the repo's credentials take over."""
         p = Path(path).expanduser()
         try:
@@ -1035,7 +1043,7 @@ class ServerManagerApp(App):
         if not is_dir:
             return f"That isn't a folder: {p}"
         if not _looks_like_project(p):
-            return (f"{p} doesn't look like a webAgent checkout (it needs run.py and an app/ "
+            return (f"{p} doesn't look like a WebAgent checkout (it needs run.py and an app/ "
                     "folder). Linking arbitrary folders for general coding is coming soon.")
         old_llm = self.llm
         self.project_root = p.resolve()
@@ -1361,6 +1369,12 @@ class ServerManagerApp(App):
         the Start↔Stop panel switches; otherwise just update the status pill in place
         (which keeps its own spinner running while loading)."""
         new = await server_health() if self.project_root else "n/a"
+        # A deliberate Kill All leaves the pill "dead" (red) and keeps it there —
+        # the guardian is OFF so health will read "stopped", but we don't want it
+        # to soften to the generic "stopped" pill. Hold "dead" until the server is
+        # actually back up (a manual Start), then resume normal health reporting.
+        if self._server_state == "dead" and new != "running":
+            return
         changed = new != self._server_state
         self._server_state = new
         if changed:
@@ -1424,7 +1438,7 @@ class ServerManagerApp(App):
 
     def action_get_started(self) -> None:
         """Open the Setup dashboard — the deterministic, button-driven checklist of
-        every dependency webAgent needs, with per-row Install + an Install-all. This
+        every dependency WebAgent needs, with per-row Install + an Install-all. This
         is the primary onboarding path (no AI key required). The AI-driven install
         stays available from the panel's "Let the assistant set this up" button."""
         if self.project_root is not None:
@@ -1449,7 +1463,7 @@ class ServerManagerApp(App):
             self._log(f"[{self.cc['secondary']}]{G.BULLET} writes enabled for setup[/]")
         self._hide_cta()
         kickoff = (
-            "Let's get started setting up webAgent on this device. Walk me through the full "
+            "Let's get started setting up WebAgent on this device. Walk me through the full "
             "install step by step — check readiness, clone, build the environment, seed the "
             "config, verify, and link it — confirming the install folder with me first. Handle "
             "problems automatically as they arise (e.g. the headless browser isn't available on "
@@ -1497,6 +1511,8 @@ class ServerManagerApp(App):
     async def _do_server(self, which: str) -> None:
         from .tools import server as srv
         if which == "kill_all":
+            self._server_state = "killing"          # red spinner during the kill sweep
+            self._refresh_status()
             msg = await srv.server_kill_all(self._server_ctx())
         else:
             fn = {"start": srv.server_start, "stop": srv.server_stop,
@@ -1507,8 +1523,17 @@ class ServerManagerApp(App):
             msg = await fn(self._server_ctx())
         self._log(f"[{self.cc['dim']}]{msg}[/]")
         self._tui_log.server(f"server {which}: {msg}")
-        self._server_state = await server_health() if self.project_root else "n/a"
+        if which == "kill_all":
+            # Kill All is a deliberate full stop (guardian OFF) — show the red "dead"
+            # pill rather than the generic "stopped" health result.
+            self._server_state = "dead" if self.project_root else "n/a"
+        else:
+            self._server_state = await server_health() if self.project_root else "n/a"
         self._refresh_status()
+        if which == "kill_all" and self._panel_kind in ("server", "admin"):
+            # Kill All turned the guardian OFF — rebuild so the guardian status
+            # line / [Keep-alive] label reflect it instead of showing stale "alive".
+            self._rebuild_panel()
 
     def _log_watchdog(self, text: str) -> None:
         """Transcript sink for the watchdog/notifier. Stored ONLY in the dedicated
@@ -1929,7 +1954,7 @@ class ServerManagerApp(App):
         """The repo/project directory field on the Admin panel. The user pastes a
         folder path (e.g. C:\\webagent) and Saves it; the path is persisted as an
         entry in the manager's own SQLite store and the agent is handed that
-        directory to act on — link an existing webAgent checkout there, or install
+        directory to act on — link an existing WebAgent checkout there, or install
         one if the folder is empty. The agent's own link hook writes this same
         entry, so when the agent links itself the field is already filled in."""
         c = self.cc
@@ -2044,11 +2069,11 @@ class ServerManagerApp(App):
         from . import deps as deps_mod
         c = self.cc
         out: list[Widget] = []
-        # Install folder (where webAgent will be cloned / built).
+        # Install folder (where WebAgent will be cloned / built).
         shown_target = self._deps_target or self._recommended_install_path()
         out.append(Static(Text("Install folder", style=c["dim"]), classes="panel-sub"))
         out.append(ClipInput(value=shown_target, id="setup-target-input",
-                             placeholder="folder for webAgent, e.g. C:\\webagent…"))
+                             placeholder="folder for WebAgent, e.g. C:\\webagent…"))
         out.append(Horizontal(self._panel_btn("[Save]", "setup_target_save"),
                               self._panel_btn("[Re-check]", "deps_recheck"),
                               classes="panel-row"))
@@ -2316,7 +2341,7 @@ class ServerManagerApp(App):
         # ── Agent-loop switch (sits right above the provider/model chooser) ──────
         # Picks which brain drives ordinary turns. The two loops connect to the LLM
         # in different ways, so flipping this also flips which LLM is used:
-        #   • webAgent loop → the linked checkout's REAL loop (its agents + abilities)
+        #   • WebAgent loop → the linked checkout's REAL loop (its agents + abilities)
         #     using the app's OWN provider config.
         #   • Internal loop → the TUI's built-in brain using the provider/key set
         #     in the fields below (keeps working even when the server is down).
@@ -2324,7 +2349,7 @@ class ServerManagerApp(App):
         out: list[Widget] = [Static(Text("Agent loop", style=f"bold {c['accent']}"),
                                     classes="panel-sub")]
         seg: list[Widget] = []
-        for label, val in (("Internal", "internal"), ("webAgent", "webagent")):
+        for label, val in (("Internal", "internal"), ("WebAgent", "webagent")):
             active = " panel-btn-active" if val == mode else ""
             seg.append(self._value_btn(label, "engine_mode_pick",
                                        "engine-mode-pick" + active, val))
@@ -2333,7 +2358,7 @@ class ServerManagerApp(App):
             note = ("Internal: the TUI's own brain. The fields below set ITS LLM, "
                     "saved locally — works even when the server is down.")
         else:
-            note = ("webAgent: the linked app's real loop — its agents & abilities. "
+            note = ("WebAgent: the linked app's real loop — its agents & abilities. "
                     "The fields below edit the APP's own LLM, saved to the server.")
         out.append(Static(Text(note, style=c["dim"]), classes="panel-sub"))
         if self.project_root is None:
@@ -2774,7 +2799,7 @@ class ServerManagerApp(App):
 
     @on(Click, ".engine-mode-pick")
     def _on_engine_mode_pick(self, event: Click) -> None:
-        """Flip the Agent-loop switch (Internal ↔ webAgent), persist it, and — when
+        """Flip the Agent-loop switch (Internal ↔ WebAgent), persist it, and — when
         switching to the internal brain — stop any warm app-engine subprocess so the
         next turn runs locally. Switching back re-launches the engine lazily."""
         val = getattr(event.widget, "_btn_value", None)
@@ -2788,10 +2813,10 @@ class ServerManagerApp(App):
             engine, self._app_engine = self._app_engine, None
             self.run_worker(engine.stop(), group="enginestop")
         c = self.cc
-        where = "internal brain" if val == "internal" else "webAgent app loop"
+        where = "internal brain" if val == "internal" else "WebAgent app loop"
         self._log(f"[{c['secondary']}]{G.OK} agent loop → {where}.[/]")
         # The model chooser now points at the selected loop's LLM: the TUI's own
-        # provider (internal, local) or the web app's provider (webAgent, server).
+        # provider (internal, local) or the web app's provider (WebAgent, server).
         if val == "internal":
             self._load_internal_provider()
             self._rebuild_panel()
@@ -2933,11 +2958,11 @@ class ServerManagerApp(App):
             return
         c = self.cc
         if self.project_root:
-            self._log(f"[b {c['primary']}]{G.ADMIN} webAgent Server Manager[/] "
+            self._log(f"[b {c['primary']}]{G.ADMIN} WebAgent Server Manager[/] "
                       f"[{c['dim']}]— managing your checkout[/]")
             self._log(f"[{c['dim']}]project:[/] {self.project_root}")
         else:
-            self._log(f"[b {c['primary']}]{G.ADMIN} webAgent Server Manager[/] "
+            self._log(f"[b {c['primary']}]{G.ADMIN} WebAgent Server Manager[/] "
                       f"[{c['dim']}]— let's get you set up[/]")
         self._log(self._host_line())
         srv = (f"[{c['secondary']}]running[/] at http://localhost:8080"
@@ -3443,8 +3468,8 @@ class ServerManagerApp(App):
         self._turn_start_time = time.time()
         self._run_turn(
             f"The repo directory \"{path}\" has been saved. Use it now: if that folder "
-            "already contains a webAgent checkout (run.py + an app/ folder), link to it. "
-            "If the folder is empty or has no checkout, install webAgent into it (the "
+            "already contains a WebAgent checkout (run.py + an app/ folder), link to it. "
+            "If the folder is empty or has no checkout, install WebAgent into it (the "
             "fresh-install flow) and then link it. Tell me what you found and did."
         )
         self._rebuild_panel()
@@ -3550,11 +3575,11 @@ class ServerManagerApp(App):
         drive the full setup. Managed mode → there's already a linked checkout, so
         point the user at Update instead of re-installing."""
         if self.project_root is not None:
-            self._log(f"[{self.cc['dim']}]a webAgent checkout is already linked "
+            self._log(f"[{self.cc['dim']}]a WebAgent checkout is already linked "
                       f"({self.project_root}) — use Admin ▸ Update to upgrade it.[/]")
             return
         body = "\n".join([
-            f"This installs webAgent on this device (recommended folder: "
+            f"This installs WebAgent on this device (recommended folder: "
             f"{self._recommended_install_path()}):",
             "  • clone the repo from GitHub",
             "  • build a Python virtualenv + install dependencies",
@@ -3563,7 +3588,7 @@ class ServerManagerApp(App):
             "",
             "It enables writes for the setup and may take several minutes.",
         ])
-        self._open_sidebar_confirm("Install webAgent", body, "Install now",
+        self._open_sidebar_confirm("Install WebAgent", body, "Install now",
                                    lambda: self._after_install_confirm(True))
 
     def _after_install_confirm(self, ok: bool | None) -> None:
@@ -3589,11 +3614,12 @@ class ServerManagerApp(App):
         self.run_worker(self._do_server("start"), group="server", exclusive=True)
 
     def action_server_scan(self) -> None:
-        """Scan for webAgent processes on/off port 8080 and refresh the panel."""
+        """Scan for WebAgent processes on/off port 8080 and refresh the panel."""
         self.run_worker(self._scan_and_show_procs(), group="procsscan", exclusive=False)
 
     def action_server_kill_all(self) -> None:
-        """Force-kill EVERY process on port 8080 (tracked server, zombies, proot)."""
+        """Force-kill EVERY process on port 8080 (tracked server, zombies, proot) AND
+        turn the keep-alive guardian OFF so the server stays down (no auto-relaunch)."""
         if self.project_root is None:
             self._log(f"[{self.cc['dim']}]no server to kill in onboarding mode[/]")
             return
@@ -3635,7 +3661,7 @@ class ServerManagerApp(App):
         self.run_worker(self._load_server_procs(), group="procsscan", exclusive=True)
 
     async def _scan_and_show_procs(self) -> None:
-        """Scan running webAgent processes and cache the result, then rebuild panel."""
+        """Scan running WebAgent processes and cache the result, then rebuild panel."""
         import asyncio
         from .procscan import scan_webagent_processes
         from .tools import server as srv
@@ -3661,7 +3687,7 @@ class ServerManagerApp(App):
             label += f"  [{who}]"
             lines.append(f"  pid {pid}{label}")
         if not procs:
-            lines.append("  (no webAgent processes found)")
+            lines.append("  (no WebAgent processes found)")
         else:
             srv_status = f"[tracked {[p['pid'] for p in procs if p['pid']==tracked][0] if tracked else '?'}]"
             lines.append(f"  → health check: {health}")
@@ -3754,7 +3780,7 @@ class ServerManagerApp(App):
         def line(label: str, what: str) -> None:
             self._log(f"  [{c['secondary']}]{label}[/]  [{c['dim']}]{what}[/]")
 
-        self._log(f"\n[b {c['primary']}]{G.ADMIN} webAgent — command reference[/]")
+        self._log(f"\n[b {c['primary']}]{G.ADMIN} WebAgent — command reference[/]")
 
         head("On-screen controls")
         line("Admin", "App Config · Model Settings · Commands · Update · Install · Reset · Uninstall · Diagnostics · Logs")
@@ -3781,7 +3807,7 @@ class ServerManagerApp(App):
             line("Vol-Up then K", "toggle the Android keyboard (or Termux drawer ▸ KEYBOARD)")
 
         head("Ask the agent (plain language)")
-        for ask in ("install webAgent  /  link <folder>",
+        for ask in ("install WebAgent  /  link <folder>",
                     "check the server status  /  is it running?",
                     "diagnose the problem  /  show the logs",
                     "start / stop / restart the server",
@@ -3831,7 +3857,7 @@ class ServerManagerApp(App):
         ])
 
     def action_admin_update(self) -> None:
-        self._open_sidebar_confirm("Update webAgent", self._update_info(), "Update now",
+        self._open_sidebar_confirm("Update WebAgent", self._update_info(), "Update now",
                                    lambda: self._after_update_confirm(True))
 
     def _after_update_confirm(self, ok: bool | None) -> None:
@@ -3853,7 +3879,7 @@ class ServerManagerApp(App):
                     "and its data folder.")
         repo = si.repo_root or "~/webagent"
         return "\n".join([
-            "This permanently removes webAgent from this device:",
+            "This permanently removes WebAgent from this device:",
             "  • launcher:  $PREFIX/bin/webagent",
             "  • home-screen shortcut:  ~/.shortcuts/webagent.sh",
             f"  • repo + virtualenv:  {repo}",
@@ -3864,7 +3890,7 @@ class ServerManagerApp(App):
         ])
 
     def action_admin_uninstall(self) -> None:
-        self._open_sidebar_confirm("Uninstall webAgent", self._uninstall_info(),
+        self._open_sidebar_confirm("Uninstall WebAgent", self._uninstall_info(),
                                    "Remove everything",
                                    lambda: self._after_uninstall_confirm(True))
 
@@ -4811,7 +4837,7 @@ class ServerManagerApp(App):
 
     # ── open-time PID / stale-instance manager ─────────────────────────────
     async def _scan_pids_on_open(self) -> None:
-        """List every running webAgent server process and flag stale/zombie ones,
+        """List every running WebAgent server process and flag stale/zombie ones,
         offering (with permission) to remove them. Runs once on open."""
         import asyncio as _asyncio
         from .tools import server as srv
@@ -4819,10 +4845,10 @@ class ServerManagerApp(App):
         info = srv._read_pidinfo()
         tracked = int(info["pid"]) if info and info.get("pid") else None
         if not procs:
-            self._log(f"[{self.cc['dim']}]{G.BULLET} no running webAgent server processes found.[/]")
+            self._log(f"[{self.cc['dim']}]{G.BULLET} no running WebAgent server processes found.[/]")
             return
         health = await server_health()
-        lines = ["webAgent server processes:"]
+        lines = ["WebAgent server processes:"]
         stale: list[dict] = []
         for p in procs:
             pid, on, cmd = p["pid"], p["on_8080"], p["cmdline"]
@@ -4845,7 +4871,7 @@ class ServerManagerApp(App):
             svc = self._watchdog
             wd_enabled = bool(svc.snapshot().get("enabled")) if svc is not None else False
             if svc is not None and wd_enabled and self.provider.configured:
-                body = ("Stale webAgent processes found — holding port 8080 without serving /health, "
+                body = ("Stale WebAgent processes found — holding port 8080 without serving /health, "
                         "or a leftover run.py from a crashed launch:\n\n"
                         + "\n".join(f"  • pid {p['pid']}  {p['cmdline'][:64]}" for p in stale)
                         + "\n\nDiagnose and terminate autonomously.")
@@ -4856,7 +4882,7 @@ class ServerManagerApp(App):
                         "leftover run.py from a crashed launch:\n\n"
                         + "\n".join(f"  • pid {p['pid']}  {p['cmdline'][:64]}" for p in stale)
                         + "\n\nTerminate them? (The healthy/serving instance is never touched.)")
-                self._open_sidebar_confirm("Remove stale webAgent processes", body,
+                self._open_sidebar_confirm("Remove stale WebAgent processes", body,
                                            "Terminate", lambda: self._terminate_pids(pids))
 
     def _terminate_pids(self, pids: list[int]) -> None:

@@ -5,7 +5,7 @@
    come entirely from the --sg-* tokens in stargaze.css (this folder), so
    deleting ui/background/stargaze/ removes the look AND its tokens with
    no edit anywhere else. The engine (ui/background/_engine/manager.js)
-   calls start(canvas) when Stargaze is the chosen background for the
+   calls start(genui) when Stargaze is the chosen background for the
    active theme, and stop() when it is swapped out.
    ============================================================ */
 (function () {
@@ -26,7 +26,7 @@
     document.head.appendChild(l);
   })();
 
-  var canvas, ctx;
+  var genui, ctx;
   var DPR = Math.min(window.devicePixelRatio || 1, 2);
   var W = 0, H = 0;
   var stars = [], shootingStars = [], dust = [];
@@ -62,8 +62,8 @@
 
   function resize() {
     W = window.innerWidth; H = window.innerHeight;
-    canvas.width = W * DPR; canvas.height = H * DPR;
-    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    genui.width = W * DPR; genui.height = H * DPR;
+    genui.style.width = W + 'px'; genui.style.height = H + 'px';
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     readPalette();
     initStars();
@@ -271,8 +271,8 @@
 
   function start(cv) {
     if (running) return;
-    canvas = cv; ctx = canvas.getContext('2d');
-    if (reduced) {  // canvas is display:none under reduced-motion; nothing to draw
+    genui = cv; ctx = genui.getContext('2d');
+    if (reduced) {  // genui is display:none under reduced-motion; nothing to draw
       resize();     // size once so a one-off static frame would be correct if shown
       return;
     }

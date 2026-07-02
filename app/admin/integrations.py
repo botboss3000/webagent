@@ -39,7 +39,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from jose import jwt as jose_jwt
 from pydantic import BaseModel
 
-from app.auth.jwt import decode_token
+from app.auth.jwt import decode_token, get_secret
 from app.integrations.oauth_helper import oauth_label
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,8 @@ router = APIRouter(prefix="/admin/integrations", tags=["integrations"])
 ANONYMOUS_KEY = "__anonymous__"
 _ADMIN_USER = "admin"
 
-_JWT_SECRET = os.environ.get("JWT_SECRET", "webagent-dev-secret-change-in-prod")
+# Sign OAuth state tokens with the app-wide JWT secret (no separate/hardcoded
+# key) so they share the same hardened, generated secret. See app/auth/jwt.py.
 _JWT_ALGORITHM = "HS256"
 
 # ── OAuth scope definitions ───────────────────────────────────────────────
@@ -314,7 +315,7 @@ _PROVIDERS: dict[str, dict] = {
         "auth_url": "https://www.reddit.com/api/v1/authorize",
         "extra_params": {"duration": "permanent"},
         "revoke": {"style": "basic_form", "url": "https://www.reddit.com/api/v1/revoke_token",
-                   "headers": {"User-Agent": "webAgent/1.0"}},
+                   "headers": {"User-Agent": "WebAgent/1.0"}},
     },
     "snapchat": {
         "config_key": "snapchat_oauth_config",
@@ -811,13 +812,13 @@ def make_state_token(user_id: str, agent_id: str = "", provider: str = "google",
         "purpose": f"{provider}_oauth",
         **extra,
     }
-    return jose_jwt.encode(payload, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
+    return jose_jwt.encode(payload, get_secret(), algorithm=_JWT_ALGORITHM)
 
 
 def decode_state_token(state: str, provider: str = "google") -> Optional[dict]:
     """Decode state token. Returns full payload dict (user_id, agent_id, ...) or None."""
     try:
-        payload = jose_jwt.decode(state, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
+        payload = jose_jwt.decode(state, get_secret(), algorithms=[_JWT_ALGORITHM])
         if payload.get("purpose") != f"{provider}_oauth":
             return None
         return payload
@@ -1466,42 +1467,88 @@ async def get_integration_config(
     def _mask(s: str) -> str:
         return s[:20] + "..." if len(s) > 20 else s
 
-    google_cid, google_csec   = await get_google_creds()
-    ms_cid, ms_csec           = await get_microsoft_creds()
-    yahoo_cid, yahoo_csec     = await get_yahoo_creds()
-    dbx_cid, dbx_csec         = await get_dropbox_creds()
-    meta_cid, meta_csec       = await get_meta_creds()
-    tw_cid, tw_csec           = await get_twitter_creds()
-    li_cid, li_csec           = await get_linkedin_creds()
-    tt_cid, tt_csec           = await get_tiktok_creds()
-    pin_cid, pin_csec         = await get_pinterest_creds()
-    red_cid, red_csec         = await get_reddit_creds()
-    snap_cid, snap_csec       = await get_snapchat_creds()
-    twitch_cid, twitch_csec   = await get_twitch_creds()
-    ebay_cid, ebay_csec       = await get_ebay_creds()
-    etsy_cid, etsy_csec       = await get_etsy_creds()
-    shop_cid, shop_csec       = await get_shopify_creds()
-    amz_cid, amz_csec         = await get_amazon_creds()
-    channel_enabled           = await get_channel_enabled_map()
-    ability_enabled           = await get_ability_enabled_map()
+    # Every read below is an independent DB round-trip. Run them concurrently
+    # with asyncio.gather instead of awaiting ~48 in series — on a remote
+    # Postgres backend the serial version paid one network RTT per read and was
+    # the dominant cost of opening Agent Settings. Grouped into three fan-outs
+    # (creds+maps, scopes, redirect URIs) so a single await drains each batch.
+    import asyncio
+
+    (
+        (google_cid, google_csec),
+        (ms_cid, ms_csec),
+        (yahoo_cid, yahoo_csec),
+        (dbx_cid, dbx_csec),
+        (meta_cid, meta_csec),
+        (tw_cid, tw_csec),
+        (li_cid, li_csec),
+        (tt_cid, tt_csec),
+        (pin_cid, pin_csec),
+        (red_cid, red_csec),
+        (snap_cid, snap_csec),
+        (twitch_cid, twitch_csec),
+        (ebay_cid, ebay_csec),
+        (etsy_cid, etsy_csec),
+        (shop_cid, shop_csec),
+        (amz_cid, amz_csec),
+        channel_enabled,
+        ability_enabled,
+    ) = await asyncio.gather(
+        get_google_creds(),
+        get_microsoft_creds(),
+        get_yahoo_creds(),
+        get_dropbox_creds(),
+        get_meta_creds(),
+        get_twitter_creds(),
+        get_linkedin_creds(),
+        get_tiktok_creds(),
+        get_pinterest_creds(),
+        get_reddit_creds(),
+        get_snapchat_creds(),
+        get_twitch_creds(),
+        get_ebay_creds(),
+        get_etsy_creds(),
+        get_shopify_creds(),
+        get_amazon_creds(),
+        get_channel_enabled_map(),
+        get_ability_enabled_map(),
+    )
 
     # Fetch enabled scopes for all providers (returns defaults when unconfigured)
-    g_scopes    = await _get_enabled_scopes("google_oauth_config",    GOOGLE_SCOPES)
-    ms_scopes   = await _get_enabled_scopes("microsoft_oauth_config", MICROSOFT_SCOPES)
-    yh_scopes   = await _get_enabled_scopes("yahoo_oauth_config",     YAHOO_SCOPES)
-    dbx_scopes  = await _get_enabled_scopes("dropbox_oauth_config",   DROPBOX_SCOPES)
-    meta_scopes = await _get_enabled_scopes("meta_oauth_config",      META_SCOPES)
-    tw_scopes   = await _get_enabled_scopes("twitter_oauth_config",   TWITTER_SCOPES)
-    li_scopes   = await _get_enabled_scopes("linkedin_oauth_config",  LINKEDIN_SCOPES)
-    tt_scopes   = await _get_enabled_scopes("tiktok_oauth_config",    TIKTOK_SCOPES)
-    pin_scopes  = await _get_enabled_scopes("pinterest_oauth_config", PINTEREST_SCOPES)
-    red_scopes  = await _get_enabled_scopes("reddit_oauth_config",    REDDIT_SCOPES)
-    snap_scopes = await _get_enabled_scopes("snapchat_oauth_config",  SNAPCHAT_SCOPES)
-    twit_scopes = await _get_enabled_scopes("twitch_oauth_config",    TWITCH_SCOPES)
-    ebay_scopes = await _get_enabled_scopes("ebay_oauth_config",      EBAY_SCOPES)
-    etsy_scopes = await _get_enabled_scopes("etsy_oauth_config",      ETSY_SCOPES)
-    shop_scopes = await _get_enabled_scopes("shopify_oauth_config",   SHOPIFY_SCOPES)
-    amz_scopes  = await _get_enabled_scopes("amazon_oauth_config",    AMAZON_SCOPES)
+    (
+        g_scopes, ms_scopes, yh_scopes, dbx_scopes, meta_scopes, tw_scopes,
+        li_scopes, tt_scopes, pin_scopes, red_scopes, snap_scopes, twit_scopes,
+        ebay_scopes, etsy_scopes, shop_scopes, amz_scopes,
+    ) = await asyncio.gather(
+        _get_enabled_scopes("google_oauth_config",    GOOGLE_SCOPES),
+        _get_enabled_scopes("microsoft_oauth_config", MICROSOFT_SCOPES),
+        _get_enabled_scopes("yahoo_oauth_config",     YAHOO_SCOPES),
+        _get_enabled_scopes("dropbox_oauth_config",   DROPBOX_SCOPES),
+        _get_enabled_scopes("meta_oauth_config",      META_SCOPES),
+        _get_enabled_scopes("twitter_oauth_config",   TWITTER_SCOPES),
+        _get_enabled_scopes("linkedin_oauth_config",  LINKEDIN_SCOPES),
+        _get_enabled_scopes("tiktok_oauth_config",    TIKTOK_SCOPES),
+        _get_enabled_scopes("pinterest_oauth_config", PINTEREST_SCOPES),
+        _get_enabled_scopes("reddit_oauth_config",    REDDIT_SCOPES),
+        _get_enabled_scopes("snapchat_oauth_config",  SNAPCHAT_SCOPES),
+        _get_enabled_scopes("twitch_oauth_config",    TWITCH_SCOPES),
+        _get_enabled_scopes("ebay_oauth_config",      EBAY_SCOPES),
+        _get_enabled_scopes("etsy_oauth_config",      ETSY_SCOPES),
+        _get_enabled_scopes("shopify_oauth_config",   SHOPIFY_SCOPES),
+        _get_enabled_scopes("amazon_oauth_config",    AMAZON_SCOPES),
+    )
+
+    # Configured-view redirect URI per provider (saved value, or a request-
+    # derived fallback). Fan these out too — each is another DB read.
+    _ruri_providers = [
+        "google", "microsoft", "yahoo", "dropbox", "meta", "twitter",
+        "linkedin", "tiktok", "pinterest", "reddit", "snapchat", "twitch",
+        "ebay", "etsy", "shopify", "amazon",
+    ]
+    _ruri_values = await asyncio.gather(
+        *(provider_redirect_uri(p, request) for p in _ruri_providers)
+    )
+    ruri = dict(zip(_ruri_providers, _ruri_values))
 
     # The configured-view URI (per provider) is whatever the admin saved at
     # setup time; if nothing is saved yet, the helper falls back to a
@@ -1515,84 +1562,84 @@ async def get_integration_config(
         "google_configured":    bool(google_cid and google_csec),
         "google_client_id":     _mask(google_cid),
         "google_scopes":        g_scopes,
-        "redirect_uri":         await provider_redirect_uri("google", request),
+        "redirect_uri":         ruri["google"],
         "redirect_uri_suggested": _suggest("google"),
         "microsoft_configured": bool(ms_cid and ms_csec),
         "microsoft_client_id":  _mask(ms_cid),
         "microsoft_scopes":     ms_scopes,
-        "microsoft_redirect_uri": await provider_redirect_uri("microsoft", request),
+        "microsoft_redirect_uri": ruri["microsoft"],
         "microsoft_redirect_uri_suggested": _suggest("microsoft"),
         "yahoo_configured":     bool(yahoo_cid and yahoo_csec),
         "yahoo_client_id":      _mask(yahoo_cid),
         "yahoo_scopes":         yh_scopes,
-        "yahoo_redirect_uri":   await provider_redirect_uri("yahoo", request),
+        "yahoo_redirect_uri":   ruri["yahoo"],
         "yahoo_redirect_uri_suggested": _suggest("yahoo"),
         "dropbox_configured":   bool(dbx_cid and dbx_csec),
         "dropbox_client_id":    _mask(dbx_cid),
         "dropbox_scopes":       dbx_scopes,
-        "dropbox_redirect_uri": await provider_redirect_uri("dropbox", request),
+        "dropbox_redirect_uri": ruri["dropbox"],
         "dropbox_redirect_uri_suggested": _suggest("dropbox"),
         # Social media
         "meta_configured":      bool(meta_cid and meta_csec),
         "meta_client_id":       _mask(meta_cid),
         "meta_scopes":          meta_scopes,
-        "meta_redirect_uri":    await provider_redirect_uri("meta", request),
+        "meta_redirect_uri":    ruri["meta"],
         "meta_redirect_uri_suggested": _suggest("meta"),
         "twitter_configured":   bool(tw_cid and tw_csec),
         "twitter_client_id":    _mask(tw_cid),
         "twitter_scopes":       tw_scopes,
-        "twitter_redirect_uri": await provider_redirect_uri("twitter", request),
+        "twitter_redirect_uri": ruri["twitter"],
         "twitter_redirect_uri_suggested": _suggest("twitter"),
         "linkedin_configured":  bool(li_cid and li_csec),
         "linkedin_client_id":   _mask(li_cid),
         "linkedin_scopes":      li_scopes,
-        "linkedin_redirect_uri": await provider_redirect_uri("linkedin", request),
+        "linkedin_redirect_uri": ruri["linkedin"],
         "linkedin_redirect_uri_suggested": _suggest("linkedin"),
         "tiktok_configured":    bool(tt_cid and tt_csec),
         "tiktok_client_id":     _mask(tt_cid),
         "tiktok_scopes":        tt_scopes,
-        "tiktok_redirect_uri":  await provider_redirect_uri("tiktok", request),
+        "tiktok_redirect_uri":  ruri["tiktok"],
         "tiktok_redirect_uri_suggested": _suggest("tiktok"),
         "pinterest_configured": bool(pin_cid and pin_csec),
         "pinterest_client_id":  _mask(pin_cid),
         "pinterest_scopes":     pin_scopes,
-        "pinterest_redirect_uri": await provider_redirect_uri("pinterest", request),
+        "pinterest_redirect_uri": ruri["pinterest"],
         "pinterest_redirect_uri_suggested": _suggest("pinterest"),
         "reddit_configured":    bool(red_cid and red_csec),
         "reddit_client_id":     _mask(red_cid),
         "reddit_scopes":        red_scopes,
-        "reddit_redirect_uri":  await provider_redirect_uri("reddit", request),
+        "reddit_redirect_uri":  ruri["reddit"],
         "reddit_redirect_uri_suggested": _suggest("reddit"),
         "snapchat_configured":  bool(snap_cid and snap_csec),
         "snapchat_client_id":   _mask(snap_cid),
         "snapchat_scopes":      snap_scopes,
-        "snapchat_redirect_uri": await provider_redirect_uri("snapchat", request),
+        "snapchat_redirect_uri": ruri["snapchat"],
         "snapchat_redirect_uri_suggested": _suggest("snapchat"),
         "twitch_configured":    bool(twitch_cid and twitch_csec),
         "twitch_client_id":     _mask(twitch_cid),
         "twitch_scopes":        twit_scopes,
-        "twitch_redirect_uri":  await provider_redirect_uri("twitch", request),
+        "twitch_redirect_uri":  ruri["twitch"],
         "twitch_redirect_uri_suggested": _suggest("twitch"),
         # Marketplaces
         "ebay_configured":      bool(ebay_cid and ebay_csec),
         "ebay_client_id":       _mask(ebay_cid),
         "ebay_scopes":          ebay_scopes,
-        "ebay_redirect_uri":    await provider_redirect_uri("ebay", request),
+        "ebay_redirect_uri":    ruri["ebay"],
         "ebay_redirect_uri_suggested": _suggest("ebay"),
         "etsy_configured":      bool(etsy_cid and etsy_csec),
         "etsy_client_id":       _mask(etsy_cid),
         "etsy_scopes":          etsy_scopes,
-        "etsy_redirect_uri":    await provider_redirect_uri("etsy", request),
+        "etsy_redirect_uri":    ruri["etsy"],
         "etsy_redirect_uri_suggested": _suggest("etsy"),
         "shopify_configured":   bool(shop_cid and shop_csec),
         "shopify_client_id":    _mask(shop_cid),
         "shopify_scopes":       shop_scopes,
-        "shopify_redirect_uri": await provider_redirect_uri("shopify", request),
+        "shopify_redirect_uri": ruri["shopify"],
         "shopify_redirect_uri_suggested": _suggest("shopify"),
         "amazon_configured":    bool(amz_cid and amz_csec),
         "amazon_client_id":     _mask(amz_cid),
         "amazon_scopes":        amz_scopes,
-        "amazon_redirect_uri":  await provider_redirect_uri("amazon", request),
+        "amazon_redirect_uri":  ruri["amazon"],
         "amazon_redirect_uri_suggested": _suggest("amazon"),
         # Channels (admin enable/disable; per-agent creds live in Connections)
         "telegram_configured":       channel_enabled.get("telegram", False),

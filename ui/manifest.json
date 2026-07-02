@@ -1,6 +1,6 @@
 {
-  "name": "webAgent",
-  "short_name": "webAgent",
+  "name": "WebAgent",
+  "short_name": "WebAgent",
   "description": "AI agent harness — chat, tools, automations, and pages",
   "start_url": "/app?utm_source=homescreen",
   "display": "standalone",
@@ -59,10 +59,10 @@
       "url": "/app?tab=admin-tools"
     },
     {
-      "name": "Canvas",
-      "short_name": "Canvas",
-      "description": "Visual canvas workspace",
-      "url": "/app?tab=canvas"
+      "name": "Gen UI",
+      "short_name": "Gen UI",
+      "description": "Visual genui workspace",
+      "url": "/app?tab=genui"
     }
   ],
   "edge_side_panel": {

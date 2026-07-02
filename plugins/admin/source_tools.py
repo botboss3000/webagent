@@ -17,10 +17,21 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.tools.loader import ToolInfo
+# In-process source operations. The agent's tools call these DIRECTLY rather
+# than POSTing to the (now admin-gated) /admin/source/* HTTP endpoints, so they
+# never need to send a token to localhost — the HTTP surface stays locked down
+# while the server-side agent path keeps working. See plugins/admin/source.py.
+from plugins.admin.source import _do_read, _do_write, _do_delete, _do_exec
 
 logger = logging.getLogger(__name__)
 
 BASE = "http://localhost:8080"
+
+
+def _err(e: Exception) -> str:
+    """Human-readable message from an exception — HTTPException.detail if present."""
+    detail = getattr(e, "detail", None)
+    return str(detail) if detail is not None else str(e)
 
 # ── Write/exec tools that must pause for the user's confirmation ───────────────
 # THE single hard-coded source of truth for which admin tools are "destructive"
@@ -65,13 +76,22 @@ except Exception:  # pragma: no cover
 
 
 def _safe_path(path: str) -> Optional[Path]:
-    """Resolve a path relative to the project root. Return None if outside."""
+    """Resolve a path relative to the project root. Return None if outside.
+
+    Uses ``Path.is_relative_to`` (a true prefix test) rather than a string
+    ``startswith`` so a sibling dir like ``…/webagent-dev-attacker`` can't
+    slip past the project-root containment check.
+    """
     p = Path(path)
     if not p.is_absolute():
         p = _PROJECT_ROOT / p
     p = p.resolve()
-    if not str(p).startswith(str(_PROJECT_ROOT)):
-        return None  # outside project root
+    try:
+        if p != _PROJECT_ROOT and not p.is_relative_to(_PROJECT_ROOT):
+            return None  # outside project root
+    except AttributeError:  # pragma: no cover - Python < 3.9
+        if not str(p).startswith(str(_PROJECT_ROOT) + os.sep):
+            return None
     return p
 
 
@@ -306,12 +326,11 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     # ── write_source: no permission needed (just write) ──
     async def _write_source(path: str, content: str) -> str:
         """Overwrite a file with new content. Backup created automatically."""
-        resp = await _api_post("/admin/source/write", {
-            "path": path, "content": content, "create_backup": True,
-        })
-        if resp.status_code != 200:
-            return f"Error: {resp.json().get('detail', 'unknown error')}"
-        return resp.json()["message"]
+        try:
+            result = await _do_write(path, content, True)
+        except Exception as e:
+            return f"Error: {_err(e)}"
+        return result.message
 
     tools["write_source"] = ToolInfo(
         name="write_source",
@@ -330,8 +349,8 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     async def _edit_source(path: str, old_text: str, new_text: str) -> str:
         """Edit a file by replacing exact text. For fuzzy matching, use patch_source."""
         try:
-            data = await _api_get("/admin/source/read", {"path": path})
-            current = data["content"]
+            data = await _do_read(path)
+            current = data.content
         except Exception:
             return f"Error: could not read {path}. Does it exist?"
 
@@ -342,14 +361,11 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         if new_content == current:
             return f"Error: replacement produced no change"
 
-        resp = await _api_post("/admin/source/write", {
-            "path": path, "content": new_content, "create_backup": True,
-        })
-        if resp.status_code != 200:
-            return f"Error: {resp.json().get('detail', 'unknown error')}"
-        result = resp.json()
-        bkp = result.get("backup_path", "none")
-        return f"{result['message']}. Backup: {bkp}"
+        try:
+            result = await _do_write(path, new_content, True)
+        except Exception as e:
+            return f"Error: {_err(e)}"
+        return f"{result.message}. Backup: {result.backup_path or 'none'}"
 
     tools["edit_source"] = ToolInfo(
         name="edit_source",
@@ -490,12 +506,11 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     # ── delete_source: user commands → do it; own initiative → ask ──
     async def _delete_source(path: str, recursive: bool = False) -> str:
         """Delete a file or directory. Call directly when user commands it; ask first when deciding on your own."""
-        resp = await _api_post("/admin/source/delete", {
-            "path": path, "recursive": recursive,
-        })
-        if resp.status_code != 200:
-            return f"Error: {resp.json().get('detail', 'unknown error')}"
-        return resp.json()["message"]
+        try:
+            result = await _do_delete(path, recursive)
+        except Exception as e:
+            return f"Error: {_err(e)}"
+        return result.message
 
     tools["delete_source"] = ToolInfo(
         name="delete_source",
@@ -517,10 +532,13 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     # ── run_command: read-only safe, mutating needs permission ──
     async def _run_command(command: str, timeout: int = 30) -> dict:
         """Execute a shell command. Read-only commands run freely. Mutating commands explained first."""
-        resp = await _api_post("/admin/source/exec", {
-            "command": command, "timeout": timeout,
-        })
-        return resp.json()
+        res = await _do_exec(command, timeout)
+        return {
+            "exit_code": res.exit_code,
+            "stdout": res.stdout,
+            "stderr": res.stderr,
+            "timed_out": res.timed_out,
+        }
 
     tools["run_command"] = ToolInfo(
         name="run_command",

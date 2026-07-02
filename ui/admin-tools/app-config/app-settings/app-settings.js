@@ -40,10 +40,8 @@ import { createPageAssistant } from '../page-assistant.js';
 // user-dropdown's theme logic so the two controls never diverge. setTheme owns
 // apply + persist; highlightThemeOption syncs every `.theme-option` on the page.
 import { setTheme, getSavedTheme, highlightThemeOption } from '../../../shared/js/user-panel.js';
-// Deploy card (App Settings → Deploy) — live one-click cloud deploy. Owns its own
-// /admin/deploy/* fetching + NDJSON deploy stream; sets window.__refreshDeploy
-// (called on section-show in nav.js). See ./deploy.js.
-import { initDeploy } from './deploy.js';
+// The Deploy card moved to its own "Data Settings" tab (renamed "Deployment") —
+// its wiring now lives in ../data-settings/data-settings.js, not here.
 
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -63,15 +61,13 @@ function _initAppSettings() {
   // owned by remote-access.js. (The former "On your phone" row was removed.)
   _wireBootRow('ac-ra-row-sn', null);
   _wireBootRow('ac-ra-row-net', null);
-  // Deploy card — expandable rows (same head-click expand wiring): the cloud
-  // deploy row + the three manual install rows (Linux/Termux, Windows, macOS).
-  // Their body ids are owned by deploy.js (initDeploy below wires the buttons,
-  // fetch + each row's live command/QR).
-  _wireBootRow('ac-deploy-row', null);
-  _wireBootRow('ac-deploy-phone-row', null);
-  _wireBootRow('ac-deploy-win-row', null);
-  _wireBootRow('ac-deploy-mac-row', null);
-  initDeploy();
+  // Advanced group — the two expandable rows moved here from the retired Data
+  // Management tab (Config Files + Stream Buffer). Same head-click expand wiring;
+  // their bodies' control ids are owned by ui/shared/js/storage.js.
+  _wireBootRow('ac-row-configfiles', null);
+  _wireBootRow('ac-row-streambuffer', null);
+  // The Deploy card's rows + wiring moved to the Data Settings tab
+  // (../data-settings/data-settings.js).
   _initBootTooltip();
   _initBootSplash();
   _initAllowUserAppearance();
@@ -88,9 +84,9 @@ function _initAppSettings() {
 // the typewriter suggestions, Tab-to-fill and the context-wrapped message are all
 // owned by the shared page-assistant engine (../page-assistant.js), which here
 // runs in COMPOSER mode so it also owns this page's static #ac-pa-* pill's
-// send / Enter / voice / file-uploads. The prompt it hands webAgent changes with
+// send / Enter / voice / file-uploads. The prompt it hands WebAgent changes with
 // the section the mouse is over (the data-pa-area groups in app-settings.html);
-// on send it opens a floating webAgent (the manager) chat via spawnWebagentPageChat.
+// on send it opens a floating WebAgent (the manager) chat via spawnWebagentPageChat.
 // Text catalog (placeholders + idea hints + prompts) lives in
 // app/defaults/app-prompts.json -> page_assistants.app_settings (edit + reload).
 let _pa = null;
@@ -627,11 +623,15 @@ function _initBootMobileMode() {
   });
 }
 
-async function _loadAppSettings() {
+async function _loadAppSettings(data) {
   try {
-    const res = await _fetch(apiPath('/admin/settings/app'));
-    if (!res.ok) return;
-    const data = await res.json();
+    // Reuse the caller's pre-fetched payload when provided (load() fetches it
+    // once for both consumers); only fetch here when called standalone.
+    if (!data) {
+      const res = await _fetch(apiPath('/admin/settings/app'));
+      if (!res.ok) return;
+      data = await res.json();
+    }
     const cb = _qs('ac-extend-llm-to-agents');
     if (cb) cb.checked = data.extend_llm_to_agents !== false;
     const sp = _qs('ac-boot-splash-enabled');
@@ -1094,11 +1094,18 @@ function _initThemeSwitch() {
 
 // Load saved values + background catalog, then build the two theme cards and
 // fill the shared controls.
-async function _loadAppearance() {
-  // Saved appearance values.
+async function _loadAppearance(data, bgData) {
+  // Saved appearance values. Reuse the caller's pre-fetched payload when given
+  // (load() shares one /admin/settings/app fetch across both consumers);
+  // `bgData === undefined` means "not passed" → fetch the catalog ourselves.
+  const _bgPassed = arguments.length >= 2;
   try {
-    const r = await _fetch(apiPath('/admin/settings/app'));
-    if (r.ok) _appValues = await r.json();
+    if (data) {
+      _appValues = data;
+    } else {
+      const r = await _fetch(apiPath('/admin/settings/app'));
+      if (r.ok) _appValues = await r.json();
+    }
   } catch (e) {
     console.warn('app-config: appearance values load failed', e);
   }
@@ -1112,10 +1119,15 @@ async function _loadAppearance() {
     if (Array.isArray(arr)) _customThemes = arr.filter((t) => t && t.id && t.name);
   } catch (e) { /* keep none */ }
 
-  // Background catalog (for the per-theme selects).
+  // Background catalog (for the per-theme selects). Reuse the pre-fetched list
+  // when load() passed it; otherwise fetch standalone.
   try {
-    const cr = await _fetch(apiPath('/admin/settings/backgrounds'));
-    if (cr.ok) { const d = await cr.json(); _bgCatalog = Array.isArray(d.backgrounds) ? d.backgrounds : []; }
+    if (_bgPassed) {
+      _bgCatalog = Array.isArray(bgData?.backgrounds) ? bgData.backgrounds : [];
+    } else {
+      const cr = await _fetch(apiPath('/admin/settings/backgrounds'));
+      if (cr.ok) { const d = await cr.json(); _bgCatalog = Array.isArray(d.backgrounds) ? d.backgrounds : []; }
+    }
   } catch (e) {
     console.warn('app-config: background catalog load failed', e);
   }
@@ -1151,8 +1163,17 @@ export function init() {
 }
 
 export async function load() {
-  await _loadAppSettings();
-  await _loadAppearance();
+  // Fetch the shared /admin/settings/app payload ONCE and the background catalog
+  // in parallel, then hand both to the two consumers. Previously _loadAppSettings
+  // and _loadAppearance each did their own /admin/settings/app fetch (the endpoint
+  // was hit 2-3× per open) and ran strictly serially.
+  const appP = _fetch(apiPath('/admin/settings/app'))
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const bgP = _fetch(apiPath('/admin/settings/backgrounds'))
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const [appData, bgData] = await Promise.all([appP, bgP]);
+  await _loadAppSettings(appData);
+  await _loadAppearance(appData, bgData);
 }
 
 async function _saveGlobalPrompt() {

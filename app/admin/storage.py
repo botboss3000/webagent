@@ -32,12 +32,16 @@ from app.secrets import (
     set_mode as set_secrets_mode,
     list_providers as list_secret_providers,
     get_secrets_status,
+    set_provider_config as set_secrets_provider_config,
+    set_provider_token as set_secrets_provider_token,
+    token_location as secrets_token_location,
+    construct as construct_secrets_provider,
 )
-from app.canvas_store import (
-    get_mode as get_canvases_mode,
-    set_mode as set_canvases_mode,
-    list_modes as list_canvases_modes,
-    get_status as get_canvases_status,
+from app.genui_store import (
+    get_mode as get_genui_mode,
+    set_mode as set_genui_mode,
+    list_modes as list_genui_modes,
+    get_status as get_genui_status,
 )
 from app.attachments_store import (
     get_mode as get_attachments_mode,
@@ -121,6 +125,94 @@ async def _test_supabase(supabase_url: Optional[str], service_key_plain: Optiona
             "error": f"Unexpected response {resp.status_code} from {rest_root}."}
 
 
+def _supabase_project_ref(supabase_url: Optional[str]) -> Optional[str]:
+    """Extract the project ref (the xxxx in https://xxxx.supabase.co) from a URL."""
+    import re
+    raw = (supabase_url or "").strip()
+    if not raw:
+        return None
+    # Tolerate a bare host without scheme.
+    host = raw
+    m = re.match(r"^[a-z]+://([^/]+)", raw, re.I)
+    if m:
+        host = m.group(1)
+    m = re.match(r"^([a-z0-9]+)\.supabase\.(?:co|in|net)$", host, re.I)
+    return m.group(1) if m else None
+
+
+async def _bootstrap_supabase(supabase_url: Optional[str], service_key_plain: Optional[str]) -> dict:
+    """Create the WebAgent tables on a Supabase project.
+
+    Supabase's public API (PostgREST + service-role key) is data-only — it
+    deliberately cannot run DDL (CREATE TABLE). So there is no generic way to
+    create tables with just the Project URL + service key.
+
+    We make a best effort: if the project happens to define an `exec_sql(sql
+    text)` RPC (a common community helper), we run the full DDL through it.
+    Otherwise we return a clear, actionable message telling the admin to paste
+    the schema (the "Show Schema SQL" button) into the Supabase SQL Editor — and
+    we deep-link straight to it. This replaces the old behaviour where Supabase
+    fell through to the raw-Postgres path and failed with an empty
+    "connect failed:" because a Supabase config carries no host/user/password.
+    """
+    url = (supabase_url or "").rstrip("/")
+    if not url:
+        return {"ok": False, "error": "Supabase requires a Project URL (e.g. https://xxxx.supabase.co)."}
+
+    # Resolve the service-role key (form value first, else the saved vault key).
+    key = service_key_plain
+    if not key:
+        try:
+            saved = load_config()
+            ref_key = saved.supabase_service_key_secret or "supabase_service_key"
+            key = await get_secrets().get(ref_key)
+        except Exception:
+            key = None
+    if not key:
+        return {"ok": False, "error": "Supabase service-role key not provided and none saved in the vault. Enter the key and retry."}
+
+    ddl = render_postgres()
+    ref = _supabase_project_ref(url)
+    sql_editor_url = f"https://supabase.com/dashboard/project/{ref}/sql/new" if ref else None
+
+    # 1) Best effort: run the DDL through an exec_sql RPC if the project has one.
+    try:
+        import httpx
+    except ImportError:
+        httpx = None
+    if httpx is not None:
+        rpc_url = f"{url}/rest/v1/rpc/exec_sql"
+        headers = {"apikey": key, "Authorization": f"Bearer {key}",
+                   "Content-Type": "application/json"}
+        for param in ("sql", "query"):
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.post(rpc_url, headers=headers, json={param: ddl})
+                if resp.status_code < 300:
+                    return {"ok": True, "method": "exec_sql RPC",
+                            "note": "Tables created on Supabase via the project's exec_sql() function."}
+                # 404 / PGRST202 = no such function; stop trying params and fall through.
+                if resp.status_code == 404 or "PGRST202" in (resp.text or ""):
+                    break
+            except Exception:
+                break  # network/other error — fall through to guidance
+
+    # 2) No DDL path available — guide the admin to the SQL Editor.
+    steps = (
+        "Supabase can't create tables through its API key — table creation (DDL) "
+        "must be run in Supabase's own SQL Editor. One-time setup:\n"
+        "  1. Click \"Show Schema SQL\" here and copy everything it shows.\n"
+        + (f"  2. Open your SQL Editor: {sql_editor_url}\n" if sql_editor_url
+           else "  2. In your Supabase dashboard, open the SQL Editor (left sidebar) → New query.\n")
+        + "  3. Paste the SQL and click Run. It's safe to re-run (uses CREATE TABLE IF NOT EXISTS).\n"
+        "  4. Come back here and click Activate."
+    )
+    out = {"ok": False, "needs_manual_sql": True, "error": steps}
+    if sql_editor_url:
+        out["sql_editor_url"] = sql_editor_url
+    return out
+
+
 # ── Models ──────────────────────────────────────────────────────────────────
 
 
@@ -145,7 +237,24 @@ class SecretsModeBody(BaseModel):
     provider: str
 
 
-class CanvasesModeBody(BaseModel):
+class SecretsProviderConfigBody(BaseModel):
+    requesting_user_id: str
+    provider: str
+    config: Dict[str, Any] = {}
+    # The sensitive access token, entered in the UI. Optional / blank = keep the
+    # currently-stored token (so re-saving other fields never wipes it). Stored
+    # keyring-first with a local-file fallback; NEVER echoed back.
+    token: Optional[str] = None
+
+
+class SecretsTestBody(BaseModel):
+    requesting_user_id: str
+    # When given, probe THIS provider (reading its saved config) without
+    # activating it; otherwise test the currently-active backend.
+    provider: Optional[str] = None
+
+
+class GenuiModeBody(BaseModel):
     requesting_user_id: str
     mode: str
 
@@ -157,6 +266,18 @@ class ActivateBody(BaseModel):
 class SchemaSQLBody(BaseModel):
     requesting_user_id: str
     dialect: str = "postgres"
+    # idempotent controls the *display/copy* SQL only (this endpoint is never an
+    # execution path — the live bootstrap calls render_postgres() directly with
+    # the idempotent default of True). Default here is FALSE on purpose: the
+    # current frontend sends True for non-Supabase providers and False for
+    # Supabase, but an older *cached* frontend may send no flag at all — and if
+    # that defaulted to True, a Supabase admin would keep getting CREATE TABLE
+    # IF NOT EXISTS (whose "IF" trips Supabase's pre-run linter) no matter how
+    # many times the server is fixed. Defaulting to the clean one-time script
+    # makes the Supabase copy correct even against a stale cache; the only
+    # trade-off is a non-Supabase "Show Schema SQL" copy is non-re-runnable when
+    # requested by a cache so old it omits the flag (cosmetic; harmless).
+    idempotent: bool = False
 
 
 # ── Routes: config + status ─────────────────────────────────────────────────
@@ -176,7 +297,7 @@ async def get_storage_config(requesting_user_id: str = Query(...)):
             "provider_meta": PROVIDER_META,
         },
         "secrets": get_secrets_status(),
-        "canvases": get_canvases_status(),
+        "genui": get_genui_status(),
     }
 
 
@@ -206,7 +327,10 @@ async def test_db_connection(body: DBConfigBody):
     # Resolve password from body (plain) — preferred during test, never saved unless /db/config called.
     password = body.password
     if not password and body.password_secret_key:
-        password = await get_secrets().get(body.password_secret_key)
+        from app.db import cred_store
+        password = cred_store.get_secret(body.password_secret_key)
+        if not password:
+            password = await get_secrets().get(body.password_secret_key)
 
     if cfg.provider == "sqlite":
         # Verify file path is writable
@@ -240,7 +364,7 @@ async def get_schema_sql(body: SchemaSQLBody):
     if body.dialect == "sqlite":
         return {"dialect": body.dialect, "ddl": render_sqlite()}
     if body.dialect == "postgres":
-        return {"dialect": body.dialect, "ddl": render_postgres()}
+        return {"dialect": body.dialect, "ddl": render_postgres(idempotent=body.idempotent)}
     return {"dialect": body.dialect, "ddl": render_mysql()}
 
 
@@ -258,7 +382,16 @@ async def bootstrap_schema(body: DBConfigBody):
     )
     password = body.password
     if not password and body.password_secret_key:
-        password = await get_secrets().get(body.password_secret_key)
+        from app.db import cred_store
+        password = cred_store.get_secret(body.password_secret_key)
+        if not password:
+            password = await get_secrets().get(body.password_secret_key)
+
+    if cfg.provider == "supabase":
+        # Supabase is REST-only (URL + service key) and cannot run DDL over its
+        # API, so it must NOT fall through to the raw-Postgres path below (which
+        # would build a hostless DSN and fail with an empty "connect failed:").
+        return await _bootstrap_supabase(body.supabase_url, body.supabase_service_key)
 
     if cfg.dialect == "postgres":
         from app.db.postgres_backend import bootstrap_schema as pg_bootstrap
@@ -297,17 +430,31 @@ async def save_db_config(body: DBConfigBody):
     if errs:
         raise HTTPException(status_code=400, detail="; ".join(errs))
 
-    # Persist password (if provided) to vault under a stable key per provider.
+    # Persist connection secrets to the database-INDEPENDENT credential store
+    # (OS keyring / file fallback) so a remote DB can be reached on cold start
+    # without the password living inside that same database. The legacy vault
+    # write is kept as a best-effort secondary (so the admin Secrets UI still
+    # lists it) and must never fail the save.
+    from app.db import cred_store
     secrets = get_secrets()
+
+    async def _vault_set_best_effort(k: str, v: str) -> None:
+        try:
+            await secrets.set(k, v)
+        except Exception as e:
+            logger.warning("Secondary vault set failed for %s (%s); keyring store is authoritative", k, e)
+
     if body.password:
         key = body.password_secret_key or f"db_password_{cfg.provider}"
-        await secrets.set(key, body.password)
+        cred_store.set_secret(key, body.password)
+        await _vault_set_best_effort(key, body.password)
         cfg.password_secret_key = key
     elif body.password_secret_key:
         cfg.password_secret_key = body.password_secret_key
 
     if body.supabase_service_key and cfg.provider == "supabase":
-        await secrets.set("supabase_service_key", body.supabase_service_key)
+        cred_store.set_secret("supabase_service_key", body.supabase_service_key)
+        await _vault_set_best_effort("supabase_service_key", body.supabase_service_key)
         cfg.supabase_service_key_secret = "supabase_service_key"
 
     save_config(cfg)
@@ -330,26 +477,101 @@ async def activate_db(body: ActivateBody):
         return {"ok": True, "mode": "local", "stats": await get_db_stats()}
 
     if cfg.provider == "supabase":
-        # Hydrate env vars from saved config so SupabaseBackend.__init__ can read them
-        if cfg.supabase_url:
-            os.environ["SUPABASE_URL"] = cfg.supabase_url
-        if cfg.supabase_service_key_secret:
-            secret = await get_secrets().get(cfg.supabase_service_key_secret)
-            if secret:
-                os.environ["SUPABASE_SERVICE_ROLE_KEY"] = secret
-        from app.db import set_db_mode, get_db_stats
+        # Hydrate env vars from saved config so SupabaseBackend.__init__ can read them.
+        url = cfg.supabase_url or ""
+        if url:
+            os.environ["SUPABASE_URL"] = url
+        key = None
+        key_name = cfg.supabase_service_key_secret or "supabase_service_key"
+        from app.db import cred_store
+        key = cred_store.get_secret(key_name)
+        if not key:
+            # Self-heal older installs whose key only lived in the legacy vault.
+            try:
+                key = await get_secrets().get(key_name)
+            except Exception:
+                key = None
+            if key:
+                cred_store.set_secret(key_name, key)
+        if key:
+            os.environ["SUPABASE_SERVICE_ROLE_KEY"] = key
+            if cfg.supabase_service_key_secret != key_name:
+                cfg.supabase_service_key_secret = key_name
+                save_config(cfg)
+        if not url or not key:
+            return JSONResponse(status_code=400, content={
+                "ok": False,
+                "error": "Supabase URL or service-role key is missing. Save the config (URL + key) first, then Activate.",
+            })
+
+        from app.db import set_db_mode, get_mode, reset_db_instance, get_db, get_db_stats
+        prev_mode = get_mode()
+
+        def _revert():
+            set_db_mode(prev_mode)
+            reset_db_instance()
+
         set_db_mode("cloud")
-        return {"ok": True, "mode": "cloud", "stats": await get_db_stats()}
+        reset_db_instance()
+        # get_db() silently falls back to LocalBackend (and flips the mode back to
+        # 'local') when Supabase can't be reached or the client isn't installed.
+        # Detect that so we never report a misleading "cloud" success.
+        try:
+            get_db()
+        except Exception as e:
+            _revert()
+            return JSONResponse(status_code=502, content={
+                "ok": False,
+                "error": f"Could not initialize the Supabase backend: {e}. The app was NOT switched.",
+            })
+        if get_mode() != "cloud":
+            _revert()
+            return JSONResponse(status_code=502, content={
+                "ok": False,
+                "error": ("Couldn't connect to Supabase with the saved URL/key (or the Supabase "
+                          "client isn't installed). The app was NOT switched — check the URL and "
+                          "service-role key, then click Test Connection."),
+            })
+        # Connected — but is the schema actually there? A missing table reads back
+        # as count -1 in get_db_stats. Refuse (and revert) so we don't leave the
+        # app pointed at an empty database where every read fails at runtime.
+        stats = await get_db_stats()
+        missing = sorted([t for t, c in (stats.get("tables") or {}).items() if c == -1])
+        if missing:
+            _revert()
+            return JSONResponse(status_code=409, content={
+                "ok": False,
+                "needs_tables": True,
+                "missing_tables": missing,
+                "error": ("Connected to Supabase, but these tables don't exist yet: "
+                          + ", ".join(missing) + ".\n"
+                          "Create them first: click \"Create Tables (SQL Editor)\", paste the SQL into "
+                          "your Supabase SQL Editor and Run, then Activate again. The app was NOT switched."),
+            })
+        return {"ok": True, "mode": "cloud", "stats": stats}
 
     # Raw Postgres family (postgres / aws_rds / gcp_cloud_sql / azure_postgres /
     # neon): all share the live asyncpg backend, routed purely by dialect.
     if cfg.dialect == "postgres":
-        # Resolve the password from the vault and stash it in the process env so
-        # both this activation and cold restarts (which re-read the vault) work.
-        if cfg.password_secret_key:
-            pw = await get_secrets().get(cfg.password_secret_key)
+        # Resolve the password and stash it in the process env. The authoritative
+        # source is the database-independent credential store (keyring/file); we
+        # self-heal older installs whose password only lived in the legacy vault
+        # by copying it across so future cold starts resolve without re-activation.
+        from app.db import cred_store
+        key_name = cfg.password_secret_key or f"db_password_{cfg.provider}"
+        pw = cred_store.get_secret(key_name)
+        if not pw:
+            try:
+                pw = await get_secrets().get(key_name)
+            except Exception:
+                pw = None
             if pw:
-                os.environ["WEBAGENT_DB_PASSWORD"] = pw
+                cred_store.set_secret(key_name, pw)
+        if pw:
+            os.environ["WEBAGENT_DB_PASSWORD"] = pw
+            if cfg.password_secret_key != key_name:
+                cfg.password_secret_key = key_name
+                save_config(cfg)
         try:
             from app.db import reset_db_instance, get_db, get_db_stats
             reset_db_instance()
@@ -400,31 +622,105 @@ async def set_secrets_provider(body: SecretsModeBody):
     return {"ok": True, "provider": body.provider}
 
 
-@router.post("/secrets/test")
-async def test_secrets(requesting_user_id: str = Query(...)):
-    await _require_admin(requesting_user_id)
-    backend = get_secrets()
-    return await backend.test_connection()
+@router.post("/secrets/provider-config")
+async def set_secrets_provider_cfg(body: SecretsProviderConfigBody):
+    """Persist a remote vault's connection details entered in the UI.
 
-
-# ── Routes: canvas store ─────────────────────────────────────────────────────
-
-
-@router.get("/canvases/status")
-async def canvases_status(requesting_user_id: str = Query(...)):
-    await _require_admin(requesting_user_id)
-    return get_canvases_status()
-
-
-@router.post("/canvases/mode")
-async def set_canvases_store_mode(body: CanvasesModeBody):
+    Non-secret fields (address / URL / project / region / mount / prefix / ids)
+    go to a local file outside the app DB; the access token is stored
+    keyring-first with a file fallback. The token is never echoed back — only
+    where it landed ('keyring' / 'file') and whether one is now saved."""
     await _require_admin(body.requesting_user_id)
     if _env_locked():
         raise HTTPException(status_code=403, detail="Config is env-locked.")
-    if body.mode not in list_canvases_modes():
+    if body.provider not in list_secret_providers():
+        raise HTTPException(status_code=400, detail=f"Unknown provider {body.provider}")
+    try:
+        set_secrets_provider_config(body.provider, body.config or {})
+        token_storage = None
+        if body.token:  # blank/None = keep existing token untouched
+            token_storage = set_secrets_provider_token(body.provider, body.token)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "ok": True,
+        "provider": body.provider,
+        "config": body.config or {},
+        "token_storage": token_storage or secrets_token_location(body.provider),
+        "token_saved": secrets_token_location(body.provider) is not None,
+    }
+
+
+@router.post("/secrets/test")
+async def test_secrets(body: SecretsTestBody):
+    await _require_admin(body.requesting_user_id)
+    if body.provider:
+        if body.provider not in list_secret_providers():
+            raise HTTPException(status_code=400, detail=f"Unknown provider {body.provider}")
+        try:
+            backend = construct_secrets_provider(body.provider)
+        except Exception as e:
+            return {"ok": False, "message": f"Could not construct {body.provider}: {e}"}
+    else:
+        backend = get_secrets()
+    return await backend.test_connection()
+
+
+# ── Routes: server restart ──────────────────────────────────────────────────
+# A self-restart so a settings change that needs a fresh process (e.g. a clean
+# vault cutover) can be applied from the UI with one click. The restart is
+# supervisor-cooperative (app/relauncher.py): a detached relauncher waits for
+# this process to exit, lets any external supervisor revive it first, and only
+# relaunches run.py itself if nothing else does — so the server always comes back.
+
+
+class ServerRestartBody(BaseModel):
+    requesting_user_id: str
+
+
+@router.get("/server/restart-info")
+async def server_restart_info(requesting_user_id: str = Query(...)):
+    """Whether this host can restart itself (so the UI knows to offer the button
+    or fall back to asking the user to restart manually)."""
+    await _require_admin(requesting_user_id)
+    from app.relauncher import auto_restart_available
+    ok, reason = auto_restart_available()
+    return {"auto_restart_available": ok, "reason": reason}
+
+
+@router.post("/server/restart")
+async def server_restart(body: ServerRestartBody):
+    """Restart the server process. Returns immediately; the process exits a beat
+    later and the relauncher (or an external supervisor) brings it back up."""
+    await _require_admin(body.requesting_user_id)
+    from app.relauncher import trigger_restart
+    result = trigger_restart()
+    if not result.get("auto_restart"):
+        # Can't self-revive on this host — don't kill the server; tell the UI.
+        raise HTTPException(status_code=409,
+                            detail=result.get("reason") or "Automatic restart is not available here.")
+    logger.warning("Server restart requested from the admin UI — relaunching...")
+    return result
+
+
+# ── Routes: genui store ─────────────────────────────────────────────────────
+
+
+@router.get("/genui/status")
+async def genui_status(requesting_user_id: str = Query(...)):
+    await _require_admin(requesting_user_id)
+    return get_genui_status()
+
+
+@router.post("/genui/mode")
+async def set_genui_store_mode(body: GenuiModeBody):
+    await _require_admin(body.requesting_user_id)
+    if _env_locked():
+        raise HTTPException(status_code=403, detail="Config is env-locked.")
+    if body.mode not in list_genui_modes():
         raise HTTPException(status_code=400, detail=f"Unknown mode {body.mode}")
     try:
-        set_canvases_mode(body.mode)
+        set_genui_mode(body.mode)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "mode": body.mode}
@@ -823,6 +1119,56 @@ async def full_db_set(body: FullDbEncBody):
             "Will be decrypted back to plaintext on the next server restart."
         ),
         "status": db_crypto.status(),
+    }
+
+
+# ── Hybrid local-first backend (opt-in) ───────────────────────────────────────
+# Toggle for app/db/hybrid.py. Only meaningful with a reachable Postgres remote;
+# on a local-only install it is a no-op. Applied on next restart (like full-DB
+# encryption). See app/db/hybrid.py + app/db/README.md.
+
+class HybridSetBody(BaseModel):
+    requesting_user_id: str
+    enabled: bool
+
+
+@router.get("/hybrid/status")
+async def hybrid_status(requesting_user_id: str = Query(...)):
+    """Hybrid local-first on/off + whether a shared remote is actually active
+    (the hybrid is a no-op without one)."""
+    await _require_admin(requesting_user_id)
+    from app.db.hybrid import hybrid_enabled
+    from app.db import is_remote_db
+    return {
+        "enabled": hybrid_enabled(),
+        "remote_active": is_remote_db(),
+        "env_locked": _env_locked(),
+    }
+
+
+@router.post("/hybrid/set")
+async def hybrid_set(body: HybridSetBody):
+    """Turn the hybrid local-first backend on/off. Takes effect on next restart."""
+    await _require_admin(body.requesting_user_id)
+    if _env_locked():
+        raise HTTPException(status_code=403, detail="Config is env-locked.")
+    from app.db.hybrid import set_hybrid_enabled, hybrid_enabled
+    from app.db import is_remote_db
+    set_hybrid_enabled(body.enabled)
+    remote = is_remote_db()
+    if body.enabled and not remote:
+        msg = ("Saved, but this install has no shared remote database — the hybrid "
+               "layer stays a no-op until a Postgres remote is active.")
+    elif body.enabled:
+        msg = "Hybrid local-first mode will take effect on the next server restart."
+    else:
+        msg = "Hybrid mode off; the app uses the remote database directly on the next restart."
+    return {
+        "ok": True,
+        "enabled": hybrid_enabled(),
+        "remote_active": remote,
+        "restart_required": True,
+        "message": msg,
     }
 
 

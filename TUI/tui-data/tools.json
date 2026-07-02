@@ -4,7 +4,7 @@
     "link_project": {
       "category": "manager_state",
       "enabled": true,
-      "description": "Link the manager to an EXISTING webAgent checkout (a folder with run.py + app/). Switches to managed mode and adopts that repo's AI key. Use when the user already has a copy."
+      "description": "Link the manager to an EXISTING WebAgent checkout (a folder with run.py + app/). Switches to managed mode and adopts that repo's AI key. Use when the user already has a copy."
     },
     "setup_launch_shortcut": {
       "category": "manager_state",
@@ -19,7 +19,7 @@
     "clone_repo": {
       "category": "install",
       "enabled": true,
-      "description": "Clone the public webAgent repo into an empty/new target folder. Mutating. Recommended target: C:/webagent (Windows) or ~/webagent."
+      "description": "Clone the public WebAgent repo into an empty/new target folder. Mutating. Recommended target: C:/webagent (Windows) or ~/webagent."
     },
     "setup_environment": {
       "category": "install",
@@ -39,7 +39,7 @@
     "check_dependencies": {
       "category": "install",
       "enabled": true,
-      "description": "Read-only dependency checklist for getting webAgent running on THIS device — the same list the Setup dashboard shows: internet, git, Python, disk, on Android/Termux the Ubuntu proot-distro sandbox (proot_distro / ubuntu / ubuntu_toolchain), then repo / venv / browser / config / verify. Each row says what it needs first. Pass the install folder as target (optional). Run this before install_dependency."
+      "description": "Read-only dependency checklist for getting WebAgent running on THIS device — the same list the Setup dashboard shows: internet, git, Python, disk, on Android/Termux the Ubuntu proot-distro sandbox (proot_distro / ubuntu / ubuntu_toolchain), then repo / venv / browser / config / verify. Each row says what it needs first. Pass the install folder as target (optional). Run this before install_dependency."
     },
     "install_dependency": {
       "category": "install",
@@ -49,22 +49,22 @@
     "server_status": {
       "category": "server",
       "enabled": true,
-      "description": "Is the local webAgent server up? Read-only."
+      "description": "Is the local WebAgent server up? Read-only."
     },
     "server_start": {
       "category": "server",
       "enabled": true,
-      "description": "Start the local webAgent server (detached) and verify health. Mutating."
+      "description": "Start the local WebAgent server (detached) and verify health. Mutating."
     },
     "server_stop": {
       "category": "server",
       "enabled": true,
-      "description": "Stop the local webAgent server the manager started. Mutating."
+      "description": "Stop the local WebAgent server the manager started. Mutating."
     },
     "server_restart": {
       "category": "server",
       "enabled": true,
-      "description": "Restart the local webAgent server. Mutating."
+      "description": "Restart the local WebAgent server. Mutating."
     },
     "server_logs": {
       "category": "server",
@@ -79,12 +79,12 @@
     "reset_app": {
       "category": "server",
       "enabled": true,
-      "description": "Reset the linked webAgent install to a clean state (like reset_webagent.bat). NON-DESTRUCTIVE by default: ALWAYS wipes only the userbase (ACTIVE database backend + visuals/users/) — credentials are kept so the app still works. Credentials now live outside the user-data DB: the LLM key/provider config (provider.json), local logins (users.json), and integration OAuth tokens + secrets (the dedicated app/db/vault.db) all survive a default reset. Backend-aware via app/db_connection.json: active Postgres (postgres/neon/gcp_cloud_sql) has its schema dropped & recreated (irreversible, NOT backed up, stray SQLite files left alone); active SQLite has local.db + sidecars removed (backed up). Opt-in flags: clear_logs (diagnostics logs.db + recordings.db — kept by default), clear_secrets (AI key/provider config + vault.db OAuth/integration creds), clear_users (local accounts + tokens), delete_env (.env), delete_agents (agent template JSONs — zero agents after). backup also covers visuals/users + opt-in file groups; stops the server first. The DB, default admin/admin user, and agents regenerate on next start (if agent JSONs were kept). Mutating — confirm first."
+      "description": "Reset the linked WebAgent install to a clean state (like reset_webagent.bat). NON-DESTRUCTIVE by default: ALWAYS wipes only the userbase (ACTIVE database backend + visuals/users/) — credentials are kept so the app still works. Credentials now live outside the user-data DB: the LLM key/provider config (provider.json), local logins (users.json), and integration OAuth tokens + secrets (the dedicated app/db/vault.db) all survive a default reset. Backend-aware via app/db_connection.json: active Postgres (postgres/neon/gcp_cloud_sql) has its schema dropped & recreated (irreversible, NOT backed up, stray SQLite files left alone); active SQLite has local.db + sidecars removed (backed up). Opt-in flags: clear_logs (diagnostics logs.db + recordings.db — kept by default), clear_secrets (AI key/provider config + vault.db OAuth/integration creds), clear_users (local accounts + tokens), delete_env (.env), delete_agents (agent template JSONs — zero agents after). backup also covers visuals/users + opt-in file groups; stops the server first. The DB, default admin/admin user, and agents regenerate on next start (if agent JSONs were kept). Mutating — confirm first."
     },
     "app_login": {
       "category": "app_control",
       "enabled": true,
-      "description": "Log into the RUNNING webAgent app over its HTTP API (the same API the web UI uses) and cache the session. Defaults to the local admin (admin/admin). Read-only side effect — just authentication. app_chat logs in on its own, so use this only to confirm credentials or surface the user_id."
+      "description": "Log into the RUNNING WebAgent app over its HTTP API (the same API the web UI uses) and cache the session. Defaults to the local admin (admin/admin). Read-only side effect — just authentication. app_chat logs in on its own, so use this only to confirm credentials or surface the user_id."
     },
     "app_list_agents": {
       "category": "app_control",
@@ -134,12 +134,12 @@
     "read_diagnostics": {
       "category": "diagnostics",
       "enabled": true,
-      "description": "Read the webAgent app's diagnostics — its flight-recorder of warnings/errors (with tracebacks), agent-loop problems, run outcomes, tool errors, every HTTP request (access) and WebSocket lifecycle (ws) — straight from the checkout's dedicated logs database (app/db/logs.db; falls back to local.db on older builds), so it works even when the server is DOWN. Filter by level (error/warning) or category (server/http/access/ws/loop/run/recovery/tool). Use it to diagnose a broken server. For BROWSER/UI-side problems (wrong render, lag, a JS error, a failed fetch in the page) use read_recordings instead — that's the browser flight-recorder."
+      "description": "Read the WebAgent app's diagnostics — its flight-recorder of warnings/errors (with tracebacks), agent-loop problems, run outcomes, tool errors, every HTTP request (access) and WebSocket lifecycle (ws) — straight from the checkout's dedicated logs database (app/db/logs.db; falls back to local.db on older builds), so it works even when the server is DOWN. Filter by level (error/warning) or category (server/http/access/ws/loop/run/recovery/tool). Use it to diagnose a broken server. For BROWSER/UI-side problems (wrong render, lag, a JS error, a failed fetch in the page) use read_recordings instead — that's the browser flight-recorder."
     },
     "read_recordings": {
       "category": "diagnostics",
       "enabled": true,
-      "description": "Collect the webAgent app's RENDER RECORDER yourself — the browser flight-recorder of HTML snapshots, DOM-mutation deltas, lag/long-task metrics, JS errors, console warnings, and failed/slow network calls — read STRAIGHT from the checkout's recordings DB (data/db/recordings.db), so it works even when the server is DOWN. This is the browser-side counterpart to read_diagnostics (which is server-side). The recorder is OFF by default; YOU can turn it on with app_set_settings({\"render_recording_enabled\": true}), reproduce the UI behaviour in the browser (or via the connected app session), read it back here, then turn it off. Filter by kind (snapshot/mutation/lag/js_error/console/network/nav/meta), level, session_id, since_minutes, or search; pass rec_id or include_html=true to also pull the captured HTML (large — keep limit small). Read-only. Use this whenever a UI/rendering change needs verifying or a browser-side bug needs evidence."
+      "description": "Collect the WebAgent app's RENDER RECORDER yourself — the browser flight-recorder of HTML snapshots, DOM-mutation deltas, lag/long-task metrics, JS errors, console warnings, and failed/slow network calls — read STRAIGHT from the checkout's recordings DB (data/db/recordings.db), so it works even when the server is DOWN. This is the browser-side counterpart to read_diagnostics (which is server-side). The recorder is OFF by default; YOU can turn it on with app_set_settings({\"render_recording_enabled\": true}), reproduce the UI behaviour in the browser (or via the connected app session), read it back here, then turn it off. Filter by kind (snapshot/mutation/lag/js_error/console/network/nav/meta), level, session_id, since_minutes, or search; pass rec_id or include_html=true to also pull the captured HTML (large — keep limit small). Read-only. Use this whenever a UI/rendering change needs verifying or a browser-side bug needs evidence."
     },
     "monitor_status": {
       "category": "monitoring",
@@ -169,7 +169,7 @@
     "server_resources": {
       "category": "monitoring",
       "enabled": true,
-      "description": "Report server + host resources right now: host CPU, memory, disk free, and the webAgent server process's memory. Read-only. Use when the user asks how much CPU/RAM/disk things are using or suspects a memory leak / full disk."
+      "description": "Report server + host resources right now: host CPU, memory, disk free, and the WebAgent server process's memory. Read-only. Use when the user asks how much CPU/RAM/disk things are using or suspects a memory leak / full disk."
     },
     "notify_test": {
       "category": "monitoring",

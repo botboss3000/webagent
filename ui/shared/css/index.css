@@ -11,8 +11,8 @@
    (the dark :root block AND its body.light-mode twin), then reference it here.
    Re-theming the whole app (e.g. peach → green) is then a one-file edit. */
 
-/* —— Background canvas + overlay —— */
-.stargaze-canvas {
+/* —— Background genui + overlay —— */
+.stargaze-genui {
   position: fixed;
   inset: 0;
   width: 100%;
@@ -37,11 +37,11 @@
 body.light-mode .stargaze-overlay { opacity: 0.45; }
 
 /* —— Page background: the "Background" palette swatch (--bg-0). Solid (not the
-   design-system gradient) so the animated canvas shows through cleanly; tracks
+   design-system gradient) so the animated genui shows through cleanly; tracks
    the swatch live in both themes. body resolves --bg-0 per theme; html keeps the
    dark base (only the few-px padding frame shows it). —— */
 html, body { background: var(--bg-0) !important; }
-/* Lift the main layout shell above the stargaze canvas/overlay. Scoped to the
+/* Lift the main layout shell above the stargaze genui/overlay. Scoped to the
    actual layout containers — NOT `body > *` — so dynamically-appended popups
    (.tutorial-popover, .session-row-actions, .feedback-modal, etc.) keep their
    own `position: fixed` instead of being forced into `position: relative`. */
@@ -192,8 +192,8 @@ body.light-mode .chat-bubble.agent { --chat-bubble-bg: var(--agent-bubble-bg, co
 /* —— The FLOATING GLASS pill skin — shared by all floating pills ——
    CHAT-PILL-SYNC (float skin): the web-chat pill (#chat-panel .chat-pill, over
    the message list), the ability-table search/chat pill (.ability-search-pill,
-   above the per-agent + admin ability tables), the Canvas prompt bar
-   (#canvas-prompt-row, over the iframe viewport), and the in-app browser pill
+   above the per-agent + admin ability tables), the Gen UI prompt bar
+   (#genui-prompt-row, over the iframe viewport), and the in-app browser pill
    (.browser-prompt-row, over the browser stage). The base .chat-pill (app1.css)
    paints an opaque pill with a hard border; these rules strip that to the
    transparent-tint + soft-border + blur glass look so all read as one matched
@@ -204,9 +204,10 @@ body.light-mode .chat-bubble.agent { --chat-bubble-bg: var(--agent-bubble-bg, co
    pill updates together. */
 #chat-panel .chat-pill,
 .ability-search-pill.chat-pill,
-#canvas-prompt-row.chat-pill,
+#genui-prompt-row.chat-pill,
 .browser-prompt-row.chat-pill,
-#ac-pa-bar-row.chat-pill {
+#ac-pa-bar-row.chat-pill,
+#ac-ds-pa-bar-row.chat-pill {
   background: color-mix(in oklab, currentColor 7%, transparent) !important;
   border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent) !important;
   backdrop-filter: blur(12px) saturate(140%) !important;
@@ -214,17 +215,19 @@ body.light-mode .chat-bubble.agent { --chat-bubble-bg: var(--agent-bubble-bg, co
 }
 #chat-panel .chat-pill:focus-within,
 .ability-search-pill.chat-pill:focus-within,
-#canvas-prompt-row.chat-pill:focus-within,
+#genui-prompt-row.chat-pill:focus-within,
 .browser-prompt-row.chat-pill:focus-within,
-#ac-pa-bar-row.chat-pill:focus-within {
+#ac-pa-bar-row.chat-pill:focus-within,
+#ac-ds-pa-bar-row.chat-pill:focus-within {
   border-color: color-mix(in oklab, currentColor 22%, transparent) !important;
   background: color-mix(in oklab, currentColor 9%, transparent) !important;
 }
 #chat-panel .chat-pill.drag-over,
 .ability-search-pill.chat-pill.drag-over,
-#canvas-prompt-row.chat-pill.drag-over,
+#genui-prompt-row.chat-pill.drag-over,
 .browser-prompt-row.chat-pill.drag-over,
-#ac-pa-bar-row.chat-pill.drag-over {
+#ac-pa-bar-row.chat-pill.drag-over,
+#ac-ds-pa-bar-row.chat-pill.drag-over {
   border: 1px dashed color-mix(in oklab, currentColor 25%, transparent) !important;
   background: color-mix(in oklab, currentColor 10%, transparent) !important;
 }
@@ -255,7 +258,10 @@ body.light-mode #chat-panel .chat-pill.drag-over {
    theme-aware, so one rule covers light + dark. */
 #ac-pa-bar-row.chat-pill,
 #ac-pa-bar-row.chat-pill:focus-within,
-#ac-pa-bar-row.chat-pill.drag-over {
+#ac-pa-bar-row.chat-pill.drag-over,
+#ac-ds-pa-bar-row.chat-pill,
+#ac-ds-pa-bar-row.chat-pill:focus-within,
+#ac-ds-pa-bar-row.chat-pill.drag-over {
   background: var(--bg-elev) !important;
 }
 /* Agent Settings page-assistant bar reuses the shared ability search/chat pill
@@ -270,9 +276,10 @@ body.light-mode #chat-panel .chat-pill.drag-over {
 }
 #chat-panel .chat-pill-input,
 .ability-search-pill .chat-pill-input,
-#canvas-prompt-row .chat-pill-input,
+#genui-prompt-row .chat-pill-input,
 .browser-prompt-row .chat-pill-input,
-#ac-pa-bar-row .chat-pill-input {
+#ac-pa-bar-row .chat-pill-input,
+#ac-ds-pa-bar-row .chat-pill-input {
   background: transparent !important;
 }
 /* —— Main panel: a real panel (glass) —— */
@@ -355,7 +362,7 @@ body.light-mode #main-panel {
 @media (prefers-reduced-motion: reduce) { #cursor-glow { display: none; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .stargaze-canvas { display: none; }
+  .stargaze-genui { display: none; }
 }
 
 /* —— "Load earlier messages" button in chat —— */

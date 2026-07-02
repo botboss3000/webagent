@@ -46,6 +46,12 @@ _AVAILABLE = (
 _backend: Optional[SecretsBackend] = None
 _mode: Optional[str] = None
 _discovered_cache: Optional[dict] = None
+# The provider the SERVER PROCESS booted with — captured on the first mode
+# resolution (which happens at startup, before any UI change). Switching the
+# vault live (set_mode) rebuilds the backend immediately, but secrets already
+# read into memory at boot are not re-fetched; comparing the live mode against
+# this tells the UI when a restart is recommended for a fully clean cutover.
+_boot_provider: Optional[str] = None
 
 
 def _discovered() -> dict:
@@ -94,7 +100,7 @@ def _save_mode(provider: str) -> None:
 
 def get_mode() -> str:
     """Get the current secrets provider name."""
-    global _mode
+    global _mode, _boot_provider
     if _mode is None:
         # Env override wins
         env_choice = os.environ.get("WEBAGENT_SECRETS_PROVIDER", "").strip()
@@ -102,6 +108,9 @@ def get_mode() -> str:
             _mode = env_choice
         else:
             _mode = _load_saved_mode() or "inline_db"
+    if _boot_provider is None:
+        # First resolution in this process == the provider we booted with.
+        _boot_provider = _mode
     return _mode
 
 
@@ -118,6 +127,44 @@ def set_mode(provider: str) -> None:
 
 def list_providers() -> list:
     return list(_all_providers())
+
+
+# ── UI-driven connection config (delegates to provider_config) ──────────────
+# Thin wrappers so callers use one import surface (app.secrets) and so saving a
+# provider's config/token also drops the cached backend if it is the active one.
+
+def get_provider_config(provider: str) -> dict:
+    from app.secrets.provider_config import get_provider_config as _g
+    return _g(provider)
+
+
+def set_provider_config(provider: str, cfg: dict) -> None:
+    global _backend
+    from app.secrets.provider_config import set_provider_config as _s
+    _s(provider, cfg)
+    if provider == get_mode():
+        _backend = None  # rebuild with the new config on next access
+
+
+def set_provider_token(provider: str, token):
+    global _backend
+    from app.secrets.provider_config import set_provider_token as _s
+    where = _s(provider, token)
+    if provider == get_mode():
+        _backend = None
+    return where
+
+
+def token_location(provider: str):
+    from app.secrets.provider_config import token_location as _t
+    return _t(provider)
+
+
+def construct(provider: str) -> SecretsBackend:
+    """Build a given provider's backend (reading its saved config) WITHOUT
+    changing the active mode — used by the UI 'Test' button to probe the
+    selected provider before activating it."""
+    return _construct(provider)
 
 
 def _construct(provider: str) -> SecretsBackend:
@@ -155,11 +202,28 @@ def get_secrets() -> SecretsBackend:
 
 
 def get_secrets_status() -> dict:
-    """For UI: current provider + reachability info."""
+    """For UI: current provider + reachability info + the saved (non-secret)
+    connection config per provider and whether/where each provider's token is
+    stored. Tokens themselves are NEVER included."""
+    try:
+        from app.secrets.provider_config import all_provider_configs, token_location
+        configs = all_provider_configs()
+        token_saved = {p: token_location(p) for p in _all_providers()}
+    except Exception as e:
+        logger.warning("Failed to load secrets provider configs: %s", e)
+        configs, token_saved = {}, {}
+    active = get_mode()
     return {
-        "provider": get_mode(),
+        "provider": active,
         "available": list(_all_providers()),
         "env_locked": os.environ.get("WEBAGENT_CONFIG_SOURCE", "").lower() == "env",
+        "configs": configs,
+        "token_saved": token_saved,
+        # The provider the process booted with + whether the live choice has
+        # diverged from it. The UI uses restart_recommended to offer a one-click
+        # server restart for a clean cutover after switching vaults.
+        "boot_provider": _boot_provider,
+        "restart_recommended": bool(_boot_provider and active != _boot_provider),
     }
 
 

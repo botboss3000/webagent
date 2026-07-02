@@ -944,20 +944,35 @@ body.light-mode .ac-tab.active .ac-tab-count-badge {
    sections is active — we switch it on by handing it a radius + the per-side inset.
    All three pages share the same centred-column layout (each is an `ac-stickynav`
    section whose `.ac-list` tables cap at 750px), so the rounded TOP corners read
-   identically. App/Agent Settings also have a bottom page-assistant bar
-   (#ac-pa-bar / #ac-as-pa-bar) below the scroller; Data Management has NO chat pill,
-   so its scroller runs to the panel floor and its rounded BOTTOM corners pin there —
-   the same convex shape, just against the panel edge instead of above a pill.
+   identically. All three now also have a bottom page-assistant bar below the
+   scroller (App Settings' #ac-pa-bar, Agent Settings' #ac-as-pa-bar, Data
+   Settings' #ac-ds-pa-bar), so the scroller shrinks to sit above the pill and
+   its rounded BOTTOM corners pin just above it — the same convex shape on every
+   tab.
    scrollbar-gutter keeps a stable strip on both sides so the column math (in
    #app-config-scroll-wrap below) floors onto the real gutter when the panel is
    narrow. The corners reveal the panel's own dynamic gradient, so they stay
    theme-correct. Doc: ui-guidance "Pinned rounded scroll corners". */
+#app-config-container:has(#ac-section-data-settings.active) #app-config-content,
 #app-config-container:has(#ac-section-app-settings.active) #app-config-content,
-#app-config-container:has(#ac-section-agent-settings.active) #app-config-content,
-#app-config-container:has(#ac-section-database.active) #app-config-content {
+#app-config-container:has(#ac-section-agent-settings.active) #app-config-content {
   scrollbar-gutter: stable both-edges;
   --rsc-r: var(--ac-rnd-r);
   --rsc-side: var(--ac-rnd-side);
+}
+/* Mobile: drop the painted-on (masked) rounded scroll corners ENTIRELY — the
+   centred-column mask inset only makes sense on a wide screen (where the 750px
+   column sits inside a fat gutter). On a narrow phone panel the column is
+   full-width, so the mask just doubled up on the scroller's OWN `border-radius`.
+   A 0 mask radius makes the mask a full-opaque no-op, so the panel falls back to
+   plain, normal border-radius corners like every other panel. Desktop keeps the
+   mask (its whole point is the column inset). */
+@media (max-width: 800px) {
+  #app-config-container:has(#ac-section-data-settings.active) #app-config-content,
+  #app-config-container:has(#ac-section-app-settings.active) #app-config-content,
+  #app-config-container:has(#ac-section-agent-settings.active) #app-config-content {
+    --rsc-r: 0px;
+  }
 }
 /* Non-scrolling wrapper (markup in app-config.html) whose sole job is to be the
    query CONTAINER that sizes the centred-column corner mask. It takes over the
@@ -1020,7 +1035,8 @@ body.light-mode .ac-tab.active .ac-tab-count-badge {
    #ac-pa-bar and Agent Settings' #ac-as-pa-bar. Each is hidden by default and
    revealed only on its own active tab by the SEPARATE :has() rules below. */
 #ac-pa-bar,
-#ac-as-pa-bar {
+#ac-as-pa-bar,
+#ac-ds-pa-bar {
   display: none;
   flex-shrink: 0;
   align-self: center;
@@ -1045,15 +1061,24 @@ body.light-mode .ac-tab.active .ac-tab-count-badge {
   display: flex;
   flex-direction: column;
 }
-#ac-pa-bar > .chat-pill { width: 100%; }
+/* Data Settings has its OWN bottom bar (a composer twin of #ac-pa-bar), revealed
+   only on its own tab. Kept a SEPARATE rule for the same reason as above. */
+#app-config-container:has(#ac-section-data-settings.active) #ac-ds-pa-bar {
+  display: flex;
+  flex-direction: column;
+}
+#ac-pa-bar > .chat-pill,
+#ac-ds-pa-bar > .chat-pill { width: 100%; }
 /* The Agent Settings bar hosts the shared SEARCH/CHAT pill, whose wrapper is
    .conn-search-wrap.ability-search-pill-wrap (not a bare .chat-pill). Make it fill
    the bar and drop the inline-flow bottom margin it carried in its old top
    placement (spacing now comes from the bar's own padding). */
 #ac-as-pa-bar > .conn-search-wrap { width: 100%; }
 #ac-as-pa-bar .ability-search-pill-wrap { margin-bottom: 0; }
-#ac-pa-input { max-height: 160px; }
-#ac-pa-preview-bar {
+#ac-pa-input,
+#ac-ds-pa-input { max-height: 160px; }
+#ac-pa-preview-bar,
+#ac-ds-pa-preview-bar {
   pointer-events: auto;
   flex-wrap: wrap;
   gap: 6px;
@@ -1074,7 +1099,8 @@ body.light-mode .ac-tab.active .ac-tab-count-badge {
        selector wins over the base `position: sticky`; restored on keyboard close,
        inline top/bottom offsets from initStickyNav stay valid). */
 body.kb-open #ac-pa-bar,
-body.kb-open #ac-as-pa-bar { display: none !important; }
+body.kb-open #ac-as-pa-bar,
+body.kb-open #ac-ds-pa-bar { display: none !important; }
 body.kb-open .ac-stickynav .ac-category-summary { position: static; }
 
 .ac-section-header {
@@ -1461,6 +1487,59 @@ live/scheduled) */
   line-height: 1.4;
 }
 
+/* App Access (Data Settings) — radio VARIANT of the shared toggle-list. Each
+   access mode is a standard `.ac-ability-row` inside `.ac-list`, but the whole
+   row is a <label> so clicking anywhere selects that mode, and the right-hand
+   control is a native radio (accent-tinted) instead of a toggle. The selected
+   row gets the same subtle accent wash the abilities tree uses for an enabled
+   row, so the current choice reads at a glance. See app-access.js + ui-guidance
+   "Toggle-list" (a row's control can be a radio). */
+.ac-access-row { cursor: pointer; }
+.ac-access-row:has(.ac-access-radio:checked) {
+  background: rgba(var(--brand-rgb), 0.06);
+}
+.ac-access-radio-cell {
+  /* Keep the radio vertically centred on the row's first (title) line and give
+     the on-top save overlay a box to cover — _markSaving sets this relative. */
+  display: flex;
+  align-items: center;
+  padding-top: 1px;
+}
+.ac-access-radio {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* ── App Access · Social sign-in (data-settings.html) ──
+   The social providers live in the SAME `.ac-list` tree as the access-mode
+   radios, styled like the ability tree: a "Sign in with" group-header row over
+   individual ability-style provider rows. The list itself draws the radio↔header
+   and header↔first-provider hairlines; only the provider↔provider hairlines need
+   a rule (the providers are wrapped in the `#ac-social-list` block). */
+#ac-social-list > * + * { border-top: var(--border-width) solid var(--border); }
+
+/* "Sign in options" header row — reads like an ability-group head (chevron +
+   icon + title + count) and is now an EXPAND target: clicking it toggles the
+   provider list below (collapsed by default). */
+.ac-access-subhead { cursor: pointer; }
+.ac-access-subhead .ac-category-count { align-self: center; margin-left: 8px; }
+/* Collapse the provider list under the "Sign in options" head; the adjacent
+   sibling reveal opens it when the head carries `.expanded` (comments between
+   the two elements are ignored by the sibling combinator). */
+#ac-social-list { display: none; }
+.ac-access-subhead.expanded + #ac-social-list { display: block; }
+.ac-access-subhead.expanded .ac-row-chevron--left { transform: rotate(90deg); }
+
+/* Provider brand mark sits in the shared 28px icon column; scale the 18px brand
+   SVG down to the 16px the ability rows use. Google / Microsoft carry their own
+   brand colours inline; the monochrome marks (GitHub, Apple, generic) use
+   currentColor, so tint them with the foreground for correct dark + light. */
+.ac-social-brand { color: var(--fg-1); }
+.ac-social-brand svg { width: 16px; height: 16px; display: block; }
+
 /* User Management — pill badges in the table */
 .ac-um-badge {
   display: inline-block;
@@ -1491,6 +1570,56 @@ live/scheduled) */
 }
 .ac-um-action-btn:hover { border-color: var(--accent); color: var(--accent); }
 .ac-um-action-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+/* Social Sign-In providers (drop-in) — the expandable body content. The rows
+   themselves reuse the shared ability-row / `.conn-toggle` look (see the App
+   Access · Social sign-in block above); these rules only style what's INSIDE an
+   expanded provider's `.ac-ability-body`: the keys form, redirect URI + save.
+   Theme via tokens only (dark + light correct). */
+.ac-social-check.saved { color: var(--success); }
+.ac-social-check.error { color: var(--danger); }
+.ac-social-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ac-social-flabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted, var(--fg-3));
+  margin-top: 6px;
+}
+.ac-social-field {
+  background: var(--bg-1, var(--bg));
+  border: var(--border-width) solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-1);
+  padding: 7px 9px;
+  font-size: 12px;
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+.ac-social-field:focus { outline: none; border-color: var(--accent); }
+.ac-social-redirect { display: flex; align-items: center; gap: 8px; }
+.ac-social-redirect code {
+  flex: 1;
+  background: rgba(var(--brand-rgb), 0.08);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 11px;
+  color: var(--fg-1);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.ac-social-req, .ac-social-hint {
+  font-size: 11px;
+  color: var(--fg-muted, var(--fg-3));
+  line-height: 1.45;
+}
+.ac-social-setup { font-size: 11px; color: var(--accent); text-decoration: none; }
+.ac-social-setup:hover { text-decoration: underline; }
+.ac-social-actions { margin-top: 8px; }
 
 /* (Removed: .ac-gh-* GitHub status grid — was only used by the deleted
    App Configuration ▸ Git Providers tab; repo status now lives in the
@@ -2465,6 +2594,80 @@ body.light-mode .files-restricted-card { background: var(--bg-elev) !important; 
   border-top-color: var(--warning);
 }
 
+/* ── SHARED-HAZARD-CONFIRM ───────────────────────────────────────────────────
+   The in-app replacement for the native confirm() popup (shared/js/confirm-dialog.js):
+   a centred notification panel with a hazard badge + Cancel/Confirm. Theme-safe —
+   all colours are design-system tokens; the tone (warning/danger) recolours the
+   badge + confirm button. */
+.wa-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(var(--bg-0-rgb), 0.55);
+  backdrop-filter: blur(3px);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.wa-confirm-overlay.show { opacity: 1; }
+.wa-confirm-panel {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-elev);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-modal, 0 30px 80px -20px rgba(var(--shadow-rgb), 0.6));
+  padding: 20px 20px 16px;
+  transform: translateY(8px) scale(0.985);
+  transition: transform 0.16s ease;
+}
+.wa-confirm-overlay.show .wa-confirm-panel { transform: translateY(0) scale(1); }
+.wa-confirm-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.wa-confirm-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+.wa-confirm-warning .wa-confirm-icon { color: var(--warning); background: var(--warning-soft); }
+.wa-confirm-danger  .wa-confirm-icon { color: var(--danger);  background: var(--danger-soft); }
+.wa-confirm-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--fg-1);
+  line-height: 1.3;
+}
+.wa-confirm-msg {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg-2, var(--muted));
+  white-space: pre-wrap;
+  margin-bottom: 18px;
+}
+.wa-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.wa-confirm-actions .ac-btn { padding: 7px 16px; }
+.wa-confirm-warning .wa-confirm-go { background: var(--warning); color: var(--bg-0); }
+.wa-confirm-danger  .wa-confirm-go { background: var(--danger);  color: var(--bg-0); }
+@media (prefers-reduced-motion: reduce) {
+  .wa-confirm-overlay,
+  .wa-confirm-panel { transition: none; }
+}
+
 /* In-flight control spinner — mirrors agents.css `.agents-spinner` but lives HERE
    in the globally-loaded sheet so the ability-tree's saving spinners animate on
    EVERY page, including the admin Agent Settings page (which doesn't load
@@ -3146,6 +3349,78 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
   gap: 6px;
   margin-top: 12px;
 }
+/* Deploy card — the local-deployments list (this app + sibling checkouts),
+   deploy.js `_renderInstances`. Each instance is an expandable `.ac-row` inside
+   #ac-deploy-instances; the list reuses the shared `.ac-ability-row` /
+   `.ac-ability-body` look, so these rules only add the status dot, badges, the
+   "Port N · folder" meta line and the sibling action buttons. Theme-safe. */
+.ac-deploy-insts > .ac-row + .ac-row {
+  border-top: var(--border-width) solid var(--border);
+}
+/* Status dot in the icon column (green running / amber busy / grey stopped). */
+.ac-deploy-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--fg-muted, var(--fg-3));
+}
+.ac-deploy-dot-run {
+  background: var(--success, #22c55e);
+  box-shadow: 0 0 0 3px rgba(var(--success-rgb, 34, 197, 94), 0.18);
+}
+.ac-deploy-dot-busy { background: var(--warning, #d1a01e); }
+.ac-deploy-dot-stop { background: var(--fg-muted, var(--fg-3)); opacity: 0.55; }
+/* Right-hand status word on the title line. */
+.ac-deploy-inst-status {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted, var(--fg-3));
+}
+/* Small pill badges after the name ("This app", "Needs update"). */
+.ac-deploy-badge {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.ac-deploy-badge-app {
+  background: rgba(var(--accent-rgb, 224, 163, 94), 0.16);
+  color: var(--accent);
+}
+.ac-deploy-badge-warn {
+  background: rgba(var(--warning-rgb, 209, 160, 30), 0.18);
+  color: var(--warning, #b8860b);
+}
+/* The "Port N · folder" line. The port is fixed-width; the folder is monospace
+   and dims slightly. A middle dot separates them. */
+.ac-deploy-meta-port { font-weight: 600; color: var(--fg-2, var(--fg-1)); }
+.ac-deploy-meta-folder {
+  margin-left: 14px;
+  font-family: var(--font-mono);
+  color: var(--fg-muted, var(--fg-3));
+  word-break: break-all;
+}
+.ac-deploy-meta-folder::before {
+  content: "·";
+  margin-right: 14px;
+  color: var(--fg-muted, var(--fg-3));
+}
+/* Danger action (Remove) reuses the base `.ac-btn` but tints red. */
+.ac-deploy-danger-btn { color: var(--danger); border-color: rgba(var(--danger-rgb, 220, 80, 80), 0.5); }
+.ac-deploy-danger-btn:hover { background: rgba(var(--danger-rgb, 220, 80, 80), 0.1); }
+/* Reused for the "reopen at" link after a hub-port relaunch. */
+.ac-deploy-current-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-family: var(--font-mono);
+}
+.ac-deploy-current-link:hover { text-decoration: underline; }
+
 /* Deploy card — primary "Deploy now" button + the live NDJSON log.
    Reuses the Remote Access form grid (.ac-ra-fields) + actions row. */
 .ac-deploy-go-btn {
@@ -3548,76 +3823,94 @@ body.light-mode .ac-category-desc {
   color: var(--fg-3);
 }
 
-/* ── MOBILE heading carousel (Agent Settings) ───────────────────────────────
+/* ── MOBILE sub-header tab strip (Agent Settings) ───────────────────────────
    Opt-in via initStickyNav(id,{mobileCarousel}) — JS in
    ui/admin-tools/app-config/sticky-nav.js (`_buildCarousel`/`_syncMode`). On a
    mobile-width viewport the opted-in section (today: Agent Settings) swaps its
-   STACKED sticky headings for a horizontal, swipeable strip of heading chips
-   pinned at the top of the single scroll block. Tapping a chip jumps the scroll
-   to that section; the chip for the section you're reading highlights and scrolls
-   itself into view. The section's own headings stay (just un-stuck) so each block
-   is still labelled as you scroll. Desktop keeps the stacked sticky headings —
-   the carousel is hidden AND removed from the DOM there. The whole behaviour is
-   inside the mobile media query, so a lingering `.ac-mnav-on` class can never
-   surface the strip on desktop. */
-.ac-mnav { display: none; }
+   STACKED sticky headings for a horizontal, swipeable strip of its section
+   headings. That strip is a GENUINE SUB-HEADER: `_buildCarousel` inserts the
+   `.ac-mnav` into #app-config-subnav — a sibling directly beneath
+   #app-config-tabs-wrap and OUTSIDE the content scroller — so it spans the full
+   panel width, sits flush under the app-config tabs and mirrors their look
+   (transparent bar, bottom rule, underline tabs), instead of a rounded card
+   clipped inside the scroller. Tapping a tab jumps the scroll to that section;
+   the tab for the section you're reading highlights and scrolls itself into view.
+   The section's own headings stay (just un-stuck) so each block is still labelled
+   as you scroll. Desktop keeps the stacked sticky headings — the strip is removed
+   from the DOM there and the host is hidden. */
+
+/* The sub-header host: hidden on desktop / on any tab without a carousel. Shown
+   only on mobile while Agent Settings is the active section (and once its strip is
+   built, so an empty host adds no border). */
+#app-config-subnav { display: none; }
+.ac-mnav { display: block; }
 
 @media (max-width: 800px) {
+  #app-config-container:has(#ac-section-agent-settings.active) #app-config-subnav:not(:empty) {
+    display: block;
+    flex-shrink: 0;                   /* a fixed header row in the flex column, never squeezed */
+  }
   /* Un-stack the in-flow headings for a carousel section so they scroll naturally
      instead of pinning top/bottom. Higher specificity than the base
      `.ac-stickynav .ac-category-summary { position: sticky }`. */
   .ac-section.ac-mnav-on .ac-category-summary { position: static; }
 
-  .ac-mnav-on > .ac-mnav {
-    display: block;
-    position: sticky;
-    top: 0;
-    z-index: 7;                       /* above the un-stuck headings (z 6) + rows */
+  #app-config-subnav > .ac-mnav {
+    /* Full-width bar with a bottom rule, mirroring #app-config-tabs-wrap — a
+       second row of tabs attached directly under the app-config tabs. It lives
+       outside the scroller, so (like the tab wrap) nothing scrolls behind it and
+       it can be transparent, letting the panel gradient show through. */
     width: 100%;
-    max-width: 750px;                 /* line up with the 750px content column */
-    margin: 0 auto 8px;
-    border-radius: var(--r-lg);
-    /* Opaque bar so scrolled rows never read through the gaps between chips
-       (mirrors the headings' opaque fill — backdrop-filter is unreliable on some
-       mobile browsers). Derived from the palette, so it tracks theme/preset. */
-    background-color: color-mix(in oklab, var(--bg-0) 90%, var(--fg-1));
+    border-bottom: var(--border-width) solid var(--border);
+    background: transparent;
   }
   .ac-mnav-strip {
     display: flex;
-    gap: 6px;
+    gap: 0;
     overflow-x: auto;
-    padding: 6px;
+    padding: 0 18px;                  /* match #app-config-tabs */
     scroll-behavior: smooth;
     scroll-snap-type: x proximity;
     scrollbar-width: none;            /* hide the horizontal scrollbar */
     -ms-overflow-style: none;
   }
   .ac-mnav-strip::-webkit-scrollbar { width: 0; height: 0; display: none; }
+  /* Mirror .ac-tab (the app-config tab bar): underline tabs — the active one
+     accent-coloured with the underline + a touch larger, animated. Keep in sync
+     with `.ac-tab` above. */
   .ac-mnav-chip {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     gap: 6px;
     white-space: nowrap;
-    padding: 7px 12px;
-    border-radius: var(--r-md);
-    border: var(--border-width) solid var(--border);
-    background: color-mix(in oklab, var(--bg-elev) 86%, transparent);
-    color: var(--fg-2);
-    font-size: 13px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;              /* sit the underline ON the bar's bottom rule */
+    padding: 10px 14px;
+    color: var(--fg-muted, var(--fg-3));
+    font-size: 12px;
     font-weight: 600;
     line-height: 1;
+    font-family: inherit;
     cursor: pointer;
     scroll-snap-align: start;
-    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    transition: color 0.15s, border-color 0.15s, font-size 0.15s;
   }
-  .ac-mnav-chip .ac-mnav-ico { width: 15px; height: 15px; color: var(--accent); flex: 0 0 auto; }
+  /* Icon inherits the tab colour (muted when idle, accent when active) — same as
+     .ac-tab-icon, which sets no colour of its own. */
+  .ac-mnav-chip .ac-mnav-ico { width: 14px; height: 14px; flex: 0 0 auto; }
   .ac-mnav-chip:hover { color: var(--fg-1); }
   .ac-mnav-chip.active {
     color: var(--accent);
-    border-color: var(--accent);
-    background: rgba(var(--brand-rgb), 0.12);
+    border-bottom-color: var(--accent);
+    font-size: 14px;
   }
+  /* Light-mode mirror of `body.light-mode .ac-tab*` (active uses --brand there). */
+  body.light-mode .ac-mnav-chip { color: var(--fg-3); }
+  body.light-mode .ac-mnav-chip:hover { color: var(--fg-2); }
+  body.light-mode .ac-mnav-chip.active { color: var(--brand); border-bottom-color: var(--brand); }
   /* Edge-fade on the side(s) that can still scroll — an ALPHA MASK only, so the
      opaque bar (never a guessed colour) shows through the fade. Same technique as
      the main-tab carousel; the both-sides rule outranks the single-side ones. */

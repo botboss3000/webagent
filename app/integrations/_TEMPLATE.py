@@ -1,7 +1,7 @@
 """TEMPLATE — copy me to add a new integration. DO NOT edit the core to add one.
 
 ================================================================================
- webAgent structure philosophy:  CORE app  vs.  DROP-IN plugins
+ WebAgent structure philosophy:  CORE app  vs.  DROP-IN plugins
 ================================================================================
 A new capability is **a new file in a plugin folder**, never an edit to the core.
 The app *discovers* plugin files at runtime — you register nothing by hand.

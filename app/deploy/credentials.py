@@ -28,8 +28,13 @@ logger = logging.getLogger(__name__)
 _ADMIN_USER = "admin"
 
 
-def _service(provider_id: str) -> str:
-    return f"deploy_cred:{provider_id}"
+def _service(provider_id: str, profile: str = "") -> str:
+    # A SAVED SERVER (a named SSH-target profile) gets its own vault row so the
+    # panel can keep several servers' logins side by side; the bare
+    # ``deploy_cred:<id>`` row stays the "currently-loaded" working slot the deploy
+    # runtime reads. profile="" → the working slot (unchanged behaviour).
+    base = f"deploy_cred:{provider_id}"
+    return f"{base}:{profile}" if profile else base
 
 
 def _as_dict(raw: Any) -> dict:
@@ -68,12 +73,15 @@ def _unpack_secrets(secret_ref: str, secret_keys: List[str]) -> Dict[str, str]:
         return {}
 
 
-async def read(provider_id: str, fields: List[dict]) -> Dict[str, str]:
-    """Full credential dict INCLUDING secret values, for the deploy runtime."""
+async def read(provider_id: str, fields: List[dict], profile: str = "") -> Dict[str, str]:
+    """Full credential dict INCLUDING secret values, for the deploy runtime.
+
+    ``profile`` selects a saved-server row (``deploy_cred:<id>:<profile>``); blank
+    reads the working slot."""
     secret_keys = _secret_keys(fields)
     try:
         from app.db import get_db
-        elem = await get_db().auth_element_get(_ADMIN_USER, _service(provider_id), "default")
+        elem = await get_db().auth_element_get(_ADMIN_USER, _service(provider_id, profile), "default")
     except Exception as e:
         logger.debug("deploy cred read failed for %s: %s", provider_id, e)
         elem = None
@@ -84,12 +92,13 @@ async def read(provider_id: str, fields: List[dict]) -> Dict[str, str]:
     return out
 
 
-async def save(provider_id: str, fields: List[dict], values: dict) -> bool:
+async def save(provider_id: str, fields: List[dict], values: dict, profile: str = "") -> bool:
     """Persist cred field values. A BLANK secret means 'leave the stored secret
-    unchanged' (so the UI never has to echo a secret back to edit it)."""
+    unchanged' (so the UI never has to echo a secret back to edit it). ``profile``
+    targets a saved-server row; blank targets the working slot."""
     secret_keys = _secret_keys(fields)
     values = values or {}
-    existing = await read(provider_id, fields)
+    existing = await read(provider_id, fields, profile)
 
     config: dict = {}
     secrets: dict = {}
@@ -106,7 +115,7 @@ async def save(provider_id: str, fields: List[dict], values: dict) -> bool:
     try:
         from app.db import get_db
         await get_db().auth_element_set(
-            user_id=_ADMIN_USER, service=_service(provider_id),
+            user_id=_ADMIN_USER, service=_service(provider_id, profile),
             config=config, secret_ref=_pack_secrets(secrets, secret_keys),
             label="default",
         )
@@ -116,29 +125,32 @@ async def save(provider_id: str, fields: List[dict], values: dict) -> bool:
     return True
 
 
-async def forget(provider_id: str) -> bool:
-    """Delete the whole vault row (the auto-discard after a successful deploy)."""
+async def forget(provider_id: str, profile: str = "") -> bool:
+    """Delete the whole vault row (the auto-discard after a successful deploy, or a
+    saved server being removed when ``profile`` is given)."""
     try:
         from app.db import get_db
-        await get_db().auth_element_delete(_ADMIN_USER, _service(provider_id), "default")
+        await get_db().auth_element_delete(_ADMIN_USER, _service(provider_id, profile), "default")
     except Exception as e:
         logger.warning("deploy cred forget failed for %s: %s", provider_id, e)
         return False
     return True
 
 
-async def is_configured(provider_id: str, fields: List[dict], required: Optional[List[str]] = None) -> bool:
+async def is_configured(provider_id: str, fields: List[dict], required: Optional[List[str]] = None,
+                        profile: str = "") -> bool:
     req = required if required is not None else _secret_keys(fields)
     if not req:
         return False
-    creds = await read(provider_id, fields)
+    creds = await read(provider_id, fields, profile)
     return all(str(creds.get(k, "")).strip() for k in req)
 
 
-async def public_view(provider_id: str, fields: List[dict], required: Optional[List[str]] = None) -> dict:
+async def public_view(provider_id: str, fields: List[dict], required: Optional[List[str]] = None,
+                      profile: str = "") -> dict:
     """For the GET endpoint: the declared fields, non-secret values, and a
     {secret_key: bool} 'is set' map — NEVER the secret values themselves."""
-    creds = await read(provider_id, fields)
+    creds = await read(provider_id, fields, profile)
     values: dict = {}
     secrets_set: dict = {}
     for f in fields:

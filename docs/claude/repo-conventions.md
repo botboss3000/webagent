@@ -22,7 +22,7 @@ After **any** change that affects how the repo is structured, configured, or use
 | New / removed **`app/`** modules, routers, endpoints, WebSockets, mounts | **Architecture → Backend** table; **Features** bullets if behavior is user-visible; **Useful URLs** if routes or ports change. |
 | **`ui/`** entry points, major tabs, or default DB / API strings | **Frontend** paragraph; tree; **Quick test** if flows change. |
 | **`.env.example`**, config knobs, default model, DB mode / paths | **Environment variables** table and related sentences (e.g. local vs cloud, `local.db`, `db_mode.json`). |
-| **Install / run** commands, Docker, scripts, ports | **Installation**, **Deployment**, tree (`scripts/`, `Dockerfile`, `webAgent.bat`), and **Useful URLs**. |
+| **Install / run** commands, Docker, scripts, ports | **Installation**, **Deployment**, tree (`scripts/`, `Dockerfile`, `WebAgent.bat`), and **Useful URLs**. |
 | **Cloud Run compatibility** — adding new Python deps, persistent storage assumptions, WebSocket origin checks, file write persistence | **`README.md` → Google Cloud Run checklist** — ensure new deps are in `requirements.txt`, no local-filesystem assumptions for persistent state, no loopback guards on WS endpoints. |
 | **Migrations**, schema location, seeding / context behavior | Sections on **Installation** (Supabase / `migrations/`), **Context defaults**, **Adding custom context** as applicable. |
 

@@ -1,5 +1,5 @@
 @echo off
-title webAgent Server Manager - Build .exe
+title WebAgent Server Manager - Build .exe
 cd /d "%~dp0"
 setlocal enabledelayedexpansion
 

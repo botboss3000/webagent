@@ -1,0 +1,101 @@
+<!-- Admin Dashboard — a movable/resizable grid of live metric cards.
+     Breadcrumb: ui/admin-tools/dashboard/dashboard.js (grid + card engine),
+     ui/admin-tools/dashboard/dashboard.css, ui/admin-tools/dashboard/server.py
+     (metrics + layout + AI-card backend), ui/shared/css/design-system.css.
+
+     COLOR SCHEME → ui/shared/css/design-system.css (single source of truth).
+     No raw hex/rgb: use var(--brand)/var(--accent), rgba(var(--brand-rgb), a),
+     var(--success|warning|danger) for status.
+
+     Drop-in admin view: discovered from page.json (order 0, top of the strip).
+     This partial only exposes the #admin-tools main slot — the Dashboard is
+     panel-less (the sidebar collapses to the icon strip for this view, see the
+     data-view="dashboard" rule in ui/main-panel/admin-tools/files.css). -->
+<template data-slot="#admin-tools">
+  <main class="files-main dash-main" id="files-dashboard-main" data-view="dashboard" hidden>
+    <!-- COMBINED HEADER — one bar. The LEFT cluster is the INSTANCE trigger: an
+         expand chevron (on the left), the live status dot, and this instance's
+         name + url. It replaces the old "Dashboard" title. Clicking it drops a
+         session-selector-style menu that BOTH shows this instance's own status
+         (DB connection + health pills) AND lists the other instances to switch to
+         or start. The RIGHT cluster is the dashboard controls (time window, edit,
+         add card, save/reset/refresh). This is the whole Local Instances feature
+         (no separate admin page): the registry/launch/stop engine is
+         app/local_instances.py, its admin API is ui/admin-tools/dashboard/server.py
+         (/admin/dashboard/instances/*), and the header is driven by
+         ui/admin-tools/dashboard/instances-header.js. DB + health text is filled
+         from the same /metrics snapshot the grid polls (dashboard.js →
+         onDashboardSnapshot). REMOVE-WHEN: the instance-switcher header is dropped
+         from the Dashboard. -->
+    <div class="dash-inst" id="dash-inst">
+      <div class="dash-toolbar">
+        <!-- LEFT: instance trigger (chevron ▸ dot ▸ name/url) — opens the menu. -->
+        <div class="dash-inst-card" id="dash-inst-trigger" role="button" tabindex="0"
+             aria-haspopup="true" aria-expanded="false" title="Switch instance · view status">
+          <span class="dash-inst-chevron" aria-hidden="true"><i data-lucide="chevron-down" style="width:18px;height:18px;"></i></span>
+          <span class="dash-inst-dot dash-inst-dot-run" id="dash-inst-dot"></span>
+          <span class="dash-inst-id">
+            <span class="dash-inst-name" id="dash-inst-name">This app</span>
+            <span class="dash-inst-sub" id="dash-inst-sub">—</span>
+          </span>
+        </div>
+        <span class="dash-spacer"></span>
+        <!-- RIGHT: only the time window + refresh stay on the bar; Edit / Add card
+             / Save as default / Reset are tucked into the "More" (⋮) dropdown. The
+             moved buttons keep their original ids so dashboard.js wiring is
+             unchanged — only their home + class changed. -->
+        <select id="dash-window" class="dash-select" title="Time window for aggregate cards">
+          <option value="300">Last 5 min</option>
+          <option value="3600" selected>Last hour</option>
+          <option value="86400">Last 24 hours</option>
+          <option value="604800">Last 7 days</option>
+        </select>
+        <button id="dash-refresh-btn" class="dash-icon-btn" title="Refresh now"><i data-lucide="refresh-cw" style="width:14px;height:14px;"></i></button>
+        <div class="dash-more" id="dash-more">
+          <button id="dash-more-btn" class="dash-icon-btn" title="More actions" aria-haspopup="true" aria-expanded="false"><i data-lucide="more-vertical" style="width:16px;height:16px;"></i></button>
+          <div class="dash-more-menu" id="dash-more-menu" hidden>
+            <button id="dash-edit-btn" class="dash-more-item" title="Rearrange cards"><i data-lucide="move" style="width:15px;height:15px;"></i><span>Edit layout</span></button>
+            <button id="dash-add-btn" class="dash-more-item" title="Add a card"><i data-lucide="plus" style="width:15px;height:15px;"></i><span>Add card</span></button>
+            <div class="dash-more-sep"></div>
+            <button id="dash-savedefault-btn" class="dash-more-item" title="Save this layout as the default for everyone"><i data-lucide="save" style="width:15px;height:15px;"></i><span>Save as default</span></button>
+            <button id="dash-reset-btn" class="dash-more-item" title="Reset to the default layout"><i data-lucide="rotate-ccw" style="width:15px;height:15px;"></i><span>Reset to default</span></button>
+          </div>
+        </div>
+      </div>
+      <!-- The switcher menu (chevron target): a self-status header (DB + health
+           pills) then instance rows + a "start a new instance" action row. Built
+           by instances-header.js. -->
+      <div class="dash-inst-menu" id="dash-inst-menu" hidden></div>
+      <!-- Inline add / edit form (drops below the bar when adding/editing). -->
+      <div class="dash-inst-form" id="dash-inst-form" hidden></div>
+      <!-- Live start/stop log (NDJSON stream), same shape as the Deploy card. -->
+      <pre class="dash-inst-log" id="dash-inst-log" hidden></pre>
+    </div>
+
+    <!-- The grid host. dashboard.js positions cards absolutely on a snap grid;
+         drag to move, drag the corner to resize. Layout persists per admin. -->
+    <div class="dash-grid-wrap" id="dash-grid-wrap">
+      <div class="dash-grid" id="dash-grid"></div>
+      <!-- Overall loading overlay: shown by dashboard.js (showGridLoading) while
+           the saved layout is being fetched — i.e. before the card sizes are even
+           known. It hides the instant renderAll lays the cards out, after which
+           each card carries its OWN spinner (renderCardBody) until its data lands.
+           REMOVE-WHEN: the dashboard no longer stages its load. -->
+      <div class="dash-loading" id="dash-loading" hidden>
+        <span class="dash-spinner dash-spinner-lg"></span>
+        <span class="dash-loading-text">Loading your dashboard…</span>
+      </div>
+      <div class="dash-empty" id="dash-empty" hidden>
+        <i data-lucide="layout-dashboard" style="width:28px;height:28px;"></i>
+        <div class="dash-empty-title">Your dashboard is empty</div>
+        <div class="dash-empty-desc">Add cards to track tokens, cost, database latency, devices and more.</div>
+        <button class="dash-btn dash-btn-primary" id="dash-empty-add"><i data-lucide="plus" style="width:14px;height:14px;"></i><span>Add your first card</span></button>
+      </div>
+    </div>
+    <!-- No add-card modal: the "Add a card" tile is a permanent card ON the grid
+         (card type add_card, built inline by dashboard.js → buildAdder). Its +
+         button opens an inline card-type picker; its chat pill generates an AI
+         card via server.py → /admin/dashboard/ai-card. The toolbar "Add card"
+         button just scrolls to / focuses that tile (ensureAdder). -->
+  </main>
+</template>

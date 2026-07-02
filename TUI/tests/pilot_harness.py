@@ -1,9 +1,9 @@
-"""Pilot test harness for the webAgent Server-Manager TUI.
+"""Pilot test harness for the WebAgent Server-Manager TUI.
 
 Textual's ``App.run_test()`` boots the app into an *off-screen* buffer — no real
 terminal window opens — and hands back a ``Pilot`` you can drive: press keys,
 click widgets, wait for changes, and inspect the widget tree. This module wraps
-the webAgent-specific boot quirks so individual tests stay short.
+the WebAgent-specific boot quirks so individual tests stay short.
 
 Boot quirks this harness handles for you:
   * ``_do_autostart = False``  — never launch the managed uvicorn server in tests.

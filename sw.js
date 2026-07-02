@@ -1,4 +1,4 @@
-/* webAgent Service Worker — v2
+/* WebAgent Service Worker — v2
  *
  * Strategy:
  *   - App shell (HTML, CSS, JS, icons): precache on install
@@ -13,7 +13,7 @@
  * Bump CACHE on each release so the activate handler drops the prior cache.
  */
 
-const CACHE = "webagent-v130";
+const CACHE = "webagent-v171";
 const STATIC_PATTERN = /\.(css|js|json|svg|png|ico|woff2?)$/;
 const CDN_PATTERN = /^(https?:)?\/\/(fonts\.googleapis|cdn\.jsdelivr|unpkg)\./;
 const API_PATTERN = /^\/api\//;
@@ -51,7 +51,7 @@ const PRECACHE = [
   "/ui/shared/css/design-system.css",
   "/ui/main-panel/agents/agent-loop/loop.css",
   "/ui/main-panel/agents/agent-loop/loop-visual.css",
-  "/ui/main-panel/canvas/canvas.css",
+  "/ui/main-panel/genui/genui.css",
   "/ui/main-panel/agents/agents.css",
   "/ui/main-panel/admin-tools/files.css",
   "/ui/tutorials/tutorial.css",

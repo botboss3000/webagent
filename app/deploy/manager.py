@@ -38,13 +38,14 @@ async def build_catalog() -> Dict[str, Any]:
         # starting values on a fresh install.
         merged = {**_field_defaults(p.config_fields), **cfg}
         cred_view = await credentials.public_view(p.id, p.credential_fields, p.credential_required)
-        providers.append({
+        entry = {
             "id": p.id,
             "display_name": p.display_name,
             "icon": p.icon,
             "summary": p.summary,
             "requires": p.requires,
             "manual": bool(getattr(p, "manual", False)),
+            "creates_server": bool(getattr(p, "creates_server", True)),
             "available": ok_avail,
             "unavailable_reason": reason,
             "config_fields": p.config_fields,
@@ -56,11 +57,144 @@ async def build_catalog() -> Dict[str, Any]:
             "credentials_set": cred_view["secrets_set"],
             "configured": cred_view["configured"],
             "deployment": store.get_deployment(p.id),
-        })
+            "saved_servers": bool(getattr(p, "saved_servers", False)),
+        }
+        # A profile-aware target (the SSH one) also carries its list of saved
+        # servers + which is currently loaded, so the panel can render the picker.
+        if entry["saved_servers"]:
+            entry["servers"] = await _server_views(p)
+            entry["active_server"] = store.get_active_server(p.id)
+        providers.append(entry)
     return {
         "providers": providers,
         "active_provider": store.get_active_provider() or (providers[0]["id"] if providers else ""),
     }
+
+
+# ── Saved servers (named reusable profiles for a profile-aware target) ───────
+#
+# The SSH target lets an admin keep several servers as pick-from-a-dropdown
+# profiles. A profile is NON-secret settings (store.py ``servers``) + its secrets
+# in the vault (credentials.py ``profile=<id>``). Selecting one COPIES it into the
+# single "working" slot (store config + the bare ``deploy_cred:<id>`` vault row)
+# that deploy/test/tear-down already read — so those paths need no change; they
+# always act on "whatever is currently loaded".
+
+
+def _label_for(p, cfg: Dict[str, Any]) -> str:
+    return (str(cfg.get("label") or cfg.get("host") or "").strip()
+            or cfg.get("display") or "Saved server")
+
+
+async def _server_views(p) -> list:
+    """The saved servers for one target, as the panel renders them: id + a short
+    label + the key non-secret fields + whether a login is stored."""
+    fields = p.credential_fields
+    out = []
+    for sid, rec in store.list_servers(p.id).items():
+        rec = rec or {}
+        view = await credentials.public_view(p.id, fields, [], profile=sid)
+        has_login = any(bool(v) for v in (view.get("secrets_set") or {}).values())
+        out.append({
+            "id": sid,
+            "label": _label_for(p, rec),
+            "host": rec.get("host", ""),
+            "ssh_user": rec.get("ssh_user", ""),
+            "ssh_port": rec.get("ssh_port", ""),
+            "source": rec.get("source", ""),          # "manual" | "google_vm" | …
+            "configured": has_login,
+        })
+    out.sort(key=lambda s: str(s.get("label", "")).lower())
+    return out
+
+
+def _split_config_keys(p, values: Dict[str, Any]):
+    """Partition a submitted form dict into this target's config keys vs cred keys
+    (label is a saved-server-only key, kept with the config record)."""
+    config_keys = {f["key"] for f in p.config_fields} | {"label"}
+    cred_keys = {f["key"] for f in p.credential_fields}
+    cfg = {k: v for k, v in (values or {}).items() if k in config_keys}
+    creds = {k: v for k, v in (values or {}).items() if k in cred_keys}
+    return cfg, creds
+
+
+async def _load_into_working_slot(provider_id: str, p, cfg: Dict[str, Any], server_id: str) -> None:
+    """Make one saved server the ACTIVE one: copy its non-secret config into the
+    working config slot and its stored secrets into the working vault row, then
+    mark it active. deploy/test/tear-down then run against it unchanged."""
+    working_cfg = {k: v for k, v in cfg.items() if k != "label"}
+    store.save_config(provider_id, working_cfg)
+    if server_id:
+        secrets = await credentials.read(provider_id, p.credential_fields, profile=server_id)
+        if secrets:
+            await credentials.save(provider_id, p.credential_fields, secrets)   # working slot
+    store.set_active_server(provider_id, server_id or "")
+
+
+async def save_server(provider_id: str, label: str, values: Dict[str, Any],
+                      server_id: str = "", *, source: str = "manual") -> Dict[str, Any]:
+    """Create or update a saved server from a submitted form (config + secrets),
+    then make it the loaded/active one. Blank secrets keep whatever that server had
+    stored. Returns ``{ok, server_id}``."""
+    p = get_provider(provider_id)
+    if not p or not getattr(p, "saved_servers", False):
+        return {"ok": False, "detail": "This target has no saved servers."}
+    cfg, creds = _split_config_keys(p, values)
+    cfg["label"] = (label or cfg.get("label") or cfg.get("host") or "").strip()
+    cfg["source"] = source
+    sid = store.upsert_server(provider_id, server_id, cfg)
+    # Persist the secrets to this server's own vault row (blank = keep existing).
+    await credentials.save(provider_id, p.credential_fields, creds, profile=sid)
+    # Load it into the working slot so a following Deploy targets it.
+    await _load_into_working_slot(provider_id, p, cfg, sid)
+    return {"ok": True, "server_id": sid}
+
+
+async def select_server(provider_id: str, server_id: str) -> Dict[str, Any]:
+    """Load a saved server (or, with a blank id, clear the form to enter a new
+    one). Returns ``{ok, config}`` with the non-secret settings so the form fills."""
+    p = get_provider(provider_id)
+    if not p or not getattr(p, "saved_servers", False):
+        return {"ok": False, "detail": "This target has no saved servers."}
+    if not server_id:
+        # "New server…": blank the working slot + its working secrets.
+        store.save_config(provider_id, {})
+        await credentials.forget(provider_id)
+        store.set_active_server(provider_id, "")
+        return {"ok": True, "config": {}}
+    cfg = store.get_server(provider_id, server_id)
+    if not cfg:
+        return {"ok": False, "detail": "That saved server no longer exists."}
+    await _load_into_working_slot(provider_id, p, cfg, server_id)
+    return {"ok": True, "config": {k: v for k, v in cfg.items() if k not in ("source",)}}
+
+
+async def delete_server(provider_id: str, server_id: str) -> Dict[str, Any]:
+    """Remove a saved server and its stored login."""
+    p = get_provider(provider_id)
+    if not p:
+        return {"ok": False, "detail": "Unknown target."}
+    store.delete_server(provider_id, server_id)
+    await credentials.forget(provider_id, profile=server_id)
+    return {"ok": True}
+
+
+async def link_ssh_server(*, host: str, ssh_user: str, ssh_port: int, private_key: str,
+                          label: str, repo_url: str = "", branch: str = "",
+                          domain: str = "", source: str = "google_vm") -> str:
+    """Create a saved SSH server from a freshly-provisioned VM (e.g. a Google VM),
+    so it appears in the SSH target's picker ready to manage. Writes the profile
+    WITHOUT touching the working slot (the admin may be mid-edit). Returns the id,
+    or "" if the SSH target isn't available."""
+    p = get_provider("ssh_vm")
+    if not p or not getattr(p, "saved_servers", False):
+        return ""
+    cfg = {"label": (label or host).strip(), "host": host, "ssh_user": ssh_user,
+           "ssh_port": ssh_port, "repo_url": repo_url, "branch": branch,
+           "domain": domain, "source": source}
+    sid = store.upsert_server("ssh_vm", "", cfg)
+    await credentials.save("ssh_vm", p.credential_fields, {"private_key": private_key}, profile=sid)
+    return sid
 
 
 async def run_deploy(provider_id: str) -> AsyncIterator[Dict[str, Any]]:

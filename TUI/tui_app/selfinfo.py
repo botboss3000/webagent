@@ -5,7 +5,7 @@ reads. Pure observation; nothing here mutates anything.
 The manager ships two ways, and self-update means something different in each:
 
 * **source** — launched as ``python -m tui_app`` from a checkout (``run.bat``).
-  Its code IS the ``tui_app/`` package inside the public webAgent git repo,
+  Its code IS the ``tui_app/`` package inside the public WebAgent git repo,
   so a newer version is a ``git pull`` away. The new code only loads on **restart**
   (Python doesn't reload its own running modules).
 * **frozen** — the single-file PyInstaller ``.exe``. Its code is sealed inside the

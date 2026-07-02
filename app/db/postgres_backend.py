@@ -228,7 +228,11 @@ def _make_postgres_backend_class():
             self._password = password if password is not None else os.environ.get("WEBAGENT_DB_PASSWORD", "")
             self._conninfo = make_conninfo(cfg, self._password)
             self._db_path = "<postgres>"  # sentinel; never used to open SQLite
-            self._write_lock = asyncio.Lock()
+            # Cross-thread/loop write guard (see _DbWriteLock in local.py): lets
+            # offloaded write coroutines run in worker threads without the
+            # loop-bound-lock error that froze chat on remote PG.
+            from app.db.local import _DbWriteLock
+            self._write_lock = _DbWriteLock()
             self._seed_on_init = seed
             self._scan_sibling_dbs = False
             self._pool = None
@@ -244,7 +248,15 @@ def _make_postgres_backend_class():
         def _ensure_extension(self):
             import psycopg
             try:
-                with psycopg.connect(self._conninfo, autocommit=True) as conn:
+                # prepare_threshold=None disables server-side prepared statements:
+                # REQUIRED on Supabase's TRANSACTION-mode pooler (6543), which
+                # multiplexes client connections across shared backends. Without it
+                # psycopg auto-prepares a statement (e.g. "_pg3_0") that lingers on a
+                # backend and collides on the next client ("prepared statement already
+                # exists"), stranding boot on the local SQLite fallback. Mirrors the
+                # pool config in _open_pool().
+                with psycopg.connect(self._conninfo, autocommit=True,
+                                     prepare_threshold=None) as conn:
                     conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
             except Exception as e:
                 logger.warning("Could not ensure pgvector extension: %s", e)
@@ -260,13 +272,39 @@ def _make_postgres_backend_class():
                 except Exception as e:  # pragma: no cover
                     logger.warning("pgvector register failed on pooled conn: %s", e)
 
+            # Pool sizing — IMPORTANT with Supabase's SESSION-mode pooler (port
+            # 5432), which caps TOTAL client connections (default 15) and holds
+            # one server connection per pooled client for its whole life. Each
+            # running instance keeps min_size connections open permanently, so a
+            # large min across several instances exhausts the cap ("max clients
+            # reached in session mode"). Keep the defaults modest and leave
+            # headroom; raise via env only on the transaction-mode pooler (6543)
+            # or a direct connection, which don't have the same per-client cap.
+            # Defaults assume the TRANSACTION-mode pooler (6543) or a direct
+            # connection (no per-client cap): min 4 keeps enough warm connections
+            # that a turn's concurrent read fan-out + the live stream + background
+            # pollers don't each pay a cold connection open. If you are pinned to
+            # the SESSION-mode pooler (5432, cap ~15) AND run several instances,
+            # lower these via env so the instances don't exhaust the cap.
+            try:
+                _min = max(1, int(os.environ.get("WEBAGENT_PG_POOL_MIN") or 4))
+            except ValueError:
+                _min = 4
+            try:
+                _max = max(_min, int(os.environ.get("WEBAGENT_PG_POOL_MAX") or 16))
+            except ValueError:
+                _max = max(_min, 16)
             self._pool = ConnectionPool(
                 self._conninfo,
-                min_size=2,
-                max_size=16,
+                min_size=_min,
+                max_size=_max,
                 open=True,
                 configure=_configure,
-                kwargs={"autocommit": False},
+                # prepare_threshold=None disables server-side prepared statements:
+                # required for Supabase's TRANSACTION-mode pooler (6543) and
+                # harmless on session mode / direct, so a user can switch the
+                # connection to the faster multiplexing pooler with no code change.
+                kwargs={"autocommit": False, "prepare_threshold": None},
             )
 
         def _get_conn(self):
@@ -276,8 +314,22 @@ def _make_postgres_backend_class():
         # ---- schema bootstrap (overrides the SQLite _init_db entirely) ----
 
         def _init_db(self) -> None:
-            self._bootstrap_pg_schema()
-            self._reconcile_columns()
+            # Schema bootstrap + column reconcile are a ONE-TIME job, but they are
+            # expensive over a remote link: ~294 DDL statements + ~59 information_schema
+            # probes, each a separate round-trip. Re-running them on every boot is the
+            # bulk of a remote Postgres's slow startup. Gate them behind a fingerprint
+            # of the current schema definition, stored in the DB itself: on a boot where
+            # the schema hasn't changed we do 2 round-trips (ensure marker table + read)
+            # instead of ~353. Fresh/other databases lack the marker, so they still get
+            # a full bootstrap exactly as before. Mirrors the manifest-hash short-circuit
+            # the agent-template seed already uses.
+            if self._schema_is_current():
+                logger.info("PostgresBackend schema up-to-date (fingerprint match) — "
+                            "skipping bootstrap/reconcile")
+            else:
+                self._bootstrap_pg_schema()
+                self._reconcile_columns()
+                self._record_schema_fingerprint()
             if getattr(self, "_seed_on_init", True):
                 conn = self._get_conn()
                 try:
@@ -291,7 +343,10 @@ def _make_postgres_backend_class():
         def _bootstrap_pg_schema(self) -> None:
             import psycopg
             ddl = render_postgres()
-            with psycopg.connect(self._conninfo, autocommit=True) as conn:
+            # prepare_threshold=None: see _ensure_extension — no server-side prepared
+            # statements on the transaction pooler.
+            with psycopg.connect(self._conninfo, autocommit=True,
+                                 prepare_threshold=None) as conn:
                 try:
                     conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
                 except Exception as e:
@@ -312,7 +367,12 @@ def _make_postgres_backend_class():
             except Exception as e:
                 logger.warning("Could not build reference schema for reconcile: %s", e)
                 return
-            with psycopg.connect(self._conninfo, autocommit=True) as conn:
+            # prepare_threshold=None: CRITICAL here — this loop runs the SAME
+            # information_schema query once per table, so psycopg would auto-prepare
+            # it after 5 rounds and that "_pg3_0" prepared statement collides across
+            # the transaction pooler's shared backends. See _ensure_extension.
+            with psycopg.connect(self._conninfo, autocommit=True,
+                                 prepare_threshold=None) as conn:
                 for table, cols in ref.items():
                     rows = conn.execute(
                         "SELECT column_name FROM information_schema.columns "
@@ -332,6 +392,76 @@ def _make_postgres_backend_class():
                                 logger.info("Reconcile: added %s.%s (%s)", table, col, pgt)
                             except Exception as e:
                                 logger.warning("Reconcile ADD %s.%s failed: %s", table, col, e)
+
+        # ---- schema fingerprint gate (skip bootstrap/reconcile when unchanged) ----
+
+        _SCHEMA_META_TABLE = "_webagent_schema_meta"
+        _SCHEMA_FP_KEY = "schema_fingerprint"
+
+        def _schema_fingerprint(self) -> str:
+            """A stable hash of the SCHEMA DEFINITION this build would create — the
+            Postgres DDL plus the reference column set the reconcile step derives.
+            Any change to a table, index, or column changes the hash, forcing a
+            re-bootstrap; an unchanged schema hashes identically every boot. Purely
+            local — no network."""
+            import hashlib
+            import json as _json
+            from app.db.schema import render_postgres
+            ddl = render_postgres()
+            try:
+                ref = _reference_sqlite_columns()
+            except Exception:
+                ref = {}
+            ref_blob = _json.dumps(ref, sort_keys=True, default=str)
+            h = hashlib.sha256()
+            h.update(ddl.encode("utf-8", "replace"))
+            h.update(b"\x00")
+            h.update(ref_blob.encode("utf-8", "replace"))
+            return h.hexdigest()
+
+        def _schema_is_current(self) -> bool:
+            """True when the remote DB already carries our exact schema fingerprint,
+            so the full bootstrap + reconcile can be skipped. Costs one connection and
+            two statements (ensure the tiny marker table exists, then read it). Any
+            failure returns False so we conservatively fall back to a full bootstrap —
+            the same behaviour as before this gate existed."""
+            import psycopg
+            try:
+                with psycopg.connect(self._conninfo, autocommit=True,
+                                     prepare_threshold=None) as conn:
+                    conn.execute(
+                        f"CREATE TABLE IF NOT EXISTS {self._SCHEMA_META_TABLE} "
+                        f"(key TEXT PRIMARY KEY, value TEXT)"
+                    )
+                    row = conn.execute(
+                        f"SELECT value FROM {self._SCHEMA_META_TABLE} WHERE key = %s",
+                        (self._SCHEMA_FP_KEY,),
+                    ).fetchone()
+                stored = row[0] if row else None
+                return bool(stored) and stored == self._schema_fingerprint()
+            except Exception as e:
+                logger.warning("Schema fingerprint check failed (%s) — will bootstrap", e)
+                return False
+
+        def _record_schema_fingerprint(self) -> None:
+            """Persist the current schema fingerprint after a successful bootstrap +
+            reconcile, so the next boot's check matches and skips the heavy work. Never
+            fatal — if the write fails we simply pay the bootstrap cost again next boot."""
+            import psycopg
+            try:
+                with psycopg.connect(self._conninfo, autocommit=True,
+                                     prepare_threshold=None) as conn:
+                    conn.execute(
+                        f"CREATE TABLE IF NOT EXISTS {self._SCHEMA_META_TABLE} "
+                        f"(key TEXT PRIMARY KEY, value TEXT)"
+                    )
+                    conn.execute(
+                        f"INSERT INTO {self._SCHEMA_META_TABLE} (key, value) VALUES (%s, %s) "
+                        f"ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                        (self._SCHEMA_FP_KEY, self._schema_fingerprint()),
+                    )
+            except Exception as e:
+                logger.warning("Could not record schema fingerprint: %s", e)
 
         def close(self):
             if self._pool is not None:

@@ -138,7 +138,7 @@ async def notify_test(ctx: ToolContext, message: str = "") -> str:
     cfg = monstate.load_monitor_config()
     channels = cfg.get("channels") or ["desktop"]
     notifier = Notifier(log=ctx.log)
-    await notifier.notify("webAgent Server Manager",
+    await notifier.notify("WebAgent Server Manager",
                           message or "Test notification — alerts are reaching you.",
                           channels)
     return f"[monitor] test notification sent via: {', '.join(channels)}."

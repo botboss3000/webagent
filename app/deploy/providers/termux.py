@@ -8,7 +8,7 @@ admin runs once in a terminal (or in Termux).
 
 Termux is essentially a small Linux userland on Android, so ONE command works in
 both places — it detects which it is on. The only Termux-specific "customization"
-is that a phone can't reliably build webAgent's heavy native dependencies
+is that a phone can't reliably build WebAgent's heavy native dependencies
 (sqlcipher, compiled wheels), so on Termux the command installs everything inside
 an Ubuntu ``proot-distro`` sandbox; on a plain Linux box it installs straight onto
 the system. Both paths live in the repo's ``deploy/termux-setup.sh``, which builds
@@ -35,14 +35,14 @@ FEATURE = {
     "display_name": "Linux / Termux",
     "category": "deploy",
     "status": "beta",
-    "summary": "Install webAgent on a Linux computer, or on an Android phone/tablet via Termux.",
+    "summary": "Install WebAgent on a Linux computer, or on an Android phone/tablet via Termux.",
     "requires": ["A Linux computer, or the free Termux app on Android", "~2 GB free storage"],
 }
 
 _PORT = 8080  # run.py is fixed to :8080
 
 def _run_command(directory: str) -> str:
-    """Start the server when webAgent is ALREADY installed on the device — no
+    """Start the server when WebAgent is ALREADY installed on the device — no
     clone, no rebuild. Detects however the install set things up and starts it the
     matching way: Termux → the proot keep-alive launcher; a systemd Linux box → the
     webagent.service (folder-independent); otherwise the nohup keep-alive loop in
@@ -60,7 +60,7 @@ class TermuxProvider(BaseDeployProvider):
     id = "termux"
     display_name = "Linux / Termux"
     icon = "terminal"
-    summary = ("Install webAgent on a Linux computer, or on an Android phone or tablet "
+    summary = ("Install WebAgent on a Linux computer, or on an Android phone or tablet "
                "using the free Termux app. You copy one command and paste it into a "
                "terminal (or Termux) — there is no cloud account and nothing to pay for.")
     requires = [
@@ -86,11 +86,12 @@ class TermuxProvider(BaseDeployProvider):
 
     # ── command generation (the single source of truth) ──
     def build_command(self, github_url: str, visibility: str = "public",
-                      token: str = "", branch: str = "", install_dir: str = "") -> Dict[str, Any]:
+                      token: str = "", branch: str = "", install_dir: str = "",
+                      admin_password: str = "") -> Dict[str, Any]:
         """Build everything the phone row needs from the admin's inputs.
 
         ALWAYS succeeds (never ``{ok: False}``): the row shows this command live as
-        the admin types. A blank repository installs the STANDARD webAgent
+        the admin types. A blank repository installs the STANDARD WebAgent
         repository (so the command is ready to run as is); a private repo with no
         token yet renders the command's shape via an obvious fill-in token, flagged
         so the row can nudge. The install folder defaults to ``$HOME/webagent`` and
@@ -110,6 +111,12 @@ class TermuxProvider(BaseDeployProvider):
         branch = mc._safe(branch, DEFAULT_BRANCH)
         directory = mc.resolve_dir(install_dir, mc.DEFAULT_DIR_POSIX)
 
+        # The optional pre-set admin password, carried into the setup script via a
+        # leading env assignment (POSIX). Blank → no prefix at all (the first visitor
+        # sets the password). Keep BYTE-IDENTICAL to deploy.js `_buildTermux`.
+        a = mc.resolve_admin(admin_password)
+        admin_prefix = ("WA_ADMIN_PW='" + a["password"] + "' ") if a["prewire"] else ""
+
         # ONE command for both Termux and plain Linux: install git with whatever
         # package manager is present (Termux's `pkg`, or apt/dnf/pacman with sudo
         # on a Linux box — sudo only when not already root). If the folder already
@@ -127,13 +134,14 @@ class TermuxProvider(BaseDeployProvider):
             'elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm git; fi; '
             f'{{ if [ -d "$D/.git" ]; then git -C "$D" remote set-url origin {clone_url}; '
             f'else git clone --depth 1 --branch {branch} {clone_url} "$D"; fi; }} && '
-            'bash "$D/deploy/termux-setup.sh"'
+            + admin_prefix + 'bash "$D/deploy/termux-setup.sh"'
         )
         # A display copy that hides the token (for any logging / non-QR display).
         clone_display = command.replace(clone_url, r["repo"]) if r["private"] else command
         private = r["private"]
         placeholder_token = r["placeholder_token"]
-        warning = r["warning"]
+        # One warning line for the row: repo issue first, else the admin-password one.
+        warning = " ".join(w for w in (r["warning"], a["warning"]) if w)
 
         steps = [
             "On a phone: install the free Termux app, then open it. On a Linux computer: open a terminal.",
@@ -144,7 +152,7 @@ class TermuxProvider(BaseDeployProvider):
             "from another device on the same network (the script prints the address).",
         ]
         instructions = (
-            "On a phone the command installs webAgent inside a small Ubuntu environment (the reliable "
+            "On a phone the command installs WebAgent inside a small Ubuntu environment (the reliable "
             "way to run the full app on Android); on a Linux computer it installs straight onto the "
             "system. Either way it keeps running in the background and restarts itself if it stops. On "
             "a Linux computer it also restarts automatically after a reboot; on a phone, install the free "
@@ -157,7 +165,8 @@ class TermuxProvider(BaseDeployProvider):
                 "run_command": _run_command(directory), "install_dir": directory,
                 "steps": steps, "instructions": instructions, "reach_note": reach_note,
                 "private": private, "default_repo": r["default_repo"],
-                "placeholder_token": placeholder_token, "warning": warning}
+                "placeholder_token": placeholder_token, "warning": warning,
+                "prewire": a["prewire"]}
 
     # ── test (nothing to connect to) ──
     async def test(self, config: Dict[str, Any], creds: Dict[str, Any]) -> Dict[str, Any]:

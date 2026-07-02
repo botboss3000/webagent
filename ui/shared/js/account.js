@@ -121,6 +121,40 @@ function renderTab() {
   `;
   wrap.appendChild(pw);
 
+  // ── Sign-in & sessions (per-user session policy) ──
+  // How long this user's login pass lasts before it must renew, plus whether it
+  // silently auto-renews so they're never signed out mid-use. Backed by
+  // GET/PUT /api/v1/auth/me/session-policy. The section is appended optimistically
+  // and removed in loadSessionPolicy() if the caller has no real account record
+  // (e.g. an anonymous guest), so guests never see a control that can't save.
+  const sess = document.createElement('section');
+  sess.className = 'account-section';
+  sess.id = 'account-session-section';
+  sess.innerHTML = `
+    <h3 class="account-section-title">Sign-in &amp; sessions</h3>
+    <div class="account-field">
+      <label for="account-session-lifetime">Keep me signed in for</label>
+      <select id="account-session-lifetime">
+        <option value="1440">1 day</option>
+        <option value="10080">7 days</option>
+        <option value="43200">30 days</option>
+        <option value="129600">90 days</option>
+      </select>
+    </div>
+    <label class="account-pref-row">
+      <input type="checkbox" id="account-session-autorenew">
+      <span class="account-pref-text">
+        <span class="account-pref-title">Stay signed in automatically</span>
+        <span class="account-pref-desc">Renew my session in the background so I stay signed in while I keep using the app — I won't be logged out the moment the period above runs out. Turn off to be signed out cleanly when that period ends.</span>
+      </span>
+    </label>
+    <div class="account-row">
+      <button id="account-save-session" class="account-btn account-btn-primary">Save changes</button>
+      <span id="account-session-status" class="account-status" style="display:none;"></span>
+    </div>
+  `;
+  wrap.appendChild(sess);
+
   // ── Preferences ──
   const prefs = document.createElement('section');
   prefs.className = 'account-section';
@@ -208,6 +242,10 @@ function wireHandlers() {
 
   const pwBtn = document.getElementById('account-change-password');
   if (pwBtn) pwBtn.addEventListener('click', onChangePassword);
+
+  const sessBtn = document.getElementById('account-save-session');
+  if (sessBtn) sessBtn.addEventListener('click', onSaveSessionPolicy);
+  loadSessionPolicy();
 
   const delTrigger = document.getElementById('account-delete-trigger');
   if (delTrigger) delTrigger.addEventListener('click', () => {
@@ -346,6 +384,74 @@ async function onChangePassword() {
     document.getElementById('account-newpass').value = '';
     document.getElementById('account-newpass2').value = '';
     _setStatus(status, 'Password changed', 'ok');
+  } catch (e) {
+    _setStatus(status, 'Connection error', 'error');
+  }
+}
+
+// Load the caller's session policy into the controls. If the caller has no real
+// account record (anonymous guest → 404/401), drop the whole section so a guest
+// never sees a control that can't be saved.
+async function loadSessionPolicy() {
+  const section = document.getElementById('account-session-section');
+  if (!section) return;
+  try {
+    const res = await fetch('/api/v1/auth/me/session-policy', { headers: _authHeaders() });
+    if (!res.ok) { section.remove(); return; }
+    const data = await res.json();
+    const sel = document.getElementById('account-session-lifetime');
+    const renew = document.getElementById('account-session-autorenew');
+    if (sel) {
+      const mins = String(data.lifetime_minutes);
+      // If the stored value isn't one of the presets, add it as a selected option
+      // so the dropdown faithfully shows the current setting.
+      if (!Array.from(sel.options).some((o) => o.value === mins)) {
+        const days = Math.round(data.lifetime_minutes / 1440);
+        const opt = document.createElement('option');
+        opt.value = mins;
+        opt.textContent = days >= 1 ? `${days} day${days === 1 ? '' : 's'}` : `${Math.round(data.lifetime_minutes / 60)} hours`;
+        sel.appendChild(opt);
+      }
+      sel.value = mins;
+    }
+    if (renew) renew.checked = !!data.auto_renew;
+  } catch (_) {
+    section.remove();
+  }
+}
+
+async function onSaveSessionPolicy() {
+  const status = document.getElementById('account-session-status');
+  const sel = document.getElementById('account-session-lifetime');
+  const renew = document.getElementById('account-session-autorenew');
+  if (!sel || !renew) return;
+  _setStatus(status, 'Saving…', '');
+  try {
+    const res = await fetch('/api/v1/auth/me/session-policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+      body: JSON.stringify({
+        lifetime_minutes: parseInt(sel.value, 10),
+        auto_renew: renew.checked,
+      }),
+    });
+    if (!res.ok) {
+      const detail = await _detail(res);
+      _setStatus(status, detail || 'Failed to save', 'error');
+      return;
+    }
+    const data = await res.json();
+    // Apply the fresh pass + renewal ticket immediately so the new policy takes
+    // effect without a re-login (a cleared ticket turns silent renewal off).
+    const active = getActive();
+    if (active) {
+      upsertAccount({
+        ...active,
+        access_token: data.access_token || active.access_token,
+        remember_token: data.remember_token || '',
+      });
+    }
+    _setStatus(status, 'Saved', 'ok');
   } catch (e) {
     _setStatus(status, 'Connection error', 'error');
   }

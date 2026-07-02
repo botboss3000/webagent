@@ -38,13 +38,16 @@
  *
  * The scroller is the shared `#app-config-content` for every page.
  *
- * MOBILE CAROUSEL (opt-in) — a section can pass `{ mobileCarousel: true }` to
+ * MOBILE SUB-HEADER (opt-in) — a section can pass `{ mobileCarousel: true }` to
  * initStickyNav (today only Agent Settings does). On a mobile-width viewport that
- * section drops the vertical sticky stacking and instead shows a horizontal,
- * swipeable strip of heading chips pinned at the top of the single scroll block:
- * tapping a chip jumps the scroll to that section, and the chip for the section
- * you're reading highlights. Desktop is unchanged. See the `.ac-mnav` block in
- * ui/shared/css/app3.css and the `_syncMode` / `_buildCarousel` helpers below.
+ * section drops the vertical sticky stacking and instead renders its headings as a
+ * horizontal, swipeable strip of underline tabs in #app-config-subnav — a genuine
+ * SUB-HEADER that sits directly beneath the app-config tab strip and OUTSIDE the
+ * content scroller, so it spans the full width and mirrors the tab strip's look
+ * (see the `.ac-mnav` block in app3.css). Tapping a tab jumps the scroll to that
+ * section (landing its heading flush under the sub-header), and the tab for the
+ * section you're reading highlights. Desktop is unchanged. See the `_syncMode` /
+ * `_buildCarousel` helpers below and the `_navHost` / `_navFor` accessors.
  */
 
 import { isMobileLayout } from '../../shared/js/layout.js';
@@ -58,6 +61,12 @@ let _raf = 0;
 
 function _scroller() { return document.getElementById(_SCROLLER_ID); }
 function _section(id) { return document.getElementById('ac-section-' + id); }
+// The mobile sub-header host — a sibling directly under #app-config-tabs-wrap and
+// OUTSIDE the scroller (markup in app-config.html). The carousel `.ac-mnav` for a
+// section is parked here (tagged with data-section) so it renders as a real full-
+// width sub-header, not a strip clipped inside the content scroller.
+function _navHost() { return document.getElementById('app-config-subnav'); }
+function _navFor(id) { const h = _navHost(); return h ? h.querySelector(':scope > .ac-mnav[data-section="' + id + '"]') : null; }
 // Every top-level `.ac-category-group` in the section, at any depth — so a page
 // that renders its groups inside a wrapper (e.g. Features' #ac-features-list)
 // still works. Nested groups (a group inside another group) are excluded so
@@ -159,17 +168,46 @@ function _updateActive(id) {
   // padTop + its own top offset — account for the padding or the test mis-reads
   // which heading is engaged.
   const padTop = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
-  // MOBILE carousel: the headings are un-stuck and a sticky chip strip (height
-  // navH) sits at the top instead, so a section is "current" once its heading
-  // scrolls under that strip rather than under a stack of pinned headings.
-  const mnav = sec.classList.contains('ac-mnav-on') ? sec.querySelector(':scope > .ac-mnav') : null;
-  const navH = mnav ? Math.round(mnav.getBoundingClientRect().height) : 0;
+  // MOBILE sub-header: the headings are un-stuck and the section-tab strip lives
+  // OUTSIDE the scroller (in #app-config-subnav, above it), so nothing pins over
+  // the content — a section is "current" once its heading reaches the scroller's
+  // top edge. (Desktop stacks sticky headings, so a section engages once its
+  // heading reaches its own pinned offset.)
+  const mnav = sec.classList.contains('ac-mnav-on') ? _navFor(id) : null;
   let active = 0;
   heads.forEach((h, i) => {
-    const top = mnav ? navH : (parseFloat(h.style.top) || 0);
+    // Mobile: the section's `-28px` top margin cancels the scroller's 28px top
+    // padding, so a heading rests flush at the scroller's border-box top — the
+    // "current" line is 0 (heading reached the top edge, just under the sub-header).
+    // Desktop: a heading engages at its own pinned offset (padTop + its inline top,
+    // which for the first heading is padTop + (−padTop) = 0).
+    const line = mnav ? 0 : (padTop + (parseFloat(h.style.top) || 0));
     const rTop = h.getBoundingClientRect().top - sTop;
-    if (rTop <= padTop + top + 1) active = i;       // scrolled into/past this section
+    if (rTop <= line + 1) active = i;               // scrolled into/past this section
   });
+  // MOBILE bottom-of-scroll fix: the top-engagement test above only marks a
+  // section "current" once its heading crosses the top edge. At max scroll the
+  // LAST section can fill most of the viewport while its heading still sits below
+  // the top edge — so a taller earlier section (whose heading has already passed
+  // the top) would stay selected even though you're looking at the last one.
+  // Override with the section that occupies MORE THAN HALF the visible height, so
+  // the highlighted tab matches what's actually on screen. A section spans from
+  // its own heading down to the next heading (the last one runs to the viewport
+  // floor); we clip each span to the viewport and pick the biggest visible slice.
+  // (Desktop keeps pure top-engagement — its headings pin, so the deepest pinned
+  // heading is always the right answer and no coverage test is needed.)
+  if (mnav && heads.length > 1) {
+    const rTops = heads.map((h) => h.getBoundingClientRect().top - sTop);
+    const viewH = scroller.getBoundingClientRect().height;
+    let best = -1, bestVis = 0;
+    for (let i = 0; i < heads.length; i++) {
+      const top = rTops[i];
+      const end = (i + 1 < heads.length) ? rTops[i + 1] : viewH;
+      const vis = Math.min(end, viewH) - Math.max(top, 0);   // visible height of this section
+      if (vis > bestVis) { bestVis = vis; best = i; }
+    }
+    if (best >= 0 && bestVis > viewH * 0.5) active = best;
+  }
   heads.forEach((h, i) => h.classList.toggle('ac-navh-active', i === active));
   // Reflect the current section in the carousel chips — only when it CHANGES, so
   // we don't fight the user's horizontal scroll on every tick — and keep the
@@ -212,17 +250,19 @@ function _headLabel(h) {
 // unchanged so a resize storm / re-show doesn't thrash the DOM.
 function _buildCarousel(id) {
   const sec = _section(id);
+  const host = _navHost();
   const heads = _heads(id);
-  if (!sec || !heads.length) return null;
+  if (!sec || !host || !heads.length) return null;
   const sig = heads.map(_headLabel).join('|');
-  let nav = sec.querySelector(':scope > .ac-mnav');
+  let nav = _navFor(id);
   if (nav && nav.dataset.sig === sig) return nav;
   if (!nav) {
     nav = document.createElement('div');
     nav.className = 'ac-mnav';
+    nav.dataset.section = id;         // ties this sub-header strip to its section
     nav.innerHTML = '<div class="ac-mnav-strip" role="tablist"></div>';
-    const firstGroup = sec.querySelector(':scope > .ac-category-group');
-    sec.insertBefore(nav, firstGroup || sec.firstChild);
+    // Park it in the sub-header host (outside the scroller), NOT inside the section.
+    host.appendChild(nav);
     const strip0 = nav.querySelector('.ac-mnav-strip');
     strip0.addEventListener('scroll', () => _updateMnavEdges(nav), { passive: true });
   }
@@ -253,8 +293,7 @@ function _buildCarousel(id) {
 }
 
 function _removeCarousel(id) {
-  const sec = _section(id);
-  const nav = sec && sec.querySelector(':scope > .ac-mnav');
+  const nav = _navFor(id);
   if (nav) nav.remove();
 }
 
@@ -276,23 +315,24 @@ function _scrollChipIntoView(strip, chip) {
   else if (c.right > s.right - 8) strip.scrollBy({ left: c.right - s.right + 14, behavior: 'smooth' });
 }
 
-// Jump the page scroll so section i's heading rests just under the pinned chip
-// strip (the mobile analogue of _scrollTo, which lands under the heading stack).
+// Jump the page scroll so section i's heading rests flush at the scroller's top
+// edge — i.e. directly under the sub-header (which sits OUTSIDE the scroller, so
+// it doesn't overlap the content and needs no height offset). The mobile analogue
+// of _scrollTo, which lands under the pinned heading stack.
 function _scrollToMobile(id, i) {
   const groups = _groups(id);
   const scroller = _scroller();
-  const sec = _section(id);
   const g = groups[i];
-  if (!g || !scroller || !sec) return;
+  if (!g || !scroller) return;
   const head = g.querySelector(':scope > .ac-category-summary');
   const ref = head || g.querySelector(':scope > .ac-category-body') || g;
-  const nav = sec.querySelector(':scope > .ac-mnav');
-  const navH = nav ? Math.round(nav.getBoundingClientRect().height) : 0;
-  const padTop = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
   const sRect = scroller.getBoundingClientRect();
   const rRect = ref.getBoundingClientRect();
+  // flowTop = the heading's offset from the scroller's border-box top. Scrolling
+  // there lands it at rTop 0 (the section's -28px margin cancels the scroller's
+  // top padding, so the top edge is the visible content top).
   const flowTop = scroller.scrollTop + (rRect.top - sRect.top);
-  const target = Math.max(0, Math.round(flowTop - navH - padTop));
+  const target = Math.max(0, Math.round(flowTop));
   scroller.scrollTo({ top: target, behavior: 'smooth' });
 }
 

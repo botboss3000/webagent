@@ -1,9 +1,9 @@
 # ============================================================================
-# webAgent - Windows launch + keep-alive loop.
+# WebAgent - Windows launch + keep-alive loop.
 #
 # Launches run.py on a Windows PC and restarts it if it ever stops. This is the
 # Windows counterpart of deploy/start_server_linux.sh / start_server_termux.sh.
-# It is the action the "webAgent" Scheduled Task runs (registered by
+# It is the action the "WebAgent" Scheduled Task runs (registered by
 # deploy/windows-setup.ps1) - the task runs it hidden at logon, so the server
 # runs in the background and comes back after a reboot.
 #
@@ -23,7 +23,7 @@ $log = Join-Path $RepoDir 'server_log.txt'
 
 while ($true) {
   try {
-    & uv run python run.py *>> $log
+    & uv run --extra encryption python run.py *>> $log
   } catch {
     "Server error: $($_.Exception.Message)" | Out-File -Append -FilePath $log -Encoding utf8
   }

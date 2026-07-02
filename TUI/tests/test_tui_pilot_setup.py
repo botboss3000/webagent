@@ -31,7 +31,7 @@ from tui_app import deps as D  # noqa: E402
 FIXED_DEPS = [
     D.Dep("internet", "Internet (GitHub + PyPI)", D.OK, "reachable", installable=False),
     D.Dep("git", "git", D.MISSING, "missing", installable=True),  # unblocked → [Install]
-    D.Dep("repo", "webAgent code", D.MISSING, "not present", installable=True),  # unblocked → [Install]
+    D.Dep("repo", "WebAgent code", D.MISSING, "not present", installable=True),  # unblocked → [Install]
     D.Dep("venv", "Python environment", D.MISSING, "not built", installable=True,
           blocked_by=["repo"]),  # blocked: repo is still missing → no button, shows hint
     D.Dep("ubuntu", "Ubuntu environment", D.OK, "installed (~900 MB)", installable=False,
@@ -58,9 +58,9 @@ def _check_logs(snap, log_actions, copy_ids) -> None:
     # Buttons can clip in the narrow panel snapshot, so assert on the widgets.
     assert "setup_logs_clear" in log_actions, "Clear button missing from the logs viewer"
     assert "panel_setup" in log_actions, "Back button missing from the logs viewer"
-    assert copy_ids and any("Cloning webAgent" in (t or "") for t in copy_ids), \
+    assert copy_ids and any("Cloning WebAgent" in (t or "") for t in copy_ids), \
         "Copy button missing or carries the wrong payload"
-    assert "Cloning webAgent" in snap, "captured log lines not shown"
+    assert "Cloning WebAgent" in snap, "captured log lines not shown"
 
 
 async def main() -> str:
@@ -81,7 +81,7 @@ async def main() -> str:
         snap = snapshot(app)
 
         # Now seed a couple of captured activity lines and render the Logs viewer.
-        app._setup_log = ["• Installing: repo", "Cloning webAgent into C:\\webagent…", "done"]
+        app._setup_log = ["• Installing: repo", "Cloning WebAgent into C:\\webagent…", "done"]
         app._panel_kind = "setuplogs"
         await app._render_panel("setuplogs")
         await pilot.pause()

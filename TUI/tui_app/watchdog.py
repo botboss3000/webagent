@@ -53,7 +53,7 @@ def active_watchdog() -> "Optional[Watchdog]":
 
 
 def _diag_db(project_root: Path) -> Path:
-    # Current webAgent builds keep diagnostics in a dedicated, isolated logs DB
+    # Current WebAgent builds keep diagnostics in a dedicated, isolated logs DB
     # (own WAL, separate from local.db) under data/db/. Older builds used app/db/,
     # and pre-split builds wrote diagnostics into local.db — check in order.
     for rel in ("data/db/logs.db", "app/db/logs.db", "data/db/local.db", "app/db/local.db"):
@@ -164,6 +164,17 @@ class Watchdog:
         self._running = False
 
     # ── public ───────────────────────────────────────────────────────────
+    def suppress_recovery(self) -> None:
+        """Stand down from auto-recovery after a DELIBERATE shutdown (Kill All).
+
+        The watchdog only auto-restarts a server that ``_seen_running`` says was up
+        this session. Clearing that flag (and the restart-rate history) makes the
+        upcoming health drop look like "never came up" — so the watchdog won't fight
+        a Kill All by relaunching the very server the user just killed. The flag
+        re-arms on its own the next time a server is actually seen healthy."""
+        self._seen_running = False
+        self._restart_times.clear()
+
     def snapshot(self) -> dict[str, Any]:
         """A read-only view for ``monitor_status`` / the admin panel."""
         cfg = load_monitor_config()
@@ -265,13 +276,13 @@ class Watchdog:
         if health == "running":
             if self._last_health == "stopped" and cfg.get("notify_on_recovery"):
                 await self._notify(cfg, "Server recovered",
-                                   "The webAgent server is healthy again.")
+                                   "The WebAgent server is healthy again.")
             self._seen_running = True
             return
         if health == "stopped":
             if self._last_health == "running" and cfg.get("notify_on_server_down"):
                 await self._notify(cfg, "Server down",
-                                   "The webAgent server stopped responding.")
+                                   "The WebAgent server stopped responding.")
             # Only auto-recover a server that WAS up this session — never fight the
             # app's autostart or repeatedly restart one that has never come up.
             if self._seen_running:
@@ -286,7 +297,7 @@ class Watchdog:
                 # Always wake the AI when the server drops — even if the playbook
                 # restarts it silently, the user wants to know and investigate why.
                 self._maybe_inject(cfg, "Server down",
-                                   "The webAgent server stopped responding. "
+                                   "The WebAgent server stopped responding. "
                                    "The playbook may be attempting recovery.")
         # health == "unknown" (probe indeterminate): take no action this tick.
 
@@ -712,11 +723,11 @@ class Watchdog:
             return
         is_up = "listening" in msg.lower() or "started" in msg.lower() or "healthy" in msg.lower()
         if is_up:
-            body = (f"The webAgent server has been restarted successfully. "
+            body = (f"The WebAgent server has been restarted successfully. "
                     f"Investigate why the previous instance died — read diagnostics, "
                     f"check server logs, and resolve the root cause.")
         else:
-            body = (f"The webAgent server restart ATTEMPT failed: {msg}. "
+            body = (f"The WebAgent server restart ATTEMPT failed: {msg}. "
                     f"The server is still down — read diagnostics and server logs, "
                     f"find the culprit, fix it, then get the server back up.")
         try:

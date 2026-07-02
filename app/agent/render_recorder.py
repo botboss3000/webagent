@@ -1,5 +1,5 @@
 """
-Client render recorder for webAgent — the browser-side flight recorder.
+Client render recorder for WebAgent — the browser-side flight recorder.
 
 The diagnostic recorder (:mod:`app.agent.diagnostics`) captures everything the
 *server* sees. But many problems — a chat bubble that renders wrong, a JS

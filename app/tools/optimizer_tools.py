@@ -1,6 +1,6 @@
 """
 Optimizer tools for the Planner and Closer subagents.
-Loaded into the webAgent's toolset when the user is chatting in an optimizer session.
+Loaded into the WebAgent's toolset when the user is chatting in an optimizer session.
 """
 
 from __future__ import annotations
@@ -9,6 +9,19 @@ import asyncio, inspect, json, logging, os, sqlite3, sys
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _connect_local(path: str):
+    """Open the main database honouring full-DB (SQLCipher) encryption.
+
+    Routes through db_crypto so this works whether ``local.db`` is plaintext or
+    encrypted at rest. db_crypto sets the row factory to match the driver, so
+    callers must NOT reassign ``row_factory`` afterwards (stdlib sqlite3.Row
+    rejects a SQLCipher cursor). The optimizer's own *temp* scratch DBs stay
+    plaintext and keep using stdlib sqlite3 directly — they are transient.
+    """
+    from app.db import db_crypto
+    return db_crypto.connect(path, "local")
 
 
 # ── Simulation helpers ────────────────────────────────────────────────────────
@@ -338,7 +351,7 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
     _local_path = os.path.join(_db_dir, "local.db")
 
     # ── Read from local.db (read-only connection) ──
-    _local_conn = sqlite3.connect(_local_path)
+    _local_conn = _connect_local(_local_path)
     _local_conn.execute("PRAGMA journal_mode=WAL")
     _local_conn.execute("PRAGMA busy_timeout=10000")
 
@@ -642,7 +655,7 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
         if best is not None:
             opt_tokens = int(best.get("token_estimate") or 0)
             opt_ms = int(best.get("duration_ms") or 0)
-            _rconn = sqlite3.connect(_local_path)
+            _rconn = _connect_local(_local_path)
             try:
                 _rconn.execute("PRAGMA busy_timeout=10000")
                 have = {r[1] for r in _rconn.execute("PRAGMA table_info(optimizer_runs)").fetchall()}
@@ -706,8 +719,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
     # 4. Read opt_closer template from agent_templates in local.db
     template_data = {}
     try:
-        _lc = sqlite3.connect(_local_path)
-        _lc.row_factory = sqlite3.Row
+        _lc = _connect_local(_local_path)
         try:
             trow = _lc.execute("SELECT * FROM agent_templates WHERE id='opt_closer'").fetchone()
             if trow:
@@ -723,8 +735,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
     # 5. Find target_session_id from planner session metadata in local.db
     target_session_id = ""
     try:
-        _lc2 = sqlite3.connect(_local_path)
-        _lc2.row_factory = sqlite3.Row
+        _lc2 = _connect_local(_local_path)
         try:
             srow = _lc2.execute("SELECT metadata FROM sessions WHERE id=?", (session_id,)).fetchone()
             if srow and srow["metadata"]:
@@ -763,8 +774,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
         now_sql, now_sql,
     )
 
-    _lc_agent = sqlite3.connect(_local_path)
-    _lc_agent.row_factory = sqlite3.Row
+    _lc_agent = _connect_local(_local_path)
     try:
         existing_agent = _lc_agent.execute(
             """SELECT * FROM agents
@@ -868,8 +878,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
         baseline_injected = False
         if target_session_id:
             try:
-                _lc3 = sqlite3.connect(_local_path)
-                _lc3.row_factory = sqlite3.Row
+                _lc3 = _connect_local(_local_path)
                 try:
                     b_rows = _lc3.execute(
                         "SELECT role, content FROM interactions WHERE session_id=? ORDER BY created_at",
@@ -929,7 +938,7 @@ async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: st
         "source_optimizer_session": session_id,
         "temp_db_path": temp_db_path,
     })
-    _lc4 = sqlite3.connect(_local_path)
+    _lc4 = _connect_local(_local_path)
     try:
         _lc4.execute(
             "INSERT OR IGNORE INTO sessions (id, user_id, title, metadata, agent_id, participants, created_at, updated_at) "

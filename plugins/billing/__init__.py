@@ -1,4 +1,4 @@
-"""Billing for webAgent — the agent tier (always present).
+"""Billing for WebAgent — the agent tier (always present).
 
 An agent admin sets a price, the end user pays it, and the agent admin keeps it.
 

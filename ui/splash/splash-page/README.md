@@ -2,7 +2,7 @@
 
 A premium, animated **public landing page** shown at the **front door** (`/`).
 A new visitor (or a search crawler / link scraper) sees this welcome page first;
-clicking **Enter app** takes them into the workspace. It introduces webAgent's
+clicking **Enter app** takes them into the workspace. It introduces WebAgent's
 features with a hero, a scrolling feature tour, a pinned showcase, a card grid,
 and a final call-to-action.
 
@@ -91,7 +91,7 @@ so there's never a dead switch with nothing behind it.
 
 ## Replacing the screenshots
 
-Drop new images into `img/` using the same filenames (`chat.webp`, `canvas.webp`,
+Drop new images into `img/` using the same filenames (`chat.webp`, `genui.webp`,
 `browser.webp`, `wiki.webp`, `automations.webp`, `agents.webp`, `abilities.webp`).
 Frames are a fixed aspect ratio, so a replacement is a straight file swap. If an
 image is missing the frame degrades gracefully to a gradient placeholder.

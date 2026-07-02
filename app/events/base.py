@@ -23,7 +23,7 @@ class EventSource(ABC):
     """One external service that can emit events.
 
     Lifecycle:
-      1. On webAgent startup the manager discovers the class.
+      1. On WebAgent startup the manager discovers the class.
       2. When a user subscribes (via the automation file), ``register_subscription``
          is called and any provider-side state is persisted to the row.
       3. For push sources, provider webhooks land at ``/api/v1/events/{name}``

@@ -1,16 +1,16 @@
 """
-Visualizer module -- Canvas workspace.
+Visualizer module -- Gen UI workspace.
 
 Injects the following tools into the agent's tool registry:
-  render_visual   -- write HTML to a named canvas
-  list_canvases   -- list all canvases for the current user
-  create_canvas   -- create a new named canvas
-  delete_canvas   -- delete a canvas (home is protected)
-  get_canvas      -- read the current HTML content of a canvas
-  rename_canvas   -- rename a canvas's display title
-  get_canvas_data -- read a canvas's data bag (content kept separate from markup)
-  set_canvas_data -- update a canvas's data bag WITHOUT rewriting its page markup
-  get_canvas_logs -- read a canvas's OWN console output (page-scoped; no logs.db needed)
+  render_visual   -- write HTML to a named genui
+  list_genui   -- list all genui for the current user
+  create_genui   -- create a new named genui
+  delete_genui   -- delete a genui (home is protected)
+  get_genui      -- read the current HTML content of a genui
+  rename_genui   -- rename a genui's display title
+  get_genui_data -- read a genui's data bag (content kept separate from markup)
+  set_genui_data -- update a genui's data bag WITHOUT rewriting its page markup
+  get_genui_logs -- read a genui's OWN console output (page-scoped; no logs.db needed)
   check_credential -- is an ability connected (vault) + what a login form needs (no secrets)
   request_credential -- ask the user for a NEW secret (secure card → vault), get a key id back
   list_vault_keys -- list the user's vault keys (id/name/service/filled) — never any value
@@ -26,40 +26,40 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
     """Inject visualizer tools into the tools dict.
 
     ``agent_id`` is the agent these tools are being built for; render_visual /
-    create_canvas record it as the canvas's owning agent (so the Canvas footer
-    can name + chat to the agent that made each canvas)."""
+    create_genui record it as the genui's owning agent (so the Gen UI footer
+    can name + chat to the agent that made each genui)."""
 
     from app.visualizer.tool import render_visual as _render_visual
-    from app.visualizer.edit import edit_canvas as _edit_canvas
-    from app.visualizer.canvas import (
-        list_canvases as _list_canvases,
-        create_canvas as _create_canvas,
-        delete_canvas as _delete_canvas,
-        get_canvas_html as _get_canvas_html,
-        rename_canvas as _rename_canvas,
-        get_canvas_data as _get_canvas_data,
-        save_canvas_data as _save_canvas_data,
-        read_canvas_logs as _read_canvas_logs,
+    from app.visualizer.edit import edit_genui as _edit_genui
+    from app.visualizer.genui import (
+        list_genui as _list_genui,
+        create_genui as _create_genui,
+        delete_genui as _delete_genui,
+        get_genui_html as _get_genui_html,
+        rename_genui as _rename_genui,
+        get_genui_data as _get_genui_data,
+        save_genui_data as _save_genui_data,
+        read_genui_logs as _read_genui_logs,
     )
 
     # -- render_visual ---------------------------------------------------------
     # render_visual is the always-available FALLBACK (a full-page make) that weaker
-    # models can do even when surgical edit_canvas matching is beyond them — so it
+    # models can do even when surgical edit_genui matching is beyond them — so it
     # must never hard-crash on the arg quirks those models produce. Several hidden
-    # aliases map to ``slug`` (``canvas_name``/``page_name``/``name``/``canvas``),
+    # aliases map to ``slug`` (``genui_name``/``page_name``/``name``/``genui``),
     # and ``**_extra`` swallows any other stray keyword a model invents instead of
     # raising "unexpected keyword argument" (which is exactly what aborted a real
     # v6 build). None of these are advertised in the schema, so the model is still
     # steered to ``html`` + ``slug``; this is purely a crash-proofing net.
     async def _render_visual_wrapper(html: str, title: str = "", slug: str = "home",
-                                     canvas_name: str = None, page_name: str = None,
-                                     name: str = None, canvas: str = None, **_extra):
-        alias = canvas_name or page_name or name or canvas
+                                     genui_name: str = None, page_name: str = None,
+                                     name: str = None, genui: str = None, **_extra):
+        alias = genui_name or page_name or name or genui
         return await _render_visual(
             html=html,
             title=title,
             slug=slug,
-            canvas_name=alias,
+            genui_name=alias,
             user_id=user_id,
             agent_id=agent_id,
         )
@@ -75,20 +75,20 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
                     "description": (
                         "Full HTML document string to render. "
                         "For p5.js sketches, include the p5.js CDN script tag. "
-                        "For regular canvases, standard HTML/CSS/JS is fine."
+                        "For regular genui, standard HTML/CSS/JS is fine."
                     ),
                 },
                 "title": {
                     "type": "string",
-                    "description": "Human-readable title for the canvas (shown in the UI).",
+                    "description": "Human-readable title for the genui (shown in the UI).",
                 },
                 "slug": {
                     "type": "string",
                     "description": (
-                        "Slug of the canvas to write to (e.g. 'home', 'dashboard', 'notes'). "
-                        "Pass the slug from the `Canvas: \"<slug>\"` hand-off tag — it MUST "
-                        "match the canvas the user is viewing, or your work lands on the wrong "
-                        "canvas. Only omit it for the 'home' canvas (the default)."
+                        "Slug of the genui to write to (e.g. 'home', 'dashboard', 'notes'). "
+                        "Pass the slug from the `Gen UI: \"<slug>\"` hand-off tag — it MUST "
+                        "match the genui the user is viewing, or your work lands on the wrong "
+                        "genui. Only omit it for the 'home' genui (the default)."
                     ),
                 },
             },
@@ -96,37 +96,37 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
         },
     )
 
-    # -- edit_canvas -----------------------------------------------------------
-    # Surgical find/replace edits to an existing canvas — the alternative to
+    # -- edit_genui -----------------------------------------------------------
+    # Surgical find/replace edits to an existing genui — the alternative to
     # re-rendering the whole page for a small change. Routes through the same
-    # save_canvas_html path as render_visual (so the live refresh fires) and
+    # save_genui_html path as render_visual (so the live refresh fires) and
     # returns the same path/slug shape the frontend reload handler reads.
-    async def _edit_canvas_wrapper(slug: str, edits=None, find: str = None,
+    async def _edit_genui_wrapper(slug: str, edits=None, find: str = None,
                                    replace: str = None, replace_all: bool = False):
-        return await _edit_canvas(
+        return await _edit_genui(
             slug=slug, edits=edits, find=find, replace=replace,
             replace_all=replace_all, user_id=user_id, agent_id=agent_id,
         )
 
-    tools["edit_canvas"] = ToolInfo(
-        name="edit_canvas",
-        handler=_edit_canvas_wrapper,
+    tools["edit_genui"] = ToolInfo(
+        name="edit_genui",
+        handler=_edit_genui_wrapper,
         parameters={
             "type": "object",
             "properties": {
                 "slug": {
                     "type": "string",
-                    "description": "Slug of the canvas to edit. Read it first with get_canvas('<slug>').",
+                    "description": "Slug of the genui to edit. Read it first with get_genui('<slug>').",
                 },
                 "edits": {
                     "type": "array",
                     "description": (
                         "One or more find/replace edits, applied in order. PREFER this over "
-                        "re-rendering the whole page when changing an existing canvas. Each "
-                        "`find` must be copied EXACTLY from the current canvas (read it with "
-                        "get_canvas first — whitespace and tags must match) and must be unique "
+                        "re-rendering the whole page when changing an existing genui. Each "
+                        "`find` must be copied EXACTLY from the current genui (read it with "
+                        "get_genui first — whitespace and tags must match) and must be unique "
                         "unless replace_all is true. If any edit's `find` is missing or "
-                        "ambiguous, NOTHING is saved and the canvas is left unchanged."
+                        "ambiguous, NOTHING is saved and the genui is left unchanged."
                     ),
                     "items": {
                         "type": "object",
@@ -152,14 +152,14 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
         },
     )
 
-    # -- list_canvases ---------------------------------------------------------
-    async def _list_canvases_wrapper():
-        canvases = await _list_canvases(user_id)
-        return json.dumps({"status": "ok", "canvases": canvases, "count": len(canvases)})
+    # -- list_genui ---------------------------------------------------------
+    async def _list_genui_wrapper():
+        genui = await _list_genui(user_id)
+        return json.dumps({"status": "ok", "genui": genui, "count": len(genui)})
 
-    tools["list_canvases"] = ToolInfo(
-        name="list_canvases",
-        handler=_list_canvases_wrapper,
+    tools["list_genui"] = ToolInfo(
+        name="list_genui",
+        handler=_list_genui_wrapper,
         parameters={
             "type": "object",
             "properties": {},
@@ -167,11 +167,11 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
         },
     )
 
-    # -- get_canvas ------------------------------------------------------------
-    async def _get_canvas_wrapper(slug: str):
-        html = await _get_canvas_html(user_id=user_id, slug=slug)
+    # -- get_genui ------------------------------------------------------------
+    async def _get_genui_wrapper(slug: str):
+        html = await _get_genui_html(user_id=user_id, slug=slug)
         if html is None:
-            return json.dumps({"status": "error", "message": "Canvas '{}' not found.".format(slug)})
+            return json.dumps({"status": "error", "message": "Gen UI '{}' not found.".format(slug)})
         return json.dumps({
             "status": "ok",
             "slug": slug,
@@ -179,30 +179,30 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
             "size_bytes": len(html),
         })
 
-    tools["get_canvas"] = ToolInfo(
-        name="get_canvas",
-        handler=_get_canvas_wrapper,
+    tools["get_genui"] = ToolInfo(
+        name="get_genui",
+        handler=_get_genui_wrapper,
         parameters={
             "type": "object",
             "properties": {
                 "slug": {
                     "type": "string",
-                    "description": "Slug of the canvas to read (e.g. 'home', 'dashboard', 'notes').",
+                    "description": "Slug of the genui to read (e.g. 'home', 'dashboard', 'notes').",
                 },
             },
             "required": ["slug"],
         },
     )
 
-    # -- create_canvas ---------------------------------------------------------
-    async def _create_canvas_wrapper(
+    # -- create_genui ---------------------------------------------------------
+    async def _create_genui_wrapper(
         slug: str,
         title: str,
         agent_context: str = "",
         initial_html: str = "",
     ):
         try:
-            entry = await _create_canvas(
+            entry = await _create_genui(
                 user_id=user_id,
                 slug=slug,
                 title=title,
@@ -210,146 +210,146 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
                 initial_html=initial_html,
                 agent_id=agent_id,
             )
-            return json.dumps({"status": "ok", "canvas": entry})
+            return json.dumps({"status": "ok", "genui": entry})
         except ValueError as e:
             return json.dumps({"status": "error", "message": str(e)})
 
-    tools["create_canvas"] = ToolInfo(
-        name="create_canvas",
-        handler=_create_canvas_wrapper,
+    tools["create_genui"] = ToolInfo(
+        name="create_genui",
+        handler=_create_genui_wrapper,
         parameters={
             "type": "object",
             "properties": {
                 "slug": {
                     "type": "string",
-                    "description": "URL-safe identifier for the canvas (e.g. 'dashboard', 'notes'). Lowercase, no spaces.",
+                    "description": "URL-safe identifier for the genui (e.g. 'dashboard', 'notes'). Lowercase, no spaces.",
                 },
                 "title": {
                     "type": "string",
-                    "description": "Human-readable display name for the canvas (e.g. 'My Dashboard').",
+                    "description": "Human-readable display name for the genui (e.g. 'My Dashboard').",
                 },
                 "agent_context": {
                     "type": "string",
                     "description": (
-                        "Optional system prompt / persona for this canvas's agent. "
-                        "Describes the agent's role and the canvas's purpose. "
+                        "Optional system prompt / persona for this genui's agent. "
+                        "Describes the agent's role and the genui's purpose. "
                         "If omitted, a default context is generated from the title."
                     ),
                 },
                 "initial_html": {
                     "type": "string",
-                    "description": "Optional initial HTML to seed the canvas with. If omitted, a blank placeholder is used.",
+                    "description": "Optional initial HTML to seed the genui with. If omitted, a blank placeholder is used.",
                 },
             },
             "required": ["slug", "title"],
         },
     )
 
-    # -- delete_canvas ---------------------------------------------------------
-    async def _delete_canvas_wrapper(slug: str):
-        ok = await _delete_canvas(user_id=user_id, slug=slug)
+    # -- delete_genui ---------------------------------------------------------
+    async def _delete_genui_wrapper(slug: str):
+        ok = await _delete_genui(user_id=user_id, slug=slug)
         if ok:
-            return json.dumps({"status": "ok", "message": "Canvas '{}' deleted.".format(slug)})
+            return json.dumps({"status": "ok", "message": "Gen UI '{}' deleted.".format(slug)})
         if slug == "home":
-            return json.dumps({"status": "error", "message": "The home canvas cannot be deleted."})
-        return json.dumps({"status": "error", "message": "Canvas '{}' not found.".format(slug)})
+            return json.dumps({"status": "error", "message": "The home genui cannot be deleted."})
+        return json.dumps({"status": "error", "message": "Gen UI '{}' not found.".format(slug)})
 
-    tools["delete_canvas"] = ToolInfo(
-        name="delete_canvas",
-        handler=_delete_canvas_wrapper,
+    tools["delete_genui"] = ToolInfo(
+        name="delete_genui",
+        handler=_delete_genui_wrapper,
         parameters={
             "type": "object",
             "properties": {
                 "slug": {
                     "type": "string",
-                    "description": "Slug of the canvas to delete. The 'home' canvas cannot be deleted.",
+                    "description": "Slug of the genui to delete. The 'home' genui cannot be deleted.",
                 },
             },
             "required": ["slug"],
         },
     )
 
-    # -- rename_canvas ---------------------------------------------------------
-    async def _rename_canvas_wrapper(slug: str, title: str):
-        ok = await _rename_canvas(user_id=user_id, slug=slug, new_title=title)
+    # -- rename_genui ---------------------------------------------------------
+    async def _rename_genui_wrapper(slug: str, title: str):
+        ok = await _rename_genui(user_id=user_id, slug=slug, new_title=title)
         if ok:
-            return json.dumps({"status": "ok", "message": "Canvas '{}' renamed to '{}'.".format(slug, title)})
-        return json.dumps({"status": "error", "message": "Canvas '{}' not found.".format(slug)})
+            return json.dumps({"status": "ok", "message": "Gen UI '{}' renamed to '{}'.".format(slug, title)})
+        return json.dumps({"status": "error", "message": "Gen UI '{}' not found.".format(slug)})
 
-    tools["rename_canvas"] = ToolInfo(
-        name="rename_canvas",
-        handler=_rename_canvas_wrapper,
+    tools["rename_genui"] = ToolInfo(
+        name="rename_genui",
+        handler=_rename_genui_wrapper,
         parameters={
             "type": "object",
             "properties": {
                 "slug": {
                     "type": "string",
-                    "description": "Slug of the canvas to rename (e.g. 'dashboard', 'notes').",
+                    "description": "Slug of the genui to rename (e.g. 'dashboard', 'notes').",
                 },
                 "title": {
                     "type": "string",
-                    "description": "New human-readable display title for the canvas.",
+                    "description": "New human-readable display title for the genui.",
                 },
             },
             "required": ["slug", "title"],
         },
     )
 
-    # -- get_canvas_data -------------------------------------------------------
-    # Read a canvas's DATA bag (its content — the records the page renders),
+    # -- get_genui_data -------------------------------------------------------
+    # Read a genui's DATA bag (its content — the records the page renders),
     # which lives in data.json separately from the page markup. Read this before
-    # set_canvas_data when you only want to change part of the content.
-    async def _get_canvas_data_wrapper(slug: str):
-        data = await _get_canvas_data(user_id=user_id, slug=slug)
+    # set_genui_data when you only want to change part of the content.
+    async def _get_genui_data_wrapper(slug: str):
+        data = await _get_genui_data(user_id=user_id, slug=slug)
         return json.dumps({"status": "ok", "slug": slug, "data": data or {}})
 
-    tools["get_canvas_data"] = ToolInfo(
-        name="get_canvas_data",
-        handler=_get_canvas_data_wrapper,
+    tools["get_genui_data"] = ToolInfo(
+        name="get_genui_data",
+        handler=_get_genui_data_wrapper,
         parameters={
             "type": "object",
             "properties": {
                 "slug": {
                     "type": "string",
-                    "description": "Slug of the canvas whose data bag to read (e.g. 'home', 'dashboard').",
+                    "description": "Slug of the genui whose data bag to read (e.g. 'home', 'dashboard').",
                 },
             },
             "required": ["slug"],
         },
     )
 
-    # -- set_canvas_data -------------------------------------------------------
-    # Write a canvas's DATA bag WITHOUT touching its page markup — this is how you
+    # -- set_genui_data -------------------------------------------------------
+    # Write a genui's DATA bag WITHOUT touching its page markup — this is how you
     # update a dashboard's content (add a student, move a lesson, change a row).
     # The page reads it via api.getData(); the change shows on next load/refresh.
     # `merge=true` shallow-merges your top-level keys into the existing data
     # (change one section, leave the rest); `merge=false` (default) replaces the
-    # whole bag. PREFER this over render_visual/edit_canvas for data-only changes.
-    async def _set_canvas_data_wrapper(slug: str, data=None, merge: bool = False, **_extra):
+    # whole bag. PREFER this over render_visual/edit_genui for data-only changes.
+    async def _set_genui_data_wrapper(slug: str, data=None, merge: bool = False, **_extra):
         if not isinstance(data, dict):
             return json.dumps({"status": "error", "message": "`data` must be a JSON object."})
         if merge:
-            existing = await _get_canvas_data(user_id=user_id, slug=slug)
+            existing = await _get_genui_data(user_id=user_id, slug=slug)
             base = dict(existing) if isinstance(existing, dict) else {}
             base.update(data)
             data = base
-        await _save_canvas_data(user_id=user_id, slug=slug, data=data)
+        await _save_genui_data(user_id=user_id, slug=slug, data=data)
         return json.dumps({"status": "ok", "slug": slug, "merged": bool(merge), "keys": list(data.keys())})
 
-    tools["set_canvas_data"] = ToolInfo(
-        name="set_canvas_data",
-        handler=_set_canvas_data_wrapper,
+    tools["set_genui_data"] = ToolInfo(
+        name="set_genui_data",
+        handler=_set_genui_data_wrapper,
         parameters={
             "type": "object",
             "properties": {
                 "slug": {
                     "type": "string",
-                    "description": "Slug of the canvas whose data to write (e.g. 'home', 'dashboard').",
+                    "description": "Slug of the genui whose data to write (e.g. 'home', 'dashboard').",
                 },
                 "data": {
                     "type": "object",
                     "description": (
-                        "The canvas's content as a JSON object (e.g. "
+                        "The genui's content as a JSON object (e.g. "
                         "{\"students\": [...], \"lessons\": {...}}). The page reads "
                         "these via api.getData(). Use the SAME key names the page expects."
                     ),
@@ -367,33 +367,33 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
         },
     )
 
-    # -- get_canvas_logs -------------------------------------------------------
+    # -- get_genui_logs -------------------------------------------------------
     # Read the page's OWN console output — the console.log/info/warn/error and
-    # uncaught script errors the canvas produced while running, captured per-page in a
-    # file beside the canvas (NOT the global logs.db). A page-scoped debug log the agent
-    # reads with no codebase-admin access: build a canvas, then read its errors and fix
+    # uncaught script errors the genui produced while running, captured per-page in a
+    # file beside the genui (NOT the global logs.db). A page-scoped debug log the agent
+    # reads with no codebase-admin access: build a genui, then read its errors and fix
     # them. Auto-cleared on every re-render, so it reflects the version now running.
-    # TWO sources fill it: (a) a LIVE user session in the Canvas tab (entries arrive a
+    # TWO sources fill it: (a) a LIVE user session in the Gen UI tab (entries arrive a
     # moment after the page mounts; includes errors from the user's own clicks), and
-    # (b) screenshot_canvas's HEADLESS render (tagged source:'headless') — so calling
-    # screenshot_canvas after a build populates these logs immediately, no live session
+    # (b) screenshot_genui's HEADLESS render (tagged source:'headless') — so calling
+    # screenshot_genui after a build populates these logs immediately, no live session
     # needed. Each entry carries `source` ('headless' or absent = live).
-    async def _get_canvas_logs_wrapper(slug: str, level: str = None, limit: int = 100):
+    async def _get_genui_logs_wrapper(slug: str, level: str = None, limit: int = 100):
         try:
             lim = int(limit) if limit else 100
         except (TypeError, ValueError):
             lim = 100
         lim = max(1, min(lim, 500))
         lvl = (level or "").strip().lower() or None
-        logs = _read_canvas_logs(user_id=user_id, slug=slug, limit=lim, level=lvl)
+        logs = _read_genui_logs(user_id=user_id, slug=slug, limit=lim, level=lvl)
         n_err = sum(1 for r in logs if str(r.get("level")) == "error")
         n_warn = sum(1 for r in logs if str(r.get("level")) == "warn")
         note = (
             "Empty means nothing has run+logged for this version yet. Either render it "
-            "with screenshot_canvas (populates these logs headlessly, source:'headless') "
-            "or have the user open it in the Canvas tab, then read again." if not logs else
+            "with screenshot_genui (populates these logs headlessly, source:'headless') "
+            "or have the user open it in the Gen UI tab, then read again." if not logs else
             "Newest entries last. Each: {ts, level, text, stack?, source?}. source:'headless' "
-            "is from a screenshot_canvas render; no source = a live user session. A 'Cannot "
+            "is from a screenshot_genui render; no source = a live user session. A 'Cannot "
             "read properties of null' is almost always the shadow-scope bug — query through "
             "the mount `root`, not document.*."
         )
@@ -407,15 +407,15 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
             "note": note,
         })
 
-    tools["get_canvas_logs"] = ToolInfo(
-        name="get_canvas_logs",
-        handler=_get_canvas_logs_wrapper,
+    tools["get_genui_logs"] = ToolInfo(
+        name="get_genui_logs",
+        handler=_get_genui_logs_wrapper,
         parameters={
             "type": "object",
             "properties": {
                 "slug": {
                     "type": "string",
-                    "description": "Slug of the canvas whose console output to read (e.g. 'home', 'dashboard').",
+                    "description": "Slug of the genui whose console output to read (e.g. 'home', 'dashboard').",
                 },
                 "level": {
                     "type": "string",
@@ -434,7 +434,7 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
     )
 
     # -- check_credential ------------------------------------------------------
-    # Lets a canvas be "linked to the vault": the design agent asks whether the
+    # Lets a genui be "linked to the vault": the design agent asks whether the
     # user has already connected an ability (e.g. browser_control / a login) and
     # what fields a connect form should collect — so it can render "Connected ✓"
     # vs a login form, WITHOUT ever seeing any secret value. Reads the same
@@ -475,7 +475,7 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
                 "ability": {
                     "type": "string",
                     "description": (
-                        "Ability whose vault credential the canvas links to "
+                        "Ability whose vault credential the genui links to "
                         "(e.g. 'browser_control'). Returns whether the user has "
                         "connected it and the fields a login/connect form should "
                         "collect — never any secret value."

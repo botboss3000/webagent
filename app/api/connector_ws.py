@@ -3,7 +3,7 @@ Browser CONNECTOR WebSocket — the server end of the browser-extension link.
 
 A thin route over the engine in app/tools/browser_connector.py, exactly as
 app/api/browser_stream.py is a thin route over app/tools/browser.py. A user
-installs the webAgent browser extension; it opens ONE authenticated WebSocket
+installs the WebAgent browser extension; it opens ONE authenticated WebSocket
 here and waits for ``{type:"cmd"}`` frames, runs each command in the user's real
 browser, and replies ``{type:"result"}``. The agent's ``browser_action``
 forwards to this link whenever a session's backend is "connector" (see the
@@ -31,8 +31,8 @@ router = APIRouter()
 
 
 def _verify_token(token: str):
-    """Resolve the caller's user_id from a JWT, else the open-mode admin, else
-    None. Same shape as browser_stream._verify_token."""
+    """Resolve the caller's user_id from a JWT, else None. Same shape as
+    browser_stream._verify_token."""
     if token:
         try:
             payload = decode_token(token)
@@ -42,8 +42,7 @@ def _verify_token(token: str):
             uid = payload.get("user_id") or payload.get("sub")
             if uid:
                 return uid
-    from app.auth.identity import open_mode_admin_id
-    return open_mode_admin_id()
+    return None
 
 
 @router.websocket("/api/v1/connector/ws")

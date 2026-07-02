@@ -77,6 +77,15 @@ AGENT_TOOL_MODES_KEY = "tool_modes"
 # ceiling: which abilities exist + permission limits).
 AGENT_ABILITY_MODES_KEY = "ability_modes"
 
+# Key under which a per-agent DEFAULT visibility lives in agents.metadata
+# ({"discovery_default": "visible"|"discoverable"}). It is the fallback applied to
+# any ability (and, through the ability gate, its tools) that has NO explicit
+# per-item choice. Absent ⇒ "visible" (every existing agent behaves exactly as
+# before). Set to "discoverable" so an agent's whole tool surface collapses to a
+# compact `# [ABILITIES]` menu that the model pulls from on demand via
+# load_ability — instead of shipping every ability's full tool schema each turn.
+AGENT_DISCOVERY_DEFAULT_KEY = "discovery_default"
+
 # Key under which the per-agent ability-SKILL visibility map lives in
 # agents.metadata ({ability_id: "visible"|"discoverable"}). Lets an agent make a
 # bundled skill's body always-shown (visible) or load-on-demand (discoverable),
@@ -221,12 +230,16 @@ def tools_for_ability(ability: str) -> List[str]:
 
 # ── Ability visibility ─────────────────────────────────────────────────────────
 
-def resolve_ability_mode(ability_id: str, modes_map: Optional[Dict[str, str]]) -> str:
+def resolve_ability_mode(ability_id: str, modes_map: Optional[Dict[str, str]],
+                         default: Optional[str] = None) -> str:
     """Effective visibility of an ability for an agent: the agent's explicit
-    per-agent choice (normalized) else the default ``VISIBLE``. Abilities have no
-    app-wide default — discovery is tuned per agent."""
+    per-ability choice (normalized) ▸ the agent's ``discovery_default`` (passed in
+    as ``default``) ▸ ``VISIBLE``. Abilities have no app-wide default — discovery
+    is tuned per agent, so ``default`` carries the agent-level preference."""
     explicit = normalize_visibility((modes_map or {}).get(ability_id))
-    return explicit or VISIBLE
+    if explicit:
+        return explicit
+    return normalize_visibility(default) or VISIBLE
 
 
 def resolve_skill_mode(ability_id: str, modes_map: Optional[Dict[str, str]],
@@ -243,17 +256,20 @@ def resolve_skill_mode(ability_id: str, modes_map: Optional[Dict[str, str]],
 
 def ability_is_revealed(ability_id: str, modes_map: Optional[Dict[str, str]],
                         active_ability_names: Optional[Iterable[str]],
-                        suppressed_ability_names: Optional[Iterable[str]] = None) -> bool:
+                        suppressed_ability_names: Optional[Iterable[str]] = None,
+                        ability_default: Optional[str] = None) -> bool:
     """True when an ability's tools + bundled skill should flow into the prompt
     this turn: it is ``visible``, OR it is discoverable but already pulled in via
     ``load_ability`` this session.
 
     ``suppressed_ability_names`` lets a session turn an ability OFF from the chat
     Abilities panel even if it's ``visible`` by the agent's config — a suppressed
-    ability is never revealed (its tools + skill are withheld until re-armed)."""
+    ability is never revealed (its tools + skill are withheld until re-armed).
+    ``ability_default`` is the agent-level discovery default applied when the
+    ability has no explicit per-ability visibility choice."""
     if ability_id in set(suppressed_ability_names or ()):
         return False
-    if resolve_ability_mode(ability_id, modes_map) == VISIBLE:
+    if resolve_ability_mode(ability_id, modes_map, ability_default) == VISIBLE:
         return True
     return ability_id in set(active_ability_names or ())
 
@@ -264,6 +280,7 @@ def tool_hidden_by_ability(
     active_ability_names: Optional[Iterable[str]],
     active_tool_names: Optional[Iterable[str]] = None,
     suppressed_ability_names: Optional[Iterable[str]] = None,
+    ability_default: Optional[str] = None,
 ) -> bool:
     """True when a tool must be withheld entirely (not indexed, not sent) because
     the ability that gates it is ``discoverable`` and has NOT been loaded yet — or
@@ -271,11 +288,13 @@ def tool_hidden_by_ability(
 
     Tools with no gating ability (always-on utilities, DB tools), tools of a
     revealed ability, and a tool the agent already loaded individually
-    (``load_tool``) are never hidden by this rule."""
+    (``load_tool``) are never hidden by this rule. ``ability_default`` is the
+    agent-level discovery default applied to an ability with no explicit choice."""
     ability = ability_for_tool(name)
     if not ability:
         return False
-    if ability_is_revealed(ability, ability_modes, active_ability_names, suppressed_ability_names):
+    if ability_is_revealed(ability, ability_modes, active_ability_names,
+                           suppressed_ability_names, ability_default):
         return False
     return name not in set(active_tool_names or ())
 

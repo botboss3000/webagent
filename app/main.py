@@ -1,4 +1,4 @@
-"""Entry point for the webAgent server.
+"""Entry point for the WebAgent server.
 
 CORE FILE — do NOT register new integrations / capabilities here. New event
 sources, channels, connectors, integrations, vaults, encryption methods,
@@ -118,6 +118,9 @@ from plugins.billing.api import router as billing_router
 # ── Auth ──
 from app.auth import router as auth_router
 
+# ── Social sign-in (drop-in providers under plugins/auth_providers/) ──
+from app.api.social_auth import router as social_auth_router
+
 # ── GitHub ──
 from app.api.github import router as github_router
 
@@ -148,7 +151,7 @@ try:
     from app.admin.tasks import router as tasks_router
 except ImportError:
     tasks_router = None
-from app.api.canvas import router as canvases_router
+from app.api.genui import router as genui_router
 from app.api.devices import router as devices_router
 from app.api.wiki import router as wiki_router
 from app.api.ability_delete import router as ability_delete_router
@@ -186,8 +189,8 @@ except Exception as _diag_err:  # never let diagnostics wiring break boot
     logger.warning("Diagnostic log handler not installed: %s", _diag_err)
 
 app = FastAPI(
-    title="webAgent API",
-    description="webAgent — FastAPI service with tool-calling agent loop and WebSocket streaming",
+    title="WebAgent API",
+    description="WebAgent — FastAPI service with tool-calling agent loop and WebSocket streaming",
     version="0.1.0"
 )
 
@@ -288,6 +291,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(NoCacheMiddleware)
+
+# Decode the request's JWT once and stash the VERIFIED caller id in a
+# contextvar, so token-less admin chokepoints (app.auth.identity.resolve_admin_uid)
+# can demand a cryptographically-proven identity instead of trusting a
+# client-claimed ``requesting_user_id``. Pure-ASGI so the contextvar reliably
+# reaches the endpoint. See app/auth/identity.py.
+from app.auth.identity import CallerIdentityMiddleware
+app.add_middleware(CallerIdentityMiddleware)
 
 
 @app.middleware("http")
@@ -417,6 +428,7 @@ app.include_router(feedback_router)
 
 # Register auth router
 app.include_router(auth_router)
+app.include_router(social_auth_router)
 
 # Register generic webhook router (more specific paths first)
 app.include_router(webhooks_generic_router)
@@ -461,8 +473,8 @@ if optimizer_router is not None:
 if tasks_router is not None:
     app.include_router(tasks_router)
 
-# Register Canvas router
-app.include_router(canvases_router)
+# Register Gen UI router
+app.include_router(genui_router)
 
 # Register Devices router (presence list for the target-device picker)
 app.include_router(devices_router)
@@ -492,12 +504,12 @@ except Exception as _e:
 
 # ── Restart endpoint ──
 # POST /api/v1/restart shuts down the server process.
-# Works with webAgent.bat which loops uvicorn in a :restart cycle.
+# Works with WebAgent.bat which loops uvicorn in a :restart cycle.
 restart_router = APIRouter(prefix="/api/v1")
 
 @restart_router.post("/restart")
 async def restart_server():
-    """Shut down the server. webAgent.bat will restart it automatically."""
+    """Shut down the server. WebAgent.bat will restart it automatically."""
     import threading
     logger.warning("Restart requested via /api/v1/restart — shutting down...")
     # Give the response time to be sent before the process exits
@@ -506,7 +518,7 @@ async def restart_server():
         time.sleep(0.5)
         os._exit(0)
     threading.Thread(target=_die, daemon=True).start()
-    return {"status": "restarting", "message": "Server is shutting down. webAgent.bat will restart it."}
+    return {"status": "restarting", "message": "Server is shutting down. WebAgent.bat will restart it."}
 
 app.include_router(restart_router)
 
@@ -515,10 +527,10 @@ _SCREENSHOTS_DIR = _APP_DIR.parent / "data" / "screenshots"
 _SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/screenshots", StaticFiles(directory=str(_SCREENSHOTS_DIR)), name="screenshots")
 
-# Uploads, generated images (visuals), and Canvas page bodies now all live in
-# the per-user data home (data/user_data/<uid>/{uploads,visuals,canvases}) and serve
+# Uploads, generated images (visuals), and Gen UI page bodies now all live in
+# the per-user data home (data/user_data/<uid>/{uploads,visuals,genui}) and serve
 # from the /user_data mount below — so the old top-level /uploads and /visuals
-# mounts are retired. (Canvases are served via the /api/v1/canvases route, not a mount.)
+# mounts are retired. (Gen UI are served via the /api/v1/genui route, not a mount.)
 
 # Per-user data home (data/user_data/<user_id>/…) — uploads, generated images,
 # page bodies, agent outputs, and screenshots. See app/user_workspace.py.
@@ -556,9 +568,9 @@ _ROOT_INDEX_HTML = _APP_DIR.parent / "index.html"
 # ── SEO / social-preview meta injection ─────────────────────────────────────
 # Default copy for the app shell. Per-agent public pages override title + desc
 # with the agent's name so a shared /{agent_id} link previews meaningfully.
-_SEO_DEFAULT_TITLE = "webAgent — your AI agent harness"
+_SEO_DEFAULT_TITLE = "WebAgent — your AI agent harness"
 _SEO_DEFAULT_DESC = (
-    "webAgent is a self-hostable AI agent harness: chat with capable agents, "
+    "WebAgent is a self-hostable AI agent harness: chat with capable agents, "
     "give them tools and automations, and build visual pages — all in one app."
 )
 # Dedicated 1200×630 landscape social card — the size Open Graph / Twitter
@@ -574,7 +586,7 @@ _SEO_LOGO_IMAGE = "/ui/icons/icon-512x512.png"  # square brand mark (schema.org 
 _SEO_SAMEAS = ["https://github.com/botboss3000/webagent"]
 
 # Marketing copy for the public landing front page (see _render_landing_page).
-_LANDING_TITLE = "webAgent — your own team of AI agents"
+_LANDING_TITLE = "WebAgent — your own team of AI agents"
 _LANDING_DESC = (
     "Chat, automate, browse the web, build live dashboards and share knowledge — "
     "all driven by tool-using agents you shape to fit the way you work."
@@ -641,7 +653,7 @@ def _seo_head_block(origin: str, path: str, title: str, desc: str, noindex: bool
         f'<link rel="canonical" href="{eurl}">\n'
         f'<meta property="og:type" content="{_esc(og_type, quote=True)}">\n'
         + article_meta
-        + f'<meta property="og:site_name" content="webAgent">\n'
+        + f'<meta property="og:site_name" content="WebAgent">\n'
         f'<meta property="og:title" content="{et}">\n'
         f'<meta property="og:description" content="{ed}">\n'
         f'<meta property="og:url" content="{eurl}">\n'
@@ -678,7 +690,7 @@ def _home_jsonld(origin: str) -> str:
     org = {
         "@context": "https://schema.org",
         "@type": "Organization",
-        "name": "webAgent",
+        "name": "WebAgent",
         "url": origin + "/",
         "logo": origin + _SEO_LOGO_IMAGE,
         "description": _SEO_DEFAULT_DESC,
@@ -688,7 +700,7 @@ def _home_jsonld(origin: str) -> str:
     site = {
         "@context": "https://schema.org",
         "@type": "WebSite",
-        "name": "webAgent",
+        "name": "WebAgent",
         "url": origin + "/",
     }
     return _jsonld_block(org, site)
@@ -719,10 +731,10 @@ def _wiki_article_jsonld(origin, slug, title, desc, published, modified, image=N
         "url": page_url,
         "mainEntityOfPage": {"@type": "WebPage", "@id": page_url},
         "image": image or (origin + _SEO_PREVIEW_IMAGE),
-        "author": {"@type": "Organization", "name": "webAgent", "url": origin + "/"},
+        "author": {"@type": "Organization", "name": "WebAgent", "url": origin + "/"},
         "publisher": {
             "@type": "Organization",
-            "name": "webAgent",
+            "name": "WebAgent",
             "logo": {"@type": "ImageObject", "url": origin + _SEO_LOGO_IMAGE},
         },
     }
@@ -787,7 +799,7 @@ def _render_app_shell(request: Request, agent_id=None, agent_name=None) -> HTMLR
     description / canonical / Open Graph / Twitter-card block with ABSOLUTE urls.
     For a public agent link it also swaps the title + description to that agent's
     name, so sharing the link previews as "Chat with <Agent>" rather than a
-    generic "webAgent" (and marks it noindex — shareable-only). This is the single
+    generic "WebAgent" (and marks it noindex — shareable-only). This is the single
     source of truth for app-shell head SEO — keep it here, not in the static file
     (see the matching KEEP comment in index.html)."""
     import json
@@ -800,8 +812,8 @@ def _render_app_shell(request: Request, agent_id=None, agent_name=None) -> HTMLR
     title = _SEO_DEFAULT_TITLE
     desc = _SEO_DEFAULT_DESC
     if agent_name:
-        title = f"Chat with {agent_name} — webAgent"
-        desc = f"Chat with {agent_name}, an AI agent on webAgent."
+        title = f"Chat with {agent_name} — WebAgent"
+        desc = f"Chat with {agent_name}, an AI agent on WebAgent."
     # /app and /index.html serve the SAME home shell as / — point their canonical
     # (and og:url) at / so search engines treat the three as one page rather than
     # duplicate content. A public agent link keeps its own path (it's noindex, so
@@ -817,7 +829,7 @@ def _render_app_shell(request: Request, agent_id=None, agent_name=None) -> HTMLR
         # Brand identity (Organisation + WebSite) for the indexable app home. A
         # public agent link is noindex, so it skips this.
         meta += _home_jsonld(origin)
-    html = html.replace("<title>webAgent</title>", f"<title>{_esc(title, quote=True)}</title>", 1)
+    html = html.replace("<title>WebAgent</title>", f"<title>{_esc(title, quote=True)}</title>", 1)
     html = html.replace("</head>", meta + "</head>", 1)
     return HTMLResponse(content=html)
 
@@ -919,6 +931,13 @@ async def shutdown():
         await stop_device_worker()
     except Exception:
         pass
+    # Stop the hybrid sync engine and let it flush any final pending pushes.
+    try:
+        _engine = getattr(app.state, "hybrid_sync_engine", None)
+        if _engine is not None:
+            await _engine.stop()
+    except Exception:
+        pass
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1009,8 +1028,8 @@ def _render_static_seo_page(request: Request, rel_path: str, page_path: str,
 async def privacy_page(request: Request):
     """Serve the privacy policy page (public, no auth) with SEO head injected."""
     return _render_static_seo_page(
-        request, "ui/privacy.html", "/privacy", "Privacy Policy — webAgent",
-        "How webAgent handles your data — what is collected, how it is stored and "
+        request, "ui/privacy.html", "/privacy", "Privacy Policy — WebAgent",
+        "How WebAgent handles your data — what is collected, how it is stored and "
         "used, and the choices and controls you have.")
 
 
@@ -1018,15 +1037,15 @@ async def privacy_page(request: Request):
 async def tos_page(request: Request):
     """Serve the terms of service page (public, no auth) with SEO head injected."""
     return _render_static_seo_page(
-        request, "ui/tos.html", "/tos", "Terms of Service — webAgent",
-        "The terms for using webAgent — acceptable use, your responsibilities, and "
+        request, "ui/tos.html", "/tos", "Terms of Service — WebAgent",
+        "The terms for using WebAgent — acceptable use, your responsibilities, and "
         "the terms that govern the service.")
 
 
 @app.get("/termux", include_in_schema=False)
 @app.get("/termux.sh", include_in_schema=False)
 async def termux_installer():
-    """Serve the Termux one-line installer for the standalone webAgent TUI.
+    """Serve the Termux one-line installer for the standalone WebAgent TUI.
 
     Enables `curl -fsSL https://webagent.live/termux | bash` to install the
     Server Manager TUI on Android. Served verbatim from
@@ -1036,7 +1055,7 @@ async def termux_installer():
     from fastapi.responses import PlainTextResponse
     script = _APP_DIR.parent / "TUI" / "install-termux.sh"
     if not script.is_file():
-        return PlainTextResponse("# webAgent TUI installer not found\n", status_code=404)
+        return PlainTextResponse("# WebAgent TUI installer not found\n", status_code=404)
     body = script.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
     return PlainTextResponse(
         body,
@@ -1144,8 +1163,8 @@ async def wiki_public_index(request: Request):
         articles = await list_articles(include_drafts=False)
     except Exception:
         articles = []
-    title = "Wiki — webAgent"
-    desc = "Browse the webAgent knowledge base — published guides, policies and reference."
+    title = "Wiki — WebAgent"
+    desc = "Browse the WebAgent knowledge base — published guides, policies and reference."
     head = _seo_head_block(origin, "/wiki", title, desc, noindex=False)
     head += _jsonld_block(_breadcrumb_obj(origin, [("Home", "/"), ("Wiki", "/wiki")]))
     return HTMLResponse(public_pages.build_index_html(
@@ -1166,7 +1185,7 @@ async def wiki_public_article(slug: str, request: Request):
     article = await get_article(slug, include_drafts=False)
     if not article:
         head = _seo_head_block(
-            origin, f"/wiki/{slug}", "Not found — webAgent Wiki",
+            origin, f"/wiki/{slug}", "Not found — WebAgent Wiki",
             "This wiki article doesn't exist or isn't public.", noindex=True)
         return HTMLResponse(
             public_pages.build_notfound_html(origin=origin, head_html=head),
@@ -1190,7 +1209,7 @@ async def wiki_public_article(slug: str, request: Request):
         related = await get_backlinks(slug, include_drafts=False)
     except Exception:
         related = []
-    page_title = f"{article.get('title') or 'Untitled'} — webAgent Wiki"
+    page_title = f"{article.get('title') or 'Untitled'} — WebAgent Wiki"
     desc = public_pages.make_description(article.get("body") or "")
     # Prefer the article's own first image as the share preview; fall back to the
     # default 1200×630 card when it has none (or none that verifiably exists).
@@ -1395,6 +1414,38 @@ async def startup():
     except Exception as _bf_err:
         logger.warning("admin_users backfill failed: %s", _bf_err)
 
+    # ── Hybrid local-first sync engine (Stage 2) ──
+    # When the hybrid backend is active (SQLite hot store in front of the Postgres
+    # authority), interaction writes land locally first and are queued in a local
+    # OUTBOX. Start the background engine that drains that outbox to the remote as
+    # a stripped skeleton within a few seconds. Stage 4 also turns the remote→local
+    # PULLER on (pull_enabled=True) so shared content/config edits made on another
+    # device land in this machine's local replica continuously. This is safe: the
+    # Stage-4 security audit confirmed no authorization/identity/billing decision
+    # resolves from the local cache — the agent access-mode selector is read from
+    # the authority (chat._enforce_agent_access_policy), billing/roles/admin/tier
+    # all resolve remote, and the puller only warms Synced-tier rows (it never
+    # pulls money/identity tables). No-op unless the active db is a HybridBackend.
+    # The engine binds to THIS machine's local outbox, so it runs per-process (not
+    # via the cluster leader, which would wrongly elect a single device for everyone).
+    try:
+        from app.db import get_db as _get_db_sync
+        from app.db.hybrid import hybrid_enabled as _hybrid_on, HybridBackend
+        _sync_db = _get_db_sync()
+        # Reach the HybridBackend — it's either the active backend directly, or
+        # wrapped by the encryption decorator (composition is Enc(Hybrid(...))).
+        _inner = _sync_db
+        if not isinstance(_inner, HybridBackend):
+            _inner = getattr(_sync_db, "_inner", None)
+        if _hybrid_on() and isinstance(_inner, HybridBackend):
+            from app.db.sync import SyncEngine
+            _engine = SyncEngine(_inner, pull_enabled=True)
+            _engine.start()
+            app.state.hybrid_sync_engine = _engine
+            logger.info("Hybrid sync engine started (push + pull, syncing local replica <-> remote)")
+    except Exception as _sync_err:
+        logger.warning("Hybrid sync engine failed to start: %s", _sync_err)
+
     # ── Singleton background services, gated by a single-worker leader ──
     # The scheduler, event runtime, ability pollers, boot orphan-resume, watchdog
     # and Remote Access must run in EXACTLY ONE worker. Under gunicorn --workers N
@@ -1525,6 +1576,14 @@ async def startup():
                 logger.info("LLM config seeded into auth_elements from env vars")
         except Exception as e:
             logger.warning("Failed to seed LLM config: %s", e)
+
+    # ── Scrub any plaintext LLM key (old provider.json / config-blob copies) into
+    #    the encrypted vault. Idempotent; no-op once nothing plaintext remains. ──
+    try:
+        from app.admin.settings import migrate_llm_secrets
+        await migrate_llm_secrets()
+    except Exception as _mig_err:
+        logger.warning("LLM secret migration skipped: %s", _mig_err)
 
 
 if __name__ == "__main__":

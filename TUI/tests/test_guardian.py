@@ -92,8 +92,10 @@ def test_supervise_server() -> None:
     root = Path(_TMP)  # any non-None path; venv probe is stubbed
 
     real_health, real_venv, real_ports = g._is_healthy, g._venv_python, g._pids_on_port
+    real_sleep = g.time.sleep
     g._venv_python = lambda r: Path("py")           # type: ignore[assignment]
     g._pids_on_port = lambda port=g.PORT: set()      # type: ignore[assignment]
+    g.time.sleep = lambda *_a, **_k: None            # don't actually wait out the health window
     guard._spawn_server = lambda py, r: 4321         # type: ignore[assignment]
     try:
         # Healthy → never launches.
@@ -119,6 +121,7 @@ def test_supervise_server() -> None:
         assert "spawn2" not in launched
     finally:
         g._is_healthy, g._venv_python, g._pids_on_port = real_health, real_venv, real_ports
+        g.time.sleep = real_sleep
     print("ok: server supervision — healthy skip / relaunch / settle / no-root")
 
 

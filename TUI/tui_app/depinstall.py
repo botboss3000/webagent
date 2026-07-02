@@ -248,9 +248,9 @@ async def manage_ubuntu(ctx: ToolContext, op: str, target: str, log: LogFn) -> R
     return False, f"Unknown Ubuntu action '{op}'."
 
 
-# ── the webAgent install itself ───────────────────────────────────────────────
+# ── the WebAgent install itself ───────────────────────────────────────────────
 async def run_repo(ctx: ToolContext, target: Path, log: LogFn) -> Result:
-    log(f"Cloning webAgent into {target}…")
+    log(f"Cloning WebAgent into {target}…")
     msg = await clone_repo(ctx, str(target))
     ok = "cloned into" in msg or "[clone]" in msg
     log(msg)

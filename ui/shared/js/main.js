@@ -18,7 +18,7 @@ import { initTabs } from './tabs.js';
 import { initLoop } from '../../main-panel/agents/agent-loop/js/loop.js';
 import { initLoopVisual } from '../../main-panel/agents/agent-loop/js/loop-logic.js';
 import { registerSessionApi, initSessions } from '../../chat-side-panel/js/session-init.js';
-import { initCanvas } from '../../main-panel/canvas/js/canvas.js';
+import { initGenui } from '../../main-panel/genui/js/genui.js';
 import { initBilling } from './billing.js';
 import { initAccount } from './account.js';
 import { relocateAdminToolsContainers } from './files.js';
@@ -31,8 +31,9 @@ import { initChatResize } from './chatResize.js';
 import { initRecorder } from '../../chat-side-panel/js/recorder.js';
 import { initDebugConsole } from './debugConsole.js';
 import { initTutorial, startTutorial } from '../../tutorials/js/tutorial.js';
-import { fetchAdminStatus, isAdmin, fetchAccessMode, getAccessMode, isAuthenticated, showLeftOverlay, authHeaders } from './left-login.js';
+import { fetchAdminStatus, isAdmin, fetchAccessMode, getAccessMode, isAuthenticated, isAnonGuest, showLeftOverlay, authHeaders } from './left-login.js';
 import { installAuthRefresh, ensureFreshToken, startTokenAutoRefresh } from './auth-refresh.js';
+import { getActive, removeAccount } from './accounts.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
 import { randomUUID } from './uuid.js';
 import { initClipboard } from './clipboard.js';
@@ -78,51 +79,49 @@ startTokenAutoRefresh();
 //                         this is attempted regardless of the app access mode.
 //   • otherwise         → leave unauthenticated; the visitor signs in / registers.
 // Redirects to the first-run setup wizard if the app isn't set up yet (no admin).
-// Probe whether the token currently in storage is accepted by the server.
-// Used by open mode to decide between keeping a valid session and minting a
-// fresh admin token. Hits /auth/me (which the 401-refresh wrapper deliberately
-// ignores, so a stale token surfaces a real 401 here instead of being retried).
-async function _sessionTokenValid() {
-  const token = localStorage.getItem('auth_token');
-  if (!token) return false;
-  try {
-    const res = await fetch('/api/v1/auth/me', {
-      headers: authHeaders(),
-    });
-    return res.ok;
-  } catch (_) {
-    return false;
-  }
-}
-
 async function _initBootAuth() {
   // Resolve the app's access mode FIRST. The entire identity of the app — who
   // is signed in, and whether Admin Tools are available — hinges on it, so it
   // must be settled before we decide what to do with any token already in
-  // storage. (Previously a leftover `auth_token` short-circuited this on the
-  // very first line, so in "open" mode a stale/expired/foreign token left the
-  // app half-authenticated: the avatar showed the admin as "signed in", but the
-  // server rejected the token so the admin-status probe returned false and the
-  // Admin Tools tab never appeared. Only a manual logout reset it. Open mode
-  // now re-establishes a valid admin session at boot instead.)
+  // storage.
   await fetchAccessMode();
   const mode = getAccessMode();
 
   const haveToken = !!localStorage.getItem('auth_token');
 
-  // In every mode EXCEPT open, an existing token means we're already signed in
-  // and the keep-fresh timer + 401 backstop maintain it from here. Two cases
-  // re-establish identity instead of trusting a stored token blindly:
-  //   • open mode — the default admin is the active local user, so we re-validate
-  //     (and re-mint if needed) even when a token is present (handled below).
-  //   • Open Registration guests (anon_* token) — a guest has no remember-token
-  //     to drive the 401 refresh, so a stale guest token would silently break.
-  //     Fall through to re-mint one below against the SAME browser-keyed identity
-  //     (their sessions survive). A real signed-in member token is trusted as-is.
-  if (mode !== 'open' && haveToken) {
+  // An existing token means we're already signed in and the keep-fresh timer +
+  // 401 backstop maintain it from here. One case re-establishes identity instead
+  // of trusting a stored token blindly: Open Registration guests (anon_* token)
+  // have no remember-token to drive the 401 refresh, so a stale guest token would
+  // silently break — fall through to re-mint one below against the SAME
+  // browser-keyed identity (their sessions survive). A real signed-in member
+  // token is trusted as-is.
+  if (haveToken) {
     const _uid = localStorage.getItem('auth_user_id') || '';
-    const isGuest = mode === 'public_registered' && _uid.indexOf('anon_') === 0;
-    if (!isGuest) return;
+    const isAnon = _uid.indexOf('anon_') === 0;
+    if (isAnon && mode !== 'public_registered') {
+      // A LEFTOVER anonymous guest token from a prior Open-Registration session
+      // that the admin has since switched to a stricter mode. An anon guest is
+      // NOT an approved member, so it must not be trusted here — drop the stale
+      // identity entirely and fall through to the "require sign-in" path so the
+      // app-wide Private lock fires (otherwise the guest would silently keep
+      // access: the profile page, chat, and WebSocket would all treat the
+      // lingering token as a signed-in user). removeAccount() clears the legacy
+      // auth_token/auth_user_id keys when no account remains, or switches to a
+      // real signed-in member if one is also present — so we never wipe a
+      // genuine member's token here.
+      try { removeAccount(_uid); } catch (_) {}
+      // fall through (no return): no token is minted in admin_approval mode.
+    } else if (!(mode === 'public_registered' && isAnon)) {
+      // A signed-in member. Don't trust the stored token blindly — if it's
+      // already expired, try one refresh now; ensureFreshToken() signs the user
+      // out cleanly (fires webagent-auth-expired) when it can't be recovered,
+      // instead of letting the app boot into the powerless-zombie state. A still
+      // valid token makes this a no-op.
+      await ensureFreshToken();
+      return;
+    }
+    // (public_registered + anon falls through below to re-mint a fresh guest.)
   }
 
   // Check if app has been initialized (admin exists). On a fresh install (no
@@ -153,48 +152,6 @@ async function _initBootAuth() {
     app.currentUserId = userId;
     app.localUserId = userId;
   };
-
-  // ── Open mode: the default admin is the active local user (localhost only). ──
-  // Auto-sign-in as the bootstrap admin unless we ALREADY hold a server-valid
-  // session. Keeping a valid session means a deliberately-switched account (via
-  // the multi-account picker) survives a reload; an invalid/expired/foreign
-  // token is replaced with a fresh admin token so the app self-heals instead of
-  // showing a signed-in-but-powerless state.
-  if (mode === 'open') {
-    if (haveToken && await _sessionTokenValid()) return;
-    try {
-      const res = await fetch('/api/v1/auth/open-login', { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
-        // Store through the multi-account manager so the header avatar, the
-        // account dropdown, and the token-refresh logic all read the SAME
-        // source of truth. (Open-login previously wrote only the legacy keys,
-        // leaving getActive() blank and the account UI inconsistent with the
-        // token actually being used.) upsertAccount() mirrors the legacy keys
-        // too, so downstream code that reads `auth_token` keeps working.
-        const { upsertAccount } = await import('./accounts.js');
-        upsertAccount({
-          user_id: data.user_id,
-          username: data.username,
-          display_name: data.display_name,
-          access_token: data.access_token,
-        });
-        app.currentUserId = data.user_id;
-        app.localUserId = data.user_id;
-      }
-    } catch (e) {
-      console.warn('open-mode auto-login failed:', e);
-    }
-    // Fallback for open mode over Cloudflare Tunnel etc.: if open-login
-    // failed (non-localhost request) we still need a userId for the
-    // WebSocket handshake — the server skips JWT verification in open
-    // mode, so we can trust the stored/local value.
-    if (!app.currentUserId) {
-      app.currentUserId = localStorage.getItem('auth_user_id') || 'admin';
-      app.localUserId = app.currentUserId;
-    }
-    return;
-  }
 
   // ── Public agent URL: per-agent anonymous, gated by the agent itself. ──
   if (window.__agentId) {
@@ -268,8 +225,7 @@ async function _initBootAuth() {
 // visitor isn't signed in / authorized to use this instance. A valid auth token
 // is the authorization signal: in "private" (admin-approval) mode a guest has no
 // token and an unapproved account can't get one, so both are locked out of every
-// page; "open" mode auto-logs-in (token minted) so the owner is never locked;
-// after sign-in user-panel.js reloads the page, which re-runs this gate.
+// page; after sign-in user-panel.js reloads the page, which re-runs this gate.
 //
 // Public agent URLs (/{agentId}) run their OWN per-agent anonymous access flow,
 // so they are intentionally never gated here.
@@ -292,15 +248,17 @@ function _applyAppRestricted(restricted) {
 }
 function _evaluateAppAccess() {
   if (window.__agentId) { _applyAppRestricted(false); return; }
-  // 'open' and 'public_registered' (Open Registration) are open to anonymous
-  // visitors — the app is usable without a member sign-in (open mode auto-logs-in
-  // the admin; Open Registration hands anons a guest token). Per-page visibility
-  // (App Settings) and the Admin Tools gate decide what an anon can actually see,
-  // so the whole-app lock must NOT fire here. Only 'admin_approval' (Private)
-  // walls the entire app behind sign-in.
+  // 'public_registered' (Open Registration) is open to anonymous visitors — the
+  // app is usable without a member sign-in (Open Registration hands anons a guest
+  // token). Per-page visibility (App Settings) and the Admin Tools gate decide
+  // what an anon can actually see, so the whole-app lock must NOT fire here. Only
+  // 'admin_approval' (Private) walls the entire app behind sign-in.
   const mode = getAccessMode();
-  if (mode === 'open' || mode === 'public_registered') { _applyAppRestricted(false); return; }
-  _applyAppRestricted(!isAuthenticated());
+  if (mode === 'public_registered') { _applyAppRestricted(false); return; }
+  // Private (admin_approval): only an approved MEMBER passes. A token alone isn't
+  // enough — an anonymous guest token (a leftover from a prior Open-Registration
+  // session) belongs to a non-approved identity, so it must NOT unlock the app.
+  _applyAppRestricted(!(isAuthenticated() && !isAnonGuest()));
 }
 // Fallback wiring for the static lock card's Sign-in button → opens the corner
 // account menu. Normally unused: _applyAppRestricted swaps that card for the
@@ -320,8 +278,8 @@ function _evaluateAppAccess() {
 
 // Run boot auth, then continue init. For visitors who must sign in this resolves immediately.
 const _anonReady = _initBootAuth();
-// Evaluate access once boot auth settles (so "open" mode's auto-login token is
-// already in place and the owner is never momentarily locked).
+// Evaluate access once boot auth settles (so any minted guest token is already
+// in place and the visitor is never momentarily locked).
 _anonReady.then(_evaluateAppAccess).catch(() => _evaluateAppAccess());
 
 // Before the rest of init (which connects the WebSocket and loads the current
@@ -434,7 +392,7 @@ function _showJsErrorBanner(msg, source, errorEvent) {
   banner.insertBefore(row, banner.firstChild);
 
   // Structured console output for DevTools inspection
-  console.error('[webAgent JS error]', { msg, source, allErrors: _JS_ERRORS });
+  console.error('[WebAgent JS error]', { msg, source, allErrors: _JS_ERRORS });
 }
 
 // Catches synchronous errors thrown by scripts (including missing variables,
@@ -458,7 +416,7 @@ function _safeInit(name, fn) {
     fn();
   } catch (e) {
     _showJsErrorBanner(e.message, name);
-    console.error('[webAgent] ' + name + ' threw during init:', e);
+    console.error('[WebAgent] ' + name + ' threw during init:', e);
   }
 }
 
@@ -493,6 +451,16 @@ _bootReady.then(async () => {
   // and dispatch 'admin-status-loaded' to refine the visibility.
   _applyAdminToolsVisibility();
   fetchAdminStatus();
+
+  // If we just auto-signed-out an expired session (see webagent-auth-expired
+  // handler), open the sign-in form so the user can immediately sign back in
+  // rather than landing on a silent signed-out shell.
+  try {
+    if (sessionStorage.getItem('webagent_signed_out_expired')) {
+      sessionStorage.removeItem('webagent_signed_out_expired');
+      setTimeout(() => { try { showLeftOverlay(); } catch (_) {} }, 400);
+    }
+  } catch (_) { /* private mode — non-fatal */ }
 
   // Fire profile + app settings early so initAgents() can use cached results
   // instead of fetching them sequentially later. These are fire-and-forget;
@@ -539,11 +507,11 @@ _bootReady.then(async () => {
   // DOM/handlers for a panel that's rarely opened, especially on mobile where
   // only one panel is ever visible. initAgents is covered by startAgents()
   // when the Agents tab activates. Kept eager below:
-  //  • initCanvas — registers the live page/visualizer WebSocket handler
-  //    (app._canvasHandler), which must receive events even when the
-  //    Canvas tab isn't showing.
+  //  • initGenui — registers the live page/visualizer WebSocket handler
+  //    (app._genuiHandler), which must receive events even when the
+  //    Gen UI tab isn't showing.
   //  • initBilling / initAccount — cheap, no tab-gated heavy work.
-  _safeInit('initCanvas',   initCanvas);
+  _safeInit('initGenui',   initGenui);
   _safeInit('initBilling',     initBilling);
   _safeInit('initAccount',     initAccount);
   _safeInit('initSessions',    initSessions);
@@ -602,4 +570,30 @@ window.addEventListener('webagent-token-refreshed', () => {
   if (!open) {
     try { connectAgent(); } catch (_) {}
   }
+});
+
+// ── Session is dead and cannot be recovered → sign out cleanly ──────────────
+// Fired by auth-refresh.js when a signed-in member's access token has expired
+// and there's no usable remember-token to recall a fresh one (or it was
+// revoked). Without this the admin drifts into a "signed-in but powerless"
+// state: the token is still in storage so the UI looks logged-in, but the
+// server rejects it — Admin Tools disappear and chat errors with "Invalid or
+// missing token…". Re-login was the only fix. Now we do that automatically:
+// wipe every identity key (so the reload can't re-enter the zombie state) and
+// reload to a clean signed-out app with the sign-in form open. Once-only.
+let _authExpiredHandled = false;
+window.addEventListener('webagent-auth-expired', () => {
+  if (_authExpiredHandled) return;
+  _authExpiredHandled = true;
+  try {
+    const active = getActive();
+    if (active) removeAccount(active.user_id);
+  } catch (_) {}
+  ['auth_token', 'auth_username', 'auth_user_id', 'auth_display_name',
+   'remember_token', 'anonUserId', 'terminalUserId']
+    .forEach((k) => { try { localStorage.removeItem(k); } catch (_) {} });
+  // Tell the next boot to surface the sign-in form (and why) instead of a silent
+  // signed-out shell.
+  try { sessionStorage.setItem('webagent_signed_out_expired', '1'); } catch (_) {}
+  try { window.location.reload(); } catch (_) {}
 });

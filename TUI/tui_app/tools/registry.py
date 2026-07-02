@@ -73,7 +73,7 @@ def _base_specs() -> list[ToolSpec]:
     return [
         # ── Manager state (available in onboarding mode) ───────────────────
         ToolSpec("link_project", (
-            "Link the manager to an EXISTING webAgent checkout (a folder with "
+            "Link the manager to an EXISTING WebAgent checkout (a folder with "
             "run.py + app/). Switches to managed mode and adopts that repo's AI "
             "key. Use when the user already has a copy."), {
             "type": "object",
@@ -96,7 +96,7 @@ def _base_specs() -> list[ToolSpec]:
             "properties": {"target": {**_STR, "default": ""}},
         }, install.check_install_readiness, needs_project=False),
         ToolSpec("clone_repo", (
-            "Clone the public webAgent repo into an empty/new target folder. "
+            "Clone the public WebAgent repo into an empty/new target folder. "
             "Mutating. Recommended target: C:/webagent (Windows) or ~/webagent."), {
             "type": "object",
             "properties": {"target": _STR},
@@ -126,7 +126,7 @@ def _base_specs() -> list[ToolSpec]:
             "required": ["target"],
         }, install.verify_install, mutating=True, needs_project=False),
         ToolSpec("check_dependencies", (
-            "Read-only dependency checklist for getting webAgent running on THIS "
+            "Read-only dependency checklist for getting WebAgent running on THIS "
             "device — the same list the Setup dashboard shows: internet, git, Python, "
             "disk, on Android/Termux the Ubuntu proot-distro sandbox (proot_distro / "
             "ubuntu / ubuntu_toolchain), then repo / venv / browser / config / verify. "
@@ -147,24 +147,26 @@ def _base_specs() -> list[ToolSpec]:
             "required": ["id"],
         }, install.install_dependency, mutating=True, needs_project=False),
         # ── Server lifecycle (managed) ─────────────────────────────────────
-        ToolSpec("server_status", "Is the local webAgent server up? Read-only.", {
+        ToolSpec("server_status", "Is the local WebAgent server up? Read-only.", {
             "type": "object", "properties": {},
         }, server.server_status),
-        ToolSpec("server_start", "Start the local webAgent server (detached) and verify health. Mutating.", {
+        ToolSpec("server_start", "Start the local WebAgent server (detached) and verify health. Mutating.", {
             "type": "object", "properties": {},
         }, server.server_start, mutating=True),
-        ToolSpec("server_stop", "Stop the local webAgent server the manager started. Mutating.", {
+        ToolSpec("server_stop", "Stop the local WebAgent server the manager started. Mutating.", {
             "type": "object", "properties": {},
         }, server.server_stop, mutating=True),
-        ToolSpec("server_restart", "Restart the local webAgent server. Mutating.", {
+        ToolSpec("server_restart", "Restart the local WebAgent server. Mutating.", {
             "type": "object", "properties": {},
         }, server.server_restart, mutating=True),
         ToolSpec("server_kill_all",
                  "Force-kill EVERY process on port 8080 (not just the tracked "
-                 "server) plus any run.py / proot wrappers. Like kill.bat: finds "
-                 "all listeners on 8080, sends SIGKILL, clears the tracked PID "
-                 "state. Use this when something is squatting on port 8080 and "
-                 "gentle stop didn't work. Mutating.", {
+                 "server) plus any run.py / proot wrappers, and turn the keep-alive "
+                 "guardian OFF so the server stays DOWN (it won't be auto-relaunched). "
+                 "Like kill_webagent.bat: finds all listeners on 8080, sends SIGKILL, "
+                 "clears the tracked PID state. Use this when something is squatting "
+                 "on port 8080 and gentle stop didn't work, or to fully shut the "
+                 "server down. Mutating.", {
             "type": "object", "properties": {},
         }, server.server_kill_all, mutating=True),
         ToolSpec("server_logs", "Tail the captured server log. Read-only.", {
@@ -172,7 +174,7 @@ def _base_specs() -> list[ToolSpec]:
             "properties": {"lines": {**_INT, "default": 40}},
         }, server.server_logs),
         ToolSpec("reset_app", (
-            "Reset the linked webAgent install to a clean state (like reset_webagent.bat). "
+            "Reset the linked WebAgent install to a clean state (like reset_webagent.bat). "
             "ALWAYS wipes the userbase: the ACTIVE database backend + the per-user generated "
             "pages in visuals/users/. Backend-aware via app/db_connection.json: if Postgres "
             "(postgres/neon/gcp_cloud_sql) is active, it connects through the checkout's venv and "
@@ -201,7 +203,7 @@ def _base_specs() -> list[ToolSpec]:
         }, update.check_updates),
         # ── Drive the running app as a user (the same API the web UI uses) ──
         ToolSpec("app_login", (
-            "Log into the RUNNING webAgent app over its HTTP API and cache the "
+            "Log into the RUNNING WebAgent app over its HTTP API and cache the "
             "session. Defaults to the local admin (admin/admin). Read-only side "
             "effect (just authentication). Use before app_chat if you want to "
             "confirm credentials first; app_chat also logs in on its own."), {
@@ -282,7 +284,7 @@ def _base_specs() -> list[ToolSpec]:
                            "model": {**_STR, "default": ""}},
         }, webapp.app_set_auth_keys, mutating=True, needs_project=False),
         ToolSpec("read_diagnostics", (
-            "Read the webAgent app's diagnostics — its flight-recorder of "
+            "Read the WebAgent app's diagnostics — its flight-recorder of "
             "warnings/errors (with tracebacks), agent-loop problems, run outcomes "
             "and tool errors — straight from the checkout's local DB, so it works "
             "even when the server is DOWN. Filter by level (error/warning) or "
@@ -293,7 +295,7 @@ def _base_specs() -> list[ToolSpec]:
                            "category": {**_STR, "default": ""}},
         }, diagnostics.read_diagnostics),
         ToolSpec("read_recordings", (
-            "Read the webAgent app's RENDER RECORDER — the browser flight-recorder "
+            "Read the WebAgent app's RENDER RECORDER — the browser flight-recorder "
             "of HTML snapshots, DOM-mutation deltas, lag/long-task metrics, JS "
             "errors, console warnings, and failed/slow network calls — straight "
             "from the checkout's recordings DB (data/db/recordings.db), so it works "
@@ -362,7 +364,7 @@ def _base_specs() -> list[ToolSpec]:
                  monitor.notify_test, needs_project=False),
         ToolSpec("server_resources",
                  "Report the server process + host resources right now: host CPU, "
-                 "memory, disk, and the webAgent process's memory. Read-only.",
+                 "memory, disk, and the WebAgent process's memory. Read-only.",
                  {"type": "object", "properties": {}},
                  monitor.server_resources),
         # ── Playbook (self-healing issue knowledge base) ───────────────────
@@ -680,7 +682,7 @@ class ToolRegistry:
         if spec is None:
             return f"Error: unknown tool '{name}'"
         if spec.needs_project and ctx.project_root is None:
-            return f"Error: '{name}' needs a linked webAgent checkout. Link one first."
+            return f"Error: '{name}' needs a linked WebAgent checkout. Link one first."
         try:
             return await spec.handler(ctx, **args)
         except TypeError as e:

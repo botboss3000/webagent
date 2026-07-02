@@ -1,8 +1,23 @@
 """
-Source file management endpoints — unrestricted filesystem access.
+Source file management endpoints — project-tree filesystem access + shell.
 
 Allows reading, writing, deleting files, and running shell commands.
 Used by agent tools (read_source, write_source, edit_source, delete_source, run_command).
+
+SECURITY (added 2026-06-28):
+  • Every HTTP endpoint here is ADMIN-ONLY. The router carries a single
+    `_require_source_admin` dependency that resolves the caller from a
+    cryptographically-verified JWT (Authorization header or ?token=) — or, in
+    'open' access mode, the local bootstrap admin — and refuses anyone who is
+    not a DB admin. Before this gate the whole router was reachable with NO
+    auth, which made `/admin/source/exec` an unauthenticated remote-shell.
+  • File reads/writes/deletes are CONFINED to the project tree (`_confine`).
+    Absolute paths or `..` escapes outside the repo are rejected. (Shell
+    commands via /exec are not path-confined by nature — the admin gate is
+    their protection.)
+  • The agent's own tools (plugins/admin/source_tools.py) call the in-process
+    `_do_*` helpers below DIRECTLY, not over HTTP, so they never need to send a
+    token to localhost and the HTTP surface can stay locked down.
 
 To disable: delete this file and source_tools.py, remove the import from main.py.
 Guardrails can be added by implementing plugins/admin/guardrails.py.
@@ -17,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 # Optional guardrails — delete guardrails.py to remove restrictions
@@ -34,7 +49,6 @@ except ImportError:
         pass
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/admin/source", tags=["admin"])
 
 # Project root for resolving relative paths
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -47,6 +61,44 @@ SYNTAX_CHECKERS = {
     ".py": lambda code: ast.parse(code),
     ".json": lambda code: __import__("json").loads(code),
 }
+
+
+# ── Auth gate ───────────────────────────────────────────────────────────────
+# Single chokepoint for the whole router. Resolves the caller from a verified
+# JWT (or the open-mode local admin) and requires a DB admin, mirroring
+# app/api/files.py._require_admin. Attached as a router-level dependency so
+# EVERY endpoint below — read, write, delete, exec, backups — is gated with no
+# per-route wiring to forget.
+
+async def _is_admin(user_id: str) -> bool:
+    if not user_id:
+        return False
+    try:
+        from app.db import get_db
+        return bool(await get_db().is_user_admin(user_id))
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("is_user_admin lookup failed for %s: %s", user_id, e)
+        return False
+
+
+async def _require_source_admin(request: Request) -> None:
+    """Admin gate for the source router.
+
+    Caller identity comes from `request_user_id` (verified Bearer/`?token=`
+    JWT, or the bootstrap admin in 'open' access mode) — never from a
+    client-claimed id. A non-admin (or unauthenticated) caller gets 403.
+    """
+    from app.auth.identity import request_user_id
+    uid = request_user_id(request)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+router = APIRouter(
+    prefix="/admin/source",
+    tags=["admin"],
+    dependencies=[Depends(_require_source_admin)],
+)
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -105,13 +157,16 @@ class CommandResponse(BaseModel):
 def resolve_path(raw_path: str) -> Path:
     """
     Resolve a path. If relative, it's relative to the project root.
-    Unrestricted — any path the OS user can access is allowed.
 
     On Windows, paths like ``/tmp`` have ``is_absolute() == False`` but
     ``p.root == '\\'``, and Python's Path division (``PROJECT_ROOT / p``)
     *still* treats them as absolute (it sees the root separator and replaces
     the left side, producing ``C:\\tmp``).  To prevent this we strip the
     leading separator before joining so they land inside the project tree.
+
+    NOTE: this only *resolves* a path; callers that touch the filesystem must
+    pass the result through ``_confine`` so an absolute path or ``..`` escape
+    outside the repo is rejected.
     """
     p = Path(raw_path)
     if not p.is_absolute() or (os.name == 'nt' and not p.drive and p.root and len(p.root) == 1):
@@ -119,6 +174,25 @@ def resolve_path(raw_path: str) -> Path:
         # it as absolute (e.g. /tmp -> tmp -> PROJECT_ROOT/tmp).
         p = PROJECT_ROOT / str(p).lstrip('\\/')
     return p.resolve()
+
+
+def _confine(resolved: Path) -> Path:
+    """Reject a resolved path that escapes the project tree.
+
+    Uses ``Path.is_relative_to`` (a real prefix test) rather than a string
+    ``startswith`` so a sibling directory like ``…/webagent-dev-attacker``
+    cannot pass the check. Raises HTTP 400 on escape.
+    """
+    try:
+        if resolved == PROJECT_ROOT or resolved.is_relative_to(PROJECT_ROOT):
+            return resolved
+    except AttributeError:  # pragma: no cover - Python < 3.9
+        if str(resolved).startswith(str(PROJECT_ROOT) + os.sep):
+            return resolved
+    raise HTTPException(
+        status_code=400,
+        detail=f"Path escapes the project root: {resolved}",
+    )
 
 
 def validate_syntax(content: str, ext: str) -> Optional[str]:
@@ -133,12 +207,14 @@ def validate_syntax(content: str, ext: str) -> Optional[str]:
         return str(e)
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+# ── In-process core logic ─────────────────────────────────────────────────────
+# Both the HTTP endpoints (admin-gated above) and the agent's server-side tools
+# (source_tools.py) call these directly. The agent path is in-process and
+# trusted, so it bypasses the HTTP auth gate without needing a localhost token;
+# the HTTP path is reachable only after `_require_source_admin`.
 
-@router.get("/read", response_model=FileContent)
-async def read_file(path: str = Query(..., description="Path to file (relative or absolute)")):
-    """Read any file on the system."""
-    resolved = resolve_path(path)
+async def _do_read(path: str) -> FileContent:
+    resolved = _confine(resolve_path(path))
     try:
         await check_path(str(resolved), "read")
     except PermissionError as e:
@@ -158,15 +234,8 @@ async def read_file(path: str = Query(..., description="Path to file (relative o
     )
 
 
-@router.post("/write", response_model=WriteResponse)
-async def write_file(request: WriteRequest):
-    """
-    Create a new file or overwrite an existing one.
-    - Creates parent directories automatically
-    - Validates Python/JSON syntax before writing
-    - Backs up existing files to .source-backups/
-    """
-    resolved = resolve_path(request.path)
+async def _do_write(path: str, content: str, create_backup: bool = True) -> WriteResponse:
+    resolved = _confine(resolve_path(path))
     ext = resolved.suffix.lower()
 
     try:
@@ -176,14 +245,12 @@ async def write_file(request: WriteRequest):
 
     is_new = not resolved.exists()
 
-    # Validate syntax before writing
-    error = validate_syntax(request.content, ext)
+    error = validate_syntax(content, ext)
     if error:
         raise HTTPException(status_code=400, detail=f"Syntax error: {error}")
 
-    # Backup existing file
     backup_path = None
-    if not is_new and request.create_backup:
+    if not is_new and create_backup:
         backup_filename = f"{resolved.name}.{int(time.time())}.bak"
         backup_file = BACKUP_DIR / backup_filename
         try:
@@ -192,9 +259,8 @@ async def write_file(request: WriteRequest):
         except Exception as e:
             logger.warning("Backup failed: %s", e)
 
-    # Write
     resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(request.content, encoding="utf-8")
+    resolved.write_text(content, encoding="utf-8")
 
     action = "Created" if is_new else "Updated"
     logger.info("%s: %s", action, resolved)
@@ -206,14 +272,8 @@ async def write_file(request: WriteRequest):
     )
 
 
-@router.post("/delete", response_model=DeleteResponse)
-async def delete_file(request: DeleteRequest):
-    """
-    Delete a file or directory.
-    - Files are deleted permanently (not sent to trash)
-    - Directories require recursive=True
-    """
-    resolved = resolve_path(request.path)
+async def _do_delete(path: str, recursive: bool = False) -> DeleteResponse:
+    resolved = _confine(resolve_path(path))
 
     try:
         await check_path(str(resolved), "delete")
@@ -232,7 +292,7 @@ async def delete_file(request: DeleteRequest):
                 message=f"Deleted file {resolved}",
             )
         elif resolved.is_dir():
-            if not request.recursive:
+            if not recursive:
                 raise HTTPException(
                     status_code=400,
                     detail=f"'{resolved}' is a directory. Set recursive=true to delete it.",
@@ -243,6 +303,8 @@ async def delete_file(request: DeleteRequest):
                 path=str(resolved), deleted=True,
                 message=f"Deleted directory {resolved}",
             )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Delete failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -250,24 +312,20 @@ async def delete_file(request: DeleteRequest):
     raise HTTPException(status_code=500, detail="Unexpected error")
 
 
-@router.post("/exec", response_model=CommandResponse)
-async def run_command(request: CommandRequest):
-    """
-    Execute a shell command on the server.
-    Returns stdout, stderr, and exit code.
-    """
+async def _do_exec(command: str, timeout: int = 30) -> CommandResponse:
     try:
-        await check_command(request.command)
+        await check_command(command)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    logger.info("Executing command: %s", request.command)
+    logger.info("Executing command: %s", command)
     try:
         result = subprocess.run(
-            request.command,
+            command,
             shell=True,
             capture_output=True,
             text=True,
-            timeout=request.timeout,
+            timeout=timeout,
+            cwd=str(PROJECT_ROOT),
         )
         return CommandResponse(
             exit_code=result.returncode,
@@ -278,7 +336,7 @@ async def run_command(request: CommandRequest):
         return CommandResponse(
             exit_code=-1,
             stdout="",
-            stderr=f"Command timed out after {request.timeout} seconds",
+            stderr=f"Command timed out after {timeout} seconds",
             timed_out=True,
         )
     except Exception as e:
@@ -287,6 +345,44 @@ async def run_command(request: CommandRequest):
             stdout="",
             stderr=str(e),
         )
+
+
+# ── Endpoints (admin-gated via the router dependency) ──────────────────────────
+
+@router.get("/read", response_model=FileContent)
+async def read_file(path: str = Query(..., description="Path to file (relative or absolute)")):
+    """Read any file inside the project tree."""
+    return await _do_read(path)
+
+
+@router.post("/write", response_model=WriteResponse)
+async def write_file(request: WriteRequest):
+    """
+    Create a new file or overwrite an existing one.
+    - Creates parent directories automatically
+    - Validates Python/JSON syntax before writing
+    - Backs up existing files to .source-backups/
+    """
+    return await _do_write(request.path, request.content, request.create_backup)
+
+
+@router.post("/delete", response_model=DeleteResponse)
+async def delete_file(request: DeleteRequest):
+    """
+    Delete a file or directory.
+    - Files are deleted permanently (not sent to trash)
+    - Directories require recursive=True
+    """
+    return await _do_delete(request.path, request.recursive)
+
+
+@router.post("/exec", response_model=CommandResponse)
+async def run_command(request: CommandRequest):
+    """
+    Execute a shell command on the server (in the project root).
+    Returns stdout, stderr, and exit code.
+    """
+    return await _do_exec(request.command, request.timeout)
 
 
 @router.get("/backups")

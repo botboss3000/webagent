@@ -312,7 +312,7 @@
     el.textContent = css;
 
     // Tell JS-driven surfaces a palette/border/font change just landed. CSS-var
-    // consumers re-style automatically; canvases that read the palette INTO JS
+    // consumers re-style automatically; genui that read the palette INTO JS
     // (the animated backgrounds) cache it and would otherwise stay stale until a
     // resize or dark<->light flip — so they listen for this and re-read live.
     try { window.dispatchEvent(new CustomEvent('wa-appearance-changed')); } catch (e) {}

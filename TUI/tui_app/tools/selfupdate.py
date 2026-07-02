@@ -99,6 +99,24 @@ def _copy_source(src: Path, dest: Path) -> None:
     shutil.copytree(src, dest, ignore=_BACKUP_IGNORE)
 
 
+def _precompile_project(repo: Path) -> bool:
+    """Best-effort: pre-build the WebAgent server's bytecode after a pull so its
+    next cold boot doesn't pay the .pyc-compile cost. Uses the project's OWN venv
+    python (the interpreter that actually runs the server) so the compiled .pyc
+    matches. Quiet, time-boxed, and never raises — a miss just means the server
+    compiles lazily on first import, exactly as before."""
+    for sub in (".venv", "venv", "venv313"):
+        py = repo / sub / ("Scripts" if _IS_WIN else "bin") / ("python.exe" if _IS_WIN else "python")
+        if py.exists():
+            try:
+                subprocess.run([str(py), "-m", "compileall", "-q", "app", "run.py"],
+                               cwd=str(repo), capture_output=True, timeout=300)
+                return True
+            except (OSError, subprocess.SubprocessError):
+                return False
+    return False
+
+
 async def _update_source(ctx: ToolContext, info: SelfInfo, make_backup: bool) -> str:
     if not info.repo_root:
         return "Error: can't locate the git checkout this manager runs from."
@@ -122,9 +140,11 @@ async def _update_source(ctx: ToolContext, info: SelfInfo, make_backup: bool) ->
                 "Nothing else changed and your backup is safe. This is usually local edits or a "
                 "diverged branch — resolve those (or restore from the backup) and retry.")
     steps.append("pulled the latest code (fast-forward)")
+    if await asyncio.to_thread(_precompile_project, repo):
+        steps.append("pre-compiled the server's bytecode (faster first boot)")
     return ("[self-update] " + "; ".join(steps) + ".\n"
             "The new code loads on restart — run self_restart (or close and reopen) to apply it. "
-            "Note: this pulled the whole repository, so a managed webAgent checkout living in the "
+            "Note: this pulled the whole repository, so a managed WebAgent checkout living in the "
             "same repo is now updated too.")
 
 

@@ -220,7 +220,7 @@ def make_description(body: str, limit: int = 160) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > limit:
         text = text[:limit].rsplit(" ", 1)[0].rstrip() + "…"
-    return text or "A webAgent wiki article."
+    return text or "A WebAgent wiki article."
 
 
 def _reading_time(body: str) -> int:
@@ -347,7 +347,7 @@ def _top_nav(app_link: Optional[str] = None) -> str:
     extra = f'<a href="{_esc(app_link)}">Open in app</a>' if app_link else ""
     return (
         '<nav class="pw-top">\n'
-        '  <a class="pw-brand" href="/">webAgent</a>\n'
+        '  <a class="pw-brand" href="/">WebAgent</a>\n'
         f'  <span class="pw-top-links"><a href="/wiki">Wiki</a>{extra}</span>\n'
         "</nav>\n"
     )
@@ -414,7 +414,7 @@ def build_article_html(
         + tags_html
         + related_html
         + "</article>\n"
-        + '<footer class="pw-foot">From the <a href="/wiki">webAgent Wiki</a>.</footer>\n'
+        + '<footer class="pw-foot">From the <a href="/wiki">WebAgent Wiki</a>.</footer>\n'
         + "</div>\n"
     )
     return _page_shell(title=title, head_html=head_html, body_html=inner)
@@ -461,7 +461,7 @@ def build_index_html(
         "policies and reference.</p>\n"
         + "</header>\n"
         + listing
-        + '<footer class="pw-foot">Powered by <a href="/">webAgent</a>.</footer>\n'
+        + '<footer class="pw-foot">Powered by <a href="/">WebAgent</a>.</footer>\n'
         + "</div>\n"
     )
     return _page_shell(title=title, head_html=head_html, body_html=inner)
@@ -479,4 +479,4 @@ def build_notfound_html(*, origin: str, head_html: str) -> str:
         + "</article>\n"
         + "</div>\n"
     )
-    return _page_shell(title="Not found — webAgent Wiki", head_html=head_html, body_html=inner)
+    return _page_shell(title="Not found — WebAgent Wiki", head_html=head_html, body_html=inner)

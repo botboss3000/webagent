@@ -1,7 +1,7 @@
 {
   // fallow configuration — https://docs.fallow.tools
   //
-  // Why this file exists: webAgent's UI is NOT loaded through statically
+  // Why this file exists: WebAgent's UI is NOT loaded through statically
   // traceable ES imports, so without these hints fallow reports most of the
   // live ui/ tree as "unused dead code". Three loading mechanisms defeat
   // static analysis, and each needs a hint below:
@@ -46,7 +46,7 @@
     "ui/main-panel/agents/js/agents.js",
     "ui/main-panel/automations/js/automations.js",
     "ui/main-panel/browser/js/browser.js",
-    "ui/main-panel/canvas/js/canvas.js",
+    "ui/main-panel/genui/js/genui.js",
     "ui/main-panel/sessions/js/sessions-page.js",
     "ui/main-panel/wiki/js/wiki.js",
     "ui/shared/js/files.js",
@@ -82,7 +82,7 @@
     "**/_TEMPLATE/**",
     "**/_TEMPLATE.*",
     // Stylesheets are pulled in by <link> tags in index.html / admin pages and
-    // injected into shadow-DOM canvases at runtime. fallow is a JS/TS analyzer
+    // injected into shadow-DOM genui at runtime. fallow is a JS/TS analyzer
     // and does not trace either, so every .css file is a permanent false
     // positive. After the ui/ restructure CSS lives co-located in each feature
     // folder (ui/<feature>/*.css), so this must match all of it, not just ui/css.

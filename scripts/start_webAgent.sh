@@ -5,7 +5,7 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.." || exit 1
 # Run after database migration; starts uvicorn in the background (default port 8080, override with PORT=).
 
 echo "========================================="
-echo "webAgent - Quick Start"
+echo "WebAgent - Quick Start"
 echo "========================================="
 
 # Check if virtual environment exists
@@ -52,7 +52,7 @@ if curl -s "http://localhost:${PORT}/health" > /dev/null; then
     echo "Context defaults are applied on first chat if the user has no context rows (no separate seed endpoint)."
     echo ""
     echo "========================================="
-    echo "✅ webAgent is ready!"
+    echo "✅ WebAgent is ready!"
     echo ""
     echo "Test endpoints:"
     echo "  Health:    curl http://localhost:${PORT}/health"

@@ -161,11 +161,219 @@ def _load_provider(user_id: str) -> dict:
     return dict(DEFAULT_PROVIDER)
 
 
-def _save_provider(user_id: str, config: dict) -> None:
-    """Save provider config for a specific user.
+# ── LLM secret handling — keys live ONLY in the encrypted vault ─────────────
+#
+# An LLM config can carry several API keys: the default brain's key, one per
+# entry in the ``providers`` map, and one per saved-roster model. The vault row
+# (``auth_elements``) only Fernet-encrypts ``secret_ref``; its ``config`` blob is
+# a plaintext column. So we pack EVERY key into a single JSON bundle stored in
+# ``secret_ref`` (encrypted), and keep every other store — the ``config`` blob and
+# provider.json — stripped of keys. Reads rehydrate the keys back out of the
+# bundle, so callers see a complete config without any plaintext key ever landing
+# on disk or in an unencrypted column.
 
-    Writes only this user's key into provider.json (every other user's config is
-    preserved and data/config/ is created on demand), then applies it to the env.
+def _has_plaintext_key(cfg: dict) -> bool:
+    """True if any api_key is present anywhere in a config dict."""
+    if not isinstance(cfg, dict):
+        return False
+    if cfg.get("api_key"):
+        return True
+    for v in (cfg.get("providers") or {}).values():
+        if isinstance(v, dict) and v.get("api_key"):
+            return True
+    for e in (cfg.get("multi_providers") or []):
+        if isinstance(e, dict) and e.get("api_key"):
+            return True
+    return False
+
+
+def _strip_provider_secrets(config: dict) -> dict:
+    """Return a copy of a provider config with every api_key blanked — the shape
+    written to provider.json and to the vault's plaintext ``config`` blob."""
+    clean = dict(config or {})
+    clean["api_key"] = ""
+    provs = clean.get("providers")
+    if isinstance(provs, dict):
+        clean["providers"] = {
+            k: ({**v, "api_key": ""} if isinstance(v, dict) else v)
+            for k, v in provs.items()
+        }
+    mp = clean.get("multi_providers")
+    if isinstance(mp, list):
+        clean["multi_providers"] = [
+            ({**e, "api_key": ""} if isinstance(e, dict) else e) for e in mp
+        ]
+    return clean
+
+
+def _pack_llm_secret(config: dict) -> str:
+    """Collect every api_key in a config into one JSON bundle for the encrypted
+    ``secret_ref``. Returns "" when there are no keys at all."""
+    default = config.get("api_key", "") or ""
+    providers = {}
+    for name, v in (config.get("providers") or {}).items():
+        if isinstance(v, dict) and v.get("api_key"):
+            providers[name] = v["api_key"]
+    multi = [
+        (e.get("api_key", "") if isinstance(e, dict) else "")
+        for e in (config.get("multi_providers") or [])
+    ]
+    while multi and not multi[-1]:   # trim trailing empties
+        multi.pop()
+    if not default and not providers and not multi:
+        return ""
+    bundle = {"v": 1, "default": default}
+    if providers:
+        bundle["providers"] = providers
+    if multi:
+        bundle["multi"] = multi
+    return json.dumps(bundle, separators=(",", ":"))
+
+
+def _unpack_llm_secret(secret_ref: str) -> dict:
+    """Parse a packed bundle. A bare key string (legacy / env-seeded rows) is
+    treated as just the default key."""
+    if not secret_ref:
+        return {}
+    s = secret_ref.strip()
+    if s.startswith("{"):
+        try:
+            d = json.loads(s)
+            if isinstance(d, dict) and d.get("v"):
+                return d
+        except Exception:
+            pass
+    return {"default": secret_ref}   # legacy bare key
+
+
+def _rehydrate_llm_keys(config: dict, secret_ref: str) -> dict:
+    """Splice keys from the encrypted bundle back into a config dict (mutates and
+    returns it). A key already present in the (legacy plaintext) config is kept
+    only when the bundle has nothing for that slot, so this is safe both before
+    and after the migration has stripped the plaintext copies."""
+    bundle = _unpack_llm_secret(secret_ref)
+    config["api_key"] = bundle.get("default") or config.get("api_key", "") or ""
+    bp = bundle.get("providers") or {}
+    provs = config.get("providers")
+    if isinstance(provs, dict):
+        for name, v in provs.items():
+            if isinstance(v, dict):
+                v["api_key"] = bp.get(name) or v.get("api_key", "") or ""
+    bm = bundle.get("multi") or []
+    mp = config.get("multi_providers")
+    if isinstance(mp, list):
+        for i, e in enumerate(mp):
+            if isinstance(e, dict):
+                e["api_key"] = (bm[i] if i < len(bm) else "") or e.get("api_key", "") or ""
+    return config
+
+
+async def _persist_llm_config(user_id: str, full: dict) -> None:
+    """Single write path for a user's LLM config.
+
+    Guarantees no API key is ever stored in plaintext: every key is packed into
+    ONE encrypted vault secret (``auth_elements.secret_ref``); the DB ``config``
+    blob and provider.json receive a key-stripped copy. provider.json stays as a
+    non-secret fallback + boot seed; the active env (this process) still gets the
+    real key.
+    """
+    secret = _pack_llm_secret(full)
+    stripped = _strip_provider_secrets(full)
+    try:
+        from app.db import get_db
+        db = get_db()
+        await db.auth_element_set(
+            user_id=user_id,
+            service="llm",
+            config=stripped,
+            secret_ref=secret,
+            label="default",
+        )
+    except Exception as e:
+        logger.warning("Failed to save LLM config to vault: %s", e)
+    # provider.json (stripped inside _save_provider) + active env (full, with key)
+    _save_provider(user_id, full)
+
+
+async def _load_own_llm_config(user_id: str) -> Optional[dict]:
+    """Load a user's OWN LLM config (vault row, else its provider.json entry) with
+    keys rehydrated — NO admin/anonymous fallback. Used by the migration so we
+    never copy one user's config onto another."""
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(user_id, "llm", "default")
+        if elem:
+            cfg = elem.get("config") or {}
+            if isinstance(cfg, str):
+                cfg = json.loads(cfg or "{}")
+            return _rehydrate_llm_keys(cfg, elem.get("secret_ref", ""))
+    except Exception:
+        pass
+    fc = _load_all_providers().get(user_id)
+    return dict(fc) if isinstance(fc, dict) else None
+
+
+async def _llm_storage_has_plaintext(user_id: str) -> bool:
+    """True if a user's provider.json entry or vault config blob still holds a
+    plaintext api_key (an encrypted secret_ref does NOT count)."""
+    fc = _load_all_providers().get(user_id)
+    if _has_plaintext_key(fc):
+        return True
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(user_id, "llm", "default")
+    except Exception:
+        elem = None
+    if elem:
+        cfg = elem.get("config") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg or "{}")
+            except Exception:
+                cfg = {}
+        if _has_plaintext_key(cfg):
+            return True
+    return False
+
+
+async def migrate_llm_secrets() -> None:
+    """One-time scrub of historically plaintext LLM keys.
+
+    For every user that has a provider config, fold any plaintext api_key (from
+    provider.json OR the DB ``config`` blob) into the encrypted vault secret and
+    rewrite both stores stripped. Idempotent: once no plaintext key remains for a
+    user, re-running skips them. Safe to call on every startup.
+    """
+    try:
+        candidates = set(_load_all_providers().keys()) | {"admin"}
+    except Exception:
+        candidates = {"admin"}
+    secured = 0
+    for uid in candidates:
+        try:
+            if not await _llm_storage_has_plaintext(uid):
+                continue
+            own = await _load_own_llm_config(uid)
+            if not own:
+                continue
+            await _persist_llm_config(uid, own)
+            secured += 1
+        except Exception as e:
+            logger.warning("LLM secret migration failed for %s: %s", str(uid)[:12], e)
+    if secured:
+        logger.info("Secured plaintext LLM key(s) for %d user(s) into the vault", secured)
+
+
+def _save_provider(user_id: str, config: dict) -> None:
+    """Save provider config for a specific user to provider.json — WITHOUT any
+    api_key — and apply it to the active env (with the key) for this process.
+
+    The secret never lands in provider.json; it lives only in the encrypted vault
+    (see _persist_llm_config). provider.json keeps the non-secret fields
+    (provider/model/base_url/capabilities/roster) as a fallback + boot seed; every
+    other user's config is preserved and data/config/ is created on demand.
     """
     # Fill in base_url from preset if missing
     provider = config.get("provider", "")
@@ -173,11 +381,12 @@ def _save_provider(user_id: str, config: dict) -> None:
         config["base_url"] = PROVIDER_PRESETS[provider]["base_url"]
 
     try:
-        set_config_key(PROVIDER_FILE, user_id, config)
+        set_config_key(PROVIDER_FILE, user_id, _strip_provider_secrets(config))
     except Exception as e:
         logger.warning("Failed to save provider.json: %s", e)
 
-    # Apply this config as the active env vars (current user's session)
+    # Apply this config as the active env vars (current user's session) — uses the
+    # in-memory config WITH the key; only the on-disk copy is stripped.
     _apply_config_to_env(config)
 
     logger.info("Provider config saved for user %s: %s", user_id[:12], config.get("provider"))
@@ -197,8 +406,10 @@ async def _resolve_user_config(user_id: str) -> dict:
             # Fall back to admin user's config (anonymous visitors get a working LLM)
             elem = await db.auth_element_get("admin", "llm", "default")
         if elem:
-            cfg = json.loads(elem.get("config", "{}"))
-            cfg["api_key"] = elem.get("secret_ref", "")
+            cfg = elem.get("config") or {}
+            if isinstance(cfg, str):
+                cfg = json.loads(cfg or "{}")
+            _rehydrate_llm_keys(cfg, elem.get("secret_ref", ""))
             return cfg
     except Exception:
         pass
@@ -569,7 +780,7 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
                 c = elem.get("config") or {}
                 if isinstance(c, str):
                     c = json.loads(c)
-                c["api_key"] = elem.get("secret_ref", "")
+                _rehydrate_llm_keys(c, elem.get("secret_ref", ""))
                 cfg = c
                 break
     except Exception as e:
@@ -1028,7 +1239,7 @@ class AppSettings(BaseModel):
     run_zombie_grace_seconds: int = 45             # row 'running' + no live task this long ⇒ zombie
     run_max_resume_attempts: int = 3               # per-run resume budget before giving up (failed)
     run_resume_backoff_seconds: int = 30           # base for exponential resume backoff
-    # User feedback → GitHub issues via the webAgent relay. Cloners can flip
+    # User feedback → GitHub issues via the WebAgent relay. Cloners can flip
     # `feedback_enabled` off to hide the form, or point `feedback_relay_url`
     # at their own relay deployment.
     feedback_enabled: bool = True
@@ -1464,11 +1675,15 @@ async def set_provider(
     token: Optional[str] = Query(None),
 ):
     """Set provider configuration for the requesting user.
-    Stored in auth_elements table (DB) AND provider.json fallback.
-    Never shared between users.
+    API keys are packed into the ENCRYPTED vault secret (auth_elements.secret_ref);
+    the DB config blob + provider.json fallback are stored key-stripped. Never
+    shared between users.
     """
     user_id = _resolve_user_id(authorization or "", token or "")
-    existing = _load_provider(user_id)
+    # Resolve the CURRENT config from the vault (keys rehydrated) so a partial
+    # save — e.g. changing the model with the key field left blank to "keep" — does
+    # not wipe the stored key now that provider.json no longer holds it.
+    existing = await _resolve_user_config(user_id)
     existing_providers = existing.get("providers", {})
     request_providers = config.providers or {}
 
@@ -1505,34 +1720,9 @@ async def set_provider(
         "multi_providers": existing.get("multi_providers", []),
     }
 
-    # Save to DB (auth_elements table) — primary storage
-    try:
-        from app.db import get_db
-        db = get_db()
-        await db.auth_element_set(
-            user_id=user_id,
-            service="llm",
-            config={
-                "provider": config.provider,
-                "base_url": current_url,
-                "model": current_model,
-                "providers": merged_providers,
-                "text_capable": config.text_capable,
-                "image_capable": config.image_capable,
-                "image_out_capable": config.image_out_capable,
-                "use_for_image_out": config.use_for_image_out,
-                "high_effort_capable": config.high_effort_capable,
-                # Preserve the saved roster (full-replace write).
-                "multi_providers": existing.get("multi_providers", []),
-            },
-            secret_ref=current_key,
-            label="default",
-        )
-    except Exception as e:
-        logger.warning("Failed to save to auth_elements DB: %s", e)
-
-    # Also save to provider.json (fallback)
-    _save_provider(user_id, merged)
+    # Persist through the single secret-safe path: keys packed into the encrypted
+    # vault secret, plaintext stores (DB config blob + provider.json) stripped.
+    await _persist_llm_config(user_id, merged)
 
     logger.info("Provider config set for user %s: %s", user_id[:12], config.provider)
     return {"status": "ok", "message": f"Provider set to {config.provider}", "user": user_id}
@@ -1545,7 +1735,9 @@ async def clear_provider(
 ):
     """Clear provider configuration for the requesting user."""
     user_id = _resolve_user_id(authorization or "", token or "")
-    _save_provider(user_id, dict(DEFAULT_PROVIDER))
+    # Clear the vault (now authoritative) as well as provider.json + env, so a
+    # cleared key cannot be resurrected from the vault on the next read.
+    await _persist_llm_config(user_id, dict(DEFAULT_PROVIDER))
     logger.info("Provider config cleared for user %s", user_id[:12])
     return {"status": "ok", "message": "Provider settings cleared", "user": user_id}
 
@@ -1580,7 +1772,9 @@ async def set_multi_providers(
     radio) and is NOT changed here unless none is set yet.
     """
     user_id = _resolve_user_id(authorization or "", token or "")
-    existing = _load_provider(user_id)
+    # Vault-first (keys rehydrated) so the default brain's key + providers map are
+    # preserved across a roster-only edit.
+    existing = await _resolve_user_config(user_id)
 
     merged = dict(existing)
     merged["multi_providers"] = [p.model_dump() for p in body.providers]
@@ -1598,35 +1792,9 @@ async def set_multi_providers(
         if first.model:
             merged["model"] = first.model
 
-    # Save to DB (auth_elements table)
-    try:
-        from app.db import get_db
-        db = get_db()
-        db_config = {
-            "provider": merged.get("provider", ""),
-            "base_url": merged.get("base_url", ""),
-            "model": merged.get("model", ""),
-            "providers": merged.get("providers", {}),
-            "multi_providers": merged.get("multi_providers", []),
-            # preserve the default model's detected capabilities across edits
-            "text_capable": merged.get("text_capable", True),
-            "image_capable": merged.get("image_capable", False),
-            "image_out_capable": merged.get("image_out_capable", False),
-            "use_for_image_out": merged.get("use_for_image_out", False),
-            "high_effort_capable": merged.get("high_effort_capable", False),
-        }
-        await db.auth_element_set(
-            user_id=user_id,
-            service="llm",
-            config=db_config,
-            secret_ref=merged.get("api_key", ""),
-            label="default",
-        )
-    except Exception as e:
-        logger.warning("Failed to save multi-providers to DB: %s", e)
-
-    # Save to provider.json (fallback)
-    _save_provider(user_id, merged)
+    # Persist through the single secret-safe path: every roster key + the default
+    # key packed into the encrypted vault secret; plaintext stores stripped.
+    await _persist_llm_config(user_id, merged)
 
     count = len(body.providers)
     logger.info("Saved-model roster saved for user %s: count=%d", user_id[:12], count)

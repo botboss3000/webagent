@@ -7,7 +7,7 @@ Re-run after a brand/colour change:
     .venv/Scripts/python.exe scripts/make_og_card.py
 
 Design: warm-dark background + soft amber glow, the square app icon as the brand
-mark, the "webAgent" wordmark ("web" white, "Agent" amber), the product tagline,
+mark, the "WebAgent" wordmark ("web" white, "Agent" amber), the product tagline,
 and a small capability strip. Colours mirror the design-system DARK palette
 (--bg-0 #16100b, --brand #e0a35e, --fg-1/-3). Requires Pillow.
 """

@@ -72,7 +72,7 @@ class StripeProcessor:
             "line_items": [{
                 "price_data": {
                     "currency": currency.lower(),
-                    "product_data": {"name": f"webAgent {kind}"},
+                    "product_data": {"name": f"WebAgent {kind}"},
                     "unit_amount": int(amount_cents),
                 },
                 "quantity": 1,
@@ -108,7 +108,7 @@ class StripeProcessor:
             "line_items": [{
                 "price_data": {
                     "currency": currency.lower(),
-                    "product_data": {"name": f"webAgent subscription ({agent_id})"},
+                    "product_data": {"name": f"WebAgent subscription ({agent_id})"},
                     "unit_amount": int(price_cents),
                     "recurring": {"interval": "month"},
                 },

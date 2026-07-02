@@ -1,6 +1,6 @@
 """Headless engine driver — run the LINKED checkout's real agent brain.
 
-This file is shipped with the TUI but is **executed by the linked webAgent
+This file is shipped with the TUI but is **executed by the linked WebAgent
 checkout's own Python interpreter** (its ``.venv``), with the checkout as the
 working directory, so ``import app...`` resolves to the checkout's code and its
 installed dependencies. That is the whole point of "Option A": the terminal

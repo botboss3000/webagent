@@ -1,7 +1,7 @@
 """Feedback relay endpoint.
 
 Forwards user feedback (bug reports, feature requests, messages to admin) to
-the webAgent feedback relay, which creates a GitHub issue in the private
+the WebAgent feedback relay, which creates a GitHub issue in the private
 feedback repo. Anonymous by default; the user may optionally include an email
 for follow-up.
 
@@ -33,7 +33,7 @@ router = APIRouter(prefix="/api/v1/feedback")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _PROVIDER_FILE = _PROJECT_ROOT / "data" / "config" / "provider.json"
 
-# Default relay URL — points at the upstream webAgent project's relay (a
+# Default relay URL — points at the upstream WebAgent project's relay (a
 # Cloudflare Worker). Every clone inherits this and works out of the box;
 # cloners can override via app-settings.json `feedback_relay_url`.
 _DEFAULT_RELAY_URL = "https://webagent-feedback-relay.botboss.workers.dev/submit"

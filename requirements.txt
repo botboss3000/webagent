@@ -1,4 +1,4 @@
-# webAgent runtime dependencies — mirrors the [project].dependencies list in
+# WebAgent runtime dependencies — mirrors the [project].dependencies list in
 # pyproject.toml (the authoritative manifest). Used by the legacy `pip install`
 # path and the Docker build. `uv sync` (pyproject + uv.lock) is the primary
 # setup; this file is kept in sync by hand. For the lighter variant without
@@ -55,6 +55,11 @@ croniter>=2.0.0
 
 # QR codes for the Remote Access card (optional; the card degrades to text without it)
 qrcode>=7.4
+
+# SSH client for the "Existing server (SSH)" deploy target — install WebAgent onto
+# a Linux VM you already own. Runtime-guarded (app/deploy/providers/ssh_vm.py), so
+# a trimmed edition without it just shows that target as unavailable.
+paramiko>=3.4.0
 
 # Windows PTY for the web terminal (Windows hosts only)
 pywinpty>=2.0.10; sys_platform == 'win32'

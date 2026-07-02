@@ -1,7 +1,7 @@
 /**
- * webAgent feedback relay (Cloudflare Worker).
+ * WebAgent feedback relay (Cloudflare Worker).
  *
- * Receives JSON feedback submissions from any webAgent install (your hosted
+ * Receives JSON feedback submissions from any WebAgent install (your hosted
  * deployment, or any cloned/forked instance), verifies a Turnstile token,
  * applies per-IP and per-installation rate limits, and creates a GitHub
  * issue in the configured private feedback repo.

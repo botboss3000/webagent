@@ -24,7 +24,7 @@
 // review and press Send; flipping app-prompts.json's
 // ui_handoffs.app_control_point.auto_send makes it send immediately to whatever
 // agent is active (default "WebAgent" as fallback). The handoff reuses the path
-// Canvas/Agents use: app.startWebagentSession() → app.chatInput → app.chatSend
+// Gen UI/Agents use: app.startWebagentSession() → app.chatInput → app.chatSend
 // (ui/shared/js/state.js). The fingerprint/chip wording lives in
 // app/defaults/app-prompts.json (ui_handoffs.app_control_point.template), applied
 // server-side.
@@ -80,7 +80,7 @@ function _activePage() {
     const btn = document.querySelector('#main-tabs .main-tab[data-value="' + val + '"]');
     if (btn) label = (btn.textContent || '').replace(/\s+/g, ' ').trim();
   } catch (_) { /* ignore */ }
-  const MAP = { browser: 'Browser', canvas: 'Canvas', agents: 'Agents', sessions: 'Sessions', automations: 'Automations', wiki: 'Wiki', account: 'Account', 'admin-tools': 'Admin Tools' };
+  const MAP = { browser: 'Browser', genui: 'Gen UI', agents: 'Agents', sessions: 'Sessions', automations: 'Automations', wiki: 'Wiki', account: 'Account', 'admin-tools': 'Admin Tools' };
   return label || MAP[val] || (val || 'app');
 }
 
@@ -258,8 +258,8 @@ function _populateAgentRows() {
   const list = _agents();
   const current = list.find((a) => a.id === app.currentAgentId) || null;
   const webagent = list.find((a) => a.template_id === 'default') || null;
-  _fillAgentRow('agent-here', current || webagent, 'webAgent');
-  _fillAgentRow('agent-new', webagent, 'webAgent');
+  _fillAgentRow('agent-here', current || webagent, 'WebAgent');
+  _fillAgentRow('agent-new', webagent, 'WebAgent');
 }
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
@@ -478,7 +478,7 @@ function _sendNew(customText) {
   _close();
   try {
     const w = createChatWidget({
-      title: (webagent && webagent.name) || 'webAgent',
+      title: (webagent && webagent.name) || 'WebAgent',
       iconName: 'sparkles',
       ensureAgent: app.startWebagentSession,
       initialMessage: body,

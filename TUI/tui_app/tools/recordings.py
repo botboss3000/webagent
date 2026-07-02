@@ -1,4 +1,4 @@
-"""Read the webAgent app's RENDER RECORDER output — the browser flight-recorder
+"""Read the WebAgent app's RENDER RECORDER output — the browser flight-recorder
 that captures HTML snapshots, DOM-mutation deltas, lag / long-task metrics, JS
 errors, console warnings, and failed/slow network calls from the live web UI.
 

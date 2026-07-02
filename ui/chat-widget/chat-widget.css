@@ -53,15 +53,20 @@ body.light-mode .chat-widget {
 }
 
 /* ── Resize handles (one per edge/corner) ── */
-.cw-resize { position: absolute; z-index: 4; }
+/* Handles sit ABOVE the header (z-index 6) so the outer edge/corner strips grab
+   for resize even where they overlap the header's top edge — otherwise the
+   header, being on top, would swallow the pointer-down and start a drag. The
+   strips are thin (top edge ~5px, corners ~10px inward), well clear of the
+   vertically-centred header buttons, so those stay clickable by geometry. */
+.cw-resize { position: absolute; z-index: 7; touch-action: none; }
 .cw-resize-n  { top: -3px; left: 10px; right: 10px; height: 8px; cursor: ns-resize; }
 .cw-resize-s  { bottom: -3px; left: 10px; right: 10px; height: 8px; cursor: ns-resize; }
 .cw-resize-e  { top: 10px; bottom: 10px; right: -3px; width: 8px; cursor: ew-resize; }
 .cw-resize-w  { top: 10px; bottom: 10px; left: -3px; width: 8px; cursor: ew-resize; }
-.cw-resize-ne { top: -4px; right: -4px; width: 14px; height: 14px; cursor: nesw-resize; z-index: 5; }
-.cw-resize-nw { top: -4px; left: -4px; width: 14px; height: 14px; cursor: nwse-resize; z-index: 5; }
-.cw-resize-se { bottom: -4px; right: -4px; width: 14px; height: 14px; cursor: nwse-resize; z-index: 5; }
-.cw-resize-sw { bottom: -4px; left: -4px; width: 14px; height: 14px; cursor: nesw-resize; z-index: 5; }
+.cw-resize-ne { top: -4px; right: -4px; width: 14px; height: 14px; cursor: nesw-resize; z-index: 8; }
+.cw-resize-nw { top: -4px; left: -4px; width: 14px; height: 14px; cursor: nwse-resize; z-index: 8; }
+.cw-resize-se { bottom: -4px; right: -4px; width: 14px; height: 14px; cursor: nwse-resize; z-index: 8; }
+.cw-resize-sw { bottom: -4px; left: -4px; width: 14px; height: 14px; cursor: nesw-resize; z-index: 8; }
 /* The minimized chip is never resizable. */
 .chat-widget.minimized .cw-resize { display: none; }
 /* Keep text selection/cursor sane while a drag or resize is in progress. */
@@ -70,7 +75,7 @@ body.cw-dragging, body.cw-dragging * { cursor: inherit !important; user-select: 
 /* ── Header (doubles as the minimized chip) ── */
 .cw-header {
   position: relative;
-  z-index: 6; /* above resize handles so its buttons stay clickable */
+  z-index: 6; /* above the body/footer; the outer resize strips sit above this (see .cw-resize) */
   display: flex;
   align-items: center;
   gap: 8px;

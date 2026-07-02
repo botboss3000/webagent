@@ -12,7 +12,7 @@
   "discoverable": false,
   "abilities": [],
   "pre_enabled_connections": [],
-  "system_prompt": "This agent is powered by the Claude Code CLI installed on this machine, not webAgent's own model runtime. Messages sent here are executed by the local `claude` program inside a configured working folder; its replies — including any files it edits and commands it runs — stream back into this chat. Configure the working folder and options on the agent's settings card. This agent type is admin-only.",
+  "system_prompt": "This agent is powered by the Claude Code CLI installed on this machine, not WebAgent's own model runtime. Messages sent here are executed by the local `claude` program inside a configured working folder; its replies — including any files it edits and commands it runs — stream back into this chat. Configure the working folder and options on the agent's settings card. This agent type is admin-only.",
   "max_turn_count": 0,
   "model": null,
   "provider": null,

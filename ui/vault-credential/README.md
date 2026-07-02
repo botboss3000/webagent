@@ -13,8 +13,8 @@ ability) surfaces in chat.
 the renderer. Live events only — a session reload won't re-pop a stale card.
 
 **The guarantee.** The value the user types here POSTs **straight to the vault**
-(`POST /api/v1/canvases/vault/keys/{key_id}`) — it never returns to the agent, the
+(`POST /api/v1/genui/vault/keys/{key_id}`) — it never returns to the agent, the
 chat transcript, or any log. The agent only ever holds the `key_id`; the dashboard
 uses the secret by reference via `api.callWithKey` (server-side proxy in
-`app/api/canvas.py`). Store/usage contract: `app/abilities/vault_store.py` and the
+`app/api/genui.py`). Store/usage contract: `app/abilities/vault_store.py` and the
 Visualizer skill's **Logins & secrets → pattern 3**.

@@ -1,4 +1,4 @@
-/* webAgent Server Manager — Textual CSS.
+/* WebAgent Server Manager — Textual CSS.
  *
  * Every color is a THEME VARIABLE (no literal hex) so the UI re-skins live
  * across all 23 shared themes and stays legible in light AND dark schemes.

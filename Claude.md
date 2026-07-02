@@ -1,15 +1,15 @@
-# webAgent — agent instructions
+# WebAgent — agent instructions
 
 **DO NOT work in a workspace. Update the main repo directly in `C:\Users\Alex R\Projects\webagent-dev`.**
 
-**webAgent** is the AI Agent Harness app in this repo (chat, tools, WebSockets, UI). Your job is to **edit and extend the webAgent codebase** (Python backend, `ui/` frontend, config). When the user talks about the **agent process**, **flow**, **memory**, **skills**, or **tools** in this project, they mean **this application**, not the Pi Agent, Cursor, Hermes, or Claude assistants.
+**WebAgent** is the AI Agent Harness app in this repo (chat, tools, WebSockets, UI). Your job is to **edit and extend the WebAgent codebase** (Python backend, `ui/` frontend, config). When the user talks about the **agent process**, **flow**, **memory**, **skills**, or **tools** in this project, they mean **this application**, not the Pi Agent, Cursor, Hermes, or Claude assistants.
 
 Use **`README.md`** for architecture, module map, setup, env vars, and HTTP/WebSocket paths.
 
 ## Terminology
 
 - **"Chat"** — The in-app chat UI or `POST /api/v1/chat`, not this IDE chat between you and the user.
-- **"Agent"** — Unless they explicitly say something like **Pi Agent**, **agent** means webAgent's runtime (loops, WebSocket stream, tools), not the coding assistant.
+- **"Agent"** — Unless they explicitly say something like **Pi Agent**, **agent** means WebAgent's runtime (loops, WebSocket stream, tools), not the coding assistant.
 
 ## Explain logic, not code
 

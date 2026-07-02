@@ -19,9 +19,11 @@ import {
   getActive,
   removeAccount,
   switchTo,
+  upsertAccount,
   onChange as onAccountsChange,
 } from './accounts.js';
 import { showLeftOverlay } from './left-login.js';
+import { socialIconSvg } from './social-icons.js';
 
 // ── Server-reachability guard ──────────────────────────────────────────────
 // Used by setChatHeaderReachable to avoid redundant DOM writes.
@@ -124,6 +126,10 @@ function renderUserDropdown() {
       cur.style.gap = '8px';
       cur.innerHTML = `
         <div style="font-size:13px;font-weight:600;color:var(--fg-2);margin-bottom:2px;">Sign in</div>
+        <div id="dd-social-login" style="display:none;flex-direction:column;gap:8px;"></div>
+        <div id="dd-social-or" style="display:none;align-items:center;gap:8px;color:var(--fg-3);font-size:11px;">
+          <span style="flex:1;height:1px;background:var(--border);"></span>or<span style="flex:1;height:1px;background:var(--border);"></span>
+        </div>
         <input type="email" id="dd-login-email" placeholder="Email" autocomplete="username" style="
           width:100%;padding:8px 10px;background:var(--bg-0);border:1px solid var(--border);
           border-radius:6px;color:var(--fg-1);font-size:13px;font-family:inherit;
@@ -194,6 +200,9 @@ function renderUserDropdown() {
       loginBtn.addEventListener('click', doInlineLogin);
       passInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doInlineLogin(); });
       emailInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') passInput.focus(); });
+
+      // Populate the "Continue with …" buttons for any enabled social providers.
+      _renderSocialButtons();
     }
   }
 
@@ -257,6 +266,86 @@ function renderUserDropdown() {
       window.lucide.createIcons();
     }
   } catch (_) {}
+}
+
+// ── Social sign-in buttons ──────────────────────────────────────────────────
+// Shown in the header login form when the admin has enabled + configured any
+// drop-in providers (plugins/auth_providers/). A button opens the provider in a
+// popup; the server callback page postMessages the minted token back to this
+// window, which _onSocialMessage stores as a signed-in account.
+
+let _socialMsgWired = false;
+
+async function _renderSocialButtons() {
+  const box = document.getElementById('dd-social-login');
+  const orDiv = document.getElementById('dd-social-or');
+  if (!box) return;
+  let providers = [];
+  try {
+    const res = await fetch('/api/v1/auth/social/providers', { cache: 'no-store' });
+    if (res.ok) providers = (await res.json()).providers || [];
+  } catch (_) { providers = []; }
+  if (!providers.length) {
+    box.style.display = 'none';
+    if (orDiv) orDiv.style.display = 'none';
+    return;
+  }
+  box.innerHTML = '';
+  for (const p of providers) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.style.cssText = `display:flex;align-items:center;justify-content:center;gap:9px;` +
+      `width:100%;padding:9px 10px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;` +
+      `font-family:inherit;background:${p.brand_color};color:${p.text_color};` +
+      `border:1px solid ${p.border ? 'var(--border)' : 'transparent'};`;
+    btn.innerHTML = `<span style="display:flex;align-items:center;">${socialIconSvg(p.icon)}</span>` +
+      `<span>Continue with ${_escText(p.display_name)}</span>`;
+    btn.addEventListener('click', () => _openSocialLogin(p.id));
+    box.appendChild(btn);
+  }
+  box.style.display = 'flex';
+  if (orDiv) orDiv.style.display = 'flex';
+  _wireSocialMessages();
+}
+
+function _escText(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+
+function _openSocialLogin(providerId) {
+  const w = 520, h = 640;
+  let feat = `width=${w},height=${h}`;
+  try {
+    const x = (window.outerWidth - w) / 2 + (window.screenX || 0);
+    const y = (window.outerHeight - h) / 2 + (window.screenY || 0);
+    feat += `,left=${Math.max(0, Math.round(x))},top=${Math.max(0, Math.round(y))}`;
+  } catch (_) {}
+  window.open(`/api/v1/auth/social/${encodeURIComponent(providerId)}/start`,
+    'webagent_social_login', feat);
+}
+
+function _wireSocialMessages() {
+  if (_socialMsgWired) return;
+  _socialMsgWired = true;
+  window.addEventListener('message', _onSocialMessage);
+}
+
+function _onSocialMessage(event) {
+  if (event.origin !== window.location.origin) return;
+  const data = event.data;
+  if (!data || data.type !== 'social-login-success' || !data.access_token) return;
+  try {
+    upsertAccount({
+      user_id: data.user_id,
+      username: data.username,
+      display_name: data.display_name,
+      access_token: data.access_token,
+      remember_token: '',
+    });
+  } catch (_) {}
+  window.location.reload();
 }
 
 // ── Theme system ──────────────────────────────────────────────────────────

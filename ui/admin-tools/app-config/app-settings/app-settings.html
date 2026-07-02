@@ -26,7 +26,7 @@
   <!-- ── Main Panel Pages ── -->
   <!-- data-pa-area: the page-assistant pill (bottom of this section) reads which
        area the mouse is over via closest('[data-pa-area]') and swaps its
-       placeholder + the prompt it hands webAgent. Keys map to
+       placeholder + the prompt it hands WebAgent. Keys map to
        data/config/app-prompts.json → page_assistants.app_settings.areas. -->
   <div class="ac-category-group" id="ac-main-panel-card" data-pa-area="main_panel">
     <div class="ac-category-summary" style="cursor:default;">
@@ -394,267 +394,75 @@
   </div>
 
   <!-- ════════════════════════════════════════════════════════════════
-       DEPLOY — live one-click deploy of this app onto a cloud target.
-       One heading over one `.ac-list` with a single expandable row (the
-       shared ability-table component). Inside the body: a target picker
-       (Google VM / AWS / … — rendered from GET /admin/deploy/catalog), a
-       dynamic SETTINGS form (non-secret config_fields) and a CLOUD KEY form
-       (secret credential_fields → encrypted vault), then Test / Save /
-       Deploy now / Tear down, a live NDJSON log, and a result line.
-       All wiring lives in the sibling deploy.js (initDeploy); the row's
-       expand/collapse reuses _wireBootRow in app-settings.js. The cloud key
-       is used for one deploy then auto-discarded from the vault (the
-       per-target "Forget keys after deploy" setting, default on).
-       Admin-only + the Deploy/Tear-down actions are confirm-gated in deploy.js.
+       ADVANCED — occasional/low-level knobs that don't belong with the
+       everyday appearance & pages settings above. This group holds the two
+       rows MOVED here from the retired "Data Management" tab (which had nothing
+       else left once the "where does my data live" rows went to Data Settings):
+         • Config Files  — seed the default JSON config library
+         • Stream Buffer — in-memory per-turn event retention for WS replay
+       Both are the shared ability-table component (`.ac-list` of expandable
+       `.ac-row`s). Their control ids are PRESERVED VERBATIM (`ac-cfg-*`,
+       `ac-storage-sbuf-*`) because their driver (ui/shared/js/storage.js) binds
+       by element id — so the move is DOM-only and the wiring keeps working. The
+       rows expand/collapse via _wireBootRow() in the sibling app-settings.js
+       (a click on a control inside a body never toggles the row).
        ════════════════════════════════════════════════════════════════ -->
-  <div class="ac-category-group" id="ac-deploy-card" data-pa-area="deploy">
+  <div class="ac-category-group" id="ac-advanced-card" data-pa-area="advanced">
     <div class="ac-category-summary" style="cursor:default;">
-      <i data-lucide="rocket" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
-      <span class="ac-category-title">Deploy</span>
-      <span id="ac-deploy-badge" class="ac-category-count">loading…</span>
+      <i data-lucide="sliders-horizontal" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Advanced</span>
     </div>
     <div class="ac-category-body">
-      <div class="ac-list" id="ac-deploy-list">
-        <div class="ac-row" id="ac-deploy-row">
+      <div class="ac-list">
+
+        <!-- ── Row · Config Files (seed the default JSON config library) ── -->
+        <div class="ac-row" id="ac-row-configfiles">
           <div class="ac-ability-row">
-            <span class="ac-ability-icon"><i data-lucide="cloud-upload" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <span class="ac-ability-icon"><i data-lucide="file-cog" class="lucide-icon" style="width:18px;height:18px;color:var(--success);"></i></span>
             <div class="ac-ability-label">
-              <div class="ac-ability-name">Deploy this app to the cloud</div>
-              <div class="ac-ability-desc">Create a server on your cloud account and install webAgent on it automatically. Your cloud key is used once for the deploy, then discarded from the vault.</div>
+              <div class="ac-ability-name">Config Files</div>
+              <div class="ac-ability-desc">Write the default JSON config files from the built-in templates.</div>
             </div>
+            <span class="ac-ability-status" id="ac-cfg-seed-badge">loading…</span>
             <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
           </div>
           <div class="ac-ability-body">
-            <label class="ac-label">Where to deploy</label>
-            <select id="ac-deploy-provider" class="ac-input"></select>
-            <div id="ac-deploy-blurb" class="ac-hint" style="line-height:1.5;"></div>
-            <div id="ac-deploy-requires" class="ac-hint" style="line-height:1.5;color:var(--fg-3);"></div>
-
-            <label class="ac-label" style="margin-top:10px;">Settings</label>
-            <div id="ac-deploy-config" class="ac-ra-fields"></div>
-
-            <label class="ac-label" style="margin-top:10px;">Cloud key</label>
-            <div id="ac-deploy-creds" class="ac-ra-fields"></div>
-            <div id="ac-deploy-key-note" class="ac-hint" style="font-size:11px;"></div>
-
-            <div class="ac-ra-actions" style="margin-top:10px;">
-              <button id="ac-deploy-test" class="ac-btn" type="button">Test connection</button>
-              <button id="ac-deploy-save" class="ac-btn" type="button">Save settings</button>
-              <button id="ac-deploy-go" class="ac-btn ac-deploy-go-btn" type="button">Deploy now</button>
-              <button id="ac-deploy-destroy" class="ac-btn" type="button">Tear down</button>
-              <span id="ac-deploy-status" class="ac-hint" style="margin-left:6px;"></span>
+            <div class="ac-hint">
+              The app runs fine with <strong>no</strong> config files — every setting falls back to a built-in default, and a file is created the moment you change that setting. This writes out the whole <strong>library</strong> of default config files to <code>data/config/</code> so you have editable copies to work from. Files that manage their own lifecycle (secrets, the ability catalog, the model catalog) are shown but not written. <strong>Existing files are never overwritten.</strong>
             </div>
-
-            <pre id="ac-deploy-log" class="ac-deploy-log" hidden></pre>
-            <div id="ac-deploy-result" class="ac-hint" style="margin-top:8px;font-size:12px;line-height:1.5;"></div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+              <button id="ac-cfg-refresh-btn" class="ac-btn">Refresh</button>
+              <button id="ac-cfg-seed-btn" class="ac-btn ac-btn-primary">Generate Missing Files</button>
+            </div>
+            <div id="ac-cfg-list" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+            <pre id="ac-cfg-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
           </div>
         </div>
 
-        <!-- ── Run on Linux / Termux ── a SEPARATE sibling row (not a cloud
-             provider): the admin gives a GitHub URL + public/private (+ token if
-             private), and gets the one command to paste into a Linux terminal or
-             Termux plus a scannable QR of it. ONE command, it detects which it's on.
-             No cloud account, nothing billable. The `data-tip` on each label becomes
-             a circled "?" help badge (deploy.js _wirePhoneTips, same look as the
-             cloud row). Body ids owned by deploy.js (_initPhone); expand reuses
-             _wireBootRow. -->
-        <div class="ac-row" id="ac-deploy-phone-row">
+        <!-- ── Row · Stream Buffer (in-memory per-turn event log for WS replay) ── -->
+        <div class="ac-row" id="ac-row-streambuffer">
           <div class="ac-ability-row">
-            <span class="ac-ability-icon"><i data-lucide="terminal" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <span class="ac-ability-icon"><i data-lucide="activity" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
             <div class="ac-ability-label">
-              <div class="ac-ability-name">Run webAgent on Linux or Termux</div>
-              <div class="ac-ability-desc">Install webAgent on a Linux computer, or on an Android phone or tablet using the free Termux app. Enter your repository, then scan or paste the command it gives you — no cloud account, nothing to pay for.</div>
+              <div class="ac-ability-name">Stream Buffer</div>
+              <div class="ac-ability-desc">How long each chat turn's events stay in memory for replay after a refresh.</div>
             </div>
+            <span class="ac-ability-status" id="ac-storage-sbuf-badge"></span>
             <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
           </div>
           <div class="ac-ability-body">
-            <label class="ac-label" data-tip="The address of the webAgent code on GitHub. Leave blank to install the standard webAgent app; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
-            <input id="ac-tx-url" class="ac-input" type="text" placeholder="https://github.com/botboss3000/webagent" autocomplete="off" spellcheck="false">
-
-            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
-            <select id="ac-tx-visibility" class="ac-input">
-              <option value="public">Public — anyone can clone it</option>
-              <option value="private">Private — needs an access token</option>
-            </select>
-
-            <div id="ac-tx-token-wrap" style="display:none;margin-top:10px;">
-              <label class="ac-label" data-tip="A GitHub personal access token, used once to build the command so the device can download a private repository. It is never saved on the server — it only gets embedded in the command you copy or scan, then forgotten.">Access token</label>
-              <input id="ac-tx-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
-              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the device can download a private repository, then forgotten.</div>
+            <div class="ac-hint">
+              Each chat turn keeps its events (stream tokens, tool calls, results) in memory so a refresh or session switch can replay what was missed. Buffer is dropped this many seconds after the turn finishes. 0 = drop immediately. Max 3600.
             </div>
-
-            <!-- Install location (optional). Blank = the default shown as the
-                 placeholder (deploy.js fills it from MANUAL_ROWS.defaultDir). If
-                 webAgent is already in this folder the command updates it to the
-                 repository above instead of re-installing. -->
-            <label class="ac-label" style="margin-top:10px;" data-tip="The folder on the device to install webAgent into. Leave blank for the default ($HOME/webagent). If webAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
-            <input id="ac-tx-dir" class="ac-input" type="text" autocomplete="off" spellcheck="false">
-
-            <!-- The command is shown LIVE (built + QR generated by deploy.js as
-                 the fields change) — there is no "generate" button. Copy grabs it;
-                 the QR button toggles a popover with the same command as a scannable
-                 code (mirrors Remote Access → Same network). -->
-            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
-              <div class="ac-deploy-cmd-head">Paste this into a Linux terminal, or Termux on a phone</div>
-              <div class="ac-deploy-cmd-row">
-                <code class="ac-deploy-cmd" id="ac-tx-cmd"></code>
-                <div class="ac-tx-cmd-btns">
-                  <button id="ac-tx-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
-                  <button id="ac-tx-qr-btn" class="ac-btn ac-ra-icon-btn" type="button" title="Show QR code" aria-label="Show QR code"><i data-lucide="qr-code"></i></button>
-                </div>
-              </div>
-              <div id="ac-tx-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
+            <label class="ac-label" style="margin-top:10px;">Retention seconds</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input type="number" id="ac-storage-sbuf-seconds" class="ac-input" min="0" max="3600" step="1" style="width:120px;" value="60">
+              <button id="ac-storage-sbuf-save" class="ac-btn ac-btn-primary">Save</button>
+              <span id="ac-storage-sbuf-status" class="ac-hint" style="margin-left:6px;"></span>
             </div>
-
-            <!-- Run-only command: start the server when webAgent is ALREADY
-                 installed on this device (no clone, no rebuild). Static per
-                 platform — deploy.js fills the code + wires Copy (_manualRender /
-                 _initManualRows, RUN_* constants; the run field on MANUAL_ROWS). -->
-            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
-              <div class="ac-deploy-cmd-head">Already installed? Just start the server</div>
-              <div class="ac-deploy-cmd-row">
-                <code class="ac-deploy-cmd" id="ac-tx-run"></code>
-                <div class="ac-tx-cmd-btns">
-                  <button id="ac-tx-run-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
-                </div>
-              </div>
-            </div>
-
-            <ol class="ac-tx-steps" id="ac-tx-steps"></ol>
-            <div class="ac-deploy-cmd-note" id="ac-tx-note" hidden></div>
           </div>
         </div>
 
-        <!-- ── Run on Windows ── another SEPARATE manual row (sibling of the
-             Linux/Termux row). Same shape: GitHub URL + public/private (+ token
-             if private) → the one command to paste into PowerShell + a QR. The
-             command is built LIVE in deploy.js (_winBuild, a byte-mirror of
-             app/deploy/providers/windows.py build_command) so the box renders
-             even before the server restarts. Body ids owned by deploy.js
-             (MANUAL_ROWS[windows]); expand reuses _wireBootRow. -->
-        <div class="ac-row" id="ac-deploy-win-row">
-          <div class="ac-ability-row">
-            <span class="ac-ability-icon"><i data-lucide="monitor" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
-            <div class="ac-ability-label">
-              <div class="ac-ability-name">Run webAgent on Windows</div>
-              <div class="ac-ability-desc">Install webAgent on a Windows 10 or 11 PC. Enter your repository, then copy or scan the command and paste it into PowerShell — no cloud account, nothing to pay for.</div>
-            </div>
-            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
-          </div>
-          <div class="ac-ability-body">
-            <label class="ac-label" data-tip="The address of the webAgent code on GitHub. Leave blank to install the standard webAgent app; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
-            <input id="ac-win-url" class="ac-input" type="text" placeholder="https://github.com/botboss3000/webagent" autocomplete="off" spellcheck="false">
-
-            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
-            <select id="ac-win-visibility" class="ac-input">
-              <option value="public">Public — anyone can clone it</option>
-              <option value="private">Private — needs an access token</option>
-            </select>
-
-            <div id="ac-win-token-wrap" style="display:none;margin-top:10px;">
-              <label class="ac-label" data-tip="A GitHub personal access token, used once to build the command so the device can download a private repository. It is never saved on the server — it only gets embedded in the command you copy or scan, then forgotten.">Access token</label>
-              <input id="ac-win-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
-              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the PC can download a private repository, then forgotten.</div>
-            </div>
-
-            <!-- Install location (optional). Blank = the default ($env:USERPROFILE\webagent),
-                 filled in as the placeholder by deploy.js. An existing install here is
-                 updated to the repository above rather than re-installed. -->
-            <label class="ac-label" style="margin-top:10px;" data-tip="The folder on the PC to install webAgent into. Leave blank for the default (your user profile folder). If webAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
-            <input id="ac-win-dir" class="ac-input" type="text" autocomplete="off" spellcheck="false">
-
-            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
-              <div class="ac-deploy-cmd-head">Paste this into Windows PowerShell</div>
-              <div class="ac-deploy-cmd-row">
-                <code class="ac-deploy-cmd" id="ac-win-cmd"></code>
-                <div class="ac-tx-cmd-btns">
-                  <button id="ac-win-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
-                  <button id="ac-win-qr-btn" class="ac-btn ac-ra-icon-btn" type="button" title="Show QR code" aria-label="Show QR code"><i data-lucide="qr-code"></i></button>
-                </div>
-              </div>
-              <div id="ac-win-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
-            </div>
-
-            <!-- Run-only command: start the server when it's ALREADY installed. -->
-            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
-              <div class="ac-deploy-cmd-head">Already installed? Just start the server</div>
-              <div class="ac-deploy-cmd-row">
-                <code class="ac-deploy-cmd" id="ac-win-run"></code>
-                <div class="ac-tx-cmd-btns">
-                  <button id="ac-win-run-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
-                </div>
-              </div>
-            </div>
-
-            <ol class="ac-tx-steps" id="ac-win-steps"></ol>
-            <div class="ac-deploy-cmd-note" id="ac-win-note" hidden></div>
-          </div>
-        </div>
-
-        <!-- ── Run on macOS ── another SEPARATE manual row (sibling of the
-             Linux/Termux + Windows rows). Same shape: GitHub URL + public/private
-             (+ token if private) → the one command to paste into Terminal + a QR.
-             Built LIVE in deploy.js (_macBuild, a byte-mirror of
-             app/deploy/providers/macos.py build_command). Body ids owned by
-             deploy.js (MANUAL_ROWS[macos]); expand reuses _wireBootRow. -->
-        <div class="ac-row" id="ac-deploy-mac-row">
-          <div class="ac-ability-row">
-            <span class="ac-ability-icon"><i data-lucide="laptop" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
-            <div class="ac-ability-label">
-              <div class="ac-ability-name">Run webAgent on a Mac</div>
-              <div class="ac-ability-desc">Install webAgent on a Mac. Enter your repository, then copy or scan the command and paste it into Terminal — no cloud account, nothing to pay for.</div>
-            </div>
-            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
-          </div>
-          <div class="ac-ability-body">
-            <label class="ac-label" data-tip="The address of the webAgent code on GitHub. Leave blank to install the standard webAgent app; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
-            <input id="ac-mac-url" class="ac-input" type="text" placeholder="https://github.com/botboss3000/webagent" autocomplete="off" spellcheck="false">
-
-            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
-            <select id="ac-mac-visibility" class="ac-input">
-              <option value="public">Public — anyone can clone it</option>
-              <option value="private">Private — needs an access token</option>
-            </select>
-
-            <div id="ac-mac-token-wrap" style="display:none;margin-top:10px;">
-              <label class="ac-label" data-tip="A GitHub personal access token, used once to build the command so the device can download a private repository. It is never saved on the server — it only gets embedded in the command you copy or scan, then forgotten.">Access token</label>
-              <input id="ac-mac-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
-              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the Mac can download a private repository, then forgotten.</div>
-            </div>
-
-            <!-- Install location (optional). Blank = the default ($HOME/webagent),
-                 filled in as the placeholder by deploy.js. An existing install here is
-                 updated to the repository above rather than re-installed. -->
-            <label class="ac-label" style="margin-top:10px;" data-tip="The folder on the Mac to install webAgent into. Leave blank for the default ($HOME/webagent). If webAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
-            <input id="ac-mac-dir" class="ac-input" type="text" autocomplete="off" spellcheck="false">
-
-            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
-              <div class="ac-deploy-cmd-head">Paste this into Terminal on your Mac</div>
-              <div class="ac-deploy-cmd-row">
-                <code class="ac-deploy-cmd" id="ac-mac-cmd"></code>
-                <div class="ac-tx-cmd-btns">
-                  <button id="ac-mac-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
-                  <button id="ac-mac-qr-btn" class="ac-btn ac-ra-icon-btn" type="button" title="Show QR code" aria-label="Show QR code"><i data-lucide="qr-code"></i></button>
-                </div>
-              </div>
-              <div id="ac-mac-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
-            </div>
-
-            <!-- Run-only command: start the server when it's ALREADY installed. -->
-            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
-              <div class="ac-deploy-cmd-head">Already installed? Just start the server</div>
-              <div class="ac-deploy-cmd-row">
-                <code class="ac-deploy-cmd" id="ac-mac-run"></code>
-                <div class="ac-tx-cmd-btns">
-                  <button id="ac-mac-run-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
-                </div>
-              </div>
-            </div>
-
-            <ol class="ac-tx-steps" id="ac-mac-steps"></ol>
-            <div class="ac-deploy-cmd-note" id="ac-mac-note" hidden></div>
-          </div>
-        </div>
       </div><!-- /.ac-list -->
     </div><!-- /.ac-category-body -->
   </div>

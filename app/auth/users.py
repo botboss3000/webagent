@@ -16,21 +16,54 @@ logger = logging.getLogger(__name__)
 
 _USER_FILE = Path(__file__).resolve().parent / "users.json"
 
+# How long a fresh login pass stays valid before it must renew, per user.
+# This is the default for any account that hasn't picked its own value on the
+# Manage Account page; each user can shorten or lengthen it (clamped to the
+# bounds below). 30 days keeps people signed in across normal gaps; the silent
+# auto-renew (when on) then keeps active sessions alive indefinitely.
+DEFAULT_SESSION_LIFETIME_MINUTES = 60 * 24 * 30          # 30 days
+MIN_SESSION_LIFETIME_MINUTES = 60                        # 1 hour floor
+MAX_SESSION_LIFETIME_MINUTES = 60 * 24 * 90              # 90 day ceiling
+
+
+def clamp_session_lifetime(minutes: int) -> int:
+    """Pin a requested session lifetime into the allowed [1h, 90d] range."""
+    try:
+        m = int(minutes)
+    except (TypeError, ValueError):
+        return DEFAULT_SESSION_LIFETIME_MINUTES
+    return max(MIN_SESSION_LIFETIME_MINUTES, min(MAX_SESSION_LIFETIME_MINUTES, m))
+
 
 # ── Data ────────────────────────────────────────────────────────────────────
 
 class User:
-    __slots__ = ("username", "password_hash", "user_id", "display_name", "remember_token", "is_approved")
+    __slots__ = ("username", "password_hash", "user_id", "display_name",
+                 "remember_token", "is_approved",
+                 "session_lifetime_minutes", "auto_renew", "social_links")
 
     def __init__(self, username: str, password_hash: str, user_id: str,
                  display_name: str = "", remember_token: str = "",
-                 is_approved: bool = True):
+                 is_approved: bool = True,
+                 session_lifetime_minutes: int = DEFAULT_SESSION_LIFETIME_MINUTES,
+                 auto_renew: bool = True,
+                 social_links: Optional[dict] = None):
         self.username = username
         self.password_hash = password_hash
         self.user_id = user_id
         self.display_name = display_name or username
         self.remember_token = remember_token
         self.is_approved = is_approved
+        # Linked social sign-in identities: {provider_id: external_id}. Lets the
+        # same Google/GitHub/etc. account always resolve to this user even if the
+        # provider's email later changes. See app/api/social_auth.py.
+        self.social_links = dict(social_links or {})
+        # Per-user session policy (set on the Manage Account page):
+        #   session_lifetime_minutes — how long one login pass lasts
+        #   auto_renew — whether the pass silently renews so the user effectively
+        #                never gets signed out while they keep using the app
+        self.session_lifetime_minutes = clamp_session_lifetime(session_lifetime_minutes)
+        self.auto_renew = bool(auto_renew)
 
     def to_dict(self) -> dict:
         return {
@@ -40,6 +73,9 @@ class User:
             "display_name": self.display_name,
             "remember_token": self.remember_token,
             "is_approved": self.is_approved,
+            "session_lifetime_minutes": self.session_lifetime_minutes,
+            "auto_renew": self.auto_renew,
+            "social_links": self.social_links,
         }
 
     @classmethod
@@ -51,6 +87,12 @@ class User:
             display_name=d.get("display_name", d["username"]),
             remember_token=d.get("remember_token", ""),
             is_approved=d.get("is_approved", True),
+            # Older users.json files predate these keys — fall back to the
+            # defaults so existing accounts load unchanged.
+            session_lifetime_minutes=d.get("session_lifetime_minutes",
+                                           DEFAULT_SESSION_LIFETIME_MINUTES),
+            auto_renew=d.get("auto_renew", True),
+            social_links=d.get("social_links", {}),
         )
 
 
@@ -105,7 +147,8 @@ def _persist():
 def _bootstrap_admin():
     """On first start, create admin from env var BOOTSTRAP_ADMIN_PASSWORD if set."""
     password = _os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "")
-    if password and "admin" not in _users:
+    _have_admin = any(u.user_id == "admin" for u in _users.values())
+    if password and not _have_admin:
         admin = User(
             username="admin",
             password_hash=_hash_password(password),
@@ -115,13 +158,16 @@ def _bootstrap_admin():
         _users["admin"] = admin
         _persist()
         logger.info("Bootstrap admin created from BOOTSTRAP_ADMIN_PASSWORD env var")
-    elif "admin" not in _users:
+    elif not _have_admin:
         logger.info("No admin user found. App is in uninitialized state.")
 
 
 def admin_exists() -> bool:
-    """Return whether an admin user account exists."""
-    return "admin" in _users
+    """Return whether an admin user account exists.
+
+    Keyed on the canonical bootstrap user_id ("admin"), NOT on the login name,
+    so an admin who chose a custom login name is still recognised as set up."""
+    return any(u.user_id == "admin" for u in _users.values())
 
 
 def is_default_seed() -> bool:
@@ -172,16 +218,22 @@ def resolve_remember_token(token: str) -> Optional[User]:
 
 
 def register_user(username: str, password: str, display_name: str = "",
-                  is_approved: bool = True) -> Optional[User]:
+                  is_approved: bool = True,
+                  user_id: Optional[str] = None) -> Optional[User]:
     """Register a new user. Returns User on success, None if username taken.
     Set is_approved=False when admin approval is required.
+
+    `user_id` defaults to the username (the normal case — the login name *is*
+    the stable id). The bootstrap admin passes user_id="admin" explicitly so the
+    login name can be anything the operator chooses while the canonical admin id
+    that the rest of the app keys privileges on stays fixed.
     """
     if username in _users:
         return None
     user = User(
         username=username,
         password_hash=_hash_password(password),
-        user_id=username,
+        user_id=user_id or username,
         display_name=display_name or username,
         is_approved=is_approved,
     )
@@ -207,9 +259,11 @@ def set_user_approval(username: str, is_approved: bool) -> Optional[User]:
 
 def delete_user(username: str) -> bool:
     """Remove a user from the store. Returns True if deleted."""
-    if username == "admin":
+    user = _users.get(username)
+    if user is None:
         return False
-    if username not in _users:
+    # Protect the bootstrap admin regardless of its (possibly custom) login name.
+    if user.user_id == "admin":
         return False
     del _users[username]
     _persist()
@@ -224,6 +278,56 @@ def get_user_by_id(user_id: str) -> Optional[User]:
     return None
 
 
+# ── Social sign-in links ────────────────────────────────────────────────────
+
+def get_user_by_social(provider: str, external_id: str) -> Optional[User]:
+    """Find the user who has linked this (provider, external_id), or None.
+
+    Keyed on the provider's STABLE id (not email) so a user keeps their account
+    even if they change their email at the provider.
+    """
+    if not provider or not external_id:
+        return None
+    ext = str(external_id)
+    for u in _users.values():
+        if str(u.social_links.get(provider, "")) == ext:
+            return u
+    return None
+
+
+def link_social(username: str, provider: str, external_id: str) -> Optional[User]:
+    """Record that `username`'s account is linked to (provider, external_id)."""
+    user = _users.get(username)
+    if user is None or not provider or not external_id:
+        return None
+    user.social_links[provider] = str(external_id)
+    _persist()
+    return user
+
+
+def register_social_user(email: str, display_name: str, provider: str,
+                         external_id: str, is_approved: bool = True) -> Optional[User]:
+    """Create a new account for a first-time social sign-in and link it.
+
+    The password is a random, unusable value — the person signs in through the
+    provider, not with a password. Returns None if the email is already taken
+    (the caller should link to the existing account instead).
+    """
+    if email in _users:
+        return None
+    user = User(
+        username=email,
+        password_hash=_hash_password(secrets.token_urlsafe(32)),
+        user_id=email,
+        display_name=display_name or email,
+        is_approved=is_approved,
+        social_links={provider: str(external_id)} if provider and external_id else None,
+    )
+    _users[email] = user
+    _persist()
+    return user
+
+
 def clear_remember_token(username: str) -> bool:
     """Clear the remember token for a user (sign-out)."""
     user = _users.get(username)
@@ -232,6 +336,23 @@ def clear_remember_token(username: str) -> bool:
     user.remember_token = ""
     _persist()
     return True
+
+
+def set_session_policy(username: str, lifetime_minutes: int,
+                       auto_renew: bool) -> Optional[User]:
+    """Set a user's session policy (login-pass lifetime + auto-renew).
+
+    The lifetime is clamped into the allowed range. Returns the updated User,
+    or None if the user is not found. Does NOT touch the remember token —
+    callers decide whether to issue/clear it based on the new auto_renew value.
+    """
+    user = _users.get(username)
+    if user is None:
+        return None
+    user.session_lifetime_minutes = clamp_session_lifetime(lifetime_minutes)
+    user.auto_renew = bool(auto_renew)
+    _persist()
+    return user
 
 
 # ── Self-service profile/password/delete ────────────────────────────────────

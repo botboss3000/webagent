@@ -96,16 +96,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.user_id = payload.get("user_id")
                 return await call_next(request)
 
-        # ── Open access mode: trust unauthenticated requests ──
-        # In "open" mode (single-user / local convenience), there's no cross-tenant
-        # risk so we allow requests without a valid token. The frontend connects
-        # through Cloudflare Tunnel etc. where open-login is unavailable.
-        from app.admin.settings import get_access_mode
-        if get_access_mode() == "open":
-            request.state.username = "admin"
-            request.state.user_id = "admin"
-            return await call_next(request)
-
         # Not authenticated
         # API routes → 401 JSON
         if path.startswith("/api/"):

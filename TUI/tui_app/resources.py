@@ -31,8 +31,8 @@ MONITOR_DEFAULTS_FILE = "monitor.defaults.json"
 
 # Last-ditch prompt if both the user copy and the packaged copy are unreadable.
 _FALLBACK_PROMPT = (
-    "You are webAgent Server Manager — a server-independent agent that helps "
-    "install, link, run, diagnose, monitor, and update a local webAgent server, "
+    "You are WebAgent Server Manager — a server-independent agent that helps "
+    "install, link, run, diagnose, monitor, and update a local WebAgent server, "
     "and can handle general coding tasks. Only offer to perform an action if you "
     "have a tool for it; otherwise guide in plain text."
 )

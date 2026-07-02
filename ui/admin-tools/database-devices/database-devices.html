@@ -1,0 +1,45 @@
+<!-- Database & Devices — drop-in Admin Tools view partial.
+     Two <template data-slot> blocks injected at boot by the partial loader
+     (ui/shared/js/partial-loader.js): a sidebar panel into #files-sidebar and a
+     main pane into #admin-tools. Discovered via
+     ui/admin-tools/database-devices/page.json; driven by database-devices.js
+     (startView/stopView); backed by server.py (/admin/database-devices/*).
+
+     The page is the app's shared backbone: SIGN IN to the database + secrets
+     vault you want, then see every other DEVICE signed in to that same database.
+     The whole main pane is rendered from JS into #smb-root (the `smb-` =
+     "shared backbone" prefix is internal). Sister admin views:
+     ui/admin-tools/server-manager/, ui/admin-tools/update/.
+     REMOVE-WHEN: the Database & Devices view is dropped from the admin catalog. -->
+<template data-slot="#files-sidebar">
+  <div class="files-sidebar-panel" id="files-panel-database-devices" data-view="database-devices" hidden>
+    <div class="files-sidebar-header">
+      <div class="files-sidebar-actions">
+        <button class="files-icon-btn" id="dbd-refresh" title="Refresh"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
+      </div>
+    </div>
+    <div class="cvm-side">
+      <div class="cvm-side-section">
+        <div class="cvm-side-title">Status</div>
+        <div class="cvm-legend">
+          <span class="cvm-legend-item"><span class="cvm-dot cvm-dot-run"></span> Online / reachable</span>
+          <span class="cvm-legend-item"><span class="cvm-dot cvm-dot-stop"></span> Offline / unreachable</span>
+          <span class="cvm-legend-item"><span class="cvm-dot cvm-dot-busy"></span> Checking…</span>
+        </div>
+      </div>
+      <div class="cvm-side-section">
+        <div class="cvm-hint">Sign in to the <strong>database</strong> and <strong>secrets vault</strong> you want this
+          app to use. Every device signed in to the same database shares one app — they appear under
+          <strong>Linked devices</strong> automatically; the box running this app is marked <strong>This device</strong>.</div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template data-slot="#admin-tools">
+  <main class="files-main" id="files-database-devices-main" data-view="database-devices" hidden>
+    <!-- The whole page (shared-vs-local map, Database card, Vault card, Linked
+         devices) is rendered here by database-devices.js. -->
+    <div id="smb-root" class="smb-root smb-page"></div>
+  </main>
+</template>

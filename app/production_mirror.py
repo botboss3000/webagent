@@ -372,7 +372,7 @@ def _dev_head_short() -> str:
 def _dev_identity() -> tuple[str, str]:
     name, _, _ = _git(["config", "user.name"], cwd=_PROJECT_ROOT, timeout=10)
     email, _, _ = _git(["config", "user.email"], cwd=_PROJECT_ROOT, timeout=10)
-    return (name.strip() or "webAgent", email.strip() or "webagent@local")
+    return (name.strip() or "WebAgent", email.strip() or "webagent@local")
 
 
 # ── Status (for the Git page's Production section) ──────────────────────────

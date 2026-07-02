@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# webAgent — native Linux launch + keep-alive loop.
+# WebAgent — native Linux launch + keep-alive loop.
 #
 # Launches run.py on a plain Linux box and restarts it if it ever stops.
 # Detached with nohup so it survives the terminal closing. This is the Linux

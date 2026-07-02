@@ -174,7 +174,7 @@ const LOOP_EDGES = [
 ];
 
 // ── Horizontal layout — group bounding boxes in the 1560px baseline ──────────
-// Each group moves as a unit when the canvas is compressed to fit narrower widths.
+// Each group moves as a unit when the genui is compressed to fit narrower widths.
 const _H_GROUPS = [
   { nodeIds: ['user_input'],
     left: 13,   right: 117  },
@@ -207,7 +207,7 @@ function buildHorizontalLayout(availableWidth) {
   const W = availableWidth > 0 ? availableWidth : LOOP_W;
 
   if (W >= LOOP_W) {
-    return { nodes: LOOP_NODES, stages: LOOP_STAGES, canvasW: LOOP_W + 16, canvasH: LOOP_H, mode: 'horizontal' };
+    return { nodes: LOOP_NODES, stages: LOOP_STAGES, genuiW: LOOP_W + 16, genuiH: LOOP_H, mode: 'horizontal' };
   }
 
   // gs = 1.0 at full width, 0.0 at minimum — gaps clamp at _H_MIN_GAP
@@ -232,8 +232,8 @@ function buildHorizontalLayout(availableWidth) {
   });
 
   const lastG   = _H_GROUPS[_H_GROUPS.length - 1];
-  const canvasW = newLeft[newLeft.length - 1] + (lastG.right - lastG.left) + 8;
-  return { nodes, stages, canvasW, canvasH: LOOP_H, mode: 'horizontal' };
+  const genuiW = newLeft[newLeft.length - 1] + (lastG.right - lastG.left) + 8;
+  return { nodes, stages, genuiW, genuiH: LOOP_H, mode: 'horizontal' };
 }
 
 // ── buildVerticalLayout ───────────────────────────────────────────────────────
@@ -302,18 +302,18 @@ function buildVerticalLayout(availableWidth) {
     { label: 'OUTPUT',    y1: 1544, y2: 1704, color: '#9ece6a' },
   ];
 
-  return { nodes, stages, canvasW: w, canvasH: 1716, mode: 'vertical' };
+  return { nodes, stages, genuiW: w, genuiH: 1716, mode: 'vertical' };
 }
 
 // ── Edge path computation ─────────────────────────────────────────────────────
 export function computeEdgePath(edge, nodes, layout = {}) {
-  const { mode = 'horizontal', canvasW = LOOP_W } = layout;
+  const { mode = 'horizontal', genuiW = LOOP_W } = layout;
   const src = nodes.find(n => n.id === edge.from);
   const dst = nodes.find(n => n.id === edge.to);
   if (!src || !dst) return null;
 
   if (mode === 'vertical') {
-    return _computeEdgePathVertical(edge, src, dst, canvasW);
+    return _computeEdgePathVertical(edge, src, dst, genuiW);
   }
 
   // ── Horizontal mode ───────────────────────────────────────────────────────
@@ -344,8 +344,8 @@ export function computeEdgePath(edge, nodes, layout = {}) {
            labelX: mx, labelY: (y1 < y2 ? y1 : y2) - 5 };
 }
 
-function _computeEdgePathVertical(edge, src, dst, canvasW) {
-  const sameX   = Math.abs(src.cx - dst.cx) < canvasW * 0.06;
+function _computeEdgePathVertical(edge, src, dst, genuiW) {
+  const sameX   = Math.abs(src.cx - dst.cx) < genuiW * 0.06;
   const sameY   = Math.abs(src.cy - dst.cy) < 8;
   const forward = dst.cy > src.cy;
 
@@ -359,7 +359,7 @@ function _computeEdgePathVertical(edge, src, dst, canvasW) {
 
   // "below" arc in vertical mode: right-side bypass (guardrails → check_continue)
   if (edge.below) {
-    const arcX = canvasW * 0.97;
+    const arcX = genuiW * 0.97;
     const x = src.cx, y1 = src.cy + src.hh, y2 = dst.cy - dst.hh;
     return { d: `M ${x} ${y1} C ${arcX} ${y1}, ${arcX} ${y2}, ${x} ${y2}`,
              labelX: arcX + 3, labelY: (y1 + y2) / 2 };
@@ -367,7 +367,7 @@ function _computeEdgePathVertical(edge, src, dst, canvasW) {
 
   // "above" / llm_call→check_continue bypass (skip ROUTING + EXECUTION)
   if (edge.from === 'llm_call' && edge.to === 'check_continue') {
-    const arcX = canvasW * 0.93;
+    const arcX = genuiW * 0.93;
     const x = src.cx, y1 = src.cy + src.hh, y2 = dst.cy - dst.hh;
     return { d: `M ${x} ${y1} C ${arcX} ${y1}, ${arcX} ${y2}, ${x} ${y2}`,
              labelX: arcX + 4, labelY: (y1 + y2) / 2 };
@@ -375,7 +375,7 @@ function _computeEdgePathVertical(edge, src, dst, canvasW) {
 
   // Backward loopback arc (check_continue → interrupt_chk, ↺ continue)
   if (!forward && sameX) {
-    const arcX = edge.from === 'check_continue' ? canvasW * 0.97 : canvasW * 0.91;
+    const arcX = edge.from === 'check_continue' ? genuiW * 0.97 : genuiW * 0.91;
     const x = src.cx, y1 = src.cy + src.hh, y2 = dst.cy - dst.hh;
     return { d: `M ${x} ${y1} C ${arcX} ${y1}, ${arcX} ${y2}, ${x} ${y2}`,
              labelX: arcX + 3, labelY: (y1 + y2) / 2 };
@@ -459,7 +459,7 @@ export function applyDiagramStates(root, svg, nodeStates, { markerPrefix = 'ld',
 // opts:
 //   availableWidth  — px width to lay out for
 //   markerPrefix    — unique SVG marker ID prefix (avoids DOM clashes)
-//   canvasH         — override SVG height
+//   genuiH         — override SVG height
 //   nodeFilter      — array of node IDs to show; null/empty = show all
 //   getNodeDetail   — (nodeDef) => string
 //   onNodeClick     — (nodeDef, nodeEl, rootEl) => void
@@ -473,7 +473,7 @@ export function applyDiagramStates(root, svg, nodeStates, { markerPrefix = 'ld',
 export function renderLoopDiagram(containerEl, nodeStates, {
   availableWidth = 0,
   markerPrefix   = 'ld',
-  canvasH        = 0,
+  genuiH        = 0,
   nodeFilter     = null,
   excludeNodes   = null,
   extraEdges     = null,
@@ -512,16 +512,16 @@ export function renderLoopDiagram(containerEl, nodeStates, {
     visibleEdges = [...visibleEdges, ...extraEdges.filter(e => visibleIds.has(e.from) && visibleIds.has(e.to))];
   }
 
-  const svgH = canvasH > 0 ? canvasH : layout.canvasH;
+  const svgH = genuiH > 0 ? genuiH : layout.genuiH;
 
   const root = document.createElement('div');
-  root.style.cssText = `position:relative;width:${layout.canvasW}px;min-height:${svgH}px;flex-shrink:0;margin:0 auto;`;
+  root.style.cssText = `position:relative;width:${layout.genuiW}px;min-height:${svgH}px;flex-shrink:0;margin:0 auto;`;
   containerEl.appendChild(root);
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('width',   layout.canvasW);
+  svg.setAttribute('width',   layout.genuiW);
   svg.setAttribute('height',  svgH);
-  svg.setAttribute('viewBox', `0 0 ${layout.canvasW} ${svgH}`);
+  svg.setAttribute('viewBox', `0 0 ${layout.genuiW} ${svgH}`);
   svg.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:0;overflow:visible;';
   root.appendChild(svg);
 
@@ -538,14 +538,14 @@ export function renderLoopDiagram(containerEl, nodeStates, {
 
   // Stage backgrounds and labels
   if (layout.mode === 'vertical') {
-    _renderStagesVertical(svg, layout.stages, layout.canvasW);
+    _renderStagesVertical(svg, layout.stages, layout.genuiW);
   } else {
     _renderStagesHorizontal(svg, layout.stages, svgH);
   }
 
   // Draw edges. data-from/data-to + data-alt let applyDiagramStates() restyle a
   // path/label in place on live events without rebuilding the whole diagram.
-  const edgeLayout = { mode: layout.mode, canvasW: layout.canvasW };
+  const edgeLayout = { mode: layout.mode, genuiW: layout.genuiW };
   for (const edge of visibleEdges) {
     const edgeState = _edgeState(nodeStates, edge.from, edge.to);
     const pi        = computeEdgePath(edge, layout.nodes, edgeLayout);
@@ -651,12 +651,12 @@ function _renderStagesHorizontal(svg, stages, svgH) {
   });
 }
 
-function _renderStagesVertical(svg, stages, canvasW) {
+function _renderStagesVertical(svg, stages, genuiW) {
   stages.forEach((stage, i) => {
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
     rect.setAttribute('x',      1);
     rect.setAttribute('y',      stage.y1);
-    rect.setAttribute('width',  canvasW - 2);
+    rect.setAttribute('width',  genuiW - 2);
     rect.setAttribute('height', stage.y2 - stage.y1);
     rect.setAttribute('fill',   i % 2 === 0 ? '#ffffff03' : '#00000008');
     rect.setAttribute('rx',     '3');
@@ -665,7 +665,7 @@ function _renderStagesVertical(svg, stages, canvasW) {
     if (i > 0) {
       const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
       line.setAttribute('x1', 0);       line.setAttribute('y1', stage.y1);
-      line.setAttribute('x2', canvasW); line.setAttribute('y2', stage.y1);
+      line.setAttribute('x2', genuiW); line.setAttribute('y2', stage.y1);
       line.setAttribute('stroke', '#1e2035');
       line.setAttribute('stroke-width', '1');
       svg.appendChild(line);

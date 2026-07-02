@@ -1,6 +1,6 @@
 """The external **keep-alive guardian** — a supervisor that outlives the TUI.
 
-The Server-Manager TUI (``python -m tui_app``) auto-starts the webAgent web
+The Server-Manager TUI (``python -m tui_app``) auto-starts the WebAgent web
 server and watches it via the *in-process* ``watchdog.py``. But that watchdog is
 a TUI worker: it dies the instant the TUI dies, which is exactly when the server
 it launched is most likely to fall over too. This module is the answer — a
@@ -9,9 +9,9 @@ it launched is most likely to fall over too. This module is the answer — a
 
 * **the web server** — if ``/health`` stops answering and a checkout is linked,
   relaunch ``run.py`` from the *project's* venv (with crash-loop backoff);
-* **one server only** — when the server is healthy, kill any *other* webAgent
+* **one server only** — when the server is healthy, kill any *other* WebAgent
   ``run.py`` tree on the machine besides the one actually serving port 8080, so a
-  second launcher (e.g. a stray ``webAgent.bat``) can't leave a duplicate server
+  second launcher (e.g. a stray ``WebAgent.bat``) can't leave a duplicate server
   running its own background loops against the same database. The guardian adopts
   whichever process is serving (it never kills the live one);
 * **the TUI itself** — if the TUI process vanishes WITHOUT a clean-quit marker
@@ -66,8 +66,16 @@ POLL_SECONDS = 5.0           # gap between supervision ticks
 _FAIL_LIMIT = 36             # consecutive launch failures before giving up (~3 min)
 HEALTH_TIMEOUT = 4.0         # per-probe HTTP timeout
 INITIAL_GRACE = 8.0          # let the TUI's own autostart begin before we act
-SERVER_SETTLE = 60.0         # after launching the server, give it this long to boot
-                             # before considering another launch (cold boot is slow)
+HEALTH_WAIT_SECONDS = 90.0   # after spawning, how long to wait for /health before
+                             # declaring "not yet responding". MUST exceed the real
+                             # cold-boot time (full-app import + plugin discovery has
+                             # been measured at ~45s on Windows); too short makes the
+                             # guardian cry wolf on a server that is merely still booting
+                             # and risks a duplicate launch colliding with the live one.
+SERVER_SETTLE = 90.0         # after launching the server, give it this long to boot
+                             # before considering another launch (cold boot is slow).
+                             # Kept >= HEALTH_WAIT_SECONDS so a slow-but-fine boot is
+                             # never relaunched on top of itself.
 TUI_RELAUNCH_GAP = 30.0      # min seconds between TUI relaunches (crash-loop guard +
                              # covers the window before the new TUI writes its pid)
 MAX_SERVER_RESTARTS_PER_HOUR = 5
@@ -170,7 +178,7 @@ def _terminate(pid: int) -> bool:
 
 
 def _venv_python(project_root: Path) -> Optional[Path]:
-    """The webAgent checkout's own venv interpreter (for running ``run.py``)."""
+    """The WebAgent checkout's own venv interpreter (for running ``run.py``)."""
     for venv_dir in (".venv", "venv", "venv313"):
         cand = (project_root / venv_dir / ("Scripts" if _IS_WIN else "bin")
                 / ("python.exe" if _IS_WIN else "python"))
@@ -204,7 +212,7 @@ def _pids_on_port(port: int = PORT) -> set[int]:
 
 def _proc_table() -> list[tuple[int, int, str]]:
     """Best-effort ``[(pid, ppid, cmdline)]`` for every process (windowless).
-    Used to identify duplicate webAgent server trees. Returns ``[]`` on failure —
+    Used to identify duplicate WebAgent server trees. Returns ``[]`` on failure —
     callers MUST treat an empty table as "don't know" and reap nothing."""
     rows: list[tuple[int, int, str]] = []
     try:
@@ -244,7 +252,7 @@ def _proc_table() -> list[tuple[int, int, str]]:
 
 
 def _is_server_proc(cmdline: str) -> bool:
-    """True if a command line looks like a webAgent **web server** (``run.py`` /
+    """True if a command line looks like a WebAgent **web server** (``run.py`` /
     ``app.main``) — and NOT the TUI/guardian or a scanner shell. Deliberately
     conservative: a false positive here could kill the wrong process."""
     c = (cmdline or "").lower()
@@ -259,7 +267,7 @@ def _is_server_proc(cmdline: str) -> bool:
 
 def _server_tree(listener_pids: set[int], runpy_pids: set[int],
                  parents: dict[int, int]) -> set[int]:
-    """The set of webAgent server pids that make up the **serving** tree: start
+    """The set of WebAgent server pids that make up the **serving** tree: start
     from whoever is LISTENING on the port and walk up to run.py ancestors and down
     to run.py children (through run.py nodes only). That tree is "our own" server —
     everything else in ``runpy_pids`` is a duplicate. Seeding from the live listener
@@ -511,7 +519,7 @@ class Guardian:
             # 45KB shim that spawns the real Python as a child).  Tracking
             # the stub means kill/status follow a zombie while the real
             # server runs unmonitored.
-            for _ in range(60):                        # up to 30s (0.5s each)
+            for _ in range(int(HEALTH_WAIT_SECONDS / 0.5)):  # 0.5s per probe
                 time.sleep(0.5)
                 if _is_healthy():
                     listeners = _pids_on_port(PORT)
@@ -537,7 +545,7 @@ class Guardian:
 
     def _reap_foreign_servers(self) -> None:
         """Enforce "one server, and it's the one I supervise": kill any *other*
-        webAgent ``run.py`` tree besides whichever one is actually serving 8080.
+        WebAgent ``run.py`` tree besides whichever one is actually serving 8080.
 
         Runs ONLY when the server is healthy and past its boot-settle window, so
         the serving tree is stable — a still-booting server (not yet listening)

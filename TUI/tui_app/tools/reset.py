@@ -1,4 +1,4 @@
-"""Reset the linked webAgent install back to a clean state.
+"""Reset the linked WebAgent install back to a clean state.
 
 The in-app equivalent of the repo's ``reset_webagent.bat``: it wipes the running
 app's **userbase** (the live database + the per-user generated pages) and, opt-in,
@@ -238,7 +238,7 @@ async def reset_app(
     delete_agents: bool = False,
     clear_logs: bool = False,
 ) -> str:
-    """Reset the linked webAgent install. Each group is gated by its own flag:
+    """Reset the linked WebAgent install. Each group is gated by its own flag:
     ``clear_db`` (the active user-data database) and ``clear_pages`` default ON;
     ``clear_logs`` / ``clear_secrets`` / ``clear_users`` / ``delete_env`` /
     ``delete_agents`` default OFF. So a caller can reset only logs, or only the
@@ -329,7 +329,7 @@ async def reset_app(
         else:
             lines.append(f"[reset] Postgres wipe FAILED: {pg_detail}")
             if still_up:
-                lines.append("  → the webAgent server is still running and may be holding "
+                lines.append("  → the WebAgent server is still running and may be holding "
                              "connections open. Stop it (Server ▸ Kill), then reset again.")
 
     verb = "backed up" if backup else "deleted"
@@ -340,7 +340,7 @@ async def reset_app(
     if failed:
         lines.append("  FAILED (still present): " + "; ".join(failed))
         if still_up and not is_pg:
-            lines.append("  → the webAgent server is still running and is holding the "
+            lines.append("  → the WebAgent server is still running and is holding the "
                          "database open. Stop it (Server ▸ Kill), then reset again.")
     if backup_dir is not None and ok:
         lines.append(f"  backup: {backup_dir}")

@@ -1,4 +1,4 @@
-"""Chat endpoint for webAgent."""
+"""Chat endpoint for WebAgent."""
 
 import asyncio
 import json
@@ -14,6 +14,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.models.schemas import ChatRequest, ChatResponse
 from app.db import get_db
+from app.db.turn_cache import with_turn_cache, turn_cache_scope
+from app.db.offload import db_offload
+from app.agent import turn_prewarm
 from app.agent.prompts import (
     build_system_prompt,
     append_skills_section,
@@ -57,6 +60,119 @@ def _spawn_bg(coro, *, label: str = "bg") -> None:
 
     task.add_done_callback(_done)
 
+
+# ── Concurrent pure-DB reads ──
+# On a remote Postgres (e.g. Supabase) every DB call is a network round-trip of
+# tens-to-hundreds of ms. The storage layer is synchronous psycopg wearing an
+# ``async def`` hat, so a plain ``asyncio.gather`` of these coroutines does NOT
+# overlap them — each one blocks the single event-loop thread for its whole
+# round-trip, so they still run back-to-back.
+#
+# This helper drives each coroutine to completion in its OWN worker thread. The
+# psycopg connection pool hands each thread a separate connection and releases
+# the GIL while waiting on the socket, so the round-trips genuinely overlap —
+# turning a stack of N serial waits into roughly one. The same holds for the
+# SQLite backend (``_get_conn`` opens a fresh, thread-local connection per call).
+#
+# HARD CONSTRAINT: every factory must return a coroutine that does ONLY blocking
+# DB work. It must NOT touch a main-loop-bound async client — notably the
+# embedding client (memory recall) or the chat LLM client (history compaction) —
+# because those are cached globally and bound to the main event loop; first-
+# touching them from a worker loop corrupts them for the rest of the process.
+# That is why memory_search and build_openai_history_from_session stay on the
+# main loop and are deliberately NOT passed here.
+async def _gather_db_concurrent(*factories):
+    """Run independent, pure-DB coroutine factories truly concurrently.
+
+    Each ``factory`` is a zero-arg callable returning a FRESH coroutine. Results
+    come back in input order; a failure in one is returned in its slot as the
+    exception instance (caller decides whether it's fatal), so one slow/failed
+    read can't sink the batch.
+    """
+    if not factories:
+        return []
+
+    # Each factory runs in its OWN worker thread (fresh loop) so the blocking
+    # round-trips TRULY overlap instead of serializing on the one event-loop
+    # thread, and the main loop stays free for the LLM stream. Safe now that the
+    # write guard is thread-agnostic (_DbWriteLock); the earlier failure was the
+    # loop-bound asyncio.Lock. ONLY pure-DB reads belong here — never anything
+    # that touches the embedding client or the WS broadcaster (see
+    # app/db/offload.py's hard rule).
+    def _drive(factory):
+        return asyncio.run(factory())
+
+    return await asyncio.gather(
+        *(asyncio.to_thread(_drive, f) for f in factories),
+        return_exceptions=True,
+    )
+
+
+# ── Cross-message cache for the agent's tool set ──────────────────────────────
+# load_tools makes dozens of DB round-trips and its result depends only on the
+# agent's config + the caller (not on the message). We cache it per (agent, user)
+# keyed by the agent's ``updated_at`` (any agent edit bumps it → cache miss →
+# fresh load), with a TTL backstop for edits that don't touch the agent row. A
+# shallow copy is returned so a turn's own dict mutations never corrupt the cache.
+async def _cached_load_tools(user_id: str, agent_id: str,
+                             template_id: Optional[str], version: Any):
+    from app.tools.loader import load_tools
+    if not agent_id or version is None:
+        return await load_tools(user_id, agent_id=agent_id or "",
+                                agent_template_id=template_id, gate_caller_access=True)
+    from app.agent import static_cache
+    key = f"tools:{agent_id}:{user_id}:{template_id or ''}"
+    result = await static_cache.get_or_compute(
+        key, version,
+        lambda: load_tools(user_id, agent_id=agent_id,
+                           agent_template_id=template_id, gate_caller_access=True),
+    )
+    return dict(result) if isinstance(result, dict) else result
+
+
+# ── Hot-path stopwatch (temporary latency diagnostic) ─────────────────────────
+# DIAGNOSTIC: marks how long each stage of a single chat turn takes and writes
+# the marks to the diagnostics log (category="perf", level INFO → durable in
+# logs.db). Lets us see exactly which stage eats the wall-clock time on a slow
+# turn — prep vs. DB reads vs. memory recall vs. the LLM provider's first token.
+# Each mark records the delta since the previous mark and the total since the
+# turn started. Cheap and never raises. REMOVE-WHEN: latency diagnosis is done.
+_PERF_ENABLED = (os.environ.get("WEBAGENT_PERF_TRACE", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+class _PerfTimer:
+    def __init__(self, label: str, *, session_id=None, turn_id=None,
+                 user_id=None, agent_id=None) -> None:
+        self.label = label
+        self.session_id = session_id
+        self.turn_id = turn_id
+        self.user_id = user_id
+        self.agent_id = agent_id
+        self._t0 = time.monotonic()
+        self._last = self._t0
+
+    def mark(self, name: str, **extra) -> None:
+        if not _PERF_ENABLED:
+            return
+        now = time.monotonic()
+        total_ms = int((now - self._t0) * 1000)
+        delta_ms = int((now - self._last) * 1000)
+        self._last = now
+        try:
+            from app.agent.diagnostics import record
+            detail = {"phase": self.label, "mark": name,
+                      "delta_ms": delta_ms, "total_ms": total_ms}
+            if extra:
+                detail.update(extra)
+            record("info", "perf",
+                   f"[perf] {self.label}:{name} +{delta_ms}ms (t={total_ms}ms)",
+                   source="chat.hotpath", detail=detail,
+                   session_id=self.session_id, turn_id=self.turn_id,
+                   user_id=self.user_id, agent_id=self.agent_id)
+        except Exception:
+            pass
+
+
 # ── Memory skip gate ──
 # Skip memory_search for trivial messages (greetings, affirmations, commands).
 _SKIP_MEMORY_PATTERN = re.compile(
@@ -99,7 +215,26 @@ def _session_title_from_message(message: str, max_words: int = 6) -> str:
 
 async def _enforce_agent_access_policy(db, agent: dict, user_id: str) -> None:
     """Raise 403 if user is not allowed to chat with this agent under its user_mode policy."""
-    mode = (agent or {}).get("user_mode") or "anonymous"
+    # Authorization must never resolve from the local cache: read the access mode
+    # straight from the authority, not the (Stage-3 possibly locally-served) agent
+    # dict. db._get_conn() delegates to the remote authority under the hybrid
+    # backend — the same authoritative-read idiom used for the tier check below.
+    mode = None
+    agent_id = (agent or {}).get("id")
+    if agent_id:
+        try:
+            conn = db._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT user_mode FROM agents WHERE id = ?", (agent_id,)
+                ).fetchone()
+                mode = (row["user_mode"] if row else None)
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.debug("authoritative user_mode read failed for %s (%s); using resolved dict", agent_id, e)
+            mode = (agent or {}).get("user_mode")
+    mode = mode or "anonymous"
     if mode == "anonymous":
         return
     # Global admin always allowed
@@ -146,8 +281,16 @@ async def _enforce_billing_access(db, agent: dict, user_id: str) -> None:
     raise HTTPException(status_code=402, detail=decision.to_dict())
 
 
-async def _ensure_session(db, user_id: str, session_id: str, title: str = None) -> None:
-    """Create the session row if it doesn't exist yet, and update its title on first real message."""
+async def _ensure_session(db, user_id: str, session_id: str, title: str = None) -> bool:
+    """Create the session row if it doesn't exist yet, and update its title on
+    first real message.
+
+    Returns True when the session row did NOT exist and was just created — i.e.
+    this is the very first message of a brand-new session. The front-end doesn't
+    persist a session row until the first send (see session-init.js), so a
+    missing row is a reliable "first turn, no history to load" signal that the
+    caller uses to skip the history read + its "Loading history" pill step.
+    """
     conn = db._get_conn()
     try:
         row = conn.execute("SELECT title FROM sessions WHERE id=?", (session_id,)).fetchone()
@@ -172,7 +315,12 @@ async def _ensure_session(db, user_id: str, session_id: str, title: str = None) 
                 "metadata": json.dumps(meta),
             }).execute()
             logger.info(f"Created session {session_id[:12]} for user {user_id[:12]}")
+            # Clean create of a row that didn't exist → genuinely the first turn.
+            return True
         except Exception as create_err:
+            # A failed insert means the row may have been created concurrently
+            # (a race), so we can't assume there's no history — fall through and
+            # let the caller take the normal history-loading path.
             logger.warning(f"Session creation failed (may already exist): {create_err}")
     elif title and row[0] in (None, "New Session", session_id[:12]):
         # Session exists with placeholder title — update to first real message
@@ -182,6 +330,7 @@ async def _ensure_session(db, user_id: str, session_id: str, title: str = None) 
             conn.commit()
         finally:
             conn.close()
+    return False
 
 
 # Canonical Ask/Plan/Auto, accepting the legacy Read/Write names (mirrors
@@ -372,7 +521,7 @@ async def _handle_compact_command(user_id: str, session_id: str, db) -> str:
             "`/compact`."
         )
 
-    # An alternate engine (e.g. Local Claude Code) keeps its memory OUTSIDE webAgent,
+    # An alternate engine (e.g. Local Claude Code) keeps its memory OUTSIDE WebAgent,
     # so /compact means "compact & restart" for it: after the fold below, hand off to
     # the engine's hook to reshape what happens next. Generic lookup — no per-engine
     # branching here (the core stays small; engines are drop-in plug-ins).
@@ -685,6 +834,10 @@ async def chat_abilities(user_id: str, session_id: str, agent_id: Optional[str] 
             from app.tools.tool_modes import resolve_ability_mode
             from app.abilities import ui_catalog
             modes = await db.get_agent_ability_modes(agent_id)
+            try:
+                _adefault = await db.get_agent_discovery_default(agent_id)
+            except Exception:
+                _adefault = None
             cat_abilities = (ui_catalog() or {}).get("abilities", {})
             rows = await db.get_agent_connections(agent_id)
             for r in rows:
@@ -694,7 +847,7 @@ async def chat_abilities(user_id: str, session_id: str, agent_id: Optional[str] 
                 if not aid:
                     continue
                 meta = cat_abilities.get(aid, {})
-                mode = resolve_ability_mode(aid, modes)
+                mode = resolve_ability_mode(aid, modes, _adefault)
                 # Active = revealed to the agent this turn: visible-by-config OR
                 # loaded this session, AND not suppressed from this panel.
                 active = ((mode == "visible") or (aid in loaded)) and (aid not in suppressed)
@@ -849,6 +1002,85 @@ async def update_suggestions_config(req: SuggestionsConfigRequest):
     return save_runtime_config(updates)
 
 
+class PrewarmRequest(BaseModel):
+    user_id: str
+    session_id: str
+    agent_id: Optional[str] = None
+
+
+@router.post("/prewarm")
+async def chat_prewarm(req: PrewarmRequest, fastapi_request: Request):
+    """Warm the read-only prep (tool set, chat history, attached data sources)
+    for a session WHILE THE USER IS STILL TYPING, so the next send skips those
+    remote round-trips. The front-end calls this on chat-input focus and on a
+    debounced keystroke. Best-effort: any failure just returns ``ok: False`` and
+    the turn builds the prep live as before — nothing here can break a send.
+    """
+    from app.auth.identity import assert_caller_is
+    try:
+        uid = await assert_caller_is(fastapi_request, req.user_id)
+    except Exception:
+        return {"ok": False, "reason": "auth"}
+    db = get_db()
+    try:
+        # Share the per-turn read cache so duplicate reads within this build are
+        # de-duped, exactly like a real send.
+        with turn_cache_scope():
+            # Resolve the agent the same way a send does (light: no membership
+            # writes). Engine agents own their whole turn → nothing to prewarm.
+            if req.agent_id:
+                agent = await db.fetch_agent_by_id_with_context(
+                    req.agent_id, CONTEXT_SECTION_TYPES, user_id=uid)
+            else:
+                agent = await db.get_agent_for_user(uid)
+            if not agent:
+                return {"ok": False, "reason": "no_agent"}
+            try:
+                _meta = agent.get("metadata")
+                if isinstance(_meta, str):
+                    _meta = json.loads(_meta or "{}")
+                _eng = str((_meta or {}).get("engine") or "").strip()
+                if _eng and _eng != "default":
+                    return {"ok": False, "reason": "engine_agent"}
+            except Exception:
+                pass
+
+            agent_id = agent.get("id")
+            tools_version = agent.get("updated_at")
+
+            # Build tools + data sources concurrently in worker threads, then the
+            # history (kept on the loop because its compaction step may call the
+            # LLM). These are the same reads a turn makes.
+            _factories = [
+                lambda: _cached_load_tools(
+                    uid, agent_id or "",
+                    agent.get("template_id"), tools_version),
+            ]
+            if agent_id:
+                _factories.append(
+                    lambda: db.agent_data_source_list(agent_id, enabled_only=True))
+            _res = await _gather_db_concurrent(*_factories)
+            if isinstance(_res[0], BaseException):
+                return {"ok": False, "reason": "tools"}
+            tools = _res[0]
+            ds_attached = []
+            if agent_id and len(_res) > 1:
+                ds_attached = [] if isinstance(_res[1], BaseException) else (_res[1] or [])
+
+            history = await build_openai_history_from_session(
+                db, uid, req.session_id, agent_id=agent_id)
+
+            turn_prewarm.store(
+                req.session_id,
+                sig=(uid, agent_id, tools_version),
+                tools=tools, history=history, ds_attached=ds_attached,
+            )
+        return {"ok": True}
+    except Exception as e:
+        logger.debug("prewarm failed for %s: %s", req.session_id, e)
+        return {"ok": False, "reason": "error"}
+
+
 
 @router.post("", response_model=ChatResponse)
 async def chat(request: ChatRequest, fastapi_request: Request):
@@ -857,6 +1089,17 @@ async def chat(request: ChatRequest, fastapi_request: Request):
 
     Uses the simple agent loop with tool-calling support.
     """
+    # Open ONE per-turn read-cache scope around the whole live send. The turn-cache
+    # bulk optimisations (a single query for ALL of a user's vault secrets, per-turn
+    # dedup of invariant reads) only fire inside such a scope. The live path used to
+    # run WITHOUT one — so load_tools re-resolved every integration provider's
+    # credential as its own remote round-trip on EVERY loop iteration (~70-100 serial
+    # ~150ms round-trips/turn on remote Postgres). The scope collapses those to one.
+    with turn_cache_scope():
+        return await _chat_impl(request, fastapi_request)
+
+
+async def _chat_impl(request: ChatRequest, fastapi_request: Request):
     try:
         # Tenant isolation: the JWT subject must match the user_id the
         # client says it's chatting as. Every tool wrapper down the call
@@ -969,6 +1212,18 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         # ── Assign agent first (context rows are keyed by agent_id) ──
         if agent is None and getattr(request, 'agent_id', None):
             agent = await db.get_agent_by_id(request.agent_id)
+        # Honor the session's existing binding before falling back to the user's
+        # default agent. A loopback POST that omits agent_id for an ALREADY-BOUND
+        # session (e.g. an orchestrator spawn's wait-run, which drives a
+        # `spawn-…` session bound to its own helper agent, or the orchestrator
+        # re-wake) would otherwise resolve to the user's default agent — which
+        # then trips the bind-mismatch guard below with a 500, so the spawn never
+        # runs. Resolving via the binding here makes the resolved agent match the
+        # bound one. New (unbound) sessions fall through unchanged.
+        if agent is None:
+            _bound_id = await db.get_session_agent_id(request.session_id)
+            if _bound_id:
+                agent = await db.get_agent_by_id(_bound_id)
         if agent is None:
             agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
@@ -1336,6 +1591,33 @@ async def chat(request: ChatRequest, fastapi_request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _find_interaction_by_cmid(db, session_id: str, client_msg_id: str) -> Optional[str]:
+    """Return the id of an already-persisted user interaction carrying this
+    client message id (stored in metadata as ``cmid``), or None.
+
+    Makes /send idempotent: the browser keeps unconfirmed sends in a localStorage
+    outbox and retries them (see ui/chat-side-panel/js/chat-send.js). Without this,
+    a retry of a message the server already accepted inserts a duplicate row (the
+    "it keeps resending to the DB" symptom). The id is matched with a LIKE against
+    the metadata JSON; ``_``/``%``/``\\`` in the id are escaped so they can't act
+    as LIKE wildcards. Best-effort: callers treat any error as "not found" and fall
+    through to a normal insert, so this never blocks a legitimate send.
+    """
+    esc = client_msg_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = '%"cmid": "' + esc + '"%'
+    conn = db._get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id FROM interactions WHERE session_id=? AND role='user' "
+            "AND metadata LIKE ? ESCAPE '\\' LIMIT 1",
+            (session_id, pattern),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+@with_turn_cache
 async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[str, Any]:
     """Synchronous prep shared by /send and /stream.
 
@@ -1352,7 +1634,9 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
     RunManager.start_or_replace).
     """
     from app.auth.identity import assert_caller_is
+    _perf = _PerfTimer("prepare_send", session_id=request.session_id, user_id=request.user_id)
     request.user_id = await assert_caller_is(fastapi_request, request.user_id)
+    _perf.mark("auth_done")
     db = get_db()
     channel = "web_portal"
 
@@ -1409,9 +1693,34 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
             )
         return {"slash_result": result}
 
-    # Ensure the session exists before inserting interactions
+    # Ensure the session exists before inserting interactions. A freshly-created
+    # session row means this is the first message of a brand-new session, so
+    # there is no prior history to load — the turn executor uses this to skip the
+    # history read and its "Loading history" pill step.
     _session_title = _session_title_from_message(request.message) if (request.message or "").strip() else None
-    await _ensure_session(db, request.user_id, request.session_id, title=_session_title)
+    _is_first_turn = await _ensure_session(db, request.user_id, request.session_id, title=_session_title)
+
+    # ── Idempotent send (dedupe outbox retries) ──
+    # The browser parks unconfirmed sends in a localStorage outbox and re-POSTs
+    # them every few seconds until it gets a clean success. If the original send
+    # actually landed but the acknowledgement never made it back (slow remote DB,
+    # dropped connection), each retry would otherwise insert the SAME message
+    # again. We short-circuit here — before the costly agent/billing round-trips —
+    # when this client message id was already accepted, returning the original
+    # turn so the retry resolves without a duplicate row or a second agent run.
+    client_msg_id = getattr(request, "client_msg_id", None)
+    if client_msg_id:
+        try:
+            _existing_id = _find_interaction_by_cmid(db, request.session_id, client_msg_id)
+        except Exception as _dedup_err:
+            logger.debug("client_msg_id dedupe lookup failed (will insert): %s", _dedup_err)
+            _existing_id = None
+        if _existing_id:
+            logger.info(
+                "Duplicate send for session %s (cmid=%s) — returning existing turn %s",
+                request.session_id[:12], client_msg_id, _existing_id,
+            )
+            return {"duplicate": True, "user_interaction_id": _existing_id}
 
     # ── Optimizer / Closer session: route to dedicated agent ──
     opt_template_id = None
@@ -1464,7 +1773,10 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
                 template_id=req_template,
             )
         elif req_agent_id:
-            agent = await db.get_agent_by_id(req_agent_id)
+            # Fetch WITH context here so the turn executor doesn't re-fetch it
+            # later (one DB round-trip saved per message — see the note below).
+            agent = await db.fetch_agent_by_id_with_context(
+                req_agent_id, CONTEXT_SECTION_TYPES, user_id=request.user_id)
             if agent:
                 admin_users = agent.get("admin_users") or []
                 if isinstance(admin_users, str):
@@ -1475,45 +1787,119 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
                 if request.user_id not in admin_users:
                     await db.add_agent_member(req_agent_id, request.user_id)
         else:
-            agent = await db.get_agent_for_user(request.user_id)
+            # No explicit agent requested. Honor the session's existing binding
+            # before defaulting. A loopback POST that omits agent_id for an
+            # already-bound session (e.g. an orchestrator spawn's wait-run driving
+            # a `spawn-…` session bound to its own helper agent, or the
+            # orchestrator re-wake) would otherwise resolve to the user's default
+            # agent and trip the bind-mismatch guard below with a 500 — so the
+            # spawn never runs. Resolving via the binding makes the resolved agent
+            # match the bound one. A genuinely new/unbound session (no binding
+            # row yet) falls through to the default-agent fallback unchanged.
+            _bound_id = await db.get_session_agent_id(request.session_id)
+            if _bound_id:
+                agent = await db.fetch_agent_by_id_with_context(
+                    _bound_id, CONTEXT_SECTION_TYPES, user_id=request.user_id)
+            if agent is None:
+                agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
             raise HTTPException(
                 status_code=400,
                 detail="No agent assigned. Create an agent before chatting.",
             )
 
-    # ── Access policy + billing enforcement ──
-    await _enforce_agent_access_policy(db, agent, request.user_id)
-    await _enforce_billing_access(db, agent, request.user_id)
+    # Resolve the agent WITH its context documents once, here. The turn executor
+    # needs the context-loaded agent and would otherwise re-fetch it on every
+    # message (a full extra DB round-trip — cheap on local SQLite, but costly on
+    # a remote Postgres). get_or_resolve_session_agent already includes context;
+    # get_agent_by_id / get_agent_for_user do not, so top it up when missing.
+    if agent and agent.get("id") and not agent.get("context_documents"):
+        try:
+            _agent_with_ctx = await db.fetch_agent_by_id_with_context(
+                agent["id"], CONTEXT_SECTION_TYPES, user_id=request.user_id)
+            if _agent_with_ctx is not None:
+                agent = _agent_with_ctx
+        except Exception as _ctx_err:
+            logger.debug("agent context prefetch failed (will re-fetch later): %s", _ctx_err)
 
-    # ── Bind session to agent ──
-    existing_agent_id = await db.get_session_agent_id(request.session_id)
-    if existing_agent_id is None:
-        await db.bind_session_to_agent(request.session_id, agent["id"])
-    elif existing_agent_id != agent["id"]:
+    _perf.mark("agent_resolved", agent_id=(agent.get("id") if agent else None))
+
+    # ── Access policy + billing enforcement + participant-state reads ──
+    # All five are independent given the resolved agent: the access-policy check,
+    # the billing check, the session's currently-bound agent, and whether the user
+    # / agent are already participants. Each is PURE DB (no LLM / embedding / WS
+    # client — safe to drive on a worker loop). Run serially they were ~5 stacked
+    # remote round-trips (~2-3s); overlapped in worker threads they finish in about
+    # one. Access/billing denials surface as an HTTPException in their result slot,
+    # which we re-raise; a failed participant read is treated as "needs the write"
+    # (the underlying add/bind ops are idempotent), the safe default.
+    _access_r, _billing_r, _bound_agent, _user_is_part, _agent_is_part = await _gather_db_concurrent(
+        lambda: _enforce_agent_access_policy(db, agent, request.user_id),
+        lambda: _enforce_billing_access(db, agent, request.user_id),
+        lambda: db.get_session_agent_id(request.session_id),
+        lambda: db.is_session_participant(request.session_id, request.user_id, 'user'),
+        lambda: db.is_session_participant(request.session_id, agent["id"], 'agent'),
+    )
+    # Re-raise an access/billing denial (HTTPException) or any hard error from them.
+    for _r in (_access_r, _billing_r):
+        if isinstance(_r, BaseException):
+            raise _r
+    _perf.mark("access_billing_done")
+    _perf.mark("participants_read")
+    existing_agent_id = None if isinstance(_bound_agent, BaseException) else _bound_agent
+    if existing_agent_id is not None and existing_agent_id != agent["id"]:
+        # Correctness guard stays on the critical path — a session already bound to
+        # a DIFFERENT agent must fail loudly, not respond as the wrong agent.
         raise RuntimeError(
             f"Session {request.session_id[:8]} bound to agent {existing_agent_id[:8]}, "
             f"but resolved agent is {agent['id'][:8]}. Cannot respond."
         )
 
-    # ── Participants ──
-    if not await db.is_session_participant(request.session_id, request.user_id, 'user'):
-        await db.add_session_participant(request.session_id, request.user_id, 'user')
-    if not await db.is_session_participant(request.session_id, agent["id"], 'agent'):
-        await db.add_session_participant(request.session_id, agent["id"], 'agent')
+    # The bind + participant-row writes are IDEMPOTENT bookkeeping that nothing in
+    # this turn reads back (the turn uses ``agent`` directly). On a remote DB they
+    # were up to three serial writes (~1s) sitting in the blocking send path on the
+    # first message of a session. Fire them in the background so /send returns as
+    # soon as the user message is persisted; they settle within a second, off the
+    # critical path.
+    _need_bind = existing_agent_id is None
+    _need_user_part = isinstance(_user_is_part, BaseException) or not _user_is_part
+    _need_agent_part = isinstance(_agent_is_part, BaseException) or not _agent_is_part
+    if _need_bind or _need_user_part or _need_agent_part:
+        async def _session_bookkeeping():
+            try:
+                if _need_bind:
+                    await db_offload(lambda: db.bind_session_to_agent(request.session_id, agent["id"]))
+                if _need_user_part:
+                    await db_offload(lambda: db.add_session_participant(request.session_id, request.user_id, 'user'))
+                if _need_agent_part:
+                    await db_offload(lambda: db.add_session_participant(request.session_id, agent["id"], 'agent'))
+            except Exception as _bk_err:  # noqa: BLE001
+                logger.debug("deferred session bookkeeping failed: %s", _bk_err)
+        _spawn_bg(_session_bookkeeping(), label="session_bookkeeping")
+    _perf.mark("participants_written")
 
     # ── Persist the user message ──
+    # Carry the client message id (cmid) in metadata so an outbox retry of this
+    # exact send is recognised as a duplicate next time (see _find_interaction_by_cmid).
+    _user_meta = {"source": "web_portal_chat"}
+    if client_msg_id:
+        _user_meta["cmid"] = client_msg_id
     user_interaction_id = await db.insert_interaction(
         request.user_id, request.session_id, role="user", content=request.message,
         channel=channel,
-        metadata=json.dumps({"source": "web_portal_chat"}),
+        metadata=json.dumps(_user_meta),
         input_data=json.dumps(request.model_dump(), default=str),
         sender_id=request.user_id,
         receiver_id=agent["id"],
     )
+    _perf.mark("user_message_persisted", turn_id=user_interaction_id)
 
     # Record the mode this turn runs in so the pill is restorable server-side.
-    await _record_session_execution_mode(db, request.session_id, getattr(request, 'execution_mode', 'ask'))
+    # Pure UI-restore bookkeeping the turn never reads back — defer it off the
+    # blocking send path (a read+write round-trip on remote Postgres every message).
+    _spawn_bg(
+        _record_session_execution_mode(db, request.session_id, getattr(request, 'execution_mode', 'ask')),
+        label="record_execution_mode")
 
     # ── Emit the user message so all subscribed devices render it instantly ──
     # (The RunBuffer + run-state for the new turn are started inside the turn
@@ -1531,19 +1917,23 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
         or agent.get("template_id") == "web-agent-tui"
     )
 
+    _perf.mark("prepare_send_done", turn_id=user_interaction_id)
+
     return {
         "db": db,
         "agent": agent,
         "user_interaction_id": user_interaction_id,
         "channel": channel,
         "is_tui_bridge": is_tui_bridge,
+        "is_first_turn": _is_first_turn,
     }
 
 
+@with_turn_cache
 async def _run_turn_background(
     db, request: ChatRequest, agent: Dict[str, Any],
     user_interaction_id: str, channel: str = "web_portal",
-    replaced: bool = False,
+    replaced: bool = False, is_first_turn: bool = False,
 ) -> None:
     """Execute one agent turn to completion, fully decoupled from any client
     connection. Owned by the Run Manager — survives the sender leaving, closing
@@ -1560,6 +1950,9 @@ async def _run_turn_background(
     user_id = request.user_id
     final_status = "complete"
     _last_seq_persist = 0.0
+    _perf = _PerfTimer("run_turn", session_id=session_id, turn_id=user_interaction_id,
+                       user_id=user_id, agent_id=(agent.get("id") if agent else None))
+    _perf.mark("turn_start")
 
     # Start the RunBuffer + durable run-state for THIS turn. Done here (not in
     # _prepare_send) so a replaced run's begin happens strictly after the prior
@@ -1575,6 +1968,10 @@ async def _run_turn_background(
             "agent_id": agent.get("id"), "channel": channel,
             "turn_id": user_interaction_id,
         })
+        # NOT offloaded: run_state_begin emits an agent-status WebSocket broadcast
+        # (via _emit_agent_run_status → notify_user), which is bound to the main
+        # event loop and must not run on a worker-thread loop. It's one call per
+        # turn, so the round-trip cost is negligible.
         await db.run_state_begin(
             session_id, user_id, agent.get("id"), user_interaction_id,
             origin="web", relaunch_ctx=_web_relaunch_ctx,
@@ -1582,17 +1979,23 @@ async def _run_turn_background(
     except Exception as _rse:
         logger.debug("run_state_begin failed: %s", _rse)
     # Backfill seq on the already-saved user row from the buffer's first slot.
+    # The write is a synchronous round-trip, so run it in a worker thread to keep
+    # the event loop free (see app/db/offload.py).
     try:
         _user_ss, _user_ts = _run_buffer.next_seq()
-        _conn = db._get_conn()
-        try:
-            _conn.execute(
-                "UPDATE interactions SET session_seq=?, turn_id=?, turn_seq=? WHERE id=?",
-                (_user_ss, user_interaction_id, _user_ts, user_interaction_id),
-            )
-            _conn.commit()
-        finally:
-            _conn.close()
+
+        def _backfill_seq():
+            _conn = db._get_conn()
+            try:
+                _conn.execute(
+                    "UPDATE interactions SET session_seq=?, turn_id=?, turn_seq=? WHERE id=?",
+                    (_user_ss, user_interaction_id, _user_ts, user_interaction_id),
+                )
+                _conn.commit()
+            finally:
+                _conn.close()
+
+        await asyncio.to_thread(_backfill_seq)
     except Exception as _seqerr:
         logger.debug("Failed to backfill seq on user row: %s", _seqerr)
 
@@ -1613,14 +2016,20 @@ async def _run_turn_background(
             if now - _last_seq_persist > 1.0:
                 _last_seq_persist = now
                 try:
-                    await db.run_state_update_seq(session_id, int(ss))
+                    # Offloaded: this fires repeatedly DURING streaming; on the
+                    # loop it would freeze the LLM stream every ~1s.
+                    await db_offload(lambda: db.run_state_update_seq(session_id, int(ss)))
                 except Exception:
                     pass
 
     try:
-        # Re-fetch agent with context documents if missing.
+        # Re-fetch agent with context documents only if they were never resolved.
+        # _prepare_send now loads context up front, so the common path skips this
+        # entirely (a saved DB round-trip per message). Note: an agent with no
+        # context docs has an *empty list* here — that still counts as resolved,
+        # so we check for the key being absent (None), not merely falsy.
         nonlocal_agent = agent
-        if not nonlocal_agent.get("context_documents"):
+        if nonlocal_agent.get("context_documents") is None:
             _fetched = await db.fetch_agent_by_id_with_context(
                 nonlocal_agent["id"], CONTEXT_SECTION_TYPES, user_id=user_id)
             if _fetched is not None:
@@ -1631,7 +2040,7 @@ async def _run_turn_background(
 
         # Local Claude Code (and any alternate-runtime) agent hands its WHOLE turn
         # to its own engine adapter (see the engine seam in app/agent/loop.py) — it
-        # runs `claude` directly, not webAgent's loop. None of the normal turn
+        # runs `claude` directly, not WebAgent's loop. None of the normal turn
         # plumbing applies, so skip the memory nodes: a Claude run should show no
         # memory_search / memory_save bubbles around it.
         _engine_id = ""
@@ -1693,13 +2102,62 @@ async def _run_turn_background(
                                   "step": "memory_search_end", "results_count": 0,
                                   "results": [], "skipped": True})
         else:
-            await event_callback({"type": "pipeline", "level": "pipeline",
-                                  "step": "memory_search_start", "query": request.message, "limit": 5})
+            # The embedding/search is LAUNCHED here so it overlaps the tool +
+            # history reads below, but the user-visible "Searching memory" step
+            # is emitted later — right before we actually await its result — so
+            # the activity pill steps through each prep stage in the order it is
+            # genuinely waited on (building tools → loading history → searching
+            # memory) instead of sitting on "Searching memory" for all of prep.
             # Short messages take the keyword-only fast path (no embedding) (#3).
             _use_vector = not _should_skip_vector(request.message)
             _brain_task = asyncio.create_task(
                 db.memory_search(request.user_id, request.message, limit=5, vector=_use_vector)
             )
+
+        # ── Launch the independent pure-DB reads concurrently (real parallelism) ──
+        # load_tools + the attached data-source list touch only the DB (no main-
+        # loop-bound LLM/embedding client), so each runs in its own worker thread
+        # via _gather_db_concurrent: their remote-Postgres round-trips overlap one
+        # another, the memory embedding launched just above, AND the attachment/
+        # vision work below — instead of stacking serially. Collected further down,
+        # just before the prompt is built. The history builder is deliberately NOT
+        # included: its compaction step can call the LLM, which must stay on this
+        # event loop's client.
+        _agent_id_for_prompt = agent.get("id") if agent else None
+        _tools_version = agent.get("updated_at") if agent else None
+        # ── PREWARM FAST PATH ──
+        # If the front-end warmed this session's read-only prep while the user was
+        # typing (tool set + history + data sources), consume it and SKIP those
+        # remote round-trips entirely. The bundle is only returned when it's still
+        # valid (same agent/version, within TTL, built after the last turn), so a
+        # miss is always safe — we just build it live below.
+        _pw = None
+        # Skip the fast path on a REPLACE turn: an interrupted-and-replaced send
+        # must rebuild history fresh (it includes the interrupted partial reply +
+        # the interruption system note), which a pre-typed bundle wouldn't have.
+        if not _is_engine_agent and not replaced:
+            try:
+                _pw = turn_prewarm.consume(
+                    session_id, sig=(request.user_id, _agent_id_for_prompt, _tools_version))
+            except Exception:
+                _pw = None
+        _reads_task = None
+        if _pw is None:
+            _read_factories = [
+                lambda: _cached_load_tools(
+                    request.user_id, _agent_id_for_prompt or "",
+                    agent.get("template_id") if agent else None, _tools_version),
+            ]
+            if _agent_id_for_prompt:
+                _read_factories.append(
+                    lambda: db.agent_data_source_list(_agent_id_for_prompt, enabled_only=True))
+            _reads_task = asyncio.ensure_future(_gather_db_concurrent(*_read_factories))
+        _perf.mark("db_reads_launched", prewarmed=bool(_pw))
+        # Activity-pill stage: we now wait on the tool build / data-source reads
+        # (the dominant cost of a warm turn). Surfaced so the user sees this stage
+        # — and its live elapsed time — above the chat pill, not just "memory".
+        await event_callback({"type": "pipeline", "level": "pipeline",
+                              "step": "prep_tools", "prewarmed": bool(_pw)})
 
         # ── Resolve attachments + vision fallback ──
         attachment_context = None
@@ -1743,9 +2201,67 @@ async def _run_turn_background(
             _desc_out.get("message_text", request.message),
             _desc_out.get("inline_docs", attachment_docs),
         )
+        _perf.mark("attachments_vision_done")
 
-        # ── PHASE 1 (cont.): await the memory lookup launched above, fold into prompt ──
+        # ── Collect the concurrent reads launched above ──
+        # These ran in worker threads alongside the memory embedding and the
+        # attachment/vision work, so their round-trips have been overlapping
+        # rather than stacking. The pipeline events are still emitted in their
+        # original narrative order below, so the loop visualizer's sequence
+        # (search → prompt → data sources) is unchanged.
+        _ds_attached: List[Dict[str, Any]] = []
+        if _pw is not None:
+            # Prewarm hit: tools + data sources + history came from the bundle the
+            # front-end built while the user typed — no remote round-trips here.
+            tools = _pw["tools"]
+            if isinstance(tools, BaseException) or tools is None:
+                raise RuntimeError("prewarmed tools invalid")
+            _ds_attached = _pw.get("ds_attached") or []
+            _perf.mark("db_reads_collected", prewarmed=True,
+                       tool_count=len(tools) if isinstance(tools, list) else None)
+        else:
+            _reads = await _reads_task
+            tools = _reads[0]
+            if isinstance(tools, BaseException):
+                raise tools  # tool loading is essential — surface the real error
+            if _agent_id_for_prompt:
+                _ds_res = _reads[1]
+                _ds_attached = [] if isinstance(_ds_res, BaseException) else (_ds_res or [])
+            _perf.mark("db_reads_collected", tool_count=len(tools) if isinstance(tools, list) else None)
+
+        # ── Build the chat history (prior interactions) ──
+        if is_first_turn:
+            # Brand-new session: the user's message is the very first interaction,
+            # so there is nothing prior to load. Skip both the DB round-trip AND
+            # the user-visible "Loading history" pill step entirely.
+            history = []
+            _perf.mark("history_built", first_turn=True, history_len=0)
+        elif _pw is not None:
+            # Prewarm hit: history came from the pre-typed bundle.
+            await event_callback({"type": "pipeline", "level": "pipeline",
+                                  "step": "prep_history", "prewarmed": True})
+            history = _pw["history"]
+            _perf.mark("history_built", prewarmed=True,
+                       history_len=len(history) if isinstance(history, list) else None)
+        else:
+            # Activity-pill stage: building the chat history (prior interactions).
+            await event_callback({"type": "pipeline", "level": "pipeline",
+                                  "step": "prep_history"})
+            # History stays on the main loop (its compaction step may call the LLM).
+            # Its DB round-trips overlap any reads still finishing in their threads.
+            history = await build_openai_history_from_session(
+                db, request.user_id, request.session_id,
+                exclude_interaction_ids={user_interaction_id} if user_interaction_id else set(),
+                agent_id=agent.get("id"),
+            )
+            _perf.mark("history_built", history_len=len(history) if isinstance(history, list) else None)
+
+        # ── PHASE 1 (cont.): await the memory lookup (its embedding has been
+        # overlapping the assembly above) and fold it into the prompt ──
         if _brain_task is not None:
+            # Activity-pill stage: now we actually wait on the memory lookup.
+            await event_callback({"type": "pipeline", "level": "pipeline",
+                                  "step": "memory_search_start", "query": request.message, "limit": 5})
             brain_results = await _brain_task
             await event_callback({
                 "type": "pipeline", "level": "pipeline", "step": "memory_search_end",
@@ -1785,7 +2301,7 @@ async def _run_turn_background(
             await event_callback({"type": "tool_result", "level": "agent", "tool": "memory_search",
                                   "result": search_content[:2000], "duration_ms": 0, "error": False})
 
-        _agent_id_for_prompt = agent.get("id") if agent else None
+        _perf.mark("memory_recall_done", memory_hits=len(brain_results or []))
         system_prompt = await build_system_prompt(
             context_docs, brain_context, request.user_id, agent_id=_agent_id_for_prompt)
         # The attachment summary tells the model to call the `read_attachment`
@@ -1796,32 +2312,19 @@ async def _run_turn_background(
             system_prompt = system_prompt + "\n\n" + attachment_context
         system_prompt = await append_skills_section(system_prompt, agent, request.session_id, caller_user_id=request.user_id)
 
-        from app.tools.loader import load_tools
-        tools = await load_tools(request.user_id, agent_id=_agent_id_for_prompt or "",
-                                 agent_template_id=agent.get("template_id") if agent else None,
-                                 gate_caller_access=True)
+        # Emit the pipeline events now, in their original visual order (the work
+        # above was reordered for overlap, but the narrative shown stays the same).
         await event_callback({
             "type": "pipeline", "level": "pipeline", "step": "build_prompt", "sections": ["SYSTEM"],
             "brain_injected": bool(brain_context), "tool_count_in_prompt": len(tools),
             "system_prompt": system_prompt[:8000],
         })
-
-        try:
-            _ds_attached = await db.agent_data_source_list(_agent_id_for_prompt, enabled_only=True) if _agent_id_for_prompt else []
-        except Exception:
-            _ds_attached = []
         await event_callback({
             "type": "pipeline", "level": "pipeline", "step": "data_src_loaded",
             "attached_count": len(_ds_attached),
             "sources": [{"name": a.get("name"), "type": a.get("type"), "tool_alias": a.get("tool_alias")}
                         for a in _ds_attached],
         })
-
-        history = await build_openai_history_from_session(
-            db, request.user_id, request.session_id,
-            exclude_interaction_ids={user_interaction_id} if user_interaction_id else set(),
-            agent_id=agent.get("id"),
-        )
 
         # If this turn replaced one the user interrupted, tell the agent so it
         # reads the new message as a course-correction / stop / addition relative
@@ -1848,6 +2351,9 @@ async def _run_turn_background(
 
         assistant_reply = ""
         _exec_mode = getattr(request, 'execution_mode', 'ask') or 'ask'
+        _perf.mark("prep_complete_entering_loop")
+        _seen_first_event = False
+        _seen_first_text = False
         async for event in stream_agent_events(
             user_id=request.user_id, session_id=request.session_id,
             user_message=user_message_content, system_prompt=system_prompt,
@@ -1860,6 +2366,13 @@ async def _run_turn_background(
             # its own tools — the default loop already inlines images itself.
             attachment_docs=attachment_docs,
         ):
+            if not _seen_first_event:
+                _seen_first_event = True
+                _perf.mark("loop_first_event", event_type=event.get("type"))
+            _etype = event.get("type")
+            if not _seen_first_text and _etype in ("stream", "response"):
+                _seen_first_text = True
+                _perf.mark("loop_first_text", event_type=_etype)
             await event_callback(event)
             if event["type"] == "response":
                 assistant_reply = event["content"]
@@ -1867,6 +2380,7 @@ async def _run_turn_background(
                 assistant_reply = f"I encountered an error: {event['message']}"
             elif event["type"] == "interrupted" and not assistant_reply:
                 assistant_reply = f"I was interrupted: {event['message']}"
+        _perf.mark("loop_done", reply_chars=len(assistant_reply or ""))
 
         # ── Background memory save ── (skipped for engine agents — no plumbing)
         if not _is_engine_agent and 'memory_save' not in set(_raw_at or []) and loop_config.is_enabled("memory_save"):
@@ -1909,11 +2423,19 @@ async def _run_turn_background(
         except Exception:
             pass
     finally:
+        # The turn is done — drop any prewarm bundle so the NEXT turn re-warms with
+        # history that includes the reply just produced (see app/agent/turn_prewarm).
+        try:
+            turn_prewarm.mark_turn_done(session_id)
+        except Exception:
+            pass
         # Derive the machine cause from the terminal status. A voluntary cause
         # (user_stop / replaced) already on the row is preserved by run_state_finish.
         _web_cause = ("complete" if final_status == "complete"
                       else "crash" if final_status == "error" else None)
         try:
+            # NOT offloaded: run_state_finish emits an agent-status WebSocket
+            # broadcast (main-loop-bound notify_user), so it stays on the loop.
             await db.run_state_finish(session_id, status=final_status, stop_cause=_web_cause)
         except Exception as _rsf:
             logger.debug("run_state_finish failed for %s: %s", session_id, _rsf)
@@ -2146,6 +2668,12 @@ async def chat_send(request: ChatRequest, fastapi_request: Request):
         return {"status": "tunnelled", "session_id": request.session_id}
     if "slash_result" in prep:
         return {"status": "ok", "session_id": request.session_id, "reply": prep["slash_result"]}
+    if prep.get("duplicate"):
+        # Idempotent replay: the browser outbox re-sent a message we already
+        # accepted. Acknowledge the original turn with a 200 so the retry clears
+        # from the outbox — but do NOT start a second run for it.
+        return {"status": "duplicate", "session_id": request.session_id,
+                "turn_id": prep["user_interaction_id"]}
 
     # ── Cross-device hand-off ──
     # If this turn targets another device, enqueue it for that device's worker to
@@ -2243,7 +2771,8 @@ async def chat_send(request: ChatRequest, fastapi_request: Request):
         db=prep["db"],
         run_factory=lambda replaced: _run_turn_background(
             prep["db"], request, prep["agent"], prep["user_interaction_id"],
-            prep["channel"], replaced=replaced),
+            prep["channel"], replaced=replaced,
+            is_first_turn=prep.get("is_first_turn", False)),
     )
     return {
         "status": status,  # "running" or "replacing"
@@ -2272,6 +2801,12 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
             yield f"data: {json.dumps({'type': 'stream', 'level': 'agent', 'content': result})}\n\n"
             yield f"data: {json.dumps({'type': 'response', 'level': 'agent', 'content': result})}\n\n"
         return StreamingResponse(_slash_events(), media_type="text/event-stream")
+    if prep.get("duplicate"):
+        # Idempotent replay (outbox retry of an already-accepted send): don't
+        # start a second run — just close the stream so the client resolves.
+        async def _dup_noop():
+            yield f"data: {json.dumps({'type': 'response', 'level': 'agent', 'content': ''})}\n\n"
+        return StreamingResponse(_dup_noop(), media_type="text/event-stream")
 
     # ── TUI bridge path ──
     if prep.get("is_tui_bridge"):
@@ -2315,7 +2850,8 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
         db=prep["db"],
         run_factory=lambda replaced: _run_turn_background(
             prep["db"], request, prep["agent"], prep["user_interaction_id"],
-            prep["channel"], replaced=replaced),
+            prep["channel"], replaced=replaced,
+            is_first_turn=prep.get("is_first_turn", False)),
     )
 
     async def safe_event_generator():
@@ -2356,8 +2892,10 @@ async def _save_chat_to_memory(
             timeline=user_message[:200],
         )
 
-        # Save memory_save as visible tool interaction
-        await db.insert_interaction(
+        # Save memory_save as visible tool interaction. Offloaded: this runs in a
+        # background task that overlaps the NEXT turn — a blocking write here would
+        # freeze that turn's stream. See app/db/offload.py.
+        await db_offload(lambda: db.insert_interaction(
             user_id, session_id, role="tool",
             content=save_content,
             parent_id=parent_interaction_id,
@@ -2368,7 +2906,7 @@ async def _save_chat_to_memory(
             output_data=save_content,
             sender_id=agent_id,
             receiver_id=agent_id,
-        )
+        ))
 
         await _emit_to_visualizers(session_id, {
             "type": "db", "level": "db",
@@ -2786,7 +3324,10 @@ async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: 
                 })
             else:
                 _op = None  # tool finished — back to a generic "thinking" state
-            await get_db().run_state_set_op(session_id, _op)
+            # Offloaded: emitted for every tool event mid-turn; a blocking write
+            # here would freeze the loop (and the stream) on each tool call.
+            _db_op = get_db()
+            await db_offload(lambda: _db_op.run_state_set_op(session_id, _op))
         except Exception as _oe:
             logger.debug("run_state_set_op failed for session %s: %s", session_id, _oe)
 

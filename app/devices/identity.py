@@ -1,4 +1,4 @@
-"""Device identity — a STABLE, per-machine id for this webAgent instance.
+"""Device identity — a STABLE, per-machine id for this WebAgent instance.
 
 When several instances share ONE database (the multi-device feature), each must
 know which physical machine it is so jobs can be addressed to it. The existing

@@ -495,6 +495,39 @@ class LogStore:
         finally:
             conn.close()
 
+    def query_tool_executions_sync(
+        self,
+        *,
+        tool_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Synchronous twin of ``query_tool_executions`` for SYNC (`def`) path
+        operations (see db_viewer.py endpoints run in FastAPI's threadpool). The
+        body was already fully synchronous; this just drops the ``async`` so a
+        sync endpoint can call it without an event loop."""
+        where: List[str] = []
+        params: List[Any] = []
+        if tool_name:
+            where.append("tool_name = ?")
+            params.append(tool_name)
+        if session_id:
+            where.append("session_id = ?")
+            params.append(session_id)
+        sql = "SELECT * FROM tool_executions"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        params.append(max(1, min(int(limit or 200), 2000)))
+        conn = self._connect(self._logs_path)
+        try:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        except Exception as e:
+            logger.debug("query_tool_executions_sync failed: %s", e)
+            return []
+        finally:
+            conn.close()
+
     async def session_tool_usage(
         self,
         tool_names: List[str],
@@ -504,7 +537,7 @@ class LogStore:
     ) -> Dict[str, set]:
         """Map each session_id to the SET of tool names it ran, restricted to
         ``tool_names``. One grouped query — used to flag which sessions touched a
-        canvas or a browser page without a per-session round-trip. Sessions that
+        genui or a browser page without a per-session round-trip. Sessions that
         ran none of the listed tools are simply absent from the map."""
         names = [t for t in (tool_names or []) if t]
         if not names:

@@ -219,7 +219,7 @@ async def regenerate_key(body: UserBody):
 async def ngrok_authtoken(body: AuthtokenBody):
     """Convenience: stash an ngrok authtoken into ngrok's own config.
 
-    webAgent never stores the token — it just runs ``ngrok config add-authtoken``
+    WebAgent never stores the token — it just runs ``ngrok config add-authtoken``
     so the user doesn't have to open a terminal.
     """
     await _require_admin(body.requesting_user_id)

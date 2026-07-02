@@ -1,4 +1,4 @@
-"""webAgent launcher — guarantees a SINGLE server instance on port 8080.
+"""WebAgent launcher — guarantees a SINGLE server instance on port 8080.
 
 Why this matters: the live chat feed (WebSocket) and the running agent only
 talk to each other through one process's in-memory listener list — there is no
@@ -46,7 +46,47 @@ from uvicorn.server import Server
 HOST = "0.0.0.0"   # IPv4 "any"
 HOST6 = "::"        # IPv6 "any" — so http://localhost:8080 works when the browser
                     # resolves "localhost" to ::1 (Windows browsers often try IPv6 first).
-PORT = 8080
+
+# The port is 8080 by default, but reads WEBAGENT_PORT when set so SEVERAL
+# WebAgent checkouts can run side by side on one machine — each launched on its
+# OWN port (8081, 8082, …) from its OWN repo folder. This is what the admin
+# "Local Instances" page uses to run sibling repos as background servers. Every
+# guard below (sole-instance kill, bind, take-over) references this one value, so
+# an instance only ever guards/binds ITS port — a sibling on 8081 never touches
+# the 8080 hub. A blank/garbage value falls back to 8080.
+def _saved_hub_port() -> int:
+    """The port the hub was told to bind next time, from the Deploy card's "change
+    current deployment port" (data/config/local-instances.json ``hub_port``). Read
+    with the stdlib only — run.py must not import the heavy app package. Returns 0
+    when unset/invalid. A SIBLING is launched WITH WEBAGENT_PORT, so this is only
+    consulted for the hub (no env), and never lets a sibling read it."""
+    try:
+        import json
+        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "data", "config", "local-instances.json")
+        with open(cfg_path, "r", encoding="utf-8") as fh:
+            v = int((json.load(fh) or {}).get("hub_port") or 0)
+        return v if 1024 <= v <= 65535 else 0
+    except Exception:  # noqa: BLE001  — missing/garbage file → fall back to 8080
+        return 0
+
+
+def _resolve_port() -> int:
+    raw = (os.environ.get("WEBAGENT_PORT") or "").strip()
+    if raw:
+        try:
+            p = int(raw)
+            if 1 <= p <= 65535:
+                return p
+        except ValueError:
+            pass
+    saved = _saved_hub_port()
+    if saved:
+        return saved
+    return 8080
+
+
+PORT = _resolve_port()
 _IS_WIN = sys.platform == "win32"
 # Keep helper console tools (netstat/taskkill/tasklist) from flashing a window.
 _NO_WINDOW = {"creationflags": 0x08000000} if _IS_WIN else {}  # CREATE_NO_WINDOW
@@ -149,7 +189,7 @@ def _ensure_sole_instance() -> None:
     owners = _live_owners(PORT)
     if not owners:
         return
-    print(f"[webAgent] Port {PORT} held by a live server (pid(s) {owners}) — taking "
+    print(f"[WebAgent] Port {PORT} held by a live server (pid(s) {owners}) — taking "
           f"over (killing it so there is only one server).", flush=True)
     for pid in owners:
         _kill(pid)
@@ -225,7 +265,7 @@ def _bind_with_takeover(family: int, host: str):
             owners = _live_owners(PORT)
             if owners:
                 # A real server (re)appeared on the port — take it over.
-                print(f"[webAgent] Port {PORT} still held by live pid(s) {owners} — "
+                print(f"[WebAgent] Port {PORT} still held by live pid(s) {owners} — "
                       f"killing to take over…", flush=True)
                 for pid in owners:
                     _kill(pid)
@@ -234,14 +274,14 @@ def _bind_with_takeover(family: int, host: str):
                 # No live owner: the only thing in the way is a dead
                 # predecessor's lingering sockets. Reclaim the address.
                 if not announced:
-                    print(f"[webAgent] Port {PORT} occupied by a previous server's "
+                    print(f"[WebAgent] Port {PORT} occupied by a previous server's "
                           f"leftover sockets (no live process owns it) — reclaiming "
                           f"the address…", flush=True)
                     announced = True
                 reuse = True
             time.sleep(0.4)
     if last is not None:
-        print(f"[webAgent] (last bind error: {last})", flush=True)
+        print(f"[WebAgent] (last bind error: {last})", flush=True)
     return None, reuse
 
 
@@ -253,11 +293,11 @@ def main():
     if sock4 is None:
         owners = _live_owners(PORT)
         if owners:
-            print(f"[webAgent] ERROR: port {PORT} is held by live process(es) "
+            print(f"[WebAgent] ERROR: port {PORT} is held by live process(es) "
                   f"{owners} that won't terminate. Stop them (TUI Stop button / "
                   f"run kill_webagent.bat as Administrator) and retry.", flush=True)
         else:
-            print(f"[webAgent] ERROR: port {PORT} is still tied up by a previous "
+            print(f"[WebAgent] ERROR: port {PORT} is still tied up by a previous "
                   f"server's leftover sockets and wouldn't release in time. Wait "
                   f"~30s and retry, or run kill_webagent.bat.", flush=True)
         sys.exit(1)
@@ -271,22 +311,22 @@ def main():
     try:
         sock6 = _make_listener(socket.AF_INET6, HOST6, reuse=reuse)
     except OSError as e:
-        print(f"[webAgent] IPv6 listener unavailable ({e}) — serving IPv4 only.", flush=True)
+        print(f"[WebAgent] IPv6 listener unavailable ({e}) — serving IPv4 only.", flush=True)
 
     sockets = [sock4] + ([sock6] if sock6 is not None else [])
     families = "IPv4+IPv6" if sock6 is not None else "IPv4 only"
     how = "reclaimed leftovers" if reuse else "exclusive"
-    print(f"[webAgent] Bound port {PORT} ({families}, {how} — single instance)", flush=True)
+    print(f"[WebAgent] Bound port {PORT} ({families}, {how} — single instance)", flush=True)
 
     config = Config(app="app.main:app", ws="wsproto")
     server = Server(config=config)
 
     # Print our own banner — uvicorn skips its "Uvicorn running on" line when a
     # pre-bound socket is passed in.
-    print(f"[webAgent] Server running on http://localhost:{PORT}", flush=True)
-    print(f"[webAgent] UI: http://localhost:{PORT}/index.html", flush=True)
-    print(f"[webAgent] Swagger: http://localhost:{PORT}/docs", flush=True)
-    print(f"[webAgent] Press Ctrl+C in the webAgent.bat window to stop.", flush=True)
+    print(f"[WebAgent] Server running on http://localhost:{PORT}", flush=True)
+    print(f"[WebAgent] UI: http://localhost:{PORT}/index.html", flush=True)
+    print(f"[WebAgent] Swagger: http://localhost:{PORT}/docs", flush=True)
+    print(f"[WebAgent] Press Ctrl+C in the WebAgent.bat window to stop.", flush=True)
     print(flush=True)
 
     server.run(sockets=sockets)

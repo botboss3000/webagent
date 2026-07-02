@@ -23,7 +23,7 @@ PREFIX = "enc:v1:"
 
 
 def is_ciphertext(s: Optional[str]) -> bool:
-    """True if s is a webAgent-formatted ciphertext blob."""
+    """True if s is a WebAgent-formatted ciphertext blob."""
     return bool(s) and s.startswith(PREFIX)
 
 

@@ -30,7 +30,7 @@ class NormalizedEvent:
 
     source: str                 # e.g. "gmail"
     event_type: str             # e.g. "message_received"
-    owner_user_id: str          # webAgent internal user id
+    owner_user_id: str          # WebAgent internal user id
     external_id: str            # provider-side primary key for dedup
     occurred_at: str            # ISO timestamp
     payload: Dict[str, Any] = field(default_factory=dict)

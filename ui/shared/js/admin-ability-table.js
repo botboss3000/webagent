@@ -1130,7 +1130,7 @@ export async function build(container, cfg) {
   });
 
   // ── Hybrid search / chat pill ────────────────────────────────────────────────
-  // TYPE → live filter; SEND/ATTACH → chat to webAgent the manager.
+  // TYPE → live filter; SEND/ATTACH → chat to WebAgent the manager.
   // SISTER-PANEL: AGENT-ABILITY-TABLE — mirrored in agent-ability-table.js, with
   // ONE intentional divergence in MOUNT LOCATION (not look/behaviour): the agent
   // card builds this pill INLINE above the table (showSearch defaults on). The

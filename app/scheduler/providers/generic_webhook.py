@@ -1,7 +1,7 @@
 """Generic webhook provider.
 
 For any cron service that exposes an HTTP endpoint accepting a job spec.
-webAgent POSTs the following JSON to the configured ``upstream_url`` for
+WebAgent POSTs the following JSON to the configured ``upstream_url`` for
 every job push, and a DELETE when the row goes away:
 
   {
@@ -16,7 +16,7 @@ every job push, and a DELETE when the row goes away:
   }
 
 The upstream service is expected to respond with ``{"job_id": "..."}`` on
-success. webAgent stores that id as ``external_job_id`` for the row.
+success. WebAgent stores that id as ``external_job_id`` for the row.
 
 This is the lowest-common-denominator integration — use it to wire any of:
   - Self-hosted cron services
@@ -91,7 +91,7 @@ class GenericWebhookScheduler(BaseRemoteScheduler):
             "fire_url": fire_url,
             "schedule_cron": row.get("schedule_cron"),
             "timezone": row.get("timezone") or "UTC",
-            "label": row.get("task_label") or "webAgent automation",
+            "label": row.get("task_label") or "WebAgent automation",
             "owner_user_id": row.get("owner_user_id"),
         }
         async with httpx.AsyncClient(timeout=20.0) as client:

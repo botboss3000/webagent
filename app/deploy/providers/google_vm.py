@@ -44,6 +44,29 @@ _COMPUTE = "https://compute.googleapis.com/compute/v1"
 _IMAGE = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
 _FW_NAME = "webagent-allow-http-https"
 _NET_TAG = "webagent-http"
+# When "save as an SSH server" is on, we authorise this login on the new VM (via
+# instance ssh-keys metadata, which GCE's guest agent provisions with sudo) and
+# save its freshly-generated private key to the SSH target's saved-servers list.
+_SSH_LINK_USER = "webagent"
+
+
+def _gen_ssh_keypair() -> Tuple[str, str]:
+    """A fresh Ed25519 keypair → (OpenSSH private-key PEM, OpenSSH public line).
+    Uses ``cryptography`` (already a dependency); the private key is loadable later
+    by paramiko for the SSH deploy target."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    key = Ed25519PrivateKey.generate()
+    priv = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.OpenSSH,
+        serialization.NoEncryption(),
+    ).decode("ascii")
+    pub = key.public_key().public_bytes(
+        serialization.Encoding.OpenSSH,
+        serialization.PublicFormat.OpenSSH,
+    ).decode("ascii")
+    return priv, pub
 
 
 def _b64url(data: bytes) -> str:
@@ -125,7 +148,7 @@ class GoogleVMProvider(BaseDeployProvider):
     id = "google_vm"
     display_name = "Google Compute VM"
     icon = "cloud"
-    summary = "Create a Google Cloud VM and install webAgent on it automatically."
+    summary = "Create a Google Cloud VM and install WebAgent on it automatically."
     requires = ["A Google Cloud project", "A service-account JSON key with the Compute Admin role"]
     # This target can enumerate + manage every VM in the project, so it powers the
     # Cloud VMs admin page (list / start / stop / delete) — see list_instances +
@@ -141,12 +164,31 @@ class GoogleVMProvider(BaseDeployProvider):
          "tip": "Your project's ID (not its display name). Find it in the Google "
                 "Cloud console top-bar project picker, or at console.cloud.google.com. "
                 "No project yet? Create one there first — creating a project is free."},
-        {"key": "zone", "label": "Zone (data-centre location)", "type": "text",
-         "default": "us-central1-a", "placeholder": "us-central1-a",
-         "tip": "Where the server physically lives. Pick one near most of your users "
-                "for speed. Examples: us-central1-a (Iowa, USA), us-east1-b "
-                "(S. Carolina), europe-west2-a (London), asia-southeast1-a "
-                "(Singapore). Full list: Cloud console → Compute Engine → Zones."},
+        # A dropdown of common worldwide zones (pick by where your users are), plus
+        # a "Custom…" entry that reveals a text box so ANY of Google's ~40 zones can
+        # still be typed — see deploy.js `_buildField` (the `custom` select branch).
+        {"key": "zone", "label": "Zone (data-centre location)", "type": "select",
+         "default": "us-central1-a", "custom": True,
+         "custom_label": "✏️ Custom… (type any zone)",
+         "custom_placeholder": "e.g. us-west2-a — any Google Cloud zone",
+         "tip": "Where the server physically lives. Pick the location closest to most "
+                "of your users for speed. The list covers the common regions; choose "
+                "“Custom…” to type any other Google Cloud zone. Full list: Cloud "
+                "console → Compute Engine → Zones.",
+         "options": [
+             {"value": "us-central1-a", "label": "🇺🇸 US Central — Iowa"},
+             {"value": "us-east1-b", "label": "🇺🇸 US East — S. Carolina"},
+             {"value": "us-west1-a", "label": "🇺🇸 US West — Oregon"},
+             {"value": "northamerica-northeast1-a", "label": "🇨🇦 Canada — Montréal"},
+             {"value": "europe-west2-a", "label": "🇬🇧 Europe — London"},
+             {"value": "europe-west1-b", "label": "🇧🇪 Europe — Belgium"},
+             {"value": "europe-west3-a", "label": "🇩🇪 Europe — Frankfurt"},
+             {"value": "asia-southeast1-a", "label": "🇸🇬 Asia — Singapore"},
+             {"value": "asia-northeast1-a", "label": "🇯🇵 Asia — Tokyo"},
+             {"value": "asia-south1-a", "label": "🇮🇳 Asia — Mumbai"},
+             {"value": "australia-southeast1-a", "label": "🇦🇺 Australia — Sydney"},
+             {"value": "southamerica-east1-a", "label": "🇧🇷 South America — São Paulo"},
+         ]},
         {"key": "machine_type", "label": "Machine size", "type": "select",
          "default": "e2-small",
          "tip": "Bigger machines cost more per month but serve more people at once. "
@@ -169,7 +211,7 @@ class GoogleVMProvider(BaseDeployProvider):
          ]},
         {"key": "repo_url", "label": "Code to install (git repository)", "type": "text",
          "default": DEFAULT_REPO_URL, "placeholder": DEFAULT_REPO_URL,
-         "tip": "Leave this as-is to install the standard webAgent. Only change it if "
+         "tip": "Leave this as-is to install the standard WebAgent. Only change it if "
                 "you maintain your own copy (a fork) and want the server to run that "
                 "instead."},
         {"key": "branch", "label": "Version (git branch)", "type": "text",
@@ -182,12 +224,23 @@ class GoogleVMProvider(BaseDeployProvider):
                 "and point its DNS 'A' record at the server's IP — the server then "
                 "gets a free HTTPS certificate automatically. Leave blank to reach "
                 "the app at the server's raw IP over plain http."},
-        {"key": "forget_keys", "label": "Forget cloud key after deploy", "type": "checkbox",
+        {"key": "forget_keys", "label": "Forget my Google Cloud key after deploy", "type": "checkbox",
          "default": True,
-         "tip": "Recommended. Deletes your cloud key from the app's vault as soon as "
-                "the deploy succeeds, so the app never keeps standing access to your "
-                "cloud account. You'll only be asked for the key again if you tear the "
-                "server down later."},
+         "tip": "About your GOOGLE CLOUD account key (the service-account JSON below) — "
+                "NOT the SSH key. Recommended: deletes it from the app's vault the "
+                "moment the deploy succeeds, so the app keeps no standing power to "
+                "create, delete or bill servers on your cloud account. This is separate "
+                "from the SSH access below — you can forget this and still keep SSH "
+                "access to the VM. You'll be asked for this key again only if you tear "
+                "the server down later."},
+        {"key": "save_ssh_server", "label": "Keep SSH access to this VM (saved server)", "type": "checkbox",
+         "default": True,
+         "tip": "About a SEPARATE, narrow key for THIS ONE VM — not your cloud account. "
+                "Recommended: generates an SSH login for the new VM and adds it to the "
+                "'Existing server (SSH)' saved-servers list, so afterwards you can "
+                "reconnect to re-install, update or stop just this machine over SSH — no "
+                "cloud key needed. The SSH key is generated for you and stored encrypted. "
+                "Independent of the cloud-key option above."},
     ]
     credential_fields = [
         {"key": "service_account_json", "label": "Service-account key (JSON)",
@@ -197,7 +250,21 @@ class GoogleVMProvider(BaseDeployProvider):
                 "with the 'Compute Admin' role, then open it → Keys → Add key → JSON "
                 "and download the file. Paste the file's entire contents here. It's "
                 "stored encrypted, and (with the option above) deleted after deploy."},
+        # OPTIONAL. A SECRET so it rides the encrypted vault (never deploy.json) and
+        # is auto-discarded after a successful deploy with the cloud key. The Deploy
+        # panel renders this into its OWN slot (above the cloud key), NOT the generic
+        # cloud-key list — see deploy.js `_renderProvider` / `#ac-deploy-admin`.
+        {"key": "admin_password", "label": "Admin password (optional)",
+         "type": "password", "secret": True, "required": False,
+         "placeholder": "leave blank — first visitor sets it",
+         "tip": "Optional — leave it blank to deploy the server as-is, with no admin "
+                "password set: the first person to open its address then picks the "
+                "password on the setup page. Or type one here (6+ characters) to "
+                "pre-set it, so the admin is ready before the address is ever public "
+                "(the account is created automatically on first boot). Stored "
+                "encrypted, and discarded once the deploy succeeds."},
     ]
+    # Only the cloud key is required to deploy — the admin password is optional.
     credential_required = ["service_account_json"]
 
     def available(self) -> Tuple[bool, str]:
@@ -264,6 +331,14 @@ class GoogleVMProvider(BaseDeployProvider):
         branch = (config.get("branch") or DEFAULT_BRANCH).strip() or DEFAULT_BRANCH
         domain = (config.get("domain") or "").strip()
 
+        # Optional pre-set admin password (from the vault). Blank → the first visitor
+        # to the server's address sets it via the setup page (open until an admin
+        # exists). Typed → bake BOOTSTRAP_ADMIN_PASSWORD in (see bootstrap._env_body).
+        admin_password = (creds.get("admin_password") or "").strip()
+        if admin_password and len(admin_password) < 6:
+            yield done({"ok": False, "message": "The admin password must be at least 6 characters (or leave it blank to set it on first visit)."})
+            return
+
         if not project:
             yield done({"ok": False, "message": "No Google Cloud project ID set."})
             return
@@ -276,7 +351,27 @@ class GoogleVMProvider(BaseDeployProvider):
             return
 
         name = f"webagent-{int(time.time())}-{_secrets.token_hex(2)}"
-        startup = build_install_script(repo_url=repo, branch=branch, domain=domain, port=8080)
+        startup = build_install_script(
+            repo_url=repo, branch=branch, domain=domain, port=8080,
+            admin_password=admin_password,
+        )
+        # Optionally generate an SSH login for the VM so it can be added to the SSH
+        # target's saved servers afterwards. GCE's guest agent provisions the user
+        # (with sudo) from the ``ssh-keys`` metadata; we keep the private half to
+        # store against the saved server on success.
+        save_ssh = bool(config.get("save_ssh_server", True))
+        ssh_priv = ssh_pub = ""
+        if save_ssh:
+            try:
+                ssh_priv, ssh_pub = _gen_ssh_keypair()
+            except Exception:
+                logger.exception("ssh keypair generation failed; skipping SSH link")
+                save_ssh = False
+
+        metadata_items = [{"key": "startup-script", "value": startup}]
+        if save_ssh and ssh_pub:
+            metadata_items.append({"key": "ssh-keys",
+                                   "value": f"{_SSH_LINK_USER}:{ssh_pub} {_SSH_LINK_USER}"})
         instance_body = {
             "name": name,
             "machineType": f"zones/{zone}/machineTypes/{machine}",
@@ -289,7 +384,7 @@ class GoogleVMProvider(BaseDeployProvider):
                 "accessConfigs": [{"type": "ONE_TO_ONE_NAT", "name": "External NAT"}],
             }],
             "tags": {"items": [_NET_TAG]},
-            "metadata": {"items": [{"key": "startup-script", "value": startup}]},
+            "metadata": {"items": metadata_items},
         }
 
         try:
@@ -331,9 +426,33 @@ class GoogleVMProvider(BaseDeployProvider):
             return
 
         public_url = (f"https://{domain}" if domain else (f"http://{ip}" if ip else ""))
-        yield ev("VM created. It is now installing webAgent — this takes a few minutes.", phase="installing", level="ok")
+        yield ev("VM created. It is now installing WebAgent — this takes a few minutes.", phase="installing", level="ok")
         if domain:
             yield ev(f"Point your domain {domain} at {ip or 'the server IP'} so HTTPS can be issued.", phase="dns", level="warn")
+        if admin_password:
+            yield ev("Admin account will be created automatically on first boot from the password you set.",
+                     phase="claim", level="ok")
+        else:
+            where = public_url or "the server's address"
+            yield ev(f"No admin password was pre-set: the first visitor to {where} sets it via the setup "
+                     "page. Open it yourself as soon as it's live and set your password before anyone else.",
+                     phase="claim", level="warn")
+
+        # Add the new VM to the SSH target's saved servers so it can be managed over
+        # SSH later. Best-effort: a hiccup here never fails the deploy (the VM is up).
+        if save_ssh and ssh_priv and ip:
+            try:
+                from app.deploy import manager
+                await manager.link_ssh_server(
+                    host=ip, ssh_user=_SSH_LINK_USER, ssh_port=22, private_key=ssh_priv,
+                    label=name, repo_url=repo, branch=branch, domain=domain, source="google_vm")
+                yield ev("Saved this VM to your SSH servers (Existing server → Saved servers) "
+                         "so you can reconnect to it later.", phase="linked", level="ok")
+            except Exception:
+                logger.exception("linking google VM to ssh servers failed")
+        elif save_ssh and not ip:
+            yield ev("Couldn't read the VM's IP, so it wasn't added to your SSH servers — "
+                     "you can add it by hand once it has an address.", phase="linked", level="warn")
 
         result = {
             "ok": True,
@@ -343,7 +462,7 @@ class GoogleVMProvider(BaseDeployProvider):
             "project": project,
             "public_url": public_url,
             "state": "installing",
-            "message": "Server created. webAgent is installing and will be live in a few minutes.",
+            "message": "Server created. WebAgent is installing and will be live in a few minutes.",
         }
         yield done(result)
 

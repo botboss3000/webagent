@@ -1,4 +1,4 @@
-"""File base editor API for webAgent.
+"""File base editor API for WebAgent.
 
 Provides admin-only endpoints for browsing, reading, and editing files
 inside the project root. Intended to back the VS Code-style file editor
@@ -46,38 +46,25 @@ _MAX_WRITE_BYTES = 5 * 1024 * 1024  # 5 MB
 # ── Auth ────────────────────────────────────────────────────────────
 
 def _user_id(request: Request) -> str:
-    """Resolve the requesting user_id.
+    """Resolve the requesting user_id from a VERIFIED token only.
 
-    Prefers a valid JWT in the Authorization header (cryptographically
-    authoritative), falls back to a `user_id` query param. The latter
-    matches the convention used by other admin endpoints in this app
-    (see app/admin/storage.py) so the Files page keeps working when the
-    JWT can't decode — e.g. after a JWT_SECRET rotation or a multi-
-    account sync glitch — provided is_admin=1 is set for that user_id
-    in the DB.
+    SECURITY (changed 2026-06-28): this used to fall back to a raw ``?user_id=``
+    query param when the JWT couldn't decode — which let anyone request
+    ``/api/v1/files/...?user_id=admin`` with no token and get admin-level read
+    /write of the host filesystem. That unverified-identity escape hatch is
+    removed. Identity now comes only from:
+
+      1. a valid ``Authorization: Bearer`` JWT, or
+      2. a valid ``?token=`` JWT (query-param auth used by some FE callers).
+
+    Still gated by ``db.is_user_admin`` downstream via ``_require_admin``.
     """
     auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        payload = decode_token(auth[7:])
-        if payload and payload.get("user_id"):
-            return payload["user_id"]
-    # Explicit query-param identity (JWT-rotation / multi-account escape hatch).
-    qp = request.query_params.get("user_id", "")
-    if qp:
-        return qp
-    # Open access mode: single-user / local convenience, no cross-tenant risk.
-    # A tunnel client holds no localhost JWT (open-login is localhost-only), and
-    # AuthMiddleware is not registered globally (see app/auth/identity.py) so
-    # request.state carries no identity here either. Resolve to the bootstrap
-    # admin directly off the access mode — mirroring db_viewer._is_open_access_mode
-    # — so the file editor AND the admin-status probe work over a Cloudflare
-    # Tunnel. Still gated by db.is_user_admin downstream.
-    try:
-        from app.admin.settings import get_access_mode
-        if get_access_mode() == "open":
-            return _BOOTSTRAP_ADMIN_ID
-    except Exception:
-        pass
+    token = auth[7:] if auth.startswith("Bearer ") else request.query_params.get("token", "")
+    if token:
+        payload = decode_token(token)
+        if payload and (payload.get("user_id") or payload.get("sub")):
+            return payload.get("user_id") or payload.get("sub")
     return ""
 
 

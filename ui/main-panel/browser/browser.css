@@ -10,7 +10,7 @@
    floating-glass skin (index.css) — this file owns ONLY the wrapper layout + the
    browser-nav chrome. See docs/claude/ui-guidance.md ("Chat pills").
 
-   TOOLBAR-LAYOUT (sister to ui/main-panel/canvas/canvas-toolbar.css): the
+   TOOLBAR-LAYOUT (sister to ui/main-panel/genui/genui-toolbar.css): the
    .browser-toolbar is a SINGLE row — the compact browser controls (.browser-nav,
    borderless flat buttons straight on the toolbar background) sit at their natural
    width on the left, and the unified pill (.browser-prompt-bar — the merged
@@ -58,7 +58,7 @@
 .browser-frame.has-frame { display: block; }
 
 /* Live pixel mirror (CDP screencast). Hidden until the screencast view is
-   active; the canvas is letterboxed to keep the page's aspect ratio. */
+   active; the genui is letterboxed to keep the page's aspect ratio. */
 .browser-mirror {
   width: 100%;
   height: 100%;
@@ -71,7 +71,7 @@
 .browser-mirror.has-frame { display: block; }
 
 /* Interactive overlay layer (cursors / ripples / telegraphs) — sits over the
-   mirror canvas, click-through. The overlay module (js/overlay.js) also styles
+   mirror genui, click-through. The overlay module (js/overlay.js) also styles
    `.bovl-layer` on this same element + owns everything inside it; these base
    rules just guarantee correct positioning before that style is injected. */
 .browser-overlay-layer {
@@ -124,7 +124,7 @@
 /* ── Toolbar: browser-nav chip + small chat pill, in normal flow ──
    SINGLE row on a wide panel (nav grows on the left, pill capped on the right);
    STACKS to a column under the breakpoint at the bottom of this file. Mirrors the
-   Canvas footer's pill + page-controls pairing (canvas-toolbar.css).
+   Gen UI footer's pill + page-controls pairing (genui-toolbar.css).
    pointer-events:none on the wrapper + auto on the visible controls lets clicks
    in the transparent gaps fall through to the browser stage behind it. */
 .browser-toolbar {

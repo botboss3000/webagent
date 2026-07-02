@@ -106,7 +106,7 @@ async def check_install_readiness(ctx: ToolContext, target: str = "") -> str:
     py = _supported_python()
     lines.append(f"  [{'OK' if py else 'X'}] Python 3.11-3.12: "
                  + (f"found ({py})" if py else f"NOT found (system Python is {f.system_python or 'absent'}; "
-                    "webAgent needs 3.11 or 3.12)"))
+                    "WebAgent needs 3.11 or 3.12)"))
     lines.append(f"  [{'OK' if f.git_present else 'X'}] git: {'found' if f.git_present else 'MISSING — install git first'}")
     net = _reachable("github.com") and _reachable("pypi.org")
     lines.append(f"  [{'OK' if net else 'X'}] internet: {'github + pypi reachable' if net else 'cannot reach github/pypi'}")
@@ -152,7 +152,7 @@ async def clone_repo(ctx: ToolContext, target: str) -> str:
     ctx.audit("clone_repo", {"target": str(p)}, ok, out[-300:])
     if not ok:
         return f"Error cloning the repo (exit {code}):\n{out[-600:]}"
-    return f"[clone] webAgent cloned into {p}. Next: setup_environment."
+    return f"[clone] WebAgent cloned into {p}. Next: setup_environment."
 
 
 async def setup_environment(ctx: ToolContext, target: str, python_exe: str = "",
@@ -207,7 +207,7 @@ async def seed_config(ctx: ToolContext, target: str) -> str:
         return WRITES_DISABLED_MSG
     p = _resolve_target(target)
     if not (p / "run.py").exists():
-        return f"Error: {p} isn't a webAgent checkout — clone first."
+        return f"Error: {p} isn't a WebAgent checkout — clone first."
     prov: Optional[ProviderConfig] = ctx.app_provider
     have_key = bool(prov and prov.configured)
     # 1) .env from .env.example, with the app key wired in and Supabase left blank.

@@ -6,13 +6,13 @@
 //
 // A fully self-contained, drop-in ES module that paints transient interaction
 // visuals ON TOP of the Browser page's live pixel mirror (the
-// <canvas class="browser-mirror">). It draws: agent INTENT telegraph halos
+// <genui class="browser-mirror">). It draws: agent INTENT telegraph halos
 // (where the agent is about to act), click ripples (agent or user), typing
 // highlights on form fields, and a ghost agent cursor with a fading trail.
 //
 // Called by:
-//   • ui/main-panel/browser/js/browser.js — owns the canvas + mirror lifecycle;
-//     calls initOverlay/setSpace/setCanvas/setEnabled and clears on view change.
+//   • ui/main-panel/browser/js/browser.js — owns the genui + mirror lifecycle;
+//     calls initOverlay/setSpace/setGenui/setEnabled and clears on view change.
 //   • ui/main-panel/browser/js/live-events.js — the agent action feed; turns
 //     incoming events into showTelegraph/showClick/showType/setAgentCursor calls.
 //
@@ -20,20 +20,20 @@
 // children appended into the supplied `layerEl`) and injects a ONE-TIME scoped
 // <style> block (id-guarded). Every colour comes from design-system CSS vars so
 // it is automatically correct in dark AND light mode. Everything is
-// pointer-events:none so it never blocks the canvas or the user.
+// pointer-events:none so it never blocks the genui or the user.
 //
-// COORDINATE MATH: the page coordinate space (default 1280x720) is the canvas's
-// intrinsic size; the canvas displays object-fit:contain (letterboxed) inside
+// COORDINATE MATH: the page coordinate space (default 1280x720) is the genui's
+// intrinsic size; the genui displays object-fit:contain (letterboxed) inside
 // .browser-stage. This module computes the INVERSE of browser.js `_mapPt`:
 // given a page-space point/box it returns the on-screen pixel position within
 // the overlay layer. See `_project()` below.
 
 // ── Module state (single overlay instance; the page only has one mirror) ─────
 let _layer = null;        // the absolutely-positioned overlay layer (== stage box)
-let _canvas = null;       // the <canvas class="browser-mirror"> we project onto
+let _genui = null;       // the <genui class="browser-mirror"> we project onto
 let _space = { width: 1280, height: 720 };  // page CSS-pixel coord space
 let _enabled = true;      // when false everything is hidden/cleared
-let _ro = null;           // ResizeObserver on the canvas
+let _ro = null;           // ResizeObserver on the genui
 let _onResize = null;     // window resize listener (kept for removal)
 
 // Agent ghost cursor: a persistent element (unlike the transient ripples), so
@@ -72,7 +72,7 @@ function _injectStyle() {
   inset: 0;
   overflow: hidden;
   pointer-events: none;
-  z-index: 4;               /* above the canvas, below the footer (z-index:5) */
+  z-index: 4;               /* above the genui, below the footer (z-index:5) */
 }
 .${_CLS.layer} * { pointer-events: none; }
 
@@ -233,11 +233,11 @@ function _injectStyle() {
 //   box : { x, y, width, height } in page CSS pixels
 // Both recomputed on every render so resize / letterbox shifts stay accurate.
 function _metrics() {
-  if (!_layer || !_canvas) return null;
-  const rect = _canvas.getBoundingClientRect();
+  if (!_layer || !_genui) return null;
+  const rect = _genui.getBoundingClientRect();
   const layerRect = _layer.getBoundingClientRect();
-  const cw = _space.width || _canvas.width || 1280;
-  const ch = _space.height || _canvas.height || 720;
+  const cw = _space.width || _genui.width || 1280;
+  const ch = _space.height || _genui.height || 720;
   const scale = Math.min(rect.width / cw, rect.height / ch) || 1;
   const dispW = cw * scale, dispH = ch * scale;
   const offX = (rect.left - layerRect.left) + (rect.width - dispW) / 2;
@@ -298,18 +298,18 @@ function _spawnTransient(el, ttlMs) {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 // Store refs, create the layer, attach observers. Safe to call repeatedly.
-export function initOverlay(layerEl, canvasEl) {
+export function initOverlay(layerEl, genuiEl) {
   if (!layerEl) return;
   _injectStyle();
   _layer = layerEl;
   _layer.classList.add(_CLS.layer);
-  if (canvasEl) _canvas = canvasEl;
+  if (genuiEl) _genui = genuiEl;
 
-  // Observe canvas display-box changes so projection metrics stay current.
+  // Observe genui display-box changes so projection metrics stay current.
   if (_ro) { try { _ro.disconnect(); } catch (_) {} _ro = null; }
-  if (_canvas && typeof ResizeObserver !== 'undefined') {
+  if (_genui && typeof ResizeObserver !== 'undefined') {
     _ro = new ResizeObserver(() => { /* metrics recomputed lazily per render */ });
-    try { _ro.observe(_canvas); } catch (_) {}
+    try { _ro.observe(_genui); } catch (_) {}
   }
   if (!_onResize) {
     _onResize = () => { /* projection is recomputed on next render; nothing to cache */ };
@@ -324,13 +324,13 @@ export function setSpace(space) {
   }
 }
 
-// Swap the canvas ref (e.g. if the mirror element is recreated).
-function setCanvas(canvasEl) {
-  _canvas = canvasEl || null;
+// Swap the genui ref (e.g. if the mirror element is recreated).
+function setGenui(genuiEl) {
+  _genui = genuiEl || null;
   if (_ro) { try { _ro.disconnect(); } catch (_) {} _ro = null; }
-  if (_canvas && typeof ResizeObserver !== 'undefined') {
+  if (_genui && typeof ResizeObserver !== 'undefined') {
     _ro = new ResizeObserver(() => {});
-    try { _ro.observe(_canvas); } catch (_) {}
+    try { _ro.observe(_genui); } catch (_) {}
   }
 }
 
@@ -468,5 +468,5 @@ function teardownOverlay() {
   if (_onResize) { window.removeEventListener('resize', _onResize); _onResize = null; }
   if (_layer) _layer.classList.remove(_CLS.layer);
   _layer = null;
-  _canvas = null;
+  _genui = null;
 }

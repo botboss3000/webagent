@@ -6,7 +6,7 @@ target never connects anywhere: it GENERATES one command the admin pastes into
 **PowerShell** once. The command installs git if missing (via winget), clones the
 repo to ``%USERPROFILE%\\webagent``, then runs the repo's
 ``deploy/windows-setup.ps1`` — which installs ``uv`` (Astral's Python toolchain),
-syncs the dependencies, and registers a **Scheduled Task** so webAgent runs in the
+syncs the dependencies, and registers a **Scheduled Task** so WebAgent runs in the
 background, restarts itself if it stops, and starts again when the user logs in.
 
 This is a "manual" target (``manual = True``): no cloud key, nothing billable,
@@ -30,7 +30,7 @@ FEATURE = {
     "display_name": "Windows",
     "category": "deploy",
     "status": "beta",
-    "summary": "Install webAgent on a Windows PC by pasting one command into PowerShell.",
+    "summary": "Install WebAgent on a Windows PC by pasting one command into PowerShell.",
     "requires": ["A Windows 10 or 11 PC", "~2 GB free storage"],
 }
 
@@ -52,17 +52,20 @@ _TEMPLATE = (
     "return}; "
     "if(Test-Path \"$dir\\.git\"){git -C \"$dir\" remote set-url origin $repo}"
     "else{git clone --depth 1 --branch __BRANCH__ $repo \"$dir\"}; "
+    # __ADMIN__ carries the optional pre-set admin password into windows-setup.ps1
+    # as an env var ($env:WA_ADMIN_PW) the child powershell inherits; empty when blank.
+    "__ADMIN__"
     "powershell -NoProfile -ExecutionPolicy Bypass -File \"$dir\\deploy\\windows-setup.ps1\""
 )
 
 
 def _run_command(directory: str) -> str:
-    """Start the server when webAgent is ALREADY installed — no clone, no rebuild.
-    Prefers the “webAgent” Scheduled Task the installer registers (which is
+    """Start the server when WebAgent is ALREADY installed — no clone, no rebuild.
+    Prefers the “WebAgent” Scheduled Task the installer registers (which is
     folder-independent); falls back to the keep-alive ps1 in the install folder if
     the task isn't there. Keep BYTE-IDENTICAL to deploy.js `_runWindows`."""
     return (
-        "if(Get-ScheduledTask -TaskName webAgent -EA SilentlyContinue){Start-ScheduledTask -TaskName webAgent}"
+        "if(Get-ScheduledTask -TaskName WebAgent -EA SilentlyContinue){Start-ScheduledTask -TaskName WebAgent}"
         "else{powershell -NoProfile -ExecutionPolicy Bypass -File \""
         + directory + "\\deploy\\start_server_windows.ps1\"}"
     )
@@ -72,7 +75,7 @@ class WindowsProvider(BaseDeployProvider):
     id = "windows"
     display_name = "Windows"
     icon = "monitor"
-    summary = ("Install webAgent on a Windows PC. You copy one command and paste it "
+    summary = ("Install WebAgent on a Windows PC. You copy one command and paste it "
                "into PowerShell — there is no cloud account and nothing to pay for.")
     requires = [
         "A Windows 10 or 11 PC",
@@ -95,16 +98,22 @@ class WindowsProvider(BaseDeployProvider):
 
     # ── command generation (the single source of truth) ──
     def build_command(self, github_url: str, visibility: str = "public",
-                      token: str = "", branch: str = "", install_dir: str = "") -> Dict[str, Any]:
+                      token: str = "", branch: str = "", install_dir: str = "",
+                      admin_password: str = "") -> Dict[str, Any]:
         """Build everything the Windows row needs. ALWAYS succeeds (never
         ``{ok: False}``) — see ``manual_common.resolve_clone`` for why. Returns
         ``{ok, command, run_command, clone_display, steps, instructions,
-        reach_note, private, default_repo, placeholder_token, warning}``."""
+        reach_note, private, default_repo, placeholder_token, warning, prewire}``."""
         r = mc.resolve_clone(github_url, visibility, token)
         branch = mc._safe(branch, DEFAULT_BRANCH)
         directory = mc.resolve_dir(install_dir, mc.DEFAULT_DIR_WINDOWS)
+        # Optional pre-set admin password → an env assignment before the setup script
+        # (PowerShell); empty when blank. BYTE-IDENTICAL to deploy.js `_buildWindows`.
+        a = mc.resolve_admin(admin_password)
+        admin_ps = ("$env:WA_ADMIN_PW='" + a["password"] + "'; ") if a["prewire"] else ""
         command = (_TEMPLATE.replace("__CLONE__", r["clone_url"])
-                   .replace("__BRANCH__", branch).replace("__DIR__", directory))
+                   .replace("__BRANCH__", branch).replace("__DIR__", directory)
+                   .replace("__ADMIN__", admin_ps))
         # A display copy that hides the token (for any logging / non-QR display).
         clone_display = command.replace(r["clone_url"], r["repo"]) if r["private"] else command
 
@@ -116,16 +125,18 @@ class WindowsProvider(BaseDeployProvider):
             "from another device on the same network.",
         ]
         instructions = (
-            "webAgent installs into a folder in your user profile and runs in the background as a "
-            "Scheduled Task named 'webAgent' — it starts automatically when you log in and restarts "
-            "itself if it stops. To stop it, run in PowerShell: 'Stop-ScheduledTask -TaskName webAgent'. "
-            "To stop it starting on login: 'Unregister-ScheduledTask -TaskName webAgent -Confirm:$false'.")
+            "WebAgent installs into a folder in your user profile and runs in the background as a "
+            "Scheduled Task named 'WebAgent' — it starts automatically when you log in and restarts "
+            "itself if it stops. To stop it, run in PowerShell: 'Stop-ScheduledTask -TaskName WebAgent'. "
+            "To stop it starting on login: 'Unregister-ScheduledTask -TaskName WebAgent -Confirm:$false'.")
         reach_note = "http://localhost:8080 on this PC · http://THIS-PC-IP:8080 on the same network"
+        warning = " ".join(w for w in (r["warning"], a["warning"]) if w)
         return {"ok": True, "command": command, "clone_display": clone_display,
                 "run_command": _run_command(directory), "install_dir": directory,
                 "steps": steps, "instructions": instructions, "reach_note": reach_note,
                 "private": r["private"], "default_repo": r["default_repo"],
-                "placeholder_token": r["placeholder_token"], "warning": r["warning"]}
+                "placeholder_token": r["placeholder_token"], "warning": warning,
+                "prewire": a["prewire"]}
 
     # ── test (nothing to connect to) ──
     async def test(self, config: Dict[str, Any], creds: Dict[str, Any]) -> Dict[str, Any]:
@@ -144,7 +155,7 @@ class WindowsProvider(BaseDeployProvider):
     async def destroy(self, config: Dict[str, Any], creds: Dict[str, Any],
                       record: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         yield done({"ok": True, "deleted": False,
-                    "message": "webAgent runs on your own PC — stop it with: Stop-ScheduledTask -TaskName webAgent"})
+                    "message": "WebAgent runs on your own PC — stop it with: Stop-ScheduledTask -TaskName WebAgent"})
 
 
 PROVIDER = WindowsProvider()

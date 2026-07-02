@@ -1,4 +1,4 @@
-"""Persistent client for driving + observing the RUNNING webAgent app.
+"""Persistent client for driving + observing the RUNNING WebAgent app.
 
 One long-lived ``WebAppClient`` owned by the TUI. It logs into the local server
 as a user (default ``admin``/``admin``), holds a **WebSocket subscription** to
@@ -74,7 +74,7 @@ class WebAppClient:
                 r = await c.post(f"{self.base_url}/api/v1/auth/login",
                                  json={"email": self.username, "password": self.password})
         except httpx.ConnectError:
-            raise WebAppError(f"the webAgent server isn't reachable on {self.base_url}. "
+            raise WebAppError(f"the WebAgent server isn't reachable on {self.base_url}. "
                               "Start it first (server controls), then try again.")
         except httpx.HTTPError as e:
             raise WebAppError(f"contacting the server failed: {e}")
@@ -107,7 +107,7 @@ class WebAppClient:
                 r = await c.get(f"{self.base_url}{path}", params=params or {},
                                 headers=self._auth_headers())
         except httpx.ConnectError:
-            raise WebAppError(f"the webAgent server isn't reachable on {self.base_url}.")
+            raise WebAppError(f"the WebAgent server isn't reachable on {self.base_url}.")
         except httpx.HTTPError as e:
             raise WebAppError(f"{path} failed: {e}")
         if r.status_code == 401:                  # token expired — one retry
@@ -124,7 +124,7 @@ class WebAppClient:
             async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as c:
                 r = await c.post(f"{self.base_url}{path}", json=body, headers=self._auth_headers())
         except httpx.ConnectError:
-            raise WebAppError(f"the webAgent server isn't reachable on {self.base_url}.")
+            raise WebAppError(f"the WebAgent server isn't reachable on {self.base_url}.")
         except httpx.HTTPError as e:
             raise WebAppError(f"{path} failed: {e}")
         if r.status_code == 401:
@@ -188,7 +188,7 @@ class WebAppClient:
                     r = await c.post(f"{self.base_url}/api/v1/chat", json=body,
                                      headers=self._auth_headers())
         except httpx.ConnectError:
-            raise WebAppError(f"the webAgent server isn't reachable on {self.base_url}.")
+            raise WebAppError(f"the WebAgent server isn't reachable on {self.base_url}.")
         except httpx.ReadTimeout:
             raise WebAppError(f"the app agent didn't reply within {int(timeout)}s on session {session_id}.")
         except httpx.HTTPError as e:

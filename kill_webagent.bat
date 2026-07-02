@@ -1,10 +1,10 @@
 @echo off
-title Kill webAgent
+title Kill WebAgent
 cd /d "%~dp0"
 
 REM ── Pause at the very start so you can see output ──
 echo ============================================================
-echo  Kill webAgent — starting up
+echo  Kill WebAgent — starting up
 echo  If this window closes immediately, there's a script crash.
 echo ============================================================
 echo.

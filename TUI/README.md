@@ -1,11 +1,11 @@
 # webagent TUI — Server Manager
 
-A **standalone, server-independent Server Manager agent** for webAgent. It is its own
+A **standalone, server-independent Server Manager agent** for WebAgent. It is its own
 project — separate from the web app and from `launcher/` — packaged as a single
 relocatable executable.
 
-Its agent talks **directly to the LLM API** (never through the webAgent server),
-so it can inspect, edit, and source-control a webAgent checkout **even when the
+Its agent talks **directly to the LLM API** (never through the WebAgent server),
+so it can inspect, edit, and source-control a WebAgent checkout **even when the
 server is down**.
 
 > **mk2 — event-driven build.** This copy (in `TUI/`) upgrades the agent
@@ -57,10 +57,10 @@ conversation, tool steps and all. Built-in-brain sessions stay in `webagent.db`.
 The manager runs even with **no checkout linked** — it's an onboarding guide
 first, a codebase agent second:
 
-- **Onboarding** (no repo linked) — orient, explain webAgent, **install a fresh
+- **Onboarding** (no repo linked) — orient, explain WebAgent, **install a fresh
   copy**, or **link an existing checkout**. Runs on the **app key**, on the
   built-in brain.
-- **Managed** (a webAgent checkout linked) — ordinary turns run on the **app-brain
+- **Managed** (a WebAgent checkout linked) — ordinary turns run on the **app-brain
   front door** (the checkout's real agent, shared app DB); the built-in brain keeps
   the management/recovery ability sets below and the linked repo's AI key.
 
@@ -68,7 +68,7 @@ The brain used in managed mode is switchable from **Admin ▸ Model Settings ▸
 loop** (a toggle right above the LLM model chooser), saved as `engine_mode` in the
 TUI config:
 
-- **webAgent** (default) — drive the linked checkout's real loop (its agents,
+- **WebAgent** (default) — drive the linked checkout's real loop (its agents,
   abilities + the **app's own** provider config).
 - **Internal** — force the TUI's own built-in brain + the LLM resolved from Model
   Settings, even with a checkout linked. Because the two loops connect to the LLM
@@ -281,14 +281,14 @@ keeps **both** running:
 - **the web server** — if `/health` stops answering and a checkout is linked, it
   relaunches `run.py` from the checkout's venv (clearing a zombie port first, with
   a crash-loop cap);
-- **one server only** — once the server is healthy, it kills any **other** webAgent
+- **one server only** — once the server is healthy, it kills any **other** WebAgent
   `run.py` tree on the machine besides the one actually serving port 8080. This
-  stops a second launcher (e.g. a stray `webAgent.bat`) from leaving a duplicate
+  stops a second launcher (e.g. a stray `WebAgent.bat`) from leaving a duplicate
   server running its own background loops against the same database — which is what
   let a single test fan-out balloon into 120+ runaway spawns. The guardian **adopts
   whichever process is serving** (it seeds from the live listener, so it can never
   kill the live server) and reaps the rest. *Corollary: pick one launch path — let
-  the guardian own the server; don't also run `webAgent.bat` alongside it.*
+  the guardian own the server; don't also run `WebAgent.bat` alongside it.*
 - **the TUI itself** — if the TUI process vanishes **without** a clean-quit marker
   (i.e. it crashed or its window was closed), it relaunches the TUI in a fresh
   console window.
@@ -312,6 +312,13 @@ It's **on by default** and designed to be invisible:
   the guardian but **leaves the running server and window untouched** — it only
   stops auto-reviving them. The state lives in `guardian.json` and **persists
   across restarts** (a future open won't re-spawn it until turned back ON).
+- **`[Kill All]` is a FULL stop.** The Server view's **`[Kill All]`** button (and
+  the `server_kill_all` tool) is the in-app equivalent of `kill_webagent.bat`: it
+  turns the keep-alive guardian **OFF first** (so it can't relaunch what you're
+  about to kill) **and** tells the in-process watchdog to stand down, *then*
+  force-kills every process on port 8080. The server stays **down** until you
+  deliberately `[Start]` it and turn keep-alive back **ON** — neither supervisor
+  will auto-restart it.
 
 Standard-library only and import-light (no Textual / httpx / tool registry), so
 the daemon stays tiny. The runtime files (`guardian.pid`, `guardian.json`,
@@ -487,12 +494,12 @@ copy whose command tracks your live edits, clone the repo and install editable
 against the `TUI` folder instead: `uv tool install --editable ./webagent-dev/TUI`.
 Either way, launch afterwards with `webagent`.
 
-- **Target project** — the webAgent checkout to operate on. Auto-detected from
+- **Target project** — the WebAgent checkout to operate on. Auto-detected from
   the working directory if it contains `run.py` + `app/`; otherwise set
   `WEBAGENT_PROJECT`.
 - **LLM provider** — resolved (highest priority first) from an explicit
   `WEBAGENT_*` override → the **linked repo's `provider.json`** (the same
-  credential store the webAgent server itself uses; `admin` profile
+  credential store the WebAgent server itself uses; `admin` profile
   preferred) → generic/legacy `LLM_*` / `OPENROUTER_*` env / the project's `.env`
   (the **app key**, used during onboarding) → saved config → built-in defaults.
   OpenAI compatible. Reading `provider.json` as one coherent (api_key, base_url,
@@ -511,7 +518,7 @@ single paste:
 cd ~ && pkg install -y git && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent && bash ~/webagent/TUI/install-termux.sh
 ```
 
-…or via the short URL the webAgent server hosts (it serves `/termux` → this same
+…or via the short URL the WebAgent server hosts (it serves `/termux` → this same
 script, LF-normalised):
 
 ```bash
@@ -536,7 +543,7 @@ in the checkout's `.env`; the installer prints exactly what to set if none is fo
 
 The **first time** the manager opens with no checkout linked, it auto-shows a
 **Setup dashboard** — a deterministic, button-driven checklist of everything
-webAgent needs to run on this device. It auto-opens **once** (gated by
+WebAgent needs to run on this device. It auto-opens **once** (gated by
 `first_run_seen` in `config.json`, so it never nags afterwards) and is reachable
 any time from the **Setup** header pill (onboarding mode) or **Admin ▸ `[Setup]`**
 (managed mode).
@@ -546,7 +553,7 @@ Each dependency is a **row**: a status icon (✓ ready · ✗ missing · ⚠ opt
 that are missing and installable. A top **`[Install all]`** runs every missing row
 **in order** (prerequisites first — a row whose prerequisites aren't met yet shows
 "do the steps above first" instead of a button), **`[Re-check]`** re-probes, and an
-**Install folder** field sets where webAgent is cloned/built (defaults to
+**Install folder** field sets where WebAgent is cloned/built (defaults to
 `C:\webagent` / `~/webagent`).
 
 It is **deterministic**: a button runs the real command itself and streams progress
@@ -567,7 +574,7 @@ The checklist is **platform-aware**:
   **python/venv/build tools**. The Ubuntu row also offers **Update / Reinstall /
   Remove**. This mirrors the web app's **Termux deploy command**
   (`deploy/termux-setup.sh`) exactly, so the two install paths stay in lock-step.
-- **The webAgent install itself** — clone the code → build the environment +
+- **The WebAgent install itself** — clone the code → build the environment +
   dependencies (inside Ubuntu on Termux, on the host otherwise) → the headless
   browser (desktop only; off on Android) → seed config + AI key → verify.
 
@@ -691,12 +698,12 @@ agent re-reads each session's history by id, so its context follows the active t
 | Header item | Action |
 |-------------|--------|
 | **mode** (far left) — a **one-word** write-gate (`read` / `write` / `auto`) | **Click to cycle** read → write → auto (colour signals the mode). Maps to the App panel's **Ask / Plan / Auto** pill (plan↔read, ask↔write). |
-| **Setup** (onboarding mode only) | the **first-open dependency dashboard** — every dependency webAgent needs, each with a live status + an `[Install]` button when one applies, plus `[Install all]` (see [Setup dashboard](#setup-dashboard-the-first-open-dependency-checklist)). Also reachable from **Admin ▸ `[Setup]`** in managed mode. |
+| **Setup** (onboarding mode only) | the **first-open dependency dashboard** — every dependency WebAgent needs, each with a live status + an `[Install]` button when one applies, plus `[Install all]` (see [Setup dashboard](#setup-dashboard-the-first-open-dependency-checklist)). Also reachable from **Admin ▸ `[Setup]`** in managed mode. |
 | **Admin** | a **Repo directory** field (paste a folder path → `[Save]` / `[Clear]`) at the top, then opens `[Setup]` · `[App Config]` · `[Model Settings]` · `[Commands]` · `[Update]` · `[Install]` · `[Reset]` · `[Uninstall]` · `[Diagnostics]` · `[Logs]` · `[Keep-alive: ON/OFF]` |
 | **Git** (managed mode only) | source control: a **GitHub token** field with `[Save]` / `[Clear]` (used to authenticate network ops; stored in the TUI's own config, never written into the repo's `.git/config`), then `[Fetch]` · `[Pull]` · `[Push]`. Each button hands the agent a plain-language request so it runs the matching `git_tool` op under the usual op-safety rules (force-push blocked); Pull/Push arm writes first since the click is the consent. |
 | **Playbook** (managed mode only) | the self-healing **issue knowledge base**: a **remediation-mode** selector (`[Document]` / `[Safe-auto]` / `[Autonomous]`), then the list of learned issues (occurrences, status, best remedy + confidence). Click an issue to drill in: its remedies with helped/didn't stats, recent incidents, and `[Approve]` / `[Disable]` / `[Forget]` controls. See [The Playbook](#the-playbook-self-healing-issue-knowledge-base). |
 | **App** | the **AI provider** block — **Provider** as a grid of **pill buttons** (OpenRouter / OpenAI / DeepSeek / Groq / Together / Mistral / xAI / Custom); clicking one highlights it and fills the **Base URL** + **Model** to match (Custom leaves them as typed). Then a plain-text **AI key** field, `[Save]` / `[Clear]`; plus the write-gate `[Read-only]` / `[Write]` / `[Autonomous]` (current one highlighted) and `[Open Browser]` (opens `http://localhost:8080/index.html`). **Keys are shown in clear text** (not masked) so you can verify what you pasted. |
-| **server status** (right after **App**, managed mode) | the live `live` / `stopped` pill (spins `…starting` while booting). **Click it** to open the **Server** view (`[Start]` · `[Restart]` · `[Kill]`). |
+| **server status** (right after **App**, managed mode) | the live `live` / `stopped` pill (spins `…starting` while booting). **Click it** to open the **Server** view (`[Start]` · `[Restart]` · `[Kill All]` — a full stop that also disables keep-alive). |
 
 **Closing a panel:** click the **same category again** to toggle it shut. (Esc no longer
 closes the panel — it now stops the running agent turn.) The open category is highlighted in
@@ -706,16 +713,16 @@ the header.
 
 | Button | Action |
 |--------|--------|
-| **Repo directory** (field, top of the panel) | Paste the folder a webAgent checkout lives in (or should live in), e.g. `C:\webagent`, and `[Save]`. The path is stored as an entry in the manager's own SQLite store (`settings` table, key `repo_dir`) and the agent is handed a message — *"the repo directory X has been saved"* — telling it to **link** an existing checkout there, or **install** one if the folder is empty. The field is pasteable and pre-fills from the saved entry; it's also written whenever the agent links a checkout itself, so it always reflects the directory in play. `[Clear]` forgets it. (If no AI key is set yet the path is still saved, with a nudge to set a provider first.) |
+| **Repo directory** (field, top of the panel) | Paste the folder a WebAgent checkout lives in (or should live in), e.g. `C:\webagent`, and `[Save]`. The path is stored as an entry in the manager's own SQLite store (`settings` table, key `repo_dir`) and the agent is handed a message — *"the repo directory X has been saved"* — telling it to **link** an existing checkout there, or **install** one if the folder is empty. The field is pasteable and pre-fills from the saved entry; it's also written whenever the agent links a checkout itself, so it always reflects the directory in play. `[Clear]` forgets it. (If no AI key is set yet the path is still saved, with a nudge to set a provider first.) |
 | `[Setup]` | Open the **Setup dashboard** — the deterministic, button-driven dependency checklist (the same view the **Setup** header pill opens in onboarding mode). See [Setup dashboard](#setup-dashboard-the-first-open-dependency-checklist) |
 | `[Connect]` | Open the **Connect** view — browse the admin's agents, pick one, then pick (or start) a session to set the **target**, and flip the two mute toggles (see [Driving the running app](#driving-the-running-app-the-two-mutes)) |
 | `[App Config]` | Open the **App Config** view — edit `app-settings.json` (access mode, presentation mode, **render recorder** on/off — the browser flight-recorder that captures HTML snapshots / lag / JS errors), saved over the admin API; plus **Session naming** (TUI-local) — how the Sessions list names each conversation: **Summary (AI)** (LLM summary of the last ~10 messages, falling back to the latest user message), **Latest message**, or **Off** |
-| `[Model Settings]` | Open the **Model Settings** view — an **Agent loop** switch (Internal ↔ webAgent, see [Modes](#modes)) right above the **LLM provider + auth key** (provider quick-pick pills that fill base URL + model, then provider / base URL / model / API key), saved over the admin API. (Moved here out of App Config.) |
+| `[Model Settings]` | Open the **Model Settings** view — an **Agent loop** switch (Internal ↔ WebAgent, see [Modes](#modes)) right above the **LLM provider + auth key** (provider quick-pick pills that fill base URL + model, then provider / base URL / model / API key). The fields are **mode-aware**: in **WebAgent** mode they read/save the **app's** provider over the admin API (server must be up); in **Internal** mode they read/save the **TUI's own** provider locally (sets `provider_override`, rebuilds the live LLM immediately, no server call). (Moved here out of App Config.) |
 | `[Commands]` | Print a user reference to the transcript — on-screen controls, keyboard shortcuts, plain-language things to ask the agent, and the terminal commands for install / launch / proot-Python / uninstall (tailored to Termux vs desktop) |
 | `[Update]` | Update the manager/repo — backs up, pulls (source) or rebuilds the exe (frozen), and restarts |
 | `[Install]` | Run the guided install (onboarding mode); in managed mode it points you at `[Update]` instead |
 | `[Reset]` | Reset the install to a clean state — stops the server and wipes the userbase (active database backend + generated pages), app secrets, and local logins (keeps `.env` + agent templates so the app reboots clean). **Backend-aware:** an active **Postgres** DB has its schema dropped & recreated (irreversible — not backed up); an active **SQLite** DB and the other files are **backed up** to `temp/reset-backup-<timestamp>/` first. For a deeper/lighter wipe, ask the agent to run `reset_app` with the flags you want |
-| `[Uninstall]` | Remove webAgent from the device (Termux) — lists exactly what's deleted (launcher, shortcut, repo, data, package), then removes it and closes |
+| `[Uninstall]` | Remove WebAgent from the device (Termux) — lists exactly what's deleted (launcher, shortcut, repo, data, package), then removes it and closes |
 | `[Diagnostics]` | Show the app's recorded warnings/errors — reads the local DB, so it works even when the server is down |
 | `[Logs]` | Show the captured server log in the transcript |
 | `[Keep-alive: ON/OFF]` | Toggle the **external keep-alive guardian** (see [Keep-alive guardian](#keep-alive-guardian-survives-the-tui)). ON keeps the server **and** this window alive through crashes; OFF stops supervising but leaves both running. Persists across restarts |
@@ -746,7 +753,7 @@ tools (`app_login`, `app_list_agents`, `app_list_sessions`, `webapp_send`, `weba
 
 ### Open-time process manager
 
-On open the manager **lists every running webAgent server process** (PIDs, whether each
+On open the manager **lists every running WebAgent server process** (PIDs, whether each
 holds port 8080, and which one it tracks) and flags **stale/zombie** instances — a process
 squatting on 8080 without serving `/health`, or a leftover `run.py` from a crashed launch.
 If any are found it opens a sidebar confirmation listing them; **with your permission** it

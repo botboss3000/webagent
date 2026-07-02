@@ -12,7 +12,7 @@ import { advanceDeleteBtn, resetDeleteBtn } from '../../shared/js/delete-control
 import { notifySessionsChanged } from '../../shared/js/session-events.js';
 import { loopSessionChanged } from '../../main-panel/agents/agent-loop/js/loop.js';
 import { loopVisualSessionChanged } from '../../main-panel/agents/agent-loop/js/loop-logic.js';
-import { canvasSessionChanged } from '../../main-panel/canvas/js/canvas.js';
+import { genuiSessionChanged } from '../../main-panel/genui/js/genui.js';
 import { chatActivitySessionChanged } from '../../shared/js/chat-activity.js';
 import { consumeReplayedEventsFor } from '../../shared/js/agentWs.js';
 import { randomUUID } from '../../shared/js/uuid.js';
@@ -70,7 +70,7 @@ async function switchToSession(sid) {
   await loadSessionChat(sid);
   loopSessionChanged();
   loopVisualSessionChanged();
-  canvasSessionChanged();
+  genuiSessionChanged();
   chatActivitySessionChanged();
   _renderSessionRows();
   _setTriggerLabel();

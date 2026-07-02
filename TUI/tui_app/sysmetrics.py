@@ -207,7 +207,7 @@ def port_in_use(port: int = 8080, host: str = "127.0.0.1",
 
     On systems where the socket stack is broken (e.g. Python 3.14 with a
     corrupted Winsock provider), falls back to a subprocess call via
-    *fallback_python* (e.g. the webAgent's venv Python 3.12)."""
+    *fallback_python* (e.g. the WebAgent's venv Python 3.12)."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(1.0)

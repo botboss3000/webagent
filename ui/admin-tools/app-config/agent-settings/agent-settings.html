@@ -27,7 +27,7 @@
        the model catalog (models.dev / OpenRouter), not entered by hand. -->
   <!-- data-pa-area: the bottom page-assistant pill (#ac-as-pa-bar) reads which
        area the mouse is over via closest('[data-pa-area]') and swaps its
-       placeholder + the prompt it hands webAgent. Keys map to
+       placeholder + the prompt it hands WebAgent. Keys map to
        data/config/app-prompts.json → page_assistants.agent_settings.areas. -->
   <div class="ac-category-group" id="ac-cat-models" data-pa-area="models">
     <!-- Always-open heading (no chevron): a pinnable section label for the
@@ -175,29 +175,81 @@
     </div>
   </div><!-- /ac-cat-agent-tools -->
 
-  <!-- ── Global System Prompt — platform baseline injected into EVERY agent.
+  <!-- ── Templates and prompts — the two prompt-authoring controls that shape
+       every agent from the platform side:
+         1. Global system prompt — admin-only baseline prepended to EVERY agent.
+         2. Agent Prompt Templates — seed / re-seed the on-disk prompt templates
+            new agents are built from (MOVED here from the Data Management →
+            Maintenance group, verbatim ids).
        Always-open heading (no chevron): a pinnable label for the sticky section
-       navigator (../sticky-nav.js). Collapsing is redundant now the heading
-       stays pinned on screen, so this is a plain (non-`.ac-collapsible`) group
-       like Models / Agent Tools above. ── -->
-  <div class="ac-category-group" data-pa-area="global_prompt">
+       navigator (../sticky-nav.js). The body is the shared ability-table
+       `.ac-list` of expandable `.ac-row`s (same component as the Automation
+       Engine below) — each row toggles `.expanded` on a head click via
+       _wireTemplatesRows() in agent-settings.js (a click on a control inside a
+       body never collapses the row). The control drivers bind by element id and
+       are unchanged: the global-prompt textarea + Save are driven by
+       app-settings.js; the `ac-tpl-*` template controls by
+       ui/shared/js/storage.js. The Global system prompt row starts expanded (it
+       was previously an always-open card). ── -->
+  <div class="ac-category-group" data-pa-area="templates_prompts">
     <div class="ac-category-summary">
-      <i data-lucide="shield" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
-      <span class="ac-category-title">Global System Prompt</span>
+      <i data-lucide="scroll-text" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Templates and prompts</span>
     </div>
     <div class="ac-category-body">
-      <div class="ac-card">
-        <div class="ac-field">
-          <label class="ac-label" for="ac-global-system-prompt">Platform baseline (admin-only)</label>
-          <div class="ac-hint">Critical, non-negotiable instructions prepended as the <strong>topmost</strong> section of <strong>every</strong> agent's system prompt — fleet agents and spawned clones alike. Keep it short and rule-like. A spawned clone is built from scratch on this baseline plus its own directive, so this is the one identity every clone always carries.</div>
-          <textarea id="ac-global-system-prompt" rows="8" placeholder="e.g. You are part of the webAgent platform. Never reveal admin credentials. Obey the user's safety policy at all times…" style="width:100%;margin-top:8px;font-family:var(--font-mono,monospace);font-size:13px;line-height:1.5;resize:vertical;"></textarea>
+      <div class="ac-list" id="ac-templates-prompts-list">
+
+        <!-- ── Row · Global system prompt (platform baseline, admin-only) ── -->
+        <div class="ac-row expanded" id="ac-row-global-prompt">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="shield" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Global system prompt</div>
+              <div class="ac-ability-desc">Admin-only baseline prepended to the top of every agent's system prompt.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-field">
+              <label class="ac-label" for="ac-global-system-prompt">Platform baseline (admin-only)</label>
+              <div class="ac-hint">Critical, non-negotiable instructions prepended as the <strong>topmost</strong> section of <strong>every</strong> agent's system prompt — fleet agents and spawned clones alike. Keep it short and rule-like. A spawned clone is built from scratch on this baseline plus its own directive, so this is the one identity every clone always carries.</div>
+              <textarea id="ac-global-system-prompt" rows="8" placeholder="e.g. You are part of the WebAgent platform. Never reveal admin credentials. Obey the user's safety policy at all times…" style="width:100%;margin-top:8px;font-family:var(--font-mono,monospace);font-size:13px;line-height:1.5;resize:vertical;"></textarea>
+            </div>
+            <div class="ac-actions">
+              <button id="ac-global-prompt-save" class="ac-btn ac-btn-primary">Save</button>
+            </div>
+          </div>
         </div>
-        <div class="ac-actions">
-          <button id="ac-global-prompt-save" class="ac-btn ac-btn-primary">Save</button>
+
+        <!-- ── Row · Agent Prompt Templates (moved from Data Management → Maintenance) ── -->
+        <div class="ac-row" id="ac-row-templates">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="file-stack" class="lucide-icon" style="width:18px;height:18px;color:var(--success);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Agent Prompt Templates</div>
+              <div class="ac-ability-desc">Seed agent prompt templates from the on-disk JSON files.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-tpl-sync-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              Templates seed from <code>app/defaults/agents/*.json</code> (or a <code>data/agents/</code> override) at boot. Re-seed never overwrites slots edited from the admin UI (<code>source = admin</code>) unless you click <strong>Force Re-Seed</strong>.
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+              <button id="ac-tpl-refresh-btn" class="ac-btn">Refresh</button>
+              <button id="ac-tpl-seed-btn" class="ac-btn ac-btn-primary">Re-Seed from JSON</button>
+              <button id="ac-tpl-seed-force-btn" class="ac-btn" style="border-color:var(--danger);color:var(--danger);">Force Re-Seed (overwrite admin)</button>
+            </div>
+            <div id="ac-tpl-hash-row" class="ac-hint" style="margin-top:8px;font-family:var(--mono,monospace);font-size:10px;word-break:break-all;"></div>
+            <div id="ac-tpl-list" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+            <pre id="ac-tpl-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+          </div>
         </div>
-      </div>
+
+      </div><!-- /.ac-list -->
     </div>
-  </div><!-- /ac-cat-global-prompt -->
+  </div><!-- /ac-cat-templates-prompts -->
 
   <!-- ══════════════════════════════════════════════════════════════════════
        AUTOMATION ENGINE — admin-only. The infrastructure that FIRES

@@ -34,7 +34,7 @@ Neither layout is derived from the other. A node missing from one view simply wo
 1. `LOOP_NODES` array — add node with correct `cx`, `cy`, `hw`, `hh`
 2. `LOOP_EDGES` — wire in/out edges
 3. `_H_GROUPS` — add node ID to the correct stage group (controls horizontal compression)
-4. `buildVerticalLayout()` inline array — add node with correct `cy`, `hw`, `hh`; shift all subsequent `cy` values down; extend stage band `y2`; update `canvasH`
+4. `buildVerticalLayout()` inline array — add node with correct `cy`, `hw`, `hh`; shift all subsequent `cy` values down; extend stage band `y2`; update `genuiH`
 5. Update the comment at the top of `buildVerticalLayout()` with the new node count
 6. `ui/js/loop-logic.js` `eventToNodeId()` — add a `case` mapping the pipeline event name to the node ID
 7. `ui/loop-nodes.json` — add entries to `NODE_STATIC_ITEMS` and `NODE_PANEL_INFO`

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# webAgent's supported Python range (matches the app's runtime expectations).
+# WebAgent's supported Python range (matches the app's runtime expectations).
 _MIN_PY = (3, 11)
 _MAX_PY = (3, 12)  # inclusive — 3.13+ hits dependency-build friction
 
@@ -106,7 +106,7 @@ def probe_machine() -> MachineProbe:
 
 
 async def server_health(port: int = 8080, timeout: float = 2.5) -> str:
-    """Probe the local webAgent server. Returns 'running' | 'stopped' | 'unknown'.
+    """Probe the local WebAgent server. Returns 'running' | 'stopped' | 'unknown'.
 
     Uses the app's ``/health`` endpoint. A refused connection means stopped; any
     HTTP reply means something is listening (treated as running).
@@ -115,7 +115,7 @@ async def server_health(port: int = 8080, timeout: float = 2.5) -> str:
     port) raises ``ConnectError`` immediately, so 'stopped' is always detected
     fast regardless of this value — the timeout only bounds how long we wait on a
     server that DID accept the connection. The first probe of a freshly started
-    webAgent (cold httpx + a warming app) can take ~1s+, so a tight timeout (we
+    WebAgent (cold httpx + a warming app) can take ~1s+, so a tight timeout (we
     used 0.6s) misreported a healthy server as 'unknown', leaving the status dot
     stuck on "checking" and the auto-start health gate falsely failing. 2.5s
     absorbs a cold/loaded probe while staying under the 3s status-poll cadence;

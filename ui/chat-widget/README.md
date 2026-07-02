@@ -5,7 +5,7 @@ without disturbing the main chat side-panel. Consumers:
 - the git-control star (⭐) in the file editor sidebar (`ui/shared/js/files-git.js`),
   which asks the agent to commit & push in a widget instead of hijacking the main panel;
 - the **ability-table search/chat pill** (`buildAbilitySearchPill` in
-  `ui/shared/js/dom-utils.js`), which on send opens a widget talking to webAgent
+  `ui/shared/js/dom-utils.js`), which on send opens a widget talking to WebAgent
   the manager via the exported helper **`spawnWebagentAbilityChat({ text, attachmentIds })`**.
 
 ## Files

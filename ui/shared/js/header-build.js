@@ -102,15 +102,49 @@
     });
   };
 
+  // Read a JWT's `exp` claim (epoch ms) without verifying the signature — for
+  // display gating only; the server is the real authority. Returns null when the
+  // token is missing/malformed or carries no exp. Mirrors _decodeJwtExpMs in
+  // auth-refresh.js (this file is a classic script and can't import it).
+  function tokenExpMs(token) {
+    if (!token || typeof token !== 'string') return null;
+    var parts = token.split('.');
+    if (parts.length < 2) return null;
+    try {
+      var b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      var claims = JSON.parse(atob(b64));
+      return typeof claims.exp === 'number' ? claims.exp * 1000 : null;
+    } catch (e) { return null; }
+  }
+
+  // True only when the token's exp is PROVABLY in the past. Conservative on
+  // purpose (matches auth-refresh.js): a token we can't read the exp of is NOT
+  // treated as expired here, so a legitimate member is never falsely hidden by a
+  // parsing quirk — genuinely-broken tokens are handled by the auto-sign-out.
+  function tokenExpired(token) {
+    var exp = tokenExpMs(token);
+    return typeof exp === 'number' && exp <= Date.now();
+  }
+
   // A visitor counts as "signed in" (a real member) once a member auth token is
   // stored (the login/logout flow reloads the page, so reading it at build time
   // is enough — the header is rebuilt from scratch on every auth transition).
   // An Open Registration *guest* also holds a token, but it's an anonymous
   // (anon_*) identity — NOT a member — so 'auth'-visibility pages stay hidden
   // from guests just as they are from logged-out visitors.
+  //
+  // An EXPIRED token does NOT count as signed in: a dead token left in storage
+  // used to keep 'auth'-visibility pages (Sessions, Browser, Automations, …)
+  // showing even though every server call they make is rejected — the same
+  // "signed-in but powerless" zombie state that hid Admin Tools. Gating on a
+  // provably-expired token here keeps the strip honest until the auto-sign-out
+  // (auth-refresh.js → main.js) clears the token and reloads.
   function isSignedIn() {
     try {
-      if (!localStorage.getItem('auth_token')) return false;
+      var token = localStorage.getItem('auth_token');
+      if (!token) return false;
+      if (tokenExpired(token)) return false;
       var uid = localStorage.getItem('auth_user_id') || '';
       return uid.indexOf('anon_') !== 0;
     } catch (e) { return false; }
@@ -297,7 +331,56 @@
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
     if (shouldHidePage(p)) btn.style.display = 'none';
     btn.appendChild(lucideIcon(p.icon));
+    // Title label — hidden in icon mode, revealed when the strip is expanded
+    // into a labelled rail (see .files-strip-label / .rail-expanded in files.css).
+    var lbl = document.createElement('span');
+    lbl.className = 'files-strip-label';
+    lbl.textContent = p.label || p.id;
+    btn.appendChild(lbl);
     return btn;
+  }
+
+  // ── Expandable icon rail ──────────────────────────────────────────────────
+  // The 38px strip can widen to show each view's title next to its icon and
+  // collapse back. The choice persists per browser and is re-applied on every
+  // rebuild so it survives catalog refreshes. Orthogonal to the split/strip
+  // width states — the .rail-expanded class on #files-sidebar drives the CSS.
+  var LS_RAIL = 'files.adminRailExpanded';
+  function railExpanded() {
+    try { return localStorage.getItem(LS_RAIL) === '1'; } catch (e) { return false; }
+  }
+  function applyRailState(sidebar) {
+    var on = railExpanded();
+    sidebar.classList.toggle('rail-expanded', on);
+    var t = sidebar.querySelector('.files-strip-rail-toggle');
+    if (t) {
+      t.setAttribute('aria-expanded', on ? 'true' : 'false');
+      t.title = on ? 'Collapse sidebar' : 'Expand sidebar';
+      var ic = t.querySelector('[data-lucide]');
+      if (ic) ic.setAttribute('data-lucide', on ? 'panel-left-close' : 'panel-left-open');
+    }
+  }
+  function ensureRailToggle(strip) {
+    if (strip.querySelector('.files-strip-rail-toggle')) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'files-strip-btn files-strip-rail-toggle';
+    btn.title = 'Expand sidebar';
+    btn.appendChild(lucideIcon('panel-left-open'));
+    var lbl = document.createElement('span');
+    lbl.className = 'files-strip-label';
+    lbl.textContent = 'Collapse';
+    btn.appendChild(lbl);
+    btn.addEventListener('click', function () {
+      var on = !railExpanded();
+      try { localStorage.setItem(LS_RAIL, on ? '1' : '0'); } catch (e) {}
+      var sb = document.getElementById('files-sidebar');
+      if (sb) applyRailState(sb);
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        try { window.lucide.createIcons(); } catch (e) {}
+      }
+    });
+    strip.insertBefore(btn, strip.firstChild);
   }
 
   // Build (or rebuild) the strip's view-switch buttons from the admin page list.
@@ -313,6 +396,8 @@
     var pages = sortPages(adminPages);
     strip.querySelectorAll('[data-generated="1"]').forEach(function (el) { el.remove(); });
     pages.forEach(function (p) { strip.appendChild(buildStripBtn(p, activeView)); });
+    ensureRailToggle(strip);
+    applyRailState(sidebar);
     if (window.lucide && typeof window.lucide.createIcons === 'function') {
       try { window.lucide.createIcons(); } catch (e) {}
     }

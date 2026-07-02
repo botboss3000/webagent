@@ -1,5 +1,5 @@
 """
-Abstract storage backend interface for webAgent.
+Abstract storage backend interface for WebAgent.
 
 Defines the contract that both Supabase and Local backends must implement.
 All methods match the current SupabaseClient API surface.
@@ -14,6 +14,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 from app.models.schemas import InteractionRecord
+from app.db.turn_cache import turn_cached
 
 logger = logging.getLogger(__name__)
 
@@ -892,22 +893,22 @@ class StorageBackend(ABC):
         """Return True if user_id is a member or admin of the agent."""
         ...
 
-    # ---- canvases (canvas workspace) ----
+    # ---- genui (genui workspace) ----
 
     @abstractmethod
-    async def canvas_list(self, user_id: str) -> List[dict]:
-        """Return all canvas rows for user_id, ordered with 'home' first then by updated_at desc.
+    async def genui_list(self, user_id: str) -> List[dict]:
+        """Return all genui rows for user_id, ordered with 'home' first then by updated_at desc.
         Each row: id, user_id, slug, title, agent_context, html, created_at, updated_at.
         `html` may be None when the body lives on disk (hybrid mode)."""
         ...
 
     @abstractmethod
-    async def canvas_get(self, user_id: str, slug: str) -> Optional[dict]:
-        """Get one canvas row by (user_id, slug). Returns None if not found."""
+    async def genui_get(self, user_id: str, slug: str) -> Optional[dict]:
+        """Get one genui row by (user_id, slug). Returns None if not found."""
         ...
 
     @abstractmethod
-    async def canvas_upsert(
+    async def genui_upsert(
         self,
         user_id: str,
         slug: str,
@@ -916,26 +917,26 @@ class StorageBackend(ABC):
         html: Optional[str] = None,
         agent_id: str = "",
     ) -> dict:
-        """Insert or update a canvas. Returns the saved row. `html=None` leaves the
+        """Insert or update a genui. Returns the saved row. `html=None` leaves the
         column NULL on insert and untouched on update (so hybrid mode can store
         metadata-only rows without disturbing existing bodies). `agent_id` is the
-        owning agent (the one that created/manages this canvas); a freshly-supplied
+        owning agent (the one that created/manages this genui); a freshly-supplied
         value wins, otherwise the existing owner is preserved."""
         ...
 
     @abstractmethod
-    async def canvas_delete(self, user_id: str, slug: str) -> bool:
+    async def genui_delete(self, user_id: str, slug: str) -> bool:
         """Delete one page. Returns True if a row was removed."""
         ...
 
     @abstractmethod
-    async def canvas_get_data(self, user_id: str, slug: str) -> Optional[str]:
-        """Return a canvas's raw data JSON string (the `data` column), or None."""
+    async def genui_get_data(self, user_id: str, slug: str) -> Optional[str]:
+        """Return a genui's raw data JSON string (the `data` column), or None."""
         ...
 
     @abstractmethod
-    async def canvas_set_data(self, user_id: str, slug: str, data_json: str) -> bool:
-        """Set a canvas's `data` column to data_json (a JSON string). Returns True
+    async def genui_set_data(self, user_id: str, slug: str, data_json: str) -> bool:
+        """Set a genui's `data` column to data_json (a JSON string). Returns True
         if a row was updated."""
         ...
 
@@ -1075,6 +1076,7 @@ class EncryptedStorageBackend:
     def _is_vault_call(user_id: str, service: str) -> bool:
         return user_id == _VAULT_SENTINEL_USER and service == _VAULT_SENTINEL_SERVICE
 
+    @turn_cached
     async def auth_element_get(
         self, user_id: str, service: str, label: str = "default"
     ) -> Optional[dict]:

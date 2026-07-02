@@ -10,9 +10,9 @@
 //   • Cloud accounts — VMs in a cloud account (Open / Start / Stop / Delete).
 //     The SIDEBAR account manager (provider dropdown + per-account login
 //     sub-menu) is unchanged from the old Cloud VMs page.
-//   • Devices        — every computer running webAgent (the presence registry):
+//   • Devices        — every computer running WebAgent (the presence registry):
 //     online/offline, platform, self-reported repo, Open link to its endpoint.
-//   • Machines       — manually-tracked boxes that don't run webAgent: address,
+//   • Machines       — manually-tracked boxes that don't run WebAgent: address,
 //     repo, notes, a reachability Ping, Edit / Remove.
 //   • Sites          — manually-tracked hosted URLs: same, with an HTTP Ping.
 //
@@ -360,22 +360,20 @@ async function _loadAll() {
   body.innerHTML = '<div class="cvm-hint cvm-main-hint">Loading your servers…</div>';
 
   const accounts = _accounts();
-  // Cloud groups (per account), devices and manual entries all load in parallel;
-  // each source is guarded so one failing never blanks the others.
-  const [cloudParts, devData, entData] = await Promise.all([
+  // Cloud groups (per account) and manual entries load in parallel; each source
+  // is guarded so one failing never blanks the others. (Linked WebAgent devices
+  // moved to the Database & Devices page.)
+  const [cloudParts, entData] = await Promise.all([
     Promise.all(accounts.map(_cloudGroup)),
-    _get('/devices').catch(() => ({ devices: [] })),
     _get('/entries').catch(() => ({ entries: [] })),
   ]);
 
-  const devices = devData.devices || [];
   const entries = entData.entries || [];
   const machines = entries.filter(e => e.kind !== 'site');
   const sites = entries.filter(e => e.kind === 'site');
 
   const sections = [];
   sections.push(cloudParts.join(''));
-  sections.push(_devicesGroup(devices));
   sections.push(_entriesGroup('Machines', 'hard-drive', machines));
   sections.push(_entriesGroup('Sites', 'globe', sites));
   const html = sections.filter(Boolean).join('');
@@ -386,15 +384,14 @@ async function _loadAll() {
   const cloudCount = accounts.reduce((n, p) => n + (p._count || 0), 0);
   const bits = [];
   if (accounts.length) bits.push(cloudCount + ' cloud server' + (cloudCount === 1 ? '' : 's'));
-  bits.push(devices.length + ' device' + (devices.length === 1 ? '' : 's'));
   if (entries.length) bits.push(entries.length + ' tracked');
   _stats(bits.join(' · '));
 }
 
 function _emptyNotice() {
   return '<div class="cvm-notice"><div class="cvm-notice-title"><i data-lucide="server"></i> Nothing to manage yet</div>'
-    + '<div class="cvm-hint">Add a cloud account or a machine / site in the sidebar on the left. Any computer running webAgent '
-    + 'against this database shows up automatically under Devices.</div></div>';
+    + '<div class="cvm-hint">Add a cloud account or a machine / site in the sidebar on the left. Computers running WebAgent '
+    + 'against your shared database are listed on the <strong>Database &amp; Devices</strong> page.</div></div>';
 }
 
 // One cloud account → its server group (or a connect / error notice).
@@ -496,7 +493,7 @@ function _cloudCard(inst, providerId) {
 
   const badges = [];
   if (inst.is_this_app) badges.push('<span class="cvm-badge cvm-badge-app">This app</span>');
-  else if (inst.is_webagent) badges.push('<span class="cvm-badge">webAgent</span>');
+  else if (inst.is_webagent) badges.push('<span class="cvm-badge">WebAgent</span>');
 
   const meta = [];
   if (inst.machine_type) meta.push(_metaItem('cpu', inst.machine_type));
@@ -513,36 +510,6 @@ function _cloudCard(inst, providerId) {
     classes: inst.is_this_app ? 'cvm-card-app' : '',
     dot: st.dot, statusLabel: st.label, name: inst.name,
     badges, meta, repo: inst.repo || '', repoEdit: 'ann:' + (inst.annotation_key || ''),
-    actions,
-  });
-}
-
-// ── Devices group (webAgent presence registry) ──
-function _devicesGroup(devices) {
-  const inner = devices.length
-    ? devices.map(_deviceCard).join('')
-    : '<div class="cvm-hint cvm-group-empty">No webAgent devices seen yet. Any machine running webAgent against this database appears here automatically.</div>';
-  const online = devices.filter(d => d.online).length;
-  const meta = devices.length ? (online + ' online · ' + devices.length + ' total') : '';
-  return '<div class="cvm-group">' + _groupHead('Devices', 'cpu', meta) + inner + '</div>';
-}
-
-function _deviceCard(d) {
-  const online = !!d.online;
-  const badges = [];
-  if (d.is_self) badges.push('<span class="cvm-badge cvm-badge-app">This app</span>');
-  const meta = [];
-  if (d.platform) meta.push(_metaItem(_platformIcon(d.platform), d.platform));
-  if (d.branch) meta.push(_metaItem('git-commit', d.branch));
-  if (d.endpoint) meta.push(_metaItem('link', d.endpoint));
-  const actions = [];
-  if (d.endpoint) actions.push('<a class="cvm-act cvm-act-open" href="' + _escAttr(_openUrl(d.endpoint)) + '" target="_blank" rel="noopener"><i data-lucide="external-link"></i>Open</a>');
-  return _card({
-    classes: d.is_self ? 'cvm-card-app' : '',
-    dot: online ? 'cvm-dot-run' : 'cvm-dot-stop',
-    statusLabel: online ? 'Online' : 'Offline',
-    name: d.label || d.instance_id, nameMono: false,
-    badges, meta, repo: d.repo || '', repoEdit: 'ann:' + (d.annotation_key || ''),
     actions,
   });
 }
@@ -598,14 +565,6 @@ function _kindIcon(kind) {
     default: return 'hard-drive';
   }
 }
-function _platformIcon(platform) {
-  const p = (platform || '').toLowerCase();
-  if (p.includes('win')) return 'monitor';
-  if (p.includes('darwin') || p.includes('mac')) return 'laptop';
-  if (p.includes('linux')) return 'terminal';
-  return 'cpu';
-}
-
 // Google Compute states → friendly label + status-dot class.
 function _statusMeta(status) {
   switch ((status || '').toUpperCase()) {

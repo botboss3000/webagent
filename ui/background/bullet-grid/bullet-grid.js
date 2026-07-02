@@ -34,7 +34,7 @@
   var DOT_R = 1.3;         // base dot radius
   var DOT_GROW = 2.0;      // extra radius right at the cursor
 
-  var canvas, ctx;
+  var genui, ctx;
   var DPR = Math.min(window.devicePixelRatio || 1, 2);
   var W = 0, H = 0, spacing = 34;
   var dots = [];
@@ -74,8 +74,8 @@
 
   function resize() {
     W = window.innerWidth; H = window.innerHeight;
-    canvas.width = W * DPR; canvas.height = H * DPR;
-    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    genui.width = W * DPR; genui.height = H * DPR;
+    genui.style.width = W + 'px'; genui.style.height = H + 'px';
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     readPalette();
     build();
@@ -146,8 +146,8 @@
 
   function start(cv) {
     if (running) return;
-    canvas = cv; ctx = canvas.getContext('2d');
-    if (reduced) { resize(); return; }  // canvas hidden under reduced-motion
+    genui = cv; ctx = genui.getContext('2d');
+    if (reduced) { resize(); return; }  // genui hidden under reduced-motion
     running = true;
     window.addEventListener('pointermove', onPointerMove);
     document.addEventListener('mouseleave', onPointerLeave);

@@ -17,14 +17,14 @@ THE CONTRACT (mirrors credentials.py so it's the same encrypted vault row shape)
     ``secret_ref``. It never passes through the agent / the chat transcript / a
     log. The agent only ever holds the key id.
   • The dashboard later uses it by id through the server-side proxy
-    (app/api/canvas.py ``/vault/proxy``): ``read_secret`` hands the plaintext to
+    (app/api/genui.py ``/vault/proxy``): ``read_secret`` hands the plaintext to
     the OUTBOUND call only, server-side, attached per the binding. The key is
     locked to its bound ``base_url`` so it can't be redirected elsewhere.
 
 Vault row layout (one per key id, same table the Abilities → Credentials panel
 uses, so encryption-at-rest is identical):
   user_id    = <signed-in user>            (user-scoped, the chosen vault)
-  service    = "canvas_vault"              (this store's namespace)
+  service    = "genui_vault"              (this store's namespace)
   label      = <key_id>                    (the stable handle the agent gets back)
   config     = {name, fields[], binding{}} (PLAINTEXT metadata — agent may read)
   secret_ref = "<value>" | {field: value}  (ENCRYPTED — agent may NEVER read)
@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # This store's namespace in the shared auth_elements vault. One row per key id.
-VAULT_SERVICE = "canvas_vault"
+VAULT_SERVICE = "genui_vault"
 
 # How a stored secret attaches to an outbound request. The agent picks one when
 # it requests the credential; the proxy is the ONLY place that ever expands it.

@@ -7,7 +7,7 @@
 // for the secret.
 //
 // THE GUARANTEE: the value the user types here goes STRAIGHT to the encrypted vault
-// (POST /api/v1/canvases/vault/keys/{key_id}) — it never returns to the agent, the
+// (POST /api/v1/genui/vault/keys/{key_id}) — it never returns to the agent, the
 // chat transcript, or any log. The agent only ever holds the key id; the dashboard
 // it builds uses the secret by id via the server-side proxy (api.callWithKey).
 //
@@ -118,7 +118,7 @@ export function renderVaultCredentialCard(payload) {
         <span class="vcc-badge"><i data-lucide="shield-check"></i></span>
         <span class="vcc-title"></span>
       </div>
-      <div class="vcc-sub">Saved straight to your vault — webAgent never sees this value.${
+      <div class="vcc-sub">Saved straight to your vault — WebAgent never sees this value.${
         host ? ` Used only with <span class="vcc-svc">${host}</span>.` : ''
       }</div>
       <div class="vcc-body">${fieldsHtml}</div>
@@ -163,7 +163,7 @@ export function renderVaultCredentialCard(payload) {
     msg.className = 'vcc-msg';
     msg.textContent = 'Saving…';
     try {
-      const resp = await fetch(apiPath('/api/v1/canvases/vault/keys/' + encodeURIComponent(payload.key_id)), {
+      const resp = await fetch(apiPath('/api/v1/genui/vault/keys/' + encodeURIComponent(payload.key_id)), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ values }),

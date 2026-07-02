@@ -1,0 +1,17 @@
+{
+  "_comment": "Admin Dashboard default layout (factory seed). This is the bundled, always-tracked default a fresh admin — or a 'reset to default' — starts from. An admin can override it at runtime via the dashboard's 'Save as default' button, which writes data/config/dashboard-default.json (gitignored); that override wins over this file. See app/util/paths.dashboard_default_path() and ui/admin-tools/dashboard/server.py. Each card: id (stable), type (a CARD_TYPES key in dashboard.js), and grid cells x,y,w,h (12 columns wide, 88px rows). The full-width metric_chart also carries series (enabled line/bar ids) and range (time window).",
+  "version": 2,
+  "cards": [
+    { "id": "c-chart", "type": "metric_chart", "x": 0, "y": 0, "w": 12, "h": 5, "series": ["tokens_in", "tokens_out", "cost"], "range": { "window": 3600 } },
+    { "id": "c-sessions", "type": "sessions_monitor", "x": 0, "y": 5, "w": 6, "h": 4 },
+    { "id": "c-agents", "type": "agents_panel", "x": 6, "y": 5, "w": 6, "h": 4 },
+    { "id": "c-users", "type": "user_mgmt", "x": 0, "y": 9, "w": 4, "h": 4 },
+    { "id": "c-health", "type": "health_board", "x": 4, "y": 9, "w": 4, "h": 4 },
+    { "id": "c-security", "type": "security", "x": 8, "y": 9, "w": 4, "h": 4 },
+    { "id": "c-tools", "type": "tool_usage", "x": 0, "y": 13, "w": 6, "h": 4 },
+    { "id": "c-dblat", "type": "db_latency", "x": 6, "y": 13, "w": 6, "h": 3 },
+    { "id": "c-devices", "type": "devices", "x": 6, "y": 16, "w": 6, "h": 3 },
+    { "id": "c-failures", "type": "failures", "x": 0, "y": 17, "w": 6, "h": 3 },
+    { "id": "c-add", "type": "add_card", "x": 6, "y": 19, "w": 4, "h": 3 }
+  ]
+}

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 class ToolContext:
     """Everything a tool handler needs, injected by the agent on each call.
 
-    ``project_root`` is ``None`` in onboarding mode (no webAgent repo linked yet);
+    ``project_root`` is ``None`` in onboarding mode (no WebAgent repo linked yet);
     only tools flagged ``needs_project=False`` are exposed/dispatched then.
     """
 
@@ -26,7 +26,7 @@ class ToolContext:
     log: Callable[[str], None]           # stream a status line to the UI
     audit: Callable[[str, Any, bool, str], None]  # (tool, args, ok, detail)
     session_id: str = ""
-    # Link the manager to a webAgent checkout (provided by the app). Returns a
+    # Link the manager to a WebAgent checkout (provided by the app). Returns a
     # human-readable result. Used by onboarding-mode tools that change app state.
     set_project: Optional[Callable[[str], Awaitable[str]]] = None
     # The manager's current ("app") provider — seeded into a fresh install so the
@@ -35,7 +35,7 @@ class ToolContext:
     # Ask the app to close the manager (provided by the app). Used by the
     # self-update restart so a staged exe swap / source reload can finish.
     request_exit: Optional[Callable[[], Awaitable[None]]] = None
-    # The shared client for the RUNNING webAgent app (login + WS stream + send).
+    # The shared client for the RUNNING WebAgent app (login + WS stream + send).
     # Set by the app so app-facing tools (appctl / webapp) reuse one session +
     # the live stream. None in plain tool calls → a standalone client is used.
     webapp_client: Optional[Any] = None

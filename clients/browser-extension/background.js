@@ -1,7 +1,7 @@
 /*
- * webAgent Browser Connector — MV3 background service worker.
+ * WebAgent Browser Connector — MV3 background service worker.
  *
- * Holds ONE authenticated WebSocket back to the webAgent server and runs the
+ * Holds ONE authenticated WebSocket back to the WebAgent server and runs the
  * commands it pushes against the user's real tabs. This is the client half of
  * the connector backend; the server half is app/api/connector_ws.py +
  * app/tools/browser_connector.py.

@@ -3,7 +3,7 @@
 /**
  * Tunnel Link — App Configuration → App Settings → Tunnel card.
  *
- * The webAgent side of the tunnel.webagent.live feature. The admin enters the
+ * The WebAgent side of the tunnel.webagent.live feature. The admin enters the
  * hosted relay address and their Cloudflare tunnel address; this panel registers
  * the instance with the relay (keeping the address current) and, on demand, mints
  * a short-lived pairing code shown as a QR. A phone scans that QR at the relay to

@@ -102,7 +102,7 @@ def _register_builtin() -> None:
     register(
         id="generic_webhook",
         display_name="Generic webhook",
-        description="Your own scheduler hits a configured upstream URL. webAgent POSTs each job's metadata; your service triggers the fire webhook on schedule.",
+        description="Your own scheduler hits a configured upstream URL. WebAgent POSTs each job's metadata; your service triggers the fire webhook on schedule.",
         auth_mode="api_key",
         fields=[
             {"key": "upstream_url", "label": "Your scheduler service URL (POST target)", "type": "text", "required": True},

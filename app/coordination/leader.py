@@ -29,6 +29,24 @@ logger = logging.getLogger(__name__)
 CHECK_INTERVAL_SEC = 10
 LEASE_TTL_SEC = 30
 
+# On a REMOTE shared DB every renewal is a network round-trip. Renew far less
+# often (still 3× headroom vs TTL) so the heartbeat stops taxing the slow
+# connection; the only cost is a dead leader's singletons failing over in ~TTL
+# instead of ~30s, which is fine for background work.
+REMOTE_CHECK_INTERVAL_SEC = 30
+REMOTE_LEASE_TTL_SEC = 90
+
+
+def _intervals() -> tuple:
+    """Return (check_interval, lease_ttl) for the active DB backend."""
+    try:
+        from app.db import is_remote_db
+        if is_remote_db():
+            return REMOTE_CHECK_INTERVAL_SEC, REMOTE_LEASE_TTL_SEC
+    except Exception:
+        pass
+    return CHECK_INTERVAL_SEC, LEASE_TTL_SEC
+
 AsyncFn = Callable[[], Awaitable[None]]
 
 
@@ -67,14 +85,18 @@ class BackgroundLeader:
     def is_leader(self) -> bool:
         return self._is_leader
 
-    async def _acquire(self) -> bool:
+    async def _acquire(self, lease_ttl: int = LEASE_TTL_SEC) -> bool:
         try:
             from app.db import get_db
             db = get_db()
             fn = getattr(db, "background_leader_acquire", None)
             if fn is None:
                 return True  # backend has no lock → behave as the sole leader
-            return bool(await fn(self._holder_id, LEASE_TTL_SEC))
+            # Offloaded: this poll fires on a timer; running its remote round-trip
+            # on the event loop would periodically freeze the loop (and any live
+            # LLM stream). See app/db/offload.py.
+            from app.db.offload import db_offload
+            return bool(await db_offload(lambda: fn(self._holder_id, lease_ttl)))
         except Exception as e:
             logger.warning("background_leader_acquire failed (assuming NOT leader): %s", e)
             return False
@@ -85,7 +107,8 @@ class BackgroundLeader:
             db = get_db()
             fn = getattr(db, "background_leader_release", None)
             if fn is not None:
-                await fn(self._holder_id)
+                from app.db.offload import db_offload
+                await db_offload(lambda: fn(self._holder_id))
         except Exception as e:
             logger.debug("background_leader_release failed: %s", e)
 
@@ -107,7 +130,8 @@ class BackgroundLeader:
 
     async def _loop(self) -> None:
         while not self._stopping:
-            leader = await self._acquire()
+            check_interval, lease_ttl = _intervals()
+            leader = await self._acquire(lease_ttl)
             if leader and not self._is_leader:
                 self._is_leader = True
                 logger.info("Acquired background leadership (%s) — starting singleton services",
@@ -119,7 +143,7 @@ class BackgroundLeader:
                                self._holder_id)
                 await self._stop_services()
             try:
-                await asyncio.sleep(CHECK_INTERVAL_SEC)
+                await asyncio.sleep(check_interval)
             except asyncio.CancelledError:
                 break
 

@@ -3,35 +3,35 @@
   "kind": "ability",
   "icon": "layout",
   "color": "#7aa2f7",
-  "description": "Turns the agent into a design agent for the Canvas workspace — author and edit interactive dashboards, pages, data views, and other UI as self-contained mini web apps that match the app's look (dark/light, desktop/mobile). Builds clickable drill-down panels, modals/drawers/popovers, in-place content swaps, live filters and dynamic animated effects — verified by clicking them, and built in rounds (ship the base, then propose features). Includes create, edit, rename, and delete.",
-  "skill_summary": "USE THIS for any request to build, design, change, or show something visual — a dashboard, page, report, chart, data view, form, mockup, landing page, notes/tool UI, or anything described as a 'design' or 'UI'. It renders a real, live HTML canvas in the Canvas tab (this is how you make a dashboard — NOT the browser, NOT plain chat). Load it and follow its skill the moment a request is about building or editing a visual surface.",
+  "description": "Turns the agent into a design agent for the Gen UI workspace — author and edit interactive dashboards, pages, data views, and other UI as self-contained mini web apps that match the app's look (dark/light, desktop/mobile). Builds clickable drill-down panels, modals/drawers/popovers, in-place content swaps, live filters and dynamic animated effects — verified by clicking them, and built in rounds (ship the base, then propose features). Includes create, edit, rename, and delete.",
+  "skill_summary": "USE THIS for any request to build, design, change, or show something visual — a dashboard, page, report, chart, data view, form, mockup, landing page, notes/tool UI, or anything described as a 'design' or 'UI'. It renders a real, live HTML genui in the Gen UI tab (this is how you make a dashboard — NOT the browser, NOT plain chat). Load it and follow its skill the moment a request is about building or editing a visual surface.",
   "note": null,
   "simple": true,
   "placeholder": false,
   "tools": [
     "render_visual",
-    "edit_canvas",
-    "list_canvases",
-    "get_canvas",
-    "create_canvas",
-    "delete_canvas",
-    "rename_canvas",
-    "get_canvas_data",
-    "set_canvas_data",
-    "get_canvas_logs",
+    "edit_genui",
+    "list_genui",
+    "get_genui",
+    "create_genui",
+    "delete_genui",
+    "rename_genui",
+    "get_genui_data",
+    "set_genui_data",
+    "get_genui_logs",
     "check_credential",
     "request_credential",
     "list_vault_keys",
-    "screenshot_canvas"
+    "screenshot_genui"
   ],
   "config": {
     "bias": {
       "key": "build_posture",
       "default": "balanced",
       "levels": {
-        "minimal": "BUILD POSTURE — Minimal: build exactly and only what the user asked for, in one clean round. Do NOT add unrequested panels, charts, or animations, and do NOT push a menu of extra enhancements after — finish the requested canvas, verify it, and stop. Propose more only if the user asks 'what else can you add?'.",
+        "minimal": "BUILD POSTURE — Minimal: build exactly and only what the user asked for, in one clean round. Do NOT add unrequested panels, charts, or animations, and do NOT push a menu of extra enhancements after — finish the requested genui, verify it, and stop. Propose more only if the user asks 'what else can you add?'.",
         "balanced": "",
-        "rich": "BUILD POSTURE — Rich: lean toward a fuller, more interactive result. After shipping and verifying the requested base, proactively propose a short menu (3–5) of concrete, tempting enhancements tailored to THIS canvas (drill-downs, live filters, count-ups, hover popovers) and offer to add them in the next round. Bias toward dynamic, clickable canvases over static ones — but still ship the requested base first and never bloat a single render."
+        "rich": "BUILD POSTURE — Rich: lean toward a fuller, more interactive result. After shipping and verifying the requested base, proactively propose a short menu (3–5) of concrete, tempting enhancements tailored to THIS genui (drill-downs, live filters, count-ups, hover popovers) and offer to add them in the next round. Bias toward dynamic, clickable genui over static ones — but still ship the requested base first and never bloat a single render."
       }
     },
     "settings": [

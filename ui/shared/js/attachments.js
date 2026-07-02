@@ -91,7 +91,7 @@ export function initAttachments() {
   }
 
   // Main chat pill: paste + drop scoped to the chat field (composer pill).
-  // Other pills (Canvas, Agents, admin) wire themselves via wireChatPillUploads.
+  // Other pills (Gen UI, Agents, admin) wire themselves via wireChatPillUploads.
   wireChatPillUploads(
     document.getElementById('chat-input-row'),
     document.getElementById('chat-input'),
@@ -127,7 +127,7 @@ function _serverErrText(detail, fallback) {
 // finished booting, or a secondary pill whose chat hasn't started a session.
 // Without a user + session the upload is rejected by the server and the failure
 // is invisible. Mirror the send flow: if we have a user but no session, spin up
-// the shared webAgent session; with no user at all the upload can't be
+// the shared WebAgent session; with no user at all the upload can't be
 // attributed and must be refused.
 async function _ensureSessionForUpload() {
   if (app.currentUserId && app.currentSessionId) return true;
@@ -789,7 +789,7 @@ export function handleAttachmentEvent(event) {
 
 /** Forward a secondary chat pill's attach/voice buttons to the main chat composer.
  *  This avoids duplicating the file-picker / recorder logic in every secondary
- *  chat pill (agent builder, canvas pages, etc.).
+ *  chat pill (agent builder, genui pages, etc.).
  *  @param {HTMLElement|null} attachBtn — the secondary pill's 📎 button
  *  @param {HTMLElement|null} voiceBtn  — the secondary pill's 🎤 button
  */

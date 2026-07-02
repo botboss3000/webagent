@@ -1,4 +1,4 @@
-# Local Postgres + pgvector for webAgent development.
+# Local Postgres + pgvector for WebAgent development.
 #
 #   docker compose -f docker-compose.postgres.yml up -d
 #

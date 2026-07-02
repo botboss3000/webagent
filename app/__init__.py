@@ -1,1 +1,1 @@
-"""webAgent FastAPI application package."""
+"""WebAgent FastAPI application package."""

@@ -152,7 +152,7 @@ class GoogleCloudScheduler(BaseRemoteScheduler):
     def _build_job_body(self, row: Dict[str, Any], fire_url: str) -> Dict[str, Any]:
         return {
             "name": self._job_name(row["id"]),
-            "description": (row.get("task_label") or "webAgent automation")[:500],
+            "description": (row.get("task_label") or "WebAgent automation")[:500],
             "schedule": row["schedule_cron"],
             "timeZone": row.get("timezone") or "UTC",
             "httpTarget": {

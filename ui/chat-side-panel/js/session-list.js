@@ -1,7 +1,8 @@
 'use strict';
 
 // Session dropdown list — fetch + render session rows (drag handles, pin icons,
-// status spinners, spawn badges, relative times), header label + notification
+// status spinners, spawn badges, relative times, a per-row "more" (⋯) kebab that
+// opens the pin/unpin toggle, and a trash button), header label + notification
 // badge, related-session chips. Module map: ui/chat-side-panel/js/README.md.
 
 import { app } from '../../shared/js/state.js';
@@ -382,6 +383,11 @@ function _renderSessionRows() {
       const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0;
       return bTime - aTime;
     });
+  // Only reserve the caret column (spacer on non-parent rows) when the list
+  // actually holds an expandable family row — otherwise it's dead space that
+  // pushes the pin/title away from the drag grip. With no families present the
+  // grip sits right beside the pin/title (no gap).
+  const anyParent = sorted.some(s => (s.child_count || 0) > 0);
 
   if (!sorted.length) {
     const empty = document.createElement('div');
@@ -408,7 +414,7 @@ function _renderSessionRows() {
     // spacer keeps non-parent rows' titles aligned with parents'.
     const caretHtml = hasChildren
       ? `<span class="session-row-expand" data-id="${s.id}" title="${isExpanded ? 'Collapse' : 'Show grouped sessions'}">${icon(isExpanded ? 'chevron-down' : 'chevron-right', { size: '13px' })}</span>`
-      : `<span class="session-row-expand-spacer"></span>`;
+      : (anyParent ? `<span class="session-row-expand-spacer"></span>` : '');
     const label = s.title || 'New Session';
     const sAgentIcon = s.agent_icon || '';
     const sAgentEngine = s.agent_engine || '';
@@ -442,12 +448,14 @@ function _renderSessionRows() {
       ? `<span class="session-row-spawn-badge" title="Spawned helper session">${icon('git-branch', { size: '11px' })}</span>`
       : '';
     // Manage mode: swap the trash button for a visibility (eye) toggle that
-    // reflects and flips the row's hidden state. Normal mode: trash button.
+    // reflects and flips the row's hidden state. Normal mode: a "more" (⋯) kebab
+    // that opens the pin/unpin toggle, then the trash button.
     const trailingBtn = _showHidden
       ? `<button class="session-row-visibility" title="${s.hidden ? 'Un-hide session' : 'Hide session'}" data-id="${s.id}" data-hidden="${s.hidden ? '1' : '0'}">${icon(s.hidden ? 'eye-off' : 'eye', { size: '14px' })}</button>`
-      : `<button class="session-row-delete" title="Delete session" data-id="${s.id}" data-state="trash">${icon('trash-2', { size: '14px' })}</button>`;
+      : `<button class="session-row-kebab" title="More…" data-id="${s.id}">${icon('more-vertical', { size: '14px' })}</button>`
+        + `<button class="session-row-delete" title="Delete session" data-id="${s.id}" data-state="trash">${icon('trash-2', { size: '14px' })}</button>`;
     row.innerHTML = `
-      <span class="row-drag-handle" data-drag-handle title="Drag to reorder \u00B7 hold to pin">${icon('grip-vertical', { size: '13px' })}</span>
+      <span class="row-drag-handle" data-drag-handle title="Drag to reorder">${icon('grip-vertical', { size: '13px' })}</span>
       ${caretHtml}
       <span class="session-row-pin-icon">${icon('pin', { size: '12px' })}</span>
       ${statusHtml}

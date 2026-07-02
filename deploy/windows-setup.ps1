@@ -1,5 +1,5 @@
 # ============================================================================
-# webAgent - Windows installer & launcher.
+# WebAgent - Windows installer & launcher.
 #
 # Run on the target PC. This is what the Deploy panel's one-line PowerShell
 # command hands off to after cloning the repo to %USERPROFILE%\webagent. It:
@@ -9,7 +9,7 @@
 #   3. installs the lightweight Server Manager (the `webagent` command) FIRST,
 #      on its own venv, so a failure in the heavier server build still leaves a
 #      working manager to inspect / retry / diagnose (mirrors termux-setup.sh),
-#   4. registers a Scheduled Task "webAgent" that runs the keep-alive launcher
+#   4. registers a Scheduled Task "WebAgent" that runs the keep-alive launcher
 #      (deploy/start_server_windows.ps1) at logon - so the server runs in the
 #      background, restarts itself if it stops, and survives a reboot - and
 #      starts it now.
@@ -25,12 +25,29 @@ $Port = 8080
 $LocalBin = Join-Path $env:USERPROFILE '.local\bin'
 
 Write-Host "============================================"
-Write-Host " webAgent - Windows setup"
+Write-Host " WebAgent - Windows setup"
 Write-Host "============================================"
 Set-Location $RepoDir
 
 # Update the code best-effort (the one-liner cloned it; a re-run refreshes it). --
 try { & git -C $RepoDir pull --ff-only 2>$null } catch { Write-Host "  (could not update - keeping the current code)" }
+
+# Optional pre-set admin password (from the Deploy panel). The one-line command
+# passes it as WA_ADMIN_PW, which this child process inherits; write it into .env,
+# which the app loads at boot (app/main.py load_dotenv). .env is gitignored, so the
+# pull above never disturbs it. When it's absent nothing is written — the first
+# visitor to the app's address sets the password on the setup page (open until an
+# admin exists, so it works from another device on the same network too).
+if ($env:WA_ADMIN_PW) {
+  $envFile = Join-Path $RepoDir '.env'
+  $keep = @()
+  if (Test-Path $envFile) {
+    $keep = @(Get-Content $envFile | Where-Object { $_ -notmatch '^BOOTSTRAP_ADMIN_PASSWORD=' })
+  }
+  $keep += "BOOTSTRAP_ADMIN_PASSWORD=$($env:WA_ADMIN_PW)"
+  Write-Host "Admin account will be created on first boot from the password you set."
+  Set-Content -Path $envFile -Value $keep -Encoding ascii
+}
 
 # -- 1. Ensure uv -----------------------------------------------------------
 function Test-Cmd($name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
@@ -49,9 +66,16 @@ if (-not (Test-Path $Uv) -and -not (Test-Cmd 'uv')) {
 }
 
 # -- 2. Sync dependencies (downloads Python 3.12 if needed) -----------------
+# --extra encryption installs the SQLCipher engine (sqlcipher3), mandatory once a
+# database is encrypted at rest; without it an encrypted install cannot boot.
 Write-Host "Installing dependencies (first run downloads Python - a few minutes)..."
-& $Uv sync
+& $Uv sync --extra encryption
 if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] uv sync failed - see the output above."; exit 1 }
+
+# Pre-compile bytecode so the FIRST server boot doesn't pay the .pyc-compile cost
+# (cold boots are dominated by this + the OS file scan). Best-effort, non-fatal.
+Write-Host "Pre-compiling Python bytecode (faster first boot)..."
+try { & $Uv run python -m compileall -q app run.py } catch { Write-Host "  (skipped - the server will compile on first import)" }
 
 # -- 3. Server Manager (the `webagent` command) - FIRST, best-effort --------
 # A dedicated venv + a webagent.cmd launcher on PATH. Non-fatal: a hiccup here
@@ -89,8 +113,8 @@ set "WEBAGENT_TUI_NO_SUPERVISE=1"
 # -- 4. Background service: a Scheduled Task at logon ------------------------
 # Runs the keep-alive launcher hidden, restarts on failure, starts at logon (so
 # it survives a reboot). No admin rights needed - it runs as the current user.
-Write-Host "Setting up webAgent to run in the background and start when you log in..."
-$TaskName = 'webAgent'
+Write-Host "Setting up WebAgent to run in the background and start when you log in..."
+$TaskName = 'WebAgent'
 $LoopScript = Join-Path $RepoDir 'deploy\start_server_windows.ps1'
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
   -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$LoopScript`" `"$RepoDir`""
@@ -100,7 +124,7 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
   -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
 try {
   Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-    -Settings $settings -Description 'webAgent server (keep-alive)' -Force | Out-Null
+    -Settings $settings -Description 'WebAgent server (keep-alive)' -Force | Out-Null
   Start-ScheduledTask -TaskName $TaskName
   $svcOk = $true
 } catch {
@@ -119,12 +143,12 @@ try {
 
 Write-Host ""
 Write-Host "============================================"
-Write-Host " webAgent is starting in the background."
+Write-Host " WebAgent is starting in the background."
 Write-Host "   On this PC:           http://localhost:$Port"
 if ($ip) { Write-Host "   From another device:  http://${ip}:$Port   (same network)" }
 if ($svcOk) {
   Write-Host " It keeps running, restarts itself if it stops, and starts when you log in."
-  Write-Host " To stop it:   Stop-ScheduledTask -TaskName webAgent"
+  Write-Host " To stop it:   Stop-ScheduledTask -TaskName WebAgent"
 } else {
   Write-Host " It is running in this session. Re-run this command to set up auto-start."
 }

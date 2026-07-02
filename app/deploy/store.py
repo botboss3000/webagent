@@ -17,6 +17,7 @@ All writes route through ``app/util/config_io.py`` (atomic, self-creates
 
 from __future__ import annotations
 
+import secrets as _secrets
 import time
 from pathlib import Path
 from typing import Any, Dict
@@ -53,6 +54,73 @@ def save_config(provider_id: str, config: Dict[str, Any]) -> Dict[str, Any]:
     block["config"] = dict(config or {})
     _save(data)
     return block["config"]
+
+
+# ── Saved servers (named reusable profiles for a profile-aware target) ───────
+#
+# A "saved server" is a named set of NON-secret settings (address, user, port,
+# repo, domain) the admin can pick from a dropdown instead of retyping — its
+# secrets (SSH key / password) live in the vault under a per-server key
+# (``app/deploy/credentials.py`` with ``profile=<server_id>``). Only the
+# SSH target uses these today. They sit alongside the single "working" ``config``
+# the deploy runtime actually reads: selecting a saved server copies it INTO the
+# working slot (see manager.select_server), so deploy/test/tear-down are unchanged.
+
+def list_servers(provider_id: str) -> Dict[str, Any]:
+    """All saved-server profiles for a target, keyed by server id (may be empty)."""
+    block = _load().get("providers", {}).get(provider_id, {})
+    servers = block.get("servers", {})
+    return dict(servers) if isinstance(servers, dict) else {}
+
+
+def get_server(provider_id: str, server_id: str) -> Dict[str, Any]:
+    rec = list_servers(provider_id).get(server_id, {})
+    return dict(rec) if isinstance(rec, dict) else {}
+
+
+def upsert_server(provider_id: str, server_id: str, profile: Dict[str, Any]) -> str:
+    """Create or replace one saved server's NON-secret record. A blank
+    ``server_id`` mints a new one. Returns the server id used."""
+    data = _load()
+    providers = data.setdefault("providers", {})
+    block = providers.setdefault(provider_id, {})
+    servers = block.setdefault("servers", {})
+    if not isinstance(servers, dict):
+        servers = {}
+        block["servers"] = servers
+    sid = (server_id or "").strip() or ("srv-" + _secrets.token_hex(4))
+    rec = dict(profile or {})
+    rec.setdefault("created_at", time.time())
+    rec["updated_at"] = time.time()
+    servers[sid] = rec
+    _save(data)
+    return sid
+
+
+def delete_server(provider_id: str, server_id: str) -> None:
+    data = _load()
+    block = data.get("providers", {}).get(provider_id)
+    if not isinstance(block, dict):
+        return
+    servers = block.get("servers")
+    if isinstance(servers, dict) and server_id in servers:
+        servers.pop(server_id, None)
+        if block.get("active_server") == server_id:
+            block["active_server"] = ""
+        _save(data)
+
+
+def get_active_server(provider_id: str) -> str:
+    block = _load().get("providers", {}).get(provider_id, {})
+    return str(block.get("active_server", "") or "")
+
+
+def set_active_server(provider_id: str, server_id: str) -> None:
+    data = _load()
+    providers = data.setdefault("providers", {})
+    block = providers.setdefault(provider_id, {})
+    block["active_server"] = server_id or ""
+    _save(data)
 
 
 # ── Which target is currently selected in the panel ─────────────────────────

@@ -1,7 +1,7 @@
 """Manager-state tools — things that change the *manager's* situation rather
 than the target codebase. Available in onboarding mode (no project required).
 
-v1: ``link_project`` points the manager at an existing webAgent checkout, which
+v1: ``link_project`` points the manager at an existing WebAgent checkout, which
 flips it from onboarding into managed mode and re-picks the AI key (the linked
 repo's credentials take over). The heavy install flow (cloning a fresh copy,
 building the environment) lands in a later phase.
@@ -16,7 +16,7 @@ from .base import WRITES_DISABLED_MSG, ToolContext
 
 
 async def link_project(ctx: ToolContext, path: str) -> str:
-    """Link the manager to an existing webAgent checkout at ``path``."""
+    """Link the manager to an existing WebAgent checkout at ``path``."""
     if ctx.set_project is None:
         return "Error: linking is unavailable in this context."
     path = (path or "").strip().strip('"').strip("'")
@@ -79,7 +79,7 @@ async def setup_launch_shortcut(ctx: ToolContext) -> str:
 
 
 async def uninstall(ctx: ToolContext) -> str:
-    """Remove webAgent from this device (Termux only): the launcher, the home-screen
+    """Remove WebAgent from this device (Termux only): the launcher, the home-screen
     shortcut, the cloned repo + venv, the manager's data dir, and the pip package.
     Irreversible. Mutating. The caller should close the manager afterward (the code
     being removed is the one running — on Linux/Android the inodes survive until exit).
@@ -129,5 +129,5 @@ async def uninstall(ctx: ToolContext) -> str:
     msg = "[uninstall] removed: " + ("; ".join(removed) if removed else "(nothing found)")
     if failed:
         msg += "\n[uninstall] could NOT remove: " + "; ".join(failed)
-    msg += "\nwebAgent has been removed from this device. Closing the manager now."
+    msg += "\nWebAgent has been removed from this device. Closing the manager now."
     return msg

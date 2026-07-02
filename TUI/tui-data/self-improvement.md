@@ -187,10 +187,10 @@ if not ctx.writes_enabled:
 
 ## Constraints & gotchas
 
-1. **Python 3.11–3.12 only** — never install/run webAgent on 3.13+. Never loosen pins.
+1. **Python 3.11–3.12 only** — never install/run WebAgent on 3.13+. Never loosen pins.
 2. **No psutil** — sysmetrics uses stdlib + ctypes + /proc. Keep it dependency-free.
 3. **No openai SDK** — llm.py uses raw httpx. Keeps frozen exe size small.
-4. **Never import webAgent app internals** — the manager talks to it over HTTP only.
+4. **Never import WebAgent app internals** — the manager talks to it over HTTP only.
 5. **Never commit** `.env`, `local.db`, `provider.json`, `db_connection.json`, or other per-machine files. No force-push.
 6. **Sensitive files list** (`safety.py:SENSITIVE_FILES`): `.env`, `app/db/local.db`, `app/auth/users.json`, `provider.json`, `app/db_mode.json`, `scheduler_config.json`.
 7. **Backups are automatic** — `write_source`, `edit_source`, `patch_source`, `delete_source`, and git operations all auto-backup.
@@ -200,7 +200,7 @@ if not ctx.writes_enabled:
 11. **Tool descriptions in tools.json** overlay Python code — edit there to change how the model sees a tool without touching code.
 12. **Prompt changes need restart** — `SYSTEM_PROMPT` is a module-level constant loaded once.
 13. **The `Current situation` block** is appended to the system prompt each turn by the app — describes the host, mode, server status, available actions. The agent reads it but doesn't control its content.
-14. **Self-update in source mode** does `git pull --ff-only` — so it pulls the WHOLE repo, not just the manager. A managed webAgent checkout sharing the same repo gets updated too.
+14. **Self-update in source mode** does `git pull --ff-only` — so it pulls the WHOLE repo, not just the manager. A managed WebAgent checkout sharing the same repo gets updated too.
 15. **Self-update in frozen mode** fetches fresh source into data dir, builds new exe, stages it beside the current one — swap happens on restart via a detached helper script.
 
 ---

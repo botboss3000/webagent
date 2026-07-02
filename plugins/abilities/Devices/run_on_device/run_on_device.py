@@ -1,7 +1,7 @@
 """Multi-Device Control ability — hand a task to ANOTHER of the user's devices.
 
 Drop-in (see plugins/abilities/_TEMPLATE.py): exposes two tools —
-  • list_my_devices — discover the other webAgent instances sharing this database
+  • list_my_devices — discover the other WebAgent instances sharing this database
   • run_on_device   — enqueue a job for one of them; that device's worker
                       (app/devices/worker.py) claims and runs it with ITS OWN
                       local tools / browser / files.
@@ -18,7 +18,7 @@ DESTRUCTIVE: set = set()
 def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
                 agent_template_id: str = "", enabled_providers=None, **_ctx):
     async def list_my_devices():
-        """List the user's webAgent devices (instances sharing this database):
+        """List the user's WebAgent devices (instances sharing this database):
         each one's id, friendly label, whether it's online now, and what it can do."""
         from app.devices import list_devices
         devices = await list_devices(online_within_seconds=60)

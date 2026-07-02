@@ -1,6 +1,6 @@
-"""Find running webAgent server processes (dependency-free, cross-platform).
+"""Find running WebAgent server processes (dependency-free, cross-platform).
 
-Used on open to show the user every webAgent server instance on the machine and
+Used on open to show the user every WebAgent server instance on the machine and
 to spot **stale/zombie** ones (a process holding port 8080 that no longer serves
 ``/health``, or a leftover ``run.py`` python from a crashed launch) so the manager
 can offer to clean them up.
@@ -8,7 +8,7 @@ can offer to clean them up.
 Two signals are merged:
   1. PIDs **listening on port 8080** (the server port) — the live instance(s).
   2. Python processes whose command line mentions ``run.py`` / ``app.main`` — the
-     webAgent launcher, which also catches one mid-startup or bound elsewhere.
+     WebAgent launcher, which also catches one mid-startup or bound elsewhere.
 
 Everything is best-effort: any probe that fails is skipped, never raised. Returns
 a list of ``{pid, cmdline, on_8080}`` dicts. Classification (tracked vs untracked
@@ -77,7 +77,7 @@ def listeners_on(port: int = 8080) -> set[int]:
     return pids
 
 
-# ── webAgent python processes (by command line) ──────────────────────────────
+# ── WebAgent python processes (by command line) ──────────────────────────────
 def _runpy_procs() -> dict[int, str]:
     procs: dict[int, str] = {}
     if _IS_WIN:
@@ -141,7 +141,7 @@ def process_stat(pid: int) -> str:
 
 
 def scan_webagent_processes(port: int = 8080) -> list[dict]:
-    """Merge port-8080 listeners and webAgent python processes into one list:
+    """Merge port-8080 listeners and WebAgent python processes into one list:
     ``[{pid, cmdline, on_8080, age, stat, cmd_short}]`` sorted by pid.
     Never raises."""
     try:

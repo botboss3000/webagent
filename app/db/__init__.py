@@ -1,5 +1,5 @@
 """
-Database backend factory for webAgent.
+Database backend factory for WebAgent.
 
 Provides get_db() which returns the current StorageBackend instance
 (Cloud/Supabase or Local/SQLite) based on the persisted mode.
@@ -111,6 +111,28 @@ def _maybe_wrap_encryption(backend: StorageBackend) -> StorageBackend:
         return backend
 
 
+def _maybe_wrap_hybrid(remote: StorageBackend) -> StorageBackend:
+    """When the hybrid local-first layer is switched on, wrap the reachable remote
+    (Postgres) authority in a HybridBackend that also holds a local SQLite hot
+    store. Off by default and only ever applied to a live remote — a local-only
+    install never reaches here, so it is a strict no-op there.
+
+    Ordering: the encryption shim wraps the RESULT of this (Enc(Hybrid(local,
+    remote))), so field-level secret encryption still sees a single backend and
+    authoritative auth_element reads resolve against the remote."""
+    try:
+        from app.db.hybrid import hybrid_enabled, HybridBackend
+        if not hybrid_enabled():
+            return remote
+        from app.db.local import LocalBackend
+        local = LocalBackend()
+        logger.info("Wrapped remote backend with HybridBackend (local-first hot store)")
+        return HybridBackend(local, remote)
+    except Exception as e:
+        logger.warning("Hybrid wrap failed (%s); using remote unwrapped", e)
+        return remote
+
+
 def reset_db_instance() -> None:
     """Drop the cached backend so the next get_db() rebuilds it.
 
@@ -123,15 +145,106 @@ def reset_db_instance() -> None:
 _PG_PROVIDERS = ("postgres", "neon", "gcp_cloud_sql")
 
 
+# ── Connection health ────────────────────────────────────────────────────────
+# Records whether the LAST get_db() build actually reached the database the admin
+# signed into, or silently fell back to THIS device's local SQLite copy. Surfaced
+# to the Database & Devices page so a fallback shows a clear "couldn't reach the
+# shared database" banner instead of failing quietly (the local copy always
+# probes green, which is exactly what made the failure invisible before).
+_conn_health: dict = {
+    "ok": True, "degraded": False,
+    "intended": None, "actual": None,
+    "reason": None, "detail": None, "message": None,
+}
+
+_DEGRADED_MESSAGES = {
+    "no_password": (
+        "Couldn't reach the shared database — there's no saved password for it on "
+        "this device, so the app is running on this device's local copy. Open the "
+        "Database page and sign in (Activate) to reconnect."
+    ),
+    "no_credentials": (
+        "Couldn't reach the shared database — its connection details aren't set on "
+        "this device, so the app is running on this device's local copy. Open the "
+        "Database page and sign in (Activate) to reconnect."
+    ),
+    "connect_failed": (
+        "Couldn't reach the shared database, so the app is running on this device's "
+        "local copy. Check the connection and sign in again on the Database page."
+    ),
+}
+
+
+def get_connection_health() -> dict:
+    """Return a copy of the current connection-health record.
+
+    ``degraded`` is True when the saved config points at a shared remote database
+    but get_db() couldn't reach it and dropped to local SQLite. ``message`` is a
+    ready-to-show one-liner; ``detail`` carries the underlying error."""
+    return dict(_conn_health)
+
+
+def is_remote_db() -> bool:
+    """True only when the app is ACTUALLY connected to a remote shared database
+    (Postgres / Supabase), False for local SQLite — including a degraded fallback
+    to the local copy. Used to lengthen background-poller intervals on remote
+    backends, where every round-trip is a costly network hop."""
+    actual = _conn_health.get("actual")
+    if actual:
+        return actual != "local"
+    # Health not yet recorded (pre-get_db) — infer from the saved provider.
+    try:
+        from app.db.connection_config import load_config
+        prov = getattr(load_config(), "provider", "sqlite")
+        return prov in _PG_PROVIDERS or prov == "supabase"
+    except Exception:
+        return False
+
+
+def _mark_healthy(actual: str) -> None:
+    _conn_health.update(ok=True, degraded=False, intended=actual, actual=actual,
+                        reason=None, detail=None, message=None)
+
+
+def _mark_degraded(intended: str, reason: str, detail: str = "") -> None:
+    msg = _DEGRADED_MESSAGES.get(reason, _DEGRADED_MESSAGES["connect_failed"])
+    _conn_health.update(ok=False, degraded=True, intended=intended, actual="local",
+                        reason=reason, detail=(detail or "")[:300], message=msg)
+    logger.error("DB connection degraded: intended=%s reason=%s detail=%s",
+                 intended, reason, (detail or "")[:200])
+
+
 def _resolve_pg_password(cfg) -> str:
-    """Resolve the Postgres password synchronously: explicit env wins, then the
-    secrets vault (best-effort sync), else empty. get_db() is sync, so we cannot
-    await the async secrets API here — the activate flow stashes the resolved
-    password into WEBAGENT_DB_PASSWORD for cold-start use."""
+    """Resolve the Postgres password synchronously at cold start.
+
+    Order:
+      1. WEBAGENT_DB_PASSWORD env (the warm/activate path stashes it here).
+      2. The database-independent credential store (OS keyring / file fallback).
+         This is the durable source: it survives self-restarts and does NOT live
+         inside the database we are trying to reach. We try the saved
+         ``password_secret_key`` and, if that is unset (older configs), the
+         conventional ``db_password_<provider>`` name so such configs self-heal.
+      3. Best-effort read from the configurable secrets vault (legacy fallback).
+
+    get_db() is synchronous, so steps 1-2 use no event loop at all; only the
+    legacy step 3 needs the async vault and is guarded against a running loop."""
     pw = os.environ.get("WEBAGENT_DB_PASSWORD", "")
     if pw:
         return pw
+
     key = getattr(cfg, "password_secret_key", None)
+    provider = getattr(cfg, "provider", "") or ""
+    try:
+        from app.db import cred_store
+        for k in (key, f"db_password_{provider}" if provider else None):
+            if not k:
+                continue
+            val = cred_store.get_secret(k)
+            if val:
+                return val
+    except Exception as e:
+        logger.debug("Could not resolve PG password from cred_store: %s", e)
+
     if key:
         try:
             import asyncio
@@ -146,6 +259,30 @@ def _resolve_pg_password(cfg) -> str:
         except Exception as e:
             logger.debug("Could not resolve PG password from secrets: %s", e)
     return pw
+
+
+def _hydrate_supabase_env_sync() -> None:
+    """Populate SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY from the saved config and
+    the database-independent credential store, if not already in the env. Lets a
+    Supabase backend cold-start (after a self-restart) without re-activation."""
+    try:
+        from app.db.connection_config import load_config
+        cfg = load_config()
+    except Exception:
+        return
+    if getattr(cfg, "provider", "") != "supabase":
+        return
+    if not os.environ.get("SUPABASE_URL") and getattr(cfg, "supabase_url", None):
+        os.environ["SUPABASE_URL"] = cfg.supabase_url
+    if not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+        try:
+            from app.db import cred_store
+            key_name = getattr(cfg, "supabase_service_key_secret", None) or "supabase_service_key"
+            val = cred_store.get_secret(key_name)
+            if val:
+                os.environ["SUPABASE_SERVICE_ROLE_KEY"] = val
+        except Exception as e:
+            logger.debug("Could not hydrate Supabase key from cred_store: %s", e)
 
 
 def active_postgres_conninfo() -> Optional[str]:
@@ -180,15 +317,41 @@ def _maybe_build_postgres():
         return None
     if getattr(cfg, "provider", "sqlite") not in _PG_PROVIDERS:
         return None
-    try:
-        from app.db.postgres_backend import build_postgres_backend
-        password = _resolve_pg_password(cfg)
-        backend = build_postgres_backend(cfg, password=password)
-        logger.info("Initialized PostgresBackend (provider=%s)", cfg.provider)
-        return backend
-    except Exception as e:
-        logger.error("PostgresBackend init failed (%s); falling back to mode-based backend", e)
+    from app.db.postgres_backend import build_postgres_backend
+    password = _resolve_pg_password(cfg)
+    if not password:
+        # No durable password on this device (the exact cause of the silent
+        # local fallback) — record it so the page can say so plainly.
+        _mark_degraded("postgres", "no_password",
+                       "no saved password for the Postgres connection on this device")
         return None
+    # Retry a TRANSIENT connection failure before giving up. Opening the pool at
+    # boot briefly bursts several connections at the remote pooler; a momentary
+    # reset ("server closed the connection unexpectedly" / WinError 10054), common
+    # right after a fast restart while the pooler still counts the old connections,
+    # would otherwise strand the whole server on an EMPTY local SQLite copy for its
+    # entire life — the worst failure mode (silent wrong data), not a slow one. A
+    # short backing-off retry lets the pooler drain and accept us. A genuinely
+    # unreachable DB still falls through to the local copy after the attempts, with
+    # the degraded banner, exactly as before.
+    import time as _time
+    last_err: Exception | None = None
+    for _attempt in range(4):
+        try:
+            backend = build_postgres_backend(cfg, password=password)
+            logger.info("Initialized PostgresBackend (provider=%s%s)", cfg.provider,
+                        f", after {_attempt} retr{'y' if _attempt == 1 else 'ies'}" if _attempt else "")
+            return backend
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if _attempt < 3:
+                _delay = 1.5 * (2 ** _attempt)  # 1.5s, 3s, 6s
+                logger.warning("PostgresBackend init attempt %d failed (%s); retrying in %.1fs",
+                               _attempt + 1, e, _delay)
+                _time.sleep(_delay)
+    logger.error("PostgresBackend init failed after retries (%s); falling back to local", last_err)
+    _mark_degraded("postgres", "connect_failed", str(last_err))
+    return None
 
 
 def get_db() -> StorageBackend:
@@ -204,40 +367,98 @@ def get_db() -> StorageBackend:
     global _db_instance, _db_mode
 
     if _db_instance is None:
-        # Postgres-family providers (postgres / neon / gcp_cloud_sql) are selected
-        # via the saved connection config, independent of the cloud/local mode.
-        # This takes precedence so an activated Postgres backend is always used.
-        pg_backend = _maybe_build_postgres()
-        if pg_backend is not None:
-            _db_instance = _maybe_wrap_encryption(pg_backend)
+        # What did the admin sign into? The saved connection config is the source
+        # of truth for the intended provider; the cloud/local mode is only the
+        # fallback for older installs that never set an explicit provider.
+        try:
+            from app.db.connection_config import load_config
+            _provider = (getattr(load_config(), "provider", "") or "").strip()
+        except Exception:
+            _provider = ""
+
+        # 1) Postgres-family (postgres / neon / gcp_cloud_sql) — selected via the
+        #    saved connection config; takes precedence over mode.
+        if _provider in _PG_PROVIDERS:
+            pg_backend = _maybe_build_postgres()  # marks health degraded on failure
+            if pg_backend is not None:
+                _mark_healthy("postgres")
+                _db_instance = _maybe_wrap_encryption(_maybe_wrap_hybrid(pg_backend))
+                return _db_instance
+            # Signed into a shared Postgres DB but couldn't reach it → local copy.
+            from app.db.local import LocalBackend
+            logger.error("Falling back to LocalBackend (SQLite) — the shared Postgres "
+                         "database is unreachable; see the Database page")
+            _db_instance = _maybe_wrap_encryption(LocalBackend())
             return _db_instance
 
+        # 2) Supabase (REST URL + service key). Cold start: the activate click
+        #    stashes URL/key into the env, but a self-restart loses that — re-hydrate
+        #    from the saved config + the DB-independent credential store first.
+        if _provider == "supabase":
+            _hydrate_supabase_env_sync()
+            if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+                _mark_degraded("supabase", "no_credentials",
+                               "Supabase URL or service key is not set on this device")
+                from app.db.local import LocalBackend
+                logger.error("Falling back to LocalBackend (SQLite) — Supabase credentials "
+                             "missing on this device; see the Database page")
+                _db_instance = _maybe_wrap_encryption(LocalBackend())
+                return _db_instance
+            try:
+                from app.db.supabase import SupabaseBackend
+                base = SupabaseBackend()
+                _mark_healthy("supabase")
+                logger.info("Initialized SupabaseBackend (Cloud)")
+            except Exception as e:
+                _mark_degraded("supabase", "connect_failed", str(e))
+                from app.db.local import LocalBackend
+                base = LocalBackend()
+                logger.error("Falling back to LocalBackend (SQLite) — Supabase unreachable: %s", e)
+            _db_instance = _maybe_wrap_encryption(base)
+            return _db_instance
+
+        # 3) Explicit single-device local SQLite — an intentional choice, not a
+        #    fallback, so it stays healthy (no warning banner).
+        if _provider == "sqlite":
+            from app.db.local import LocalBackend
+            _mark_healthy("local")
+            logger.info("Initialized LocalBackend (SQLite)")
+            _db_instance = _maybe_wrap_encryption(LocalBackend())
+            return _db_instance
+
+        # 4) No explicit provider saved — honour the legacy cloud/local mode.
         mode = get_mode()
         if mode == "local":
             from app.db.local import LocalBackend
-            base = LocalBackend()
+            _mark_healthy("local")
             logger.info("Initialized LocalBackend (SQLite)")
-        else:
-            _supa_url = os.environ.get("SUPABASE_URL", "")
-            _supa_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
-            if not _supa_url or not _supa_key:
-                logger.info(
-                    "Database mode is 'cloud' but Supabase credentials are not configured "
-                    "— using local backend until credentials are set in the Database tab"
-                )
-                from app.db.local import LocalBackend
-                base = LocalBackend()
-            else:
-                try:
-                    from app.db.supabase import SupabaseBackend
-                    base = SupabaseBackend()
-                    logger.info("Initialized SupabaseBackend (Cloud)")
-                except Exception as e:
-                    logger.warning("Supabase init failed (%s), falling back to local", e)
-                    from app.db.local import LocalBackend
-                    base = LocalBackend()
-                    _db_mode = "local"
-                    logger.info("Fell back to LocalBackend (SQLite)")
+            _db_instance = _maybe_wrap_encryption(LocalBackend())
+            return _db_instance
+
+        # Legacy cloud mode → Supabase via env.
+        _hydrate_supabase_env_sync()
+        if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+            logger.info(
+                "Database mode is 'cloud' but Supabase credentials are not configured "
+                "— using local backend until credentials are set in the Database tab"
+            )
+            # No remote was ever configured here → first-run local, NOT a fallback
+            # from a known shared DB, so don't raise a false "couldn't reach" banner.
+            from app.db.local import LocalBackend
+            _mark_healthy("local")
+            _db_instance = _maybe_wrap_encryption(LocalBackend())
+            return _db_instance
+        try:
+            from app.db.supabase import SupabaseBackend
+            base = SupabaseBackend()
+            _mark_healthy("supabase")
+            logger.info("Initialized SupabaseBackend (Cloud)")
+        except Exception as e:
+            _mark_degraded("supabase", "connect_failed", str(e))
+            from app.db.local import LocalBackend
+            base = LocalBackend()
+            _db_mode = "local"
+            logger.error("Fell back to LocalBackend (SQLite): %s", e)
         _db_instance = _maybe_wrap_encryption(base)
 
     return _db_instance

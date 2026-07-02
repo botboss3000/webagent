@@ -184,7 +184,7 @@ function _installConsoleCapture() {
           try { return JSON.stringify(a); } catch (_) { return String(a); }
         }).join(' ').slice(0, 600);
         // Skip our own error-banner echo to avoid recursion noise.
-        if (!text.startsWith('[webAgent JS error]')) {
+        if (!text.startsWith('[WebAgent JS error]')) {
           _record('console', { level: lvl === 'warn' ? 'warning' : 'error', label: text });
         }
       } catch (_) {}

@@ -5,7 +5,7 @@ project root (or the current dir during onboarding).
 
 Format: one line per event, ISO-8601 timestamps, pipe-delimited fields::
 
-    2026-06-03T15:23:30 | START   | webAgent TUI v0.2.0 | project=~/webagent
+    2026-06-03T15:23:30 | START   | WebAgent TUI v0.2.0 | project=~/webagent
     2026-06-03T15:23:35 | USER    | why did the server crash?
     2026-06-03T15:23:40 | ASSIST  | Let me check the logs…
     2026-06-03T15:23:42 | WARN    | No AI key configured
@@ -72,7 +72,7 @@ class TuiLogger:
 
     def start(self, version: str, project: str = "", model: str = "") -> None:
         """Log the TUI session start."""
-        parts = [f"webAgent TUI {version}"]
+        parts = [f"WebAgent TUI {version}"]
         if project:
             parts.append(f"project={project}")
         if model:

@@ -1250,12 +1250,46 @@ function resetTokens() {
   try { localStorage.removeItem(_TOKEN_CACHE_KEY); } catch (_) {}
 }
 
+// ── Live per-stage elapsed timer ────────────────────────────────────────────
+// Each note (Building tools / Loading history / Searching memory / Preparing /
+// Thinking… / Writing reply…) shows the seconds spent ON THAT STAGE, ticking
+// live, so the user can SEE which step is slow — not just that "memory" ran.
+// `currentNote` stays the bare label (so setNote's dedupe still works); the
+// element shows label + suffix, refreshed on a light interval.
+let _stageTimer = null;   // setInterval handle ticking the elapsed suffix
+let _stageStart = 0;      // performance.now() when the current stage began
+
+// Terminal/one-shot notes that shouldn't carry a running clock.
+const _NO_CLOCK_NOTES = new Set(['Error', 'Stopped', 'Blocked for safety']);
+
+function _clearStageTimer() {
+  if (_stageTimer) { clearInterval(_stageTimer); _stageTimer = null; }
+  _stageStart = 0;
+}
+
+function _renderNote() {
+  if (!textEl) return;
+  let txt = currentNote || '';
+  if (_stageStart && txt) {
+    const secs = (performance.now() - _stageStart) / 1000;
+    if (secs >= 0.3) txt += '  ·  ' + secs.toFixed(1) + 's';
+  }
+  textEl.textContent = txt;
+}
+
 function setNote(text) {
   // Dedupe identical notes — this also tames the per-chunk spam from `stream`
   // events, which would otherwise re-fire on every token.
   if (!text || text === currentNote) return;
   currentNote = text;
-  if (textEl) textEl.textContent = text;
+  // Begin a fresh stage clock (unless this is a terminal note), then refresh on
+  // a light interval so the elapsed seconds tick up live next to the label.
+  _clearStageTimer();
+  if (active && !_NO_CLOCK_NOTES.has(text)) {
+    _stageStart = performance.now();
+    _stageTimer = setInterval(_renderNote, 120);
+  }
+  _renderNote();
   _animateText();
 }
 
@@ -1284,6 +1318,11 @@ function _resetForNewTurn() {
 // Switch the indicator into its live "working" look.
 function _activate() {
   active = true;
+  // Expose turn-active state globally so background pollers (session list /
+  // related-sessions refresh in session-init.js) can PAUSE while a turn is
+  // streaming — their heavy, un-offloaded DB endpoints otherwise jam the
+  // server's event loop and starve the live reply. Cleared in stop().
+  try { window.__agentTurnActive = true; } catch (_) {}
   resting = false;
   // Cancel any pending text-blank scheduled by a just-finished turn's stop(). A
   // re-activation within that 260ms window would otherwise have its fresh note
@@ -1308,8 +1347,10 @@ function stop() {
   _disarmWatchdog();
   _clearEndTimer();
   _stopThinkingRamp();
+  _clearStageTimer();
   if (!active && !resting) return;
   active = false;
+  try { window.__agentTurnActive = false; } catch (_) {}
   if (pillEl) pillEl.classList.remove('thinking');
   _setSpinnerDir(null);
 
@@ -1347,6 +1388,7 @@ export function chatActivitySessionChanged() {
   _clearTextTimer();
   _clearEndTimer();
   active = false;
+  try { window.__agentTurnActive = false; } catch (_) {}
   resting = false;
   _turnEnded = false;
   toolCalls = [];
@@ -1711,11 +1753,13 @@ function eventToNote(event) {
   if (type === 'pipeline') {
     switch (event.step) {
       case 'load_context':              return 'Loading context';
+      case 'prep_tools':                return 'Building tools';
+      case 'prep_history':              return 'Loading history';
       case 'memory_search_start':       return 'Searching memory';
       case 'build_prompt':              return 'Preparing';
       case 'attachment':                return 'Reading attachment';
       case 'attachment_describe_start': return 'Looking at image';
-      case 'load_tools':                return 'Loading tools';
+      case 'load_tools':                return 'Building tools';
       case 'data_src_loaded':           return 'Loading data';
       case 'turn_start':
       case 'llm_call_start':            return 'Thinking…';

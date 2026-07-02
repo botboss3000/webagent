@@ -44,7 +44,7 @@ tools can tell you.
   **exact list in the plan with a one-line reason for each** ("browser_control — to log in
   and act on the site as you"). The user confirms that list, so nothing the user wanted is
   missing and nothing they didn't ask for sneaks in. Walk them through the high-leverage ones:
-  - **visualizer** — gives it a live dashboard/canvas it renders with `render_visual`.
+  - **visualizer** — gives it a live dashboard/genui it renders with `render_visual`.
     Almost every user-facing agent wants this as its "face".
   - **agent_orchestration** — lets it dispatch **research** and **search** sub-agents and
     quote their real results back. Use when the agent must gather/verify lots of
@@ -66,7 +66,7 @@ tools can tell you.
     requirement — the agent will look like it "saved a note" and then have nothing next run.
   - **User Files** ability (`save_file` / `list_user_files` / `read_user_file`) — for any
     agent that handles **uploads or documents for the user** (shared notes, exports,
-    attachments, a file a dashboard offers for download). The canvas itself cannot store
+    attachments, a file a dashboard offers for download). The genui itself cannot store
     files; durable artifacts must go through this ability.
   - **A connected datastore** (Google Sheets, Airtable, Notion, a DB) — when the user wants
     *structured* records they can also open directly. Add the matching ability and say so in
@@ -196,7 +196,7 @@ ability; `ask_tools=[…]` makes specific tools confirm-first. These compose wit
 
 The canonical "act as me on a website and show me a live dashboard" agent: it signs in
 to **some account-based site** on the user's behalf, watches the things that matter
-there (items, orders, messages, stats), and surfaces them on a canvas. This shape fits
+there (items, orders, messages, stats), and surfaces them on a genui. This shape fits
 **any** such site — a marketplace, a classifieds site, a storefront/seller admin, a
 SaaS dashboard, a social account. **Stay site-agnostic here**: the steps below are the
 same for every one of them; the *per-site* specifics (which URLs, which page elements,
@@ -212,7 +212,7 @@ the dashboard skill, or the orchestration skill.
    make the choice deliberately.)
 
 2. **The new agent starts BARE — add abilities deliberately, never prune.** Whichever start
-   you picked, `create_agent` makes a **blank canvas with NO abilities enabled** (only the
+   you picked, `create_agent` makes a **blank genui with NO abilities enabled** (only the
    always-on core tools), the same way an orchestration clone starts with only the abilities
    you hand it. You then
    **add** each ability you need — one `set_agent_ability(agent_id, '<ability>', true)` call
@@ -236,17 +236,17 @@ the dashboard skill, or the orchestration skill.
      app's UI code to match it (never write).
 
 4. **Author its skills** with `manage_agent_skills(action='set', mode='selectable', …)`:
-   - **(a) Dashboard skill** — how to build and `render_visual` the canvas: render the full
+   - **(a) Dashboard skill** — how to build and `render_visual` the genui: render the full
      `<!DOCTYPE html>…</html>` document in one call, use the design tokens (or app styling
      if ui_admin read-only was granted), render the **login state** from `check_credential`
-     (Connected ✓ vs a login form), and never echo secrets. **Do not re-invent the canvas
+     (Connected ✓ vs a login form), and never echo secrets. **Do not re-invent the genui
      contract — defer to the Visualizer skill for every mechanic, because a wrong variant
-     silently fails.** The canvas is **first-class** (grafted into the app in a shadow root,
+     silently fails.** The genui is **first-class** (grafted into the app in a shadow root,
      not a sandboxed iframe), so the contracts the dashboard skill must NOT paraphrase are:
      1. **The mount handshake + `api` toolbox.** The script receives `(root, api)` by ANY of
         three equivalent forms (defer to Visualizer for which to use): a top-level
-        `function mount(root, api){…}` (drop-in, auto-called), `WebagentCanvas.register(fn)`,
-        or inline use of `WebagentCanvas.root`/`.api`; all DOM is
+        `function mount(root, api){…}` (drop-in, auto-called), `WebagentGenui.register(fn)`,
+        or inline use of `WebagentGenui.root`/`.api`; all DOM is
         queried via `root.*` (never `document.*`), and the agent is reached via
         `api.chat(text)` / `api.action(verb,text)` / `api.refresh()`. There is **no**
         `parent.postMessage` and **no** `window.addEventListener('message', …)` anymore.
@@ -270,17 +270,17 @@ the dashboard skill, or the orchestration skill.
      layout) and for every contract/theme/credential/render mechanic write one line:
      *"follow the Visualizer skill exactly — do not paraphrase."* Quote it verbatim **only**
      if you copy it character-for-character from the Visualizer skill.
-     **Canvas capability reality — bake this into the dashboard skill.** A first-class canvas
+     **Gen UI capability reality — bake this into the dashboard skill.** A first-class genui
      runs with the app's full powers: it **can** open a **live webcam/microphone**
      (`navigator.mediaDevices.getUserMedia`, shown in a `<video>` — and the mount must stop
      the tracks in its `cleanup`), run timers, and `fetch` read-only things directly. Use
      `root.*` scoping and `:host` theming; **never** add `window`-level key/pointer listeners
      or size things to `100vw`/`100vh` (they'd hit/cover the whole app). Persisted user data
      (notes, uploads, progress tracking) is still the **agent's** job via its real tools
-     (memory / `save_file`), requested through `api` — the canvas doesn't persist server data
+     (memory / `save_file`), requested through `api` — the genui doesn't persist server data
      itself. (This first-class model is **admin-gated**: an admin may use it in any access mode,
      and open single-user mode allows it for everyone; for a non-admin on a shared deployment the
-     Canvas tab disables it.)
+     Gen UI tab disables it.)
    - **(b) Orchestration skill** — when to spawn a **research** sub-agent (deep, multi-step
      gathering) vs a **search** sub-agent (quick lookups), and to **quote the sub-agents'
      real returned results** rather than inventing them.
@@ -296,21 +296,21 @@ the dashboard skill, or the orchestration skill.
    manage the user's <site> account on their behalf" — fill in the actual site), the
    **navigate → read → act** loop, "**never expose secrets**; log in with **vault_login**,
    never by typing a password you were given", and "always **`render_visual`** the
-   dashboard — your result is the canvas, not a description of it".
+   dashboard — your result is the genui, not a description of it".
 
 6. **Guardrails for Auto.** `update_agent` with sane `max_turn_count` / `max_wall_seconds`
    and `max_identical_tool_calls` / `max_stall_strikes` so an unattended run terminates.
    Keep the happy-path tools at `auto`; set any genuinely risky action (e.g. sending a
    message on the user's behalf) to `ask` with `set_agent_tool` if the user wants a check.
    Confirm it can run in Auto.
-   **Output cap for canvas builders — the truncation trap.** A dashboard agent emits a full
+   **Output cap for genui builders — the truncation trap.** A dashboard agent emits a full
    `<!DOCTYPE html>…</html>` document in one `render_visual` call; if `max_tokens` is too low
    the document is **chopped mid-stream** and the render is rejected (`saved:false`) or ships
    a stub — the classic "it said it built the dashboard but didn't." Give any visualizer/
-   dashboard agent a **generous `max_tokens`** (a rich multi-panel canvas wants ~16k+, not
+   dashboard agent a **generous `max_tokens`** (a rich multi-panel genui wants ~16k+, not
    4–8k) and a `max_wall_seconds` long enough to finish the build — the *initial* build is the
    biggest render it will ever do, so a 5-minute cap can cut it off. You can tighten both for
-   day-to-day running afterward, but never leave a canvas builder unable to emit one whole
+   day-to-day running afterward, but never leave a genui builder unable to emit one whole
    page.
 
 7. **Summarise** to the user: abilities enabled, the three skills you wrote, the guardrails,
@@ -335,7 +335,7 @@ Design every login-capable agent so it **never sees** an email or password. The 
   any value**. The dashboard uses this to draw **"Connected ✓"** vs a login form.
 - **For protected sites (bot-detection / 2FA — Facebook, Google, banks, most
   marketplaces) the agent signs in via the user's REAL Chrome window OUTSIDE the app.**
-  None of the three in-app layers can carry an interactive login: the in-app canvas (it's
+  None of the three in-app layers can carry an interactive login: the in-app genui (it's
   first-class now, but still can't hold a cross-origin site's login/cookies), the in-app
   headless browser, AND the in-app iframe/mirror (sites like Facebook refuse to be framed and
   trip bot-detection there). So the agent must recognize those limits and:
@@ -358,7 +358,7 @@ Tell the new agent, in its prompt and domain skill, to follow exactly this: chec
 simple site, `vault_login`) → continue once they confirm. The dashboard login form (writing
 to the vault via `api.storeCredential`) is only for sites that take a stored-credential
 headless login; for a real interactive login the user signs in on the real site and no
-password ever enters the app. **Never** put a secret in a `chat` action, the canvas
+password ever enters the app. **Never** put a secret in a `chat` action, the genui
 title/HTML, a status message, or anywhere the agent can read it.
 
 ---

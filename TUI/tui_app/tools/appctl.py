@@ -1,4 +1,4 @@
-"""One-shot tools for the running webAgent app — log in, list agents, chat.
+"""One-shot tools for the running WebAgent app — log in, list agents, chat.
 
 Thin wrappers over the shared ``WebAppClient`` (see ``appclient.py``): they reuse
 the app-owned client (and its cached admin session) when one is on the
@@ -14,7 +14,7 @@ from .base import WRITES_DISABLED_MSG, ToolContext
 
 
 async def app_login(ctx: ToolContext, username: str = "admin", password: str = "admin") -> str:
-    """Log into the running webAgent app and cache the session. Read-only side
+    """Log into the running WebAgent app and cache the session. Read-only side
     effect (just authentication). Defaults to the local admin (admin/admin)."""
     client = get_client(ctx)
     client.username, client.password = username, password

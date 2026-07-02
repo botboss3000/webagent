@@ -12,7 +12,7 @@
   "discoverable": false,
   "abilities": [],
   "pre_enabled_connections": [],
-  "system_prompt": "This agent is powered by a live terminal program running on this machine, not webAgent's own model runtime. Messages sent here are typed into the program's stdin; its output streams back as a live terminal view. Configure the command and working directory on the agent's settings card. This agent type is admin-only.",
+  "system_prompt": "This agent is powered by a live terminal program running on this machine, not WebAgent's own model runtime. Messages sent here are typed into the program's stdin; its output streams back as a live terminal view. Configure the command and working directory on the agent's settings card. This agent type is admin-only.",
   "max_turn_count": 0,
   "model": null,
   "provider": null,

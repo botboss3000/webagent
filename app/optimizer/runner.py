@@ -80,7 +80,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     _opt_conn.commit()
     _opt_conn.close()
 
-    # ── Inject target session data + webAgent context into temp DB ──
+    # ── Inject target session data + WebAgent context into temp DB ──
     # This gives the Planner the full picture without needing tool calls
     await _inject_session_context(user_id, session_id, temp_db_path, opt_sid)
 
@@ -113,7 +113,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
 
 
 async def _inject_session_context(user_id: str, session_id: str, temp_db_path: str, opt_sid: str) -> None:
-    """Inject target session interactions + webAgent base-prompt context into the
+    """Inject target session interactions + WebAgent base-prompt context into the
     optimizer temp DB. Limits to last 50 interactions so long sessions don't
     bloat the prompt."""
     import json
@@ -122,8 +122,11 @@ async def _inject_session_context(user_id: str, session_id: str, temp_db_path: s
     ctx_data = []
     # ── Target session transcript (read from the real runtime local.db) ──
     try:
-        local = sqlite3.connect(os.path.join(DB_DIR, "local.db"))
-        local.row_factory = sqlite3.Row
+        # Route through db_crypto so the read works whether local.db is plaintext
+        # or SQLCipher-encrypted at rest. db_crypto sets the matching row factory
+        # (do NOT reassign row_factory here — stdlib Row rejects a cipher cursor).
+        from app.db import db_crypto
+        local = db_crypto.connect(os.path.join(DB_DIR, "local.db"), "local")
         # Get last 50 target session interactions
         ics = local.execute(
             "SELECT role, content, tool_name FROM interactions WHERE session_id=? ORDER BY created_at DESC LIMIT 50",

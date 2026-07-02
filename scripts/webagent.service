@@ -1,5 +1,5 @@
 [Unit]
-Description=webAgent FastAPI server
+Description=WebAgent FastAPI server
 After=network.target
 
 [Service]

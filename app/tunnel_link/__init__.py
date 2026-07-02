@@ -1,4 +1,4 @@
-"""Tunnel Link — the webAgent side of the tunnel.webagent.live feature.
+"""Tunnel Link — the WebAgent side of the tunnel.webagent.live feature.
 
 This instance registers itself with the hosted relay (the separate
 `webagent-tunnel` service), keeps its Cloudflare tunnel address current there,

@@ -1,4 +1,4 @@
-"""Device presence API — lists the webAgent instances ("devices") that share
+"""Device presence API — lists the WebAgent instances ("devices") that share
 this database, for the target-device picker used by the chat pill, the
 automations "Run on" field, and the sessions device badge.
 

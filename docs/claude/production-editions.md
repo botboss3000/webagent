@@ -670,7 +670,7 @@ trimmed copy*, this lets you *directly view and commit to* any other local repo.
 
 - **Engine:** `app/git_repos.py` — a small, self-contained registry (mirrors
   `production_mirror.py`; no import from `github.py`, avoids a cycle). The **built-in
-  webAgent entry** is *synthesized on the fly* (project root + live `origin` + the
+  WebAgent entry** is *synthesized on the fly* (project root + live `origin` + the
   shared `github_token`) — never persisted, can't be edited/removed — so selecting
   it behaves byte-for-byte like before. **Added repos** are stored in the gitignored
   `data/config/git-repos.json` with their own `folder`/`remote_url`/`token`
@@ -736,6 +736,41 @@ packaging step. Storage selection was intentionally left on its mode-switch
 fallback) — new storage backends still register via discovery for the catalog.
 
 ---
+
+## Per-agent discovery default (`discovery_default`) — discoverable by default
+
+Visibility (`visible` vs `discoverable`) is normally set **per ability / per tool**.
+Independent of those per-item maps, an agent may carry a single **default
+visibility** in `agents.metadata` under **`discovery_default`**
+(`AGENT_DISCOVERY_DEFAULT_KEY` in `app/tools/tool_modes.py`). It is the fallback
+applied to any ability that has **no explicit per-ability choice**:
+
+- **absent ⇒ `visible`** — every pre-existing agent behaves exactly as before
+  (all enabled abilities' tools shipped each turn).
+- **`discoverable`** — every un-chosen ability is withheld behind the compact
+  `# [ABILITIES]` menu; its tools **and** bundled skill arrive only when the
+  model calls `load_ability("<id>")`, then stay active for the conversation. This
+  collapses a large tool surface (e.g. 100+ schemas) down to a short ability list
+  plus the always-on core/Base tools, slashing the per-turn input the model must
+  prefill (the dominant chat-latency + cost driver on a big agent).
+
+**Resolution order** is *explicit per-ability choice ▸ `discovery_default` ▸
+`visible`*, so an admin/agent can still force a specific ability `visible` or
+`discoverable` regardless of the default. It threads through
+`resolve_ability_mode(id, modes, default)` and the `ability_default=` kwarg on
+`ability_is_revealed` / `tool_hidden_by_ability`; the runtime reads it once via
+`db.get_agent_discovery_default(agent_id)` in the agent loop, the prompt builder
+(ability-skill gate), the live chat Abilities panel, and the per-agent Abilities
+tab (so the dropdown shows the TRUE effective mode). Skills already default to
+`discoverable`, so they need no separate flag.
+
+**Who gets it on by default:** the **default WebAgent agent**
+(`create_agent_for_user`) and **every Agent-Manager-created agent**
+(`create_custom_agent`) are seeded `discovery_default="discoverable"` via the
+shared `_with_discovery_default()` helper (which never overrides an explicit
+template choice). Existing default agents (`is_user_default=1`) are **backfilled
+once at boot** in `_initialize` so the in-place default agent benefits without a
+re-create. Setter: `db.set_agent_discovery_default(agent_id, mode)`.
 
 ## App-wide per-tool defaults (resolution order)
 

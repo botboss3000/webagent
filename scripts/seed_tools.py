@@ -283,7 +283,7 @@ STARTER_TOOLS = [
     },
     {
         "name": "restart_server",
-        "description": "Restart the Python agent server. Call this after editing .py files to apply changes. The server will be down for ~1-2 seconds while webAgent.bat restarts it.",
+        "description": "Restart the Python agent server. Call this after editing .py files to apply changes. The server will be down for ~1-2 seconds while WebAgent.bat restarts it.",
         "parameters": {
             "type": "object",
             "properties": {},

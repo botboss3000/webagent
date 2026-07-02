@@ -40,6 +40,10 @@ data/config/deploy.json
 data/config/server-manager.json
 data/config/production-mirror.json
 data/config/git-repos.json
+data/config/local-instances.json
+data/local-instances/
+data/config/dashboard-layouts.json
+data/config/dashboard-default.json
 app-settings.json
 .venv
 env/
@@ -150,6 +154,9 @@ app/db/optimizer_*.db-shm
 start_server_proot.sh
 
 # Runtime auth + config (per-machine, contains hashes/tokens)
+# JWT signing secret — generated on first run; committing it would let anyone
+# forge tokens (see app/auth/jwt.py). Per-machine, never tracked.
+data/config/jwt_secret.txt
 db_connection.json
 /db_mode.json
 app/auth/users.json
@@ -157,8 +164,11 @@ app/auth/users.json.bak
 app/db_mode.json
 app/db_connection.json
 app/secrets_mode.json
+app/secrets_config.json
+app/secrets_token_fallback.json
 app/encryption_mode.json
 app/db_encryption.json
+app/db_hybrid.json
 app/pages_mode.json
 app/attachments_store_config.json
 # Remote Access (per-machine config + the signpost directory written at runtime)
@@ -198,6 +208,8 @@ tmp/
 bg_pid.txt
 TUI/server.pid
 TUI/self-update/
+# TUI's local runtime config holds its own API key — keep it out of git.
+TUI/config.json
 
 # Launcher build output: the single portable webagent.exe now lands at the
 # PROJECT ROOT (built from launcher/ via launcher/scripts/build_exe.py).

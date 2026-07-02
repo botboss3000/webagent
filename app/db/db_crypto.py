@@ -485,14 +485,19 @@ def can_enable() -> Tuple[bool, Optional[str]]:
         return False, "Configuration is env-locked on this deployment."
     if not sqlcipher_available():
         return False, "The SQLCipher engine is not installed on this host."
+    # Full-DB encryption holds its per-file keys in the OS keyring DIRECTLY (see
+    # app.db.db_keys — it reads the keyring, not the async secrets vault API). So
+    # the only real requirement is a secure OS keyring to hold those keys; the
+    # *secrets-vault* backend mode (inline_db vs os_keyring, used for integration
+    # tokens) is a separate subsystem and must NOT gate this. Gating on it wrongly
+    # disabled the whole panel on installs whose vault runs in inline_db mode even
+    # though their databases were already keyring-encrypted and fully readable.
     try:
-        from app.secrets import get_mode as secrets_mode, keyring_is_secure
-        if secrets_mode() != "os_keyring":
-            return False, "Full-DB encryption requires the OS-keyring secrets vault."
+        from app.secrets import keyring_is_secure
         if not keyring_is_secure():
-            return False, "No secure OS keyring is available on this host."
+            return False, "Full-DB encryption requires a secure OS keyring to hold the database keys."
     except Exception as e:
-        return False, f"Vault unavailable: {e}"
+        return False, f"Keyring unavailable: {e}"
     return True, None
 
 

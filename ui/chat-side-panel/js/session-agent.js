@@ -1,7 +1,7 @@
 'use strict';
 
 // Agent selection — load agents, agent cache, last-session-per-agent map, the
-// webAgent singleton (find-or-create from the `default` template), agent picker.
+// WebAgent singleton (find-or-create from the `default` template), agent picker.
 // Sets app.currentAgentId. Module map: ui/chat-side-panel/js/README.md.
 
 import { app } from '../../shared/js/state.js';
@@ -50,7 +50,7 @@ function _saveLastSessionMap() {
   } catch (_) { /* storage may be full */ }
 }
 
-// ── webAgent singleton ─────────────────────────────────────────────────────
+// ── WebAgent singleton ─────────────────────────────────────────────────────
 const WEBAGENT_TEMPLATE_ID = 'default';
 const _webagentIdCache = new Map();
 
@@ -63,7 +63,7 @@ async function findWebagentAgent(userId) {
     const match = (data.agents || []).find(a => a.template_id === WEBAGENT_TEMPLATE_ID);
     if (match) { _webagentIdCache.set(userId, match.id); return match.id; }
   } catch (e) {
-    console.warn('[webAgent] find failed:', e);
+    console.warn('[WebAgent] find failed:', e);
   }
   return null;
 }
@@ -74,8 +74,8 @@ async function createWebagentAgent(userId) {
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({
       user_id: userId,
-      name: 'webAgent',
-      description: 'Your all-purpose webAgent \u2014 chat, tools, web, browser, code, pages, and source control.',
+      name: 'WebAgent',
+      description: 'Your all-purpose WebAgent \u2014 chat, tools, web, browser, code, pages, and source control.',
       template_id: WEBAGENT_TEMPLATE_ID,
     }),
   });

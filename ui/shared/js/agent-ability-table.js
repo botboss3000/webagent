@@ -1320,7 +1320,7 @@ export async function build(container, cfg) {
   }
 
   // ── Hybrid search / chat pill (above the table) ──
-  // TYPE → live filter; SEND/ATTACH → chat to webAgent the manager.
+  // TYPE → live filter; SEND/ATTACH → chat to WebAgent the manager.
   // SISTER-PANEL: AGENT-ABILITY-TABLE — mirrored in admin-ability-table.js.
   // MOUNT-LOCATION divergence (look/behaviour still mirrored): the agent card keeps
   // this pill INLINE above the table; the admin Agent Settings page mounts the same

@@ -41,47 +41,47 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         # app/visualizer/ not available — visual rendering disabled.
         return {}
 
-    # Pass agent_id through to the registrar so render_visual / create_canvas /
-    # edit_canvas record this agent as the canvas's owner (extract_injected calls
+    # Pass agent_id through to the registrar so render_visual / create_genui /
+    # edit_genui record this agent as the genui's owner (extract_injected calls
     # register_tools(staging, user_id, agent_id)).
     handlers, schemas, destructive = extract_injected(register_tools, user_id, agent_id)
 
-    # ── screenshot_canvas ─────────────────────────────────────────────────────
+    # ── screenshot_genui ─────────────────────────────────────────────────────
     # Added HERE (not in the register_tools registrar) because it needs the live
     # session_id — the registrar only receives user_id, but the drop-in build_tools
     # contract hands us session_id too. Gives the agent *eyes*: renders a saved
-    # canvas headlessly the way the app mounts it, saves the shot as a session
+    # genui headlessly the way the app mounts it, saves the shot as a session
     # attachment (user sees it; agent can read it via process_image), and returns
     # width/console signals so the agent can catch a not-full-width / broken build.
-    async def _screenshot_canvas(slug: str, theme: str = "dark", click=None):
-        from app.visualizer.screenshot import screenshot_canvas as _shot
+    async def _screenshot_genui(slug: str, theme: str = "dark", click=None):
+        from app.visualizer.screenshot import screenshot_genui as _shot
         return await _shot(slug=slug, theme=theme, click=click,
                            user_id=user_id, session_id=session_id)
 
-    handlers["screenshot_canvas"] = _screenshot_canvas
-    schemas["screenshot_canvas"] = {
+    handlers["screenshot_genui"] = _screenshot_genui
+    schemas["screenshot_genui"] = {
         "type": "object",
         "properties": {
             "slug": {
                 "type": "string",
-                "description": ("Slug of the canvas to render and screenshot (e.g. 'home', "
+                "description": ("Slug of the genui to render and screenshot (e.g. 'home', "
                                 "'dashboard'). Use the slug you just rendered to."),
             },
             "theme": {
                 "type": "string",
                 "enum": ["dark", "light", "both"],
                 "description": ("Which theme to render. 'both' returns a dark and a light shot "
-                                "so you can confirm the canvas is legible in each. Default 'dark'."),
+                                "so you can confirm the genui is legible in each. Default 'dark'."),
             },
             "click": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional. CSS selector(s) to click INSIDE the canvas before the shot, in "
+                    "Optional. CSS selector(s) to click INSIDE the genui before the shot, in "
                     "order — so the screenshot captures an INTERACTION's result (a name opening "
                     "a profile panel, a calendar day expanding, a tab switching, a popover). Use "
                     "this to VERIFY clickable features actually work, not just that the page looks "
-                    "right at rest. Each selector is matched in the canvas's shadow root (e.g. "
+                    "right at rest. Each selector is matched in the genui's shadow root (e.g. "
                     "'#student-sarah', '.day[data-date=\"2026-06-17\"]', '[data-tab=\"profile\"]'). "
                     "A selector that matches nothing is reported back as a CLICK MISS. Pass one "
                     "selector for a single click or several for a sequence."),
@@ -94,9 +94,9 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
     TOOL_SCHEMAS.update(schemas)
     DESTRUCTIVE.clear()
     DESTRUCTIVE.update(destructive)
-    # delete_canvas removes a saved canvas irreversibly → confirm in Ask/Plan mode
+    # delete_genui removes a saved genui irreversibly → confirm in Ask/Plan mode
     # (matches the gated wiki_delete / cancel_automation). Create / edit / set-data
     # are reversible and run free, like memory.
-    DESTRUCTIVE.add("delete_canvas")
+    DESTRUCTIVE.add("delete_genui")
 
     return handlers

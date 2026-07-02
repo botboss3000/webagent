@@ -165,7 +165,7 @@ async def _refresh_token(
         creds = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
         headers["Authorization"] = f"Basic {creds}"
         if provider == "reddit":
-            headers["User-Agent"] = "webAgent/1.0"
+            headers["User-Agent"] = "WebAgent/1.0"
     else:
         data["client_id"] = client_id
         data["client_secret"] = client_secret

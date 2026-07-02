@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api/v1/automations", tags=["automations"])
 
 async def _require_automations_page_access(request: Request) -> None:
     """Enforce the Automations page's VISIBILITY on the server, not just by hiding
-    its header tab. Mirrors the Canvas/Browser page gates: registered users,
+    its header tab. Mirrors the Gen UI/Browser page gates: registered users,
     admins, and 'open' single-user mode pass; because every main page defaults to
     'auth' (registration required), an anonymous guest is refused unless an admin
     opens the Automations page to 'all'. This stops a hand-crafted request from

@@ -1,6 +1,6 @@
 """Multi-device coordination.
 
-A SHARED database lets one user's several webAgent instances ("devices") see one
+A SHARED database lets one user's several WebAgent instances ("devices") see one
 another and hand work back and forth — "run this on the laptop", "let the phone
 handle that". This package adds:
 

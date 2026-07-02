@@ -445,19 +445,19 @@ export function createLoopView(opts = {}) {
       const optSx         = Math.min(1, availableWidth / 1000);
       const positionedOptNodes = OPTIMIZER_NODES.map((n, i) => ({ ...n, cx: Math.round(OPT_BASE_CX[i] * optSx) }));
 
-      const totalH = layout.canvasH + OPT_SECTION_H;
+      const totalH = layout.genuiH + OPT_SECTION_H;
       svgEl.setAttribute('height', totalH);
-      svgEl.setAttribute('viewBox', `0 0 ${layout.canvasW} ${totalH}`);
+      svgEl.setAttribute('viewBox', `0 0 ${layout.genuiW} ${totalH}`);
       rootEl.style.minHeight = totalH + 'px';
 
-      const divY  = layout.canvasH + 18;
-      const labY  = layout.canvasH + 34;
-      const optCY = layout.canvasH + 78;
+      const divY  = layout.genuiH + 18;
+      const labY  = layout.genuiH + 34;
+      const optCY = layout.genuiH + 78;
 
       const divLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
       divLine.setAttribute('x1', 10);
       divLine.setAttribute('y1', divY);
-      divLine.setAttribute('x2', layout.canvasW - 10);
+      divLine.setAttribute('x2', layout.genuiW - 10);
       divLine.setAttribute('y2', divY);
       divLine.setAttribute('stroke', '#2a2a4a');
       divLine.setAttribute('stroke-width', '1');

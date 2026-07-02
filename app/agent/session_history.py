@@ -239,6 +239,21 @@ def interactions_to_openai_messages(
 # model still has grounding without the full history.
 RESUME_TAIL_MESSAGES = 12
 
+# Below this many stored rows, a session CANNOT have been compacted: compaction
+# never deletes raw turns (they stay searchable), so any session that has summary
+# segments still carries all of its many raw rows. A handful of rows is therefore
+# provably free of segments AND far under any token compaction threshold — so the
+# whole context-strategy + compaction + segment-loading path (several sequential
+# remote round-trips that would each return "nothing") can be skipped, and the
+# rows mapped directly. This is the common hot path: a new or short session — the
+# "simple llm" turn the user feels as slow. (A custom CONTEXT_ASSEMBLE strategy,
+# if one is ever enabled, won't run on these short sessions, but there is nothing
+# meaningful to reshape in a handful of turns; the default Context Control has no
+# assemble step. Skipping a compaction that could fire on a huge two-turn paste
+# just defers it one turn — the next turn compacts — and the passive read is
+# still correct, so this is self-correcting, not a regression.)
+HISTORY_FULL_PATH_FLOOR = 8
+
 
 def trim_history_for_resume(
     messages: List[Dict[str, Any]],
@@ -306,6 +321,17 @@ async def build_openai_history_from_session(
         ``[summary] + [verbatim tail]`` instead of the full transcript. The raw
         rows are never deleted — they stay searchable.
     """
+    # Read the transcript once, up front. A new/short session can't have been
+    # compacted (raw rows are never deleted, so a compacted session always has
+    # many rows) and so has no summary segments and nothing to fold — skip the
+    # whole context-strategy + compaction + segment-loading machinery (several
+    # sequential remote round-trips) and return the direct mapping. This is the
+    # common hot path; see HISTORY_FULL_PATH_FLOOR for why it is safe.
+    rows = await db.fetch_interactions(user_id, session_id)
+    if len(rows) < HISTORY_FULL_PATH_FLOOR:
+        return interactions_to_openai_messages(
+            rows, exclude_interaction_ids=exclude_interaction_ids)
+
     # Context-management strategy (write side) — only for agent-loop callers that
     # pass an agent_id. Whichever strategy is enabled (default: Context Control)
     # gets to persist any reshaping of the history before it is read back; the
@@ -322,11 +348,14 @@ async def build_openai_history_from_session(
                 _compact = getattr(strategy, "CONTEXT_COMPACT", None)
                 settings = (await _get(db, agent_id, session_id, user_id)) if _get else {}
                 if settings.get("enabled") and settings.get("compaction_enabled", True) and _compact:
-                    await _compact(db, user_id, session_id, settings)
+                    # Re-read only if compaction actually reshaped the stored train
+                    # (it returns a truthy result when it folded turns); otherwise
+                    # the rows we already have are current.
+                    _changed = await _compact(db, user_id, session_id, settings)
+                    if _changed:
+                        rows = await db.fetch_interactions(user_id, session_id)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("context strategy (write side) skipped: %s", e)
-
-    rows = await db.fetch_interactions(user_id, session_id)
 
     # Optional full assembly override: a strategy may reshape the message list
     # itself (e.g. a sliding-window or retrieval-recall strategy) and take full

@@ -30,7 +30,7 @@
     "webagent.db",
     "publish-public.json",
 
-    "webAgent.bat",
+    "WebAgent.bat",
     "launcher.bat",
     "run.bat",
     "kill_webagent.bat",

@@ -1338,7 +1338,7 @@ export function buildAbilitySearchPill(container, cfg = {}) {
   const input = document.createElement('textarea');
   input.className = 'chat-pill-input';
   input.rows = 1;
-  input.placeholder = cfg.placeholder || 'Search abilities, or ask webAgent…';
+  input.placeholder = cfg.placeholder || 'Search abilities, or ask WebAgent…';
   input.autocomplete = 'off';
 
   const voiceBtn = document.createElement('button');
@@ -1350,7 +1350,7 @@ export function buildAbilitySearchPill(container, cfg = {}) {
   const sendBtn = document.createElement('button');
   sendBtn.type = 'button';
   sendBtn.className = 'chat-pill-send';
-  sendBtn.title = 'Ask webAgent';
+  sendBtn.title = 'Ask WebAgent';
   sendBtn.innerHTML = _iconHtml('send', '16px');
 
   pill.appendChild(attachBtn);

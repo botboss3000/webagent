@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>webAgent</title>
+<title>WebAgent</title>
 <!-- SEO / social-preview meta (description, canonical, Open Graph, Twitter card)
      is injected RIGHT HERE server-side by app/main.py `_render_app_shell`, and the
      bare <title> above is replaced there too. It's done server-side so the urls
@@ -26,7 +26,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes"> <!-- Fallback for older iOS -->
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="webAgent">
+<meta name="apple-mobile-web-app-title" content="WebAgent">
 <link rel="apple-touch-icon" href="./ui/icons/icon-512x512.png">
 <!-- Fonts: Inter (sans) + JetBrains Mono (mono) -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -330,7 +330,7 @@
   </svg>
   <span class="ptr-label-hint" id="ptr-hint"></span>
 </div>
-<canvas class="stargaze-canvas" id="stargaze-bg"></canvas>
+<genui class="stargaze-genui" id="stargaze-bg"></genui>
 <div class="stargaze-overlay"></div>
 <div id="cursor-glow"></div>
 <script>
@@ -401,7 +401,7 @@
       } catch (_) {
         // Server unreachable — the partial loader will also fail and show a
         // visible notice. Log a compact hint here since this runs first.
-        console.warn('[webAgent] Backend unreachable during setup check — server may be down.');
+        console.warn('[WebAgent] Backend unreachable during setup check — server may be down.');
       }
     })();
   })();
@@ -886,7 +886,7 @@
         dot.className = 'health-dot health-dot-red';
         dot.title = 'Server unreachable — start the backend then refresh';
       }
-      var panel = document.getElementById('tab-canvas');
+      var panel = document.getElementById('tab-genui');
       if (!panel) return;
       panel.classList.add('active');
       panel.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:48px 24px;text-align:center;';
@@ -898,7 +898,7 @@
       title.style.cssText = 'margin:0;font:600 20px/1.3 Inter,sans-serif;color:var(--fg-2, #c8cfe0);';
       panel.appendChild(title);
       var msg = document.createElement('p');
-      msg.textContent = 'The webAgent backend at ' + (location.host || 'localhost:8080') + ' cannot be reached. Start the server then refresh this page.';
+      msg.textContent = 'The WebAgent backend at ' + (location.host || 'localhost:8080') + ' cannot be reached. Start the server then refresh this page.';
       msg.style.cssText = 'margin:0;max-width:420px;font:400 14px/1.6 Inter,sans-serif;color:var(--fg-3, #8a92b0);';
       panel.appendChild(msg);
       var hint = document.createElement('p');

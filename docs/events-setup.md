@@ -5,7 +5,7 @@ arrives from any airline, summarize it and message me on Telegram"* and
 have the agent fire **in real time** when the matching email shows up.
 
 Most external services (Gmail, Outlook, Drive, etc.) push notifications
-to a public HTTPS URL on the webAgent server. This document covers the
+to a public HTTPS URL on the WebAgent server. This document covers the
 one-time infrastructure setup each provider needs **before** event
 subscriptions start working.
 
@@ -22,7 +22,7 @@ subscriptions start working.
 | **Event source** | One external service that can emit events (gmail, slack, ...). Plugin under `app/events/sources/`. |
 | **Event type** | What happened: `message_received`, `event_added`, `file_modified`, `mention`, ... |
 | **Subscription** | A row in `agent_event_subscriptions` saying "when SOURCE emits EVENT_TYPE for OWNER, fire AGENT with PROMPT, optionally deliver via CHANNEL." |
-| **Push** | Provider POSTs to webAgent the moment something happens (real-time). |
+| **Push** | Provider POSTs to WebAgent the moment something happens (real-time). |
 | **Poll** | Background loop checks the provider on a cadence (≥5 s). |
 | **Renewal** | Many push providers expire subscriptions after a few days; the renewer loop refreshes them automatically. |
 
@@ -59,7 +59,7 @@ Once-only GCP setup (in the `webagent-495517` project):
      (any SA with the basic Pub/Sub publisher role) and set the **audience**
      to the same URL (`https://<your-host>/api/v1/events/gmail`).
    - **Ack deadline** ~30 s.
-4. Set the three env vars above, restart webAgent.
+4. Set the three env vars above, restart WebAgent.
 5. The first user who saves a "when an email arrives ..." automation
    triggers a `users.watch` call on their Gmail; the daily renewer re-runs
    it before Gmail's 7-day TTL.

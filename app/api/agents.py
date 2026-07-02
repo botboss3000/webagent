@@ -240,7 +240,7 @@ def _safe_agent(agent: dict) -> dict:
     cu = meta.get("chat_ui") if isinstance(meta, dict) else None
     result["chat_ui"] = cu if isinstance(cu, dict) else {}
     # Alternate runtime engine (e.g. "claude_code") + its per-agent config. Absent
-    # ⇒ a normal webAgent-LLM agent. Drives the Config tab's "Claude Code" card and
+    # ⇒ a normal WebAgent-LLM agent. Drives the Config tab's "Claude Code" card and
     # the loop's engine dispatch (app/agent/loop.py stream_agent_events).
     result["engine"] = meta.get("engine") if isinstance(meta, dict) else None
     cc = meta.get("claude_code") if isinstance(meta, dict) else None
@@ -437,8 +437,8 @@ async def list_agents(request: Request, user_id: str = Query(...), include_syste
         try:
             new_agent = await db.create_custom_agent(
                 user_id=user_id,
-                name="webAgent",
-                description="Your all-purpose webAgent — chat, tools, web, browser, code, pages, and source control.",
+                name="WebAgent",
+                description="Your all-purpose WebAgent — chat, tools, web, browser, code, pages, and source control.",
                 template_id="default",
             )
             if new_agent:
@@ -1765,6 +1765,14 @@ async def get_agent_connections(request: Request, agent_id: str, user_id: str = 
         _skill_modes = await db.get_agent_skill_modes(agent_id)
     except Exception:
         _skill_modes = {}
+    # Per-agent DEFAULT visibility — the fallback applied to an ability with no
+    # explicit per-ability choice, so the Abilities tab shows each ability's TRUE
+    # effective mode (discoverable for a discovery-default agent) rather than a
+    # misleading "visible".
+    try:
+        _discovery_default = await db.get_agent_discovery_default(agent_id)
+    except Exception:
+        _discovery_default = None
     # Per-agent ability ACCESS level (everyone / registered / admin) — surfaced on
     # each ability connection so the Abilities tab can render its "Available to"
     # control. Absent → everyone (no restriction).
@@ -1853,7 +1861,7 @@ async def get_agent_connections(request: Request, agent_id: str, user_id: str = 
         # Ability + bundled-skill visibility (per-agent discovery).
         if entry.get("section") == "ability":
             from app.tools.tool_modes import resolve_ability_mode, resolve_skill_mode, resolve_ability_access
-            item["ability_mode"] = resolve_ability_mode(ct, _ability_modes)
+            item["ability_mode"] = resolve_ability_mode(ct, _ability_modes, _discovery_default)
             item["available_to"] = resolve_ability_access(ct, _ability_access)
             try:
                 from app.abilities import ability_feature_with_skill

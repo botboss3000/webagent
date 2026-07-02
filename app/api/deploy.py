@@ -1,7 +1,7 @@
 """Deploy admin API: /admin/deploy/*
 
 Backs the Deploy card in App Config → App Settings. Live one-click deploy of
-webAgent onto a cloud target. ALL endpoints are admin-only — deploying spends
+WebAgent onto a cloud target. ALL endpoints are admin-only — deploying spends
 money on the admin's cloud account and exposes the (admin-gated) tools, so it is
 locked to admins, exactly like Remote Access.
 
@@ -53,14 +53,60 @@ class CredentialsBody(UserBody):
     values: dict = {}
 
 
+# ── Saved servers (profile-aware targets, e.g. ssh_vm) ──
+class ServerSaveBody(UserBody):
+    provider: str
+    server_id: str = ""            # blank = create a new saved server
+    label: str = ""                # the nickname shown in the picker
+    values: dict = {}              # config + secret fields from the form
+
+
+class ServerSelectBody(UserBody):
+    provider: str
+    server_id: str = ""            # blank = "New server…" (clear the form)
+
+
+class ServerIdBody(UserBody):
+    provider: str
+    server_id: str
+
+
 class ManualCommandBody(UserBody):
     provider: str = "termux"       # any "manual" target: termux | windows | macos
     github_url: str = ""
     visibility: str = "public"     # "public" | "private"
     token: str = ""                # only for a private repo; never stored
     install_dir: str = ""          # optional folder to install into (blank = default)
+    admin_password: str = ""       # optional; when set it is embedded in the command
+                                   # (in plain text), never stored server-side
     persist: bool = False          # save the non-secret URL+visibility+folder (on
                                    # blur, NOT on every live-preview keystroke)
+
+
+# ── Local deployments (this app + sibling checkouts) — see the instances section ──
+class InstFolderBody(UserBody):
+    folder: str = ""
+
+
+class InstAddBody(UserBody):
+    label: str = ""
+    folder: str = ""
+    port: int = 0
+
+
+class InstUpdateBody(UserBody):
+    id: str
+    label: str = ""
+    folder: str = ""
+    port: int = 0
+
+
+class InstIdBody(UserBody):
+    id: str
+
+
+class HubPortBody(UserBody):
+    port: int = 0
 
 
 # ── Catalog (status) ──
@@ -134,6 +180,41 @@ async def test(body: SelectBody):
         return {"ok": False, "detail": str(e)}
 
 
+# ── Saved servers (profile-aware targets: the SSH one) ──
+# Let an admin keep several servers as pick-from-a-dropdown profiles. Saving/
+# selecting/deleting a server manages the profile store + its vault row; selecting
+# also loads it into the working slot so a following Deploy / Test / Tear-down acts
+# on it (those endpoints are unchanged — they always use "whatever is loaded").
+@router.post("/servers/save")
+async def servers_save(body: ServerSaveBody):
+    await _require_admin(body.requesting_user_id)
+    if not get_provider(body.provider):
+        raise HTTPException(status_code=400, detail="Unknown target")
+    res = await manager.save_server(body.provider, body.label, body.values or {}, body.server_id)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("detail", "Could not save the server."))
+    return res
+
+
+@router.post("/servers/select")
+async def servers_select(body: ServerSelectBody):
+    await _require_admin(body.requesting_user_id)
+    if not get_provider(body.provider):
+        raise HTTPException(status_code=400, detail="Unknown target")
+    res = await manager.select_server(body.provider, body.server_id)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("detail", "Could not load the server."))
+    return res
+
+
+@router.post("/servers/delete")
+async def servers_delete(body: ServerIdBody):
+    await _require_admin(body.requesting_user_id)
+    if not get_provider(body.provider):
+        raise HTTPException(status_code=400, detail="Unknown target")
+    return await manager.delete_server(body.provider, body.server_id)
+
+
 # ── Manual install (Linux/Termux, Windows, macOS) — build the command + QR ──
 # Each "manual" target gets its OWN bespoke row in the Deploy card (not the
 # cloud-provider dropdown): the admin gives a GitHub URL + public/private (+ a
@@ -153,9 +234,11 @@ async def _build_manual_command(body: ManualCommandBody):
     if not p or not hasattr(p, "build_command") or not getattr(p, "manual", False):
         raise HTTPException(status_code=400, detail="Unknown install target")
     plan = p.build_command(body.github_url, body.visibility, body.token,
-                           install_dir=body.install_dir)
+                           install_dir=body.install_dir,
+                           admin_password=body.admin_password)
     if body.persist:
-        # Persist only the NON-secret choices so the row pre-fills next time.
+        # Persist only the NON-secret choices so the row pre-fills next time. The
+        # admin PASSWORD is never stored (it only ever lives in the shown command).
         store.save_config(provider_id, {"github_url": (body.github_url or "").strip(),
                                         "visibility": body.visibility or "public",
                                         "install_dir": (body.install_dir or "").strip()})
@@ -177,6 +260,7 @@ async def _build_manual_command(body: ManualCommandBody):
         "private": plan.get("private", False),
         "default_repo": plan.get("default_repo", False),
         "placeholder_token": plan.get("placeholder_token", False),
+        "prewire": plan.get("prewire", False),
         "warning": plan.get("warning", ""),
     }
 
@@ -223,3 +307,96 @@ async def destroy(body: SelectBody):
     if not get_provider(body.provider):
         raise HTTPException(status_code=400, detail="Unknown target")
     return _stream(manager.run_destroy(body.provider))
+
+
+# ── Local deployments (this app + sibling checkouts on this machine) ──────────
+# The Deploy card's "Current deployment" list. Backed by app/local_instances.py:
+# this app (the hub) plus any OTHER WebAgent repo folders registered to run as
+# background servers on their own ports (8081, 8082, …). Same registry + engine the
+# Dashboard's instance-switcher header uses; these are the Deploy card's own thin,
+# admin-gated wrappers over it (self-contained, so the card doesn't depend on any
+# other page's router). Start/Stop stream NDJSON like Deploy / Tear-down.
+@router.get("/instances")
+async def instances_list(requesting_user_id: str = ""):
+    await _require_admin(requesting_user_id)
+    from app import local_instances as li
+    return {"instances": await li.list_instances(), "hub_port": li.hub_port()}
+
+
+@router.post("/instances/validate")
+async def instances_validate(body: InstFolderBody):
+    await _require_admin(body.requesting_user_id)
+    from app import local_instances as li
+    return li.validate_folder(body.folder)
+
+
+@router.post("/instances/add")
+async def instances_add(body: InstAddBody):
+    await _require_admin(body.requesting_user_id)
+    from app import local_instances as li
+    try:
+        return {"ok": True, "instance": li.add_instance(body.label, body.folder, body.port)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/instances/update")
+async def instances_update(body: InstUpdateBody):
+    await _require_admin(body.requesting_user_id)
+    from app import local_instances as li
+    try:
+        return {"ok": True, "instance": li.update_instance(
+            body.id, label=body.label, folder=body.folder, port=body.port)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/instances/remove")
+async def instances_remove(body: InstIdBody):
+    await _require_admin(body.requesting_user_id)
+    from app import local_instances as li
+    try:
+        li.remove_instance(body.id)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/instances/start")
+async def instances_start(body: InstIdBody):
+    await _require_admin(body.requesting_user_id)
+    from app import local_instances as li
+    return _stream(li.start_instance(body.id))
+
+
+@router.post("/instances/stop")
+async def instances_stop(body: InstIdBody):
+    await _require_admin(body.requesting_user_id)
+    from app import local_instances as li
+    return _stream(li.stop_instance(body.id))
+
+
+# Change the CURRENT app's own port. Persists the new port (run.py reads it on the
+# next start) and relaunches this process so it rebinds — the browser is on the OLD
+# port, so the response tells the caller where to reopen. The relauncher waits for
+# us to exit, then brings us back on the new port (or a supervisor does — run.py
+# reads the same saved port either way).
+@router.post("/instances/set-hub-port")
+async def instances_set_hub_port(body: HubPortBody):
+    await _require_admin(body.requesting_user_id)
+    from app import local_instances as li
+    try:
+        new_port = li.set_hub_port(body.port)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    result = {"ok": True, "port": new_port, "url": f"http://localhost:{new_port}/"}
+    try:
+        from app import relauncher
+        restart = relauncher.trigger_restart(port=new_port)
+        result["restart"] = restart
+        result["auto_restart"] = bool(restart.get("auto_restart"))
+    except Exception as e:  # noqa: BLE001  — saved anyway; just couldn't self-relaunch
+        logger.exception("hub-port relaunch failed")
+        result["auto_restart"] = False
+        result["restart"] = {"status": "error", "reason": str(e)}
+    return result

@@ -1,0 +1,911 @@
+<template data-slot="#ac-section-slot-data-settings">
+<section id="ac-section-data-settings" class="ac-section ac-stickynav">
+  <!-- DATA SETTINGS — admin-only. No page-title header: the tab carousel already
+       names this page. Follows the standard config-page layout (App Settings /
+       Agent Settings) — a stack of always-open, sticky `.ac-category-group`
+       headings (no chevron) plus a bottom page-assistant chat pill (like App
+       Settings). See docs/claude/ui-guidance.md point 5 + "the standard
+       config-page layout".
+
+       PAGE-ASSISTANT: each `.ac-category-group` below carries a `data-pa-area`
+       key (deployment · app_access · database); the bottom pill (markup in
+       app-config.html as #ac-ds-pa-bar, wired by _initPageAssistant in
+       data-settings.js) reads which area the mouse is over and swaps its
+       placeholder + wraps the sent message with that area's prompt. The whole
+       assistant is steered toward helping the admin get people SIGNED IN to this
+       instance — text catalog in app-prompts.json → page_assistants.data_settings.
+
+       Its first group is DEPLOYMENT (moved here out of App Settings). More
+       data-related settings groups can be added below it over time. -->
+
+  <!-- ════════════════════════════════════════════════════════════════
+       DEPLOYMENT — manage where WebAgent runs + install it somewhere new.
+       One heading over one `.ac-list` with two parts:
+         1. LOCAL DEPLOYMENTS (#ac-deploy-instances) — the current app (the
+            hub) plus any registered sibling checkouts on this machine, each an
+            expandable bar built by deploy.js `_renderInstances`: a live status
+            dot + a "Port N · folder" line. The HUB bar expands to a port editor
+            (change this app's port → it persists + relaunches on the new port);
+            a SIBLING bar expands to Open / Start / Stop / edit / Remove. Backed
+            by /admin/deploy/instances/* (app/local_instances.py — the same
+            registry the Dashboard's instance header uses).
+         2. + NEW DEPLOYMENT (#ac-deploy-new-row) — an expandable `.ac-group`
+            whose body holds the install targets, revealed on click:
+              • Deploy to the cloud (Google VM / AWS / … from the catalog),
+              • Register a local checkout (#ac-deploy-register-row) — an
+                expandable add form (another WebAgent repo folder + a free
+                port) so it can run alongside this one,
+              • Deploy to Linux or Android (Termux), Windows, and Mac.
+       Inside the cloud target's body: a target picker (rendered from
+       GET /admin/deploy/catalog), a dynamic SETTINGS form (non-secret
+       config_fields) and a CLOUD KEY form (secret credential_fields →
+       encrypted vault), then Test / Save / Deploy now / Tear down, a live
+       NDJSON log, and a result line. The three manual targets each build
+       their install/run command LIVE in the browser (see deploy.js).
+       All wiring lives in the sibling deploy.js (initDeploy); the static rows'
+       expand reuses _wireBootRow in data-settings.js, the dynamic instance bars
+       use deploy.js delegation. The cloud key is used for one deploy then
+       auto-discarded from the vault ("Forget keys after deploy", default on).
+       Admin-only; Deploy / Tear-down / relaunch actions are confirm-gated.
+       ════════════════════════════════════════════════════════════════ -->
+  <div class="ac-category-group" id="ac-deploy-card" data-pa-area="deployment">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="rocket" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Deployment</span>
+      <span id="ac-deploy-badge" class="ac-category-count">loading…</span>
+    </div>
+    <div class="ac-category-body">
+      <div class="ac-list" id="ac-deploy-list">
+
+        <!-- ── Current deployment + other local deployments ── deploy.js
+             `_renderInstances` fills this with one expandable bar per WebAgent
+             instance on this machine: the HUB (this app) first, then any
+             registered sibling checkouts. Each collapsed bar shows a live status
+             dot + "Port N · folder"; the hub bar expands to a port editor (change
+             + relaunch this app), a sibling bar to Open / Start / Stop / edit /
+             Remove. Same registry/engine (app/local_instances.py) the Dashboard's
+             instance header uses, via /admin/deploy/instances/*. Expand + actions
+             are wired by deploy.js delegation (the rows are built dynamically). -->
+        <div id="ac-deploy-instances" class="ac-deploy-insts">
+          <div class="ac-hint" style="padding:10px 14px;">Checking where WebAgent is running…</div>
+        </div>
+
+        <!-- ── + New deployment ── an expandable group. Its head is the "add a
+             deployment" bar; clicking it reveals the four install targets below
+             (the cloud row + the three manual rows). Expand wired by
+             _wireBootRow('ac-deploy-new-row') in data-settings.js; the members
+             are ordinary `.ac-row`s inside `.ac-group-body`. -->
+        <div class="ac-row ac-group" id="ac-deploy-new-row">
+          <div class="ac-ability-row ac-group-head">
+            <span class="ac-ability-icon"><i data-lucide="plus" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">New deployment</div>
+              <div class="ac-ability-desc">Install WebAgent somewhere new — the cloud, a Linux or Android device, Windows or a Mac.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-group-body">
+
+        <div class="ac-row" id="ac-deploy-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="cloud-upload" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Deploy to the cloud</div>
+              <div class="ac-ability-desc">Create a server on your cloud account and install WebAgent on it automatically. Your cloud key is used once for the deploy, then discarded from the vault.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Where to deploy</label>
+            <select id="ac-deploy-provider" class="ac-input"></select>
+            <div id="ac-deploy-blurb" class="ac-hint" style="line-height:1.5;"></div>
+            <div id="ac-deploy-requires" class="ac-hint" style="line-height:1.5;color:var(--fg-3);"></div>
+
+            <!-- ── Saved servers ── shown only for a profile-aware target (the SSH
+                 one, p.saved_servers). Pick a saved server to fill the form, name +
+                 Save the current one to add it to the list, or Delete one. Every
+                 Google VM you create is auto-added here too. Populated + wired by
+                 deploy.js (_renderServers / _onServerSelect / _onServerSave). -->
+            <div id="ac-deploy-servers-wrap" style="display:none;margin-top:10px;">
+              <label class="ac-label">Saved servers</label>
+              <select id="ac-deploy-servers" class="ac-input"></select>
+              <div class="ac-ra-actions" style="margin-top:8px;">
+                <input id="ac-deploy-server-label" class="ac-input" type="text"
+                       placeholder="Name this server (e.g. Hetzner box)" autocomplete="off"
+                       spellcheck="false" style="flex:1 1 auto;min-width:0;">
+                <button id="ac-deploy-server-save" class="ac-btn" type="button">Save server</button>
+                <button id="ac-deploy-server-delete" class="ac-btn ac-deploy-danger-btn" type="button">Delete</button>
+              </div>
+              <div class="ac-hint" style="font-size:11px;margin-top:4px;line-height:1.5;">
+                Pick a saved server to fill the form, or “＋ New server…” to add one. Saving keeps its
+                address and login (stored encrypted) so you can reconnect with one click next time.
+              </div>
+            </div>
+
+            <label class="ac-label" style="margin-top:10px;">Settings</label>
+            <div id="ac-deploy-config" class="ac-ra-fields"></div>
+
+            <!-- Optional pre-set admin password. Rendered here (its OWN slot, above
+                 the cloud key) by deploy.js _renderProvider from the provider's
+                 admin_password credential descriptor — it's a deploy setting, not a
+                 cloud credential, so it doesn't belong in the Cloud key list. Still
+                 a secret: gathered as a 'cred', vaulted, discarded after deploy. -->
+            <div id="ac-deploy-admin" class="ac-ra-fields"></div>
+
+            <label class="ac-label" style="margin-top:10px;">Cloud key</label>
+            <div id="ac-deploy-creds" class="ac-ra-fields"></div>
+            <div id="ac-deploy-key-note" class="ac-hint" style="font-size:11px;"></div>
+
+            <div class="ac-ra-actions" style="margin-top:10px;">
+              <button id="ac-deploy-test" class="ac-btn" type="button">Test connection</button>
+              <button id="ac-deploy-save" class="ac-btn" type="button">Save settings</button>
+              <button id="ac-deploy-go" class="ac-btn ac-deploy-go-btn" type="button">Deploy now</button>
+              <button id="ac-deploy-destroy" class="ac-btn" type="button">Tear down</button>
+              <span id="ac-deploy-status" class="ac-hint" style="margin-left:6px;"></span>
+            </div>
+
+            <pre id="ac-deploy-log" class="ac-deploy-log" hidden></pre>
+            <div id="ac-deploy-result" class="ac-hint" style="margin-top:8px;font-size:12px;line-height:1.5;"></div>
+          </div>
+        </div>
+
+        <!-- ── + Register a local checkout ── an expandable add form: point at
+             another WebAgent repo folder on this machine + a free port, and it can
+             run alongside this one. Sits inside New deployment (below Deploy to the
+             cloud). Body ids owned by deploy.js (_initRegister); expand wired by
+             _wireBootRow('ac-deploy-register-row'). -->
+        <div class="ac-row" id="ac-deploy-register-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="folder-plus" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Register a local checkout</div>
+              <div class="ac-ability-desc">Run another WebAgent repo folder on this machine on its own port, alongside this one.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Repo folder *</label>
+            <input id="ac-inst-folder" class="ac-input" type="text" placeholder="C:\path\to\another-webagent" autocomplete="off" spellcheck="false">
+            <div class="ac-hint" id="ac-inst-folder-tip" style="font-size:11px;margin-top:3px;">The folder of another WebAgent checkout (needs run.py + app/main.py).</div>
+
+            <label class="ac-label" style="margin-top:10px;">Name</label>
+            <input id="ac-inst-label" class="ac-input" type="text" placeholder="Defaults to the folder name" autocomplete="off">
+
+            <label class="ac-label" style="margin-top:10px;">Port *</label>
+            <input id="ac-inst-port" class="ac-input" type="number" min="1024" max="65535" placeholder="8081">
+            <div class="ac-hint" id="ac-inst-port-tip" style="font-size:11px;margin-top:3px;">A free port, different from this app’s.</div>
+
+            <div class="ac-ra-actions" style="margin-top:10px;">
+              <button id="ac-inst-add" class="ac-btn ac-deploy-go-btn" type="button">Add</button>
+              <span id="ac-inst-add-status" class="ac-hint" style="margin-left:6px;"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Run on Linux / Termux ── a SEPARATE sibling row (not a cloud
+             provider): the admin gives a GitHub URL + public/private (+ token if
+             private), and gets the one command to paste into a Linux terminal or
+             Termux plus a scannable QR of it. ONE command, it detects which it's on.
+             No cloud account, nothing billable. The `data-tip` on each label becomes
+             a circled "?" help badge (deploy.js _wirePhoneTips, same look as the
+             cloud row). Body ids owned by deploy.js (_initPhone); expand reuses
+             _wireBootRow. -->
+        <div class="ac-row" id="ac-deploy-phone-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="terminal" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Deploy to Linux or Android (Termux)</div>
+              <div class="ac-ability-desc">Install WebAgent on a Linux computer, or on an Android phone or tablet using the free Termux app. Enter your repository, then scan or paste the command it gives you — no cloud account, nothing to pay for.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label" data-tip="The address of the WebAgent code on GitHub. Leave blank to install the standard WebAgent app; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
+            <input id="ac-tx-url" class="ac-input" type="text" placeholder="https://github.com/botboss3000/webagent" autocomplete="off" spellcheck="false">
+
+            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
+            <select id="ac-tx-visibility" class="ac-input">
+              <option value="public">Public — anyone can clone it</option>
+              <option value="private">Private — needs an access token</option>
+            </select>
+
+            <div id="ac-tx-token-wrap" style="display:none;margin-top:10px;">
+              <label class="ac-label" data-tip="A GitHub personal access token, used once to build the command so the device can download a private repository. It is never saved on the server — it only gets embedded in the command you copy or scan, then forgotten.">Access token</label>
+              <input id="ac-tx-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
+              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the device can download a private repository, then forgotten.</div>
+            </div>
+
+            <!-- Install location (optional). Blank = the default shown as the
+                 placeholder (deploy.js fills it from MANUAL_ROWS.defaultDir). If
+                 WebAgent is already in this folder the command updates it to the
+                 repository above instead of re-installing. -->
+            <label class="ac-label" style="margin-top:10px;" data-tip="The folder on the device to install WebAgent into. Leave blank for the default ($HOME/webagent). If WebAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
+            <input id="ac-tx-dir" class="ac-input" type="text" autocomplete="off" spellcheck="false">
+
+            <!-- Admin password (optional). See deploy.js _mcResolveAdmin (mirror of
+                 manual_common.resolve_admin). Blank → no prefix: the first visitor
+                 sets the password on the setup page. Typed → the command carries it
+                 (WA_ADMIN_PW → BOOTSTRAP_ADMIN_PASSWORD in .env) IN PLAIN TEXT. -->
+            <label class="ac-label" style="margin-top:10px;" data-tip="Optional — leave it blank to install the app as-is, with no admin password set. The first person to open its address then picks the password on the setup page (this also works from another device on the same network). Or type a password here to pre-set it, so the admin is ready before the app is ever reachable — note it is then embedded in the command below in plain text, so keep that command private.">Admin password (optional)</label>
+            <input id="ac-tx-admin-pw" class="ac-input" type="password" placeholder="leave blank — first visitor sets it" autocomplete="new-password" spellcheck="false">
+
+            <!-- The command is shown LIVE (built + QR generated by deploy.js as
+                 the fields change) — there is no "generate" button. Copy grabs it;
+                 the QR button toggles a popover with the same command as a scannable
+                 code (mirrors Remote Access → Same network). -->
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Paste this into a Linux terminal, or Termux on a phone</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-tx-cmd"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-tx-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                  <button id="ac-tx-qr-btn" class="ac-btn ac-ra-icon-btn" type="button" title="Show QR code" aria-label="Show QR code"><i data-lucide="qr-code"></i></button>
+                </div>
+              </div>
+              <div id="ac-tx-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
+            </div>
+
+            <!-- Run-only command: start the server when WebAgent is ALREADY
+                 installed on this device (no clone, no rebuild). Static per
+                 platform — deploy.js fills the code + wires Copy (_manualRender /
+                 _initManualRows, RUN_* constants; the run field on MANUAL_ROWS). -->
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Already installed? Just start the server</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-tx-run"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-tx-run-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                </div>
+              </div>
+            </div>
+
+            <ol class="ac-tx-steps" id="ac-tx-steps"></ol>
+            <div class="ac-deploy-cmd-note" id="ac-tx-note" hidden></div>
+          </div>
+        </div>
+
+        <!-- ── Run on Windows ── another SEPARATE manual row (sibling of the
+             Linux/Termux row). Same shape: GitHub URL + public/private (+ token
+             if private) → the one command to paste into PowerShell + a QR. The
+             command is built LIVE in deploy.js (_winBuild, a byte-mirror of
+             app/deploy/providers/windows.py build_command) so the box renders
+             even before the server restarts. Body ids owned by deploy.js
+             (MANUAL_ROWS[windows]); expand reuses _wireBootRow. -->
+        <div class="ac-row" id="ac-deploy-win-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="monitor" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Deploy to Windows</div>
+              <div class="ac-ability-desc">Install WebAgent on a Windows 10 or 11 PC. Enter your repository, then copy or scan the command and paste it into PowerShell — no cloud account, nothing to pay for.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label" data-tip="The address of the WebAgent code on GitHub. Leave blank to install the standard WebAgent app; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
+            <input id="ac-win-url" class="ac-input" type="text" placeholder="https://github.com/botboss3000/webagent" autocomplete="off" spellcheck="false">
+
+            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
+            <select id="ac-win-visibility" class="ac-input">
+              <option value="public">Public — anyone can clone it</option>
+              <option value="private">Private — needs an access token</option>
+            </select>
+
+            <div id="ac-win-token-wrap" style="display:none;margin-top:10px;">
+              <label class="ac-label" data-tip="A GitHub personal access token, used once to build the command so the device can download a private repository. It is never saved on the server — it only gets embedded in the command you copy or scan, then forgotten.">Access token</label>
+              <input id="ac-win-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
+              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the PC can download a private repository, then forgotten.</div>
+            </div>
+
+            <!-- Install location (optional). Blank = the default ($env:USERPROFILE\webagent),
+                 filled in as the placeholder by deploy.js. An existing install here is
+                 updated to the repository above rather than re-installed. -->
+            <label class="ac-label" style="margin-top:10px;" data-tip="The folder on the PC to install WebAgent into. Leave blank for the default (your user profile folder). If WebAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
+            <input id="ac-win-dir" class="ac-input" type="text" autocomplete="off" spellcheck="false">
+
+            <!-- Admin password (optional) — see the Linux/Termux row above (mirror). -->
+            <label class="ac-label" style="margin-top:10px;" data-tip="Optional — leave it blank to install the app as-is, with no admin password set. The first person to open its address then picks the password on the setup page (this also works from another device on the same network). Or type a password here to pre-set it, so the admin is ready before the app is ever reachable — note it is then embedded in the command below in plain text, so keep that command private.">Admin password (optional)</label>
+            <input id="ac-win-admin-pw" class="ac-input" type="password" placeholder="leave blank — first visitor sets it" autocomplete="new-password" spellcheck="false">
+
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Paste this into Windows PowerShell</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-win-cmd"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-win-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                  <button id="ac-win-qr-btn" class="ac-btn ac-ra-icon-btn" type="button" title="Show QR code" aria-label="Show QR code"><i data-lucide="qr-code"></i></button>
+                </div>
+              </div>
+              <div id="ac-win-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
+            </div>
+
+            <!-- Run-only command: start the server when it's ALREADY installed. -->
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Already installed? Just start the server</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-win-run"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-win-run-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                </div>
+              </div>
+            </div>
+
+            <ol class="ac-tx-steps" id="ac-win-steps"></ol>
+            <div class="ac-deploy-cmd-note" id="ac-win-note" hidden></div>
+          </div>
+        </div>
+
+        <!-- ── Run on macOS ── another SEPARATE manual row (sibling of the
+             Linux/Termux + Windows rows). Same shape: GitHub URL + public/private
+             (+ token if private) → the one command to paste into Terminal + a QR.
+             Built LIVE in deploy.js (_macBuild, a byte-mirror of
+             app/deploy/providers/macos.py build_command). Body ids owned by
+             deploy.js (MANUAL_ROWS[macos]); expand reuses _wireBootRow. -->
+        <div class="ac-row" id="ac-deploy-mac-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="laptop" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Deploy to Mac</div>
+              <div class="ac-ability-desc">Install WebAgent on a Mac. Enter your repository, then copy or scan the command and paste it into Terminal — no cloud account, nothing to pay for.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label" data-tip="The address of the WebAgent code on GitHub. Leave blank to install the standard WebAgent app; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
+            <input id="ac-mac-url" class="ac-input" type="text" placeholder="https://github.com/botboss3000/webagent" autocomplete="off" spellcheck="false">
+
+            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
+            <select id="ac-mac-visibility" class="ac-input">
+              <option value="public">Public — anyone can clone it</option>
+              <option value="private">Private — needs an access token</option>
+            </select>
+
+            <div id="ac-mac-token-wrap" style="display:none;margin-top:10px;">
+              <label class="ac-label" data-tip="A GitHub personal access token, used once to build the command so the device can download a private repository. It is never saved on the server — it only gets embedded in the command you copy or scan, then forgotten.">Access token</label>
+              <input id="ac-mac-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
+              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the Mac can download a private repository, then forgotten.</div>
+            </div>
+
+            <!-- Install location (optional). Blank = the default ($HOME/webagent),
+                 filled in as the placeholder by deploy.js. An existing install here is
+                 updated to the repository above rather than re-installed. -->
+            <label class="ac-label" style="margin-top:10px;" data-tip="The folder on the Mac to install WebAgent into. Leave blank for the default ($HOME/webagent). If WebAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
+            <input id="ac-mac-dir" class="ac-input" type="text" autocomplete="off" spellcheck="false">
+
+            <!-- Admin password (optional) — see the Linux/Termux row above (mirror). -->
+            <label class="ac-label" style="margin-top:10px;" data-tip="Optional — leave it blank to install the app as-is, with no admin password set. The first person to open its address then picks the password on the setup page (this also works from another device on the same network). Or type a password here to pre-set it, so the admin is ready before the app is ever reachable — note it is then embedded in the command below in plain text, so keep that command private.">Admin password (optional)</label>
+            <input id="ac-mac-admin-pw" class="ac-input" type="password" placeholder="leave blank — first visitor sets it" autocomplete="new-password" spellcheck="false">
+
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Paste this into Terminal on your Mac</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-mac-cmd"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-mac-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                  <button id="ac-mac-qr-btn" class="ac-btn ac-ra-icon-btn" type="button" title="Show QR code" aria-label="Show QR code"><i data-lucide="qr-code"></i></button>
+                </div>
+              </div>
+              <div id="ac-mac-status" class="ac-hint" style="margin-top:6px;font-size:11.5px;"></div>
+            </div>
+
+            <!-- Run-only command: start the server when it's ALREADY installed. -->
+            <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
+              <div class="ac-deploy-cmd-head">Already installed? Just start the server</div>
+              <div class="ac-deploy-cmd-row">
+                <code class="ac-deploy-cmd" id="ac-mac-run"></code>
+                <div class="ac-tx-cmd-btns">
+                  <button id="ac-mac-run-copy" class="ac-btn ac-ra-icon-btn" type="button" title="Copy command" aria-label="Copy command"><i data-lucide="copy"></i></button>
+                </div>
+              </div>
+            </div>
+
+            <ol class="ac-tx-steps" id="ac-mac-steps"></ol>
+            <div class="ac-deploy-cmd-note" id="ac-mac-note" hidden></div>
+          </div>
+        </div>
+
+          </div><!-- /.ac-group-body -->
+        </div><!-- /#ac-deploy-new-row -->
+      </div><!-- /.ac-list -->
+    </div><!-- /.ac-category-body -->
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       APP ACCESS — how new users get into this instance (the "access mode").
+       This is the former Users → Access Mode form, moved here and restyled to
+       match the Deployment card (a `.ac-category-group` heading over one
+       `.ac-list`). Its two options are a RADIO VARIANT of the shared toggle-list:
+       each mode is an `.ac-ability-row` whose right-hand control is a radio (see
+       docs/claude/ui-guidance.md "Toggle-list" → "a row's control can be a
+       radio"). Picking a mode auto-saves via the SAME backend the Users form used
+       (GET/POST /admin/settings/app → access_mode) — no Save button; the pick
+       confirms with the unified on-top save overlay. All wiring lives in the
+       sibling app-access.js (initAppAccess); the heading badge shows the current
+       mode. Admin-only.
+
+       Below the mode radios, in the SAME `.ac-list` tree, sits SOCIAL SIGN-IN
+       (moved here out of the Users page): the radios say who may register, these
+       drop-in providers (plugins/auth_providers/) say how they sign in — one "how
+       people get into this instance" section. It reads like the ability tree: a
+       "Sign in with" group-header row over individual ability-style provider rows
+       (icon + name + Enabled switch + expandable keys body), rendered into
+       #ac-social-list by the sibling social-auth.js (initSocialAuth).
+       ════════════════════════════════════════════════════════════════ -->
+  <div class="ac-category-group" id="ac-access-card" data-pa-area="app_access">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="key-round" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">App Access</span>
+      <span id="ac-access-badge" class="ac-category-count">loading…</span>
+    </div>
+    <div class="ac-category-body">
+      <!-- ONE `.ac-list` tree (the ability-tree look): two access-mode rows, a
+           "Sign in with" sub-head that reads like an ability-group header (icon +
+           title + live count), then the provider rows — each an individual
+           ability-style row (icon + name + substate + Enabled switch + expandable
+           keys body), rendered by social-auth.js. The list draws every hairline
+           divider, so the radios + providers read as one continuous tree.
+           (No `role=radiogroup` on the list: it now also holds non-radio rows; the
+           two mode radios still group by their shared `name`.) -->
+      <div class="ac-list ac-access-list" id="ac-access-list" aria-label="How new users can join this instance">
+
+        <!-- Private (admin approval) — the default. Expands to show users awaiting
+             approval so the admin can authorize or reject them inline. The pending
+             count badge is updated by app-access.js whenever the mode loads or an
+             action is taken. The chevron wiring lives in initAppAccess(). -->
+        <div class="ac-row" id="ac-row-private">
+          <div class="ac-ability-row ac-access-row" id="ac-private-head">
+            <span class="ac-ability-icon"><i data-lucide="shield-check" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Private — admin approval required</div>
+              <div class="ac-ability-desc">New users register but cannot sign in until an admin approves them. <em>(default)</em></div>
+            </div>
+            <span class="ac-ability-status ac-access-radio-cell">
+              <input type="radio" name="ac-access-mode" value="admin_approval" class="ac-access-radio" aria-label="Private — admin approval required">
+            </span>
+            <span id="ac-private-pending-badge" class="ac-category-count" style="display:none;"></span>
+            <span class="ac-row-chevron" id="ac-private-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body" id="ac-private-users-body">
+            <div id="ac-private-users-list"></div>
+          </div>
+        </div>
+
+        <!-- Open Registration — anyone can join + sign in themselves.
+             Plain <div> (not a <label>) on purpose: only the radio circle itself
+             selects this mode, so clicking the row body isn't a hidden toggle. -->
+        <div class="ac-ability-row ac-access-row">
+          <span class="ac-ability-icon"><i data-lucide="globe" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Open Registration</div>
+            <div class="ac-ability-desc">Anyone can join and sign in themselves. “Remember me” on the sign-in screen keeps each device logged in. Anonymous user permissions are controlled per-agent, not at the app level.</div>
+          </div>
+          <span class="ac-ability-status ac-access-radio-cell">
+            <input type="radio" name="ac-access-mode" value="public_registered" class="ac-access-radio" aria-label="Open Registration">
+          </span>
+        </div>
+
+        <!-- ── Sign in options ── an EXPANDABLE group-header row for the social
+             providers below: a LEFT chevron + icon + title + a live "N on" count
+             (set by social-auth.js), the same anatomy as an ability-group head.
+             Clicking the bar expands/collapses the provider list (#ac-social-list),
+             which is collapsed by default. Wired by _wireSocialHead in app-access.js;
+             the collapse + left-chevron-rotate rules live in app3.css. -->
+        <div class="ac-ability-row ac-access-subhead" id="ac-social-head" role="button" tabindex="0" aria-expanded="false">
+          <span class="ac-row-chevron ac-row-chevron--left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          <span class="ac-ability-icon"><i data-lucide="log-in" class="lucide-icon" style="width:16px;height:16px;color:var(--fg-muted);"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Sign in options</div>
+            <div class="ac-ability-desc">One-click social login (Google, GitHub, …). A new account this way follows the access mode above.</div>
+          </div>
+          <span class="ac-category-count" id="ac-social-count"></span>
+        </div>
+
+        <!-- ── Provider rows ── each an individual ability-style row, rendered by
+             social-auth.js. Direct child of the list so the header/first-provider
+             hairline is drawn by the list; provider↔provider hairlines come from
+             the `#ac-social-list > * + *` rule (app3.css). -->
+        <div id="ac-social-list">
+          <div class="ac-table-empty" style="padding:14px;">Loading providers…</div>
+        </div>
+
+      </div><!-- /.ac-list -->
+
+    </div><!-- /.ac-category-body -->
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       DATABASE — where the app's data lives + how it's protected. These
+       seven rows were MOVED here out of the Data Management page (the former
+       Core Storage + Secrets & Encryption groups, plus Data Migration) so all
+       "where does my data live" controls sit under one Database heading below
+       App Access. The rows are the SHARED ability-table component (`.ac-list`
+       of expandable `.ac-row`s) — collapsed to one line (icon · name · live
+       status badge · chevron), expanding in place to their configurator.
+
+       IMPORTANT — the control ids are PRESERVED VERBATIM from Data Management,
+       because their drivers (ui/shared/js/storage.js, ui/shared/js/data-
+       management.js) bind by element id (getElementById, not section-scoped)
+       and load on App-Config open via settings-view.js startStorageUi() /
+       startDataManagement() — so moving the markup to this section leaves the
+       drivers working unchanged. The rows' expand/collapse is wired by
+       _wireDatabaseRows() in data-settings.js (mirrors the retired Data
+       Management tab's _wireRows, incl. the `.ac-tri` header-toggle exclusion
+       for the Encryption + Hybrid rows). storage.js pins its `root` on THIS
+       section (#ac-section-data-settings) — the Data Management tab that used to
+       host it was removed (its last two rows, Config Files + Stream Buffer, went
+       to App Settings → Advanced). See docs/claude/ui-guidance.md +
+       app/db/README.md. ════════════════════════════════════════════════ -->
+  <div class="ac-category-group" id="ac-database-card" data-pa-area="database">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="database" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Database</span>
+    </div>
+    <div class="ac-category-body">
+
+      <!-- Section-wide functional banner (moved with the storage rows): shown by
+           storage.js when config is locked to environment variables. -->
+      <div id="ac-storage-env-banner" class="ac-info-banner" style="display:none;margin-bottom:12px;border-left-color:var(--warning);color:var(--warning);">
+        Configuration is locked to environment variables. UI changes are disabled. Edit the deployment to modify storage settings.
+      </div>
+
+      <div class="ac-list">
+
+        <!-- ── Row · Application Data (the main app database) ── -->
+        <div class="ac-row" id="ac-row-appdata">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="server" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Application Data</div>
+              <div class="ac-ability-desc">Where the main app database lives — SQLite, Postgres, Supabase, and more.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-active-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Provider</label>
+            <select id="ac-storage-db-provider" class="ac-input">
+              <option value="sqlite">SQLite</option>
+              <option value="postgres">Postgres</option>
+              <option value="supabase">Supabase</option>
+              <option value="aws_rds">Amazon RDS</option>
+              <option value="gcp_cloud_sql">Google Cloud SQL</option>
+              <option value="azure_postgres">Azure Database</option>
+              <option value="neon">Neon</option>
+            </select>
+
+            <div id="ac-storage-db-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-left:3px solid var(--accent);border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
+            <div id="ac-storage-db-fields" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+
+            <!-- Natural left-to-right flow: Test → Save → create tables → Activate.
+                 The button set is provider-aware (see applyProviderButtons in
+                 storage.js): for Supabase, "Auto-Create Tables" is hidden and
+                 table-creation is folded into "Show Schema SQL" (which becomes a
+                 "copy SQL → open SQL Editor" action), because Supabase's API
+                 cannot run DDL. Other providers keep real one-click Auto-Create. -->
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+              <button id="ac-storage-db-test" class="ac-btn">Test Connection</button>
+              <button id="ac-storage-db-save" class="ac-btn">Save Config</button>
+              <button id="ac-storage-db-show-sql" class="ac-btn">Show Schema SQL</button>
+              <button id="ac-storage-db-bootstrap" class="ac-btn">Auto-Create Tables</button>
+              <button id="ac-storage-db-activate" class="ac-btn ac-btn-primary">Activate</button>
+            </div>
+
+            <!-- Output box for Test / Show Schema SQL / Activate, with a Copy
+                 button so the generated schema (e.g. the SQL to paste into the
+                 Supabase SQL Editor) can be copied in one click. The copy bar is
+                 shown by storage.js only when the box actually has text; copying
+                 uses the shared clipboard helper (works on localhost + LAN). -->
+            <div id="ac-storage-db-output-wrap" style="margin-top:10px;">
+              <div class="ac-output-copy-bar" style="display:none;justify-content:flex-end;margin-bottom:4px;">
+                <button id="ac-storage-db-output-copy" type="button" class="ac-output-copy-btn" title="Copy output to clipboard"
+                  style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;font-size:10px;background:var(--bg-0);border:var(--border-width) solid var(--border);border-radius:5px;color:var(--fg-3);cursor:pointer;line-height:1;">
+                  <i data-lucide="copy" style="width:12px;height:12px;"></i><span>Copy</span>
+                </button>
+              </div>
+              <pre id="ac-storage-db-output" style="margin:0;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Row · Hybrid local-first (opt-in, applies on next restart) ──
+             One hold-until-confirmed toggle for app/db/hybrid.py. When ON with a
+             shared Postgres remote, heavy chat detail (tool payloads) is kept in
+             THIS device's local database and only the lightweight transcript
+             skeleton is stored remotely (Phase-0 measured those payloads at ~99%
+             of the main DB). A strict no-op on a local-only install — the badge +
+             body note say so. Same spinner→✓/⚠ hold-until-confirmed flow as the
+             encryption toggles (storage.js loadHybrid). The .ac-tri click is
+             excluded from the row's expand handler in data-settings.js
+             _wireDatabaseRows. See app/db/hybrid.py + app/db/README.md. -->
+        <div class="ac-row" id="ac-row-hybrid">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="split" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Hybrid local-first</div>
+              <div class="ac-ability-desc">Keep heavy chat detail (tool payloads) in this device's local database and store only the shared skeleton in the remote. Only active with a shared (Postgres) database. Applies on the next restart.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-hybrid-badge">loading…</span>
+            <span class="ac-tri" id="ac-storage-hybrid-toggle" role="button" tabindex="0" data-state="off"
+                  title="Turn hybrid local-first on/off"><span class="ac-tri-knob"></span></span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div id="ac-storage-hybrid-note" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:var(--warning);font-size:11px;line-height:1.55;"></div>
+            <pre id="ac-storage-hybrid-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+          </div>
+        </div>
+
+        <!-- ── Row · Secrets Vault ── -->
+        <div class="ac-row" id="ac-row-secrets">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="key-round" class="lucide-icon" style="width:18px;height:18px;color:var(--purple);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Secrets Vault</div>
+              <div class="ac-ability-desc">Where API keys and OAuth tokens are kept — app DB, OS keyring, or a cloud vault.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-secrets-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Provider</label>
+            <select id="ac-storage-secrets-provider" class="ac-input">
+              <option value="inline_db">App DB (default, plaintext)</option>
+              <option value="env">Environment variables (read-only)</option>
+              <option value="os_keyring">OS Keyring</option>
+              <!-- Shared remote vaults — every machine pointing at the remote DB
+                   reads the same secrets + encryption keys. The backends are
+                   drop-in files (app/secrets/*.py), auto-discovered; this list
+                   only needs an <option> + matching SECRETS_NOTES/SECRETS_SETUP
+                   entry in storage.js. -->
+              <option value="hashicorp_vault">HashiCorp Vault</option>
+              <option value="azure_key_vault">Azure Key Vault</option>
+              <option value="gcp_secret_manager">GCP Secret Manager</option>
+              <option value="aws_secrets_manager">AWS Secrets Manager</option>
+            </select>
+
+            <div id="ac-storage-secrets-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-left:3px solid var(--purple);border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
+            <!-- Connection fields for remote vaults — built by storage.js
+                 (renderSecretsFields) from SECRETS_FIELDS[provider]. Hidden for the
+                 local providers (App DB / env / OS Keyring), which need no fields.
+                 This is what lets a remote vault be configured IN THE UI after
+                 launch: the non-secret fields save to a local file outside the DB,
+                 the token saves keyring-first with a file fallback — never the DB.
+                 Each text/password input carries .ac-input so it themes correctly
+                 in dark + light. -->
+            <div id="ac-storage-secrets-fields" style="display:none;margin-top:10px;"></div>
+
+            <div id="ac-storage-secrets-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:var(--danger);color:var(--danger);font-size:11px;">
+              Secrets stored as plaintext in main DB. Acceptable for local dev; upgrade to a vault for production.
+            </div>
+
+            <!-- Remote-DB ⨉ local-vault recommendation — shown by storage.js
+                 (renderVaultRecommendation) ONLY when the Application Data database
+                 is a REMOTE/networked backend (anything but local SQLite) AND the
+                 chosen vault is single-host (OS Keyring) or in-DB (App DB). It
+                 explains, in plain terms, the limitations of keeping the vault on one
+                 machine while the data lives on a shared remote database, and points
+                 at a shared cloud vault for multi-machine setups. The copy is
+                 provider-aware (the App-DB and OS-Keyring cases differ). Hidden for
+                 SQLite (single-host by nature) and for the already-shared cloud
+                 vaults. Themed via .ac-info-banner (correct in dark + light). -->
+            <div id="ac-storage-secrets-multihost" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:var(--warning);font-size:11px;line-height:1.55;"></div>
+
+            <div style="display:flex;gap:6px;margin-top:12px;">
+              <button id="ac-storage-secrets-test" class="ac-btn">Test</button>
+              <button id="ac-storage-secrets-save" class="ac-btn ac-btn-primary">Activate</button>
+            </div>
+            <pre id="ac-storage-secrets-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+
+            <!-- Clean-cutover restart notice — shown by storage.js
+                 (renderSecretsRestart) ONLY when the live vault has diverged from
+                 the one the server booted with (state.secrets.restart_recommended).
+                 Switching the vault takes effect immediately for new reads, but
+                 secrets already loaded at boot aren't re-fetched until a restart;
+                 this offers a one-click, panel-scoped server restart (no full-app
+                 reload, no sign-out) that spins until /health answers again. The
+                 button/spinner/status line are built in JS so the panel can show
+                 live progress. Themed via .ac-info-banner (dark + light). -->
+            <div id="ac-storage-secrets-restart" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:var(--warning);font-size:11px;line-height:1.55;"></div>
+          </div>
+        </div>
+
+        <!-- ── Row · Encryption (master + per-database, whole-file SQLCipher) ──
+             Restructured to mirror the ability-tree GROUP pattern: a MASTER tri-
+             toggle on the header (Off · Mixed · On, spanning the private
+             databases) gives one-click activate/deactivate; expanding reveals one
+             toggle per database so any single file can be untoggled. Default is
+             all-encrypted. Every toggle is HOLD-UNTIL-CONFIRMED — the knob only
+             moves after the save succeeds (storage.js loadFullDb / _toggleDb /
+             _setAll): click → spinner over the toggle → ✓ on success, ⚠ + no-move
+             on failure, exactly like the agent ability toggles. The older
+             per-secret field encryption + key tools live under the Advanced
+             disclosure at the bottom. The whole-file conversion still happens at
+             the next restart; a toggle records intent only. All control IDs are
+             preserved so the existing storage.js handlers keep binding.
+             See app/db/db_crypto.py. -->
+        <div class="ac-row" id="ac-row-encryption">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="lock" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Encryption</div>
+              <div class="ac-ability-desc">Encrypt databases at rest (SQLCipher) — each as a whole file under its own key in the keyring vault. Back up the vault's master key: if the keyring is lost the data can't be recovered. Applies on the next restart.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-enc-badge">loading…</span>
+            <!-- MASTER tri (Off · Mixed · On). Static markup; storage.js drives the
+                 data-state from the live per-database status and wires the hold-
+                 until-confirmed bulk set. A .ac-tri click is excluded from the
+                 row's expand handler in data-settings.js _wireDatabaseRows. -->
+            <span class="ac-tri" id="ac-storage-enc-master" role="button" tabindex="0" data-state="off"
+                  title="Master encryption — click the left half to turn ALL databases off, the right half to turn ALL on"><span class="ac-tri-knob"></span></span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <!-- Functional banner only: storage.js shows WHY encryption can't be
+                 managed here (engine missing / no keyring / env-locked). The
+                 descriptive copy lives once on the row header above (the separate
+                 notes box was removed as a duplicate). -->
+            <div id="ac-storage-fulldb-warning" class="ac-info-banner" style="display:none;margin-top:10px;border-left-color:var(--danger);color:var(--danger);font-size:11px;"></div>
+
+            <!-- Per-database toggles (built by storage.js loadFullDb). -->
+            <div id="ac-storage-fulldb-list" style="margin-top:12px;display:flex;flex-direction:column;gap:2px;"></div>
+            <pre id="ac-storage-fulldb-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+
+            <!-- ── Advanced disclosure — per-secret field encryption + key tools ──
+                 Collapsed by default (sliders toggle, like the model table's
+                 Advanced row). Holds the older field-level (Fernet) controls. -->
+            <div id="ac-storage-enc-adv" style="margin-top:14px;border-top:var(--border-width) solid var(--border);padding-top:10px;">
+              <div id="ac-storage-enc-adv-toggle" role="button" tabindex="0" style="display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--muted);">
+                <i data-lucide="sliders-horizontal" class="lucide-icon" style="width:16px;height:16px;"></i>
+                <span style="flex:1;font-size:12px;font-weight:600;">Advanced — per-secret field encryption, key generation &amp; rotation</span>
+                <span class="ac-row-chevron" style="transition:transform .15s;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+              </div>
+              <div id="ac-storage-enc-adv-body" style="display:none;margin-top:12px;">
+                <div id="ac-storage-enc-vault-warning" class="ac-info-banner" style="display:none;margin-top:4px;border-left-color:var(--danger);color:var(--danger);font-size:11px;">
+                  Secrets vault is set to <strong>inline_db</strong> while the database backend is remote. Encryption keys would live in the same DB they protect. Switch the Secrets Vault provider above before enabling per-tenant encryption.
+                </div>
+
+                <!-- Per-secret field encryption — ONE hold-until-confirmed toggle
+                     (replaces the former None/Field dropdown + Activate Level +
+                     Encrypt Existing Rows + Decrypt Back to Plaintext buttons).
+                     This is a SEPARATE layer from the whole-database toggles above:
+                     it scrambles individual secret VALUES under per-tenant keys, so
+                     it still protects secrets while the DB is open AND it is the only
+                     at-rest protection available on cloud databases (Postgres/
+                     Supabase), where whole-file SQLCipher isn't possible.
+                       ON  = activate the field level + encrypt existing rows.
+                       OFF = decrypt all rows back to plaintext + set level to none.
+                     storage.js _toggleFieldEnc drives it with the same spinner→✓/⚠
+                     hold-until-confirmed flow as the whole-DB toggles. -->
+                <div class="ac-ability-row" style="padding-top:4px;">
+                  <span class="ac-ability-icon"><i data-lucide="key" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i></span>
+                  <div class="ac-ability-label">
+                    <div class="ac-ability-name" style="font-size:13px;">Per-secret field encryption <span class="ac-ability-status" id="ac-storage-enc-level-badge" style="margin-left:6px;"></span></div>
+                    <div class="ac-ability-desc" id="ac-storage-enc-field-status">Encrypts individual secret values under a per-tenant key (Fernet) — works on every backend, including cloud databases.</div>
+                  </div>
+                  <span class="ac-tri" id="ac-storage-enc-level-tri" role="button" tabindex="0" data-state="off"
+                        title="Turn per-secret field encryption on or off (converts existing rows)"><span class="ac-tri-knob"></span></span>
+                </div>
+
+                <div id="ac-storage-enc-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-left:3px solid var(--accent);border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
+                <!-- Expert key tools only — generation, rotation, and a round-trip
+                     probe. The activate / encrypt / decrypt actions are folded into
+                     the toggle above. -->
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">
+                  <button id="ac-storage-enc-kek-generate" class="ac-btn">Generate KEK</button>
+                  <button id="ac-storage-enc-kek-rotate" class="ac-btn">Rotate KEK</button>
+                  <button id="ac-storage-enc-test" class="ac-btn">Test Round-Trip</button>
+                </div>
+
+                <div style="margin-top:14px;">
+                  <div style="font-size:11px;font-weight:600;color:var(--muted);">Per-tenant keys</div>
+                  <div id="ac-storage-enc-tenants" style="margin-top:6px;font-size:11px;max-height:200px;overflow-y:auto;border:var(--border-width) solid var(--border);border-radius:6px;padding:6px;display:none;"></div>
+                </div>
+
+                <pre id="ac-storage-enc-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto;display:none;"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Row · GenUI Storage (where Gen UI pages live; renamed from
+             "Page Storage") ── The row wrapper id stays `ac-row-pagestorage` and
+             the control ids stay `ac-storage-genui-*` so storage.js keeps binding;
+             only the visible name/description changed to "GenUI Storage". -->
+        <div class="ac-row" id="ac-row-pagestorage">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="layout-template" class="lucide-icon" style="width:18px;height:18px;color:var(--success);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">GenUI Storage</div>
+              <div class="ac-ability-desc">Where Gen UI pages are stored — on disk, in the database, or hybrid.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-genui-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Mode</label>
+            <select id="ac-storage-genui-mode" class="ac-input">
+              <option value="filesystem">Filesystem (default — files on disk)</option>
+              <option value="database">Database (full HTML in DB; survives restarts)</option>
+              <option value="hybrid">Hybrid (metadata in DB, body on disk)</option>
+            </select>
+
+            <div id="ac-storage-genui-notes" class="ac-provider-notes" style="margin-top:8px;padding:8px 10px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-left:3px solid var(--success);border-radius:4px;font-size:11px;line-height:1.55;"></div>
+
+            <div style="display:flex;gap:6px;margin-top:12px;">
+              <button id="ac-storage-genui-save" class="ac-btn ac-btn-primary">Activate</button>
+            </div>
+            <pre id="ac-storage-genui-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;display:none;"></pre>
+          </div>
+        </div>
+
+        <!-- ── Row · Chat Attachments (per-row storage backend) ── -->
+        <div class="ac-row" id="ac-row-attachments">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="paperclip" class="lucide-icon" style="width:18px;height:18px;color:var(--purple);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Chat Attachments</div>
+              <div class="ac-ability-desc">Where uploaded images, voice, and dropped files are saved.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-attach-active-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              Where chat attachments (images, voice, dropped files) are stored. Switch any time — existing files keep working because each attachment row remembers which backend wrote it.
+            </div>
+
+            <div id="ac-attach-env-banner" class="ac-info-banner" hidden style="margin-top:10px;border-left-color:var(--warning);color:var(--warning);font-size:11px;">
+              Config is env-locked (WEBAGENT_CONFIG_SOURCE=env or WEBAGENT_ATTACHMENTS_STORE set). Backend can be inspected but not changed from this UI.
+            </div>
+
+            <label class="ac-label" style="margin-top:10px;">Backend</label>
+            <select id="ac-attach-mode" class="ac-input"></select>
+
+            <div id="ac-attach-blurb" class="ac-hint" style="margin-top:6px;line-height:1.5;"></div>
+
+            <div id="ac-attach-fields" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;align-items:center;">
+              <button id="ac-attach-save" class="ac-btn ac-btn-primary">Activate Backend</button>
+              <button id="ac-attach-save-cfg" class="ac-btn">Save Provider Settings</button>
+              <button id="ac-attach-test" class="ac-btn">Test</button>
+              <span id="ac-attach-status" class="ac-hint" style="margin-left:6px;"></span>
+            </div>
+
+            <div id="ac-attach-counts" class="ac-hint" style="margin-top:8px;font-size:11px;"></div>
+          </div>
+        </div>
+
+        <!-- ── Row · Data Migration ── -->
+        <div class="ac-row" id="ac-row-migration">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="arrow-right-left" class="lucide-icon" style="width:18px;height:18px;color:var(--success);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Data Migration</div>
+              <div class="ac-ability-desc">Export the current backend to JSON, then import it after switching.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              Export current backend data to JSON, switch active backend, then import the file. Heavy tables may take a while.
+            </div>
+            <div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;">
+              <button id="ac-storage-export-btn" class="ac-btn ac-btn-primary">Export to JSON</button>
+              <label class="ac-btn" style="cursor:pointer;">
+                Import JSON
+                <input id="ac-storage-import-input" type="file" accept="application/json" style="display:none;">
+              </label>
+            </div>
+            <pre id="ac-storage-migrate-output" style="margin-top:10px;padding:8px;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto;display:none;"></pre>
+          </div>
+        </div>
+
+      </div><!-- /.ac-list -->
+    </div><!-- /.ac-category-body -->
+  </div><!-- /#ac-database-card -->
+
+</section>
+</template>

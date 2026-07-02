@@ -1,13 +1,13 @@
 # Remote Access — setup guide
 
 The **Remote Access** card (App Config → **App Settings**) lets a phone or any
-other device reach this webAgent server. It offers several methods through one
+other device reach this WebAgent server. It offers several methods through one
 card; turn on whichever you want. All settings are admin-only.
 
 > **Security first.** Exposing this machine also exposes its admin shell/file
 > tools. Keep sign-in enabled, keep the powerful tools admin-only, and prefer a
 > private method (Tailscale) when you don't need a public link. The signpost and
-> the tunnels are *plumbing* — your webAgent login is still the real gate.
+> the tunnels are *plumbing* — your WebAgent login is still the real gate.
 
 ## The methods
 
@@ -38,7 +38,7 @@ for those.
 ### ngrok
 1. Install ngrok and create a free ngrok account.
 2. In the card, paste your **authtoken** and click **Save token** (the app runs
-   ngrok's one-time `add-authtoken` for you; webAgent never stores the token).
+   ngrok's one-time `add-authtoken` for you; WebAgent never stores the token).
 3. (Optional, for a stable address) buy a reserved domain in ngrok and put it in
    the **Reserved domain** field.
 4. Pick **ngrok** as the method and click **Start**.
@@ -82,7 +82,7 @@ bookmark working:
 ## Hosting the signpost for other people
 
 The signpost directory is **multi-tenant**: it stores one entry per rendezvous
-key. Set a webAgent install's signpost **role** to **Server** (or **Both**) and
+key. Set a WebAgent install's signpost **role** to **Server** (or **Both**) and
 it will host the `where-is-my-PC` lookup + `/go/<key>` redirect for many users —
 each user's PC reports under its own key, secured by a per-key push token bound
 on first use. The directory only holds addresses; it never sees agent traffic.

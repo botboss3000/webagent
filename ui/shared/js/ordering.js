@@ -140,6 +140,9 @@ function _suppressNextClick(container) {
  * @param {string} [opts.ignoreSelector]  Presses starting on a match here are
  *        ignored (e.g. the drag handle and the action buttons, which have their
  *        own gestures).
+ * @param {string} [opts.requireSelector] If set, the press must START on an
+ *        element matching this selector (e.g. only the title, not the whole row).
+ *        Presses landing elsewhere in the row are ignored.
  * @param {(rowId: string, rowEl: HTMLElement) => void} opts.onLongPress
  * @param {number} [opts.longPressMs]
  */
@@ -151,6 +154,7 @@ export function attachRowLongPress(container, opts) {
   const {
     rowSelector,
     ignoreSelector,
+    requireSelector,
     onLongPress,
     longPressMs = _LONG_PRESS_MS,
   } = opts || {};
@@ -169,6 +173,7 @@ export function attachRowLongPress(container, opts) {
     // Left button / touch / pen only — ignore right- and middle-clicks.
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (ignoreSelector && e.target.closest(ignoreSelector)) return;
+    if (requireSelector && !e.target.closest(requireSelector)) return;
     const r = e.target.closest(rowSelector);
     if (!r || !container.contains(r)) return;
     row = r;

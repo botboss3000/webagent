@@ -1,6 +1,6 @@
 @echo off
 REM ─────────────────────────────────────────────────────────────────────────
-REM Run the webAgent Server Manager (TUI) FROM SOURCE — no .exe build needed.
+REM Run the WebAgent Server Manager (TUI) FROM SOURCE — no .exe build needed.
 REM Double-click this file, or run it from a terminal. It always reflects the
 REM latest code in this folder. Uses (and, on first run, creates) a local .venv.
 REM ─────────────────────────────────────────────────────────────────────────

@@ -57,6 +57,20 @@ export function isAuthenticated() {
   return !!getAuthToken();
 }
 
+/**
+ * True when the stored identity is an anonymous guest (an `anon_*` user id).
+ *
+ * Anonymous guests are only legitimate in Open Registration mode — they are
+ * never approved members. So for the whole-app Private (admin_approval) gate a
+ * guest token must NOT count as authorized, even though a token is present in
+ * storage (a leftover from a prior Open-Registration session the admin has since
+ * switched to Private). Callers gate on `isAuthenticated() && !isAnonGuest()`.
+ */
+export function isAnonGuest() {
+  const uid = localStorage.getItem('auth_user_id') || '';
+  return uid.indexOf('anon_') === 0;
+}
+
 let _isAdmin = false;
 let _adminFetched = false;
 
@@ -82,14 +96,9 @@ function adminStatusReady() {
 export async function fetchAdminStatus() {
   let result = false;
   try {
-    // Probe the server when we hold a token OR the app is in "open" access mode.
-    // Open mode auto-trusts the request as the bootstrap admin server-side (the
-    // auth middleware), but over a Cloudflare Tunnel there's no JWT to mint
-    // (open-login only mints for local + same-network/LAN devices, never a
-    // public tunnel exit) — so gating purely on a token would leave the owner
-    // unable to see Admin Tools. check-access honours open mode and reports
-    // is_admin there, so probe it regardless of token in that case.
-    if (getAuthToken() || getAccessMode() === 'open') {
+    // Probe the server only when we hold a token — identity now comes solely
+    // from a valid JWT (the old 'open' auto-admin access mode was retired).
+    if (getAuthToken()) {
       const res = await fetch('/api/v1/files/check-access', { headers: authHeaders() });
       if (res.ok) {
         const data = await res.json();

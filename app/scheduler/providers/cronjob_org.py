@@ -104,7 +104,7 @@ class CronJobOrgScheduler(BaseRemoteScheduler):
                 "url": fire_url,
                 "enabled": True,
                 "saveResponses": False,
-                "title": (row.get("task_label") or "webAgent automation")[:200],
+                "title": (row.get("task_label") or "WebAgent automation")[:200],
                 "requestMethod": 1,  # 1 = POST per docs
                 "schedule": cron_to_cronjob_schedule(row.get("schedule_cron", ""), row.get("timezone", "UTC")),
             }

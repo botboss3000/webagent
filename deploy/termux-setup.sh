@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ============================================================================
-# webAgent — Linux / Termux installer & launcher.
+# WebAgent — Linux / Termux installer & launcher.
 #
 # Run this on the target machine. It is what the Deploy panel's one-line command
 # hands off to after cloning the repo to $HOME/webagent. It works in TWO places
 # and detects which one automatically:
 #
-#   * Termux (Android phone / tablet) — webAgent's full Python stack (compiled
+#   * Termux (Android phone / tablet) — WebAgent's full Python stack (compiled
 #     wheels, optional SQLCipher) is unreliable on bare Termux, so we install it
 #     inside a real Ubuntu userland via proot-distro (no root). This Ubuntu
 #     sandbox is the Termux-specific "customization"; everything else is shared.
@@ -16,7 +16,7 @@
 #
 # ORDER MATTERS. We install the lightweight Server Manager (the `webagent`
 # command) FIRST, on its own minimal dependencies, and only then build the
-# heavier webAgent server. That way a failure in the fragile server build never
+# heavier WebAgent server. That way a failure in the fragile server build never
 # leaves you empty-handed — you always end up with a working `webagent` you can
 # use to inspect / retry / diagnose. The server build is run non-fatally and its
 # output is saved to ~/webagent-install.log.
@@ -37,17 +37,33 @@ PORT=8080
 INSTALL_LOG="$HOME/webagent-install.log"
 
 echo "============================================"
-echo " webAgent — Linux / Termux setup"
+echo " WebAgent — Linux / Termux setup"
 echo "============================================"
 
 # The one-line command clones the repo first; make sure it's really there. ----
 if [ ! -d "$REPO_DIR/.git" ]; then
-  echo "ERROR: webAgent code not found at $REPO_DIR." >&2
+  echo "ERROR: WebAgent code not found at $REPO_DIR." >&2
   echo "       Clone it first, then re-run this script." >&2
   exit 1
 fi
-echo "Updating webAgent code…"
+echo "Updating WebAgent code…"
 git -C "$REPO_DIR" pull --ff-only || echo "  (could not fast-forward — keeping the current code)"
+
+# Optional pre-set admin password (from the Deploy panel). The one-line install
+# command passes it as WA_ADMIN_PW; we write it into .env, which the app loads at
+# boot (app/main.py load_dotenv). .env is gitignored, so the git pull above never
+# disturbs it. When it's absent nothing is written — the first visitor to the app's
+# address sets the password on the setup page (open until an admin exists, so it
+# works from another device on the same network too).
+if [ -n "$WA_ADMIN_PW" ]; then
+  ENV_FILE="$REPO_DIR/.env"
+  touch "$ENV_FILE"
+  # Drop any earlier line so re-running replaces, not stacks.
+  grep -vE '^BOOTSTRAP_ADMIN_PASSWORD=' "$ENV_FILE" > "$ENV_FILE.tmp" 2>/dev/null || : > "$ENV_FILE.tmp"
+  mv "$ENV_FILE.tmp" "$ENV_FILE"
+  printf 'BOOTSTRAP_ADMIN_PASSWORD=%s\n' "$WA_ADMIN_PW" >> "$ENV_FILE"
+  echo "Admin account will be created on first boot from the password you set."
+fi
 
 # Detect Termux (the customization) vs a plain Linux box. ---------------------
 if [ -n "$TERMUX_VERSION" ] || [ -d /data/data/com.termux ] || command -v termux-setup-storage >/dev/null 2>&1; then
@@ -100,7 +116,7 @@ else
     "$REPO_DIR/TUI/.venv/bin/pip" install -e "$REPO_DIR/TUI"
     $SUDO tee /usr/local/bin/webagent >/dev/null <<WALAUNCH
 #!/usr/bin/env bash
-# webAgent Server Manager (TUI) — installed FIRST by termux-setup.sh.
+# WebAgent Server Manager (TUI) — installed FIRST by termux-setup.sh.
 # The systemd service / keep-alive loop owns the running server; this just
 # inspects / restarts it (WEBAGENT_TUI_NO_SUPERVISE = no second supervisor).
 export WEBAGENT_PROJECT="$REPO_DIR"
@@ -112,7 +128,7 @@ WALAUNCH
     || echo "  (Server Manager install skipped — the server build will still continue.)"
 fi
 
-# ── STEP 2: build + start the full webAgent server — NON-FATAL ───────────────
+# ── STEP 2: build + start the full WebAgent server — NON-FATAL ───────────────
 # This is the heavier, more fragile part. We run it WITHOUT aborting the whole
 # script on failure, so a problem here still leaves the manager above usable.
 # Everything it prints is mirrored to $INSTALL_LOG, and ${PIPESTATUS[0]} tells us
@@ -174,6 +190,8 @@ apt-get install -y python3 python3-venv python3-pip git build-essential libffi-d
 .venv/bin/pip install --upgrade pip wheel
 # Playwright-free dependency set — browser automation is omitted on phones.
 .venv/bin/pip install -r req_no_playwright.txt
+# Pre-compile bytecode so the first server boot is fast (no .pyc compile). Non-fatal.
+.venv/bin/python -m compileall -q app run.py || true
 echo "  dependencies ready."
 '
 
@@ -189,7 +207,7 @@ echo "  dependencies ready."
     # no REPO_DIR in scope), honouring a custom install folder.
     cat > "$HOME/.termux/boot/webagent-boot.sh" <<BOOTEOF
 #!/data/data/com.termux/files/usr/bin/sh
-# webAgent — start on device boot. Needs the Termux:Boot add-on (F-Droid).
+# WebAgent — start on device boot. Needs the Termux:Boot add-on (F-Droid).
 # Generated by deploy/termux-setup.sh; re-run that script to regenerate.
 termux-wake-lock 2>/dev/null
 sleep 5
@@ -204,6 +222,8 @@ BOOTEOF
     .venv/bin/pip install --upgrade pip wheel
     # Playwright-free dependency set — same lightweight install as the phone.
     .venv/bin/pip install -r req_no_playwright.txt
+    # Pre-compile bytecode so the first server boot is fast (no .pyc compile). Non-fatal.
+    .venv/bin/python -m compileall -q app run.py || true
 
     echo "[Linux 2/2] Setting up the server to run and survive reboots…"
     RUN_USER="$(id -un)"
@@ -216,7 +236,7 @@ BOOTEOF
       echo "  Installing a systemd service (auto-start on boot + restart on crash)…"
       $SUDO tee /etc/systemd/system/webagent.service >/dev/null <<UNITEOF
 [Unit]
-Description=webAgent server
+Description=WebAgent server
 After=network.target
 
 [Service]
@@ -264,7 +284,7 @@ IP="$( (ip -4 addr 2>/dev/null || ifconfig 2>/dev/null) | grep -Eo '([0-9]{1,3}\
 echo ""
 echo "============================================"
 if [ "$HEAVY_OK" = 1 ]; then
-  echo " webAgent is starting in the background."
+  echo " WebAgent is starting in the background."
   echo "   On this machine:     http://localhost:$PORT"
   if [ -n "$IP" ]; then
     echo "   From another device: http://$IP:$PORT   (same network)"
@@ -282,7 +302,7 @@ if [ "$HEAVY_OK" = 1 ]; then
   fi
 else
   echo " The Server Manager IS installed — run:   webagent"
-  echo " …but the webAgent server build did NOT finish."
+  echo " …but the WebAgent server build did NOT finish."
   echo ""
   echo "   • Retry any time by re-running this same install command."
   echo "   • Inspect / diagnose with the manager:   webagent"

@@ -23,7 +23,19 @@ class AWSSecretsManager(SecretsBackend):
     name = "aws_secrets_manager"
 
     def __init__(self, region: Optional[str] = None):
-        self._region = region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+        # Resolution order: explicit arg → saved UI config / token → env var.
+        from app.secrets.provider_config import get_provider_config, get_provider_token
+        cfg = get_provider_config(self.name)
+        self._region = (
+            region
+            or cfg.get("region")
+            or os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION")
+        )
+        # Explicit IAM key pair is OPTIONAL — when blank, boto3's default
+        # credential chain (instance/ECS/Lambda role, ~/.aws, env) is used.
+        self._access_key_id = cfg.get("access_key_id") or os.environ.get("AWS_ACCESS_KEY_ID")
+        self._secret_access_key = get_provider_token(self.name) or os.environ.get("AWS_SECRET_ACCESS_KEY")
         try:
             import boto3  # noqa: F401
         except ImportError as e:
@@ -33,7 +45,12 @@ class AWSSecretsManager(SecretsBackend):
 
     def _client(self):
         import boto3
-        kwargs = {"region_name": self._region} if self._region else {}
+        kwargs = {}
+        if self._region:
+            kwargs["region_name"] = self._region
+        if self._access_key_id and self._secret_access_key:
+            kwargs["aws_access_key_id"] = self._access_key_id
+            kwargs["aws_secret_access_key"] = self._secret_access_key
         return boto3.client("secretsmanager", **kwargs)
 
     async def get(self, key: str) -> Optional[str]:
@@ -71,3 +88,12 @@ class AWSSecretsManager(SecretsBackend):
                 if name.startswith(prefix):
                     keys.append(name)
         return sorted(keys)
+
+    async def test_connection(self) -> dict:
+        # Real probe: a minimal authenticated list call in the region.
+        try:
+            client = self._client()
+            client.list_secrets(MaxResults=1)
+        except Exception as e:
+            return {"ok": False, "message": f"Could not reach AWS Secrets Manager ({self._region or 'default region'}): {type(e).__name__}: {e}"}
+        return {"ok": True, "message": f"AWS Secrets Manager reachable in region {self._region or '(default)'}."}

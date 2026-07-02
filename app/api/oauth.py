@@ -539,13 +539,13 @@ async def reddit_callback(
         return await client.post(
             "https://www.reddit.com/api/v1/access_token",
             headers={"Authorization": f"Basic {creds_b64}", "Content-Type": "application/x-www-form-urlencoded",
-                     "User-Agent": "webAgent/1.0"},
+                     "User-Agent": "WebAgent/1.0"},
             data={"code": code, "redirect_uri": redirect_uri, "grant_type": "authorization_code"},
         )
 
     async def profile(client, *, access_token, client_id, token_data, state_data):
         r = await client.get("https://oauth.reddit.com/api/v1/me",
-                             headers={"Authorization": f"Bearer {access_token}", "User-Agent": "webAgent/1.0"})
+                             headers={"Authorization": f"Bearer {access_token}", "User-Agent": "WebAgent/1.0"})
         me = r.json() if r.status_code == 200 else {}
         return {"name": me.get("name", ""), "picture": me.get("icon_img", "").split("?")[0],
                 "email": "", "connected_at": _now()}

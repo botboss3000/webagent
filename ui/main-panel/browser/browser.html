@@ -2,13 +2,13 @@
      Loaded by ui/shared/js/partial-loader.js into #tab-browser · logic: ui/main-panel/browser/js/browser.js ·
      styles: ui/main-panel/browser/browser.css · streamed from app/api/browser_stream.py.
 
-PILL-PANEL-LAYOUT: mirrors the Canvas page (ui/main-panel/canvas/canvas.html). The browser
+PILL-PANEL-LAYOUT: mirrors the Gen UI page (ui/main-panel/genui/genui.html). The browser
 	     stage flex-fills the panel; the .browser-toolbar sits in normal flow at the
 	     bottom, with the browser image stretching to fill the stage both vertically
 	     and horizontally. The page shares the agent's browser session, so whatever
 	     the agent does shows here live and the user can take over at any time.
 
-	     TOOLBAR-LAYOUT (sister to Canvas's canvas-toolbar): the .browser-toolbar is a
+	     TOOLBAR-LAYOUT (sister to Gen UI's genui-toolbar): the .browser-toolbar is a
 	     SINGLE row holding the compact browser controls (.browser-nav: back/forward/
 	     reload + device/point/share/session — borderless flat buttons straight on the
 	     toolbar background, no container chip) on the left and ONE unified chat pill
@@ -21,12 +21,12 @@ PILL-PANEL-LAYOUT: mirrors the Canvas page (ui/main-panel/canvas/canvas.html). T
 
   <!-- Full-height browser stage. Two renderers share it:
          • .browser-frame  — the HTML proxy iframe (in-app / headless backend).
-         • .browser-mirror — a live pixel mirror (CDP screencast canvas) used when
+         • .browser-mirror — a live pixel mirror (CDP screencast genui) used when
            the session is driving the REAL browser on the user's device, and for
            any page the iframe can't frame. Only one is visible at a time. -->
   <div class="browser-stage">
     <iframe class="browser-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allow="cross-origin-isolated"></iframe>
-    <canvas class="browser-mirror" tabindex="0"></canvas>
+    <genui class="browser-mirror" tabindex="0"></genui>
     <!-- Loading state: shown by browser.js while a session that HAS a saved page
          is reconnecting / restoring, so the user sees a spinner instead of the
          "type a URL" hint. The hint (.browser-empty) is reserved for sessions
@@ -39,12 +39,12 @@ PILL-PANEL-LAYOUT: mirrors the Canvas page (ui/main-panel/canvas/canvas.html). T
          the page lives in the user's OWN browser (via the extension), so there's
          nothing to mirror here. Reuses .browser-empty styling. Toggled by
          _showConnectorStage() in browser.js; any normal stage change hides it. -->
-    <div class="browser-empty browser-connector-notice" style="display:none;">This session is running in <b>your own browser</b> via the webAgent extension. Watch the agent act in your browser window. Switch the control on the left back to <b>In-app</b> to use the shared browser here.</div>
+    <div class="browser-empty browser-connector-notice" style="display:none;">This session is running in <b>your own browser</b> via the WebAgent extension. Watch the agent act in your browser window. Switch the control on the left back to <b>In-app</b> to use the shared browser here.</div>
   </div>
 
   <!-- Toolbar: browser controls (left) + small chat pill (right), floating overlay.
        SINGLE row on a wide panel, STACKS to two rows on a narrow one — see browser.css
-       .browser-toolbar (sister layout to ui/main-panel/canvas/canvas-toolbar.css). -->
+       .browser-toolbar (sister layout to ui/main-panel/genui/genui-toolbar.css). -->
   <div class="browser-toolbar">
 
     <!-- Browser-specific controls: back / forward / reload, plus the device
@@ -65,7 +65,7 @@ PILL-PANEL-LAYOUT: mirrors the Canvas page (ui/main-panel/canvas/canvas.html). T
 
       <!-- Backend switcher: CYCLES this session between the in-app browser, the
            real browser on this machine ("On device"), and the user's OWN browser
-           driven through the webAgent extension ("My browser"). Label + title are
+           driven through the WebAgent extension ("My browser"). Label + title are
            set by cycleBackend() / updateDeviceUi() in browser.js. -->
       <button class="browser-btn web-device browser-device" data-act="device" aria-pressed="false"
               title="Switch how this session is driven: in-app, on device, or my browser (extension)">
@@ -74,7 +74,7 @@ PILL-PANEL-LAYOUT: mirrors the Canvas page (ui/main-panel/canvas/canvas.html). T
       </button>
 
       <!-- Pair extension: open the one-time setup card that hands this browser's
-           server URL + a long-lived token to the webAgent browser extension, so
+           server URL + a long-lived token to the WebAgent browser extension, so
            "My browser" mode can connect. Opened by openPairModal() in browser.js;
            needed because, outside 'open' access mode, the extension must present a
            token and a non-technical user has no other way to get one. -->
@@ -125,7 +125,7 @@ PILL-PANEL-LAYOUT: mirrors the Canvas page (ui/main-panel/canvas/canvas.html). T
          browser.js): a URL swaps the action icon to a globe and navigates the page on
          submit, anything else stays the send icon and goes to the agent in the active
          browser session. CHAT-PILL-SYNC: shares .chat-pill* styles with
-         #chat-input-row, #canvas-prompt-row, #agent-builder-bar-row — geometry in
+         #chat-input-row, #genui-prompt-row, #agent-builder-bar-row — geometry in
          ui/shared/css/app1.css, floating-glass skin in ui/shared/css/index.css. This
          panel owns only the wrapper width + stack breakpoint (browser.css). -->
     <div class="browser-prompt-bar">

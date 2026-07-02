@@ -1,6 +1,6 @@
-# Starting webAgent on Android/Termux (Ubuntu proot)
+# Starting WebAgent on Android/Termux (Ubuntu proot)
 
-**Why this is needed:** On Android/Termux, the host Python is 3.13+ (unsupported by webAgent's dependency stack). The solution is an **Ubuntu proot** running Python 3.11 or 3.12. The server must be started *inside* the proot, and the proot must stay alive as long as the server runs.
+**Why this is needed:** On Android/Termux, the host Python is 3.13+ (unsupported by WebAgent's dependency stack). The solution is an **Ubuntu proot** running Python 3.11 or 3.12. The server must be started *inside* the proot, and the proot must stay alive as long as the server runs.
 
 ## Quick start
 

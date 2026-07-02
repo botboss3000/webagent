@@ -48,14 +48,14 @@ let _editing = false;   // is the user focused/typing in the pill right now?
 
 // ── Device backend + live pixel mirror state ───────────────────────────────
 // A session can be driven by the in-app headless browser (view = proxy iframe)
-// or the REAL browser on the user's device (view = screencast canvas mirror).
+// or the REAL browser on the user's device (view = screencast genui mirror).
 let scWs = null;            // screencast WebSocket
 let scReconnectTimer = null;
-let viewMode = 'proxy';     // 'proxy' (iframe) | 'mirror' (canvas screencast)
+let viewMode = 'proxy';     // 'proxy' (iframe) | 'mirror' (genui screencast)
 let deviceOn = false;       // is this session on the on-device (local) backend?
 // Which backend drives this session: 'headless' (in-app), 'local' (the real
 // browser on this machine), or 'connector' (the user's OWN browser, driven
-// through the webAgent extension). deviceOn stays a derived alias of
+// through the WebAgent extension). deviceOn stays a derived alias of
 // backendMode==='local' so the existing screencast/mirror logic is untouched.
 let backendMode = 'headless';
 let connectorConnected = false;  // is the user's browser extension live right now?
@@ -103,7 +103,7 @@ function mount() {
   if (!els.stage || !els.frame) { els = null; return false; }
 
   // ── Interactive overlay layer ──
-  // A transparent, click-through layer over the mirror canvas that the overlay
+  // A transparent, click-through layer over the mirror genui that the overlay
   // module paints into (cursors / ripples / telegraphs). Created here so the
   // page markup stays minimal; the module owns everything inside it.
   els.overlay = document.createElement('div');
@@ -916,7 +916,7 @@ async function openPairModal() {
 
   const intro = document.createElement('p');
   intro.className = 'pair-intro';
-  intro.textContent = 'Install the webAgent browser extension, then paste these two values into its Settings so the agent can drive this browser.';
+  intro.textContent = 'Install the WebAgent browser extension, then paste these two values into its Settings so the agent can drive this browser.';
 
   const body = document.createElement('div');
   body.className = 'pair-body';
@@ -961,7 +961,7 @@ async function openPairModal() {
   const steps = document.createElement('ol');
   steps.className = 'pair-steps';
   [
-    'Click the webAgent extension icon, then “Settings…”.',
+    'Click the WebAgent extension icon, then “Settings…”.',
     'Paste the Server URL and Token above, then Save.',
     'The extension badge turns green (ON) once it connects.',
     'Come back here and switch the control to “My browser”.',
@@ -990,7 +990,7 @@ function _markRealPage(url) {
   _setStage('page');
 }
 
-function _sizeCanvas() {
+function _sizeGenui() {
   if (!els || !els.mirror) return;
   els.mirror.width = mirrorSpace.width;
   els.mirror.height = mirrorSpace.height;
@@ -1011,7 +1011,7 @@ function drawFrame(b64) {
 }
 
 // Repaint the last frame we saw (used to restore the page instantly on tab
-// return, and to cover the brief blank after a canvas resize on reconnect).
+// return, and to cover the brief blank after a genui resize on reconnect).
 function _repaintLast() {
   if (_lastFrameB64) drawFrame(_lastFrameB64);
 }
@@ -1038,8 +1038,8 @@ function connectScreencast() {
     let m; try { m = JSON.parse(ev.data); } catch (_) { return; }
     if (m.type === 'ready') {
       if (m.space && m.space.width && m.space.height) mirrorSpace = m.space;
-      _sizeCanvas();
-      _repaintLast();   // _sizeCanvas clears the bitmap; cover it with the saved frame until the live stream resumes
+      _sizeGenui();
+      _repaintLast();   // _sizeGenui clears the bitmap; cover it with the saved frame until the live stream resumes
       try { overlay.setSpace(mirrorSpace); } catch (_) {}
       if (m.url && m.url !== 'about:blank') _setUrlDisplay(m.url);
       _markRealPage(m.url);
@@ -1080,7 +1080,7 @@ function _scSend(obj) {
   }
 }
 
-// Map a pointer event on the (object-fit:contain) canvas to page CSS pixels.
+// Map a pointer event on the (object-fit:contain) genui to page CSS pixels.
 function _mapPt(e) {
   const cv = els.mirror;
   const rect = cv.getBoundingClientRect();
@@ -1197,7 +1197,7 @@ async function doConnect() {
       // The server says the page URL changed — update the address bar and (in
       // proxy mode) load the new page into the iframe.  Skip if this is an echo
       // of a navigation we already initiated (link click or URL-bar Go). In
-      // mirror mode the canvas already shows the change live, so only the
+      // mirror mode the genui already shows the change live, so only the
       // address bar needs updating.
       if (m.url && m.url !== 'about:blank') {
         _setUrlDisplay(m.url);

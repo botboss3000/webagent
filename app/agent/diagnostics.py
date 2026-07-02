@@ -1,5 +1,5 @@
 """
-Central diagnostic flight-recorder for webAgent.
+Central diagnostic flight-recorder for WebAgent.
 
 Captures the server's and agent loop's internal activity into a rolling
 window so an operator — or a diagnostic AI agent — can inspect what has been
@@ -346,7 +346,11 @@ class DiagnosticRecorder:
                     break
             if batch:
                 try:
-                    await db.insert_diagnostics_batch(batch)
+                    # Offloaded: this background flush fires on a timer that can
+                    # overlap a live turn; a blocking remote write here would
+                    # freeze the event loop (and the LLM stream).
+                    from app.db.offload import db_offload
+                    await db_offload(lambda: db.insert_diagnostics_batch(batch))
                 except Exception as e:
                     logger.debug("insert_diagnostics_batch failed: %s", e)
         # 2. Structured tool-execution metrics.
@@ -359,7 +363,8 @@ class DiagnosticRecorder:
                     break
             if tbatch:
                 try:
-                    await db.insert_tool_executions(tbatch)
+                    from app.db.offload import db_offload
+                    await db_offload(lambda: db.insert_tool_executions(tbatch))
                 except Exception as e:
                     logger.debug("insert_tool_executions failed: %s", e)
 

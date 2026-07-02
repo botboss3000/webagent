@@ -784,6 +784,35 @@ class ToolLoader:
                 _m = _re_h.match(r"^(.*)_[0-9a-f]{8}$", ability_id or "")
                 if _m and _m.group(1) in ABILITY_TOOLS:
                     ability_id = _m.group(1)
+
+            # ── Dedup: don't re-inject an ability that's already active ──────────
+            # The skill body returned below is large (often ~10k tokens). It is
+            # meant to be loaded ONCE and then "stays in context for the rest of
+            # this conversation". Re-calling load_ability for an already-active
+            # ability is a common model tic — especially after a `continue`
+            # restarts the loop and the model forgets it already loaded it — and
+            # each redundant call duplicated the whole skill into the transcript,
+            # a major driver of runaway context. If it's already active, return a
+            # tiny acknowledgement (tool names only, NO skill body) instead.
+            if session_id:
+                try:
+                    from app.db import get_db as _gd
+                    if ability_id in await _gd().get_session_active_abilities(session_id):
+                        _names = list(ABILITY_TOOLS.get(ability_id, []))
+                        return json.dumps({
+                            "status": "already_active",
+                            "ability": {"id": ability_id},
+                            "tools": _names,
+                            "message": (
+                                f"Ability '{ability_id}' is already active — its skill is "
+                                f"already in the context above and its tools "
+                                f"({', '.join(_names) or 'none'}) are callable now. Do not "
+                                f"load it again; just call the tool you need."
+                            ),
+                        })
+                except Exception as e:
+                    logger.debug("load_ability dedup check failed for %s: %s", ability_id, e)
+
             names = list(ABILITY_TOOLS.get(ability_id, []))
             skill_body = skill_summary = ""
             skill_handle = None

@@ -2,7 +2,7 @@
   "name": "webagent-feedback-relay",
   "version": "0.1.0",
   "private": true,
-  "description": "Cloudflare Worker that relays webAgent user feedback into GitHub issues.",
+  "description": "Cloudflare Worker that relays WebAgent user feedback into GitHub issues.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

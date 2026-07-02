@@ -43,8 +43,12 @@ if exist ".venv\Scripts\python.exe" (
 )
 
 :: ── 3. Sync: downloads Python 3.12 if needed, creates .venv, installs deps from pyproject.toml ──
+:: --extra encryption installs the SQLCipher engine (sqlcipher3). It is MANDATORY
+:: whenever a database is encrypted at rest (app/db_encryption.json) — without it
+:: the encrypted files can't be opened and the server cannot boot. Keep this flag
+:: so a plain `uv sync` never prunes the engine out from under an encrypted install.
 echo [webAgent] Syncing dependencies via uv (may download Python on first run)...
-uv sync
+uv sync --extra encryption
 if !ERRORLEVEL! neq 0 (
     echo [ERROR] uv sync failed. Check the output above.
     pause
@@ -68,7 +72,7 @@ ping -n 3 127.0.0.1 >nul
 echo [webAgent] Server running. Press Ctrl+C to stop permanently.
 echo [webAgent] Use the "Restart" button in the terminal page to restart.
 echo.
-uv run python run.py
+uv run --extra encryption python run.py
 
 :: Loop on exit
 echo.

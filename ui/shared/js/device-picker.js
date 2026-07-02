@@ -1,6 +1,6 @@
 /* device-picker.js — the shared "target device" picker for the multi-device fleet.
  *
- * One source of truth for (a) fetching the list of webAgent instances ("devices")
+ * One source of truth for (a) fetching the list of WebAgent instances ("devices")
  * that share this database and (b) rendering the little floating menu used to pick
  * one. Reused by THREE surfaces so they stay consistent:
  *   • the chat composer target pill            (ui/chat-side-panel/js/chat-ui.js)

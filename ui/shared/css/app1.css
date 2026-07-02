@@ -411,7 +411,7 @@ body.light-mode #chat-sub-header .chip-sep { background: var(--border); }
 /* PILL-PANEL-LAYOUT: canonical "floating pill over full-height content" layout
    that EVERY panel hosting a .chat-pill must mirror. Instances: chat panel
    (here); agents page (#agent-builder-bar over #agents-grid in agents.css);
-   Canvas page (#canvas-footer over #canvas-viewport in canvas.css).
+   Gen UI page (#genui-footer over #genui-viewport in genui.css).
    Full rationale in docs/claude/ui-guidance.md ("Chat pills" → panel layout).
    Three pieces:
      1. Panel is a flex column with position: relative (here #chat-panel).
@@ -430,7 +430,7 @@ body.light-mode #chat-sub-header .chip-sep { background: var(--border); }
    (token/mode row) below it. NOTE: this is the TALL composer pill — it is now
    intentionally taller than every other pill, and there is NO LONGER a rule
    keeping its bottom edge level with the other panels' pills (the old
-   PILL-PANEL-ALIGN reserve on the agents/canvas bars has been removed). So you
+   PILL-PANEL-ALIGN reserve on the agents/genui bars has been removed). So you
    can change this `bottom`, this `gap`, or the .chat-footer-row height freely
    without touching the other panels. (Pill skin/geometry is separately
    commonized; see the CHAT-PILL-SYNC block lower in this file.) */
@@ -1853,6 +1853,9 @@ body.light-mode .chat-bubble.user.pending .label {
 
 .chat-continue-btn,
 .chat-stop-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font-size: 13px;
     font-weight: 600;
     padding: 5px 16px;
@@ -1986,8 +1989,8 @@ body.light-mode .chat-continue-btn:hover {
    NOTE: the base skin here is an opaque dark pill with a hard border. Four
    pills are re-skinned as transparent "floating glass" in ui/shared/css/index.css
    (loaded last): the web-chat pill (#chat-panel .chat-pill), the agents-page
-   builder bar (#agent-builder-bar > .chat-pill), the Canvas prompt bar
-   (#canvas-prompt-row), and the in-app browser pill (.browser-prompt-row).
+   builder bar (#agent-builder-bar > .chat-pill), the Gen UI prompt bar
+   (#genui-prompt-row), and the in-app browser pill (.browser-prompt-row).
    If you change the float look, edit index.css; geometry stays here.
    Apply these classes to opt in:
      .chat-pill        — outer container (the rounded box; TALL composer)
@@ -2004,7 +2007,7 @@ body.light-mode .chat-continue-btn:hover {
       #chat-input-row              (web chat — chat.js)            TALL
       #ac-int-admin-chat-input-row (integration admin chat)        1-line
       #agent-builder-bar-row       (agents page — agents.js)       1-line
-      #canvas-prompt-row        (Canvas tab — canvas.js)     1-line
+      #genui-prompt-row        (Gen UI tab — genui.js)     1-line
       .browser-prompt-row          (in-app browser — browser.js)   1-line
     When tweaking, change here and every pill in the app updates; add
     `.chat-pill-1line` to a pill's markup to make it the compact variant.
@@ -2015,7 +2018,7 @@ body.light-mode .chat-continue-btn:hover {
     controls. If you add or change a sibling button, grep SIBLING-BTN-COHESION
     and match every instance.
     SEPARATE concern — the FLOATING pills (web-chat, agents builder bar,
-   Canvas, browser) also share a PANEL LAYOUT this block does NOT cover: the
+   Gen UI, browser) also share a PANEL LAYOUT this block does NOT cover: the
    grep tag PILL-PANEL-LAYOUT (full-height scroller + absolute pill overlay),
    anchored at #chat-input-area above and mirrored on #agent-builder-bar in
    agents.css etc. (The old cross-panel bottom-alignment rule — PILL-PANEL-ALIGN
@@ -2061,7 +2064,7 @@ body.light-mode .chat-continue-btn:hover {
      chat_pill_button_size → --chat-pill-button-size mic / send button box
      chat_pill_button_icon → --chat-pill-button-icon mic / send glyph
    These drive only the TALL composer — the compact 1-line bars
-   (search/builder/canvas/browser) keep their own fixed sizing via the more
+   (search/builder/genui/browser) keep their own fixed sizing via the more
    specific `.chat-pill-1line *` rules further down, which override these. */
 .chat-pill:not(.chat-pill-1line) {
     max-width: var(--chat-pill-max-width, 500px);
@@ -4711,6 +4714,20 @@ body.light-mode #user-dropdown-menu.user-dropdown-menu {
 .account-field input:focus {
     border-color: var(--brand);
   }
+.account-field select {
+    padding: 8px 10px;
+    background: var(--bg-0);
+    border: var(--border-width) solid var(--border);
+    border-radius: 6px;
+    color: var(--fg-1);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    cursor: pointer;
+  }
+.account-field select:focus {
+    border-color: var(--brand);
+  }
 .account-row {
     display: flex;
     align-items: center;
@@ -4835,6 +4852,12 @@ body.light-mode .account-field input {
     color: var(--fg-1);
   }
 body.light-mode .account-field input:focus { border-color: var(--brand); }
+body.light-mode .account-field select {
+    background: var(--bg-0);
+    border-color: var(--border);
+    color: var(--fg-1);
+  }
+body.light-mode .account-field select:focus { border-color: var(--brand); }
 body.light-mode .account-btn {
     background: var(--bg-elev);
     border-color: var(--border);

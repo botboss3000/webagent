@@ -1,0 +1,14 @@
+{
+  "id": "dashboard",
+  "label": "Dashboard",
+  "icon": "layout-dashboard",
+  "order": 0,
+  "locked": true,
+  "html": "dashboard.html",
+  "mount": "#files-dashboard-main",
+  "entry": "ui/admin-tools/dashboard/dashboard.js",
+  "start": "startView",
+  "stop": "stopView",
+  "css": ["dashboard.css"],
+  "router": "server.py"
+}

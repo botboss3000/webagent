@@ -1,7 +1,7 @@
 [project]
 name = "tui-app"
 version = "0.2.0"
-description = "webAgent Server Manager — a server-independent TUI agent (Codebase Admin + Source Control)"
+description = "WebAgent Server Manager — a server-independent TUI agent (Codebase Admin + Source Control)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

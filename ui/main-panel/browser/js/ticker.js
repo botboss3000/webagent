@@ -22,7 +22,7 @@
 // text var(--fg-1/2/3), borders var(--border-width) solid var(--border).
 //
 // The overlay container is pointer-events:none so it never steals input from the
-// live mirror canvas underneath; it is purely informational (v1 needs no
+// live mirror genui underneath; it is purely informational (v1 needs no
 // interactive child).
 
 // ── Module state ───────────────────────────────────────────────────────────

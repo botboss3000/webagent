@@ -1,0 +1,250 @@
+/* ── Gen UI Tab ── */
+
+/* COLOR SCHEME → ui/shared/css/design-system.css (single source of truth).
+   No raw hex/rgb here: use var(--brand) / var(--accent) / var(--accent-hover) for
+   the brand accent, rgba(var(--brand-rgb), a) for any accent opacity, var(--success|
+   warning|danger) (or rgba(var(--*-rgb), a)) for status, var(--purple) for the 2nd hue.
+   Need a colour that doesn't exist yet? Add a token to the palette in design-system.css
+   (the dark :root block AND its body.light-mode twin), then reference it here.
+   Re-theming the whole app (e.g. peach → green) is then a one-file edit. */
+
+/* NOTE: the footer toolbar (page selector, +, refresh, ✦ chat) lives in its own
+   swappable module — js/genui-toolbar.js + genui-toolbar.css. Its styles are
+   NOT here, so a redesign of the footer never touches this core stylesheet. */
+
+/* ── New Page Dialog ── */
+
+#genui-new-page-dialog {
+  display: none;
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(var(--shadow-rgb), 0.65);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+}
+
+.genui-dialog-box {
+  background: var(--bg-0);
+  border: var(--border-width) solid var(--border);
+  border-radius: 10px;
+  padding: 22px 24px;
+  width: 320px;
+  max-width: 90%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.5);
+}
+
+.genui-dialog-box h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-1);
+}
+
+.genui-dialog-input {
+  background: var(--bg-elev);
+  border: var(--border-width) solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-1);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.genui-dialog-input:focus {
+  border-color: var(--accent);
+}
+
+.genui-dialog-input::placeholder { color: var(--fg-4); }
+
+.genui-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.genui-dialog-btn {
+  padding: 6px 16px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s;
+}
+
+.genui-dialog-btn-primary {
+  background: var(--accent);
+  color: var(--bg-0);
+  border-color: var(--accent);
+}
+
+.genui-dialog-btn-primary:hover { background: var(--brand-strong); }
+
+.genui-dialog-btn-cancel {
+  background: transparent;
+  color: var(--fg-3);
+  border-color: var(--border);
+}
+
+.genui-dialog-btn-cancel:hover { background: var(--bg-elev); color: var(--fg-1); }
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+#tab-genui {
+  display: none;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-0);
+}
+
+#tab-genui.active {
+  display: flex;
+}
+
+#genui-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  position: relative;
+}
+
+/* ── Viewport (iframe area) ──
+   PILL-PANEL-LAYOUT: flex:1 so it takes all the column height left over after
+   the normal-flow footer (page-nav + prompt pill) below it. When the footer is
+   collapsed (display:none) the viewport reclaims the full height. Mirrors the
+   Browser page's .browser-stage. */
+
+#genui-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* FIRST-CLASS GENUI HOST. The agent's genui is rendered (into an open shadow
+   root) directly inside this element — no iframe. Two things make that safe for
+   the app shell:
+     • contain: layout paint  — clips the genui's painting to this box AND makes
+       this element the containing block for any position:fixed descendant, so a
+       genui's full-bleed background can't spill over the rest of the app.
+     • transform: translateZ(0) — belt-and-suspenders for the same fixed-child
+       containment in browsers that need a transform to establish it.
+   Background is transparent by default so the app's own animated background
+   shows THROUGH the genui (the default look); a genui only paints its own
+   background when the agent deliberately designs one. This host is the scroll
+   container for tall genui. */
+.genui-host {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: transparent;
+  position: relative;
+  overflow: auto;
+  contain: layout paint;
+  transform: translateZ(0);
+}
+
+/* ── Placeholder State ── */
+
+.genui-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  color: var(--fg-3);
+}
+
+.genui-placeholder-icon {
+  font-size: 48px;
+  opacity: 0.4;
+}
+
+.genui-placeholder-text {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.genui-placeholder-hint {
+  font-size: 12px;
+  color: var(--fg-4);
+  font-style: italic;
+}
+
+/* ── Loading State ── */
+
+.genui-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+  color: var(--brand);
+  font-size: 14px;
+}
+
+.genui-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-soft);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: genui-spin 0.8s linear infinite;
+}
+
+@keyframes genui-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ═══════════════════════════════════════════════
+   LIGHT MODE OVERRIDES
+   ═══════════════════════════════════════════════ */
+body.light-mode #tab-genui {
+  background: var(--bg-0);
+}
+body.light-mode .genui-host {
+  background: transparent;
+}
+body.light-mode .genui-placeholder {
+  color: var(--fg-3);
+}
+body.light-mode .genui-placeholder-text {
+  color: var(--brand);
+}
+body.light-mode .genui-placeholder-hint {
+  color: var(--fg-4);
+}
+body.light-mode .genui-spinner {
+  border-color: var(--border);
+  border-top-color: var(--brand);
+}
+body.light-mode .genui-dialog-box {
+  background: var(--bg-0);
+  border-color: var(--border);
+}
+body.light-mode .genui-dialog-box h3 { color: var(--fg-1); }
+body.light-mode .genui-dialog-input {
+  background: var(--bg-0);
+  border-color: var(--border);
+  color: var(--fg-1);
+}
+body.light-mode .genui-dialog-input:focus { border-color: var(--brand); }
+body.light-mode .genui-dialog-btn-primary {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+body.light-mode .genui-dialog-btn-cancel {
+  border-color: var(--border);
+  color: var(--fg-3);
+}
+body.light-mode .genui-dialog-btn-cancel:hover { background: var(--bg-elev); color: var(--fg-1); }

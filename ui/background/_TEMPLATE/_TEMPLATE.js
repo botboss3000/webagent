@@ -11,17 +11,17 @@
 
    Contract:
      • window.WA_BG.register(RID, { start, stop, refresh })
-     • start(canvas) — the engine hands you the shared <canvas>. Own your
+     • start(genui) — the engine hands you the shared <genui>. Own your
        sizing (devicePixelRatio), listeners and requestAnimationFrame.
      • stop()        — cancel the loop, REMOVE every listener you added,
-       leave the canvas clean. Called on theme flip / background swap.
+       leave the genui clean. Called on theme flip / background swap.
      • refresh()     — OPTIONAL. The engine calls this when the admin edits
        the theme colours live in the Appearance panel. Re-read your CSS
        tokens so the running loop repaints in the new palette (no resize /
        restart). Omit it if your look isn't palette-derived.
      • Read colours from CSS tokens (getComputedStyle) with JS fallbacks
        so there's no flash before <your-id>.css loads.
-     • Bail when prefers-reduced-motion is set (the canvas is hidden by
+     • Bail when prefers-reduced-motion is set (the genui is hidden by
        CSS there anyway).
      • If you react to the pointer: touch/pen never fire mouseleave, so on
        pointerup/pointercancel (guard pointerType !== 'mouse') reset the
@@ -45,7 +45,7 @@
     document.head.appendChild(l);
   })();
 
-  var canvas, ctx;
+  var genui, ctx;
   var DPR = Math.min(window.devicePixelRatio || 1, 2);
   var W = 0, H = 0;
   var running = false, rafId = 0;
@@ -57,8 +57,8 @@
 
   function resize() {
     W = window.innerWidth; H = window.innerHeight;
-    canvas.width = W * DPR; canvas.height = H * DPR;
-    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    genui.width = W * DPR; genui.height = H * DPR;
+    genui.style.width = W + 'px'; genui.style.height = H + 'px';
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     readPalette();
     // (re)build your scene here
@@ -75,7 +75,7 @@
 
   function start(cv) {
     if (running) return;
-    canvas = cv; ctx = canvas.getContext('2d');
+    genui = cv; ctx = genui.getContext('2d');
     if (reduced) { resize(); return; }
     running = true;
     window.addEventListener('resize', onResize);

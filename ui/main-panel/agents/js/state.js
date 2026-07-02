@@ -293,7 +293,7 @@ const _CONN_NOTES = {
   terminal_control: 'Open and drive interactive terminal programs (REPLs, CLIs) — effectively shell access.',
   image_generation: 'Generate images from text prompts. Requires a provider + model config.',
   automation:       'Scheduled tasks and event-triggered jobs that can call integrations.',
-  visualizer:       'Create, edit, rename, and delete canvases in the Canvas workspace.',
+  visualizer:       'Create, edit, rename, and delete genui in the Gen UI workspace.',
   agent_orchestration: 'Delegate the session to other agents and run the prompt optimizer.',
   diagnostics:      'Read the in-app flight recorder to diagnose the running app.',
   agent_management: 'List, create, and update agents and edit their prompts and abilities.',

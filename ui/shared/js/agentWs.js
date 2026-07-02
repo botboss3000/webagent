@@ -119,9 +119,17 @@ export function connectAgent() {
     const resume = (app.lastSessionSeq && typeof app.lastSessionSeq === 'object')
       ? app.lastSessionSeq
       : {};
+    // Derive the handshake user_id from the SAME source as the token (the active
+    // account) so the pair can never desync — e.g. after an account switch or a
+    // token refresh that updated auth_token but not app.currentUserId (a boot-
+    // time snapshot). A mismatched pair is rejected by the server with "token
+    // subject does not match user_id". Fall back to app.currentUserId for flows
+    // with no tracked account (open mode, public per-agent anon sessions).
+    const _active = getActive();
+    const _uid = (_active && _active.user_id) || app.currentUserId;
     app.agentWs.send(JSON.stringify({
       mode: 'user_subscriber',
-      user_id: app.currentUserId,
+      user_id: _uid,
       token: getAuthToken() || '',
       resume,
     }));
@@ -207,9 +215,9 @@ export function connectAgent() {
     if (_forCurrent && app._loopVisualHandler) {
       try { app._loopVisualHandler(event); } catch(e) { /* ignore */ }
     }
-    // Canvas has its own per-visualizer-session logic — leave unguarded.
-    if (app._canvasHandler) {
-      try { app._canvasHandler(event); } catch(e) { /* ignore */ }
+    // Gen UI has its own per-visualizer-session logic — leave unguarded.
+    if (app._genuiHandler) {
+      try { app._genuiHandler(event); } catch(e) { /* ignore */ }
     }
     // Drive the chat pill "thinking" glow + activity-note ticker (current session).
     if (_forCurrent && app._chatActivityHandler) {

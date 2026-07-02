@@ -1,4 +1,4 @@
-# Working on the webAgent codebase
+# Working on the WebAgent codebase
 
 Attached to the **Codebase Admin** ability. Loads on demand — pull it in with
 `load_skill` before any task that reads, edits, or extends this repository's
@@ -105,7 +105,7 @@ them.**
 | Two pills sitting side-by-side that must line up | `PILL-PANEL-ALIGN` |
 | Either ability table (admin Agent Settings + agent-card Abilities tab) | `SISTER-PANEL` |
 | A category-and-rows toggle list, or a collapsible config section | `SHARED EXPANDABLE OPTION-ROW LIST`, `SHARED COLLAPSIBLE SECTION PATTERN` |
-| An inline-rename field (session title, canvas page, terminal tab) | `RENAME-FIELD PATTERN` |
+| An inline-rename field (session title, genui page, terminal tab) | `RENAME-FIELD PATTERN` |
 | A drag-to-scroll horizontal carousel (agent squares, tab bar) | `CAROUSEL-WIRING PATTERN` |
 | HTML escaping, button factory, relative time formatting, status badges | `shared/dom-utils.js` |
 | Any intentional-duplicate pattern not covered above | `PREVENTIVE-COMMENTS` — see `docs/claude/preventive-comments.md` |

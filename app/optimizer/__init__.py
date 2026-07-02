@@ -1,5 +1,5 @@
 """
-Skill Optimizer for webAgent — self-improving skill layer.
+Skill Optimizer for WebAgent — self-improving skill layer.
 
 Pipeline: prefilter → proposer → executor → reviewer → proposer(present) → deployer
 """

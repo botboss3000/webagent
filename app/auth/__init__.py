@@ -1,6 +1,5 @@
 """Auth router — login with remember-me + recall endpoint."""
 
-import ipaddress
 import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
@@ -11,6 +10,7 @@ from app.auth.users import (
     admin_exists,
     authenticate,
     set_remember_token,
+    clear_remember_token,
     resolve_remember_token,
     get_user,
     get_user_by_id,
@@ -18,6 +18,9 @@ from app.auth.users import (
     update_user,
     change_password,
     delete_user_self,
+    set_session_policy,
+    clamp_session_lifetime,
+    DEFAULT_SESSION_LIFETIME_MINUTES,
     UpdateConflict,
 )
 from app.db import get_db
@@ -26,46 +29,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 _BOOTSTRAP_ADMIN_ID = "admin"
-
-
-def _is_localhost(request: Request) -> bool:
-    """True only when the request originates from the local machine.
-
-    The strictest gate, reserved for the most dangerous one-time action:
-    first-run admin creation (and first-class canvas, which runs unsandboxed
-    agent code with camera/mic in the visitor's browser). A misconfigured
-    public deployment must never hand either of those to a remote visitor.
-    """
-    host = request.client.host if request.client else ""
-    return host in ("127.0.0.1", "::1", "localhost")
-
-
-def _is_trusted_local(request: Request) -> bool:
-    """True when the request comes from the local machine OR the local
-    private network (LAN): loopback, RFC1918 private ranges, or link-local.
-
-    This is a deliberately wider boundary than `_is_localhost`. It exists so
-    the 'open' auto-admin login can hand a real session to same-network
-    devices — a phone or laptop reaching the server by its LAN address
-    (e.g. 10.0.0.x / 192.168.x) — instead of leaving them tokenless and
-    half-authenticated. PUBLIC addresses are still rejected, so flipping a
-    publicly-exposed deployment (e.g. a Cloudflare Tunnel exit) to 'open'
-    still can't grant a random internet visitor admin: they'd have to be on
-    the private network itself.
-    """
-    host = request.client.host if request.client else ""
-    if not host:
-        return False
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        # Non-IP host string (e.g. the literal "localhost").
-        return host == "localhost"
-    # Unwrap IPv4-mapped IPv6 (e.g. ::ffff:10.0.0.5) to judge the real IPv4.
-    mapped = getattr(ip, "ipv4_mapped", None)
-    if mapped is not None:
-        ip = mapped
-    return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
 class LoginRequest(BaseModel):
@@ -139,6 +102,18 @@ async def create_anonymous_session(req: AnonymousRequest):
     return AnonymousResponse(access_token=token, user_id=identity.user_id)
 
 
+def _record_auth_event(level: str, message: str, user_id: str | None = None) -> None:
+    """Write a sign-in/security event into the durable diagnostics store
+    (category ``auth``). Feeds the admin Dashboard's "Security & sign-ins"
+    card — sign-ins, failed attempts and registrations become queryable via
+    ``query_diagnostics(categories=["auth"])``. Best-effort, never raises."""
+    try:
+        from app.agent.diagnostics import record
+        record(level, "auth", message, user_id=user_id, persist=True)
+    except Exception:
+        pass
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(req: LoginRequest):
     """Authenticate with username and password.
@@ -148,11 +123,19 @@ async def login(req: LoginRequest):
     """
     user = authenticate(req.email, req.password)
     if user is None:
+        _record_auth_event("warning", f"Failed sign-in for {req.email}")
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_approved:
+        _record_auth_event("warning", f"Sign-in blocked (pending approval): {req.email}")
         raise HTTPException(status_code=403, detail="Account pending admin approval")
+    _record_auth_event("info", f"Sign-in: {user.username}", user_id=user.user_id)
 
-    token = create_access_token(user.username, user.user_id)
+    # Mint the pass for the user's own chosen lifetime (Manage Account →
+    # Sign-in & sessions; defaults to 30 days for accounts that haven't set one).
+    token = create_access_token(
+        user.username, user.user_id,
+        expires_minutes=user.session_lifetime_minutes,
+    )
     resp = LoginResponse(
         access_token=token,
         username=user.username,
@@ -160,7 +143,10 @@ async def login(req: LoginRequest):
         display_name=user.display_name,
     )
 
-    if req.remember_me:
+    # Issue a renewal ticket if the user ticked "Remember me" OR has auto-renew
+    # on as a standing account preference — either way the silent refresh then
+    # keeps the session alive so it never dies in place at the lifetime mark.
+    if req.remember_me or user.auto_renew:
         remember = set_remember_token(req.email)
         if remember:
             resp.remember_token = remember
@@ -182,11 +168,15 @@ async def recall(req: RecallRequest):
     """
     user = resolve_remember_token(req.remember_token)
     if user is None:
+        _record_auth_event("warning", "Auto-login failed (invalid or expired remember token)")
         raise HTTPException(status_code=401, detail="Invalid or expired remember token")
     if not user.is_approved:
         raise HTTPException(status_code=403, detail="Account pending admin approval")
 
-    token = create_access_token(user.username, user.user_id)
+    token = create_access_token(
+        user.username, user.user_id,
+        expires_minutes=user.session_lifetime_minutes,
+    )
     resp = RecallResponse(
         access_token=token,
         username=user.username,
@@ -218,6 +208,8 @@ async def register(req: RegisterRequest):
     user = register_user(req.email, req.password, req.display_name, is_approved=auto_approve)
     if user is None:
         raise HTTPException(status_code=409, detail="Email already registered")
+    _record_auth_event("info", f"New account registered: {user.username}"
+                       + ("" if auto_approve else " (pending approval)"), user_id=user.user_id)
 
     if not auto_approve:
         # Created but unapproved — no token issued, client must wait for admin
@@ -333,11 +325,11 @@ class UiConfigResponse(BaseModel):
     # The tutorial module reads this; the per-user "show app tour" preference
     # layers on top, and the account page hides its toggle when this is off.
     hints_enabled: bool
-    # First-class canvases (ui/main-panel/canvas): render agent-authored canvases
+    # First-class genui (ui/main-panel/genui): render agent-authored genui
     # directly in the app (no sandboxed iframe) with real-page powers — live
-    # webcam/mic, direct agent calls. A canvas runs with the VIEWER's OWN app
-    # trust (it is per-user — a person only ever sees their own canvases, in their
-    # own browser/session), so this is gated by the Canvas page's VISIBILITY
+    # webcam/mic, direct agent calls. A genui runs with the VIEWER's OWN app
+    # trust (it is per-user — a person only ever sees their own genui, in their
+    # own browser/session), so this is gated by the Gen UI page's VISIBILITY
     # setting, enforced server-side (app.auth.identity.caller_may_access_page):
     #   • "all"  → everyone, including anonymous guests
     #   • "auth" → any signed-in REGISTERED user (the default — registration
@@ -346,10 +338,10 @@ class UiConfigResponse(BaseModel):
     # Admins always pass; 'open' single-user/local mode passes everything (local
     # convenience, incl. over a Cloudflare tunnel where the browser can't mint a
     # JWT). The frontend MUST send the caller's auth token on the /ui-config fetch
-    # so the gate can see who they are (see _fetchCanvasGate in autoagent.js). The
-    # canvas HTTP endpoints (app/api/canvas.py) re-check this SAME gate + per-user
+    # so the gate can see who they are (see _fetchGenuiGate in autoagent.js). The
+    # genui HTTP endpoints (app/api/genui.py) re-check this SAME gate + per-user
     # ownership, so a hidden tab can't be bypassed by calling the API directly.
-    canvas_first_class: bool
+    genui_first_class: bool
     # Whether signed-in users may set their own theme (App Settings → Appearance →
     # "Allow per-user themes"). The account page (ui/shared/js/account.js) shows
     # its "My appearance" editor only when this is True; this same endpoint also
@@ -367,8 +359,8 @@ async def ui_config(request: Request):
     engine ui/background/_engine/manager.js renders the right one) plus the
     global border + font appearance knobs (so ui/shared/js/appearance.js can
     recolour/resize borders and swap the UI font app-wide) — for anonymous and
-    signed-in visitors alike. Also reports whether first-class canvases are
-    permitted (local-only safety gate; see app/visualizer + the Canvas tab).
+    signed-in visitors alike. Also reports whether first-class genui are
+    permitted (local-only safety gate; see app/visualizer + the Gen UI tab).
     """
     from app.admin.settings import (
         get_background_config,
@@ -382,19 +374,19 @@ async def ui_config(request: Request):
     cfg = get_background_config()
     app = get_appearance_config()
     bg_dark, bg_light = cfg["dark"], cfg["light"]
-    # Whether THIS caller may run first-class (full-trust) canvases is now driven
-    # by the Canvas page's VISIBILITY setting, enforced server-side — not a
+    # Whether THIS caller may run first-class (full-trust) genui is now driven
+    # by the Gen UI page's VISIBILITY setting, enforced server-side — not a
     # separate hardcoded admin-only gate. caller_may_access_page resolves the
     # caller from the token the frontend sends and applies the 3-state rule:
-    #   • Canvas "all"  → everyone, incl. anonymous guests
-    #   • Canvas "auth" → any signed-in registered user (the default — so canvas
+    #   • Gen UI "all"  → everyone, incl. anonymous guests
+    #   • Gen UI "auth" → any signed-in registered user (the default — so genui
     #                     is registration-required out of the box, not admin-only)
-    #   • Canvas "off"  → admins only
+    #   • Gen UI "off"  → admins only
     # Admins always pass, and 'open' single-user/local mode passes everything
     # (local convenience, incl. over a tunnel where the browser can't mint a JWT).
     from app.auth.identity import request_user_id, caller_may_access_page
     caller_uid = request_user_id(request)
-    canvas_first_class = await caller_may_access_page(request, "main", "canvas")
+    genui_first_class = await caller_may_access_page(request, "main", "genui")
     # Per-user theme: when the admin has enabled it, layer the signed-in caller's
     # saved overrides on top of the global appearance, so the boot-time applier
     # (ui/shared/js/appearance.js) needs NO change — it just receives an already
@@ -421,7 +413,7 @@ async def ui_config(request: Request):
     return UiConfigResponse(
         background_dark=bg_dark,
         background_light=bg_light,
-        canvas_first_class=canvas_first_class,
+        genui_first_class=genui_first_class,
         splash_enabled=get_splash_enabled(),
         hints_enabled=get_hints_enabled(),
         allow_user_appearance=allow_user_appearance,
@@ -451,6 +443,7 @@ class SetupStatusResponse(BaseModel):
 class SetupAdminRequest(BaseModel):
     password: str
     display_name: str = ""
+    username: str = "admin"
 
 
 class SetupAdminResponse(BaseModel):
@@ -469,21 +462,30 @@ async def setup_status():
 
 @router.post("/setup-admin", response_model=SetupAdminResponse)
 async def setup_admin(req: SetupAdminRequest, request: Request):
-    """Create the first admin account. Only accessible from localhost.
-    Rejects if an admin already exists or if request is not from localhost."""
-    # Localhost-only gate
-    if not _is_localhost(request):
-        raise HTTPException(status_code=403, detail="Setup is only available from localhost")
+    """Create the first admin account.
 
+    Open to ANY first visitor (local or remote) — the only guard is that no admin
+    exists yet. The ``admin_exists()`` check below closes the door for good the
+    instant the first admin is created, so this is strictly a one-time,
+    first-visitor action. There is deliberately NO localhost restriction: a fresh
+    install (including a freshly-deployed cloud server, whose own browser is
+    remote) must always be able to reach this page to set the very first password."""
     if admin_exists():
         raise HTTPException(status_code=400, detail="Admin already exists")
 
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
 
-    user = register_user("admin", req.password, req.display_name or "Admin")
+    # The operator may choose any login name (or leave the default "admin").
+    # The canonical admin user_id stays "admin" so every downstream admin gate
+    # (DB is_admin seed, open-mode fallback, delete protection) keeps working.
+    login_name = (req.username or "").strip() or "admin"
+    user = register_user(
+        login_name, req.password, req.display_name or "Admin",
+        user_id=_BOOTSTRAP_ADMIN_ID,
+    )
     if user is None:
-        raise HTTPException(status_code=409, detail="Admin already exists")
+        raise HTTPException(status_code=409, detail="That username is already taken")
 
     from app.auth.jwt import create_access_token
 
@@ -499,63 +501,6 @@ async def setup_admin(req: SetupAdminRequest, request: Request):
         username=user.username,
         user_id=user.user_id,
         display_name=user.display_name,
-    )
-
-
-class OpenLoginResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    username: str
-    user_id: str
-    display_name: str
-
-
-@router.post("/open-login", response_model=OpenLoginResponse)
-async def open_login(request: Request):
-    """Auto-login as the default admin — only in 'open' access mode, from the
-    local machine or the local private network (LAN).
-
-    This backs the 'Open' access level ("Default admin account is auto-logged
-    in. Recommended for local use only."). Two hard gates protect it:
-
-      1. The app's access_mode must be 'open'. Any other mode → 403.
-      2. The request must originate from a trusted-local address: the box
-         itself OR a same-network (private-LAN) device. A request from a
-         PUBLIC address → 403, so flipping a publicly-exposed deployment to
-         'open' can never grant a random internet visitor admin (they'd still
-         have to be on the private network itself). Widening this from
-         localhost-only to the LAN is what lets a phone/laptop on the same
-         network get a real admin session — and so pass the token-strict gates
-         (the web terminal, etc.) instead of a tokenless half-login.
-
-    Issues a JWT for the bootstrap admin (admin). If no admin account
-    exists yet the client should fall through to the localhost setup page.
-    """
-    from app.admin.settings import get_access_mode as _gam
-    if _gam() != "open":
-        raise HTTPException(status_code=403, detail="Open auto-login is not enabled")
-    if not _is_trusted_local(request):
-        raise HTTPException(
-            status_code=403,
-            detail="Open auto-login is only available on the local network",
-        )
-
-    admin = get_user_by_id(_BOOTSTRAP_ADMIN_ID) or get_user("admin")
-    if admin is None:
-        raise HTTPException(status_code=404, detail="No admin account exists yet")
-
-    token = create_access_token(admin.username, admin.user_id)
-
-    # Track the auto-login as activity, like every other login path.
-    now_iso = datetime.now(timezone.utc).isoformat()
-    db = get_db()
-    await db.upsert_user_profile(admin.user_id, last_login_at=now_iso)
-
-    return OpenLoginResponse(
-        access_token=token,
-        username=admin.username,
-        user_id=admin.user_id,
-        display_name=admin.display_name,
     )
 
 
@@ -587,10 +532,8 @@ async def guest_login(request: Request, req: GuestLoginRequest | None = None):
     flow (`POST /api/v1/agents/{id}/anon-session`), which mints the same kind of
     `web_public` identity for a single public agent page.
 
-    Gated to 'public_registered' only. 'open' mode auto-logs-in the bootstrap
-    admin (see open_login) and the stricter 'admin_approval' mode requires a real
-    approved account, so a guest token is refused (403) in both — keeping their
-    access rules unchanged.
+    Gated to 'public_registered' only. The stricter 'admin_approval' mode
+    requires a real approved account, so a guest token is refused (403) there.
     """
     import uuid as _uuid_mod
     from app.admin.settings import get_access_mode as _gam
@@ -721,7 +664,10 @@ async def patch_me(request: Request, body: UpdateMeRequest):
     if updated is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    token = create_access_token(updated.username, updated.user_id)
+    token = create_access_token(
+        updated.username, updated.user_id,
+        expires_minutes=updated.session_lifetime_minutes,
+    )
     return UpdateMeResponse(
         username=updated.username,
         user_id=updated.user_id,
@@ -776,6 +722,83 @@ async def delete_me(request: Request, body: DeleteMeRequest):
         raise HTTPException(status_code=404, detail="User not found")
 
     return {"status": "ok"}
+
+
+# ── Per-user session policy (Manage Account → Sign-in & sessions) ────────────
+# Each user controls how long their own login pass lasts and whether it silently
+# auto-renews. Stored on the user record (app.auth.users). The lifetime is read
+# at every token mint (login / recall / profile-edit) so a change takes effect on
+# the next pass; the PUT below also re-mints the caller's current pass + issues or
+# clears the renewal ticket so the change applies immediately, no re-login needed.
+
+class SessionPolicyResponse(BaseModel):
+    lifetime_minutes: int
+    auto_renew: bool
+
+
+class UpdateSessionPolicyRequest(BaseModel):
+    lifetime_minutes: int
+    auto_renew: bool
+
+
+class UpdateSessionPolicyResponse(BaseModel):
+    lifetime_minutes: int
+    auto_renew: bool
+    access_token: str           # fresh pass minted for the new lifetime
+    token_type: str = "bearer"
+    remember_token: str = ""     # new ticket when auto-renew on; "" when off
+
+
+@router.get("/me/session-policy", response_model=SessionPolicyResponse)
+async def get_my_session_policy(request: Request):
+    """Return the caller's session policy (login-pass lifetime + auto-renew)."""
+    username, _user_id = _require_auth(request)
+    user = get_user(username)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return SessionPolicyResponse(
+        lifetime_minutes=user.session_lifetime_minutes,
+        auto_renew=user.auto_renew,
+    )
+
+
+@router.put("/me/session-policy", response_model=UpdateSessionPolicyResponse)
+async def put_my_session_policy(request: Request, body: UpdateSessionPolicyRequest):
+    """Update the caller's session policy and apply it immediately.
+
+    Clamps the lifetime to the allowed range, saves it, then re-mints the
+    caller's current pass for the new lifetime. When auto-renew is on a fresh
+    renewal ticket is issued (so the silent refresh can keep the session alive);
+    when off the ticket is cleared (the session simply ends at the lifetime).
+    """
+    username, _user_id = _require_auth(request)
+    user = get_user(username)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    updated = set_session_policy(
+        username,
+        clamp_session_lifetime(body.lifetime_minutes),
+        bool(body.auto_renew),
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    token = create_access_token(
+        updated.username, updated.user_id,
+        expires_minutes=updated.session_lifetime_minutes,
+    )
+    remember = ""
+    if updated.auto_renew:
+        remember = set_remember_token(username) or ""
+    else:
+        clear_remember_token(username)
+    return UpdateSessionPolicyResponse(
+        lifetime_minutes=updated.session_lifetime_minutes,
+        auto_renew=updated.auto_renew,
+        access_token=token,
+        remember_token=remember,
+    )
 
 
 # ── Per-user appearance (self-service "My appearance" theme editor) ──────────

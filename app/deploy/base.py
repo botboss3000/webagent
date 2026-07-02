@@ -63,6 +63,13 @@ class BaseDeployProvider:
     # generated command in a copy box instead of a "last server" line.
     manual: bool = False
 
+    # Whether Deploy CREATES a new machine (a billable cloud VM) vs installs onto a
+    # server the admin already owns (e.g. the SSH target). The panel reads this to
+    # word its confirm dialogs correctly: a target that creates nothing shouldn't
+    # warn about a "billable server" on deploy or "permanently deletes it" on
+    # tear-down. Cloud targets leave it True; ``ssh_vm`` sets it False.
+    creates_server: bool = True
+
     config_fields: List[Dict[str, Any]] = []
     credential_fields: List[Dict[str, Any]] = []
     # Which credential keys must be present to count "ready to deploy". Defaults

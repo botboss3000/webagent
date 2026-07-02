@@ -199,6 +199,48 @@ body {
   background: var(--files-btn-hover);
 }
 
+/* ── Expandable icon rail ─────────────────────────────────────────────
+   The 38px icon strip can expand into a labelled rail (icon + view title)
+   and collapse back, toggled by the .files-strip-rail-toggle at the top of
+   the strip (built in header-build.js). State persists in localStorage
+   (files.adminRailExpanded) and rides on the #files-sidebar.rail-expanded
+   class. These rules sit after the strip/settings width rules and the
+   .rail-expanded overrides are !important so they win over the 38px
+   icon-only widths for the panel-less views (dashboard / settings). */
+.files-strip-label {
+  display: none;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: inherit;
+}
+.files-strip-rail-toggle { color: var(--files-text); opacity: 0.8; }
+.files-sidebar.rail-expanded .files-sidebar-strip {
+  width: 184px;
+  align-items: stretch;
+  padding: 6px 8px;
+}
+.files-sidebar.rail-expanded .files-strip-btn {
+  width: 100%;
+  height: 32px;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 0 9px;
+}
+.files-sidebar.rail-expanded .files-strip-label { display: inline-block; }
+/* Widen the whole sidebar in rail mode for the panel-less icon-only views
+   (dashboard / settings / strip state) which are otherwise pinned to 38px. */
+.files-sidebar.rail-expanded.strip,
+.files-sidebar.rail-expanded[data-view="settings"],
+.files-sidebar.rail-expanded[data-view="dashboard"] {
+  width: 184px !important;
+  min-width: 184px !important;
+  max-width: 184px !important;
+  flex: 0 0 184px;
+}
+
 .files-sidebar-header {
   display: flex;
   align-items: center;
@@ -2864,6 +2906,17 @@ input.fg-remote-input-inline {
 }
 .files-sidebar[data-view="settings"] ~ .files-resize-handle { display: none; }
 .files-sidebar[data-view="settings"] .files-sidebar-panel { display: none; }
+/* Dashboard is panel-less too — pin the sidebar to the icon strip so the
+   dashboard grid takes the remaining width (mirrors Settings above). */
+.files-sidebar[data-view="dashboard"] {
+  width: 38px !important;
+  min-width: 38px !important;
+  max-width: 38px !important;
+  flex: 0 0 38px;
+}
+.files-sidebar[data-view="dashboard"] ~ .files-resize-handle { display: none; }
+.files-sidebar[data-view="dashboard"] .files-sidebar-panel { display: none; }
+.files-sidebar[data-view="dashboard"].maximized ~ .files-main:not([hidden]) { display: flex; }
 /* Mobile .maximized normally hides the right side; for settings we want
    the settings main visible. */
 .files-sidebar[data-view="settings"].maximized ~ .files-main:not([hidden]) { display: flex; }

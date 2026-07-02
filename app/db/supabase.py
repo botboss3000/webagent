@@ -1,5 +1,5 @@
 """
-Supabase storage backend for webAgent.
+Supabase storage backend for WebAgent.
 
 Implements StorageBackend using Supabase as the remote database.
 Refactored from the original static-method SupabaseClient into an instance-based class.
@@ -1615,13 +1615,13 @@ class SupabaseBackend(StorageBackend):
             return False
 
     # ────────────────────────────────────────────────────────────────────
-    # Canvases (canvas workspace)
+    # Gen UI (genui workspace)
     # ────────────────────────────────────────────────────────────────────
 
-    async def canvas_list(self, user_id: str) -> List[dict]:
+    async def genui_list(self, user_id: str) -> List[dict]:
         try:
             res = (
-                self._client.table("canvases")
+                self._client.table("genui")
                 .select("*")
                 .eq("user_id", user_id)
                 .order("updated_at", desc=True)
@@ -1633,13 +1633,13 @@ class SupabaseBackend(StorageBackend):
             others = [r for r in rows if r.get("slug") != "home"]
             return home + others
         except Exception as e:
-            logger.error("canvas_list error: %s", e)
+            logger.error("genui_list error: %s", e)
             return []
 
-    async def canvas_get(self, user_id: str, slug: str) -> Optional[dict]:
+    async def genui_get(self, user_id: str, slug: str) -> Optional[dict]:
         try:
             res = (
-                self._client.table("canvases")
+                self._client.table("genui")
                 .select("*")
                 .eq("user_id", user_id)
                 .eq("slug", slug)
@@ -1648,10 +1648,10 @@ class SupabaseBackend(StorageBackend):
             )
             return res.data[0] if res.data else None
         except Exception as e:
-            logger.error("canvas_get error: %s", e)
+            logger.error("genui_get error: %s", e)
             return None
 
-    async def canvas_upsert(
+    async def genui_upsert(
         self,
         user_id: str,
         slug: str,
@@ -1664,7 +1664,7 @@ class SupabaseBackend(StorageBackend):
         now = datetime.now(timezone.utc).isoformat()
         try:
             existing = (
-                self._client.table("canvases")
+                self._client.table("genui")
                 .select("id, agent_id")
                 .eq("user_id", user_id)
                 .eq("slug", slug)
@@ -1684,7 +1684,7 @@ class SupabaseBackend(StorageBackend):
                 if html is not None:
                     data["html"] = html
                 res = (
-                    self._client.table("canvases")
+                    self._client.table("genui")
                     .update(data)
                     .eq("id", existing.data[0]["id"])
                     .execute()
@@ -1701,16 +1701,16 @@ class SupabaseBackend(StorageBackend):
                     "created_at": now,
                     "updated_at": now,
                 }
-                res = self._client.table("canvases").insert(data).execute()
+                res = self._client.table("genui").insert(data).execute()
             return res.data[0] if res.data else data
         except Exception as e:
-            logger.error("canvas_upsert error: %s", e)
+            logger.error("genui_upsert error: %s", e)
             raise
 
-    async def canvas_delete(self, user_id: str, slug: str) -> bool:
+    async def genui_delete(self, user_id: str, slug: str) -> bool:
         try:
             res = (
-                self._client.table("canvases")
+                self._client.table("genui")
                 .delete()
                 .eq("user_id", user_id)
                 .eq("slug", slug)
@@ -1718,13 +1718,13 @@ class SupabaseBackend(StorageBackend):
             )
             return bool(res.data)
         except Exception as e:
-            logger.error("canvas_delete error: %s", e)
+            logger.error("genui_delete error: %s", e)
             return False
 
-    async def canvas_get_data(self, user_id: str, slug: str) -> Optional[str]:
+    async def genui_get_data(self, user_id: str, slug: str) -> Optional[str]:
         try:
             res = (
-                self._client.table("canvases")
+                self._client.table("genui")
                 .select("data")
                 .eq("user_id", user_id)
                 .eq("slug", slug)
@@ -1733,14 +1733,14 @@ class SupabaseBackend(StorageBackend):
             )
             return (res.data[0].get("data") if res.data else None)
         except Exception as e:
-            logger.error("canvas_get_data error: %s", e)
+            logger.error("genui_get_data error: %s", e)
             return None
 
-    async def canvas_set_data(self, user_id: str, slug: str, data_json: str) -> bool:
+    async def genui_set_data(self, user_id: str, slug: str, data_json: str) -> bool:
         now = datetime.now(timezone.utc).isoformat()
         try:
             res = (
-                self._client.table("canvases")
+                self._client.table("genui")
                 .update({"data": data_json, "updated_at": now})
                 .eq("user_id", user_id)
                 .eq("slug", slug)
@@ -1748,7 +1748,7 @@ class SupabaseBackend(StorageBackend):
             )
             return bool(res.data)
         except Exception as e:
-            logger.error("canvas_set_data error: %s", e)
+            logger.error("genui_set_data error: %s", e)
             return False
 
     # ────────────────────────────────────────────────────────────────────

@@ -90,7 +90,7 @@ function _removeSessionPlaceholders() {
     .forEach(el => el.remove());
 }
 
-// CHAT-PILL-SYNC: same pattern as agent-builder-bar and canvas
+// CHAT-PILL-SYNC: same pattern as agent-builder-bar and genui
 function _updateInputRowState() {
   if (!app.chatInput) return;
   const row = document.getElementById('chat-input-row');
@@ -202,6 +202,10 @@ async function _retryEntry(entry) {
       session_id: entry.session_id || app.currentSessionId,
       user_id: entry.user_id || app.currentUserId,
       execution_mode: app.executionMode || 'ask',
+      // Idempotency key: the outbox entry id rides along on every retry so the
+      // server can recognise a re-send of an already-accepted message and skip
+      // the duplicate insert / second run (see app/api/chat.py _find_interaction_by_cmid).
+      client_msg_id: entry.id,
     };
     if (entry.agent_id || app.currentAgentId) {
       payload.agent_id = entry.agent_id || app.currentAgentId;
@@ -405,7 +409,7 @@ function _debouncedSaveDraft() {
 // ── Send / Stop / Abort ────────────────────────────────────────────────────
 
 async function sendStopMessage() {
-  addChatBubble('user', '\uD83D\uDED1 Stop');
+  addChatBubble('user', 'Stop');
 
   // Stop is the escape hatch from a composer-locking command (e.g. /compact):
   // hand control back to the user immediately, even if the server is still busy.
@@ -470,7 +474,7 @@ async function sendMessage() {
         await app.startWebagentSession();
       }
     } catch (e) {
-      addChatBubble('agent', '\u274C Could not start webAgent: ' + (e.message || e), 'error');
+      addChatBubble('agent', '\u274C Could not start WebAgent: ' + (e.message || e), 'error');
       return;
     }
     if (!app.currentAgentId) return;
@@ -552,6 +556,10 @@ async function sendMessage() {
     session_id: app.currentSessionId,
     user_id: app.currentUserId,
     execution_mode: app.executionMode || 'ask',
+    // Idempotency key (same id stored on the outbox entry above): if this send
+    // isn't confirmed and the outbox retries it, the server dedupes on this id
+    // instead of inserting the message twice. (see app/api/chat.py)
+    client_msg_id: outboxEntry.id,
   };
   if (app.currentAgentId) base.agent_id = app.currentAgentId;
   if (_appControl) base.app_control = _appControl;
@@ -640,10 +648,22 @@ app.refreshChat = async () => {
 // Needed by chat-ui.js for auto-resize
 function _autoResizePill(el) {
   if (!el || el.tagName !== 'TEXTAREA') return;
-  el.style.height = 'auto';
   const cs = getComputedStyle(el);
   const minH = parseFloat(cs.minHeight) || 0;
   const maxH = parseFloat(cs.maxHeight) || 124;
+  // Empty field → always rest at one line. A textarea's scrollHeight INCLUDES its
+  // wrapped placeholder, so measuring it here would grow an empty pill to fit a
+  // long placeholder — and on a narrow screen (or the page-assistant's long
+  // typewriter hints) that wraps to 2–3 lines, making the single-line pill "stack"
+  // taller on window resize. Pin to min-height and skip the measure when there's
+  // no typed value; only real content grows the pill.
+  if (!el.value) {
+    el.style.height = minH ? minH + 'px' : 'auto';
+    el.style.overflowY = 'hidden';
+    _updateScrollIndicator(el);
+    return;
+  }
+  el.style.height = 'auto';
   const next = Math.max(minH, Math.min(el.scrollHeight, maxH));
   el.style.height = next + 'px';
   el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden';
@@ -665,9 +685,44 @@ function _updateScrollIndicator(el) {
   pill.style.setProperty('--indicator-opacity', '1');
 }
 
+// ── Prewarm ──────────────────────────────────────────────────────────────────
+// While the user is typing (or the moment they focus the pill), ask the server
+// to build the read-only prep for the NEXT send — the agent's tool set, the chat
+// history, the attached data sources. On a remote DB those reads cost seconds;
+// doing them during the typing window means the send can skip them. Best-effort:
+// throttled per session, fire-and-forget, and a failure just means the turn
+// builds the prep live as before. Backend: POST /api/v1/chat/prewarm.
+const _PREWARM_THROTTLE_MS = 15000;
+let _lastPrewarmAt = Object.create(null);
+
+function _prewarm() {
+  try {
+    if (!_canChat()) return;
+    if (!app.currentUserId || !app.currentSessionId || !app.currentAgentId) return;
+    // Tunnels / Terminal Chat don't run the normal agent turn — nothing to warm.
+    if (app.tunnel && app.tunnel.active) return;
+    if (app.terminalChat && app.terminalChat.active) return;
+    const sid = app.currentSessionId;
+    const now = Date.now();
+    if (_lastPrewarmAt[sid] && (now - _lastPrewarmAt[sid]) < _PREWARM_THROTTLE_MS) return;
+    _lastPrewarmAt[sid] = now;
+    fetch(apiPath('/api/v1/chat/prewarm'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        user_id: app.currentUserId,
+        session_id: sid,
+        agent_id: app.currentAgentId,
+      }),
+      keepalive: true,
+    }).catch(() => { /* best-effort: a miss just builds the prep live on send */ });
+  } catch (_) { /* never let prewarm interfere with typing */ }
+}
+
 export {
   sendMessage,
   sendStopMessage,
+  _prewarm,
   abortChatStream,
   applyChatGate,
   _canChat,

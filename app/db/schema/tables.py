@@ -1,5 +1,5 @@
 """
-Canonical table definitions for webAgent.
+Canonical table definitions for WebAgent.
 
 Each table is represented as a dict:
 {
@@ -915,25 +915,37 @@ TABLES: List[Table] = [
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
-    # Visualizer workspace canvases (see migration 019 / 030 / 032).
-    Table("canvases", [
+    # Visualizer workspace genui (see migration 019 / 030 / 032).
+    Table("genui", [
         Column("id", "TEXT", nullable=False, primary_key=True),
         Column("user_id", "TEXT", nullable=False),
         Column("slug", "TEXT", nullable=False),
         Column("title", "TEXT", nullable=False),
         Column("agent_context", "TEXT", nullable=False, default="''"),
-        # Owning agent — the agent that created/manages this canvas (mirrors
-        # browser_sessions.agent_id). Nullable: a user-made canvas has none until
-        # an agent renders into it; the footer falls back to the default webAgent.
+        # Owning agent — the agent that created/manages this genui (mirrors
+        # browser_sessions.agent_id). Nullable: a user-made genui has none until
+        # an agent renders into it; the footer falls back to the default WebAgent.
         Column("agent_id", "TEXT"),
         Column("html", "TEXT"),
-        # Per-canvas DATA bag (JSON object) — the content the page renders, kept
+        # Per-genui DATA bag (JSON object) — the content the page renders, kept
         # separate from `html` so the agent updates data without rewriting markup.
         Column("data", "TEXT"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ], constraints=[
         "UNIQUE(user_id, slug)",
+    ]),
+
+    # ── Background singleton leadership (see app/coordination/leader.py) ──
+    # A TTL'd lock so exactly ONE instance across a shared DB runs the singleton
+    # background services (schedulers, orphan-resume, etc.). Every instance polls
+    # to acquire/renew this lease; only the holder is "leader". MUST exist on
+    # Postgres too — without it the leader poll fails and retry-storms the DB.
+    Table("background_leader", [
+        Column("lock_key", "TEXT", nullable=False, primary_key=True),
+        Column("holder_id", "TEXT"),
+        Column("heartbeat_at", "TEXT"),
+        Column("expires_at", "TEXT"),
     ]),
 
     # ── Multi-device coordination (see app/devices/) ──
@@ -1070,7 +1082,7 @@ INDEXES: List[Index] = [
     Index("idx_automation_runs_auto", "automation_runs", "automation_id, created_at DESC"),
     Index("idx_automation_runs_sub", "automation_runs", "subscription_id, created_at DESC"),
     Index("idx_automation_runs_owner", "automation_runs", "owner_user_id, created_at DESC"),
-    Index("idx_canvases_user", "canvases", "user_id"),
+    Index("idx_genui_user", "genui", "user_id"),
     # Multi-device coordination
     Index("idx_device_jobs_claim", "device_jobs", "status, target_instance"),
     Index("idx_device_jobs_created", "device_jobs", "created_at"),

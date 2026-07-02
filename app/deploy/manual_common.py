@@ -1,6 +1,6 @@
 """Shared helpers for MANUAL deploy targets (Windows, macOS, …).
 
-A "manual" deploy target installs webAgent onto a device the admin already owns by
+A "manual" deploy target installs WebAgent onto a device the admin already owns by
 handing back a single copy-paste command — no cloud account, nothing billable
 (see ``app/deploy/base.BaseDeployProvider.manual``). Every such target needs the
 SAME pre-command logic before its platform-specific shell line: tidy the repo URL
@@ -20,13 +20,19 @@ from __future__ import annotations
 from typing import Any, Dict
 
 # When the admin hasn't typed a repository, the command installs the STANDARD
-# webAgent repository — so the box always shows a command that is ready to run as
+# WebAgent repository — so the box always shows a command that is ready to run as
 # is. The admin only overrides this for their own fork. Mirror of deploy.js
 # `_MC_DEFAULT_REPO`.
 DEFAULT_REPO = "https://github.com/botboss3000/webagent"
 # Still shown when a PRIVATE repo is chosen but no token is typed yet, so the
 # command renders its shape; an obvious "fill me in" token.
 PLACEHOLDER_TOKEN = "YOUR_ACCESS_TOKEN"
+
+# Characters that would break the password out of the command's single-quoted
+# (POSIX) / quoted (PowerShell) embedding. A password with any of these is NOT
+# spliced in — we fall back to first-visitor setup and nudge. Mirror of deploy.js
+# `_MC_BAD_PW`.
+BAD_PW = "'\"" + "`" + "$\\\n\r"
 
 # Default install folder per platform — where the repo is cloned and run from when
 # the admin doesn't choose one. POSIX expands ``$HOME`` inside the double quotes we
@@ -77,12 +83,42 @@ def resolve_dir(install_dir: str, default: str) -> str:
     return d
 
 
+def resolve_admin(admin_password: str = "") -> Dict[str, Any]:
+    """Resolve the Deploy panel's optional "Admin password" for a manual install —
+    shared by every platform provider (only the shell prefix that carries it into
+    the setup script differs per platform). NEVER errors (the row renders live).
+
+    Returns ``{prewire, password, warning}``:
+      * password left BLANK (the default) → ``prewire`` False, no shell prefix: the
+        first visitor to the installed app sets the password via the setup page
+        (which is open until an admin exists, so this works from another device on
+        the same network too — how a phone install is usually reached).
+      * password TYPED → ``prewire`` True: the setup script bakes
+        ``BOOTSTRAP_ADMIN_PASSWORD`` into the install's ``.env`` (``password``
+        carries it) so the admin is created on first boot. An unsafe password
+        (characters that would break the command's quoting) is refused — we fall
+        back to first-visitor setup and warn rather than splice something risky.
+
+    Mirror of deploy.js ``_mcResolveAdmin``.
+    """
+    pw = (admin_password or "").strip()
+    if not pw:
+        return {"prewire": False, "password": "", "warning": ""}
+    if any(c in pw for c in BAD_PW):
+        return {"prewire": False, "password": "",
+                "warning": ("That password contains characters that can't be placed in the "
+                            "command safely — use letters, digits and simple punctuation, or "
+                            "leave it blank to let the first visitor set it instead.")}
+    warning = "" if len(pw) >= 6 else "The admin password should be at least 6 characters."
+    return {"prewire": True, "password": pw, "warning": warning}
+
+
 def resolve_clone(github_url: str, visibility: str = "public", token: str = "") -> Dict[str, Any]:
     """Work out the clone target from the admin's inputs — shared by every manual
     platform provider (only the surrounding shell command differs per platform).
 
     NEVER errors: the row shows the command live as the admin types. A blank
-    repository means "install the standard webAgent repository", so the command is
+    repository means "install the standard WebAgent repository", so the command is
     ALWAYS ready to run as is — the admin only types a URL to install their own
     fork. A private repo with no token yet still renders the command's shape via an
     obvious fill-in token, flagged so the row can nudge the admin to finish it.
@@ -103,7 +139,7 @@ def resolve_clone(github_url: str, visibility: str = "public", token: str = "") 
         repo = DEFAULT_REPO
         default_repo = True
         warning = ("That repository address isn't a valid URL — using the standard "
-                   "webAgent repository instead.")
+                   "WebAgent repository instead.")
     else:
         repo = typed
     private = str(visibility or "public").lower() == "private"

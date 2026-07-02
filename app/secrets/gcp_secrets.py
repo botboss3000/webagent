@@ -24,11 +24,19 @@ class GCPSecretManager(SecretsBackend):
     name = "gcp_secret_manager"
 
     def __init__(self, project_id: Optional[str] = None):
+        # Resolution order: explicit arg → saved UI config / token → env var.
+        from app.secrets.provider_config import get_provider_config, get_provider_token
+        cfg = get_provider_config(self.name)
         self._project_id = (
             project_id
+            or cfg.get("project")
             or os.environ.get("GCP_PROJECT")
             or os.environ.get("GOOGLE_CLOUD_PROJECT")
         )
+        # The "token" for GCP is a service-account key JSON (the whole file's
+        # contents). Optional — when blank, Application Default Credentials are
+        # used (a GOOGLE_APPLICATION_CREDENTIALS file, workload identity, etc.).
+        self._sa_json = get_provider_token(self.name)
         if not self._project_id:
             raise RuntimeError(
                 "GCPSecretManager requires GCP_PROJECT env var or explicit project_id."
@@ -43,6 +51,12 @@ class GCPSecretManager(SecretsBackend):
 
     def _client(self):
         from google.cloud import secretmanager
+        if self._sa_json:
+            import json as _json
+            from google.oauth2 import service_account
+            info = _json.loads(self._sa_json)
+            creds = service_account.Credentials.from_service_account_info(info)
+            return secretmanager.SecretManagerServiceClient(credentials=creds)
         return secretmanager.SecretManagerServiceClient()
 
     def _secret_name(self, key: str) -> str:
@@ -97,3 +111,13 @@ class GCPSecretManager(SecretsBackend):
             if name.startswith(prefix):
                 keys.append(name)
         return sorted(keys)
+
+    async def test_connection(self) -> dict:
+        # Real probe: a minimal authenticated list call against the project.
+        try:
+            client = self._client()
+            parent = f"projects/{self._project_id}"
+            next(iter(client.list_secrets(request={"parent": parent})), None)
+        except Exception as e:
+            return {"ok": False, "message": f"Could not reach GCP project {self._project_id}: {type(e).__name__}: {e}"}
+        return {"ok": True, "message": f"GCP Secret Manager reachable for project {self._project_id}."}

@@ -1,5 +1,5 @@
 """
-Local SQLite storage backend for webAgent.
+Local SQLite storage backend for WebAgent.
 
 Completely independent from Supabase. Uses a local SQLite database file.
 Auto-creates tables on first use matching the Supabase schema.
@@ -13,9 +13,12 @@ import re
 import shutil
 import sqlite3
 import struct
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+
+from app.db.turn_cache import turn_cached, turn_scope_active, turn_cache_invalidate
 
 # numpy is a heavy import (~0.8s and hundreds of files to scan on a cold
 # disk) but is ONLY needed for local vector search. Load it lazily on first
@@ -411,7 +414,7 @@ CREATE TABLE IF NOT EXISTS background_leader (
 );
 
 -- ── Multi-device coordination (see app/devices/) ───────────────────────────
--- A SHARED database lets several webAgent instances (one user's devices) see
+-- A SHARED database lets several WebAgent instances (one user's devices) see
 -- one another. Two tables make that useful:
 --   • device_presence — a heartbeat/registry: which devices are online right now
 --     and what each can do (its capabilities). A device upserts its own row every
@@ -1465,19 +1468,19 @@ CREATE INDEX IF NOT EXISTS idx_exemptions_user  ON billing_exemptions(user_id);
 CREATE INDEX IF NOT EXISTS idx_exemptions_kind  ON billing_exemptions(kind);
 
 -- ============================================================
--- Canvases (the canvas workspace)
--- Used by DatabaseCanvasStore and HybridCanvasStore. In hybrid mode the
+-- Gen UI (the genui workspace)
+-- Used by DatabaseGenuiStore and HybridGenuiStore. In hybrid mode the
 -- `html` column stays NULL — the body lives on disk.
 -- ============================================================
-CREATE TABLE IF NOT EXISTS canvases (
+CREATE TABLE IF NOT EXISTS genui (
     id            TEXT PRIMARY KEY,
     user_id       TEXT NOT NULL,
     slug          TEXT NOT NULL,
     title         TEXT NOT NULL,
     agent_context TEXT NOT NULL DEFAULT '',
-    -- agent_id: the agent that created/manages this canvas (mirrors
-    -- browser_sessions.agent_id). Nullable — a user-made canvas has none until
-    -- an agent renders into it; the footer falls back to the default webAgent.
+    -- agent_id: the agent that created/manages this genui (mirrors
+    -- browser_sessions.agent_id). Nullable — a user-made genui has none until
+    -- an agent renders into it; the footer falls back to the default WebAgent.
     agent_id      TEXT,
     html          TEXT,
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1485,7 +1488,7 @@ CREATE TABLE IF NOT EXISTS canvases (
     UNIQUE(user_id, slug)
 );
 
-CREATE INDEX IF NOT EXISTS idx_canvases_user ON canvases(user_id);
+CREATE INDEX IF NOT EXISTS idx_genui_user ON genui(user_id);
 
 -- NOTE: the company-wide Wiki lives in its OWN dedicated SQLite file
 -- (data/wiki.db, see app/wiki/db.py) — not in this schema or the main backend.
@@ -1547,6 +1550,59 @@ def _vault_path_for(db_path: str) -> str:
     return os.path.join(d or ".", name)
 
 
+class _DbWriteLock:
+    """Serializes DB writes across BOTH the main event loop and worker threads.
+
+    The write-guard used to be an ``asyncio.Lock``, which is bound to the loop it
+    was created on. That made it impossible to run a write coroutine in a worker
+    thread (``db_offload``) — the loop-bound lock threw "is bound to a different
+    event loop" and killed the turn (message stuck at "pending"). Yet offloading
+    the blocking round-trips to worker threads is exactly what keeps a remote DB
+    from freezing the shared loop (and stalling the LLM stream).
+
+    A ``threading.Semaphore(1)`` is a non-reentrant mutex with NO thread
+    ownership, so (unlike ``RLock``) it can be released from a different thread
+    than acquired — which is required because ``__aenter__`` may acquire via an
+    executor thread while ``__aexit__`` releases on the caller's thread. Its
+    non-reentrant semantics match the original ``asyncio.Lock`` exactly (the code
+    has no nested writes), so behaviour is unchanged; only the cross-loop/thread
+    capability is added.
+
+    Supports BOTH ``async with`` (the 100+ existing write sites) and plain
+    ``with`` (for code running inside a worker-thread loop). On the main loop a
+    *contended* acquire is awaited via the executor so the loop is never frozen
+    waiting for the lock; an *uncontended* acquire takes the instant fast path.
+    """
+
+    __slots__ = ("_sem",)
+
+    def __init__(self) -> None:
+        self._sem = threading.Semaphore(1)
+
+    # -- sync context (worker-thread paths) --
+    def __enter__(self):
+        self._sem.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._sem.release()
+        return False
+
+    # -- async context (the inherited `async with self._write_lock` sites) --
+    async def __aenter__(self):
+        # Fast path: lock free → grab it without touching the loop/executor.
+        if self._sem.acquire(blocking=False):
+            return self
+        # Contended: wait WITHOUT freezing the loop by blocking in the executor.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._sem.acquire)
+        return self
+
+    async def __aexit__(self, *exc):
+        self._sem.release()
+        return False
+
+
 class LocalBackend(StorageBackend):
     """SQLite implementation of StorageBackend."""
 
@@ -1571,7 +1627,7 @@ class LocalBackend(StorageBackend):
             self._enc_main_id, self._enc_vault_id = "local", "vault"
         else:
             self._enc_main_id, self._enc_vault_id = "_local_custom", "_vault_custom"
-        self._write_lock = asyncio.Lock()
+        self._write_lock = _DbWriteLock()
         # Subclasses (PostgresBackend) flip these. seed=False builds a schema-only
         # reference instance (used to introspect the canonical column set).
         # _scan_sibling_dbs is a SQLite-only feature (parallel agent .db files)
@@ -2032,28 +2088,53 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added session_summaries.covered_count column")
 
-            # ── Migration: add data column to canvases (per-canvas data bag) ──
-            # Holds a canvas's content (the records it renders) as a JSON object,
+            # ── Migration 033: rename the `canvases` table to `genui` ──
+            # The "Canvas" feature was renamed to "Gen UI". On an existing DB the
+            # data lives in `canvases`; SCHEMA_SQL above may have just created an
+            # EMPTY `genui` (CREATE … IF NOT EXISTS). Move the real rows across:
+            # drop the empty placeholder, then rename. Guarded so re-runs no-op.
+            def _tbl_exists(_name):
+                return conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (_name,),
+                ).fetchone() is not None
+            if _tbl_exists("canvases"):
+                if _tbl_exists("genui"):
+                    _n = conn.execute("SELECT COUNT(*) FROM genui").fetchone()[0]
+                    if _n == 0:
+                        conn.execute("DROP TABLE genui")
+                        conn.execute("ALTER TABLE canvases RENAME TO genui")
+                        logger.info("Renamed canvases -> genui (Canvas → Gen UI)")
+                    # else: genui already holds data; leave canvases as a backup.
+                else:
+                    conn.execute("ALTER TABLE canvases RENAME TO genui")
+                    logger.info("Renamed canvases -> genui (Canvas → Gen UI)")
+                conn.execute("DROP INDEX IF EXISTS idx_canvases_user")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_genui_user ON genui(user_id)")
+                conn.commit()
+
+            # ── Migration: add data column to genui (per-genui data bag) ──
+            # Holds a genui's content (the records it renders) as a JSON object,
             # kept separate from the html body so the agent updates data without
             # rewriting the page. Guarded so re-runs are no-ops.
-            cursor = conn.execute("PRAGMA table_info(canvases)")
+            cursor = conn.execute("PRAGMA table_info(genui)")
             _cv_cols = {row[1] for row in cursor.fetchall()}
             if _cv_cols and "data" not in _cv_cols:
-                conn.execute("ALTER TABLE canvases ADD COLUMN data TEXT")
+                conn.execute("ALTER TABLE genui ADD COLUMN data TEXT")
                 conn.commit()
-                logger.info("Added canvases.data column")
+                logger.info("Added genui.data column")
 
-            # ── Migration: add agent_id column to canvases (owning agent link) ──
-            # Records the agent that created/manages each canvas (mirrors
-            # browser_sessions.agent_id) so the Canvas footer can name that agent
+            # ── Migration: add agent_id column to genui (owning agent link) ──
+            # Records the agent that created/manages each genui (mirrors
+            # browser_sessions.agent_id) so the Gen UI footer can name that agent
             # and route its chat to it, instead of always using the default agent.
             # Guarded so re-runs are no-ops.
-            cursor = conn.execute("PRAGMA table_info(canvases)")
+            cursor = conn.execute("PRAGMA table_info(genui)")
             _cv_cols2 = {row[1] for row in cursor.fetchall()}
             if _cv_cols2 and "agent_id" not in _cv_cols2:
-                conn.execute("ALTER TABLE canvases ADD COLUMN agent_id TEXT")
+                conn.execute("ALTER TABLE genui ADD COLUMN agent_id TEXT")
                 conn.commit()
-                logger.info("Added canvases.agent_id column")
+                logger.info("Added genui.agent_id column")
 
             # ── Migration: add fire_token / external_job_id / external_provider to agent_automations ──
             try:
@@ -2422,13 +2503,13 @@ class LocalBackend(StorageBackend):
             conn.commit()
 
             # ── Migration 010: backfill agents.name for user-owned agents ──
-            # Any agent with owner_user_id set but no name yet gets the default 'canvas'.
+            # Any agent with owner_user_id set but no name yet gets the default 'genui'.
             conn.execute(
-                """UPDATE agents SET name = 'canvas'
+                """UPDATE agents SET name = 'genui'
                    WHERE (name IS NULL OR name = '')"""
             )
             conn.commit()
-            logger.info("Backfilled agents.name = 'canvas' for user-owned agents")
+            logger.info("Backfilled agents.name = 'genui' for user-owned agents")
 
             # ── Migration 011: add last_login_at to user_profiles ──
             cursor = conn.execute("PRAGMA table_info(user_profiles)")
@@ -2929,6 +3010,38 @@ class LocalBackend(StorageBackend):
             # ── Seed: agent templates from data/agents/*.json (full schema) ──
             if getattr(self, "_seed_on_init", True):
                 self._seed_agent_templates_from_json_files(conn)
+
+            # ── Backfill: default WebAgent agents → discoverable visibility ──
+            # Existing default agents were created before the discovery_default
+            # flag existed, so they still ship every tool schema each turn. Flip
+            # each user's default agent to "discoverable" ONCE (only when it has no
+            # explicit choice), so the in-place default agent benefits without a
+            # re-create. New agents get the flag at creation. Idempotent + guarded.
+            try:
+                from app.tools.tool_modes import AGENT_DISCOVERY_DEFAULT_KEY
+                _def_rows = conn.execute(
+                    "SELECT id, metadata FROM agents WHERE is_user_default = 1"
+                ).fetchall()
+                _bf_now = _now_iso()
+                _bf_count = 0
+                for _r in _def_rows:
+                    try:
+                        _m = json.loads(_r["metadata"]) if _r["metadata"] else {}
+                    except (json.JSONDecodeError, TypeError):
+                        _m = {}
+                    if not isinstance(_m, dict) or _m.get(AGENT_DISCOVERY_DEFAULT_KEY):
+                        continue
+                    _m[AGENT_DISCOVERY_DEFAULT_KEY] = "discoverable"
+                    conn.execute(
+                        "UPDATE agents SET metadata = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(_m), _bf_now, _r["id"]),
+                    )
+                    _bf_count += 1
+                if _bf_count:
+                    conn.commit()
+                    logger.info("Backfilled discovery_default=discoverable on %d default agent(s)", _bf_count)
+            except Exception as _bfe:
+                logger.warning("discovery_default backfill skipped: %s", _bfe)
 
         except Exception as e:
             logger.error("Error initializing local database: %s", e)
@@ -3595,9 +3708,9 @@ class LocalBackend(StorageBackend):
         Copy admin-base prompt slots from the 'default' template into this agent.
         Only copies if the agent has no admin-base slot rows yet.
 
-        Isolation gate: non-default templates do NOT inherit webAgent context.
+        Isolation gate: non-default templates do NOT inherit WebAgent context.
         """
-        # Isolation gate: only 'default' templates inherit webAgent context
+        # Isolation gate: only 'default' templates inherit WebAgent context
         if template_id is not None and template_id != "default":
             logger.info(
                 "Skipping context copy for template_id=%s (agent=%s)",
@@ -3880,6 +3993,28 @@ class LocalBackend(StorageBackend):
             "cached": False,
             "manifest_hash": manifest_hash,
         }
+
+    @staticmethod
+    def _with_discovery_default(metadata, mode: str) -> str:
+        """Return the agent ``metadata`` JSON string with the per-agent default
+        visibility (``discovery_default``) set to ``mode`` — UNLESS the metadata
+        already carries an explicit choice (respecting a template/admin override).
+        Accepts a dict or a JSON string; always returns a JSON string. Never
+        raises — on any parse error it returns the input unchanged so agent
+        creation can't be broken by a malformed template."""
+        try:
+            from app.tools.tool_modes import (
+                AGENT_DISCOVERY_DEFAULT_KEY, normalize_visibility,
+            )
+            meta = json.loads(metadata) if isinstance(metadata, str) else dict(metadata or {})
+            if not isinstance(meta, dict):
+                return metadata if isinstance(metadata, str) else json.dumps(meta)
+            nv = normalize_visibility(mode)
+            if nv and not meta.get(AGENT_DISCOVERY_DEFAULT_KEY):
+                meta[AGENT_DISCOVERY_DEFAULT_KEY] = nv
+            return json.dumps(meta)
+        except Exception:
+            return metadata if isinstance(metadata, str) else json.dumps(metadata or {})
 
     @staticmethod
     def _tool_perm_columns(metadata) -> tuple:
@@ -5182,7 +5317,7 @@ class LocalBackend(StorageBackend):
 
     # ── Local Claude Code engine: per-session Claude conversation id ──
     # A "Local Claude Code" agent (metadata.engine="claude_code") maps each
-    # webAgent chat session to ONE Claude CLI conversation, stored in the
+    # WebAgent chat session to ONE Claude CLI conversation, stored in the
     # session's metadata so every turn resumes the same thread (Claude keeps its
     # own memory of it). The working folder is recorded too, for reference.
     # See plugins/engines/claude_code/claude_code.py.
@@ -5243,7 +5378,7 @@ class LocalBackend(StorageBackend):
     # ── Local Claude Code engine: one-shot "compact & restart" (/compact) ──
     # A Claude Code agent's memory lives inside the `claude` CLI's own session,
     # resumed each turn — it only ever grows. The /compact command arms a one-shot
-    # reseed: webAgent's Context Control folds this chat into a compact recap, we
+    # reseed: WebAgent's Context Control folds this chat into a compact recap, we
     # stash it here AND drop the stored Claude id, so the engine's next turn starts
     # a BRAND-NEW Claude session seeded with the recap instead of resuming the old
     # bloated thread. Consumed (cleared) by the engine on that next turn.
@@ -5668,16 +5803,21 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
-    # ── Per-agent tool modes (lives in agents.metadata under "tool_modes") ──
-    # Flat {tool_name: "visible" | "discoverable"} map. Absent tools resolve to
-    # the "visible" default (see app/tools/tool_modes.resolve_mode). Legacy
-    # "always" values are normalized to "visible" on read. Core tools are never
-    # stored here — they are always sent and not toggleable.
+    @turn_cached
+    async def _agent_metadata(self, agent_id: str) -> dict:
+        """Parsed ``agents.metadata`` for one agent, read ONCE per turn.
 
-    async def get_agent_tool_modes(self, agent_id: str) -> Dict[str, str]:
+        The many per-agent getters below (tool / ability / skill modes, the
+        discovery default, ability access) each used to run their OWN
+        ``SELECT metadata FROM agents`` — so a single chat turn re-read the same
+        row 5-9× (each round-trip ~150ms on a remote DB). They now all parse from
+        this one cached snapshot, collapsing those to a single read. Returns ``{}``
+        for a missing / blank / corrupt row. Turn-invariant: agent config is not
+        rewritten mid-chat-turn, so every getter in a turn safely sees the same
+        snapshot (writes go through the ``set_*`` methods under the write lock and
+        are not part of the chat read path)."""
         if not agent_id:
             return {}
-        from app.tools.tool_modes import AGENT_TOOL_MODES_KEY, normalize_visibility
         conn = self._get_conn()
         try:
             row = conn.execute(
@@ -5689,17 +5829,31 @@ class LocalBackend(StorageBackend):
                 meta = json.loads(row["metadata"]) if row["metadata"] else {}
             except (json.JSONDecodeError, TypeError):
                 return {}
-            modes = (meta or {}).get(AGENT_TOOL_MODES_KEY) or {}
-            if not isinstance(modes, dict):
-                return {}
-            out: Dict[str, str] = {}
-            for k, v in modes.items():
-                nv = normalize_visibility(v)
-                if isinstance(k, str) and nv:
-                    out[k] = nv
-            return out
+            return meta if isinstance(meta, dict) else {}
         finally:
             conn.close()
+
+    # ── Per-agent tool modes (lives in agents.metadata under "tool_modes") ──
+    # Flat {tool_name: "visible" | "discoverable"} map. Absent tools resolve to
+    # the "visible" default (see app/tools/tool_modes.resolve_mode). Legacy
+    # "always" values are normalized to "visible" on read. Core tools are never
+    # stored here — they are always sent and not toggleable.
+
+    @turn_cached
+    async def get_agent_tool_modes(self, agent_id: str) -> Dict[str, str]:
+        if not agent_id:
+            return {}
+        from app.tools.tool_modes import AGENT_TOOL_MODES_KEY, normalize_visibility
+        meta = await self._agent_metadata(agent_id)
+        modes = (meta or {}).get(AGENT_TOOL_MODES_KEY) or {}
+        if not isinstance(modes, dict):
+            return {}
+        out: Dict[str, str] = {}
+        for k, v in modes.items():
+            nv = normalize_visibility(v)
+            if isinstance(k, str) and nv:
+                out[k] = nv
+        return out
 
     async def set_agent_tool_mode(
         self, agent_id: str, tool_name: str, mode: str
@@ -5788,32 +5942,68 @@ class LocalBackend(StorageBackend):
     # to the "visible" default (see tool_modes.resolve_ability_mode). Discovery is
     # tuned per agent; the admin sets only the ceiling (enable + permission).
 
+    @turn_cached
     async def get_agent_ability_modes(self, agent_id: str) -> Dict[str, str]:
         if not agent_id:
             return {}
         from app.tools.tool_modes import AGENT_ABILITY_MODES_KEY, normalize_visibility
-        conn = self._get_conn()
-        try:
-            row = conn.execute(
-                "SELECT metadata FROM agents WHERE id = ?", (agent_id,)
-            ).fetchone()
-            if not row:
-                return {}
+        meta = await self._agent_metadata(agent_id)
+        modes = (meta or {}).get(AGENT_ABILITY_MODES_KEY) or {}
+        if not isinstance(modes, dict):
+            return {}
+        out: Dict[str, str] = {}
+        for k, v in modes.items():
+            nv = normalize_visibility(v)
+            if isinstance(k, str) and nv:
+                out[k] = nv
+        return out
+
+    @turn_cached
+    async def get_agent_discovery_default(self, agent_id: str) -> Optional[str]:
+        """The agent's per-agent DEFAULT visibility ("visible"|"discoverable"),
+        applied to any ability with no explicit per-ability choice. Returns None
+        when unset (→ the built-in "visible" behaviour). Lives in
+        agents.metadata[discovery_default]."""
+        if not agent_id:
+            return None
+        from app.tools.tool_modes import AGENT_DISCOVERY_DEFAULT_KEY, normalize_visibility
+        meta = await self._agent_metadata(agent_id)
+        return normalize_visibility((meta or {}).get(AGENT_DISCOVERY_DEFAULT_KEY))
+
+    async def set_agent_discovery_default(
+        self, agent_id: str, mode: Optional[str]
+    ) -> Optional[str]:
+        """Set (or clear, when ``mode`` is falsy/invalid) the agent's default
+        visibility. Stored in agents.metadata[discovery_default]. Returns the
+        stored value (or None when cleared)."""
+        from app.tools.tool_modes import AGENT_DISCOVERY_DEFAULT_KEY, normalize_visibility
+        nv = normalize_visibility(mode)
+        async with self._write_lock:
+            conn = self._get_conn()
             try:
-                meta = json.loads(row["metadata"]) if row["metadata"] else {}
-            except (json.JSONDecodeError, TypeError):
-                return {}
-            modes = (meta or {}).get(AGENT_ABILITY_MODES_KEY) or {}
-            if not isinstance(modes, dict):
-                return {}
-            out: Dict[str, str] = {}
-            for k, v in modes.items():
-                nv = normalize_visibility(v)
-                if isinstance(k, str) and nv:
-                    out[k] = nv
-            return out
-        finally:
-            conn.close()
+                row = conn.execute(
+                    "SELECT metadata FROM agents WHERE id = ?", (agent_id,)
+                ).fetchone()
+                if not row:
+                    return None
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                if nv:
+                    meta[AGENT_DISCOVERY_DEFAULT_KEY] = nv
+                else:
+                    meta.pop(AGENT_DISCOVERY_DEFAULT_KEY, None)
+                conn.execute(
+                    "UPDATE agents SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), agent_id),
+                )
+                conn.commit()
+                return nv
+            finally:
+                conn.close()
 
     async def set_agent_ability_mode(
         self, agent_id: str, ability_id: str, mode: str
@@ -5859,32 +6049,21 @@ class LocalBackend(StorageBackend):
     # trigger the ability (everyone = anyone incl. anon guests, the default).
     # A different axis from visibility (which tunes how the AGENT sees it).
 
+    @turn_cached
     async def get_agent_ability_access(self, agent_id: str) -> Dict[str, str]:
         if not agent_id:
             return {}
         from app.tools.tool_modes import AGENT_ABILITY_ACCESS_KEY, normalize_access
-        conn = self._get_conn()
-        try:
-            row = conn.execute(
-                "SELECT metadata FROM agents WHERE id = ?", (agent_id,)
-            ).fetchone()
-            if not row:
-                return {}
-            try:
-                meta = json.loads(row["metadata"]) if row["metadata"] else {}
-            except (json.JSONDecodeError, TypeError):
-                return {}
-            access = (meta or {}).get(AGENT_ABILITY_ACCESS_KEY) or {}
-            if not isinstance(access, dict):
-                return {}
-            out: Dict[str, str] = {}
-            for k, v in access.items():
-                nv = normalize_access(v)
-                if isinstance(k, str) and nv:
-                    out[k] = nv
-            return out
-        finally:
-            conn.close()
+        meta = await self._agent_metadata(agent_id)
+        access = (meta or {}).get(AGENT_ABILITY_ACCESS_KEY) or {}
+        if not isinstance(access, dict):
+            return {}
+        out: Dict[str, str] = {}
+        for k, v in access.items():
+            nv = normalize_access(v)
+            if isinstance(k, str) and nv:
+                out[k] = nv
+        return out
 
     async def set_agent_ability_access(
         self, agent_id: str, ability_id: str, level: str
@@ -5934,32 +6113,21 @@ class LocalBackend(StorageBackend):
     # {ability_id: "visible"|"discoverable"}. visible = the bundled skill's body
     # is always shown; discoverable = load on demand. Absent → descriptor default.
 
+    @turn_cached
     async def get_agent_skill_modes(self, agent_id: str) -> Dict[str, str]:
         if not agent_id:
             return {}
         from app.tools.tool_modes import AGENT_SKILL_MODES_KEY, normalize_visibility
-        conn = self._get_conn()
-        try:
-            row = conn.execute(
-                "SELECT metadata FROM agents WHERE id = ?", (agent_id,)
-            ).fetchone()
-            if not row:
-                return {}
-            try:
-                meta = json.loads(row["metadata"]) if row["metadata"] else {}
-            except (json.JSONDecodeError, TypeError):
-                return {}
-            modes = (meta or {}).get(AGENT_SKILL_MODES_KEY) or {}
-            if not isinstance(modes, dict):
-                return {}
-            out: Dict[str, str] = {}
-            for k, v in modes.items():
-                nv = normalize_visibility(v)
-                if isinstance(k, str) and nv:
-                    out[k] = nv
-            return out
-        finally:
-            conn.close()
+        meta = await self._agent_metadata(agent_id)
+        modes = (meta or {}).get(AGENT_SKILL_MODES_KEY) or {}
+        if not isinstance(modes, dict):
+            return {}
+        out: Dict[str, str] = {}
+        for k, v in modes.items():
+            nv = normalize_visibility(v)
+            if isinstance(k, str) and nv:
+                out[k] = nv
+        return out
 
     async def set_agent_skill_mode(
         self, agent_id: str, ability_id: str, mode: str
@@ -6115,7 +6283,12 @@ class LocalBackend(StorageBackend):
             tpl_data = dict(tpl)
             now = _now_iso()
             agent_id = _uuid()
-            _allowed_tools, _safety_policy = self._tool_perm_columns(tpl_data["metadata"])
+            # Default WebAgent ships with DISCOVERABLE tools/abilities: its whole
+            # tool surface is withheld behind the `# [ABILITIES]` menu and pulled
+            # in on demand via load_ability, instead of shipping every tool schema
+            # each turn. See tool_modes.AGENT_DISCOVERY_DEFAULT_KEY.
+            _meta_json = self._with_discovery_default(tpl_data["metadata"], "discoverable")
+            _allowed_tools, _safety_policy = self._tool_perm_columns(_meta_json)
             conn.execute(
                 """INSERT INTO agents
                    (id, name,
@@ -6127,7 +6300,7 @@ class LocalBackend(StorageBackend):
                     allowed_tools, safety_policy,
                     is_user_default, admin_users, assigned_at, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
-                (agent_id, tpl_data.get("name", "canvas"),
+                (agent_id, tpl_data.get("name", "genui"),
                  tpl_data["max_turn_count"],
                  tpl_data.get("max_wall_seconds"),
                  tpl_data.get("max_identical_tool_calls", 0),
@@ -6136,7 +6309,7 @@ class LocalBackend(StorageBackend):
                  tpl_data["provider"],
                  tpl_data["temperature"],
                  tpl_data["max_tokens"],
-                 tpl_data["metadata"],
+                 _meta_json,
                  tpl_data.get("trigger_type", "user_input"),
                  tpl_data.get("trigger_key"),
                  tpl_data.get("loop_logic", "[]"),
@@ -6181,9 +6354,16 @@ class LocalBackend(StorageBackend):
                 ).fetchone()
                 current = row["turn_count"] if row else 0
                 new_count = current + 1
+                # NOTE: do NOT touch ``updated_at`` here — turn_count is an
+                # activity counter, not a config edit. Bumping updated_at every
+                # turn would invalidate the per-agent tool cache (whose version
+                # IS updated_at) on every message, so load_tools would re-run its
+                # dozens of round-trips each time. Real config edits (tool/ability
+                # modes, connections, data sources) still bump updated_at. Matches
+                # the Supabase backend, which only updates turn_count.
                 conn.execute(
-                    "UPDATE agents SET turn_count = ?, updated_at = ? WHERE id = ?",
-                    (new_count, _now_iso(), agent_id),
+                    "UPDATE agents SET turn_count = ? WHERE id = ?",
+                    (new_count, agent_id),
                 )
                 conn.commit()
                 return new_count
@@ -6753,7 +6933,7 @@ class LocalBackend(StorageBackend):
                 conn.close()
 
     # ── Multi-device coordination (see app/devices/) ──────────────────────────
-    # A shared DB lets one user's several webAgent instances ("devices") see each
+    # A shared DB lets one user's several WebAgent instances ("devices") see each
     # other and hand work back and forth. device_heartbeat / list_devices power
     # the presence registry; enqueue/claim/finish/reclaim are the cross-device
     # dispatch QUEUE. The claim is atomic (SQLite serialises the UPDATE, exactly
@@ -7492,9 +7672,36 @@ class LocalBackend(StorageBackend):
 
     # ---- Auth Elements ----
 
+    @turn_cached
+    async def _auth_elements_for_user(self, user_id: str) -> Dict[tuple, dict]:
+        """ALL of a user's auth_elements, indexed by ``(service, label)`` and loaded
+        in ONE query, cached for the turn.
+
+        The chat hot path resolves many DISTINCT credentials per turn — the LLM key
+        PLUS one per connected integration tool — and each used to be its own remote
+        round-trip (~150ms). Because they have different (service, label) keys the
+        per-method turn cache can't share them; pulling the whole set in a single
+        query collapses those N reads to one. Turn-invariant: credentials are not
+        rewritten mid-chat-turn (writes happen in separate admin requests)."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM auth_elements WHERE user_id = ?", (user_id,)
+            ).fetchall()
+            return {(r["service"], r["label"]): dict(r) for r in rows}
+        finally:
+            conn.close()
+
+    @turn_cached
     async def auth_element_get(
         self, user_id: str, service: str, label: str = "default"
     ) -> Optional[dict]:
+        # Inside a chat turn, serve from the one-shot per-user bulk load so the many
+        # DISTINCT credential reads in a turn collapse to a single query. Every other
+        # caller (admin endpoints, background jobs) keeps the plain point read.
+        if turn_scope_active():
+            allrows = await self._auth_elements_for_user(user_id)
+            return allrows.get((service, label))
         conn = self._get_conn()
         try:
             row = conn.execute(
@@ -7535,6 +7742,10 @@ class LocalBackend(StorageBackend):
                     (row_id, user_id, service, label, config_json, secret_ref, now, now),
                 )
             conn.commit()
+            # If this write happens inside a chat turn (e.g. a tool refreshing an
+            # OAuth token), drop the turn-cached credential reads so a later read in
+            # the same turn sees the new value instead of the pre-write snapshot.
+            turn_cache_invalidate("auth_element_get", "_auth_elements_for_user")
             return {
                 "id": row_id,
                 "user_id": user_id,
@@ -7555,7 +7766,7 @@ class LocalBackend(StorageBackend):
         """Return user_id whose auth_elements row for service+OAuth-label has the
         given email/account in its config JSON. Used by inbound event sources
         (Gmail Pub/Sub, Graph notifications) to map provider events back to
-        a webAgent user. Matches any per-agent OAuth label (``oauth:<agent_id>``)
+        a WebAgent user. Matches any per-agent OAuth label (``oauth:<agent_id>``)
         for the user. None if no match."""
         if not email_or_account:
             return None
@@ -7610,6 +7821,7 @@ class LocalBackend(StorageBackend):
                 (user_id, service, label),
             )
             conn.commit()
+            turn_cache_invalidate("auth_element_get", "_auth_elements_for_user")
             return cur.rowcount > 0
         finally:
             conn.close()
@@ -7663,6 +7875,7 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
+    @turn_cached
     async def is_user_admin(self, user_id: str) -> bool:
         """Return True if the user has is_admin = 1."""
         profile = await self.get_user_profile(user_id)
@@ -8065,11 +8278,17 @@ class LocalBackend(StorageBackend):
         if getattr(self, "_scan_sibling_dbs", True):
             db_dir = os.path.dirname(os.path.abspath(self._db_path))
             primary_name = os.path.basename(self._db_path)
+            # These canonical DBs never hold an agents table and may be encrypted
+            # at rest (full-DB SQLCipher) — opening them raw here would just fail
+            # and get skipped, so exclude them up front. Per-session vault sidecars
+            # (``*.vault.db``) are likewise not agent DBs.
+            _NON_AGENT_DBS = {"vault.db", "logs.db", "recordings.db", "wiki.db"}
             try:
                 sibling_paths = [
                     os.path.join(db_dir, f)
                     for f in os.listdir(db_dir)
                     if f.endswith(".db") and f != primary_name
+                    and f not in _NON_AGENT_DBS and not f.endswith(".vault.db")
                 ]
             except OSError:
                 sibling_paths = []
@@ -8224,7 +8443,14 @@ class LocalBackend(StorageBackend):
                     tpl.get("provider", ""),
                     tpl.get("temperature", 0.7),
                     tpl.get("max_tokens", 8000),
-                    json.dumps({**json.loads(tpl.get("metadata", "{}")), "owner_user_id": user_id}),
+                    # Agent-Manager-created agents are DISCOVERABLE by default:
+                    # their tools/abilities are pulled in on demand (load_ability)
+                    # rather than shipping every schema each turn. Mirrors the
+                    # default WebAgent agent (create_agent_for_user).
+                    self._with_discovery_default(
+                        {**json.loads(tpl.get("metadata", "{}")), "owner_user_id": user_id},
+                        "discoverable",
+                    ),
                     template_id,
                     _allowed_tools,
                     tpl.get("trigger_type", "user_input"),
@@ -8699,6 +8925,7 @@ class LocalBackend(StorageBackend):
 
     # ---- Agent Connections ----
 
+    @turn_cached
     async def get_agent_connections(self, agent_id: str) -> List[dict]:
         """Return all agent_connections rows for an agent."""
         conn = self._get_conn()
@@ -9020,13 +9247,13 @@ class LocalBackend(StorageBackend):
                 d[k] = {}
         return d
 
-    # ── Canvases (canvas workspace) ───────────────────────────────────
+    # ── Gen UI (genui workspace) ───────────────────────────────────
 
-    async def canvas_list(self, user_id: str) -> List[dict]:
+    async def genui_list(self, user_id: str) -> List[dict]:
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT * FROM canvases WHERE user_id = ? "
+                "SELECT * FROM genui WHERE user_id = ? "
                 "ORDER BY (slug = 'home') DESC, updated_at DESC",
                 (user_id,),
             ).fetchall()
@@ -9034,18 +9261,18 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
-    async def canvas_get(self, user_id: str, slug: str) -> Optional[dict]:
+    async def genui_get(self, user_id: str, slug: str) -> Optional[dict]:
         conn = self._get_conn()
         try:
             row = conn.execute(
-                "SELECT * FROM canvases WHERE user_id = ? AND slug = ?",
+                "SELECT * FROM genui WHERE user_id = ? AND slug = ?",
                 (user_id, slug),
             ).fetchone()
             return dict(row) if row else None
         finally:
             conn.close()
 
-    async def canvas_upsert(
+    async def genui_upsert(
         self,
         user_id: str,
         slug: str,
@@ -9059,7 +9286,7 @@ class LocalBackend(StorageBackend):
             try:
                 now = _now_iso()
                 existing = conn.execute(
-                    "SELECT id, html, agent_id FROM canvases WHERE user_id = ? AND slug = ?",
+                    "SELECT id, html, agent_id FROM genui WHERE user_id = ? AND slug = ?",
                     (user_id, slug),
                 ).fetchone()
                 if existing:
@@ -9070,39 +9297,39 @@ class LocalBackend(StorageBackend):
                     # html=None means "leave body alone" (hybrid metadata update)
                     if html is None:
                         conn.execute(
-                            "UPDATE canvases SET title = ?, agent_context = ?, "
+                            "UPDATE genui SET title = ?, agent_context = ?, "
                             "agent_id = ?, updated_at = ? WHERE id = ?",
                             (title, agent_context, new_agent, now, existing["id"]),
                         )
                     else:
                         conn.execute(
-                            "UPDATE canvases SET title = ?, agent_context = ?, "
+                            "UPDATE genui SET title = ?, agent_context = ?, "
                             "agent_id = ?, html = ?, updated_at = ? WHERE id = ?",
                             (title, agent_context, new_agent, html, now, existing["id"]),
                         )
                     conn.commit()
                     return dict(conn.execute(
-                        "SELECT * FROM canvases WHERE id = ?", (existing["id"],),
+                        "SELECT * FROM genui WHERE id = ?", (existing["id"],),
                     ).fetchone())
                 row_id = _uuid()
                 conn.execute(
-                    "INSERT INTO canvases (id, user_id, slug, title, agent_context, "
+                    "INSERT INTO genui (id, user_id, slug, title, agent_context, "
                     "agent_id, html, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (row_id, user_id, slug, title, agent_context, agent_id or None, html, now, now),
                 )
                 conn.commit()
                 return dict(conn.execute(
-                    "SELECT * FROM canvases WHERE id = ?", (row_id,),
+                    "SELECT * FROM genui WHERE id = ?", (row_id,),
                 ).fetchone())
             finally:
                 conn.close()
 
-    async def canvas_delete(self, user_id: str, slug: str) -> bool:
+    async def genui_delete(self, user_id: str, slug: str) -> bool:
         async with self._write_lock:
             conn = self._get_conn()
             try:
                 cur = conn.execute(
-                    "DELETE FROM canvases WHERE user_id = ? AND slug = ?",
+                    "DELETE FROM genui WHERE user_id = ? AND slug = ?",
                     (user_id, slug),
                 )
                 conn.commit()
@@ -9110,11 +9337,11 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
-    async def canvas_get_data(self, user_id: str, slug: str) -> Optional[str]:
+    async def genui_get_data(self, user_id: str, slug: str) -> Optional[str]:
         conn = self._get_conn()
         try:
             row = conn.execute(
-                "SELECT data FROM canvases WHERE user_id = ? AND slug = ?",
+                "SELECT data FROM genui WHERE user_id = ? AND slug = ?",
                 (user_id, slug),
             ).fetchone()
             return (row["data"] if row else None)
@@ -9124,12 +9351,12 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
-    async def canvas_set_data(self, user_id: str, slug: str, data_json: str) -> bool:
+    async def genui_set_data(self, user_id: str, slug: str, data_json: str) -> bool:
         async with self._write_lock:
             conn = self._get_conn()
             try:
                 cur = conn.execute(
-                    "UPDATE canvases SET data = ?, updated_at = ? "
+                    "UPDATE genui SET data = ?, updated_at = ? "
                     "WHERE user_id = ? AND slug = ?",
                     (data_json, _now_iso(), user_id, slug),
                 )
@@ -9250,6 +9477,7 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
+    @turn_cached
     async def agent_data_source_list(self, agent_id: str, enabled_only: bool = False) -> List[dict]:
         """Return data sources attached to the given agent, joined with source rows."""
         conn = self._get_conn()
@@ -9300,6 +9528,9 @@ class LocalBackend(StorageBackend):
                     (attach_id, agent_id, data_source_id, tool_alias,
                      1 if inject_schema_in_prompt else 0, now),
                 )
+                # Bump the agent's version so the cached tool set (keyed on
+                # agents.updated_at) refreshes on the next message.
+                conn.execute("UPDATE agents SET updated_at = ? WHERE id = ?", (now, agent_id))
                 conn.commit()
                 row = conn.execute(
                     "SELECT * FROM agent_data_sources WHERE agent_id = ? AND data_source_id = ?",
@@ -9335,6 +9566,7 @@ class LocalBackend(StorageBackend):
                     f"UPDATE agent_data_sources SET {', '.join(sets)} WHERE agent_id = ? AND data_source_id = ?",
                     vals,
                 )
+                conn.execute("UPDATE agents SET updated_at = ? WHERE id = ?", (_now_iso(), agent_id))
                 conn.commit()
                 row = conn.execute(
                     "SELECT * FROM agent_data_sources WHERE agent_id = ? AND data_source_id = ?",
@@ -9352,6 +9584,7 @@ class LocalBackend(StorageBackend):
                     "DELETE FROM agent_data_sources WHERE agent_id = ? AND data_source_id = ?",
                     (agent_id, data_source_id),
                 )
+                conn.execute("UPDATE agents SET updated_at = ? WHERE id = ?", (_now_iso(), agent_id))
                 conn.commit()
                 return cur.rowcount > 0
             finally:
@@ -10616,6 +10849,14 @@ class _LocalQueryBuilder:
         self._filters.append(("neq", field, value))
         return self
 
+    def gt(self, field: str, value: Any) -> "_LocalQueryBuilder":
+        self._filters.append(("gt", field, value))
+        return self
+
+    def gte(self, field: str, value: Any) -> "_LocalQueryBuilder":
+        self._filters.append(("gte", field, value))
+        return self
+
     def ilike(self, field: str, pattern: str) -> "_LocalQueryBuilder":
         self._filters.append(("ilike", field, pattern))
         return self
@@ -10638,6 +10879,12 @@ class _LocalQueryBuilder:
                 params.append(value)
             elif op == "neq":
                 clauses.append(f"{field} != ?")
+                params.append(value)
+            elif op == "gt":
+                clauses.append(f"{field} > ?")
+                params.append(value)
+            elif op == "gte":
+                clauses.append(f"{field} >= ?")
                 params.append(value)
             elif op == "in":
                 placeholders = ",".join("?" for _ in value)

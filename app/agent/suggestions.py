@@ -320,7 +320,7 @@ def _existing_page_labels(area: str) -> List[str]:
 
 async def _recall_user_context(user_id: Optional[str], query: str, limit: int = 4) -> List[str]:
     """Best-effort recall of what we know about THIS user from the default
-    webAgent's memory (cross-session) so suggestions can be personalised — e.g.
+    WebAgent's memory (cross-session) so suggestions can be personalised — e.g.
     a user who runs a bakery gets "Add a bakery menu page". Uses the fast FTS-only
     path (no embedding round-trip) since this fires on hover. Returns short
     snippets; empty on any failure (personalisation is optional)."""
@@ -385,13 +385,13 @@ async def generate_page_suggestions(
 
     # Extra context so suggestions feel fresh + personal, not canned:
     #   • existing pages → propose NEW ones, never duplicate what's already there.
-    #   • the default webAgent's memory of this user → personalise some ideas.
+    #   • the default WebAgent's memory of this user → personalise some ideas.
     existing_pages = _existing_page_labels(area)
     memory_query = " ".join(filter(None, [label, context]))[:300]
     user_memory = await _recall_user_context(user_id, memory_query)
 
     system_prompt = (
-        "You are webAgent, the manager of this app, suggesting things its ADMIN "
+        "You are WebAgent, the manager of this app, suggesting things its ADMIN "
         "might ask you to build or change on one section of a settings page. "
         f"Output ONLY a JSON array of {limit} short, varied, first-person requests "
         "phrased as imperatives (e.g. \"Build a sales dashboard page\", "

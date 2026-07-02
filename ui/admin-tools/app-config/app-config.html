@@ -5,38 +5,44 @@
 <template data-slot="#main-panel">
     <div id="app-config-container" hidden>
 
-        <!-- Header -->
-        <header id="app-config-header">
-          <div class="ac-page-title">App Configuration</div>
-        </header>
-
         <!-- Tab strip with chevron-scroll carousel -->
         <div id="app-config-tabs-wrap">
           <button type="button" id="app-config-tabs-chev-left" class="ac-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button>
           <div id="app-config-tabs" role="tablist">
+            <button type="button" class="ac-tab" data-section="data-settings" role="tab">
+              <i data-lucide="rocket" class="lucide-icon ac-tab-icon"></i>Data Settings
+            </button>
             <button type="button" class="ac-tab" data-section="app-settings" role="tab">
               <i data-lucide="settings-2" class="lucide-icon ac-tab-icon"></i>App Settings
             </button>
             <button type="button" class="ac-tab" data-section="agent-settings" role="tab">
               <i data-lucide="bot" class="lucide-icon ac-tab-icon"></i>Agent Settings
             </button>
-            <button type="button" class="ac-tab" data-section="user-management" role="tab">
-              <i data-lucide="users" class="lucide-icon ac-tab-icon"></i>Users
-            </button>
-            <button type="button" class="ac-tab" data-section="database" role="tab">
-              <i data-lucide="database" class="lucide-icon ac-tab-icon"></i>Data Management
-            </button>
-            <button type="button" class="ac-tab" data-section="optimizer" role="tab">
-              <i data-lucide="zap" class="lucide-icon ac-tab-icon"></i>Optimizer Runs
-            </button>
+            <!-- The "Data Management" tab was retired: its "where does my data
+                 live" rows moved to Data Settings → Database, and its last two
+                 rows (Config Files + Stream Buffer) moved to App Settings →
+                 Advanced. Nothing was left, so the tab + its section were removed. -->
             <!-- Automation + Event Sources tabs removed: both engine panels now
-                 live under Agent Settings → "Automation Engine". -->
-            <button type="button" class="ac-tab" data-section="features" role="tab">
-              <i data-lucide="layers" class="lucide-icon ac-tab-icon"></i>Features
-            </button>
+                 live under Agent Settings → "Automation Engine".
+                 Optimizer Runs and Features moved to their own sidebar pages. -->
           </div>
           <button type="button" id="app-config-tabs-chev-right" class="ac-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
         </div>
+
+        <!-- MOBILE sub-header — a genuine SECOND row of tabs, sibling to (and
+             directly beneath) #app-config-tabs-wrap, styled to match it. On a
+             mobile-width viewport the Agent Settings tab shows its section
+             headings here as a swipeable strip of underline tabs; tapping one
+             jumps the scroll. Populated by the mobile carousel in
+             ui/admin-tools/app-config/sticky-nav.js (`_buildCarousel` inserts a
+             `.ac-mnav` here). It lives OUTSIDE the content scroller on purpose so
+             it spans the full panel width and isn't clipped by the scroller's
+             rounded top corners — a real sub-header, not a strip inside the
+             content box. Empty + hidden on desktop and on tabs without a carousel;
+             revealed only on mobile while Agent Settings is active via the
+             `:has(#ac-section-agent-settings.active)` rule on #app-config-subnav
+             in app3.css. -->
+        <div id="app-config-subnav"></div>
 
         <!-- Non-scrolling wrapper that is the query CONTAINER sizing the App
              Settings tab's rounded scroll-corner mask (see #app-config-scroll-wrap
@@ -45,14 +51,12 @@
              inside it, so the scroller's box is unchanged. -->
         <div id="app-config-scroll-wrap">
         <!-- Scrollable content (.rounded-scroll-corners → pinned rounded corners,
-             switched on only for the centred-column tabs — App Settings, Agent
-             Settings, and Data Management — see app3.css) -->
+             switched on only for the centred-column tabs — App Settings and
+             Agent Settings — see app3.css) -->
         <div id="app-config-content" class="rounded-scroll-corners">
+          <div id="ac-section-slot-data-settings"></div>
           <div id="ac-section-slot-agent-settings"></div>
-          <div id="ac-section-slot-database"></div>
-          <div id="ac-section-slot-optimizer"></div>
-          <div id="ac-section-slot-features"></div>
-          <div id="ac-section-slot-user-management"></div>
+
           <div id="ac-section-slot-app-settings"></div>
         </div><!-- /app-config-content -->
         </div><!-- /app-config-scroll-wrap -->
@@ -78,12 +82,12 @@
               <i data-lucide="plus" style="width:18px;height:18px;"></i>
             </button>
             <textarea id="ac-pa-input" class="chat-pill-input" rows="1"
-              placeholder="Tell webAgent what to change on this page…"
+              placeholder="Tell WebAgent what to change on this page…"
               autocomplete="off"></textarea>
             <button type="button" id="ac-pa-voice" class="chat-pill-voice" title="Record voice">
               <i data-lucide="mic" style="width:18px;height:18px;"></i>
             </button>
-            <button type="button" id="ac-pa-send" class="chat-pill-send" title="Send to webAgent">
+            <button type="button" id="ac-pa-send" class="chat-pill-send" title="Send to WebAgent">
               <i data-lucide="send" style="width:16px;height:16px;"></i>
             </button>
           </div>
@@ -95,7 +99,7 @@
              Agent Settings tab. Empty here: agent-settings.js injects the shared
              hybrid SEARCH/CHAT pill (buildAbilitySearchPill) into it after the
              ability table builds, so typing live-filters the tree and send chats
-             with webAgent. Like #ac-pa-bar it is hidden by default and revealed
+             with WebAgent. Like #ac-pa-bar it is hidden by default and revealed
              only while Agent Settings is the active section via the `:has()` rule
              on #ac-as-pa-bar in app3.css; the floating bar layout is shared with
              #ac-pa-bar (also app3.css). Context-awareness (placeholder + prompt
@@ -103,5 +107,35 @@
              data/config/app-prompts.json → page_assistants.agent_settings, wired
              by createPageAssistant in ui/admin-tools/app-config/page-assistant.js. -->
         <div id="ac-as-pa-bar"></div>
+
+        <!-- ════════════════════════════════════════════════════════════════
+             PAGE-ASSISTANT CHAT PILL (Data Settings only) — a third static
+             COMPOSER pill, an exact structural twin of #ac-pa-bar above but for
+             the Data Settings tab (Deployment · App Access · Database). Same
+             SIBLING-of-the-scroller layout so page rows never scroll behind it.
+             Hidden by default, revealed only while Data Settings is the active
+             section via the `:has()` rule on #ac-ds-pa-bar in app3.css. It is
+             steered toward helping the admin get people SIGNED IN to this
+             instance (access mode, social sign-in, accounts) — see its `intro`.
+             Wired in ui/admin-tools/app-config/data-settings/data-settings.js
+             (_initPageAssistant — finds these by id); placeholders + prompts in
+             data/config/app-prompts.json → page_assistants.data_settings. -->
+        <div id="ac-ds-pa-bar">
+          <div id="ac-ds-pa-preview-bar" class="ac-pa-preview-bar" style="display:none;"></div>
+          <div id="ac-ds-pa-bar-row" class="chat-pill chat-pill-1line">
+            <button type="button" id="ac-ds-pa-attach" class="chat-pill-attach" title="Attach files">
+              <i data-lucide="plus" style="width:18px;height:18px;"></i>
+            </button>
+            <textarea id="ac-ds-pa-input" class="chat-pill-input" rows="1"
+              placeholder="Ask WebAgent to help people sign in to this app…"
+              autocomplete="off"></textarea>
+            <button type="button" id="ac-ds-pa-voice" class="chat-pill-voice" title="Record voice">
+              <i data-lucide="mic" style="width:18px;height:18px;"></i>
+            </button>
+            <button type="button" id="ac-ds-pa-send" class="chat-pill-send" title="Send to WebAgent">
+              <i data-lucide="send" style="width:16px;height:16px;"></i>
+            </button>
+          </div>
+        </div>
     </div><!-- /app-config-container -->
 </template>

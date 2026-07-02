@@ -1,7 +1,7 @@
 /* ============================================================
    Background manager  —  the engine (core infrastructure)
    ------------------------------------------------------------
-   Owns the single full-screen <canvas> and decides WHICH background
+   Owns the single full-screen <genui> and decides WHICH background
    plugin runs, separately for dark and light mode. Backgrounds are
    drop-in folders under ui/background/<id>/ (see registry.js); this
    file knows none of them by name — it just loads the id the admin
@@ -17,7 +17,7 @@
      4. Watch for theme flips (body.light-mode) and swap accordingly.
 
    Selectable values are background ids ("stargaze", "bullet-grid",
-   …) or the built-in "none" (plain themed background, no canvas
+   …) or the built-in "none" (plain themed background, no genui
    animation — the cursor glow / card spotlights live in
    ui/shared/js/cursor-effects.js and stay on regardless).
    ============================================================ */
@@ -27,8 +27,8 @@
   var CONFIG_URL = '/api/v1/auth/ui-config';
   var BASE = 'ui/background/';
 
-  var canvas = document.getElementById('stargaze-bg');
-  if (!canvas) return;  // no background surface on this page
+  var genui = document.getElementById('stargaze-bg');
+  if (!genui) return;  // no background surface on this page
 
   var choice = readCache();      // { dark, light }
   var activeId = null;           // id currently drawing ('none' included)
@@ -87,7 +87,7 @@
       try { activeApi.stop(); } catch (e) {}
     }
     activeApi = null;
-    clearCanvas();
+    clearGenui();
 
     if (!id || id === 'none') { activeId = 'none'; return; }
     activeId = id;
@@ -97,15 +97,15 @@
       if (desiredId() !== id) return;
       activeApi = api;
       activeId = id;
-      try { api.start(canvas); } catch (e) { console.warn('background start failed', e); }
+      try { api.start(genui); } catch (e) { console.warn('background start failed', e); }
     });
   }
 
-  function clearCanvas() {
+  function clearGenui() {
     try {
-      var ctx = canvas.getContext('2d');
+      var ctx = genui.getContext('2d');
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0, 0, genui.width, genui.height);
     } catch (e) {}
   }
 

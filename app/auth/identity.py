@@ -21,6 +21,7 @@ payload to get the same guarantee.
 
 from __future__ import annotations
 
+import contextvars
 from typing import Optional
 
 from fastapi import HTTPException, Request
@@ -29,30 +30,73 @@ from app.auth.jwt import decode_token
 
 _BOOTSTRAP_ADMIN_ID = "admin"
 
+# ── Verified-caller identity (set per-request by CallerIdentityMiddleware) ─────
+# The cryptographically-VERIFIED user_id for the in-flight request, or None.
+# This is the single source of truth for token-less chokepoints — chiefly
+# resolve_admin_uid — that must demand a proven identity but don't receive the
+# Request object. It is populated from the request's JWT (Authorization header
+# or ?token=) by the ASGI middleware below; it is NEVER set from a
+# client-claimed body/query field, which is the whole point.
+_verified_caller_uid: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "verified_caller_uid", default=None
+)
 
-def open_mode_admin_id() -> Optional[str]:
-    """Return the bootstrap admin id when the app is in 'open' access mode,
-    else None.
 
-    The single chokepoint for the open-mode "trust the local single user as
-    admin" shortcut. 'open' mode is the single-user / local-convenience mode,
-    so there is no cross-tenant risk: a caller who presents no (mintable) JWT
-    is resolved to the bootstrap admin. This is what lets the token-strict
-    gates — this module's HTTP check plus the terminal / browser WebSocket
-    handshakes — work over a Cloudflare Tunnel, where the frontend cannot mint
-    a server-side JWT (open-login only issues to local + LAN devices, never a
-    public tunnel exit). Admin *actions* are still gated on
-    db.is_user_admin('admin') downstream, mirroring app/api/files.py and
-    db_viewer. Returns None in every other access mode, so those modes keep
-    their strict token enforcement unchanged.
-    """
-    try:
-        from app.admin.settings import get_access_mode
-        if get_access_mode() == "open":
-            return _BOOTSTRAP_ADMIN_ID
-    except Exception:
-        pass
-    return None
+def set_verified_caller_uid(uid: Optional[str]) -> None:
+    _verified_caller_uid.set(uid or None)
+
+
+def get_verified_caller_uid() -> Optional[str]:
+    return _verified_caller_uid.get()
+
+
+class CallerIdentityMiddleware:
+    """Pure-ASGI middleware that decodes the request's JWT once and stashes the
+    verified user_id in `_verified_caller_uid`.
+
+    Implemented as raw ASGI (not Starlette BaseHTTPMiddleware) on purpose:
+    BaseHTTPMiddleware runs the endpoint in a separate task whose contextvar
+    snapshot can diverge, whereas a pure-ASGI wrapper sets the var in the same
+    await chain the endpoint runs in, so resolve_admin_uid sees it reliably.
+    Sets the var on EVERY http request (to None when there's no valid token) so
+    a value can never leak from a previous request on a reused context."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            uid = None
+            token = self._extract_token(scope)
+            if token:
+                payload = decode_token(token)
+                if payload:
+                    uid = payload.get("user_id") or payload.get("sub")
+            set_verified_caller_uid(uid)
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    def _extract_token(scope) -> str:
+        for k, v in scope.get("headers", []):
+            if k == b"authorization":
+                val = v.decode("latin-1")
+                if val.startswith("Bearer "):
+                    return val[7:]
+                break
+        qs = scope.get("query_string", b"")
+        if qs:
+            from urllib.parse import parse_qs
+            tok = parse_qs(qs.decode("latin-1")).get("token", [""])[0]
+            if tok:
+                return tok
+        return ""
+
+
+# NOTE: the old 'open' access mode (auto-admin, no sign-in) was retired — the
+# only access modes now are Private (admin_approval) and Open Registration
+# (public_registered). The former `open_mode_admin_id()` tunnel/local auto-admin
+# shortcut has been removed; identity comes only from a valid JWT. "Remember me"
+# covers the local-convenience case the old mode existed for.
 
 
 async def _is_admin(user_id: str) -> bool:
@@ -72,14 +116,10 @@ def request_user_id(request: Request) -> str:
 
     1. JWT from the ``Authorization: Bearer`` header, then the ``?token=`` query
        param.
-    2. Open-mode fallback: a tokenless caller in 'open' access mode resolves to
-       the bootstrap admin (single-user / local convenience, no cross-tenant
-       risk) so admin surfaces work over a Cloudflare Tunnel, where the browser
-       cannot mint a server-side JWT. See open_mode_admin_id.
 
     Returns "" when neither yields an identity. Per-router helpers should call
-    this instead of re-implementing the decode + open-mode dance (mirrors
-    app/api/github.py and app/api/files.py).
+    this instead of re-implementing the token decode (mirrors app/api/github.py
+    and app/api/files.py).
     """
     auth = request.headers.get("Authorization", "")
     token = auth[7:] if auth.startswith("Bearer ") else request.query_params.get("token", "")
@@ -89,7 +129,7 @@ def request_user_id(request: Request) -> str:
             uid = payload.get("user_id") or payload.get("sub")
             if uid:
                 return uid
-    return open_mode_admin_id() or ""
+    return ""
 
 
 def _is_anonymous(user_id: Optional[str]) -> bool:
@@ -109,11 +149,8 @@ async def user_may_access_page(user_id: Optional[str], kind: str, page_id: str) 
       • "off"  → admins only
     Admins always pass. 'open' (single-user / local) access mode is full local
     trust, so everything passes there too — preserving the local convenience the
-    old canvas gate had. Fails closed (treats as 'auth') if visibility can't be
+    old genui gate had. Fails closed (treats as 'auth') if visibility can't be
     read."""
-    # Open mode = single-user / local box = full trust; permit everything.
-    if open_mode_admin_id() is not None:
-        return True
     try:
         from app.ui_pages import effective_visibility
         vis = effective_visibility(kind, page_id)
@@ -132,7 +169,7 @@ async def caller_may_access_page(request: Request, kind: str, page_id: str) -> b
     """Request-based wrapper around user_may_access_page: resolves the caller from
     the request's token (open-mode tokenless → bootstrap admin) and applies the
     page-visibility gate. Use this in HTTP routes that must refuse a caller the
-    admin's visibility setting excludes (e.g. the Canvas endpoints, which run
+    admin's visibility setting excludes (e.g. the Gen UI endpoints, which run
     agent-authored code with the caller's own app trust)."""
     return await user_may_access_page(request_user_id(request), kind, page_id)
 
@@ -140,17 +177,32 @@ async def caller_may_access_page(request: Request, kind: str, page_id: str) -> b
 async def resolve_admin_uid(claimed_uid: Optional[str]) -> Optional[str]:
     """Return an admin user_id the caller may act as, or None if not admin.
 
-    The single chokepoint for the body/query-param admin gates (where the page
-    passes its own ``requesting_user_id`` and the gate only checks it against the
-    DB — no JWT). A claimed id that is a real DB admin is honored; otherwise the
-    open-mode bootstrap admin is granted (tokenless tunnel convenience, same
-    trust model as request_user_id). Returns None only when the caller is
-    neither a DB admin nor in open mode, so non-open modes keep strict
-    enforcement unchanged.
+    The single chokepoint for the body/query-param admin gates across the admin
+    routers (users, storage, deploy, remote-access, tunnel-link, events,
+    server-manager). Resolution, in order:
+
+      1. 'open' access mode → the bootstrap admin (local single-user / tunnel
+         convenience, no cross-tenant risk).
+      2. Otherwise → the CRYPTOGRAPHICALLY-VERIFIED caller from the request's
+         JWT (set by CallerIdentityMiddleware), but only if that verified user
+         is a DB admin.
+
+    SECURITY (changed 2026-06-28): the client-supplied ``claimed_uid`` is no
+    longer trusted as proof of identity. Previously this function honored ANY
+    claimed id that happened to be a DB admin — so an unauthenticated caller
+    could simply send ``requesting_user_id=admin`` (the well-known bootstrap id)
+    and be granted full admin. The claimed id is now ignored for the trust
+    decision; only a verified token (or open mode) grants access. The parameter
+    is kept so the ~7 callers need no signature change.
+
+    Returns None when the caller is neither in open mode nor a verified DB
+    admin, so the routers' ``_require_admin`` helpers (which treat a falsy
+    return as "deny") reject them with 403.
     """
-    if claimed_uid and await _is_admin(claimed_uid):
-        return claimed_uid
-    return open_mode_admin_id()
+    verified = get_verified_caller_uid()
+    if verified and await _is_admin(verified):
+        return verified
+    return None
 
 
 async def assert_caller_is(request: Request, claimed_user_id: Optional[str]) -> str:
@@ -173,11 +225,6 @@ async def assert_caller_is(request: Request, claimed_user_id: Optional[str]) -> 
         if payload:
             state_uid = payload.get("user_id") or payload.get("sub")
     if not state_uid:
-        # Open access mode: resolve a tokenless caller to the bootstrap admin
-        # (single-user / local convenience) so admin surfaces — e.g. the web
-        # terminal's sidebar lists — work over a tunnel. See open_mode_admin_id.
-        state_uid = open_mode_admin_id()
-    if not state_uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if not claimed_user_id:
         return state_uid
@@ -192,14 +239,31 @@ async def assert_caller_is(request: Request, claimed_user_id: Optional[str]) -> 
     )
 
 
+def caller_uid_sync(request: Request) -> str:
+    """Synchronous caller resolution for SYNC (`def`) path operations — read
+    endpoints that FastAPI runs in its worker threadpool (off the event loop) so
+    their DB work can't jam the chat loop. Returns the verified caller uid.
+    Mirrors ``assert_caller_is(request, None)`` (no admin-impersonation branch,
+    which is the only reason that function is async). Raises 401 if no identity.
+    """
+    state_uid = getattr(request.state, "user_id", None)
+    if not state_uid:
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+        if not token:
+            token = request.query_params.get("token", "")
+        payload = decode_token(token) if token else None
+        if payload:
+            state_uid = payload.get("user_id") or payload.get("sub")
+    if not state_uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return state_uid
+
+
 def verify_token_matches_user(token: str, claimed_user_id: str) -> Optional[str]:
     """For WebSocket handshakes: decode `token` and verify its subject
     equals `claimed_user_id`. Returns the verified user_id on success,
-    `None` on failure (caller should close the socket).
-
-    Exception: in 'open' access mode the claimed id is trusted even without a
-    (valid) token — single-user / local convenience — so handshakes work over
-    a tunnel where no JWT can be minted. See open_mode_admin_id."""
+    `None` on failure (caller should close the socket)."""
     if not claimed_user_id:
         return None
     payload = decode_token(token) if token else None
@@ -207,6 +271,4 @@ def verify_token_matches_user(token: str, claimed_user_id: str) -> Optional[str]
         sub = payload.get("user_id") or payload.get("sub")
         if sub == claimed_user_id:
             return sub
-    if open_mode_admin_id() is not None:
-        return claimed_user_id
     return None

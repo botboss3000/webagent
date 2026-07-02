@@ -2,7 +2,7 @@
   "id": "settings",
   "label": "Admin Configuration",
   "icon": "settings",
-  "order": 0,
+  "order": 1,
   "locked": true,
   "html": "app-config.html",
   "mount": "#files-settings-main",
@@ -10,11 +10,8 @@
   "start": "startView",
   "stop": "stopView",
   "partials": [
+    "data-settings/data-settings.html",
     "agent-settings/agent-settings.html",
-    "app-settings/app-settings.html",
-    "user-management/user-management.html",
-    "database/data-management.html",
-    "optimizer/optimizer.html",
-    "features/features.html"
+    "app-settings/app-settings.html"
   ]
 }

@@ -40,7 +40,7 @@ DESTRUCTIVE: set = set()  # set_app_view only rearranges panels — nothing dest
 _VIEW_ALIASES: Dict[str, str] = {
     "browser":     "web",
     "web":         "web",
-    "canvas":      "canvas",
+    "genui":      "genui",
     "agents":      "agents",
     "terminal":    "terminal",
     "account":     "account",
@@ -49,7 +49,7 @@ _VIEW_ALIASES: Dict[str, str] = {
 }
 
 # The values offered to the agent in the tool schema (friendly names only).
-_VIEW_CHOICES = ["browser", "canvas", "agents", "terminal", "account", "admin"]
+_VIEW_CHOICES = ["browser", "genui", "agents", "terminal", "account", "admin"]
 
 SET_APP_VIEW_SCHEMA = {
     "type": "object",
@@ -60,7 +60,7 @@ SET_APP_VIEW_SCHEMA = {
             "description": (
                 "Which main view to bring to the front of the user's screen. "
                 "'browser' = the live in-app browser (mirrors your headless "
-                "Chromium), 'canvas' = the Canvas workspace, 'agents' = the agent "
+                "Chromium), 'genui' = the Gen UI workspace, 'agents' = the agent "
                 "manager, 'terminal' = the terminal, 'account' = the account "
                 "page, 'admin' = the admin tools. Omit to leave the current "
                 "view unchanged."
@@ -94,10 +94,10 @@ _APP_CONTROL_DEFAULTS = {
     "max_chat_width": 0,      # 0 = unlimited
     "min_chat_width": 280,
     # Friendly view names — MUST match _VIEW_CHOICES / _VIEW_ALIASES keys above.
-    # ("canvas" is the current name for what used to be "pages"; using "pages"
-    # here made the Canvas view unreachable because _enforce_app_control compares
-    # against this list while the schema/aliases only accept "canvas".)
-    "allowed_views": ["browser", "canvas", "agents", "terminal", "account", "admin"],
+    # ("genui" is the current name for what used to be "pages"; using "pages"
+    # here made the Gen UI view unreachable because _enforce_app_control compares
+    # against this list while the schema/aliases only accept "genui".)
+    "allowed_views": ["browser", "genui", "agents", "terminal", "account", "admin"],
 }
 
 
@@ -115,7 +115,7 @@ def build_app_control_tools(user_id: str, session_id: str) -> Dict[str, Callable
     ) -> str:
         """Change what the user is looking at in the app window.
 
-        Switch the main view (browser, canvas, agents, terminal, account,
+        Switch the main view (browser, genui, agents, terminal, account,
         admin), show or hide the chat panel, and/or resize the chat panel —
         all on the user's live screen. Use this to follow your narration with
         the matching view: e.g. when you start browsing, bring the browser to

@@ -1,5 +1,5 @@
 """
-Canonical webAgent schema as Python data structures.
+Canonical WebAgent schema as Python data structures.
 
 One source of truth for all SQL dialects (SQLite, Postgres, MySQL).
 The legacy embedded DDL in `app/db/local.py` (SCHEMA_SQL) and the

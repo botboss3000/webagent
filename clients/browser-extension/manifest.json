@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "webAgent Browser Connector",
+  "name": "WebAgent Browser Connector",
   "version": "0.1.0",
-  "description": "Let your webAgent server drive THIS browser — navigate, click, type, read, screenshot — in your own logged-in session. You watch it happen and can pause anytime.",
+  "description": "Let your WebAgent server drive THIS browser — navigate, click, type, read, screenshot — in your own logged-in session. You watch it happen and can pause anytime.",
   "permissions": ["scripting", "tabs", "alarms", "storage", "notifications"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "webAgent Connector" },
+  "action": { "default_popup": "popup.html", "default_title": "WebAgent Connector" },
   "options_page": "options.html"
 }

@@ -85,9 +85,8 @@ BRIDGE_SCRIPT = r"""
 def _verify_token(token: str) -> Optional[str]:
     """Return the caller's user_id from a valid JWT, else None.
 
-    In 'open' access mode a tokenless caller resolves to the bootstrap admin
-    (single-user / local convenience) so the browser stream works over a
-    tunnel, where the frontend can't mint a JWT. See open_mode_admin_id."""
+    Identity comes only from a valid JWT now (the old 'open' auto-admin
+    access mode was retired)."""
     if token:
         try:
             payload = decode_token(token)
@@ -97,8 +96,7 @@ def _verify_token(token: str) -> Optional[str]:
             uid = payload.get("user_id") or payload.get("sub")
             if uid:
                 return uid
-    from app.auth.identity import open_mode_admin_id
-    return open_mode_admin_id()
+    return None
 
 
 def _resolve_user_bs_id(user_id: str, bs_id: Optional[str]) -> Optional[str]:
@@ -123,7 +121,7 @@ def _resolve_user_bs_id(user_id: str, bs_id: Optional[str]) -> Optional[str]:
 async def _browser_page_allowed(user_id: str) -> bool:
     """Whether this caller may use the Browser page, per its 3-state visibility.
 
-    Mirrors the Canvas gate (registered users / admins / open mode pass). Because
+    Mirrors the Gen UI gate (registered users / admins / open mode pass). Because
     every main page defaults to 'auth' (registration required), an anonymous
     guest is blocked from spinning up or driving a server-side browser — closing
     the SSRF/abuse surface — unless an admin opens the Browser page to 'all'.

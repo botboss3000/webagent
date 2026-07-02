@@ -21,7 +21,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__all__ = ["DEFAULTS_DIR", "app_prompts_path", "agents_seed_dir", "project_root"]
+__all__ = [
+    "DEFAULTS_DIR", "app_prompts_path", "agents_seed_dir", "project_root",
+    "dashboard_default_path", "dashboard_default_override_path",
+]
 
 # app/util/paths.py → app/util → app → repo root
 _APP_DIR = Path(__file__).resolve().parent.parent
@@ -33,6 +36,7 @@ DEFAULTS_DIR = _APP_DIR / "defaults"
 # Legacy / override locations under the runtime data/ tree.
 _DATA_APP_PROMPTS = _REPO_ROOT / "data" / "config" / "app-prompts.json"
 _DATA_AGENTS_DIR = _REPO_ROOT / "data" / "agents"
+_DATA_DASHBOARD_DEFAULT = _REPO_ROOT / "data" / "config" / "dashboard-default.json"
 
 
 def project_root() -> str:
@@ -56,6 +60,27 @@ def app_prompts_path() -> Path:
     if _DATA_APP_PROMPTS.is_file():
         return _DATA_APP_PROMPTS
     return DEFAULTS_DIR / "app-prompts.json"
+
+
+def dashboard_default_path() -> Path:
+    """Path to the Admin Dashboard's **default layout** seed (the cards a fresh
+    admin — or a "reset to default" — starts from).
+
+    Returns the runtime override ``data/config/dashboard-default.json`` if an admin
+    has saved one (via the dashboard's "Save as default" button), else the bundled
+    ``app/defaults/dashboard.json`` that always ships. Same override-or-default rule
+    as the agent-template seeds.
+    """
+    if _DATA_DASHBOARD_DEFAULT.is_file():
+        return _DATA_DASHBOARD_DEFAULT
+    return DEFAULTS_DIR / "dashboard.json"
+
+
+def dashboard_default_override_path() -> Path:
+    """Where "Save as default" WRITES the current layout — always the runtime
+    ``data/config/`` override, never the tracked bundled seed (which stays pristine
+    so a fresh checkout still has a sane factory default)."""
+    return _DATA_DASHBOARD_DEFAULT
 
 
 def agents_seed_dir() -> str:

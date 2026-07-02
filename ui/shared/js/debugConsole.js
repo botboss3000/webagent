@@ -52,14 +52,14 @@ function _intercept(logLevel, origFn) {
 
       // Forward genuine errors to the server diagnostic log (logs.db) via the
       // shared funnel (window.__reportJsError, installed pre-module in index.html),
-      // so app/library console.error calls — e.g. canvas's "[canvas] mount
+      // so app/library console.error calls — e.g. genui's "[genui] mount
       // error:" — are recorded, not just shown in this panel. window.onerror /
       // unhandledrejection already cover UNCAUGHT errors; this adds the ones code
       // swallows with try/catch + console.error. Skip our own banner marker so an
       // error isn't logged twice, and let the funnel dedupe the rest by message.
       // (Browser-internal render warnings — bad SVG path d=, CSS parse — are NOT
       // routed through console.error and remain uncapturable from JS.)
-      if (logLevel === 'error' && text && text.indexOf('[webAgent JS error]') !== 0) {
+      if (logLevel === 'error' && text && text.indexOf('[WebAgent JS error]') !== 0) {
         try {
           if (typeof window.__reportJsError === 'function') {
             window.__reportJsError({ message: text, source: 'console.error', stack: stack });

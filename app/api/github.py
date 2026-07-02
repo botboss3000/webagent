@@ -1,4 +1,4 @@
-"""GitHub / Git integration API for webAgent.
+"""GitHub / Git integration API for WebAgent.
 
 Provides endpoints for:
 - Repo status (branch, remote, unstaged/staged files)
@@ -18,6 +18,8 @@ import logging
 import os
 import re
 import subprocess
+import threading
+import time
 import json
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
@@ -151,6 +153,31 @@ def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
         return "", "git not found on this system", -1
     except Exception as e:
         return "", str(e), -1
+
+
+# ── Coalesced remote fetch ──────────────────────────────────────────
+# Both /status and /log-graph refresh remote refs before reading. Opening the
+# Source Control page hits both, so it used to fire TWO back-to-back network
+# fetches — and the graph's was a heavy `git fetch --all` across every remote.
+# This guard runs at most ONE `git fetch origin` per _FETCH_TTL seconds: the
+# first read in a window pays the network cost, and the sibling read + the 5s
+# poll ticks inside the window reuse those just-updated refs instead of piling
+# on more fetches. The timestamp is stamped BEFORE the (slow) call so a
+# concurrent request in the same window skips rather than racing a second fetch.
+_LAST_FETCH_TS: float = 0.0
+_FETCH_LOCK = threading.Lock()
+_FETCH_TTL = 8.0  # seconds
+
+
+def _maybe_fetch(timeout: int = 20) -> None:
+    """Refresh origin's refs, but no more than once every _FETCH_TTL seconds."""
+    global _LAST_FETCH_TS
+    now = time.monotonic()
+    with _FETCH_LOCK:
+        if now - _LAST_FETCH_TS < _FETCH_TTL:
+            return
+        _LAST_FETCH_TS = now
+    _run_git(["fetch", "--quiet", "origin"], timeout=timeout)
 
 
 def _git_push(timeout: int = 120) -> tuple[str, str, int]:
@@ -340,18 +367,26 @@ async def get_status(request: Request, fetch: bool = True):
     returns the last-known local state instantly — used for the fast first paint
     of the Source Control panel, which then refreshes with `fetch=1` in the
     background.
+
+    The read runs a chain of blocking git subprocesses, so it is offloaded to a
+    worker thread (`asyncio.to_thread`) — otherwise it freezes the server's
+    single event loop for its whole duration, stalling every other request.
     """
+    return await asyncio.to_thread(_status_payload, fetch)
+
+
+def _status_payload(fetch: bool) -> dict:
     # Point git at the user's selected repo (+ its key) before running commands
     _use_active_repo()
 
     # 0. Refresh remote refs so ahead/behind reflects what's actually on origin.
     # Without this, the cached refs are whatever was last fetched/pulled on this
     # machine, so the page reports "in sync" even when origin has new commits.
-    # `--quiet` suppresses transcript noise; failures (offline, auth issue) are
-    # tolerated — we fall through to whatever cached state we have. Skipped when
-    # the caller asks for a local-only fast read (fetch=0).
+    # Coalesced (see _maybe_fetch): the sibling /log-graph read and the 5s poll
+    # reuse this one fetch instead of each firing their own. Skipped entirely on
+    # a local-only fast read (fetch=0).
     if fetch:
-        _run_git(["fetch", "--quiet", "origin"], timeout=20)
+        _maybe_fetch()
 
     # 1. Branch name
     branch_out, _, rc = _run_git(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -503,13 +538,23 @@ async def get_log_graph(request: Request, limit: int = 80, fetch: bool = True):
     `fetch=1` (default) refreshes remote refs first so origin/* tips are live;
     `fetch=0` skips the network round-trip and graphs the last-known local refs
     instantly (used for the panel's fast first paint).
+
+    Offloaded to a worker thread (`asyncio.to_thread`): the graph walk is a chain
+    of blocking git subprocesses that would otherwise freeze the event loop.
     """
+    return await asyncio.to_thread(_log_graph_payload, limit, fetch)
+
+
+def _log_graph_payload(limit: int, fetch: bool) -> dict:
     _use_active_repo()
 
     # Refresh remote refs so origin/* branch tips reflect what's on GitHub.
-    # Skipped on a local-only fast read (fetch=0).
+    # Coalesced + scoped to `origin` (was `--all`, which fetched every remote):
+    # the sibling /status read usually satisfies this within _FETCH_TTL, so the
+    # page's open fires a single origin fetch instead of two. Skipped on a
+    # local-only fast read (fetch=0).
     if fetch:
-        _run_git(["fetch", "--quiet", "--all"], timeout=20)
+        _maybe_fetch()
 
     # Clamp limit to a sane window — big graphs become unreadable anyway.
     try:
@@ -1590,6 +1635,7 @@ async def set_remote_url(req: RemoteUrlRequest, request: Request):
     stdout, stderr, rc = _run_git(["remote", "set-url", "origin", req.url], timeout=10)
     if rc != 0:
         raise HTTPException(status_code=500, detail=stderr.strip() or "Failed to set remote URL")
+    git_repos.invalidate_origin_cache()   # the built-in repo's cached origin just changed
     # Keep the registry's stored remote in sync when a non-built-in repo is active,
     # so the saved entry and the repo's git config don't drift apart.
     try:
@@ -1605,7 +1651,7 @@ async def set_remote_url(req: RemoteUrlRequest, request: Request):
 # ── Repositories (the Source Control multi-repo selector) ────────────────────
 # The Git page can manage MORE than this app's own repo: point it at any local git
 # folder paired with its own GitHub remote + key, and the Changes list + commit
-# graph reflect THAT repo. The built-in webAgent entry is always present and can't
+# graph reflect THAT repo. The built-in WebAgent entry is always present and can't
 # be removed; selecting it behaves exactly like before. Heavy lifting lives in
 # app/git_repos.py. Selecting a repo re-points every git action on the page via
 # `_use_active_repo()` (above). Route order matters: the literal `/repos/select`
@@ -1613,7 +1659,7 @@ async def set_remote_url(req: RemoteUrlRequest, request: Request):
 
 @router.get("/repos")
 async def list_git_repos(request: Request):
-    """All configured repos (webAgent first), each with active/builtin flags. The
+    """All configured repos (WebAgent first), each with active/builtin flags. The
     raw key is never returned — only a ``has_token`` flag."""
     _require_admin(request)
     return {"repos": git_repos.list_repos()}
@@ -1658,7 +1704,7 @@ async def select_git_repo(req: RepoSelectRequest, request: Request):
 async def update_git_repo(repo_id: str, req: RepoUpdateRequest, request: Request):
     """Edit a repo. A blank token keeps the existing key.
 
-    The built-in webAgent repo is a special case: its folder is pinned to this
+    The built-in WebAgent repo is a special case: its folder is pinned to this
     app's own root and can't change, but its GitHub address (git ``origin``) and
     its shared GitHub key (provider.json) ARE editable here — the same two things
     the standalone remote-URL / key fields already change, surfaced through the
@@ -1679,6 +1725,7 @@ async def update_git_repo(repo_id: str, req: RepoUpdateRequest, request: Request
                 _use_active_repo()
                 raise HTTPException(status_code=400,
                                     detail=stderr.strip() or "Failed to set remote URL")
+            git_repos.invalidate_origin_cache()   # built-in origin just changed
         # Save the shared GitHub key (blank = keep the existing one).
         if req.token:
             _save_token(req.token)
@@ -1696,7 +1743,7 @@ async def update_git_repo(repo_id: str, req: RepoUpdateRequest, request: Request
 
 @router.delete("/repos/{repo_id}")
 async def delete_git_repo(repo_id: str, request: Request):
-    """Forget a registered repo (the built-in webAgent repo can't be removed)."""
+    """Forget a registered repo (the built-in WebAgent repo can't be removed)."""
     _require_admin(request)
     try:
         git_repos.remove_repo(repo_id)

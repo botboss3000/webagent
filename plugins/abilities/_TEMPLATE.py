@@ -3,7 +3,7 @@
 ────────────────────────────────────────────────────────────────────────────
 THE PHILOSOPHY (why this folder exists)
 ────────────────────────────────────────────────────────────────────────────
-webAgent is a small **core** plus many **drop-in plugins**. A new capability is
+WebAgent is a small **core** plus many **drop-in plugins**. A new capability is
 a NEW FILE (or pair of files) in a plugin folder — never an edit to the core.
 The app discovers everything at runtime, so you register nothing by hand. This
 is what lets a production build ship only the tested features (see

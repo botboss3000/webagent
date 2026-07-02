@@ -27,6 +27,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from app.agent.error_classifier import classify_tool_error, ToolError
 from app.agent.loop_executor import LoopConfig
 from app.db import get_db
+from app.db.offload import db_offload
 from app.db.system_prompt_fragments import get_prompt_fragments
 from app.optimizer.runner import run_optimizer_async
 from plugins.billing import pricing as _billing_pricing
@@ -391,7 +392,7 @@ def _max_output_tokens() -> int:
     A hard 4096 cap silently truncates any large assistant message — most
     painfully a `render_visual` call whose entire HTML document is carried inline
     as the tool argument. A real dashboard/page easily exceeds 4096 output tokens,
-    so the document arrives cut off (no closing </html>), the canvas guard rejects
+    so the document arrives cut off (no closing </html>), the genui guard rejects
     it, and the agent can never finish — the core "it says it built the dashboard
     but didn't" failure. Default generously and let deployments tune it via
     LLM_MAX_OUTPUT_TOKENS. Kept within what mainstream models accept."""
@@ -474,7 +475,7 @@ async def _record_billing_usage(
     if not agent_id or not user_id:
         return None
     try:
-        agent = await db.get_agent_by_id(agent_id)
+        agent = await db_offload(lambda: db.get_agent_by_id(agent_id))
         if not agent:
             return None
         provider_cents = int(round((llm_cost or 0) * 100)) if llm_cost else 0
@@ -596,7 +597,7 @@ async def _record_billing_usage(
         # Credit the agent admin's earnings wallet (informational mirror)
         if agent_earnings_cents > 0:
             try:
-                roles = await db.get_agent_roles(agent_id)
+                roles = await db_offload(lambda: db.get_agent_roles(agent_id))
                 admins = roles.get("admin_users") or []
                 if admins:
                     await _billing_wallet.credit(
@@ -779,7 +780,7 @@ async def stream_agent_events(
     agent_name = "Agent"
     _agent_rec: Optional[Dict[str, Any]] = None
     if agent_id:
-        _agent_rec = await db.get_agent_by_id(agent_id)
+        _agent_rec = await db_offload(lambda: db.get_agent_by_id(agent_id))
         if _agent_rec and _agent_rec.get("name"):
             agent_name = _agent_rec["name"]
 
@@ -1011,6 +1012,7 @@ async def stream_agent_events(
     # the per-iteration schema filter below reuses them.)
     _agent_tool_modes: Dict[str, str] = {}
     _agent_ability_modes: Dict[str, str] = {}
+    _agent_discovery_default: Optional[str] = None
     _active_tool_names: List[str] = []
     _active_ability_names: List[str] = []
     _suppressed_ability_names: List[str] = []
@@ -1025,10 +1027,25 @@ async def stream_agent_events(
         if agent_id:
             _agent_tool_modes = await db.get_agent_tool_modes(agent_id)
             _agent_ability_modes = await db.get_agent_ability_modes(agent_id)
+            # Agent-level default visibility: when set to "discoverable", every
+            # ability with no explicit per-ability choice is withheld behind the
+            # `# [ABILITIES]` menu (tools + skill arrive via load_ability) instead
+            # of shipping its full tool schema each turn. Absent ⇒ "visible".
+            try:
+                _agent_discovery_default = await db.get_agent_discovery_default(agent_id)
+            except Exception:
+                _agent_discovery_default = None
         if session_id:
-            _active_tool_names = await db.get_session_active_tools(session_id)
-            _active_ability_names = await db.get_session_active_abilities(session_id)
-            _suppressed_ability_names = await db.get_session_suppressed_abilities(session_id)
+            # Offloaded + concurrent: these three session reads are NOT turn-cached
+            # (the active set legitimately grows mid-run), so on remote Postgres
+            # each is a ~150ms round-trip. Running them on the event loop serially
+            # froze the loop ~450ms/turn; offload keeps the loop free for the LLM
+            # stream and collapses the three into one concurrent batch.
+            _active_tool_names, _active_ability_names, _suppressed_ability_names = await asyncio.gather(
+                db_offload(lambda: db.get_session_active_tools(session_id)),
+                db_offload(lambda: db.get_session_active_abilities(session_id)),
+                db_offload(lambda: db.get_session_suppressed_abilities(session_id)),
+            )
         _active_set = set(_active_tool_names)
         _active_ability_set = set(_active_ability_names)
         _suppressed_ability_set = set(_suppressed_ability_names)
@@ -1037,7 +1054,8 @@ async def stream_agent_events(
         # (they are reachable only by loading the ability) or session-suppressed.
         _idx_entries = []
         for _tn, _ti in tools.items():
-            if _tm_tool_hidden(_tn, _agent_ability_modes, _active_ability_set, _active_set, _suppressed_ability_set):
+            if _tm_tool_hidden(_tn, _agent_ability_modes, _active_ability_set, _active_set,
+                               _suppressed_ability_set, ability_default=_agent_discovery_default):
                 continue
             _d = (_ti.handler.__doc__ or "").strip() if hasattr(_ti, "handler") else ""
             _idx_entries.append({
@@ -1070,7 +1088,9 @@ async def stream_agent_events(
                 from app.abilities import ui_catalog as _ui_cat
                 _cat_abilities = (_ui_cat() or {}).get("abilities", {})
                 for _aid in _ab_ids:
-                    if _tm_ability_revealed(_aid, _agent_ability_modes, _active_ability_set, _suppressed_ability_set):
+                    if _tm_ability_revealed(_aid, _agent_ability_modes, _active_ability_set,
+                                            _suppressed_ability_set,
+                                            ability_default=_agent_discovery_default):
                         continue
                     _meta = _cat_abilities.get(_aid, {})
                     _ab_entries.append({
@@ -1298,7 +1318,8 @@ async def stream_agent_events(
             if (_hb_now - _last_heartbeat) >= _HEARTBEAT_INTERVAL:
                 _last_heartbeat = _hb_now
                 try:
-                    await db.run_state_heartbeat(session_id)
+                    # Offloaded — fires during streaming; must not freeze the loop.
+                    await db_offload(lambda: db.run_state_heartbeat(session_id))
                 except Exception:
                     pass
 
@@ -1325,7 +1346,7 @@ async def stream_agent_events(
 
             turn_count += 1
             if agent_id:
-                await db.increment_agent_turn_count(agent_id)
+                await db_offload(lambda: db.increment_agent_turn_count(agent_id))
 
             # Reset stream chunk tracker for new turn
             first_stream_chunk_state[0] = True
@@ -1374,9 +1395,17 @@ async def stream_agent_events(
             )
             if session_id:
                 try:
-                    _active_set_now = set(await db.get_session_active_tools(session_id))
-                    _active_ability_now = set(await db.get_session_active_abilities(session_id))
-                    _suppressed_ability_now = set(await db.get_session_suppressed_abilities(session_id))
+                    # Offloaded + concurrent (see prep note above): this re-read
+                    # fires every turn iteration to pick up tools loaded mid-run.
+                    # Keep it off the event loop so the live LLM stream never stalls.
+                    _now_tools, _now_abils, _now_suppressed = await asyncio.gather(
+                        db_offload(lambda: db.get_session_active_tools(session_id)),
+                        db_offload(lambda: db.get_session_active_abilities(session_id)),
+                        db_offload(lambda: db.get_session_suppressed_abilities(session_id)),
+                    )
+                    _active_set_now = set(_now_tools)
+                    _active_ability_now = set(_now_abils)
+                    _suppressed_ability_now = set(_now_suppressed)
                 except Exception:
                     _active_set_now = set(_active_tool_names)
                     _active_ability_now = set(_active_ability_names)
@@ -1390,7 +1419,8 @@ async def stream_agent_events(
                 # Withhold tools of a discoverable-and-unloaded ability (re-checked
                 # each iteration so a mid-turn load_ability reveals them next pass),
                 # or of an ability the user suppressed from the chat panel.
-                if _tm_tool_hidden(name, _agent_ability_modes, _active_ability_now, _active_set_now, _suppressed_ability_now):
+                if _tm_tool_hidden(name, _agent_ability_modes, _active_ability_now, _active_set_now,
+                                   _suppressed_ability_now, ability_default=_agent_discovery_default):
                     continue
                 if not _tm_is_sent(name, _agent_tool_modes, _active_set_now, _global_tool_defaults):
                     continue
@@ -1451,17 +1481,22 @@ async def stream_agent_events(
                         await _check_interrupt(session_id, interrupt_event)
                 if streaming_asst_id is None:
                     try:
-                        streaming_asst_id = await db.insert_interaction(
+                        # Offloaded: these writes run DURING token streaming; on the
+                        # event loop each remote round-trip would freeze the loop and
+                        # stall the live stream. See app/db/offload.py.
+                        _content_snapshot = collected_content
+                        streaming_asst_id = await db_offload(lambda: db.insert_interaction(
                             user_id, session_id, role="assistant",
-                            content=collected_content,
+                            content=_content_snapshot,
                             parent_id=parent_interaction_id,
                             channel=channel,
                             metadata=_build_meta("assistant", input_tokens, output_tokens, llm_cost),
                             sender_id=agent_id, receiver_id=user_id,
                             status="streaming",
-                        )
+                        ))
                         try:
-                            await db.run_state_set_assistant(session_id, streaming_asst_id)
+                            _sid = streaming_asst_id
+                            await db_offload(lambda: db.run_state_set_assistant(session_id, _sid))
                         except Exception:
                             pass
                     except Exception as _se:
@@ -1473,7 +1508,9 @@ async def stream_agent_events(
                     return
                 _last_stream_persist = now
                 try:
-                    await db.update_interaction(streaming_asst_id, content=collected_content)
+                    _content_snapshot = collected_content
+                    _sid = streaming_asst_id
+                    await db_offload(lambda: db.update_interaction(_sid, content=_content_snapshot))
                 except Exception as _se:
                     logger.debug("stream persist (update) failed: %s", _se)
                 # Keep the liveness heartbeat fresh during a long single-turn stream.
@@ -1568,9 +1605,34 @@ async def stream_agent_events(
             # otherwise freezes the turn indefinitely; the per-chunk stall guard
             # below only covers reads AFTER the stream object exists.
             _open_s = _stream_open_seconds()
+            # DIAGNOSTIC (REMOVE-WHEN latency diagnosis done): measure WHY the first
+            # token is slow. Logs the prompt size (proxy for prefill cost) and the
+            # time the provider takes just to RETURN the stream object (headers) vs.
+            # the time from there to the first text chunk. A big open-time = provider
+            # queueing/prefill before any byte; a big prompt = our prompt is too big.
+            _llm_diag_on = (os.environ.get("WEBAGENT_PERF_TRACE", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
+            _t_open0 = time.monotonic()
             try:
                 try:
                     stream = await _open_stream(_create_kwargs, _open_s)
+                    if _llm_diag_on:
+                        try:
+                            _msg_chars = sum(len(str(m.get("content") or "")) for m in messages)
+                            _sys_chars = sum(len(str(m.get("content") or "")) for m in messages if m.get("role") == "system")
+                            from app.agent.diagnostics import record as _diag
+                            _diag("info", "perf",
+                                  f"llm_stream_open +{int((time.monotonic()-_t_open0)*1000)}ms",
+                                  source="llm_latency",
+                                  detail={"model": model_name,
+                                          "open_ms": int((time.monotonic()-_t_open0)*1000),
+                                          "msg_count": len(messages),
+                                          "prompt_chars": _msg_chars,
+                                          "system_chars": _sys_chars,
+                                          "tool_count": len(tool_definitions or []),
+                                          "reasoning_effort": reasoning_effort or "none"},
+                                  session_id=session_id, agent_id=agent_id, user_id=user_id)
+                        except Exception:
+                            pass
                 except asyncio.TimeoutError:
                     raise  # an open stall, NOT an effort rejection — handled below
                 except Exception as e_eff:
@@ -1705,6 +1767,14 @@ async def stream_agent_events(
 
             llm_duration = int((time.time() - llm_start) * 1000)
 
+            # Feed the admin Dashboard's live loop-throughput / token-rate cards
+            # (in-memory, no DB write — see app/metrics.py). Best-effort.
+            try:
+                from app import metrics as _metrics
+                _metrics.record_llm(llm_duration, input_tokens or 0, output_tokens or 0)
+            except Exception:
+                pass
+
             # ── Per-call cost (published price × this call's tokens) ──
             # When OpenRouter (or another provider) sends the actual billed total
             # cost in the stream response (includes prompt-caching discounts, volume
@@ -1803,13 +1873,15 @@ async def stream_agent_events(
                 db_start = time.time()
                 if streaming_asst_id is not None:
                     # Finalize the in-progress row created while streaming.
-                    await db.update_interaction(
+                    # Offloaded: this per-step write is a ~150ms remote round-trip;
+                    # keeping it off the event loop stops it freezing the live stream.
+                    await db_offload(lambda: db.update_interaction(
                         streaming_asst_id, content=assistant_content,
                         status="complete", output_data=outp, metadata=meta_asst,
-                    )
+                    ))
                     asst_id = streaming_asst_id
                 else:
-                    asst_id = await db.insert_interaction(
+                    asst_id = await db_offload(lambda: db.insert_interaction(
                         user_id, session_id, role="assistant", content=assistant_content,
                         parent_id=parent_interaction_id,
                         channel=channel,
@@ -1818,7 +1890,7 @@ async def stream_agent_events(
                         output_data=outp,
                         sender_id=agent_id,
                         receiver_id=user_id,
-                    )
+                    ))
                 db_dur = int((time.time() - db_start) * 1000)
                 # This step's assistant message is finalized; clear the handle so
                 # an interrupt during tool execution doesn't re-finalize it.
@@ -2229,7 +2301,10 @@ async def stream_agent_events(
                         inp = _build_input()
                         outp = json.dumps({"role": "tool", "content": result["content"][:10000], "tool_call_id": tc.id, "name": tool_name, "success": success, "duration_ms": result["duration_ms"]})
                         db_start = time.time()
-                        inter_id = await db.insert_interaction(
+                        # Offloaded: the tool-result row is the highest-frequency
+                        # write in the loop (once per executed tool call). A ~150ms
+                        # remote round-trip here on the event loop stalls the stream.
+                        inter_id = await db_offload(lambda: db.insert_interaction(
                             user_id, session_id, role="tool", content=tool_msg["content"],
                             parent_id=asst_id,
                             tool_call_id=tc.id,
@@ -2240,7 +2315,7 @@ async def stream_agent_events(
                             output_data=outp,
                             sender_id=agent_id,
                             receiver_id=agent_id,
-                        )
+                        ))
                         db_dur = int((time.time() - db_start) * 1000)
                         yield {"type": "db", "level": "db",
                                "op": "insert_interaction", "role": "tool",
@@ -2367,13 +2442,14 @@ async def stream_agent_events(
             db_start = time.time()
             if streaming_asst_id is not None:
                 # Finalize the in-progress row created while streaming.
-                await db.update_interaction(
+                # Offloaded: final-answer write on every turn's critical path.
+                await db_offload(lambda: db.update_interaction(
                     streaming_asst_id, content=collected_content,
                     status="complete", output_data=outp, metadata=meta_final,
-                )
+                ))
                 inter_id = streaming_asst_id
             else:
-                inter_id = await db.insert_interaction(
+                inter_id = await db_offload(lambda: db.insert_interaction(
                     user_id, session_id, role="assistant", content=collected_content,
                     parent_id=parent_interaction_id,
                     channel=channel,
@@ -2382,7 +2458,7 @@ async def stream_agent_events(
                     output_data=outp,
                     sender_id=agent_id,
                     receiver_id=user_id,
-                )
+                ))
             db_dur = int((time.time() - db_start) * 1000)
             yield {"type": "db", "level": "db",
                    "op": "insert_interaction", "role": "assistant",

@@ -5,9 +5,10 @@
      ui/admin-tools/server-manager/page.json; driven by server-manager.js
      (startView/stopView); backed by server.py (/admin/server-manager/*).
 
-     A single hub for everything the admin runs: cloud VMs (live API control),
-     webAgent DEVICES (auto-discovered from the presence registry), and manually
-     tracked MACHINES and SITES — each recording which code repo it runs.
+     A single hub for the servers the admin runs: cloud VMs (live API control)
+     and manually tracked MACHINES and SITES — each recording which code repo it
+     runs. (Linked WebAgent devices on the shared database now live on the
+     separate Database & Devices page, ui/admin-tools/database-devices/.)
 
      The SIDEBAR holds two managers: the cloud-account manager (a provider
      dropdown + "+" to add an account, each row expanding into its own login
@@ -38,7 +39,7 @@
         <div class="cvm-accounts" id="cvm-accounts"></div>
       </div>
 
-      <!-- Manually-tracked machines & sites — anything that doesn't run webAgent
+      <!-- Manually-tracked machines & sites — anything that doesn't run WebAgent
            (a remote Linux/Termux/Windows/Mac box) or a hosted site/URL. The form
            is rendered into #cvm-entry-form by server-manager.js (add + edit share
            it). -->
@@ -57,9 +58,9 @@
         </div>
       </div>
       <div class="cvm-side-section">
-        <div class="cvm-hint">One hub for every server you run. Machines running webAgent appear automatically under
-          <strong>Devices</strong>; the box running this app is marked <strong>This app</strong>. Cloud servers webAgent
-          created are marked <strong>webAgent</strong>. Each card shows the code repo it runs.</div>
+        <div class="cvm-hint">One hub for the servers you run. Cloud servers WebAgent created are marked
+          <strong>WebAgent</strong>; each card shows the code repo it runs. Devices running WebAgent against your
+          shared database are shown on the <strong>Database &amp; Devices</strong> page.</div>
       </div>
     </div>
   </div>

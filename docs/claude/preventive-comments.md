@@ -29,14 +29,14 @@ Inline-rename fields: create `<input>`, replace title element, attach Enter/Esca
 |------|----------|-------|
 | `ui/js/sessions.js` | `startRename(sid, row)` | Session list row |
 | `ui/js/sessions.js` | `_headerRenameSession()` | Header dropdown label |
-| `ui/js/canvas.js` | `_startRenamePage(slug, row)` | Canvas page row |
+| `ui/js/genui.js` | `_startRenamePage(slug, row)` | Gen UI page row |
 | `ui/js/files.js` | Inside `_tabLabelToInput` | Terminal tab label |
 
 **Clone-group fingerprints (intentional duplicates):**
 
 ```
  16 lines  2 instances  dup:7d3611c8
-    ui/js/canvas.js:211-223
+    ui/js/genui.js:211-223
     ui/js/sessions.js:2119-2134
 
  17 lines  2 instances  dup:2725ae62
@@ -44,7 +44,7 @@ Inline-rename fields: create `<input>`, replace title element, attach Enter/Esca
     ui/js/sessions.js:2213-2227
 
  15 lines  2 instances  dup:20bf4403
-    ui/js/canvas.js:217-231
+    ui/js/genui.js:217-231
     ui/js/files.js:2697-2708
 ```
 
@@ -124,7 +124,7 @@ Functions extracted into `ui/js/shared/` that had duplicate implementations acro
 
 ### LOOP-ARC PATTERN
 
-Adjacent SVG path-computation arms in the edge-rendering function `_computeEdgePathVertical`. These look similar (same `M..C` syntax, canvas-derived `arcX` values) but each branch handles a different connection type.
+Adjacent SVG path-computation arms in the edge-rendering function `_computeEdgePathVertical`. These look similar (same `M..C` syntax, genui-derived `arcX` values) but each branch handles a different connection type.
 
 | File | Lines | Edge type |
 |------|-------|-----------|
@@ -137,7 +137,7 @@ Adjacent SVG path-computation arms in the edge-rendering function `_computeEdgeP
  13 lines  2 instances  dup:0f3f35ca
 ```
 
-**What to keep in sync:** `canvasW` scaling factors, SVG path formatting, label positioning — but the conditional (`edge.below` vs `edge.from === 'llm_call'`) and `arcX` values are intentionally different per edge type.
+**What to keep in sync:** `genuiW` scaling factors, SVG path formatting, label positioning — but the conditional (`edge.below` vs `edge.from === 'llm_call'`) and `arcX` values are intentionally different per edge type.
 
 ## Remaining intentional duplicate groups (documented, not extracted)
 

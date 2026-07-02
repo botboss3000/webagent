@@ -31,6 +31,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -107,23 +108,47 @@ def _retry_write(fn, attempts: int = 5, delay: float = 0.25):
                 raise
 
 
+# The schema (table + indexes + late-added columns) never changes within a
+# running process, so the DDL only needs to run ONCE — not on every spawn CRUD /
+# poll tick. Re-running it each call was ~9 schema round-trips per operation on a
+# remote Postgres (CREATE + 4 index + 4 ALTER), and the ALTERs — which fail once
+# the columns exist — abort the connection's transaction on Postgres (autocommit
+# off), poisoning the caller's very next statement. This flag collapses all that
+# to a single guarded pass the first time the module touches the table.
+_TABLE_READY = False
+_TABLE_LOCK = threading.Lock()
+
+
 def _ensure_table(conn) -> None:
-    conn.execute(_CREATE_SQL)
-    for stmt in _INDEX_SQL:
-        try:
-            conn.execute(stmt)
-        except Exception:  # noqa: BLE001 — index is best-effort
-            pass
-    # Best-effort add of columns introduced after a table's first creation
-    # (older installs created the table without them). ALTER fails if it already
-    # exists — that's fine.
-    for col, decl in (("resume_attempts", "INTEGER"),
-                      ("heartbeat_at", "TEXT"), ("claim_token", "TEXT"),
-                      ("depth", "INTEGER")):
-        try:
-            conn.execute(f"ALTER TABLE agent_spawns ADD COLUMN {col} {decl}")
-        except Exception:  # noqa: BLE001
-            pass
+    global _TABLE_READY
+    if _TABLE_READY:
+        return
+    with _TABLE_LOCK:
+        if _TABLE_READY:
+            return
+        # Commit/rollback each statement in isolation so a benign "already exists"
+        # failure (indexes, ALTERs) can't leave the caller's transaction aborted
+        # on Postgres. Nothing else is pending on this conn yet — _ensure_table is
+        # always the first call in a _do() block — so committing here is safe.
+        def _run(sql: str) -> None:
+            try:
+                conn.execute(sql)
+                conn.commit()
+            except Exception:  # noqa: BLE001
+                try:
+                    conn.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+        _run(_CREATE_SQL)
+        for stmt in _INDEX_SQL:
+            _run(stmt)
+        # Best-effort add of columns introduced after a table's first creation
+        # (older installs created the table without them).
+        for col, decl in (("resume_attempts", "INTEGER"),
+                          ("heartbeat_at", "TEXT"), ("claim_token", "TEXT"),
+                          ("depth", "INTEGER")):
+            _run(f"ALTER TABLE agent_spawns ADD COLUMN {col} {decl}")
+        _TABLE_READY = True
 
 
 def _db_conn():
@@ -343,10 +368,14 @@ def _spawns_fail_orphans(now_iso: str, older_than_seconds: int, limit: int,
 # ════════════════════════════════════════════════════════════════════════════
 # Runtime — create helper agents, run them (wait/fork), re-wake the orchestrator.
 # A helper is "run" by POSTing to the local /api/v1/chat for its session, exactly
-# like the optimizer's _kickstart_planner. Because the helper's session is bound
-# to its own agent, chat.py routes the message to that agent. The loopback POST
-# must carry a JWT (see _internal_auth_headers) or chat.py's assert_caller_is
-# rejects it 401 -> 500.
+# like the optimizer's _kickstart_planner. The POST carries NO agent_id: chat.py
+# routes the message to whatever agent the session is BOUND to (the helper agent
+# for a spawn turn, the orchestrator agent for a re-wake). chat.py's agent
+# resolution honors that binding before falling back to the user's default — if
+# it didn't, an omitted agent_id would resolve to the default agent, mismatch the
+# session's bound agent, and the endpoint's bind-mismatch guard would 500 (i.e.
+# the spawn would never run). The loopback POST must also carry a JWT (see
+# _internal_auth_headers) or chat.py's assert_caller_is rejects it 401 -> 500.
 # ════════════════════════════════════════════════════════════════════════════
 
 _SPAWN_PREAMBLE = (
@@ -1059,6 +1088,22 @@ async def _run_spawn_turn(*, user_id, spawn_id, spawn_session_id, message, wait,
 # ════════════════════════════════════════════════════════════════════════════
 
 _POLL_INTERVAL = 20
+_REMOTE_POLL_INTERVAL = 60   # remote DB: every tick is a network round-trip AND
+                             # runs on the main loop, so poll far less often there
+
+
+def _poll_interval() -> float:
+    """Follow-up poll cadence. On a remote DB each tick's reads are costly network
+    round-trips on the shared event loop, so we poll a third as often; a queued
+    follow-up just fires up to a minute later, which is fine for human-scale
+    check-ins. Local SQLite keeps the snappy 20s floor."""
+    try:
+        from app.db import is_remote_db
+        if is_remote_db():
+            return _REMOTE_POLL_INTERVAL
+    except Exception:
+        pass
+    return _POLL_INTERVAL
 
 # ── Spawn self-healing tunables ──────────────────────────────────────────────
 # The core run self-healing (session_runs + boot resume) does NOT cover spawn
@@ -1121,8 +1166,11 @@ async def _resume_orphaned_spawns(now_iso: str) -> None:
     orchestrator can deliberately re-spawn anything it still needs."""
     live = set(_LIVE_RUNS)
     try:
-        failed = _spawns_fail_orphans(now_iso, _ORPHAN_RUNNING_SECONDS,
-                                      _RECOVER_PER_TICK, exclude_ids=live)
+        # Run the blocking DB sweep in a worker thread so a remote round-trip
+        # doesn't freeze the event loop (and any in-flight chat stream) mid-tick.
+        failed = await asyncio.to_thread(
+            _spawns_fail_orphans, now_iso, _ORPHAN_RUNNING_SECONDS,
+            _RECOVER_PER_TICK, exclude_ids=live)
     except Exception as e:  # noqa: BLE001
         logger.debug("orphan fail-out sweep failed: %s", e)
         return
@@ -1150,7 +1198,7 @@ async def _poll_tick() -> None:
     except Exception as e:  # noqa: BLE001
         logger.debug("orphaned-spawn recovery failed: %s", e)
     try:
-        due = _spawns_claim_due(now_iso=now)
+        due = await asyncio.to_thread(_spawns_claim_due, now_iso=now)
     except Exception as e:  # noqa: BLE001
         logger.debug("spawn check claim failed (table not ready?): %s", e)
         return
@@ -1187,7 +1235,7 @@ async def _poll_loop() -> None:
         except Exception as e:  # noqa: BLE001
             logger.exception("Orchestration poller tick failed: %s", e)
         try:
-            await asyncio.sleep(_POLL_INTERVAL)
+            await asyncio.sleep(_poll_interval())
         except asyncio.CancelledError:
             raise
 

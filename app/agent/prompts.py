@@ -2,9 +2,12 @@
 Prompt construction with dynamic tool descriptions from database.
 """
 
+import asyncio
 import base64
 import logging
 from typing import Any, Dict, List, Optional, Union
+
+from app.db.offload import db_offload
 
 from app.db.system_prompt_fragments import (
     format_tool_subheadings_markdown,
@@ -124,7 +127,9 @@ async def append_skills_section(
     try:
         from app.db import get_db
         db = get_db()
-        skills = await db.get_agent_skills(agent_id, user_id=None)
+        # Offloaded: on remote Postgres this is a ~150ms round-trip; keeping it off
+        # the event loop is part of stopping the build-prompt stall (see below).
+        skills = await db_offload(lambda: db.get_agent_skills(agent_id, user_id=None))
     except Exception as e:
         logger.debug("Could not load skills for agent %s: %s", agent_id, e)
         skills = []
@@ -144,10 +149,20 @@ async def append_skills_section(
         from app.tools.tool_modes import ability_is_revealed, resolve_skill_mode
         from app.db import get_db as _gd
         _db = _gd()
-        _amodes = await _db.get_agent_ability_modes(agent_id)
-        _smodes = await _db.get_agent_skill_modes(agent_id)
-        _aactive = await _db.get_session_active_abilities(session_id) if session_id else []
-        _asuppressed = await _db.get_session_suppressed_abilities(session_id) if session_id else []
+        # Concurrent + offloaded: these five reads are independent and each a
+        # ~150ms remote round-trip. Running them serially on the event loop was a
+        # big chunk of the build-prompt stall (and froze the loop for other work).
+        # Gather them off the loop in one shot so the whole cluster costs ~one
+        # round-trip instead of five.
+        async def _sess(_fn):
+            return await db_offload(lambda: _fn(session_id)) if session_id else []
+        _amodes, _smodes, _adefault, _aactive, _asuppressed = await asyncio.gather(
+            db_offload(lambda: _db.get_agent_ability_modes(agent_id)),
+            db_offload(lambda: _db.get_agent_skill_modes(agent_id)),
+            db_offload(lambda: _db.get_agent_discovery_default(agent_id)),
+            _sess(_db.get_session_active_abilities),
+            _sess(_db.get_session_suppressed_abilities),
+        )
         # Per-agent skill visibility override: visible = body shown every turn,
         # discoverable = load on demand. Applies to ability-bundled skills only
         # (they carry `ability_id`); the descriptor mode is the default.
@@ -159,7 +174,8 @@ async def append_skills_section(
         skills = [
             s for s in skills
             if not s.get("ability_id")
-            or ability_is_revealed(s["ability_id"], _amodes, _aactive, _asuppressed)
+            or ability_is_revealed(s["ability_id"], _amodes, _aactive, _asuppressed,
+                                   ability_default=_adefault)
         ]
     except Exception as e:
         logger.debug("ability-skill visibility filter failed for %s: %s", agent_id, e)
@@ -189,7 +205,7 @@ async def append_skills_section(
     active: List[str] = []
     if session_id:
         try:
-            active = await db.get_session_active_skills(session_id)
+            active = await db_offload(lambda: db.get_session_active_skills(session_id))
         except Exception as e:
             logger.debug("Could not load active skills for session %s: %s", session_id, e)
 

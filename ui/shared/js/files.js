@@ -2431,7 +2431,7 @@ function buildPaneForTab(tab, mode) {
     pane.appendChild(scrollWrap);
 
     // "Disconnected" overlay — shown whenever the WS isn't connected so the
-    // user knows their keystrokes aren't reaching the shell (the xterm canvas
+    // user knows their keystrokes aren't reaching the shell (the xterm genui
     // still looks live even when the socket is dead). pointer-events:none in
     // CSS keeps clicks going through to xterm for focus restore.
     const overlay = document.createElement('div');
@@ -3677,7 +3677,7 @@ function startInlineRename(tab, labelEl) {
   // ╔═╗ RENAME-FIELD PATTERN  ════════════════════════════════════════════════════╗
   // ║ Inline rename: create <input>, replace label, Enter/Escape/blur commit.    ║
   // ║ Duplicated in sessions.js (startRename & _headerRenameSession) and           ║
-  // ║ canvas.js (_startRenamePage). Mirror fixes across all copies.            ║
+  // ║ genui.js (_startRenamePage). Mirror fixes across all copies.            ║
   // ╚══════════════════════════════════════════════════════════════════════════════╝
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); finish(true); }

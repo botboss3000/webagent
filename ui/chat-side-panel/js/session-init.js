@@ -16,7 +16,7 @@ import { populateUserSelect, initUserPanel } from '../../shared/js/user-panel.js
 import { consumeReplayedEventsFor } from '../../shared/js/agentWs.js';
 import { loopSessionChanged } from '../../main-panel/agents/agent-loop/js/loop.js';
 import { loopVisualSessionChanged } from '../../main-panel/agents/agent-loop/js/loop-logic.js';
-import { canvasSessionChanged } from '../../main-panel/canvas/js/canvas.js';
+import { genuiSessionChanged } from '../../main-panel/genui/js/genui.js';
 import { chatActivitySessionChanged } from '../../shared/js/chat-activity.js';
 import { randomUUID } from '../../shared/js/uuid.js';
 import { addChatBubble } from './chat-bubble.js';
@@ -113,6 +113,7 @@ export function initSessions() {
     menu.hidden = true;
     dropdown.classList.remove('open');
     _resetAllDeleteButtons();
+    _closeRowActions();
     // Reset manage mode so the dropdown reopens in the normal (non-hidden) view.
     _setShowHidden(false);
   }
@@ -196,6 +197,58 @@ export function initSessions() {
     });
   }
 
+  // ── Per-row "more" (⋯) popup: pin/unpin toggle ─────────────────────────────
+  // Body-mounted floating menu anchored under the kebab. Mirrors the genui page
+  // kebab popup (.session-row-actions / .session-row-action). Only a pin/unpin
+  // action for now; the two-click delete stays on the row's own trash button.
+  let _rowActionsEl = null;
+  function _closeRowActions() {
+    if (_rowActionsEl) { _rowActionsEl.remove(); _rowActionsEl = null; }
+    document.removeEventListener('pointerdown', _onRowActionsOutside, true);
+    document.removeEventListener('keydown', _onRowActionsEsc, true);
+    window.removeEventListener('resize', _closeRowActions);
+  }
+  function _onRowActionsOutside(e) {
+    if (_rowActionsEl && !_rowActionsEl.contains(e.target) && !e.target.closest('.session-row-kebab')) {
+      _closeRowActions();
+    }
+  }
+  function _onRowActionsEsc(e) { if (e.key === 'Escape') _closeRowActions(); }
+  function _openRowActions(sid, kebabBtn) {
+    const sess = _sessionsCache.find(s => s.id === sid);
+    const pinned = !!(sess && sess.pinned);
+    const popup = document.createElement('div');
+    popup.className = 'session-row-actions';
+    popup.dataset.id = sid;
+    popup.dataset.source = 'session-list';
+    popup.innerHTML =
+      `<button class="session-row-action" data-action="pin">${icon(pinned ? 'pin-off' : 'pin', { size: '14px' })} ${pinned ? 'Unpin session' : 'Pin session'}</button>`;
+    document.body.appendChild(popup);
+    // Position under the kebab, right-aligned, clamped to the viewport.
+    const kb = kebabBtn.getBoundingClientRect();
+    const pw = popup.offsetWidth, ph = popup.offsetHeight;
+    let left = kb.right - pw;
+    let top = kb.bottom + 4;
+    if (left < 4) left = 4;
+    if (left + pw > window.innerWidth - 4) left = window.innerWidth - pw - 4;
+    if (top + ph > window.innerHeight - 4) top = kb.top - ph - 4;
+    popup.style.left = left + 'px';
+    popup.style.top = top + 'px';
+    popup.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const actionBtn = e.target.closest('.session-row-action');
+      if (!actionBtn) return;
+      if (actionBtn.dataset.action === 'pin') { togglePin(sid); _closeRowActions(); }
+    });
+    _rowActionsEl = popup;
+    // Defer so the click that opened the popup doesn't immediately close it.
+    setTimeout(() => {
+      document.addEventListener('pointerdown', _onRowActionsOutside, true);
+      document.addEventListener('keydown', _onRowActionsEsc, true);
+      window.addEventListener('resize', _closeRowActions);
+    }, 0);
+  }
+
   if (menu) {
     menu.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -204,6 +257,17 @@ export function initSessions() {
         const row = delBtn.closest('.session-row');
         const sid = row && row.dataset.id;
         if (sid) handleDeleteClick(delBtn, sid);
+        return;
+      }
+      // Per-row "more" (⋯) kebab — opens a small popup with the pin/unpin toggle.
+      // A second click on the same kebab closes it (toggle behaviour).
+      const kebabBtn = e.target.closest('.session-row-kebab');
+      if (kebabBtn) {
+        const sid = kebabBtn.dataset.id;
+        const open = document.querySelector('.session-row-actions[data-source="session-list"]');
+        if (open && open.dataset.id === sid) { _closeRowActions(); return; }
+        _closeRowActions();
+        if (sid) _openRowActions(sid, kebabBtn);
         return;
       }
       // Footer: toggle show-hidden (manage mode) — reveals hidden rows and
@@ -258,11 +322,13 @@ export function initSessions() {
         _setTriggerLabel();
         persistSessionOrder(app.currentUserId, _sessionsCache.map(s => s.id));
       },
-      onHandleLongPress: (sid) => togglePin(sid),
     });
     attachRowLongPress(menu, {
       rowSelector: '.session-row:not(.session-child-row)',
-      ignoreSelector: '.row-drag-handle, .session-row-delete, .session-row-title-input',
+      ignoreSelector: '.row-drag-handle, .session-row-delete, .session-row-kebab, .session-row-title-input',
+      // Only a long-press ON THE SESSION NAME opens rename — not the pin icon,
+      // status dot, caret, or empty row gaps.
+      requireSelector: '.session-row-title',
       onLongPress: (sid, row) => startRename(sid, row),
     });
   }
@@ -358,7 +424,7 @@ export function initSessions() {
     populateSessionSelect(app.currentUserId);
     loopSessionChanged();
     loopVisualSessionChanged();
-    canvasSessionChanged();
+    genuiSessionChanged();
     chatActivitySessionChanged();
     _setAgentTriggerLabel();
     if (typeof app.refreshActiveAbilities === 'function') {
@@ -635,7 +701,7 @@ export function initSessions() {
     populateSessionSelect(app.currentUserId);
     loopSessionChanged();
     loopVisualSessionChanged();
-    canvasSessionChanged();
+    genuiSessionChanged();
     chatActivitySessionChanged();
     _renderAgentRows();
     _setAgentTriggerLabel();
@@ -732,18 +798,25 @@ export function initSessions() {
   }, 15000);
 
   // ── Session list poll ──
+  // PAUSE while a turn is streaming: these endpoints (/db/sessions,
+  // /db/sessions/{id}/related) open a fresh Postgres connection and run heavy
+  // queries ON the server's event loop, so polling them during a turn starves
+  // the live reply. The session list / family tabs don't change mid-turn (a new
+  // spawn is rare), so skipping is safe; a terminal event refreshes them anyway.
   setInterval(() => {
+    if (window.__agentTurnActive) return;
     const sessionMenu = document.getElementById('session-dropdown-menu');
     const menuOpen = sessionMenu && !sessionMenu.hidden;
     if (app.currentUserId && !menuOpen) {
       populateSessionSelect(app.currentUserId);
     }
-  }, 10000);
+  }, 15000);
 
   // ── Related sessions poll ──
   setInterval(() => {
+    if (window.__agentTurnActive) return;
     _fetchRelatedSessions();
-  }, 5000);
+  }, 15000);
 
   // ── Swipe navigation ──
   _initPinSwipeNavigation();

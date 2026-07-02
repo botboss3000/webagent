@@ -70,7 +70,7 @@ _ABILITIES = [
     ("automation", "Automation", "beta", "scheduled tasks + event subscriptions."),
     ("browser_control", "Browser Control", "beta", "headless Playwright browser + arbitrary HTTP."),
     ("image_generation", "Image Generation", "beta", "generate_image via the configured image model."),
-    ("visualizer", "Visualizer", "beta", "page-authoring tools for the Canvas workspace."),
+    ("visualizer", "Visualizer", "beta", "page-authoring tools for the Gen UI workspace."),
     ("ui_admin", "UI Admin", "beta", "admin UI configuration tools."),
     ("create_tools", "Create Tools", "beta", "define new DB-persisted tools at runtime."),
     ("terminal_control", "Terminal Control", "experimental", "drive interactive terminal programs (effectively shell access)."),

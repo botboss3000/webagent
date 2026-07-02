@@ -1,6 +1,6 @@
-# webAgent feedback relay
+# WebAgent feedback relay
 
-A small Cloudflare Worker that sits between the webAgent app and GitHub
+A small Cloudflare Worker that sits between the WebAgent app and GitHub
 Issues. The app (every clone in the wild, including yours) POSTs feedback
 here; this Worker applies rate limits + a blocklist, drops honeypot-tripped
 spam, and creates an issue in the configured private feedback repo.
@@ -21,7 +21,7 @@ opt-in for an operator running on their own known domain (see below).
 ## Architecture
 
 ```
-[webAgent app, anywhere]
+[WebAgent app, anywhere]
    │ POST /api/v1/feedback        (browser → FastAPI)
    ▼
 [FastAPI app/api/feedback.py]

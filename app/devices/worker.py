@@ -31,6 +31,35 @@ POLL_INTERVAL = 2.5      # seconds between ticks (responsiveness floor)
 HEARTBEAT_EVERY = 15     # seconds between presence heartbeats
 LEASE_SECONDS = 600      # a claimed job's lease before it's reclaimable
 CLAIM_LIMIT = 4          # max jobs claimed per tick
+
+# On a REMOTE shared DB (Postgres/Supabase) every tick is several network round-
+# trips (reclaim + claim + periodic heartbeat). At the local 2.5s floor that's a
+# constant drain on the slow connection that competes with the chat hot path, so
+# we poll much less often when remote. Local-DB dispatch stays snappy; remote
+# cross-device dispatch still gets an instant `kick()` for locally-enqueued jobs,
+# so only jobs that ORIGINATE on another instance wait up to the longer poll.
+REMOTE_POLL_INTERVAL = 15.0     # seconds between ticks when DB is remote
+REMOTE_HEARTBEAT_EVERY = 45     # seconds between presence heartbeats when remote
+
+
+def _poll_interval() -> float:
+    try:
+        from app.db import is_remote_db
+        if is_remote_db():
+            return REMOTE_POLL_INTERVAL
+    except Exception:
+        pass
+    return POLL_INTERVAL
+
+
+def _heartbeat_every() -> float:
+    try:
+        from app.db import is_remote_db
+        if is_remote_db():
+            return REMOTE_HEARTBEAT_EVERY
+    except Exception:
+        pass
+    return HEARTBEAT_EVERY
 MAX_JOB_AGE_SECONDS = 86400   # staleness cap: a job that has waited longer than
                               # this (e.g. a 'wait' target that stayed offline for
                               # a day) is skipped rather than fired absurdly late
@@ -79,7 +108,7 @@ class DeviceWorker:
                 logger.exception("Device worker tick failed: %s", e)
             # Wait for the next poll OR an immediate kick, whichever comes first.
             try:
-                await asyncio.wait_for(self._kick.wait(), timeout=POLL_INTERVAL)
+                await asyncio.wait_for(self._kick.wait(), timeout=_poll_interval())
             except asyncio.TimeoutError:
                 pass
             except asyncio.CancelledError:
@@ -89,24 +118,29 @@ class DeviceWorker:
 
     async def _tick(self) -> None:
         from app.db import get_db
+        from app.db.offload import db_offload
         db = get_db()
+
+        # This loop fires on a timer. Its DB round-trips are offloaded to worker
+        # threads (db_offload) so they don't periodically freeze the event loop —
+        # which would stall any live chat LLM stream. See app/db/offload.py.
 
         # 1. Heartbeat presence (throttled).
         now = time.monotonic()
-        if self._last_heartbeat == 0.0 or (now - self._last_heartbeat) >= HEARTBEAT_EVERY:
+        if self._last_heartbeat == 0.0 or (now - self._last_heartbeat) >= _heartbeat_every():
             try:
-                await db.device_heartbeat(
+                await db_offload(lambda: db.device_heartbeat(
                     identity.device_id(),
                     label=identity.device_label(),
                     capabilities=identity.capabilities(),
-                )
+                ))
                 self._last_heartbeat = now
             except Exception as e:
                 logger.debug("device heartbeat failed: %s", e)
 
         # 2. Reclaim jobs whose claimer crashed mid-run.
         try:
-            n = await db.reclaim_expired_device_jobs()
+            n = await db_offload(lambda: db.reclaim_expired_device_jobs())
             if n:
                 logger.info("Reclaimed %d expired device job(s)", n)
         except Exception as e:
@@ -114,8 +148,8 @@ class DeviceWorker:
 
         # 3. Claim + run jobs addressed to this device.
         try:
-            jobs = await db.claim_device_jobs(
-                identity.device_id(), limit=CLAIM_LIMIT, lease_seconds=LEASE_SECONDS)
+            jobs = await db_offload(lambda: db.claim_device_jobs(
+                identity.device_id(), limit=CLAIM_LIMIT, lease_seconds=LEASE_SECONDS))
         except Exception as e:
             err = str(e)
             if "no such table" in err or "does not exist" in err:

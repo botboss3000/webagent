@@ -90,6 +90,42 @@ function _activeToken(acct) {
   return (acct && acct.access_token) || localStorage.getItem('auth_token') || '';
 }
 
+/** A real signed-in member account — not an anonymous/guest identity, and not
+ *  absent. Only members can be (and should be) signed out when their session
+ *  dies; guests are re-minted at boot and the open-mode admin needs no token. */
+function _isMemberAccount(acct) {
+  return !!(acct && acct.user_id && acct.user_id.indexOf('anon_') !== 0);
+}
+
+/** True only when the active token's `exp` is provably in the past. Conservative
+ *  on purpose: an unknown/malformed exp does NOT count as "expired" here, so the
+ *  auto-sign-out below never fires on a token we merely can't read. */
+function _tokenDefinitelyExpired(acct) {
+  const expMs = _decodeJwtExpMs(_activeToken(acct));
+  return typeof expMs === 'number' && expMs <= Date.now();
+}
+
+// ── Unrecoverable session → announce once so the app can sign out cleanly ────
+//
+// A signed-in member whose access token has expired with no way to refresh it
+// (no remember-token, or the remember-token itself was revoked) is stuck in a
+// "signed-in but powerless" state: the token is still in localStorage so the UI
+// looks logged-in, but the server rejects it, so Admin Tools vanish and the chat
+// WebSocket errors with "Invalid or missing token…". We fire `webagent-auth-expired`
+// exactly once; a single global handler (main.js) does the clean sign-out +
+// reload to the sign-in form. Guarded so it can NEVER sign out the wrong caller:
+// not anonymous/guest, not the open-mode local admin (server skips JWT there),
+// and not a public per-agent page (its anon session re-mints itself).
+let _expiredAnnounced = false;
+function _announceAuthExpired(acct) {
+  if (_expiredAnnounced) return;
+  if (!_isMemberAccount(acct)) return;
+  if (!localStorage.getItem('auth_token')) return;
+  try { if (typeof window !== 'undefined' && window.__agentId) return; } catch (_) {}
+  _expiredAnnounced = true;
+  try { window.dispatchEvent(new CustomEvent('webagent-auth-expired')); } catch (_) {}
+}
+
 // ── Core: exchange remember_token → fresh JWT ──────────────────────────────
 
 /**
@@ -119,10 +155,10 @@ function _refreshToken() {
       if (!res.ok) {
         _cooldownUntil = Date.now() + _COOLDOWN_MS;
         // A 401 means the remember token itself is dead (e.g. rotated by a
-        // password change) — re-auth is genuinely required. Let listeners
-        // decide how to surface it; we don't force any UI here.
+        // password change) — re-auth is genuinely required. Announce it so the
+        // global handler signs the member out cleanly (guarded inside).
         if (res.status === 401) {
-          try { window.dispatchEvent(new CustomEvent('webagent-auth-expired')); } catch (_) {}
+          _announceAuthExpired(getActive());
         }
         return null;
       }
@@ -168,13 +204,21 @@ function _refreshToken() {
  */
 export async function ensureFreshToken() {
   const acct = getActive();
-  // Only logged-in accounts with a persistent credential can be refreshed.
-  if (!acct || !acct.remember_token) return;
+  // Without a persistent credential we cannot recall a fresh token. For a
+  // signed-in member that makes an ALREADY-expired access token unrecoverable —
+  // announce it (→ clean sign-out) instead of leaving a dead token in place.
+  // Guests/anon (re-minted at boot) and still-valid tokens are left untouched.
+  if (!acct || !acct.remember_token) {
+    if (_tokenDefinitelyExpired(acct)) _announceAuthExpired(acct);
+    return;
+  }
   const expMs = _decodeJwtExpMs(_activeToken(acct));
   // Unknown exp (malformed/missing token) → refresh; otherwise refresh only
   // when we're inside the skew window.
   if (expMs === null || (expMs - Date.now()) <= _SKEW_MS) {
-    await _refreshToken();
+    const fresh = await _refreshToken();
+    // Recall couldn't recover it and the token is provably dead → unrecoverable.
+    if (!fresh && _tokenDefinitelyExpired(getActive())) _announceAuthExpired(getActive());
   }
 }
 
@@ -259,7 +303,29 @@ function _setAuthHeader(init, token) {
   return next;
 }
 
+/** True if `init` already carries an Authorization header (any header shape). */
+function _hasAuthHeader(init) {
+  const h = init && init.headers;
+  if (!h) return false;
+  if (h instanceof Headers) return h.has('Authorization');
+  if (Array.isArray(h)) return h.some(([k]) => String(k).toLowerCase() === 'authorization');
+  return Object.keys(h).some((k) => k.toLowerCase() === 'authorization');
+}
+
 async function _patchedFetch(input, init) {
+  // Proactively attach the signed token to our OWN same-origin /api/ and /admin/
+  // calls that don't already carry one. Admin endpoints now require a
+  // cryptographically-verified caller (app/auth/identity.resolve_admin_uid) — but
+  // many admin pages call raw fetch() with only `?requesting_user_id=` and no
+  // token. Without this they'd 403 on the first try and rely on the 401-retry
+  // (which only fires when a remember_token recall succeeds). Same allowlist as
+  // the retry (_isRefreshableApiCall excludes /api/v1/auth/*). String inputs
+  // only, so a Request object's own headers are never clobbered. Public
+  // endpoints simply ignore the extra Authorization header.
+  if (typeof input === 'string' && _isRefreshableApiCall(input) && !_hasAuthHeader(init)) {
+    const tok = _activeToken(getActive());
+    if (tok) init = _setAuthHeader(init || {}, tok);
+  }
   let resp;
   try {
     resp = await _nativeFetch(input, init);
@@ -277,7 +343,13 @@ async function _patchedFetch(input, init) {
   if (!_isRefreshableApiCall(input)) return resp;
 
   const token = await _refreshToken();
-  if (!token) return resp; // couldn't refresh — surface the original 401
+  if (!token) {
+    // Couldn't refresh. If this is a signed-in member holding a provably-dead
+    // token, the session is unrecoverable — announce it so the app signs out
+    // cleanly rather than letting every authed call keep 401ing silently.
+    if (_tokenDefinitelyExpired(getActive())) _announceAuthExpired(getActive());
+    return resp; // surface the original 401
+  }
 
   const retryInput = (typeof input === 'string')
     ? _applyTokenToUrl(input, token)

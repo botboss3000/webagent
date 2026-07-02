@@ -21,7 +21,7 @@
    The dark/light split also lets each theme keep its own fallback + its
    non-palette structural tokens (edge / star hue+sat / ink).
 
-   Triples only; the canvas applies its own alphas. To re-theme independently
+   Triples only; the genui applies its own alphas. To re-theme independently
    of the palette, replace a `var(...)` with a literal triple here.
    ============================================================ */
 

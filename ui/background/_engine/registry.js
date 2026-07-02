@@ -7,11 +7,11 @@
 
        window.WA_BG.register('<id>', { start: fn, stop: fn, refresh: fn });
 
-   • start(canvas)  — begin drawing into the shared <canvas>. The
+   • start(genui)  — begin drawing into the shared <genui>. The
                       renderer owns its own sizing, listeners and
                       requestAnimationFrame loop.
    • stop()         — cancel the loop, remove its listeners, leave
-                      the canvas clean. Called when the background is
+                      the genui clean. Called when the background is
                       swapped out (theme flip or admin change).
    • refresh()      — OPTIONAL. Called when the admin edits the theme
                       colours live (Appearance panel); re-read the CSS

@@ -1,4 +1,4 @@
-"""Generate PWA icons for webAgent.
+"""Generate PWA icons for WebAgent.
 
 Renders the Lucide "bot" glyph (the same shape as ui/favicon.svg) on the
 brand's dark rounded square. The glyph is drawn supersampled (SS x) and then
@@ -77,7 +77,7 @@ def create_icon(size, output_path):
 
 
 def create_maskable_icon(size, output_path):
-    """Maskable variant: background fills the whole canvas; glyph stays in the
+    """Maskable variant: background fills the whole genui; glyph stays in the
     inner safe zone (80%) so platform masks never clip it."""
     s = size * SS
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))

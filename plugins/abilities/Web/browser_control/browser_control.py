@@ -123,7 +123,7 @@ async def http_request(
         return "Error: url must start with http:// or https://"
 
     prepared_headers = {
-        "User-Agent": "webAgent/1.0",
+        "User-Agent": "WebAgent/1.0",
     }
     if headers:
         prepared_headers.update(headers)

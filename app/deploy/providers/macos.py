@@ -7,7 +7,7 @@ target never connects anywhere: it GENERATES one command the admin pastes into
 Command Line Tools install if needed), clones the repo to ``$HOME/webagent``, then
 runs the repo's ``deploy/macos-setup.sh`` — which builds a venv, installs the
 Playwright-free dependency set (``req_no_playwright.txt``), and installs a
-**launchd** agent so webAgent runs in the background, restarts itself if it stops,
+**launchd** agent so WebAgent runs in the background, restarts itself if it stops,
 and starts again when the user logs in.
 
 This is a "manual" target (``manual = True``): no cloud key, nothing billable,
@@ -31,7 +31,7 @@ FEATURE = {
     "display_name": "macOS",
     "category": "deploy",
     "status": "beta",
-    "summary": "Install webAgent on a Mac by pasting one command into Terminal.",
+    "summary": "Install WebAgent on a Mac by pasting one command into Terminal.",
     "requires": ["A Mac (macOS)", "~2 GB free storage"],
 }
 
@@ -49,10 +49,12 @@ _TEMPLATE = (
     "echo 'If a dialog appeared, finish it, then paste this command again.'; fi; "
     "{ if [ -d \"$D/.git\" ]; then git -C \"$D\" remote set-url origin __CLONE__; "
     "else git clone --depth 1 --branch __BRANCH__ __CLONE__ \"$D\"; fi; } && "
-    "bash \"$D/deploy/macos-setup.sh\""
+    # __ADMIN__ carries the optional pre-set admin password into macos-setup.sh as a
+    # leading env assignment (WA_ADMIN_PW); it is empty when left to the first visitor.
+    "__ADMIN__bash \"$D/deploy/macos-setup.sh\""
 )
 
-# Run-only command: start the server when webAgent is ALREADY installed — no
+# Run-only command: start the server when WebAgent is ALREADY installed — no
 # clone, no rebuild. Static (no repo URL / token). (Re)loads the launchd agent the
 # installer wrote (which also starts it at login); falls back to a kickstart if
 # it's already loaded. Folder-independent (launchd), so it takes no directory.
@@ -67,7 +69,7 @@ class MacProvider(BaseDeployProvider):
     id = "macos"
     display_name = "macOS"
     icon = "laptop"
-    summary = ("Install webAgent on a Mac. You copy one command and paste it into "
+    summary = ("Install WebAgent on a Mac. You copy one command and paste it into "
                "Terminal — there is no cloud account and nothing to pay for.")
     requires = [
         "A Mac running macOS",
@@ -90,16 +92,22 @@ class MacProvider(BaseDeployProvider):
 
     # ── command generation (the single source of truth) ──
     def build_command(self, github_url: str, visibility: str = "public",
-                      token: str = "", branch: str = "", install_dir: str = "") -> Dict[str, Any]:
+                      token: str = "", branch: str = "", install_dir: str = "",
+                      admin_password: str = "") -> Dict[str, Any]:
         """Build everything the Mac row needs. ALWAYS succeeds (never
         ``{ok: False}``) — see ``manual_common.resolve_clone`` for why. Returns
         ``{ok, command, run_command, clone_display, steps, instructions,
-        reach_note, private, default_repo, placeholder_token, warning}``."""
+        reach_note, private, default_repo, placeholder_token, warning, prewire}``."""
         r = mc.resolve_clone(github_url, visibility, token)
         branch = mc._safe(branch, DEFAULT_BRANCH)
         directory = mc.resolve_dir(install_dir, mc.DEFAULT_DIR_POSIX)
+        # Optional pre-set admin password → a leading env assignment before the
+        # setup script (POSIX); empty when blank. BYTE-IDENTICAL to deploy.js `_buildMac`.
+        a = mc.resolve_admin(admin_password)
+        admin_prefix = ("WA_ADMIN_PW='" + a["password"] + "' ") if a["prewire"] else ""
         command = (_TEMPLATE.replace("__CLONE__", r["clone_url"])
-                   .replace("__BRANCH__", branch).replace("__DIR__", directory))
+                   .replace("__BRANCH__", branch).replace("__DIR__", directory)
+                   .replace("__ADMIN__", admin_prefix))
         # A display copy that hides the token (for any logging / non-QR display).
         clone_display = command.replace(r["clone_url"], r["repo"]) if r["private"] else command
 
@@ -112,16 +120,18 @@ class MacProvider(BaseDeployProvider):
             "from another device on the same network.",
         ]
         instructions = (
-            "webAgent installs into a folder in your home directory and runs in the background via "
+            "WebAgent installs into a folder in your home directory and runs in the background via "
             "launchd — it starts automatically when you log in and restarts itself if it stops. To "
             "stop it: 'launchctl unload ~/Library/LaunchAgents/com.webagent.server.plist'. To start "
             "it again: 'launchctl load -w ~/Library/LaunchAgents/com.webagent.server.plist'.")
         reach_note = "http://localhost:8080 on this Mac · http://THIS-MAC-IP:8080 on the same network"
+        warning = " ".join(w for w in (r["warning"], a["warning"]) if w)
         return {"ok": True, "command": command, "clone_display": clone_display,
                 "run_command": RUN_COMMAND, "install_dir": directory,
                 "steps": steps, "instructions": instructions, "reach_note": reach_note,
                 "private": r["private"], "default_repo": r["default_repo"],
-                "placeholder_token": r["placeholder_token"], "warning": r["warning"]}
+                "placeholder_token": r["placeholder_token"], "warning": warning,
+                "prewire": a["prewire"]}
 
     # ── test (nothing to connect to) ──
     async def test(self, config: Dict[str, Any], creds: Dict[str, Any]) -> Dict[str, Any]:
@@ -140,7 +150,7 @@ class MacProvider(BaseDeployProvider):
     async def destroy(self, config: Dict[str, Any], creds: Dict[str, Any],
                       record: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         yield done({"ok": True, "deleted": False,
-                    "message": "webAgent runs on your own Mac — stop it with: "
+                    "message": "WebAgent runs on your own Mac — stop it with: "
                                "launchctl unload ~/Library/LaunchAgents/com.webagent.server.plist"})
 
 

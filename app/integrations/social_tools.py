@@ -203,7 +203,7 @@ async def instagram_recent_media(user_id: str, agent_id: str, ig_user_id: str, m
 # ── Reddit ────────────────────────────────────────────────────────────────
 
 _REDDIT = "https://oauth.reddit.com"
-_REDDIT_UA = {"User-Agent": "webAgent/1.0"}
+_REDDIT_UA = {"User-Agent": "WebAgent/1.0"}
 
 
 async def reddit_me(user_id: str, agent_id: str) -> str:

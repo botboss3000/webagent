@@ -95,7 +95,7 @@ async def go(key: str):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Not connected</title><style>{_PAGE_CSS}</style></head>
 <body><div class="card"><h1>PC not reachable yet</h1>
-<p>This bookmark is valid, but the PC hasn't reported an address. Open webAgent
+<p>This bookmark is valid, but the PC hasn't reported an address. Open WebAgent
 on the PC, turn on a Remote Access method, and it will register here
 automatically.</p>
 <div class="muted">key: {html.escape(key)}</div></div></body></html>"""

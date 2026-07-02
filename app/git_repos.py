@@ -9,7 +9,7 @@ working-tree changes + commit graph instead.
 
 Two kinds of entry:
 
-- **The built-in webAgent repo** is always present and is *synthesized on the fly*
+- **The built-in WebAgent repo** is always present and is *synthesized on the fly*
   (never persisted): its folder is the project root and its remote/token are read
   live — the shared ``github_token`` in ``provider.json`` plus git ``origin`` — so
   selecting it behaves byte-for-byte like today. It can't be edited or removed here.
@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -47,7 +48,7 @@ _TOKEN_FILE = _PROJECT_ROOT / "data" / "config" / "provider.json"
 
 # The built-in (this-app) repo's fixed id + label.
 BUILTIN_ID = "webagent"
-BUILTIN_LABEL = "webAgent (this app)"
+BUILTIN_LABEL = "WebAgent (this app)"
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -132,8 +133,30 @@ def _save(cfg: dict) -> dict:
     return cfg
 
 
-def _builtin_entry() -> dict:
-    """The always-present webAgent repo: project root, live origin + shared token."""
+# The built-in repo's origin URL rarely changes, yet _builtin_entry() runs on
+# EVERY UI request (resolve_active → get_active_full → _all_full) and again on
+# each 5s Source Control poll — each time spawning a `git remote get-url origin`.
+# resolve_active() doesn't even use the URL (only folder + token), so this spawn
+# was pure overhead on the hot path. Cache it briefly; a changed remote (set via
+# the Edit form → invalidate_origin_cache) shows immediately, otherwise within
+# _ORIGIN_TTL seconds.
+_ORIGIN_CACHE: str = ""
+_ORIGIN_CACHE_TS: float = 0.0
+_ORIGIN_TTL = 30.0
+
+
+def invalidate_origin_cache() -> None:
+    """Force the next read to re-query git — call after changing origin's URL."""
+    global _ORIGIN_CACHE_TS
+    _ORIGIN_CACHE_TS = 0.0
+
+
+def _builtin_origin() -> str:
+    """Origin URL of this app's repo, cached for _ORIGIN_TTL seconds."""
+    global _ORIGIN_CACHE, _ORIGIN_CACHE_TS
+    now = time.monotonic()
+    if _ORIGIN_CACHE_TS and (now - _ORIGIN_CACHE_TS) < _ORIGIN_TTL:
+        return _ORIGIN_CACHE
     origin = ""
     try:
         out, _, rc = _git(["remote", "get-url", "origin"], cwd=_PROJECT_ROOT)
@@ -141,6 +164,14 @@ def _builtin_entry() -> dict:
             origin = out.strip()
     except Exception:  # noqa: BLE001
         pass
+    _ORIGIN_CACHE = origin
+    _ORIGIN_CACHE_TS = now
+    return origin
+
+
+def _builtin_entry() -> dict:
+    """The always-present WebAgent repo: project root, live origin + shared token."""
+    origin = _builtin_origin()
     return {
         "id": BUILTIN_ID,
         "label": BUILTIN_LABEL,
@@ -159,7 +190,7 @@ def _all_full() -> list[dict]:
 
 # ── Public surface ──────────────────────────────────────────────────────────
 def list_repos() -> list[dict]:
-    """All repos, webAgent first, each tagged ``builtin`` + ``active``. The raw
+    """All repos, WebAgent first, each tagged ``builtin`` + ``active``. The raw
     token is never returned — only a ``has_token`` flag — so the client can't read
     a stored key back out."""
     active = load_config()["active_id"]
@@ -261,7 +292,7 @@ def update_repo(repo_id: str, *, label=None, folder=None, remote_url=None,
     built-in repo can't be edited here."""
     rid = (repo_id or "").strip()
     if rid == BUILTIN_ID:
-        raise ValueError("The built-in webAgent repo can't be edited here.")
+        raise ValueError("The built-in WebAgent repo can't be edited here.")
     cfg = load_config()
     for r in cfg["repos"]:
         if r["id"] != rid:
@@ -288,7 +319,7 @@ def remove_repo(repo_id: str) -> dict:
     """Forget a registered repo. The built-in repo can't be removed."""
     rid = (repo_id or "").strip()
     if rid == BUILTIN_ID:
-        raise ValueError("The built-in webAgent repo can't be removed.")
+        raise ValueError("The built-in WebAgent repo can't be removed.")
     cfg = load_config()
     before = len(cfg["repos"])
     cfg["repos"] = [r for r in cfg["repos"] if r["id"] != rid]

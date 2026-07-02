@@ -1,4 +1,4 @@
-"""Remote Access — let a phone (or any device) reach this webAgent server.
+"""Remote Access — let a phone (or any device) reach this WebAgent server.
 
 Offers several connection methods through one App Config card:
 

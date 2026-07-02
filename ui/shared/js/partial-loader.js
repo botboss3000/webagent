@@ -1,6 +1,6 @@
 // Fetches HTML partials at boot and injects them into placeholder slots in
 // index.html before the main JS modules run. Two-phase load:
-//   Phase 1: top-level tab pages (Canvas / Agents / Admin Tools) — each
+//   Phase 1: top-level tab pages (Gen UI / Agents / Admin Tools) — each
 //            partial's body replaces the inner HTML of its mount.
 //   Phase 2: admin sub-pages — each partial uses <template data-slot="...">
 //            blocks whose content is appended into the matching selector
@@ -100,7 +100,7 @@ async function fetchHtml(url) {
       _serverDownWarned = true;
       const host = location.host || 'localhost:8080';
       console.error(
-        `[webAgent] Cannot reach the backend at ${host}.`,
+        `[WebAgent] Cannot reach the backend at ${host}.`,
         '\n  The server appears to be down — start it (e.g. `python -m app.main`) then refresh the page.'
       );
     }

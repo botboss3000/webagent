@@ -350,7 +350,7 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
 }
 
 /* (The builder footer row + system-agents eye toggle were removed along with the
-   page-level "Ask webAgent…" pill. The hybrid search/chat pill that replaced it
+   page-level "Ask WebAgent…" pill. The hybrid search/chat pill that replaced it
    lives above the ability table — see ui/shared/js/dom-utils.js + the
    .ability-search-pill skin in ui/shared/css/index.css.) */
 
@@ -706,7 +706,7 @@ body.light-mode .agent-card-desc { color: var(--fg-2); }
 
    KEY INSIGHT: never paint a colour to fake an edge fade. A mask paints no
    colour, so it blends into ANY background — including one that changes at
-   runtime (e.g. the live stargaze canvas behind the main header). Pair it with
+   runtime (e.g. the live stargaze genui behind the main header). Pair it with
    transparent chevron buttons sitting over the faded edge (see .agent-card-tabs-chev
    below). The header tab strip reuses this exact method — see the
    "Masked edge-fade carousel" block in design-system.css (#main-tabs). Reuse it
@@ -953,7 +953,7 @@ body.light-mode .agent-card-chat-btn:hover { background: rgba(var(--brand-rgb), 
 .agent-detail-body::-webkit-scrollbar-thumb { background: var(--bg-tint); border-radius: 3px; }
 
 /* (The page-level "Agent Manager" floating chat bar (#agent-builder-bar) was
-   removed. Its hybrid replacement — live ability search + chat-to-webAgent — now
+   removed. Its hybrid replacement — live ability search + chat-to-WebAgent — now
    sits inline above the ability table inside each agent's Abilities tab. The pill
    geometry still comes from the shared .chat-pill* block in app1.css and its
    floating-glass skin (.ability-search-pill) from index.css.) */

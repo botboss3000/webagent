@@ -371,7 +371,7 @@ async def create_agent(
         just the app-global baseline identity. You then write its persona with
         edit_agent_prompt. Use this when no template fits.
 
-    EITHER way the agent is created as a BARE canvas — **no abilities are
+    EITHER way the agent is created as a BARE genui — **no abilities are
     enabled**. This is deliberate: you add only the abilities you justified in
     the plan, one at a time, with `set_agent_ability`, so every capability is
     intentional (never inherited-then-pruned). Refine prompts/limits afterwards
@@ -389,7 +389,7 @@ async def create_agent(
             # "none" value creates a from-scratch agent (the DB layer normalises
             # the no-template sentinels). No silent fallback to "default".
             template_id=template_id or "",
-            seed_abilities=False,  # bare canvas — abilities added deliberately
+            seed_abilities=False,  # bare genui — abilities added deliberately
         )
         slim = {
             "id": agent.get("id"),

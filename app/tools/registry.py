@@ -1,5 +1,5 @@
 """
-Dynamic tool registry for webAgent agent.
+Dynamic tool registry for WebAgent agent.
 
 Replaces the hardcoded tools with database-backed dynamic loading.
 Provides the real implementation of create_tool (writes Python code to the DB)

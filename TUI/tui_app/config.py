@@ -1,11 +1,11 @@
 """Configuration + provider resolution for the webagent TUI.
 
-Three things are resolved here, all independent of the webAgent server:
+Three things are resolved here, all independent of the WebAgent server:
 
 * **data dir** — a per-user directory for the TUI's OWN state (its external
-  database, config). Deliberately outside any webAgent checkout so a Clear
+  database, config). Deliberately outside any WebAgent checkout so a Clear
   DB / Full Reset of the web app never touches the server manager's memory.
-* **project dir** — the target webAgent checkout the agent operates on.
+* **project dir** — the target WebAgent checkout the agent operates on.
 * **LLM provider** — api key / base url / model, resolved from (highest first):
   an explicit per-TUI ``WEBAGENT_*`` override, then the linked repo's
   ``provider.json`` (the live, *complete* credential store the web app itself
@@ -107,7 +107,7 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 def _load_provider_json(project_dir: Path) -> dict[str, str]:
     """Read the web app's ``provider.json`` and return a *coherent* provider triple.
 
-    ``provider.json`` is the credential store the webAgent server itself uses, so
+    ``provider.json`` is the credential store the WebAgent server itself uses, so
     its base_url / api_key / model always agree (unlike the project's ``.env``,
     whose ``OPENROUTER_*`` values are often partial or stale). Mirrors the
     selection in ``app/admin/settings.py``: prefer the ``admin`` profile

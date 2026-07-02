@@ -182,21 +182,10 @@ def _acl_clause(table: str, user_id: Optional[str], is_admin: bool) -> tuple[Opt
 
 
 def _is_open_access_mode() -> bool:
-    """True when the app is running in 'open' access mode.
-
-    In open mode the auth middleware already trusts every request as the
-    bootstrap admin (single-user / local convenience, no cross-tenant risk).
-    The per-session participant gates below must mirror that: when the app is
-    reached through a Cloudflare Tunnel etc., the frontend has no localhost
-    JWT to present, so a strict valid-token check would wrongly mark EVERY
-    session `restricted` and the chat would show "New session" for all of
-    them. Honour open mode here so the gate matches the middleware.
-    """
-    try:
-        from app.admin.settings import get_access_mode
-        return get_access_mode() == "open"
-    except Exception:
-        return False
+    """Always False — the 'open' auto-admin access mode was retired. Kept as a
+    stable name for the per-session participant gates below, which now always
+    apply strict token checks."""
+    return False
 
 
 def _get_db_path(name: str = "local.db") -> Path:
@@ -234,8 +223,18 @@ def _open(db: str = "local.db"):
     if conninfo:
         from app.db.pg_portable import connect_standalone
         return connect_standalone(conninfo), "postgres"
-    conn = sqlite3.connect(str(_get_db_path(db)))
-    conn.row_factory = sqlite3.Row
+    # Route through db_crypto so the viewer can open SQLCipher-encrypted files.
+    # Map the canonical filenames to their db_id; anything else (per-session temp
+    # / sibling DBs) is opened as plaintext via an unrecognised id. db_crypto sets
+    # the matching row factory — do NOT reassign it (stdlib Row rejects a cipher
+    # cursor).
+    from app.db import db_crypto
+    _DB_ID_BY_FILE = {
+        "local.db": "local", "vault.db": "vault",
+        "logs.db": "logs", "recordings.db": "recordings", "wiki.db": "wiki",
+    }
+    db_id = _DB_ID_BY_FILE.get(Path(db).name, "_viewer_other")
+    conn = db_crypto.connect(str(_get_db_path(db)), db_id)
     return conn, "sqlite"
 
 
@@ -706,7 +705,7 @@ async def reorder_sessions(
 
 
 @router.get("/sessions")
-async def list_sessions(
+def list_sessions(
     request: Request,
     user_id: str = Query(..., description="User ID"),
     db: str = Query("local.db", description="Database filename"),
@@ -1010,7 +1009,7 @@ def _session_meta_get(cur, sid: str, key: str):
 
 
 @router.get("/sessions/{session_id}/related")
-async def get_session_related(
+def get_session_related(
     session_id: str,
     request: Request,
     db: str = Query("local.db", description="Database filename"),
@@ -1023,8 +1022,8 @@ async def get_session_related(
     * Browser sessions: rows from ``browser_sessions`` where the linked
       agent matches the session's agent_id (if any).
     """
-    from app.auth.identity import assert_caller_is
-    user_id = await assert_caller_is(request, None)
+    from app.auth.identity import caller_uid_sync
+    user_id = caller_uid_sync(request)
 
     db_path = _get_db_path(db)
     # `children` is the unified family-member list (spawned helpers OR optimizer
@@ -1223,7 +1222,7 @@ async def get_session_related(
         used_browser = False
         try:
             from app.db.logs_store import get_log_store
-            _bx = await get_log_store().query_tool_executions(
+            _bx = get_log_store().query_tool_executions_sync(
                 tool_name="browser_action", session_id=session_id, limit=1
             )
             used_browser = bool(_bx)
@@ -1302,7 +1301,7 @@ def _user_row_attachments(input_raw, att_by_id):
 
 
 @router.get("/session-messages")
-async def get_session_messages(
+def get_session_messages(
     request: Request,
     session_id: str = Query(..., description="Session ID"),
     limit: int = Query(20, description="Max messages to return (per edge when `around_id` is set)"),
@@ -1777,6 +1776,7 @@ async def get_session_turn_detail(
 
         id_list = [s for s in (ids or "").split(",") if s]
         details = {}
+        needs_merge = []  # ids whose fat input/output may be split-local (hybrid)
         for aid in id_list:
             try:
                 cur.execute(
@@ -1789,22 +1789,49 @@ async def get_session_turn_detail(
                 tools = []
                 try:
                     cur.execute(
-                        "SELECT tool_name, content, output, metadata FROM interactions "
+                        "SELECT id, tool_name, content, output, metadata FROM interactions "
                         f"WHERE parent_id = ? AND session_id = ? ORDER BY created_at ASC, {_tb} ASC",
                         (aid, session_id),
                     )
                     for tr in cur.fetchall():
                         tools.append({
-                            "tool_name": tr[0],
-                            "content": tr[1],
-                            "output": tr[2],
-                            "metadata": tr[3],
+                            "id": tr[0],
+                            "tool_name": tr[1],
+                            "content": tr[2],
+                            "output": tr[3],
+                            "metadata": tr[4],
                         })
+                        if tr[3] is None:
+                            needs_merge.append(tr[0])
                 except Exception:
                     pass
                 details[aid] = {"input": r[0], "output": r[1], "metadata": r[2], "tools": tools}
+                if r[0] is None or r[1] is None:
+                    needs_merge.append(aid)
             except Exception:
                 continue
+
+        # Hybrid split: the fat input/output for newer rows live in the LOCAL
+        # side-table, not on the remote skeleton this viewer just queried. Restore
+        # them so the admin sees the full payloads. Strict no-op when hybrid is off.
+        try:
+            from app.db.hybrid import hybrid_enabled, load_local_payloads_sync
+            if needs_merge and hybrid_enabled():
+                payloads = load_local_payloads_sync(needs_merge)
+                if payloads:
+                    for _aid, _d in details.items():
+                        p = payloads.get(_aid)
+                        if p:
+                            if _d.get("input") is None and p.get("input") is not None:
+                                _d["input"] = p["input"]
+                            if _d.get("output") is None and p.get("output") is not None:
+                                _d["output"] = p["output"]
+                        for _t in _d.get("tools", []):
+                            tp = payloads.get(_t.get("id"))
+                            if tp and _t.get("output") is None and tp.get("output") is not None:
+                                _t["output"] = tp["output"]
+        except Exception:
+            pass
 
         conn.close()
         return {"details": details, "session_id": session_id, "db": db}
@@ -1815,7 +1842,7 @@ async def get_session_turn_detail(
 
 
 @router.get("/session-tail")
-async def get_session_tail(
+def get_session_tail(
     request: Request,
     session_id: str = Query(..., description="Session ID"),
     after_session_seq: int = Query(0, description="Return only interactions with session_seq greater than this"),
@@ -2157,16 +2184,16 @@ async def session_stats(
 
         session_ids = list(sessions_map.keys())
 
-        # Which sessions touched a canvas or a web browser page? Derived from the
-        # tool_executions log (logs.db) — a session is "linked" to a canvas if it
-        # ran any canvas build/edit tool, and to a browser page if it drove the
-        # live browser. No FK on the canvas/browser rows is needed for this.
-        _CANVAS_TOOLS = [
-            "render_visual", "edit_canvas", "create_canvas",
-            "set_canvas_data", "rename_canvas", "screenshot_canvas",
+        # Which sessions touched a genui or a web browser page? Derived from the
+        # tool_executions log (logs.db) — a session is "linked" to a genui if it
+        # ran any genui build/edit tool, and to a browser page if it drove the
+        # live browser. No FK on the genui/browser rows is needed for this.
+        _GENUI_TOOLS = [
+            "render_visual", "edit_genui", "create_genui",
+            "set_genui_data", "rename_genui", "screenshot_genui",
         ]
         _BROWSER_TOOLS = ["browser_action"]
-        canvas_sessions: set = set()
+        genui_sessions: set = set()
         browser_sessions_used: set = set()
         try:
             from app.db.logs_store import get_log_store
@@ -2174,13 +2201,13 @@ async def session_stats(
             # (the loop's tool events don't stamp it). Correctness instead comes
             # from only flagging sessions that are in this user's session map.
             usage = await get_log_store().session_tool_usage(
-                _CANVAS_TOOLS + _BROWSER_TOOLS
+                _GENUI_TOOLS + _BROWSER_TOOLS
             )
-            _canvas_set = set(_CANVAS_TOOLS)
+            _genui_set = set(_GENUI_TOOLS)
             _browser_set = set(_BROWSER_TOOLS)
             for sid_used, tools in usage.items():
-                if tools & _canvas_set:
-                    canvas_sessions.add(sid_used)
+                if tools & _genui_set:
+                    genui_sessions.add(sid_used)
                 if tools & _browser_set:
                     browser_sessions_used.add(sid_used)
         except Exception:
@@ -2351,7 +2378,7 @@ async def session_stats(
                 "total_tokens": total_tokens,
                 "total_duration_ms": total_duration_ms,
                 "total_cost": resolved_cost,
-                "has_canvas": sid in canvas_sessions,
+                "has_genui": sid in genui_sessions,
                 "has_browser": sid in browser_sessions_used,
                 "child_count": child_counts.get(sid, 0),
                 "parent_session_id": parent_of.get(sid),

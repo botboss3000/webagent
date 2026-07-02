@@ -1186,7 +1186,7 @@ async def use_connector_browser(bs_id: str, *, user_id: Optional[str] = None) ->
         return {"success": False, "backend": _backend.get(bs_id, "headless"),
                 "connected": False, "error": "extension_not_connected",
                 "message": "No browser extension is connected for this user. Install and "
-                           "connect the webAgent browser extension, then try again."}
+                           "connect the WebAgent browser extension, then try again."}
 
     # Tear down any headless instance we launched for this key (ours → safe to
     # close). Never touch an attached on-device window.

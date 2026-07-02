@@ -24,7 +24,7 @@
 
   var REPEL = 90;          // cursor influence radius (px)
 
-  var canvas, ctx;
+  var genui, ctx;
   var DPR = Math.min(window.devicePixelRatio || 1, 2);
   var W = 0, H = 0;
   var parts = [];
@@ -61,8 +61,8 @@
 
   function resize() {
     W = window.innerWidth; H = window.innerHeight;
-    canvas.width = W * DPR; canvas.height = H * DPR;
-    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    genui.width = W * DPR; genui.height = H * DPR;
+    genui.style.width = W + 'px'; genui.style.height = H + 'px';
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     readPalette();
     build();
@@ -121,7 +121,7 @@
 
   function start(cv) {
     if (running) return;
-    canvas = cv; ctx = canvas.getContext('2d');
+    genui = cv; ctx = genui.getContext('2d');
     if (reduced) { resize(); return; }
     running = true;
     window.addEventListener('pointermove', onPointerMove);

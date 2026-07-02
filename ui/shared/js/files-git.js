@@ -121,7 +121,7 @@ let _prodState = null;
 // any local git folder + its own GitHub remote + key and the whole page (Changes,
 // commit graph, commit/push/pull) re-points to THAT repo. The list comes from
 // GET /api/v1/github/repos; each entry is {id,label,folder,remote_url,has_token,
-// builtin,active}. webAgent (builtin) is always first and can't be removed —
+// builtin,active}. WebAgent (builtin) is always first and can't be removed —
 // selecting it behaves exactly like before. Selecting another repo is a server-side
 // switch (app/api/github.py _use_active_repo), so a refresh shows that repo's data.
 let _repos = [];          // last-loaded repo list
@@ -132,7 +132,7 @@ let _repoError = '';       // transient error shown under the selector (switch/r
 
 function _activeRepo() { return _repos.find(r => r.active) || _repos[0] || null; }
 
-// The token row + Production section are webAgent-only concepts, so they hide when
+// The token row + Production section are WebAgent-only concepts, so they hide when
 // a different repo is active (that repo's key is managed in its own Edit form).
 function _isActiveBuiltin() { const a = _activeRepo(); return !a || !!a.builtin; }
 
@@ -193,7 +193,7 @@ function renderGitPanel(rootEl) {
     return;
   }
   // Status error AND no cached status = can't render anything useful. Still show
-  // the repo selector so the user can switch back to a working repo (e.g. webAgent)
+  // the repo selector so the user can switch back to a working repo (e.g. WebAgent)
   // when the selected one errors (bad folder, missing key, etc.).
   if (_state.err && !_state.status) {
     body.innerHTML = renderRepoSelector() +
@@ -234,7 +234,7 @@ function renderGitPanel(rootEl) {
 // repository…" action, and (for non-default repos) per-row Edit / Remove.
 function renderRepoSelector() {
   const active = _activeRepo();
-  const label = _esc(active ? active.label : 'webAgent (this app)');
+  const label = _esc(active ? active.label : 'WebAgent (this app)');
   const folder = _esc(active ? active.folder : '');
   const rows = _repos.map((r) => {
     const isActive = !!r.active;
@@ -295,7 +295,7 @@ function renderRepoForm() {
   const editing = _repoFormMode !== 'add';
   const r = editing ? _repos.find((x) => x.id === _repoFormMode) : null;
   const builtin = !!(r && r.builtin);
-  const title = editing ? (builtin ? 'Edit webAgent repository' : 'Edit repository') : 'Add repository';
+  const title = editing ? (builtin ? 'Edit WebAgent repository' : 'Edit repository') : 'Add repository';
   const saveLbl = editing ? 'Save' : 'Add';
   const label = _esc(r ? r.label : '');
   const folder = _esc(r ? r.folder : '');
@@ -435,9 +435,9 @@ async function selectRepo(rootEl, id) {
     renderGitPanel(rootEl);
     return;
   }
-  _prodState = null;                       // production status is webAgent-only
+  _prodState = null;                       // production status is WebAgent-only
   await refreshGit(rootEl, { remote: true });
-  loadProdState(rootEl);                    // refills the card if we switched back to webAgent
+  loadProdState(rootEl);                    // refills the card if we switched back to WebAgent
 }
 
 function openRepoForm(rootEl, mode) {
@@ -505,7 +505,7 @@ async function removeRepoEntry(rootEl, id) {
     renderGitPanel(rootEl);
     return;
   }
-  // Removing the active repo makes the server fall back to webAgent — refresh.
+  // Removing the active repo makes the server fall back to WebAgent — refresh.
   _prodState = null;
   await refreshGit(rootEl, { remote: true });
   loadProdState(rootEl);
@@ -696,7 +696,7 @@ function renderSyncSection(s) {
 // is its own repo (own history), regenerated on demand by the Release button.
 // State comes from GET /api/v1/github/production/status (cached in _prodState).
 function renderProductionSection(s) {
-  // Production (trimmed mirror) publishes THIS app's repo, so it's webAgent-only —
+  // Production (trimmed mirror) publishes THIS app's repo, so it's WebAgent-only —
   // hide it when a different repo is selected.
   if (!_isActiveBuiltin()) return '';
   const p = _prodState;

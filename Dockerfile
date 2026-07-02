@@ -29,7 +29,7 @@ RUN pip install --user --upgrade pip setuptools wheel && \
 FROM python:3.12-slim AS runtime
 
 # ── Build metadata ────────────────────────────────────────────────────────────
-LABEL description="webAgent — FastAPI agent harness"
+LABEL description="WebAgent — FastAPI agent harness"
 
 # ── Hardened system packages ──────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -69,7 +69,7 @@ EXPOSE ${APP_PORT}
 
 # tini reaps zombie processes and forwards signals cleanly
 ENTRYPOINT ["/usr/bin/tini", "--"]
-# webAgent is an ASGI app (app.main:app) served by uvicorn on :8080 — the same
+# WebAgent is an ASGI app (app.main:app) served by uvicorn on :8080 — the same
 # server, port and WebSocket stack (wsproto) that run.py uses. Multi-worker is
 # supported and correct: the singleton background loops run in ONE worker via the
 # leader lock (app/coordination/leader.py), and cross-worker chat turns stream via

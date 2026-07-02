@@ -1,5 +1,5 @@
 @echo off
-title webAgent - Build .exe
+title WebAgent - Build .exe
 cd /d "%~dp0launcher"
 setlocal enabledelayedexpansion
 
