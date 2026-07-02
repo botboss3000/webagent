@@ -37,6 +37,11 @@ export function createTerminalInstance(container, sessionId, opts) {
   // mark that conversation "already open" (so a second click skips it). Empty
   // for ordinary terminal tabs.
   const claudeSessionId = typeof opts.claudeSessionId === 'string' ? opts.claudeSessionId : '';
+  // When this tab is an SSH launcher (a saved deploy server), the server's id.
+  // Sent up on every connect as ?ssh_server_id=; the backend opens an SSH shell
+  // to that server on first creation instead of a local shell (a reload just
+  // reattaches to the running remote shell). Empty for ordinary terminal tabs.
+  const sshServerId = typeof opts.sshServerId === 'string' ? opts.sshServerId : '';
   // Friendly name passed up to the backend on each connect; the server stores
   // it on the TerminalSession so other devices see a useful label in the
   // "Your sessions" sidebar list instead of the raw UUID. May be a function
@@ -320,8 +325,11 @@ export function createTerminalInstance(container, sessionId, opts) {
     const claudeParam = claudeSessionId
       ? '&claude_session=' + encodeURIComponent(claudeSessionId)
       : '';
+    const sshParam = sshServerId
+      ? '&ssh_server_id=' + encodeURIComponent(sshServerId)
+      : '';
     ws = new WebSocket(
-      termWsUrl() + '?session_id=' + encodeURIComponent(sessionId) + tokenParam + nameParam + claudeParam,
+      termWsUrl() + '?session_id=' + encodeURIComponent(sessionId) + tokenParam + nameParam + claudeParam + sshParam,
     );
     ws.binaryType = 'arraybuffer';
 
@@ -358,6 +366,15 @@ export function createTerminalInstance(container, sessionId, opts) {
               if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'pong' }));
               }
+            } catch (_) {}
+            return;
+          }
+          if (msg.type === 'error') {
+            // Server-side refusal with a reason (e.g. an SSH connect/auth
+            // failure, or the session cap). Show it in the tab; the socket
+            // closes right after, so no reconnect is attempted.
+            try {
+              term.write('\r\n\x1b[31m[' + String(msg.message || 'error') + ']\x1b[0m\r\n');
             } catch (_) {}
             return;
           }

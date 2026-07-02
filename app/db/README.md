@@ -63,9 +63,9 @@ Copy data with `python -m app.db.migrate_sqlite_to_pg` (see `migrate_sqlite_to_p
 
 **Still SQLite-only even under Postgres:** the optimizer self-improvement subsystem (`app/optimizer/`, `app/tools/optimizer_tools.py` — temp `.db` scratch files). The admin DB Viewer (`app/api/db_viewer.py`) is now backend-aware (routes the main DB to Postgres via `_open()` + a standalone autocommit `PgPortableConnection`; temp `.db` files stay SQLite).
 
-## Hybrid local-first backend — `hybrid.py` + `sync/` (opt-in, OFF by default)
+## Hybrid local-first backend — `hybrid.py` + `sync/` (ON by default)
 
-`HybridBackend` decorates a **`(local SQLite, remote Postgres)` pair** — the same duck-typed decorator shape as `EncryptedStorageBackend` (it does **not** inherit the `StorageBackend` ABC; `__getattr__` delegates). `get_db()` wraps a reachable Postgres remote with it when `app/db_hybrid.json` (`{"enabled": true}`) or env `WEBAGENT_DB_HYBRID` is on. On a local-only install it is a strict no-op. Composition order is **`Enc(Hybrid(local, remote))`** — encryption stays outermost so field-level secret encryption still sees one backend and authoritative `auth_element_*` reads resolve against the remote.
+`HybridBackend` decorates a **`(local SQLite, remote Postgres)` pair** — the same duck-typed decorator shape as `EncryptedStorageBackend` (it does **not** inherit the `StorageBackend` ABC; `__getattr__` delegates). `get_db()` wraps a reachable Postgres remote with it unless `app/db_hybrid.json` (`{"enabled": false}`) or env `WEBAGENT_DB_HYBRID` explicitly turns it off (absent = on). On a local-only install it is a strict no-op. Composition order is **`Enc(Hybrid(local, remote))`** — encryption stays outermost so field-level secret encryption still sees one backend and authoritative `auth_element_*` reads resolve against the remote.
 
 **Correct-by-default routing.** Every method not explicitly overridden delegates to the **remote authority** — i.e. today's behaviour when Postgres is active. That means money / identity / coordination (billing, `usage_events`, `wallets`, `run_state_*`, interrupts, `background_leader`, `device_*`, `user_profiles`/`is_user_admin`, `auth_element_*`) resolve against Postgres and are **never** sourced from the forgeable local copy. Localizing a method is an opt-in override, so a new method is safe by default.
 

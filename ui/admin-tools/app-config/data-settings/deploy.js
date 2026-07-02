@@ -238,7 +238,9 @@ function _renderProvider() {
   // Tear-down only when there's a recorded server
   const dep = p.deployment || {};
   if (destroyBtn) destroyBtn.style.display = dep.server ? '' : 'none';
-  _renderDeployResult(dep);      // live address of the current deployment (if any)
+  // Session-only: show the address only if a deploy happened in THIS session for
+  // this target, never rebuilt from the saved record — so reopening the page clears it.
+  _renderDeployResult((_sessionDeploy && _sessionDeploy.provider === _provider()) ? _sessionDeploy.dep : null);
   _setStatus('');
   if (window.lucide) { try { lucide.createIcons(); } catch {} }
 }
@@ -308,9 +310,12 @@ function _restorePreserved() {
   put(['#ac-deploy-creds'], _preserve.cred);
 }
 
-// Show the live address of the current deployment below the status line — set on
-// a successful Activate and rebuilt from the saved deployment record on reload, so
-// it survives the re-render. Blank record → hidden.
+// Session-only live-address banner. Shown right after a successful deploy in THIS
+// browser session (see `_sessionDeploy`) and it survives the in-session _load()
+// re-render — but it is NOT rebuilt from the saved deployment record on a fresh
+// page load, so reopening the page clears it. Blank → hidden. (Tear-down still keys
+// off the saved `dep` record, not this banner.)
+let _sessionDeploy = null;      // { provider, dep } from a deploy done this session
 function _renderDeployResult(dep) {
   const el = _qs('ac-deploy-result');
   if (!el) return;
@@ -555,10 +560,11 @@ function _instBar(i) {
     + '</div>';
 }
 
-// The hub's body: change this app's own port (persist + relaunch), then the
-// SETUP BUNDLE tools — share THIS install's config as one encrypted code, or
-// import a code from another install. See app/admin/bootstrap_bundle.py; the
-// former per-row DB "Share (QR)" folded in here (database is one section).
+// The hub's body: change this app's own port (persist + relaunch). The SETUP
+// BUNDLE tools (export / import a config code) are NO LONGER nested here — they
+// are two static top-level rows in #ac-deploy-list (see data-settings.html →
+// #ac-deploy-export-row / #ac-deploy-import-row), siblings of "+ New deployment",
+// wired below in initDeploy. Engine: app/admin/bootstrap_bundle.py.
 function _hubBody(i) {
   return '<label class="ac-label">Change this app’s port</label>'
     + '<input class="ac-input" type="number" min="1024" max="65535" data-hub-port value="' + _escAttr(String(i.port)) + '">'
@@ -566,64 +572,6 @@ function _hubBody(i) {
     + '<div class="ac-ra-actions" style="margin-top:10px;">'
     +   '<button class="ac-btn ac-deploy-go-btn" type="button" data-hub-save>Change &amp; relaunch</button>'
     +   '<span class="ac-hint" data-hub-status style="margin-left:6px;"></span>'
-    + '</div>'
-    + _bootShareBody()
-    + _bootImportBody();
-}
-
-// The four things a setup bundle can carry — checkbox order = display order.
-const _BOOT_SECTIONS = [
-  { id: 'admin',    label: 'Admin login', desc: 'the admin username + password' },
-  { id: 'llm',      label: 'AI model & key', desc: 'provider, preset model, the saved-model table + API key' },
-  { id: 'database', label: 'Database', desc: 'the app database connection (+ password)' },
-  { id: 'vault',    label: 'Secrets vault', desc: 'which vault backend and its connection' },
-];
-
-// ── Share this app's setup ──────────────────────────────────────────────────
-// Tick what to include, type this app's admin password (authorises + encrypts),
-// Create → an encrypted code + QR appear inline. Anyone with the code AND the
-// password can provision a new install, so the result box says so plainly.
-function _bootShareBody() {
-  const checks = _BOOT_SECTIONS.map(s =>
-    '<label class="ac-boot-check" style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;cursor:pointer;">'
-    + '<input type="checkbox" data-boot-sec="' + s.id + '" checked style="margin-top:2px;">'
-    + '<span><strong>' + _esc(s.label) + '</strong> — <span style="color:var(--fg-3);">' + _esc(s.desc) + '</span></span>'
-    + '</label>').join('');
-  return '<div style="margin-top:16px;border-top:var(--border-width) solid var(--border);padding-top:12px;">'
-    + '<div style="font-weight:600;font-size:12px;margin-bottom:2px;">Clone this app’s setup</div>'
-    + '<div class="ac-hint" style="font-size:11px;margin-bottom:8px;line-height:1.5;">Package this install’s configuration into one code, then paste it into a freshly-cloned WebAgent (on its setup page, or here) so it comes up ready. The code is encrypted with this app’s admin password.</div>'
-    + checks
-    + '<label class="ac-label" style="margin-top:10px;">This app’s admin password</label>'
-    + '<input class="ac-input" type="password" data-boot-share-pw autocomplete="off" placeholder="unlocks + encrypts the code">'
-    + '<div class="ac-ra-actions" style="margin-top:10px;">'
-    +   '<button class="ac-btn ac-deploy-go-btn" type="button" data-boot-share><i data-lucide="share-2"></i> Create setup code</button>'
-    +   '<span class="ac-hint" data-boot-share-status style="margin-left:6px;"></span>'
-    + '</div>'
-    + '<div data-boot-share-result style="display:none;margin-top:12px;">'
-    +   '<div class="ac-info-banner" style="border-left-color:var(--warning);font-size:11px;line-height:1.5;margin-bottom:8px;">Anyone with this code <em>and</em> the admin password can configure a new install with these keys. Treat it like a password — share it privately.</div>'
-    +   '<div data-boot-qr style="max-width:220px;margin:0 auto 8px;"></div>'
-    +   '<textarea data-boot-code readonly rows="3" style="width:100%;padding:6px 8px;border:var(--border-width) solid var(--border);border-radius:4px;font-size:11px;font-family:var(--font-mono,monospace);background:transparent;color:inherit;resize:vertical;word-break:break-all;"></textarea>'
-    +   '<div class="ac-ra-actions" style="margin-top:6px;"><button class="ac-btn" type="button" data-boot-copy><i data-lucide="copy"></i> Copy code</button></div>'
-    + '</div>'
-    + '</div>';
-}
-
-// ── Import a setup code ─────────────────────────────────────────────────────
-// Paste a code + the SOURCE admin password → Preview shows, per section, what it
-// carries and whether this install already has it (fill / overwrite / skip) →
-// Apply runs it through the same save paths the admin UI uses.
-function _bootImportBody() {
-  return '<div style="margin-top:14px;border-top:var(--border-width) solid var(--border);padding-top:12px;">'
-    + '<div style="font-weight:600;font-size:12px;margin-bottom:2px;">Import a setup code</div>'
-    + '<div class="ac-hint" style="font-size:11px;margin-bottom:8px;line-height:1.5;">Paste a code from another WebAgent to bring its configuration into this install. Enter the <em>source</em> install’s admin password to unlock it.</div>'
-    + '<textarea data-boot-import-code rows="3" placeholder="Paste the setup code (WABOOT1…) here" style="width:100%;padding:6px 8px;border:var(--border-width) solid var(--border);border-radius:4px;font-size:11px;font-family:var(--font-mono,monospace);background:transparent;color:inherit;resize:vertical;word-break:break-all;"></textarea>'
-    + '<label class="ac-label" style="margin-top:8px;">Source admin password</label>'
-    + '<input class="ac-input" type="password" data-boot-import-pw autocomplete="off" placeholder="the admin password of the app you copied from">'
-    + '<div class="ac-ra-actions" style="margin-top:10px;">'
-    +   '<button class="ac-btn" type="button" data-boot-preview><i data-lucide="eye"></i> Preview</button>'
-    +   '<span class="ac-hint" data-boot-import-status style="margin-left:6px;"></span>'
-    + '</div>'
-    + '<div data-boot-preview-result style="display:none;margin-top:12px;"></div>'
     + '</div>';
 }
 
@@ -666,10 +614,6 @@ function _onInstClick(e) {
   if (e.target.closest('[data-remove]')) { _instRemove(id); return; }
   if (e.target.closest('[data-inst-save]')) { _instSave(id, row); return; }
   if (e.target.closest('[data-hub-save]')) { _hubSave(row); return; }
-  if (e.target.closest('[data-boot-share]')) { _bootShare(row); return; }
-  if (e.target.closest('[data-boot-copy]')) { _bootCopy(row, e.target.closest('[data-boot-copy]')); return; }
-  if (e.target.closest('[data-boot-preview]')) { _bootPreview(row); return; }
-  if (e.target.closest('[data-boot-apply]')) { _bootApply(row); return; }
   const head = e.target.closest('.ac-ability-row');
   if (head && head.parentElement === row) {
     if (e.target.closest('input, textarea, select, button, a, label')) return;
@@ -746,9 +690,13 @@ async function _hubSave(row) {
   } catch (e) { setStatus(e.message, true); }
 }
 
-// ── Setup bundle: share / import (on the "This app" hub row) ──────────────────
-// All server-side (crypto in Python): browser crypto.subtle is unavailable on
-// plain-http LAN addresses, and moving config between devices is the whole point.
+// ── Setup bundle: export / import (the two static rows in #ac-deploy-list) ────
+// "Export config to link another account" (#ac-deploy-export-row) and "Import
+// config to link this account" (#ac-deploy-import-row) are static top-level rows
+// (siblings of "+ New deployment"), wired in initDeploy. `row` here is that bar
+// element. All server-side (crypto in Python): browser crypto.subtle is
+// unavailable on plain-http LAN addresses, and moving config between devices is
+// the whole point.
 
 async function _bootShare(row) {
   const status = row.querySelector('[data-boot-share-status]');
@@ -805,20 +753,23 @@ async function _bootPreview(row) {
   set('');
   const host = row.querySelector('[data-boot-preview-result]');
   if (!host) return;
+  // Password verified → show what the code carries (read-only) and the Accept
+  // button. Accept adopts every carried section (overwrite) so this install
+  // points at the same setup as the source — that's what "link this account"
+  // means; the confirm dialog in _bootApply is the safety net. The carried
+  // section names ride a data-attr so _bootApply can build the choices map.
+  const secs = (r.sections || []).map(s => s.section).filter(Boolean);
+  host.dataset.sections = secs.join(',');
   const rows = (r.sections || []).map(s =>
-    '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:var(--border-width) solid var(--border);">'
-    + '<div style="flex:1;min-width:0;font-size:12px;">' + _esc(s.summary)
-    +   (s.present_now ? ' <span class="ac-deploy-badge ac-deploy-badge-warn" style="margin-left:4px;">already set</span>' : '')
-    + '</div>'
-    + '<select class="ac-input" data-boot-choice="' + _escAttr(s.section) + '" style="width:auto;flex:0 0 auto;font-size:11px;padding:4px 6px;">'
-    +   (s.present_now
-        ? '<option value="fill">Fill blanks only</option><option value="overwrite">Overwrite</option><option value="skip">Skip</option>'
-        : '<option value="overwrite" selected>Import</option><option value="skip">Skip</option>')
-    + '</select>'
+    '<div class="ac-boot-preview-row">'
+    + '<span>' + _esc(s.summary) + '</span>'
+    + (s.present_now ? '<span class="ac-deploy-badge ac-deploy-badge-warn">already set</span>' : '')
     + '</div>').join('');
-  host.innerHTML = rows
+  host.innerHTML =
+    '<div class="ac-info-banner" style="border-left-color:var(--warning);font-size:11px;line-height:1.5;margin-bottom:8px;">Accepting brings the settings below into this install, replacing any it already has.</div>'
+    + rows
     + '<div class="ac-ra-actions" style="margin-top:12px;">'
-    +   '<button class="ac-btn ac-deploy-go-btn" type="button" data-boot-apply><i data-lucide="download"></i> Apply to this install</button>'
+    +   '<button class="ac-btn ac-deploy-go-btn" type="button" data-boot-apply><i data-lucide="check"></i> Accept</button>'
     +   '<span class="ac-hint" data-boot-apply-status style="margin-left:6px;"></span>'
     + '</div>';
   host.style.display = '';
@@ -830,9 +781,12 @@ async function _bootApply(row) {
   const code = row.querySelector('[data-boot-import-code]')?.value?.trim() || '';
   const pw = row.querySelector('[data-boot-import-pw]')?.value || '';
   const set = (m, err) => { if (status) { status.textContent = m || ''; status.style.color = err ? 'var(--danger)' : ''; } };
+  // Every carried section is adopted (overwrite) — see _bootPreview. The names
+  // were stashed on the result host when the preview decoded the code.
+  const host = row.querySelector('[data-boot-preview-result]');
   const choices = {};
-  row.querySelectorAll('[data-boot-choice]').forEach(el => { choices[el.dataset.bootChoice] = el.value; });
-  if (!window.confirm('Apply this setup to this install?\n\nSections set to Overwrite replace your current settings.')) return;
+  ((host && host.dataset.sections) || '').split(',').filter(Boolean).forEach(s => { choices[s] = 'overwrite'; });
+  if (!window.confirm('Apply this setup to this install?\n\nThis replaces your current settings for everything the code carries.')) return;
   set('Applying…');
   let r;
   try { r = await _post('/admin/storage/bootstrap/apply', { code, password: pw, choices }); }
@@ -840,6 +794,43 @@ async function _bootApply(row) {
   if (r.ok === false) return set(r.error || 'Apply failed.', true);
   const lines = Object.entries(r.results || {}).map(([k, v]) => k + ': ' + v).join(' · ');
   set(lines || 'Done.');
+}
+
+// Editing an export/import field AFTER a verify invalidates what was revealed —
+// a generated code no longer matches the ticked sections/password, a decoded
+// preview no longer matches the pasted code/password. Hide the stale result +
+// its status so the admin re-verifies rather than copying/accepting something
+// out of date. `row` is the bar; the pair of selectors is result + status.
+function _bootInvalidate(row, resultSel, statusSel) {
+  const res = row.querySelector(resultSel); if (res) res.style.display = 'none';
+  const st = row.querySelector(statusSel); if (st) st.textContent = '';
+}
+
+// Wire the two static setup-bundle rows: their expand is handled by
+// _wireBootRow in data-settings.js; here we bind the Verify / Copy / Accept
+// actions (Accept is built into the preview result, so it's delegated) and hide
+// a stale result whenever a field is edited after a Verify. Idempotent.
+function _initBootRows() {
+  const exp = _qs('ac-deploy-export-row');
+  if (exp && !exp.dataset.bootWired) {
+    exp.dataset.bootWired = '1';
+    exp.addEventListener('click', (e) => {
+      if (e.target.closest('[data-boot-share]')) { _bootShare(exp); return; }
+      const cp = e.target.closest('[data-boot-copy]'); if (cp) { _bootCopy(exp, cp); return; }
+    });
+    const inval = () => _bootInvalidate(exp, '[data-boot-share-result]', '[data-boot-share-status]');
+    exp.addEventListener('input', inval);
+    exp.addEventListener('change', inval);   // checkbox ticks fire `change`
+  }
+  const imp = _qs('ac-deploy-import-row');
+  if (imp && !imp.dataset.bootWired) {
+    imp.dataset.bootWired = '1';
+    imp.addEventListener('click', (e) => {
+      if (e.target.closest('[data-boot-preview]')) { _bootPreview(imp); return; }
+      if (e.target.closest('[data-boot-apply]')) { _bootApply(imp); return; }
+    });
+    imp.addEventListener('input', () => _bootInvalidate(imp, '[data-boot-preview-result]', '[data-boot-import-status]'));
+  }
 }
 
 // ── Register a local checkout (the add form) ─────────────────────────────────
@@ -2140,7 +2131,8 @@ async function _deploy() {
       if (result.ok) {
         _logLine(result.message || 'Done.', 'ok');
         _setStatus('Deployed.', 'ok');
-        _renderDeployResult(result);   // show the new address at once (reload re-renders it too)
+        _sessionDeploy = { provider: _provider(), dep: result };  // remember for this session only
+        _renderDeployResult(result);   // show now; survives the _load() re-render, clears on page reopen
       } else {
         _logLine(result.message || 'Failed.', 'err');
         _setStatus(result.message || 'Failed', 'err');
@@ -2171,6 +2163,7 @@ async function _destroy() {
     await _stream('/admin/deploy/destroy', { provider: _provider() }, (result) => {
       _logLine(result.message || (result.ok ? 'Done.' : 'Failed.'), result.ok ? 'ok' : 'err');
       _setStatus(result.ok ? 'Torn down.' : (result.message || 'Failed'), result.ok ? 'ok' : 'err');
+      if (result.ok) _sessionDeploy = null;   // drop the session banner — the server is gone
     });
     await _load();
   } catch (e) { _logLine(e.message, 'err'); _setStatus(e.message, 'err'); }
@@ -2220,6 +2213,7 @@ export function initDeploy() {
     target.addEventListener('change', _syncTargetPanel);
   }
   _initManualRows();            // the Linux/Termux, Windows + macOS install rows
+  _initBootRows();              // the Export / Import setup-bundle rows
   _initInstances();             // the local-deployments list + register-a-checkout form
   _loadInstances();             // paint the hub + siblings straight away
 

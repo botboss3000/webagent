@@ -186,6 +186,20 @@ async def delete_server(provider_id: str, server_id: str) -> Dict[str, Any]:
     return {"ok": True}
 
 
+async def list_ssh_servers() -> list:
+    """Public read-only view of the saved SSH servers, for the admin Terminal
+    page's "Saved servers" launcher. Same shape the Deploy panel renders (id +
+    label + host/user/port + whether a login is stored) — NEVER any secret.
+    Returns [] if the SSH target isn't available here. The Terminal page reads
+    this to offer one-click SSH into a server the app already knows how to reach;
+    it opens an interactive shell over the SAME stored login the deploy runtime
+    uses (see app/api/terminal.py TerminalSession.spawn_ssh)."""
+    p = get_provider("ssh_vm")
+    if not p or not getattr(p, "saved_servers", False):
+        return []
+    return await _server_views(p)
+
+
 async def link_ssh_server(*, host: str, ssh_user: str, ssh_port: int, private_key: str,
                           label: str, repo_url: str = "", branch: str = "",
                           domain: str = "", source: str = "google_vm") -> str:

@@ -2527,6 +2527,7 @@ function buildPaneForTab(tab, mode) {
         tab.instance = createTerminalInstance(host, tab.path, {
           initialCommand: tab.initialCommand || '',
           claudeSessionId: tab.claudeSessionId || '',
+          sshServerId: tab.sshServerId || '',
           wrap: tab.wrap !== false,           // default true unless persisted false
           fontSize: getTerminalFontSize(),    // global setting, shared across tabs
           // Re-evaluated on every (re)connect so inline-rename and the cached
@@ -3168,7 +3169,7 @@ function persistTabs() {
     // with the same id reattaches us to it.
     const minimal = openTabs.map((t) => {
       if (t.kind === 'terminal') {
-        return { path: t.path, name: t.name, kind: 'terminal', wrap: t.wrap !== false, tmuxSession: t.tmuxSession || '' };
+        return { path: t.path, name: t.name, kind: 'terminal', wrap: t.wrap !== false, tmuxSession: t.tmuxSession || '', sshServerId: t.sshServerId || '' };
       }
       return { path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview };
     });
@@ -3222,7 +3223,7 @@ async function restoreOpenTabs() {
         if (t.kind === 'terminal') {
           // Reattach to the running PTY identified by t.path. If the shell
           // already exited, the backend will spawn a fresh one for that id.
-          pushTerminalTab(t.path, t.name, { tmuxSession: t.tmuxSession || '' });
+          pushTerminalTab(t.path, t.name, { tmuxSession: t.tmuxSession || '', sshServerId: t.sshServerId || '' });
           const restored = openTabs[openTabs.length - 1];
           if (restored && t.wrap === false) restored.wrap = false;
           continue;
@@ -3728,6 +3729,11 @@ function pushTerminalTab(sessionId, name, opts) {
     // (a second click on the quick-launch then skips to the next-newest). Not
     // persisted — but the backend session keeps its own copy across reloads.
     claudeSessionId: opts.claudeSessionId || '',
+    // For a "Saved servers" SSH launcher: the deploy server id this tab connects
+    // to. Passed up on the WS (?ssh_server_id=) so the backend opens an SSH shell
+    // to that server. Persisted so a reload can respawn it if the backend session
+    // died (a live one just reattaches). Empty for ordinary terminal tabs.
+    sshServerId: opts.sshServerId || '',
     // tmux session this tab is attached to (if any). Lets the keybar route
     // Shift+Tab via `tmux send-keys` so it reaches modern TUIs (Claude Code)
     // that remap modified keys under tmux's extended-keys. Persisted so it
@@ -3759,6 +3765,27 @@ function openNewTerminalTabWithCommand(command, name, opts) {
     initialCommand: command || '',
     claudeSessionId: opts.claudeSessionId || '',
   });
+  activeTerminalId = id;
+  renderTabs();
+  renderEditorPanes();
+  persistTabs();
+  _switchToTerminalStrip();
+}
+
+// Open a terminal tab that SSHes into a saved deploy server. The backend
+// connects over the login stored for that server in the Deploy panel (see
+// /api/v1/terminal/ssh-servers → TerminalSession.spawn_ssh). Confirms first,
+// since this drops you into a live — and often root — shell on a real server.
+function openSshTerminalTab(server) {
+  if (!server || !server.id) return;
+  const who = (server.ssh_user || 'root') + '@' + (server.host || '?');
+  const label = server.label || who;
+  const ok = window.confirm(
+    'Open an SSH terminal to ' + who + '?\n\n' +
+    'This connects using the login saved for this server in the Deploy panel.');
+  if (!ok) return;
+  const id = newTerminalSessionId();
+  pushTerminalTab(id, label, { sshServerId: server.id });
   activeTerminalId = id;
   renderTabs();
   renderEditorPanes();
@@ -4263,6 +4290,53 @@ function ftRenderLaunches(items) {
   _refreshLucideIcons(host);
 }
 
+// Render the "Saved servers (SSH)" launcher from /api/v1/terminal/ssh-servers.
+// Each row is a saved deploy server; a click opens an SSH terminal to it via
+// openSshTerminalTab. Servers with no stored login are shown dimmed + disabled
+// with a hint (a click would just fail server-side). The whole section hides
+// when there are no saved servers, so a fresh install shows nothing extra.
+function ftRenderSshServers(items) {
+  const host = document.getElementById('ft-list-ssh');
+  const section = document.getElementById('ft-section-ssh');
+  if (!host) return;
+  const servers = Array.isArray(items) ? items : [];
+  if (!servers.length) {
+    if (section) section.hidden = true;
+    host.innerHTML = '';
+    return;
+  }
+  if (section) section.hidden = false;
+  host.innerHTML = '';
+  for (const s of servers) {
+    const who = (s.ssh_user || 'root') + '@' + (s.host || '?');
+    const label = s.label || who;
+    const configured = s.configured !== false;
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'ft-row';
+    // Only the label carries the (host-derived) name; the user@host goes in the
+    // faint meta slot so the row reads like "Prod  ubuntu@203.0.113.10".
+    let inner = '<i data-lucide="server" class="lucide-icon ft-row-icon"></i>' +
+                '<span class="ft-row-label">' + ftEscapeHtml(label) + '</span>';
+    if (who !== label) inner += '<span class="ft-row-meta">' + ftEscapeHtml(who) + '</span>';
+    row.innerHTML = inner;
+    if (configured) {
+      row.title = 'SSH into ' + who + ' — connects with the saved login';
+      row.addEventListener('click', () => openSshTerminalTab(s));
+    } else {
+      row.disabled = true;
+      row.title = who + ' — no SSH login saved. Add a key or password in ' +
+                  'App Settings → Deploy, then it becomes clickable.';
+    }
+    host.appendChild(row);
+  }
+  _refreshLucideIcons(host);
+}
+
+async function ftLoadSshServers() {
+  await _ftFetchAndRender('/api/v1/terminal/ssh-servers', ftRenderSshServers, 'ft-list-ssh');
+}
+
 // Wire a quick-launch row for tap vs long-press. `onShort` fires on a normal
 // tap; `onLong` (optional) fires after a ≥500ms hold and flashes a small "in
 // tmux" confirmation. When there's no `onLong`, the row is a plain click.
@@ -4400,6 +4474,7 @@ function _renderPtyRow(s, host) {
   const label = _sessionLabel(s);
   const attached = (s.attached_clients || 0) > 0;
   const isAgent = !!s.agent_driven;
+  const isSsh = !!s.ssh;
   const row = document.createElement('div');
   row.setAttribute('role', 'button');
   row.tabIndex = 0;
@@ -4411,17 +4486,17 @@ function _renderPtyRow(s, host) {
   const meta = isAgent
     ? (s.launch_command || '')
     : (attached ? '' : (s.idle_secs != null ? _fmtIdle(s.idle_secs) + ' idle' : ''));
-  const icon = isAgent ? 'bot' : 'square-terminal';
+  const icon = isAgent ? 'bot' : (isSsh ? 'server' : 'square-terminal');
   const chip = isAgent
     ? '<span class="ft-agent-chip" title="Opened and driven by an agent">AGENT</span>'
-    : '';
+    : (isSsh ? '<span class="ft-agent-chip" title="Interactive SSH shell to a saved server">SSH</span>' : '');
   row.innerHTML =
     '<i data-lucide="' + icon + '" class="lucide-icon ft-row-icon"></i>' +
     '<span class="ft-row-label">' + ftEscapeHtml(label) + '</span>' +
     chip +
     (meta ? '<span class="ft-row-meta">' + ftEscapeHtml(meta) + '</span>' : '') +
     '<span class="' + dotCls + '" title="' + (attached ? 'attached' : 'detached') + '"></span>';
-  const open = () => openOrAttachTerminalSession(s.session_id, label);
+  const open = () => openOrAttachTerminalSession(s.session_id, label, s.ssh_server_id || '');
   row.addEventListener('click', open);
   row.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
@@ -4720,14 +4795,17 @@ async function ftLoadSessions() { return ftLoadAllSessions(); }
 // this browser for that session_id, activate it; otherwise add a tab with the
 // same id — the WebSocket layer reattaches to the live PTY automatically and
 // replays scrollback.
-function openOrAttachTerminalSession(sessionId, name) {
+function openOrAttachTerminalSession(sessionId, name, sshServerId) {
   if (!sessionId) return;
   const existing = openTabs.find((t) => t.kind === 'terminal' && t.path === sessionId);
   if (existing) {
     activeTerminalId = sessionId;
     activateTab(sessionId);
   } else {
-    pushTerminalTab(sessionId, name || undefined);
+    // Carry the SSH server id (if this is a remote session) so that, should the
+    // backend session have died, reconnecting respawns the SSH shell rather than
+    // a local one. A still-live session just reattaches regardless.
+    pushTerminalTab(sessionId, name || undefined, { sshServerId: sshServerId || '' });
     activeTerminalId = sessionId;
     renderTabs();
     renderEditorPanes();
@@ -4739,6 +4817,10 @@ function openOrAttachTerminalSession(sessionId, name) {
 function openTerminalLaunchersPanel() {
   // Quick launches are effectively static; load once per page lifetime.
   if (!_ftQuickLaunchesLoaded) ftLoadQuickLaunches();
+  // Saved SSH servers: refresh on each panel open (cheap GET) so a server just
+  // added in the Deploy panel appears without a page reload. Self-hides when
+  // none are saved.
+  ftLoadSshServers();
   // Sessions + tmux refresh on every panel show, then poll every 5s while
   // the panel stays open. Sessions surface PTYs created on any device the
   // user is signed into, so opening this panel on a new device shows the

@@ -9,7 +9,7 @@
   "note": null,
   "simple": false,
   "placeholder": false,
-  "default_enabled": false,
+  "default_enabled": true,
   "tools": [
     "list_models",
     "set_model",

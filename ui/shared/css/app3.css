@@ -3575,6 +3575,35 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
 }
 .ac-deploy-current-link:hover { text-decoration: underline; }
 
+/* Setup-bundle rows (data-settings.html #ac-deploy-export-row /
+   #ac-deploy-import-row): two static top-level rows in #ac-deploy-list, siblings
+   of "+ New deployment". They reuse the shared expandable `.ac-row` /
+   `.ac-ability-row` / `.ac-ability-body` look, so these rules only add the
+   password + Verify row and the import preview lines. Behaviour wired by
+   deploy.js _initBootRows; expand by data-settings.js _wireBootRow. Theme-safe. */
+/* Password + inline Verify button. The field grows; the button hugs its label
+   and matches the input height so they read as one control. The Verify button
+   reveals the Copy (export) / Accept (import) action once it succeeds. */
+.ac-boot-pw-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+.ac-boot-pw-row .ac-input { flex: 1 1 auto; min-width: 0; }
+.ac-boot-verify { flex: 0 0 auto; white-space: nowrap; }
+/* One "what the code carries" line in the import preview — summary text with an
+   optional "already set" badge, divided by the same hairline the list uses. */
+.ac-boot-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 12px;
+  border-top: var(--border-width) solid var(--border);
+}
+.ac-boot-preview-row > span:first-child { flex: 1 1 auto; min-width: 0; }
+.ac-boot-preview-row .ac-deploy-badge { margin-left: 0; }
+
 /* Deploy card — primary "Deploy now" button + the live NDJSON log.
    Reuses the Remote Access form grid (.ac-ra-fields) + actions row. */
 .ac-deploy-go-btn {

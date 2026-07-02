@@ -418,10 +418,38 @@ class SessionCapExceeded(Exception):
     """Raised when a user has already hit MAX_SESSIONS_PER_USER live shells."""
 
 
-async def get_or_create_session(session_id: str, user_id: str) -> "TerminalSession":
+class SSHConnectError(Exception):
+    """Raised when an SSH-backed session can't reach / log into its saved server.
+    The message is admin-facing (shown in the terminal tab), so keep it plain."""
+
+
+def _friendly_ssh_error(err: Exception, cfg: Dict[str, Any]) -> str:
+    """Turn a raw paramiko/socket connect failure into a short line an admin can
+    act on (auth vs. unreachable vs. timeout), naming the target."""
+    host = str((cfg or {}).get("host") or "the server").strip() or "the server"
+    text = str(err) or err.__class__.__name__
+    low = text.lower()
+    if "authentication" in low or "auth" in low and "fail" in low:
+        return f"Login to {host} was rejected — check the saved key/password and user."
+    if "timed out" in low or "timeout" in low:
+        return f"Timed out reaching {host} — check the address, port, and that it's online."
+    if "unable to connect" in low or "refused" in low or "no route" in low or "getaddrinfo" in low:
+        return f"Couldn't reach {host} — check the address/port and that SSH is open."
+    return f"Couldn't open an SSH shell to {host}: {text}"
+
+
+async def get_or_create_session(
+    session_id: str, user_id: str, ssh_server_id: str = "",
+) -> "TerminalSession":
     """Return the PTY session for session_id, spawning it if it doesn't exist
     yet or if its previous shell has died. The first creation for an id
-    binds it to `user_id`; reattachments verify the owner matches."""
+    binds it to `user_id`; reattachments verify the owner matches.
+
+    When `ssh_server_id` is given (and this id has no live session yet), the new
+    session is an interactive SSH shell to that saved deploy server instead of a
+    local shell — the browser passes it as ?ssh_server_id=<id> on the WS. A live
+    session for the id is returned as-is regardless (a page reload reattaches to
+    the running remote shell)."""
     async with _sessions_lock:
         _reap_dead_locked()
         sess = _sessions.get(session_id)
@@ -441,13 +469,32 @@ async def get_or_create_session(session_id: str, user_id: str) -> "TerminalSessi
                     f"(cap: {MAX_SESSIONS_PER_USER}). Close one before opening another."
                 )
 
-        sess = TerminalSession(user_id=user_id)
-        sess.spawn()
-        sess.start_pump()          # begin draining output immediately (even with no WS)
-        sess.write_input(b"\r")
+        if not ssh_server_id:
+            # Local shell: spawn under the lock (fast) — unchanged behaviour.
+            sess = TerminalSession(user_id=user_id)
+            sess.spawn()
+            sess.start_pump()          # begin draining output immediately (even with no WS)
+            sess.write_input(b"\r")
+            _sessions[session_id] = sess
+            logger.info("Created terminal session %s for user %s", session_id, user_id)
+            return sess
+
+    # SSH connect can take several seconds (DNS, TCP, auth) — do it OUTSIDE the
+    # lock so it never stalls the sidebar list or other tabs' session creation.
+    # Re-check under the lock before inserting in case a concurrent connect for
+    # the same id won the race.
+    sess = TerminalSession(user_id=user_id)
+    await sess.spawn_ssh(ssh_server_id)     # raises SSHConnectError on failure
+    sess.start_pump()
+    async with _sessions_lock:
+        existing = _sessions.get(session_id)
+        if existing is not None and existing.is_alive:
+            sess.close()
+            return existing
         _sessions[session_id] = sess
-        logger.info("Created terminal session %s for user %s", session_id, user_id)
-        return sess
+    logger.info("Created SSH terminal session %s → server %s for user %s",
+                session_id, ssh_server_id, user_id)
+    return sess
 
 
 async def close_session(session_id: str) -> bool:
@@ -685,6 +732,15 @@ class TerminalSession:
     def __init__(self, user_id: str = ""):
         self._process = None  # WinPty on Windows, (master_fd, pid) tuple on Unix
         self._reader_added = False
+        # ── SSH backend (a session pointed at a saved deploy server) ──
+        # When set, this session is NOT a local shell: input/output/resize/close
+        # dispatch to a paramiko interactive-shell channel instead of a PTY, so a
+        # terminal tab can drop the admin straight into a remote server the app
+        # already has a saved login for. Both stay None for an ordinary local
+        # shell. See spawn_ssh(); the WS carries ?ssh_server_id=<id> to request it.
+        self._ssh_client = None       # paramiko.SSHClient
+        self._ssh_channel = None      # paramiko Channel (invoke_shell)
+        self.ssh_server_id: str = ""  # the saved-server id this session connects to
         # Ring buffer of recent PTY output. Replayed to any newly-attached
         # WebSocket so a refreshed/reattached tab doesn't see a blank screen.
         self._scrollback = bytearray()
@@ -972,6 +1028,74 @@ class TerminalSession:
         else:
             self._spawn_unix(shell)
 
+    @property
+    def is_ssh(self) -> bool:
+        """True when this session is an SSH channel to a saved server rather than
+        a local shell (drives dispatch in the I/O methods below)."""
+        return self._ssh_channel is not None
+
+    async def spawn_ssh(self, server_id: str) -> None:
+        """Open an interactive SSH shell to a SAVED deploy server instead of a
+        local PTY. Reuses the deploy panel's stored (non-secret) config + its
+        vaulted login and the ssh_vm provider's own connect logic (key/password
+        auth, host-key policy), so a terminal tab lands the admin on a remote
+        server the app already knows how to reach. Cross-platform: the channel is
+        a network socket, so no local PTY / winpty is involved. Raises
+        SSHConnectError (admin-facing message) if the server is gone, has no saved
+        login, or the connection/auth fails."""
+        from app.deploy import credentials, store
+        from app.deploy.registry import get_provider
+
+        p = get_provider("ssh_vm")
+        if p is None:
+            raise SSHConnectError("The SSH deploy target isn't available on this server.")
+        ok_avail, reason = p.available()
+        if not ok_avail:
+            raise SSHConnectError(reason or "SSH support (the 'paramiko' package) isn't installed.")
+        cfg = store.get_server("ssh_vm", server_id)
+        if not cfg:
+            raise SSHConnectError("That saved server no longer exists.")
+        creds = await credentials.read("ssh_vm", p.credential_fields, profile=server_id)
+        if not (str(creds.get("private_key", "")).strip() or str(creds.get("password", "")).strip()):
+            raise SSHConnectError(
+                "No SSH key or password is saved for this server. Add one in "
+                "App Settings → Deploy, then try again."
+            )
+        self.ssh_server_id = server_id
+
+        def _connect():
+            # p._connect handles key parsing (Ed25519/ECDSA/RSA), passphrase, and
+            # password auth exactly as a deploy does — one connect path for both.
+            client = p._connect(cfg, creds)
+            try:
+                # SSH-level keepalive so a dropped peer / half-open TCP is noticed
+                # (recv then errors → session ends) instead of hanging forever.
+                transport = client.get_transport()
+                if transport is not None:
+                    transport.set_keepalive(30)
+                chan = client.invoke_shell(term="xterm-256color", width=120, height=40)
+                # A blocking recv() returns the instant data arrives regardless of
+                # the timeout, so this only bounds how often an IDLE channel wakes
+                # the pump thread (returns empty → "nothing yet", loops again); see
+                # _read_output_ssh. 1s keeps idle sessions cheap without dulling
+                # output.
+                chan.settimeout(1.0)
+                return client, chan
+            except Exception:
+                # Opened the transport but couldn't get a shell — don't leak it.
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                raise
+
+        try:
+            client, chan = await asyncio.to_thread(_connect)
+        except Exception as e:
+            raise SSHConnectError(_friendly_ssh_error(e, cfg)) from e
+        self._ssh_client = client
+        self._ssh_channel = chan
+
     @staticmethod
     def _which_windows(name: str) -> Optional[str]:
         """Find an executable in PATH on Windows."""
@@ -993,6 +1117,9 @@ class TerminalSession:
         Read available output from the PTY.
         Returns None when the child process has exited.
         """
+        if self._ssh_channel is not None:
+            return await self._read_output_ssh()
+
         if self._process is None:
             return None
 
@@ -1057,8 +1184,39 @@ class TerminalSession:
         executor = _get_winpty_executor()
         return await loop.run_in_executor(executor, _read)
 
+    async def _read_output_ssh(self) -> Optional[bytes]:
+        """Drain the paramiko channel. Returns None on EOF (remote shell closed),
+        b"" when nothing arrived within the channel's read timeout (the pump loop
+        treats empty as "loop again"), else the bytes read. The blocking recv runs
+        in a thread so it never stalls the event loop."""
+        chan = self._ssh_channel
+        if chan is None:
+            return None
+        loop = asyncio.get_event_loop()
+
+        def _read():
+            import socket
+            try:
+                data = chan.recv(65536)
+                if data == b"":
+                    return None            # clean EOF — the remote closed the shell
+                return data
+            except socket.timeout:
+                return b""                 # nothing this round; pump loops again
+            except Exception:
+                return None                # transport dropped → treat as ended
+
+        return await loop.run_in_executor(None, _read)
+
     def write_input(self, data: bytes):
         """Write raw bytes into the PTY (keystrokes from the browser)."""
+        if self._ssh_channel is not None:
+            try:
+                self._ssh_channel.sendall(data)
+            except Exception:
+                pass
+            return
+
         if self._process is None:
             return
 
@@ -1079,6 +1237,13 @@ class TerminalSession:
 
     def resize(self, rows: int, cols: int):
         """Resize the terminal window."""
+        if self._ssh_channel is not None:
+            try:
+                self._ssh_channel.resize_pty(width=cols, height=rows)
+            except Exception:
+                pass
+            return
+
         if self._process is None:
             return
 
@@ -1102,6 +1267,15 @@ class TerminalSession:
     @property
     def is_alive(self) -> bool:
         """Check if the child process is still running."""
+        if self._ssh_channel is not None:
+            chan = self._ssh_channel
+            try:
+                if chan.closed or chan.eof_received:
+                    return False
+                transport = chan.get_transport()
+                return bool(transport and transport.is_active())
+            except Exception:
+                return False
         if self._process is None:
             return False
         if IS_WINDOWS:
@@ -1131,6 +1305,22 @@ class TerminalSession:
             self._pump_task.cancel()
         self._pump_task = None
         self._ended = True
+
+        # SSH-backed session: close the channel + client, nothing PTY to reap.
+        if self._ssh_channel is not None:
+            try:
+                self._ssh_channel.close()
+            except Exception:
+                pass
+            try:
+                if self._ssh_client is not None:
+                    self._ssh_client.close()
+            except Exception:
+                pass
+            self._ssh_channel = None
+            self._ssh_client = None
+            return
+
         if self._process is None:
             return
 
@@ -1399,8 +1589,30 @@ async def list_terminal_sessions(request: Request) -> List[Dict[str, Any]]:
                 "agent_driven": s.agent_driven,
                 "launch_command": s.launch_command,
                 "paused": s.paused,
+                # SSH-backed session (a saved deploy server) vs. a local shell —
+                # lets the sidebar badge it and show which server it reaches.
+                "ssh": s.is_ssh,
+                "ssh_server_id": s.ssh_server_id,
             })
     return out
+
+
+@router.get("/api/v1/terminal/ssh-servers")
+async def list_ssh_servers(request: Request) -> List[Dict[str, Any]]:
+    """The saved deploy servers the Terminal page offers for one-click SSH — the
+    "Saved servers" launcher. Admin-only, read-only, PUBLIC fields only (id,
+    label, host, user, port, whether a login is stored); never a key/password.
+    Clicking a row opens a terminal tab tagged ?ssh_server_id=<id>, which
+    connects over the server's SAVED login (see TerminalSession.spawn_ssh)."""
+    uid = await assert_caller_is(request, None)
+    if not await _is_admin(uid):
+        raise HTTPException(status_code=403, detail="Admin required")
+    try:
+        from app.deploy import manager as deploy_manager
+        return await deploy_manager.list_ssh_servers()
+    except Exception as e:
+        logger.debug("ssh-servers list failed: %s", e)
+        return []
 
 
 @router.get("/api/v1/terminal/quick-launches")
@@ -1790,8 +2002,14 @@ async def terminal_websocket(websocket: WebSocket):
     #   • SessionCapExceeded — user has hit MAX_SESSIONS_PER_USER live shells.
     #   • PermissionError — session_id is taken by another user (UUID
     #     collision or guess).
+    # An SSH-backed tab tags itself with the saved deploy server it wants to
+    # reach; the session then connects there instead of opening a local shell.
+    # Only honoured on FIRST creation for this id — a reload reattaches to the
+    # already-running remote shell (see get_or_create_session).
+    ssh_server_id = (websocket.query_params.get("ssh_server_id") or "").strip()
+
     try:
-        session = await get_or_create_session(session_id, verified_uid)
+        session = await get_or_create_session(session_id, verified_uid, ssh_server_id=ssh_server_id)
     except SessionCapExceeded as e:
         try:
             await websocket.send_json({"type": "error", "message": str(e)})
@@ -1803,6 +2021,17 @@ async def terminal_websocket(websocket: WebSocket):
         return
     except PermissionError as e:
         await websocket.close(code=4401, reason=str(e)[:120])
+        heartbeat_task.cancel()
+        return
+    except SSHConnectError as e:
+        # Couldn't reach / log into the saved server — surface the reason in the
+        # tab and stop (a retry would just fail the same way). 4002 is the
+        # client's "hard stop, show the reason" close code.
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+        await websocket.close(code=4002, reason=str(e)[:120])
         heartbeat_task.cancel()
         return
 

@@ -399,13 +399,23 @@ async def _apply_database(data: dict, choice: str, activate: bool) -> str:
         cfg.supabase_service_key_secret = "supabase_service_key"
     save_config(cfg)
     msg = f"saved database config ({cfg.provider})"
-    if activate and cfg.provider == "sqlite":
+    if activate:
+        # Treat importing a bundle exactly like clicking the Database-page
+        # Activate button — flip the live backend on now so a fresh clone comes
+        # up connected with no manual step. Reuses the SAME activation path
+        # (password resolve → env → rebuild → verify) for every provider, not
+        # just sqlite. A failure here is reported, not fatal to the rest of the
+        # import (the admin can still re-Activate from the Database page).
         try:
-            from app.db import set_db_mode
-            set_db_mode("local")
-            msg += " + activated"
-        except Exception:
-            pass
+            from app.admin.storage import _activate_saved_backend
+            payload, status = await _activate_saved_backend()
+            if status == 200:
+                msg += " + activated"
+            else:
+                msg += f" (saved, but activation deferred: {payload.get('error', 'not switched')})"
+        except Exception as e:
+            logger.warning("bootstrap: DB activation after import failed: %s", e)
+            msg += " (saved, activation deferred)"
     return msg
 
 

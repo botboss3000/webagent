@@ -1204,13 +1204,13 @@ class AppSettings(BaseModel):
     # routes the app to /app; when False, / serves the app directly and the
     # per-device "show welcome screen" preference is moot. Served to every visitor
     # via the public /api/v1/auth/ui-config endpoint.
-    splash_enabled: bool = True
+    splash_enabled: bool = False
     # ── Startup: in-app tour / hint bubbles (ui/tutorials) ──
     # Master on/off for the numbered hint popovers, app-wide. When False the tour
     # never renders for anyone, and the per-user "show app tour" preference is
     # moot. Served via the public /api/v1/auth/ui-config endpoint; the tutorial
     # module reads it (cached, reconciled) and the account page hides its toggle.
-    hints_enabled: bool = True
+    hints_enabled: bool = False
     # ── Appearance: allow per-user theme overrides ──
     # When True, every signed-in user gets a "My appearance" editor on their
     # account page (ui/shared/js/account.js) that writes a sparse theme override
@@ -1564,15 +1564,16 @@ def get_appearance_config() -> dict:
 def get_splash_enabled() -> bool:
     """Master on/off for the welcome landing page (app-wide), read live from
     app-settings.json. When True, app/main.py serves the landing at the front door
-    (/); served via /api/v1/auth/ui-config too. Defaults to True when unset/blank."""
-    return _load_app_settings().get("splash_enabled", True) is not False
+    (/); served via /api/v1/auth/ui-config too. Ships OFF: defaults to False when
+    unset/blank so a fresh install opens straight into the app (no landing page)."""
+    return _load_app_settings().get("splash_enabled", False) is True
 
 
 def get_hints_enabled() -> bool:
     """Master on/off for the in-app tour / hint bubbles (app-wide), read live from
     app-settings.json. Served via /api/v1/auth/ui-config so the tutorial module
-    can gate on it; defaults to True (shown) when unset/blank."""
-    return _load_app_settings().get("hints_enabled", True) is not False
+    can gate on it. Ships OFF: defaults to False (hidden) when unset/blank."""
+    return _load_app_settings().get("hints_enabled", False) is True
 
 
 def get_allow_user_appearance() -> bool:

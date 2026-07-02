@@ -256,10 +256,13 @@ def _load(force: bool = False) -> Dict[str, Dict[str, Any]]:
                 "protected": bool(desc.get("protected", False)),
                 # On-by-default at the app level: an ability with no explicit
                 # admin toggle stored in data/config/agent-abilities.json falls
-                # back to this. Pure behavioural always-on abilities (git_control,
-                # ui_admin, …) set it true; credentialed/destructive ones omit it
-                # (default false → off until an admin turns them on).
-                "default_enabled": bool(desc.get("default_enabled", False)),
+                # back to this. SHIP POLICY — abilities are ON by default, so a
+                # descriptor that omits the flag bakes True (fresh installs and
+                # newly dropped-in abilities are unlocked with no hand-toggling).
+                # An ability that must ship OFF opts out with an explicit
+                # "default_enabled": false. (Credentialed abilities stay hidden by
+                # the separate secret-present gate until their key is supplied.)
+                "default_enabled": bool(desc.get("default_enabled", True)),
                 "order": desc.get("order", 100),
                 # Display-only ability: lists always-on core tools for management
                 # but owns no runtime and gates nothing (see is_virtual above).
@@ -788,8 +791,11 @@ def ui_catalog() -> Dict[str, Any]:
             # Resolved live on/off: a locked-on safety ability is forced ON
             # regardless of any stored admin choice; otherwise stored admin
             # choice ▸ descriptor default.
+            # SHIP POLICY (mirrors ability_default_enabled): no stored admin
+            # choice ⇒ ON, so the Agent Tools table renders every fresh/new
+            # ability enabled. An ability opts out with "default_enabled": false.
             "enabled": True if entry.get("locked_on")
-                       else stored_states.get(aid, entry.get("default_enabled", False)),
+                       else stored_states.get(aid, entry.get("default_enabled", True)),
             # Bundled-skill metadata so a panel can render the "Skill" row (its
             # "when to use it" summary + an editor) without a per-ability fetch.
             "skill_summary": entry.get("skill_summary") or "",
@@ -970,9 +976,16 @@ def is_toggleable_ability(ability_id: str) -> bool:
 
 
 def ability_default_enabled(ability_id: str) -> bool:
-    """The descriptor-declared default for an ability with no stored admin toggle."""
+    """The app-level default for an ability with no stored admin toggle.
+
+    SHIP POLICY — abilities are ON by default: a known ability with no explicit
+    ``default_enabled`` in its descriptor defaults to **enabled**, so a fresh
+    install (and any ability dropped in later) ships fully unlocked without the
+    admin hand-toggling each row. An ability that must ship OFF still opts out by
+    setting ``"default_enabled": false`` explicitly in its descriptor. Unknown
+    ids stay False."""
     e = _load().get(ability_id)
-    return bool(e and e.get("default_enabled", False))
+    return bool(e and e.get("default_enabled", True))
 
 
 def ability_is_locked_on(ability_id: str) -> bool:

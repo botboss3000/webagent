@@ -550,20 +550,26 @@ async def save_db_config(body: DBConfigBody):
     return {"ok": True, "saved": cfg.to_dict()}
 
 
-@router.post("/db/activate")
-async def activate_db(body: ActivateBody):
+async def _activate_saved_backend() -> tuple[dict, int]:
+    """Switch the live backend to the SAVED connection config and return
+    ``(payload, http_status)``.
+
+    This is the real activation — resolve the password, put it where the
+    connection opener reads it, rebuild the backend, and verify it actually
+    connected — factored out of the Database-page Activate endpoint so the
+    setup-bundle / boot provisioning path can reuse it verbatim. That way an
+    imported config comes up connected with no manual Activate click, and both
+    callers stay in lock-step (self-heal, revert-on-failure, schema check).
+    Refuses (and reverts) rather than leave the app pointed at an unreachable or
+    empty database.
     """
-    Switch the live backend to the saved config. Refuses on backends not yet
-    implemented (raw postgres data path is stubbed until ported).
-    """
-    await _require_admin(body.requesting_user_id)
     cfg = load_config()
 
     # Map provider → existing app.db backend mode
     if cfg.provider == "sqlite":
         from app.db import set_db_mode, get_db_stats
         set_db_mode("local")
-        return {"ok": True, "mode": "local", "stats": await get_db_stats()}
+        return {"ok": True, "mode": "local", "stats": await get_db_stats()}, 200
 
     if cfg.provider == "supabase":
         # Hydrate env vars from saved config so SupabaseBackend.__init__ can read them.
@@ -588,10 +594,10 @@ async def activate_db(body: ActivateBody):
                 cfg.supabase_service_key_secret = key_name
                 save_config(cfg)
         if not url or not key:
-            return JSONResponse(status_code=400, content={
+            return {
                 "ok": False,
                 "error": "Supabase URL or service-role key is missing. Save the config (URL + key) first, then Activate.",
-            })
+            }, 400
 
         from app.db import set_db_mode, get_mode, reset_db_instance, get_db, get_db_stats
         prev_mode = get_mode()
@@ -609,18 +615,18 @@ async def activate_db(body: ActivateBody):
             get_db()
         except Exception as e:
             _revert()
-            return JSONResponse(status_code=502, content={
+            return {
                 "ok": False,
                 "error": f"Could not initialize the Supabase backend: {e}. The app was NOT switched.",
-            })
+            }, 502
         if get_mode() != "cloud":
             _revert()
-            return JSONResponse(status_code=502, content={
+            return {
                 "ok": False,
                 "error": ("Couldn't connect to Supabase with the saved URL/key (or the Supabase "
                           "client isn't installed). The app was NOT switched — check the URL and "
                           "service-role key, then click Test Connection."),
-            })
+            }, 502
         # Connected — but is the schema actually there? A missing table reads back
         # as count -1 in get_db_stats. Refuse (and revert) so we don't leave the
         # app pointed at an empty database where every read fails at runtime.
@@ -628,7 +634,7 @@ async def activate_db(body: ActivateBody):
         missing = sorted([t for t, c in (stats.get("tables") or {}).items() if c == -1])
         if missing:
             _revert()
-            return JSONResponse(status_code=409, content={
+            return {
                 "ok": False,
                 "needs_tables": True,
                 "missing_tables": missing,
@@ -636,8 +642,8 @@ async def activate_db(body: ActivateBody):
                           + ", ".join(missing) + ".\n"
                           "Create them first: click \"Create Tables (SQL Editor)\", paste the SQL into "
                           "your Supabase SQL Editor and Run, then Activate again. The app was NOT switched."),
-            })
-        return {"ok": True, "mode": "cloud", "stats": stats}
+            }, 409
+        return {"ok": True, "mode": "cloud", "stats": stats}, 200
 
     # Raw Postgres family (postgres / aws_rds / gcp_cloud_sql / azure_postgres /
     # neon): all share the live asyncpg backend, routed purely by dialect.
@@ -667,25 +673,35 @@ async def activate_db(body: ActivateBody):
             backend = get_db()  # builds PostgresBackend (raises/falls back on failure)
             if type(backend).__name__ not in ("_PostgresBackend",) and not hasattr(backend, "_pool"):
                 # get_db fell back (bad creds / unreachable) — surface the problem.
-                return JSONResponse(status_code=502, content={
+                return {
                     "ok": False,
                     "error": "Postgres activation failed — check host/credentials and that the server is reachable.",
-                })
-            return {"ok": True, "provider": cfg.provider, "stats": await get_db_stats()}
+                }, 502
+            return {"ok": True, "provider": cfg.provider, "stats": await get_db_stats()}, 200
         except Exception as e:
-            return JSONResponse(status_code=502, content={"ok": False, "error": str(e)})
+            return {"ok": False, "error": str(e)}, 502
 
     # MySQL / other: not wired as a live backend yet.
-    return JSONResponse(
-        status_code=501,
-        content={
-            "ok": False,
-            "error": (
-                f"Provider '{cfg.provider}' can be tested and bootstrapped but is not yet "
-                "wired as a live backend."
-            ),
-        },
-    )
+    return {
+        "ok": False,
+        "error": (
+            f"Provider '{cfg.provider}' can be tested and bootstrapped but is not yet "
+            "wired as a live backend."
+        ),
+    }, 501
+
+
+@router.post("/db/activate")
+async def activate_db(body: ActivateBody):
+    """
+    Switch the live backend to the saved config. Refuses on backends not yet
+    implemented (raw postgres data path is stubbed until ported).
+    """
+    await _require_admin(body.requesting_user_id)
+    payload, status = await _activate_saved_backend()
+    if status == 200:
+        return payload
+    return JSONResponse(status_code=status, content=payload)
 
 
 # ── Routes: secrets vault ───────────────────────────────────────────────────
@@ -1211,7 +1227,7 @@ async def full_db_set(body: FullDbEncBody):
     }
 
 
-# ── Hybrid local-first backend (opt-in) ───────────────────────────────────────
+# ── Hybrid local-first backend (on by default) ────────────────────────────────
 # Toggle for app/db/hybrid.py. Only meaningful with a reachable Postgres remote;
 # on a local-only install it is a no-op. Applied on next restart (like full-DB
 # encryption). See app/db/hybrid.py + app/db/README.md.

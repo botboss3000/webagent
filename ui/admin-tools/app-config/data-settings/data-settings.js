@@ -101,6 +101,11 @@ export function init() {
   // panel's live command/QR, the target-panel switch + the Current-deployment bar).
   _wireBootRow('ac-deploy-new-row');
   _wireBootRow('ac-deploy-repo-row');
+  // The two setup-bundle rows (Export / Import) — their Verify/Copy/Accept
+  // actions are wired inside initDeploy (_initBootRows); only the head-expand is
+  // wired here, exactly like the sibling rows above.
+  _wireBootRow('ac-deploy-export-row');
+  _wireBootRow('ac-deploy-import-row');
   // NB: ac-deploy-target-row is NOT wired here — its in-header dropdown drives the
   // row's expand/collapse (deploy.js _syncTargetPanel), not a header click.
   initDeploy();

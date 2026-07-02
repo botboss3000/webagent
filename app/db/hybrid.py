@@ -42,7 +42,7 @@ guarded so the live app is untouched until the hybrid is explicitly enabled.
 
 ENABLEMENT
 ----------
-Off by default. Turned on via ``app/db_hybrid.json`` (``{"enabled": true}``) or the
+On by default. Turned off via ``app/db_hybrid.json`` (``{"enabled": false}``) or the
 ``WEBAGENT_DB_HYBRID`` env var when config is env-locked. Only ever built when a
 reachable Postgres-family remote exists — on a local-only install it is a no-op
 and ``get_db()`` returns the plain local backend as before.
@@ -125,23 +125,25 @@ def _env_locked() -> bool:
 def hybrid_enabled() -> bool:
     """True if the hybrid local-first layer is switched on for this install.
 
-    Env-locked deployments read ``WEBAGENT_DB_HYBRID`` (1/true/yes/on); otherwise
-    the persisted ``db_hybrid.json`` flag. Absent/unreadable = OFF (the default),
-    so a fresh install behaves exactly as before."""
+    Env-locked deployments read ``WEBAGENT_DB_HYBRID`` (1/true/yes/on/absent=on);
+    otherwise the persisted ``db_hybrid.json`` flag. Absent/unreadable = ON (the
+    default), so a fresh install ships with local-first storage active whenever
+    a Postgres-family remote is configured (a no-op otherwise)."""
     global _enabled_cache
     if _enabled_cache is not None:
         return _enabled_cache
-    val = False
+    val = True
     if _env_locked():
-        val = os.environ.get("WEBAGENT_DB_HYBRID", "").strip().lower() in ("1", "true", "yes", "on")
+        raw = os.environ.get("WEBAGENT_DB_HYBRID", "").strip().lower()
+        val = raw not in ("0", "false", "no", "off") if raw else True
     else:
         try:
             if os.path.exists(_FLAG_FILE):
                 with open(_FLAG_FILE, "r") as f:
-                    val = bool((json.load(f) or {}).get("enabled", False))
+                    val = bool((json.load(f) or {}).get("enabled", True))
         except Exception as e:
             logger.warning("Failed to read db_hybrid.json: %s", e)
-            val = False
+            val = True
     _enabled_cache = val
     return val
 

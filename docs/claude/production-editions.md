@@ -142,12 +142,16 @@ adding an ability is a pure drop-in — the admin **Agent Tools** panel shows it
 toggle and it persists with **no** edit to any core list (there used to be a
 hardcoded `_ABILITY_CONFIG_KEY` map in `app/admin/integrations.py`; it is gone).
 
-- **Default when unset:** the descriptor's optional **`default_enabled`** flag.
-  Behavioural always-on abilities (git_control, ui_admin, app_control,
-  agent_orchestration, diagnostics, agent_management, image_vision,
-  session_titler) set `"default_enabled": true`; credentialed or destructive
-  ones omit it (→ **off** until an admin turns them on). `ui_catalog()` surfaces
-  the flag; `_ability_app_enabled` applies *stored choice ▸ descriptor default*.
+- **Default when unset — SHIP POLICY: abilities are ON by default.** A `kind:"ability"`
+  drop-in with no stored admin toggle and no explicit `default_enabled` in its
+  descriptor resolves to **enabled**, so a fresh install ships fully unlocked and
+  any ability added later is auto-on — no hand-toggling. An ability that must ship
+  OFF opts out with an explicit `"default_enabled": false`. `ability_default_enabled`
+  is the single source (defaults True); `ui_catalog()`'s `enabled` field mirrors it,
+  and `_ability_app_enabled` applies *stored choice ▸ this default*. (Credentialed
+  abilities are still hidden by a separate secret-present gate in
+  `get_admin_configured_providers` until their key/cookie is supplied, so "on by
+  default" never leaks a tool that has no credentials behind it.)
 - **Display order, same story:** the ability table's group order and per-ability
   order also live in this file (the **`order`** section: `{groups, abilities}`),
   not just in the drop-in JSONs. Each drop-in still declares a seed `order`

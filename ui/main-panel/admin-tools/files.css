@@ -1664,6 +1664,10 @@ body.admin-restricted #main-panel { display: flex !important; }
   min-height: 26px;
 }
 .ft-row:hover { background: var(--files-row-hover); }
+/* A saved SSH server with no stored login can't connect — shown dimmed and
+   unclickable in the "Saved servers" launcher (see files.js ftRenderSshServers). */
+.ft-row:disabled { opacity: 0.5; cursor: default; }
+.ft-row:disabled:hover { background: transparent; }
 .ft-row-icon { width: 14px; height: 14px; flex-shrink: 0; color: var(--files-text-muted); }
 .ft-row-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ft-row-meta { color: var(--files-text-faint); font-size: 11px; flex-shrink: 0; }

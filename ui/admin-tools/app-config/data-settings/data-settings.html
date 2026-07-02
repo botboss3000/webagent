@@ -93,6 +93,72 @@
           <div class="ac-hint" style="padding:10px 14px;">Checking where WebAgent is running…</div>
         </div>
 
+        <!-- ── Export config (setup bundle) ── a static top-level row, sibling of
+             "+ New deployment". Tick what to include + Verify this app's admin
+             password → only then does the encrypted code + QR + Copy button
+             reveal (a correct password both authorises and encrypts). Expand is
+             wired by _wireBootRow('ac-deploy-export-row') in data-settings.js; the
+             Verify/Copy actions by deploy.js _initBootRows. Engine:
+             app/admin/bootstrap_bundle.py, via /admin/storage/bootstrap/*. This
+             (with Import below) folded in the old per-row DB "Share (QR)". -->
+        <div class="ac-row" id="ac-deploy-export-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="qr-code" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Export config to link another account</div>
+              <div class="ac-ability-desc">Package this install's setup into one encrypted code (or QR) so another WebAgent comes up ready-configured.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint" style="font-size:11px;margin-bottom:8px;line-height:1.5;">Tick what to include, then verify this app's admin password to reveal the code — paste it into a freshly-cloned WebAgent (on its setup page, or into Import below).</div>
+            <label class="ac-boot-check" style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;cursor:pointer;"><input type="checkbox" data-boot-sec="admin" checked style="margin-top:2px;"><span><strong>Admin login</strong> — <span style="color:var(--fg-3);">the admin username + password</span></span></label>
+            <label class="ac-boot-check" style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;cursor:pointer;"><input type="checkbox" data-boot-sec="llm" checked style="margin-top:2px;"><span><strong>AI model &amp; key</strong> — <span style="color:var(--fg-3);">provider, preset model, the saved-model table + API key</span></span></label>
+            <label class="ac-boot-check" style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;cursor:pointer;"><input type="checkbox" data-boot-sec="database" checked style="margin-top:2px;"><span><strong>Database</strong> — <span style="color:var(--fg-3);">the app database connection (+ password)</span></span></label>
+            <label class="ac-boot-check" style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;cursor:pointer;"><input type="checkbox" data-boot-sec="vault" checked style="margin-top:2px;"><span><strong>Secrets vault</strong> — <span style="color:var(--fg-3);">which vault backend and its connection</span></span></label>
+            <label class="ac-label" style="margin-top:10px;">This app's admin password</label>
+            <div class="ac-boot-pw-row">
+              <input class="ac-input" type="password" data-boot-share-pw autocomplete="off" placeholder="unlocks + encrypts the code">
+              <button class="ac-btn ac-boot-verify" type="button" data-boot-share>Verify</button>
+            </div>
+            <span class="ac-hint" data-boot-share-status style="display:block;margin-top:6px;"></span>
+            <div data-boot-share-result style="display:none;margin-top:12px;">
+              <div class="ac-info-banner" style="border-left-color:var(--warning);font-size:11px;line-height:1.5;margin-bottom:8px;">Anyone with this code <em>and</em> the admin password can configure a new install with these keys. Treat it like a password — share it privately.</div>
+              <div data-boot-qr style="max-width:200px;margin:0 auto 8px;"></div>
+              <textarea data-boot-code readonly rows="3" style="width:100%;padding:6px 8px;border:var(--border-width) solid var(--border);border-radius:4px;font-size:11px;font-family:var(--font-mono,monospace);background:transparent;color:inherit;resize:vertical;word-break:break-all;"></textarea>
+              <div class="ac-ra-actions" style="margin-top:6px;"><button class="ac-btn ac-deploy-go-btn" type="button" data-boot-copy><i data-lucide="copy"></i> Copy code</button></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Import config (setup bundle) ── the mirror of Export. Paste a code
+             + Verify the SOURCE install's admin password → only then does a
+             read-only summary of what it carries + an Accept button reveal.
+             Accept adopts every carried section (overwrite) so this box takes on
+             the source's setup. Expand wired by _wireBootRow('ac-deploy-import-row');
+             Verify/Accept by deploy.js _initBootRows. -->
+        <div class="ac-row" id="ac-deploy-import-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="log-in" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Import config to link this account</div>
+              <div class="ac-ability-desc">Paste a code from another WebAgent to adopt its database, vault, model and login here.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint" style="font-size:11px;margin-bottom:8px;line-height:1.5;">Paste a code from another WebAgent to bring its configuration into this install. Enter the <em>source</em> install's admin password to unlock it.</div>
+            <textarea data-boot-import-code rows="3" placeholder="Paste the setup code (WABOOT1…) here" style="width:100%;padding:6px 8px;border:var(--border-width) solid var(--border);border-radius:4px;font-size:11px;font-family:var(--font-mono,monospace);background:transparent;color:inherit;resize:vertical;word-break:break-all;"></textarea>
+            <label class="ac-label" style="margin-top:8px;">Source admin password</label>
+            <div class="ac-boot-pw-row">
+              <input class="ac-input" type="password" data-boot-import-pw autocomplete="off" placeholder="the admin password of the app you copied from">
+              <button class="ac-btn ac-boot-verify" type="button" data-boot-preview>Verify</button>
+            </div>
+            <span class="ac-hint" data-boot-import-status style="display:block;margin-top:6px;"></span>
+            <div data-boot-preview-result style="display:none;margin-top:12px;"></div>
+          </div>
+        </div>
+
         <!-- ── + New deployment ── an expandable group. Its head is the "add a
              deployment" bar; clicking it reveals the four install targets below
              (the cloud row + the three manual rows). Expand wired by
