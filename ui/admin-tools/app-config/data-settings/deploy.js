@@ -322,8 +322,16 @@ function _renderDeployResult(dep) {
   const url = ((dep && dep.public_url) || (dep && dep.ip ? 'http://' + dep.ip : '')).trim();
   if (!url) { el.hidden = true; el.innerHTML = ''; return; }
   el.hidden = false;
-  el.innerHTML = 'Deployment successful: '
+  let html = 'Deployment successful: '
     + '<a href="' + _escAttr(url) + '" target="_blank" rel="noopener" class="ac-deploy-current-link">' + _esc(url) + '</a>';
+  // Google VM deploys also get a link straight to that project's Cloud Console
+  // instances list, so the user doesn't have to hunt for it after activation.
+  const project = (dep && dep.project ? String(dep.project).trim() : '');
+  if (_provider() === 'google_vm' && project) {
+    const consoleUrl = 'https://console.cloud.google.com/compute/instances?project=' + encodeURIComponent(project);
+    html += ' &nbsp;<a href="' + _escAttr(consoleUrl) + '" target="_blank" rel="noopener" class="ac-deploy-current-link">Google VM Instances</a>';
+  }
+  el.innerHTML = html;
 }
 
 // Collapse the "More" advanced-actions panel (called on every (re)render so a
