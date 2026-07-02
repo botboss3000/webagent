@@ -195,7 +195,13 @@
                        placeholder="Name this server (e.g. Hetzner box)" autocomplete="off"
                        spellcheck="false" style="flex:1 1 auto;min-width:0;">
                 <button id="ac-deploy-server-save" class="ac-btn" type="button">Save server</button>
-                <button id="ac-deploy-server-delete" class="ac-btn ac-deploy-danger-btn" type="button">Delete</button>
+                <!-- Press-and-HOLD to delete (no confirm dialog): a danger fill sweeps
+                     the button; the deliberate hold IS the confirmation. Shared .ac-dz-hold
+                     styling; hold logic + --dz-hold duration in deploy.js (_beginDeleteHold). -->
+                <button id="ac-deploy-server-delete" class="ac-btn ac-deploy-danger-btn ac-dz-hold" type="button">
+                  <span class="ac-dz-fill"></span>
+                  <span class="ac-dz-hold-label">Hold to delete</span>
+                </button>
               </div>
               <div class="ac-hint" style="font-size:11px;margin-top:4px;line-height:1.5;">
                 Pick a saved server to fill the form, or “＋ New server…” to add one. Saving keeps its
@@ -871,6 +877,43 @@
           </div>
         </div>
 
+        <!-- ── Row · RAM speed layer (in-browser media cache) ──
+             App-wide On/Off + memory budget for ui/shared/js/media-cache.js — the
+             volatile browser-memory cache that serves attachment previews,
+             thumbnails and Gen UI media instantly on repeat renders. It is a SPEED
+             LAYER in front of whatever store holds the bytes, never a place of
+             record. Persists to /admin/settings/app (media_cache_enabled /
+             media_cache_budget_mb) and previews live via WA_APPEARANCE.setOverrides.
+             Driver: ui/admin-tools/app-config/data-settings/media-cache-settings.js. -->
+        <div class="ac-row" id="ac-row-mediacache">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="zap" class="lucide-icon" style="width:18px;height:18px;color:var(--warning);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Memory Cache (RAM)</div>
+              <div class="ac-ability-desc">Hold recent attachments &amp; thumbnails in browser memory for instant re-display. A speed layer, not storage.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-mediacache-badge">loading…</span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint" style="line-height:1.5;">
+              Keeps recently-viewed images, thumbnails and previews in this browser's memory so scrolling back through chat or reopening a file is instant — no refetch. It sits <b>in front of</b> whichever store actually holds the file (server disk, database, cloud, or this device), so nothing is lost when it's off. Memory is <b>volatile</b> (cleared on reload) and <b>capped</b>: once the budget is reached, the least-recently-used items are dropped, so it can never exceed the limit you set.
+            </div>
+
+            <label class="ac-label" style="margin-top:12px;">Status</label>
+            <select id="ac-mediacache-enabled" class="ac-input">
+              <option value="on">On — cache media in memory (recommended)</option>
+              <option value="off">Off — always fetch from the store</option>
+            </select>
+
+            <label class="ac-label" style="margin-top:10px;">Memory budget (MB)</label>
+            <input id="ac-mediacache-budget" class="ac-input" type="number" min="0" step="16" placeholder="128" />
+            <div class="ac-hint" style="margin-top:6px;font-size:11px;">Upper limit on how much browser memory the cache may use. Applies per device — lower it on phones/tablets, raise it on desktops with plenty of RAM.</div>
+
+            <div id="ac-mediacache-stats" class="ac-hint" style="margin-top:8px;font-size:11px;"></div>
+          </div>
+        </div>
+
         <!-- ── Row · Data Migration ── -->
         <div class="ac-row" id="ac-row-migration">
           <div class="ac-ability-row">
@@ -1009,7 +1052,14 @@
       </div><!-- /#ac-dz-list -->
 
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px;">
-        <button id="ac-dz-reset-btn" class="ac-btn ac-deploy-danger-btn" type="button" disabled>Reset selected data</button>
+        <!-- Hold-to-fire button: press and hold and a danger fill sweeps left→right;
+             hold to the end and the reset runs (the hold IS the confirmation — no
+             dialog). Mirrors the deploy card's hold-to-restart button. Wired by
+             danger-zone.js _beginHold; the fill duration is set from JS via --dz-hold. -->
+        <button id="ac-dz-reset-btn" class="ac-btn ac-deploy-danger-btn ac-dz-hold" type="button" disabled>
+          <span class="ac-dz-fill"></span>
+          <span class="ac-dz-hold-label">Hold to reset selected data</span>
+        </button>
         <span id="ac-dz-reset-status" class="ac-hint" style="margin-left:2px;font-size:11.5px;"></span>
       </div>
 
@@ -1027,7 +1077,10 @@
         <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;">
           <input id="ac-dz-nuke-phrase" class="ac-input" type="text" autocomplete="off" spellcheck="false"
                  placeholder="type the folder name to confirm" style="flex:1 1 220px;min-width:0;max-width:320px;">
-          <button id="ac-dz-nuke-btn" class="ac-btn ac-deploy-danger-btn" type="button" disabled>Delete installation</button>
+          <button id="ac-dz-nuke-btn" class="ac-btn ac-deploy-danger-btn ac-dz-hold" type="button" disabled>
+            <span class="ac-dz-fill"></span>
+            <span class="ac-dz-hold-label">Hold to delete installation</span>
+          </button>
           <span id="ac-dz-nuke-status" class="ac-hint" style="margin-left:2px;font-size:11.5px;"></span>
         </div>
       </div>

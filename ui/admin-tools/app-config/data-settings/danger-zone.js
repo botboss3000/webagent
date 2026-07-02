@@ -23,7 +23,6 @@
 import { apiPath } from '../../../shared/js/config.js';
 import { app } from '../../../shared/js/state.js';
 import { isAdmin } from '../../../shared/js/left-login.js';
-import { hazardConfirm } from '../../../shared/js/confirm-dialog.js';
 import { _refreshLucideIcons } from '../../../shared/js/dom-utils.js';
 import { _fetch, _qs, _esc, _fmtDate } from '../utils.js';
 
@@ -31,6 +30,66 @@ function uid() { return app.currentUserId || localStorage.getItem('auth_user_id'
 
 let _folderName = '';   // install folder name — the phrase that arms the delete
 let _autoRestart = true;
+
+// ── Hold-to-fire gesture (press + hold → a danger fill sweeps the button → fire) ──
+// Mirrors the deploy card's hold-to-restart button. The deliberate hold IS the
+// confirmation, so these destructive actions have no extra dialog. Per-button hold
+// length (ms) — the delete is longer since it's irreversible. Set as the CSS
+// `--dz-hold` var on the button at init so the fill animation matches this timer.
+const _HOLD_MS = { reset: 1500, nuke: 2200 };
+const _ARM_FRACTION = 0.25;   // show the "keep holding…" armed state after this much
+let _hold = null;             // {btn, fireTimer, armTimer, restLabel, onFire} while live
+
+function _holdLabel(btn) { return btn.querySelector('.ac-dz-hold-label'); }
+
+// Stop the active hold. `revert=true` snaps the fill back + restores the label (an
+// abort on early release); pass false when the action is firing (leave it as-is).
+function _holdCancel(revert) {
+  const h = _hold; _hold = null;
+  if (!h) return;
+  clearTimeout(h.fireTimer);
+  clearTimeout(h.armTimer);
+  window.removeEventListener('pointerup', _holdRelease, true);
+  window.removeEventListener('pointercancel', _holdRelease, true);
+  h.btn.classList.remove('holding');
+  if (revert) {
+    h.btn.classList.remove('warning');
+    const lbl = _holdLabel(h.btn);
+    if (lbl && h.restLabel != null) lbl.textContent = h.restLabel;
+  }
+}
+function _holdRelease() { _holdCancel(true); }
+
+function _beginHold(btn, ms, armLabel, onFire) {
+  if (_hold || btn.disabled || !isAdmin()) return;
+  const lbl = _holdLabel(btn);
+  const restLabel = lbl ? lbl.textContent : '';
+  const armTimer = setTimeout(() => {
+    btn.classList.add('warning');
+    if (lbl) lbl.textContent = armLabel;
+  }, Math.round(ms * _ARM_FRACTION));
+  const fireTimer = setTimeout(() => {
+    _holdCancel(false);      // clear timers/listeners; keep the button state
+    onFire();
+  }, ms);
+  _hold = { btn, fireTimer, armTimer, restLabel, onFire };
+  // Kick the CSS fill on the next frame so the transition actually animates.
+  requestAnimationFrame(() => { if (_hold && _hold.btn === btn) btn.classList.add('holding'); });
+  window.addEventListener('pointerup', _holdRelease, true);
+  window.addEventListener('pointercancel', _holdRelease, true);
+}
+
+// Resting labels — restored when a fired action fails and the button re-enables.
+const _REST_LABEL = {
+  'ac-dz-reset-btn': 'Hold to reset selected data',
+  'ac-dz-nuke-btn': 'Hold to delete installation',
+};
+function _restoreHold(btn) {
+  if (!btn) return;
+  btn.classList.remove('warning', 'holding');
+  const lbl = _holdLabel(btn);
+  if (lbl && _REST_LABEL[btn.id]) lbl.textContent = _REST_LABEL[btn.id];
+}
 
 // ── Info fetch (folder name · provider · auto-restart · last-reset outcome) ──
 async function _loadInfo() {
@@ -113,31 +172,14 @@ function _syncResetBtn() {
   btn.disabled = _selected().length === 0 || !_autoRestart;
 }
 
-const _LABELS = {
-  db: 'the app database (chat, agents, users, memories)',
-  secrets: 'the secrets vault (API keys, tokens)',
-  attachments: 'chat attachments',
-  genui: 'Gen UI pages',
-  logs: 'logs & diagnostics',
-};
-
-async function _doReset() {
+// Fire the reset (called after a full hold — no dialog, the hold was the confirm).
+async function _runReset() {
   const groups = _selected();
   if (!groups.length) return;
-  const list = groups.map(g => '• ' + (_LABELS[g] || g)).join('\n');
-  const ok = await hazardConfirm({
-    tone: 'danger',
-    title: 'Reset the selected data?',
-    message: 'The server will restart and permanently clear:\n\n' + list
-      + '\n\nA backup is kept under temp/ (except a shared Postgres database, which is dropped and cannot be undone). '
-      + 'The app rebuilds a fresh database with the default admin on the way back up.',
-    confirmLabel: 'Reset & restart',
-  });
-  if (!ok) return;
 
   const status = _qs('ac-dz-reset-status');
   const btn = _qs('ac-dz-reset-btn');
-  if (btn) btn.disabled = true;
+  if (btn) { btn.disabled = true; btn.classList.remove('warning'); }
   if (status) { status.style.color = 'var(--fg-3)'; status.textContent = 'Scheduling reset & restarting…'; }
 
   try {
@@ -148,7 +190,7 @@ async function _doReset() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) {
       if (status) { status.style.color = 'var(--danger)'; status.textContent = data.error || 'Reset failed.'; }
-      if (btn) btn.disabled = false;
+      if (btn) { btn.disabled = false; _restoreHold(btn); }
       return;
     }
     // The server is now restarting; it will wipe the data on the way up. Wait for
@@ -157,7 +199,7 @@ async function _doReset() {
     _waitForServerThenReload();
   } catch (e) {
     if (status) { status.style.color = 'var(--danger)'; status.textContent = 'Reset request failed: ' + (e?.message || e); }
-    if (btn) btn.disabled = false;
+    if (btn) { btn.disabled = false; _restoreHold(btn); }
   }
 }
 
@@ -187,21 +229,15 @@ function _syncNukeBtn() {
   btn.disabled = !_folderName || phrase.value.trim() !== _folderName;
 }
 
-async function _doNuke() {
+// Fire the self-destruct (called after a full hold — the typed folder name armed
+// the button, the hold is the final confirm; no dialog).
+async function _runNuke() {
   const phrase = _qs('ac-dz-nuke-phrase');
   if (!phrase || phrase.value.trim() !== _folderName) return;
-  const ok = await hazardConfirm({
-    tone: 'danger',
-    title: 'Delete the entire installation?',
-    message: `This permanently deletes the "${_folderName}" folder and everything in it, then shuts the server down. `
-      + 'The app does NOT come back — there is no backup and no undo. Only proceed if you mean to remove this install completely.',
-    confirmLabel: 'Delete everything',
-  });
-  if (!ok) return;
 
   const status = _qs('ac-dz-nuke-status');
   const btn = _qs('ac-dz-nuke-btn');
-  if (btn) btn.disabled = true;
+  if (btn) { btn.disabled = true; btn.classList.remove('warning'); }
   if (status) { status.style.color = 'var(--fg-3)'; status.textContent = 'Deleting installation…'; }
 
   try {
@@ -212,7 +248,7 @@ async function _doNuke() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) {
       if (status) { status.style.color = 'var(--danger)'; status.textContent = data.error || 'Delete failed.'; }
-      if (btn) btn.disabled = false;
+      if (btn) { btn.disabled = false; _restoreHold(btn); }
       return;
     }
     if (status) { status.style.color = 'var(--danger)'; status.textContent = 'Installation is being deleted and the server is shutting down. This app will stop responding.'; }
@@ -230,18 +266,36 @@ export function initDangerZone() {
 
   // Reset target checkboxes → enable/disable the reset button.
   _checks().forEach(c => c.addEventListener('change', _syncResetBtn));
-  _qs('ac-dz-reset-btn')?.addEventListener('click', () => {
-    if (!isAdmin()) return;
-    _doReset();
-  });
+  // Reset: press-and-HOLD to fire (the hold is the confirm). The fill duration
+  // (--dz-hold) is set from the same constant that drives the JS fire timer, so
+  // the animation and the action can never drift.
+  const resetBtn = _qs('ac-dz-reset-btn');
+  if (resetBtn) {
+    resetBtn.style.setProperty('--dz-hold', _HOLD_MS.reset + 'ms');
+    resetBtn.addEventListener('pointerdown', (e) => {
+      if (e.button && e.button !== 0) return;   // primary / touch only
+      e.preventDefault();
+      _beginHold(resetBtn, _HOLD_MS.reset, 'Keep holding to reset…', _runReset);
+    });
+    // A click without a completed hold does nothing (Enter/Space fall through here
+    // too) — swallow it so the browser's default button activation can't fire it.
+    resetBtn.addEventListener('click', (e) => e.preventDefault());
+  }
 
-  // Delete-install: arm the button only on an exact folder-name match.
+  // Delete-install: typing the folder name ARMS the button; then press-and-HOLD
+  // (longer) to fire. Two independent guards before anything is deleted.
   const phrase = _qs('ac-dz-nuke-phrase');
   phrase?.addEventListener('input', _syncNukeBtn);
-  _qs('ac-dz-nuke-btn')?.addEventListener('click', () => {
-    if (!isAdmin()) return;
-    _doNuke();
-  });
+  const nukeBtn = _qs('ac-dz-nuke-btn');
+  if (nukeBtn) {
+    nukeBtn.style.setProperty('--dz-hold', _HOLD_MS.nuke + 'ms');
+    nukeBtn.addEventListener('pointerdown', (e) => {
+      if (e.button && e.button !== 0) return;   // primary / touch only
+      e.preventDefault();
+      _beginHold(nukeBtn, _HOLD_MS.nuke, 'Keep holding to delete…', _runNuke);
+    });
+    nukeBtn.addEventListener('click', (e) => e.preventDefault());
+  }
 
   _refreshLucideIcons(card);
   _loadInfo();

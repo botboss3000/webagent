@@ -1381,6 +1381,13 @@ class AppSettings(BaseModel):
     ui_scale: str = "1"
     reduce_motion: str = "off"
     cursor_glow: str = "on"
+    # ── RAM speed layer (ui/shared/js/media-cache.js) — app-wide client knob ──
+    #   media_cache_enabled   — "on" (default) | "off": the in-memory
+    #                           attachment/thumbnail cache in the browser.
+    #   media_cache_budget_mb — memory ceiling (MB) for cached bytes/thumbnails;
+    #                           it LRU-evicts above this, so it can't exceed it.
+    media_cache_enabled: str = "on"
+    media_cache_budget_mb: str = "128"
     chat_pill_max_width: str = "500px"
     chat_pill_radius: str = "20px"
     chat_pill_padding: str = "4px 4px 4px 14px"
@@ -1515,6 +1522,9 @@ _DEFAULT_APPEARANCE = {
     "ui_scale": "1",
     "reduce_motion": "off",
     "cursor_glow": "on",
+    # RAM speed layer (media-cache.js) — see the AppSettings fields.
+    "media_cache_enabled": "on",
+    "media_cache_budget_mb": "128",
     # Chat-composer geometry + button knobs (see the AppSettings fields).
     "chat_pill_max_width": "500px",
     "chat_pill_radius": "20px",

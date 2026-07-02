@@ -106,6 +106,13 @@
     ui_scale: '1',         // overall UI size     (zoom; 1 = normal)
     reduce_motion: 'off',  // 'on' → near-instant animations/transitions
     cursor_glow: 'on',     // 'off' → hide the pointer glow
+    // ── RAM speed layer (ui/shared/js/media-cache.js) — app-wide client knob ──
+    //   media_cache_enabled   — 'on' (default) | 'off' to disable the in-memory
+    //                           attachment/thumbnail cache entirely.
+    //   media_cache_budget_mb — memory ceiling for cached bytes/thumbnails (MB);
+    //                           LRU-evicts above it, so it can never exceed this.
+    media_cache_enabled: 'on',
+    media_cache_budget_mb: '128',
     // ── Chat panel layout (app-wide defaults) ──
     //   chat_position        — desktop split side: 'right' (default) | 'left'
     //   chat_default_visible — first-visit desktop default: 'visible' | 'hidden'.
@@ -295,6 +302,17 @@
     if (isFalse(values.cursor_glow)) {
       css += '#cursor-glow{display:none!important}';
     }
+
+    // RAM speed layer: push the app-wide On/Off + memory budget to media-cache.js.
+    // Stashed on a global too, so the cache can self-configure even if its module
+    // finishes loading AFTER this first apply() runs (either load order is safe).
+    var mcBudget = num(values.media_cache_budget_mb);
+    var mcCfg = {
+      enabled: !isFalse(values.media_cache_enabled),
+      budgetBytes: (mcBudget ? mcBudget : 128) * 1024 * 1024
+    };
+    try { window.__waMediaCacheCfg = mcCfg; } catch (e) {}
+    try { if (window.WA_MEDIA_CACHE) window.WA_MEDIA_CACHE.configure(mcCfg); } catch (e) {}
 
     // Chat panel side (desktop split only). 'left' reverses the #stage flex row
     // so the chat sits left of the main panel; the resize handle detects the side

@@ -12,6 +12,7 @@ import { app } from './state.js';
 import { apiPath } from './config.js';
 import { icon } from './icons.js';
 import { putAttachment, getObjectUrl, deleteAttachment as idbDelete } from './attachments-idb.js';
+import * as mediaCache from './media-cache.js';
 
 // Active server-side attachment backend. Synced opportunistically by the
 // Chat Attachments card's bootstrap fetch (see ui/shared/js/data-management.js).
@@ -223,6 +224,14 @@ export async function uploadAndPreview(file, opts = {}) {
       }
 
       data = await res.json();
+    }
+
+    // Seed the RAM cache with the exact bytes just uploaded, so previews and
+    // chat-history renders this session are instant with no refetch (server
+    // backends) — for browser-stored files the bytes already live in IndexedDB.
+    if (data.attachment_id && data.storage_provider !== 'browser'
+        && (data.mime_type || '').match(/^(image|audio)\//)) {
+      try { mediaCache.put(data.attachment_id, file); } catch {}
     }
 
     // Replace chip with success preview
@@ -567,21 +576,51 @@ function _isBrowserStored(att) {
   return p.startsWith('indexeddb://');
 }
 
+// Small, repeatedly-rendered media (images, audio) is worth holding in the RAM
+// cache; large/opaque/streamed types (video, PDF, other) are left to stream from
+// their source so we never pull a whole video into memory.
+function _cacheable(att) {
+  const m = att.mime_type || '';
+  return m.startsWith('image/') || m.startsWith('audio/');
+}
+
+function _serverUrl(att) {
+  return att.url || (att.storage_path ? `/user_data/${att.storage_path}` : '');
+}
+
 function _resolveAttachmentUrl(att) {
   // Returns a thenable; null indicates "no resolvable URL". For browser-stored
-  // attachments we mint an object URL from IndexedDB; otherwise we use the
-  // server-provided URL or fall back to the local /user_data route.
+  // attachments we mint an object URL from IndexedDB (the bytes live on the
+  // device). Server-backed cacheable media is served through the RAM speed layer
+  // — instant on repeat renders — falling back to the raw URL on a miss/failure.
   if (_isBrowserStored(att) && att.attachment_id) {
     return getObjectUrl(att.attachment_id);
   }
-  return Promise.resolve(att.url || (att.storage_path ? `/user_data/${att.storage_path}` : ''));
+  const url = _serverUrl(att);
+  if (url && att.attachment_id && _cacheable(att)) {
+    return mediaCache.fetchUrl(att.attachment_id, url);
+  }
+  return Promise.resolve(url);
 }
 
-function _setSrcAsync(el, attrName, att, missingClass) {
+// Resolve a DOWNSCALED thumbnail for an image attachment (list/preview views),
+// generated once and held in RAM. Browser-stored images fall back to their full
+// IndexedDB object URL (already local); everything else tries the RAM thumbnail.
+function _resolveThumbUrl(att) {
+  if (_isBrowserStored(att)) return _resolveAttachmentUrl(att);
+  const url = _serverUrl(att);
+  if (url && att.attachment_id && (att.mime_type || '').startsWith('image/')) {
+    return mediaCache.thumbUrl(att.attachment_id, url, att.mime_type);
+  }
+  return Promise.resolve(url);
+}
+
+function _setSrcAsync(el, attrName, att, missingClass, resolver) {
   // For browser-stored bytes the URL is async; render with an empty src and
   // swap it in when IDB resolves. For server-stored bytes we still go through
-  // the same path for consistency.
-  _resolveAttachmentUrl(att).then(url => {
+  // the same path for consistency. `resolver` lets callers pick the thumbnail
+  // path (_resolveThumbUrl) instead of the full-size default.
+  (resolver || _resolveAttachmentUrl)(att).then(url => {
     if (url) {
       el[attrName] = url;
     } else if (missingClass) {
@@ -725,7 +764,7 @@ export function renderAttachmentElement(att) {
     img.loading = 'lazy';
     img.title = 'Click to expand';
     img.addEventListener('click', () => openAttachmentViewer(att));
-    _setSrcAsync(img, 'src', att, 'chat-attachment-missing');
+    _setSrcAsync(img, 'src', att, 'chat-attachment-missing', _resolveThumbUrl);
     return img;
   }
 

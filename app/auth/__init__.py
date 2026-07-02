@@ -300,6 +300,10 @@ class UiConfigResponse(BaseModel):
     ui_scale: str
     reduce_motion: str
     cursor_glow: str
+    # RAM speed layer (ui/shared/js/media-cache.js): app-wide On/Off + memory
+    # budget (MB) for the in-browser attachment/thumbnail cache.
+    media_cache_enabled: str
+    media_cache_budget_mb: str
     # Chat-composer geometry + button knobs (CSS lengths; see app1.css
     # CHAT-PILL-VARS). Injected app-wide by ui/shared/js/appearance.js.
     chat_pill_max_width: str

@@ -27,6 +27,7 @@ import { initDeploy } from './deploy.js';
 import { initAppAccess } from './app-access.js';
 import { initSocialAuth } from './social-auth.js';
 import { initDangerZone } from './danger-zone.js';
+import { initMediaCacheSettings } from './media-cache-settings.js';
 
 // Wire one expandable row: clicking the head expands/collapses it, except when
 // the click lands on a control inside the head. Same behaviour as App Settings'
@@ -115,6 +116,11 @@ export function init() {
   // here from Data Management. Their control drivers (storage.js, data-management.js)
   // bind by id and load on App-Config open (settings-view.js); we only wire the rows.
   _wireDatabaseRows();
+  // Memory Cache (RAM) row — On/Off + memory budget for the in-browser media
+  // cache (media-cache.js). Owns its own /admin/settings/app load + auto-save and
+  // live preview via WA_APPEARANCE. Row expand/collapse comes from _wireDatabaseRows
+  // above (the row lives in the same DATABASE ability-list). See ./media-cache-settings.js.
+  initMediaCacheSettings();
   // Danger Zone card (very bottom) — reset selected data groups (self-restart +
   // boot-time wipe) or delete the whole install. Owns its own /admin/storage/reset*
   // fetch + confirm dialogs; sets window.__refreshDangerZone (called on section-show

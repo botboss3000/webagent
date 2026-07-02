@@ -1,0 +1,15 @@
+{
+  "at": "2026-07-02T13:56:26",
+  "groups": [
+    "logs"
+  ],
+  "ok": [
+    "data/db/logs.db",
+    "data/db/recordings.db",
+    "data/db/instance_id.txt"
+  ],
+  "failed": [],
+  "postgres": null,
+  "backup": "C:\\Users\\Alex R\\Projects\\webagent-dev\\temp\\reset-backup-20260702-135626",
+  "note": null
+}

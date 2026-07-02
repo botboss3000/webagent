@@ -1536,6 +1536,44 @@ live/scheduled) */
   flex-shrink: 0;
 }
 
+/* Hold-to-fire buttons (Reset / Delete installation). Press and HOLD: a danger
+   fill sweeps left→right beneath the label; hold to the end and the action fires
+   (the hold IS the confirmation — no dialog). Same affordance as the deploy card's
+   hold-to-restart button. The fill's transition duration is driven from JS via the
+   `--dz-hold` custom property so CSS + the JS fire-timer can never drift.
+   See danger-zone.js `_beginHold`. */
+.ac-dz-hold {
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;           /* a touch-hold shouldn't scroll the page */
+}
+.ac-dz-hold .ac-dz-fill {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: rgba(var(--danger-rgb, 220, 80, 80), 0.30);
+  transition: transform 150ms ease;    /* quick snap-back on release / abort */
+  pointer-events: none;
+}
+.ac-dz-hold.holding .ac-dz-fill {
+  transform: scaleX(1);
+  transition: transform var(--dz-hold, 1500ms) linear;   /* == the JS fire timer */
+}
+.ac-dz-hold .ac-dz-hold-label {
+  position: relative;
+  z-index: 1;
+}
+/* Armed (past the arm threshold): intensify the danger tint so it reads as "committed". */
+.ac-dz-hold.warning {
+  color: var(--danger);
+  border-color: rgba(var(--danger-rgb, 220, 80, 80), 0.75);
+}
+.ac-dz-hold[disabled] .ac-dz-fill { transform: scaleX(0); }
+
 /* ── App Access · Social sign-in (data-settings.html) ──
    The social providers live in the SAME `.ac-list` tree as the access-mode
    radios, styled like the ability tree: a "Sign in with" group-header row over

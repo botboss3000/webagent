@@ -391,19 +391,84 @@ async function _onServerSave() {
 }
 
 // Remove a saved server + its stored login (the machine itself is untouched).
+// Fired by the press-and-hold gesture below — no confirm dialog, the hold is the
+// confirmation. Re-checks a server is selected before hitting the endpoint.
 async function _onServerDelete() {
   if (!isAdmin()) return;
   const server_id = (_qs('ac-deploy-servers') || {}).value || '';
   if (!server_id) return;
-  const cur = ((_current() || {}).servers || []).find(s => s.id === server_id);
-  if (!window.confirm('Delete saved server “' + ((cur && cur.label) || server_id) + '”?\n\n'
-      + 'This removes it from the list and forgets its stored login. The server itself is not touched.')) return;
   _setStatus('Deleting…');
   try {
     await _post('/admin/deploy/servers/delete', { provider: _provider(), server_id });
     await _load();
     _setStatus('Deleted.', 'ok');
-  } catch (e) { _setStatus(e.message, 'err'); }
+  } catch (e) {
+    _setStatus(e.message, 'err');
+  } finally {
+    _resetDeleteBtn();           // clear any lingering holding/warning state after firing
+  }
+}
+
+// ── Hold-to-delete (the saved-server Delete button) ──────────────────────────
+// Press and HOLD Delete: a danger fill sweeps the button (shared .ac-dz-hold
+// styling), the label switches to "Keep holding…" partway through, and holding the
+// whole _DEL_HOLD_MS runs the delete. Release / pointer-cancel before the end
+// aborts with no side effect — the deliberate hold replaces the old confirm dialog.
+// The CSS fill duration is driven from --dz-hold (set in _init) so it stays in
+// lock-step with _DEL_HOLD_MS.
+const _DEL_HOLD_MS = 1500;       // total hold → fire the delete
+const _DEL_ARM_MS = 380;         // hold this long → arm (intensify + swap the label)
+const _DEL_REST_LABEL = 'Hold to delete';
+let _delHold = null;             // {btn, armTimer, fireTimer} while a hold is live
+
+function _delSetLabel(btn, text) {
+  const el = btn && btn.querySelector('.ac-dz-hold-label');
+  if (el) el.textContent = text;
+}
+
+// Restore the button to its resting look (label + no holding/warning tint).
+function _resetDeleteBtn() {
+  const btn = _qs('ac-deploy-server-delete');
+  if (btn) { btn.classList.remove('holding', 'warning'); _delSetLabel(btn, _DEL_REST_LABEL); }
+}
+
+// Stop the active hold. `revert` restores the resting label (an abort); leave it
+// false when the delete is firing (the finally in _onServerDelete tidies up).
+function _delCancel(revert) {
+  const h = _delHold; _delHold = null;
+  if (!h) return;
+  clearTimeout(h.armTimer); clearTimeout(h.fireTimer);
+  window.removeEventListener('pointerup', _delRelease, true);
+  window.removeEventListener('pointercancel', _delRelease, true);
+  if (h.btn && revert) {
+    h.btn.classList.remove('holding', 'warning');
+    _delSetLabel(h.btn, _DEL_REST_LABEL);
+  }
+}
+function _delRelease() { _delCancel(true); }
+
+function _beginDeleteHold(btn) {
+  if (_delHold || !isAdmin()) return;
+  if (!((_qs('ac-deploy-servers') || {}).value || '')) return;   // nothing selected
+  const armTimer = setTimeout(() => {
+    btn.classList.add('warning');
+    _delSetLabel(btn, 'Keep holding to delete…');
+  }, _DEL_ARM_MS);
+  const fireTimer = setTimeout(() => {
+    _delCancel(false);           // clear timers/listeners, keep the button filled
+    _onServerDelete();
+  }, _DEL_HOLD_MS);
+  _delHold = { btn, armTimer, fireTimer };
+  // Kick the CSS fill on the next frame so the transition actually animates.
+  requestAnimationFrame(() => { if (_delHold && _delHold.btn === btn) btn.classList.add('holding'); });
+  window.addEventListener('pointerup', _delRelease, true);
+  window.addEventListener('pointercancel', _delRelease, true);
+}
+
+function _onServerDeletePointerDown(e) {
+  if (e.button != null && e.button !== 0) return;   // primary button / touch only
+  e.preventDefault();
+  _beginDeleteHold(e.currentTarget);
 }
 
 // ── Current deployment + other local deployments ─────────────────────────────
@@ -2139,7 +2204,15 @@ export function initDeploy() {
   // Saved-servers picker (shown only for the profile-aware SSH target).
   _qs('ac-deploy-servers')?.addEventListener('change', _onServerSelect);
   _qs('ac-deploy-server-save')?.addEventListener('click', _onServerSave);
-  _qs('ac-deploy-server-delete')?.addEventListener('click', _onServerDelete);
+  // Delete is press-and-HOLD (no confirm dialog): pointerdown starts the hold, a
+  // plain click is swallowed so only a completed hold ever deletes. --dz-hold makes
+  // the CSS fill run for exactly _DEL_HOLD_MS.
+  const _delBtn = _qs('ac-deploy-server-delete');
+  if (_delBtn) {
+    _delBtn.style.setProperty('--dz-hold', _DEL_HOLD_MS + 'ms');
+    _delBtn.addEventListener('pointerdown', _onServerDeletePointerDown);
+    _delBtn.addEventListener('click', (e) => e.preventDefault());
+  }
   // Deploy-target dropdown → reveal one panel (cloud / local / linux / win / mac).
   const target = _qs('ac-deploy-target');
   if (target && !target.dataset.wired) {

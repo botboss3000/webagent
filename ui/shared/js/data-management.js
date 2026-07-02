@@ -25,8 +25,8 @@ const PROVIDER_META = {
     ],
   },
   browser: {
-    label: 'Browser (IndexedDB)',
-    blurb: 'Bytes live in the user\'s browser via IndexedDB. The server records only the row metadata. Server-side tools (read_attachment, agent vision) cannot read bytes when this backend is active. Files do not follow users across devices.',
+    label: 'This device (browser storage)',
+    blurb: 'Bytes stay on the user\'s own device via the browser (IndexedDB); the server records only the row metadata. Nothing leaves the device — but server-side tools (read_attachment, agent vision) cannot read the bytes, and files do not follow the user to another device. (Cross-device sync is a planned addition.)',
     fields: [],
   },
   supabase: {
