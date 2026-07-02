@@ -429,6 +429,51 @@ export function initTabs() {
     window.addEventListener('admin-status-loaded', _restoreAdminTab);
   }
 
+  // ── First-ever landing: send a brand-new admin to Data Settings ──
+  // On the VERY FIRST load of this browser (after the setup wizard + splash, once
+  // the admin password is set and the gate is passed) the first content page an
+  // admin should see is Admin Configuration → Data Settings, not the usual Agents
+  // landing. It fires AT MOST ONCE per browser and only for a confirmed admin.
+  //
+  // Mechanics: land = Admin Tools tab (lastActiveTab) → 'settings' sidebar view
+  // (files.sidebarView) → 'data-settings' section (appConfig_activeSection). We
+  // seed the latter two localStorage keys BEFORE activating admin-tools so that
+  // files.js' applySidebarView and nav.js' module-eval both read the fresh values
+  // when Admin Tools first lazily mounts. Admin status is async (the /check-access
+  // probe), so — like the deferred restore above — we wait for admin-status-loaded.
+  //
+  // State machine (localStorage 'webagent.firstLanding.v1'):
+  //   absent  → first time this code runs in this browser. If the browser already
+  //             has a saved tab or arrived via a ?tab= deep link, it's an existing/
+  //             intentional visit → mark 'done' (suppress, never yank them). A truly
+  //             fresh browser → 'pending' and arm the listener.
+  //   pending → armed but no admin has signed in yet (e.g. the admin signs in on a
+  //             later load); keep waiting so their first authenticated load still
+  //             lands on Data Settings. A non-admin visitor just leaves it pending.
+  //   done    → already landed (or suppressed) — do nothing.
+  (function () {
+    const KEY = 'webagent.firstLanding.v1';
+    let state;
+    try { state = localStorage.getItem(KEY); } catch (_) { return; }
+    if (state === 'done') return;
+    if (state === null) {
+      if (savedTab || _deepLinkHandled) {
+        try { localStorage.setItem(KEY, 'done'); } catch (_) {}
+        return;
+      }
+      try { localStorage.setItem(KEY, 'pending'); } catch (_) {}
+    }
+    const _firstLanding = (e) => {
+      window.removeEventListener('admin-status-loaded', _firstLanding);
+      if (!(e && e.detail && e.detail.is_admin)) return;  // stay 'pending' for non-admins
+      try { localStorage.setItem('files.sidebarView', 'settings'); } catch (_) {}
+      try { localStorage.setItem('appConfig_activeSection', 'data-settings'); } catch (_) {}
+      try { localStorage.setItem(KEY, 'done'); } catch (_) {}
+      activateTab('admin-tools', true);
+    };
+    window.addEventListener('admin-status-loaded', _firstLanding);
+  })();
+
   // ── Middle-click on a header tab opens that page in a new browser tab ──
   // (The new-session + button's own middle-click handler moved with the button
   // into ui/chat-side-panel/js/session-init.js when it relocated to the chat

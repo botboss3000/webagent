@@ -1,7 +1,0 @@
-{
-  "id": "terminal",
-  "kind": "admin",
-  "label": "Terminal Launcher",
-  "icon": "terminal",
-  "order": 3
-}

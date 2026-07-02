@@ -30,23 +30,41 @@
             by /admin/deploy/instances/* (app/local_instances.py — the same
             registry the Dashboard's instance header uses).
          2. + NEW DEPLOYMENT (#ac-deploy-new-row) — an expandable `.ac-group`
-            whose body holds the install targets, revealed on click:
-              • Deploy to the cloud (Google VM / AWS / … from the catalog),
-              • Register a local checkout (#ac-deploy-register-row) — an
-                expandable add form (another WebAgent repo folder + a free
-                port) so it can run alongside this one,
-              • Deploy to Linux or Android (Termux), Windows, and Mac.
-       Inside the cloud target's body: a target picker (rendered from
-       GET /admin/deploy/catalog), a dynamic SETTINGS form (non-secret
-       config_fields) and a CLOUD KEY form (secret credential_fields →
-       encrypted vault), then Test / Save / Deploy now / Tear down, a live
-       NDJSON log, and a result line. The three manual targets each build
-       their install/run command LIVE in the browser (see deploy.js).
-       All wiring lives in the sibling deploy.js (initDeploy); the static rows'
-       expand reuses _wireBootRow in data-settings.js, the dynamic instance bars
-       use deploy.js delegation. The cloud key is used for one deploy then
-       auto-discarded from the vault ("Forget keys after deploy", default on).
-       Admin-only; Deploy / Tear-down / relaunch actions are confirm-gated.
+            whose body now holds just TWO bars (was five per-target rows), so the
+            repo is chosen ONCE and the target picked separately:
+              • REPO DETAILS (#ac-deploy-repo-row) — the repo choice carried into
+                EVERY target: repository URL, public/private, access token (shown
+                only when private), and an optional admin password. deploy.js
+                `_readSharedRepo()` is the single source of truth — the manual
+                command boxes AND the cloud deploy both read it. The token + admin
+                password are never stored (the token only rides the built command
+                / the one-shot cloud deploy; the admin password only pre-sets the
+                first admin).
+              • DEPLOY TARGET (#ac-deploy-target-row) — a #ac-deploy-target
+                dropdown (Cloud · Local checkout · Linux/Android · Windows · Mac)
+                revealing ONE `.ac-deploy-target-panel` at a time (deploy.js
+                `_syncTargetPanel`):
+                  – Cloud (#ac-deploy-cloud-panel) → the provider sub-picker
+                    ("Where to deploy", rendered from GET /admin/deploy/catalog),
+                    a dynamic SETTINGS form (non-secret config_fields), a CLOUD
+                    KEY form (secret credential_fields → encrypted vault), saved
+                    servers, then Test / Save / Deploy now / Tear down + a live
+                    NDJSON log. The shared repo (URL/visibility/token) + admin
+                    password are INJECTED into the cloud deploy by deploy.js, so
+                    the repo/branch/admin fields are NOT shown in this panel.
+                  – Local checkout (#ac-deploy-local-panel) → another WebAgent
+                    repo folder on this machine + a free port, run alongside this
+                    one. Repo details don't apply (it's an existing checkout).
+                  – Linux/Android, Windows, Mac (#ac-deploy-{linux,win,mac}-panel)
+                    → an install-location field + the LIVE copy-paste command (+
+                    QR) + a run-only command + steps, all built in the browser
+                    from the shared repo details.
+       All wiring lives in the sibling deploy.js (initDeploy); the two static
+       bars' expand reuses _wireBootRow in data-settings.js, the target-panel
+       switch + shared-repo plumbing + the dynamic instance bars live in deploy.js.
+       The cloud key is used for one deploy then auto-discarded from the vault
+       ("Forget keys after deploy", default on). Admin-only; Deploy / Tear-down /
+       relaunch actions are confirm-gated.
        ════════════════════════════════════════════════════════════════ -->
   <div class="ac-category-group" id="ac-deploy-card" data-pa-area="deployment">
     <div class="ac-category-summary" style="cursor:default;">
@@ -86,16 +104,72 @@
           </div>
           <div class="ac-group-body">
 
-        <div class="ac-row" id="ac-deploy-row">
+        <!-- ── Repo details (shared) ── the repo choice entered ONCE and carried
+             into EVERY target below (deploy.js _readSharedRepo is the single source
+             of truth). The token + admin password are never stored. The `data-tip`
+             labels become circled "?" badges via deploy.js _wireManualTips, which
+             now also scans this row. Expand wired by _wireBootRow('ac-deploy-repo-row'). -->
+        <div class="ac-row" id="ac-deploy-repo-row">
           <div class="ac-ability-row">
-            <span class="ac-ability-icon"><i data-lucide="cloud-upload" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <span class="ac-ability-icon"><i data-lucide="git-branch" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
             <div class="ac-ability-label">
-              <div class="ac-ability-name">Deploy to the cloud</div>
-              <div class="ac-ability-desc">Create a server on your cloud account and install WebAgent on it automatically. Your cloud key is used once for the deploy, then discarded from the vault.</div>
+              <div class="ac-ability-name">Repo details</div>
+              <div class="ac-ability-desc">The code to install and how to sign in — entered once and used for whichever target you pick below.</div>
             </div>
             <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
           </div>
           <div class="ac-ability-body">
+            <label class="ac-label" data-tip="The address of the WebAgent code on GitHub. Leave blank to install the standard WebAgent app; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
+            <input id="ac-deploy-repo-url" class="ac-input" type="text" placeholder="https://github.com/botboss3000/webagent" autocomplete="off" spellcheck="false">
+
+            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
+            <select id="ac-deploy-repo-visibility" class="ac-input">
+              <option value="public">Public — anyone can clone it</option>
+              <option value="private">Private — needs an access token</option>
+            </select>
+
+            <div id="ac-deploy-repo-token-wrap" style="display:none;margin-top:10px;">
+              <label class="ac-label" data-tip="A GitHub personal access token, used once so the target can download a private repository. It is never saved on this server — for a manual install it is embedded in the command you copy or scan; for a cloud deploy it is sent to the new server to clone with, then discarded. Either way, forgotten afterwards.">Access token</label>
+              <input id="ac-deploy-repo-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
+              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to fetch a private repository — it is <strong>not saved</strong> on this server. It rides the built command / the one-shot cloud deploy, then is forgotten.</div>
+            </div>
+
+            <!-- Admin password (optional) — shared by every target. Blank → the first
+                 visitor sets it on the setup page. Typed → it pre-sets the first admin
+                 (manual: WA_ADMIN_PW in the command; cloud: BOOTSTRAP_ADMIN_PASSWORD in
+                 the new server's .env). Never stored on this server. -->
+            <label class="ac-label" style="margin-top:10px;" data-tip="Optional — leave it blank to install the app as-is, with no admin password set. The first person to open its address then picks the password on the setup page (this also works from another device on the same network). Or type a password here (6+ characters) to pre-set it, so the admin is ready before the app is ever reachable — for a manual install it is embedded in the command in plain text, so keep that command private.">Admin password (optional)</label>
+            <input id="ac-deploy-repo-admin-pw" class="ac-input" type="password" placeholder="leave blank — first visitor sets it" autocomplete="new-password" spellcheck="false">
+          </div>
+        </div>
+
+        <!-- ── Deploy target ── pick where to install; deploy.js _syncTargetPanel
+             reveals ONE `.ac-deploy-target-panel` below the dropdown. Expand wired by
+             _wireBootRow('ac-deploy-target-row'). -->
+        <div class="ac-row" id="ac-deploy-target-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="rocket" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Deploy target</div>
+              <div class="ac-ability-desc">Where to install WebAgent — the cloud, another checkout on this machine, or a Linux/Android, Windows or Mac device.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Where to install</label>
+            <select id="ac-deploy-target" class="ac-input">
+              <option value="cloud">The cloud (create a server)</option>
+              <option value="local">A local checkout (this machine)</option>
+              <option value="termux">Linux or Android (Termux)</option>
+              <option value="windows">Windows</option>
+              <option value="macos">Mac</option>
+            </select>
+
+            <!-- ── Cloud panel ── the provider sub-picker + settings + cloud key +
+                 saved servers + actions + live NDJSON log. The shared repo (URL/
+                 visibility/token) + admin password are injected into the deploy by
+                 deploy.js, so no repo/branch/admin fields render here. -->
+            <div class="ac-deploy-target-panel" id="ac-deploy-cloud-panel" data-target="cloud" style="margin-top:12px;">
             <label class="ac-label">Where to deploy</label>
             <select id="ac-deploy-provider" class="ac-input"></select>
             <div id="ac-deploy-blurb" class="ac-hint" style="line-height:1.5;"></div>
@@ -125,13 +199,6 @@
             <label class="ac-label" style="margin-top:10px;">Settings</label>
             <div id="ac-deploy-config" class="ac-ra-fields"></div>
 
-            <!-- Optional pre-set admin password. Rendered here (its OWN slot, above
-                 the cloud key) by deploy.js _renderProvider from the provider's
-                 admin_password credential descriptor — it's a deploy setting, not a
-                 cloud credential, so it doesn't belong in the Cloud key list. Still
-                 a secret: gathered as a 'cred', vaulted, discarded after deploy. -->
-            <div id="ac-deploy-admin" class="ac-ra-fields"></div>
-
             <label class="ac-label" style="margin-top:10px;">Cloud key</label>
             <div id="ac-deploy-creds" class="ac-ra-fields"></div>
             <div id="ac-deploy-key-note" class="ac-hint" style="font-size:11px;"></div>
@@ -146,24 +213,14 @@
 
             <pre id="ac-deploy-log" class="ac-deploy-log" hidden></pre>
             <div id="ac-deploy-result" class="ac-hint" style="margin-top:8px;font-size:12px;line-height:1.5;"></div>
-          </div>
-        </div>
+            </div><!-- /#ac-deploy-cloud-panel -->
 
-        <!-- ── + Register a local checkout ── an expandable add form: point at
-             another WebAgent repo folder on this machine + a free port, and it can
-             run alongside this one. Sits inside New deployment (below Deploy to the
-             cloud). Body ids owned by deploy.js (_initRegister); expand wired by
-             _wireBootRow('ac-deploy-register-row'). -->
-        <div class="ac-row" id="ac-deploy-register-row">
-          <div class="ac-ability-row">
-            <span class="ac-ability-icon"><i data-lucide="folder-plus" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
-            <div class="ac-ability-label">
-              <div class="ac-ability-name">Register a local checkout</div>
-              <div class="ac-ability-desc">Run another WebAgent repo folder on this machine on its own port, alongside this one.</div>
-            </div>
-            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
-          </div>
-          <div class="ac-ability-body">
+            <!-- ── Local-checkout panel ── point at another WebAgent repo folder on
+                 this machine + a free port, run alongside this one. Repo details don't
+                 apply here (it's an existing checkout on disk). Body ids owned by
+                 deploy.js (_initInstances / _registerAdd). -->
+            <div class="ac-deploy-target-panel" id="ac-deploy-local-panel" data-target="local" hidden style="margin-top:12px;">
+            <div class="ac-hint" style="font-size:11px;margin-bottom:10px;line-height:1.5;color:var(--fg-3);">Repo details above aren’t used here — a local checkout runs a WebAgent folder already on this machine.</div>
             <label class="ac-label">Repo folder *</label>
             <input id="ac-inst-folder" class="ac-input" type="text" placeholder="C:\path\to\another-webagent" autocomplete="off" spellcheck="false">
             <div class="ac-hint" id="ac-inst-folder-tip" style="font-size:11px;margin-top:3px;">The folder of another WebAgent checkout (needs run.py + app/main.py).</div>
@@ -179,55 +236,19 @@
               <button id="ac-inst-add" class="ac-btn ac-deploy-go-btn" type="button">Add</button>
               <span id="ac-inst-add-status" class="ac-hint" style="margin-left:6px;"></span>
             </div>
-          </div>
-        </div>
+            </div><!-- /#ac-deploy-local-panel -->
 
-        <!-- ── Run on Linux / Termux ── a SEPARATE sibling row (not a cloud
-             provider): the admin gives a GitHub URL + public/private (+ token if
-             private), and gets the one command to paste into a Linux terminal or
-             Termux plus a scannable QR of it. ONE command, it detects which it's on.
-             No cloud account, nothing billable. The `data-tip` on each label becomes
-             a circled "?" help badge (deploy.js _wirePhoneTips, same look as the
-             cloud row). Body ids owned by deploy.js (_initPhone); expand reuses
-             _wireBootRow. -->
-        <div class="ac-row" id="ac-deploy-phone-row">
-          <div class="ac-ability-row">
-            <span class="ac-ability-icon"><i data-lucide="terminal" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
-            <div class="ac-ability-label">
-              <div class="ac-ability-name">Deploy to Linux or Android (Termux)</div>
-              <div class="ac-ability-desc">Install WebAgent on a Linux computer, or on an Android phone or tablet using the free Termux app. Enter your repository, then scan or paste the command it gives you — no cloud account, nothing to pay for.</div>
-            </div>
-            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
-          </div>
-          <div class="ac-ability-body">
-            <label class="ac-label" data-tip="The address of the WebAgent code on GitHub. Leave blank to install the standard WebAgent app; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
-            <input id="ac-tx-url" class="ac-input" type="text" placeholder="https://github.com/botboss3000/webagent" autocomplete="off" spellcheck="false">
-
-            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
-            <select id="ac-tx-visibility" class="ac-input">
-              <option value="public">Public — anyone can clone it</option>
-              <option value="private">Private — needs an access token</option>
-            </select>
-
-            <div id="ac-tx-token-wrap" style="display:none;margin-top:10px;">
-              <label class="ac-label" data-tip="A GitHub personal access token, used once to build the command so the device can download a private repository. It is never saved on the server — it only gets embedded in the command you copy or scan, then forgotten.">Access token</label>
-              <input id="ac-tx-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
-              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the device can download a private repository, then forgotten.</div>
-            </div>
-
+            <!-- ── Linux/Android panel ── install-location + the LIVE command (+ QR)
+                 + a run-only command + steps, all built in the browser by deploy.js
+                 from the shared repo details (MANUAL_ROWS[termux]). The `data-tip`
+                 install-location label becomes a "?" badge via _wireManualTips. -->
+            <div class="ac-deploy-target-panel" id="ac-deploy-linux-panel" data-target="termux" hidden style="margin-top:12px;">
             <!-- Install location (optional). Blank = the default shown as the
                  placeholder (deploy.js fills it from MANUAL_ROWS.defaultDir). If
                  WebAgent is already in this folder the command updates it to the
                  repository above instead of re-installing. -->
-            <label class="ac-label" style="margin-top:10px;" data-tip="The folder on the device to install WebAgent into. Leave blank for the default ($HOME/webagent). If WebAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
+            <label class="ac-label" data-tip="The folder on the device to install WebAgent into. Leave blank for the default ($HOME/webagent). If WebAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
             <input id="ac-tx-dir" class="ac-input" type="text" autocomplete="off" spellcheck="false">
-
-            <!-- Admin password (optional). See deploy.js _mcResolveAdmin (mirror of
-                 manual_common.resolve_admin). Blank → no prefix: the first visitor
-                 sets the password on the setup page. Typed → the command carries it
-                 (WA_ADMIN_PW → BOOTSTRAP_ADMIN_PASSWORD in .env) IN PLAIN TEXT. -->
-            <label class="ac-label" style="margin-top:10px;" data-tip="Optional — leave it blank to install the app as-is, with no admin password set. The first person to open its address then picks the password on the setup page (this also works from another device on the same network). Or type a password here to pre-set it, so the admin is ready before the app is ever reachable — note it is then embedded in the command below in plain text, so keep that command private.">Admin password (optional)</label>
-            <input id="ac-tx-admin-pw" class="ac-input" type="password" placeholder="leave blank — first visitor sets it" autocomplete="new-password" spellcheck="false">
 
             <!-- The command is shown LIVE (built + QR generated by deploy.js as
                  the fields change) — there is no "generate" button. Copy grabs it;
@@ -261,50 +282,17 @@
 
             <ol class="ac-tx-steps" id="ac-tx-steps"></ol>
             <div class="ac-deploy-cmd-note" id="ac-tx-note" hidden></div>
-          </div>
-        </div>
+            </div><!-- /#ac-deploy-linux-panel -->
 
-        <!-- ── Run on Windows ── another SEPARATE manual row (sibling of the
-             Linux/Termux row). Same shape: GitHub URL + public/private (+ token
-             if private) → the one command to paste into PowerShell + a QR. The
-             command is built LIVE in deploy.js (_winBuild, a byte-mirror of
-             app/deploy/providers/windows.py build_command) so the box renders
-             even before the server restarts. Body ids owned by deploy.js
-             (MANUAL_ROWS[windows]); expand reuses _wireBootRow. -->
-        <div class="ac-row" id="ac-deploy-win-row">
-          <div class="ac-ability-row">
-            <span class="ac-ability-icon"><i data-lucide="monitor" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
-            <div class="ac-ability-label">
-              <div class="ac-ability-name">Deploy to Windows</div>
-              <div class="ac-ability-desc">Install WebAgent on a Windows 10 or 11 PC. Enter your repository, then copy or scan the command and paste it into PowerShell — no cloud account, nothing to pay for.</div>
-            </div>
-            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
-          </div>
-          <div class="ac-ability-body">
-            <label class="ac-label" data-tip="The address of the WebAgent code on GitHub. Leave blank to install the standard WebAgent app; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
-            <input id="ac-win-url" class="ac-input" type="text" placeholder="https://github.com/botboss3000/webagent" autocomplete="off" spellcheck="false">
-
-            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
-            <select id="ac-win-visibility" class="ac-input">
-              <option value="public">Public — anyone can clone it</option>
-              <option value="private">Private — needs an access token</option>
-            </select>
-
-            <div id="ac-win-token-wrap" style="display:none;margin-top:10px;">
-              <label class="ac-label" data-tip="A GitHub personal access token, used once to build the command so the device can download a private repository. It is never saved on the server — it only gets embedded in the command you copy or scan, then forgotten.">Access token</label>
-              <input id="ac-win-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
-              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the PC can download a private repository, then forgotten.</div>
-            </div>
-
+            <!-- ── Windows panel ── install-location + the LIVE PowerShell command
+                 (+ QR) + a run-only command + steps, built from the shared repo
+                 details (MANUAL_ROWS[windows]). -->
+            <div class="ac-deploy-target-panel" id="ac-deploy-win-panel" data-target="windows" hidden style="margin-top:12px;">
             <!-- Install location (optional). Blank = the default ($env:USERPROFILE\webagent),
                  filled in as the placeholder by deploy.js. An existing install here is
                  updated to the repository above rather than re-installed. -->
-            <label class="ac-label" style="margin-top:10px;" data-tip="The folder on the PC to install WebAgent into. Leave blank for the default (your user profile folder). If WebAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
+            <label class="ac-label" data-tip="The folder on the PC to install WebAgent into. Leave blank for the default (your user profile folder). If WebAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
             <input id="ac-win-dir" class="ac-input" type="text" autocomplete="off" spellcheck="false">
-
-            <!-- Admin password (optional) — see the Linux/Termux row above (mirror). -->
-            <label class="ac-label" style="margin-top:10px;" data-tip="Optional — leave it blank to install the app as-is, with no admin password set. The first person to open its address then picks the password on the setup page (this also works from another device on the same network). Or type a password here to pre-set it, so the admin is ready before the app is ever reachable — note it is then embedded in the command below in plain text, so keep that command private.">Admin password (optional)</label>
-            <input id="ac-win-admin-pw" class="ac-input" type="password" placeholder="leave blank — first visitor sets it" autocomplete="new-password" spellcheck="false">
 
             <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
               <div class="ac-deploy-cmd-head">Paste this into Windows PowerShell</div>
@@ -331,49 +319,17 @@
 
             <ol class="ac-tx-steps" id="ac-win-steps"></ol>
             <div class="ac-deploy-cmd-note" id="ac-win-note" hidden></div>
-          </div>
-        </div>
+            </div><!-- /#ac-deploy-win-panel -->
 
-        <!-- ── Run on macOS ── another SEPARATE manual row (sibling of the
-             Linux/Termux + Windows rows). Same shape: GitHub URL + public/private
-             (+ token if private) → the one command to paste into Terminal + a QR.
-             Built LIVE in deploy.js (_macBuild, a byte-mirror of
-             app/deploy/providers/macos.py build_command). Body ids owned by
-             deploy.js (MANUAL_ROWS[macos]); expand reuses _wireBootRow. -->
-        <div class="ac-row" id="ac-deploy-mac-row">
-          <div class="ac-ability-row">
-            <span class="ac-ability-icon"><i data-lucide="laptop" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
-            <div class="ac-ability-label">
-              <div class="ac-ability-name">Deploy to Mac</div>
-              <div class="ac-ability-desc">Install WebAgent on a Mac. Enter your repository, then copy or scan the command and paste it into Terminal — no cloud account, nothing to pay for.</div>
-            </div>
-            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
-          </div>
-          <div class="ac-ability-body">
-            <label class="ac-label" data-tip="The address of the WebAgent code on GitHub. Leave blank to install the standard WebAgent app; enter your own fork's address only if you maintain a custom copy.">Code to install (GitHub repository)</label>
-            <input id="ac-mac-url" class="ac-input" type="text" placeholder="https://github.com/botboss3000/webagent" autocomplete="off" spellcheck="false">
-
-            <label class="ac-label" style="margin-top:10px;" data-tip="Public repositories anyone can download — no token needed. Choose Private only if your repository requires a login; you'll then paste an access token below.">Repository access</label>
-            <select id="ac-mac-visibility" class="ac-input">
-              <option value="public">Public — anyone can clone it</option>
-              <option value="private">Private — needs an access token</option>
-            </select>
-
-            <div id="ac-mac-token-wrap" style="display:none;margin-top:10px;">
-              <label class="ac-label" data-tip="A GitHub personal access token, used once to build the command so the device can download a private repository. It is never saved on the server — it only gets embedded in the command you copy or scan, then forgotten.">Access token</label>
-              <input id="ac-mac-token" class="ac-input" type="password" placeholder="GitHub personal access token" autocomplete="off" spellcheck="false">
-              <div class="ac-hint" style="font-size:11px;margin-top:3px;">Used only to build the command below — it is <strong>not saved</strong> on the server. It gets embedded in the command so the Mac can download a private repository, then forgotten.</div>
-            </div>
-
+            <!-- ── Mac panel ── install-location + the LIVE Terminal command (+ QR)
+                 + a run-only command + steps, built from the shared repo details
+                 (MANUAL_ROWS[macos]). -->
+            <div class="ac-deploy-target-panel" id="ac-deploy-mac-panel" data-target="macos" hidden style="margin-top:12px;">
             <!-- Install location (optional). Blank = the default ($HOME/webagent),
                  filled in as the placeholder by deploy.js. An existing install here is
                  updated to the repository above rather than re-installed. -->
-            <label class="ac-label" style="margin-top:10px;" data-tip="The folder on the Mac to install WebAgent into. Leave blank for the default ($HOME/webagent). If WebAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
+            <label class="ac-label" data-tip="The folder on the Mac to install WebAgent into. Leave blank for the default ($HOME/webagent). If WebAgent is already installed there, the command gracefully updates it to the repository above instead of starting over.">Install location (folder)</label>
             <input id="ac-mac-dir" class="ac-input" type="text" autocomplete="off" spellcheck="false">
-
-            <!-- Admin password (optional) — see the Linux/Termux row above (mirror). -->
-            <label class="ac-label" style="margin-top:10px;" data-tip="Optional — leave it blank to install the app as-is, with no admin password set. The first person to open its address then picks the password on the setup page (this also works from another device on the same network). Or type a password here to pre-set it, so the admin is ready before the app is ever reachable — note it is then embedded in the command below in plain text, so keep that command private.">Admin password (optional)</label>
-            <input id="ac-mac-admin-pw" class="ac-input" type="password" placeholder="leave blank — first visitor sets it" autocomplete="new-password" spellcheck="false">
 
             <div class="ac-deploy-cmd-wrap" style="margin-top:14px;">
               <div class="ac-deploy-cmd-head">Paste this into Terminal on your Mac</div>
@@ -400,8 +356,10 @@
 
             <ol class="ac-tx-steps" id="ac-mac-steps"></ol>
             <div class="ac-deploy-cmd-note" id="ac-mac-note" hidden></div>
-          </div>
-        </div>
+            </div><!-- /#ac-deploy-mac-panel -->
+
+          </div><!-- /.ac-ability-body (deploy target) -->
+        </div><!-- /#ac-deploy-target-row -->
 
           </div><!-- /.ac-group-body -->
         </div><!-- /#ac-deploy-new-row -->

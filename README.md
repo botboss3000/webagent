@@ -697,6 +697,13 @@ SQLite is the zero-config default and needs no setup. To run on Postgres locally
    - In the app: **Config → Storage → Application Data → Postgres → Test → Save → Activate**, or
    - Env-lock it (see the `WEBAGENT_DB_*` block in `.env.example`) and restart.
 
+   > To reuse the same connection details on another device, the Application Data
+   > row has **Share (QR)** / **Paste Config** buttons: Share encodes the current
+   > provider + fields into a scannable QR (rendered server-side via
+   > `POST /admin/storage/qr`, the same generator as Remote Access / Deploy) with a
+   > copy-code fallback; on the other device, Paste Config decodes that code to
+   > pre-fill the fields (nothing is saved or activated until you Save / Activate).
+
    SQLite stays intact as a fallback. If the configured Postgres is unreachable at
    startup, the app automatically falls back to SQLite. To go back to SQLite, set the
    provider to `sqlite` in the Storage modal (or remove the env-lock) and restart.

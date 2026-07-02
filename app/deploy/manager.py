@@ -68,6 +68,11 @@ async def build_catalog() -> Dict[str, Any]:
     return {
         "providers": providers,
         "active_provider": store.get_active_provider() or (providers[0]["id"] if providers else ""),
+        # The SHARED repo details (repo URL + public/private) the New-deployment
+        # panel carries into every target, kept in the reserved "_repo" slot so the
+        # panel can pre-fill the Repo-details bar. Non-secret; the token + admin
+        # password are never persisted.
+        "shared_repo": store.get_config("_repo"),
     }
 
 

@@ -36,6 +36,49 @@ function _userId() { try { return localStorage.getItem('auth_user_id') || ''; } 
 function _provider() { return (_qs('ac-deploy-provider') || {}).value || ''; }
 function _current() { return (_catalog && (_catalog.providers || []).find(p => p.id === _provider())) || null; }
 
+// ── Shared repo details ──────────────────────────────────────────────────────
+// The repo choice lives ONCE in the Repo-details bar (#ac-deploy-repo-*) and is
+// carried into EVERY target: the manual command boxes read it (via _manualInputs),
+// and the cloud deploy has it injected into its config/creds (see _saveSettings).
+// The token + admin password are never stored; only the URL + visibility persist
+// (to the reserved "_repo" slot) so the bar pre-fills next time.
+function _readSharedRepo() {
+  return {
+    github_url: (_qs('ac-deploy-repo-url')?.value || '').trim(),
+    visibility: _qs('ac-deploy-repo-visibility')?.value || 'public',
+    token: (_qs('ac-deploy-repo-token')?.value || '').trim(),
+    admin_password: _qs('ac-deploy-repo-admin-pw')?.value || '',
+  };
+}
+// Show the access-token field only when the repo is Private.
+function _syncSharedToken() {
+  const vis = _qs('ac-deploy-repo-visibility');
+  const wrap = _qs('ac-deploy-repo-token-wrap');
+  if (wrap) wrap.style.display = (vis && vis.value === 'private') ? '' : 'none';
+}
+
+// Cloud config/cred keys now OWNED by the shared Repo-details bar — skipped when
+// rendering a cloud target's own forms, then injected on save/deploy. `branch` is
+// dropped from the UI entirely (defaults to main, like the manual targets).
+const SHARED_CLOUD_KEYS = new Set(['repo_url', 'branch', 'visibility', 'github_token', 'admin_password', 'github_url']);
+
+// The five deploy-target panels revealed by the #ac-deploy-target dropdown. The
+// three manual values (termux/windows/macos) match MANUAL_ROWS ids so a manual
+// selection re-renders its command box.
+const TARGET_PANELS = [
+  { target: 'cloud', panel: 'ac-deploy-cloud-panel' },
+  { target: 'local', panel: 'ac-deploy-local-panel' },
+  { target: 'termux', panel: 'ac-deploy-linux-panel' },
+  { target: 'windows', panel: 'ac-deploy-win-panel' },
+  { target: 'macos', panel: 'ac-deploy-mac-panel' },
+];
+function _syncTargetPanel() {
+  const t = _qs('ac-deploy-target')?.value || 'cloud';
+  TARGET_PANELS.forEach(p => { const el = _qs(p.panel); if (el) el.hidden = (p.target !== t); });
+  const desc = MANUAL_ROWS.find(d => d.id === t);   // re-render the newly-shown command
+  if (desc) _manualRender(desc);
+}
+
 function _setStatus(msg, kind) {
   const el = _qs('ac-deploy-status');
   if (!el) return;
@@ -97,8 +140,22 @@ function _renderAll() {
       `${_esc(p.display_name)}${p.available ? '' : ' — unavailable'}</option>`).join('');
     sel.value = want;
   }
+  _prefillSharedRepo();
+  _syncSharedToken();
   _renderProvider();
   _renderManualPrefill();
+  _syncTargetPanel();
+}
+
+// Pre-fill the shared Repo-details bar from the reserved "_repo" slot (URL +
+// visibility only; the token + admin password are never persisted). Only fills a
+// blank field, so it never clobbers something the admin is mid-typing.
+function _prefillSharedRepo() {
+  const repo = (_catalog && _catalog.shared_repo) || {};
+  const url = _qs('ac-deploy-repo-url');
+  const vis = _qs('ac-deploy-repo-visibility');
+  if (url && !url.value && repo.github_url) url.value = repo.github_url;
+  if (vis && repo.visibility) vis.value = repo.visibility;
 }
 
 function _renderProvider() {

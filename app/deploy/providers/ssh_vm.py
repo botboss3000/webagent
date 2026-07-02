@@ -40,6 +40,7 @@ from app.deploy.base import BaseDeployProvider, done, ev
 from app.deploy.bootstrap import (
     DEFAULT_BRANCH, DEFAULT_REPO_URL, build_install_script,
 )
+from app.deploy.manual_common import resolve_clone
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,15 @@ class SSHVMProvider(BaseDeployProvider):
          "default": DEFAULT_REPO_URL, "placeholder": DEFAULT_REPO_URL,
          "tip": "Leave this as-is to install the standard WebAgent. Only change it if "
                 "you maintain your own copy (a fork) and want the server to run that."},
+        # public / private. Supplied by the shared "Repo details" bar in the New-
+        # deployment panel (hidden from this cloud form); a private repo also needs a
+        # github_token below so the server can clone it. Non-secret, so it lives here.
+        {"key": "visibility", "label": "Repository access", "type": "select",
+         "default": "public",
+         "options": [
+             {"value": "public", "label": "Public — anyone can clone it"},
+             {"value": "private", "label": "Private — needs an access token"},
+         ]},
         {"key": "branch", "label": "Version (git branch)", "type": "text",
          "default": DEFAULT_BRANCH,
          "tip": "Which line of the code to install. 'main' is the stable release — "
@@ -146,6 +156,21 @@ class SSHVMProvider(BaseDeployProvider):
          "tip": "The password for the SSH user. Provide EITHER this or a private key "
                 "above. For a non-root user this password is also used for sudo, so the "
                 "install can set up system services. Stored encrypted."},
+        # OPTIONAL GitHub access token for a PRIVATE repository + an OPTIONAL pre-set
+        # admin password — both supplied by the shared "Repo details" bar (hidden from
+        # this cloud form). Secrets, so they ride the encrypted vault (and honour the
+        # "Forget SSH login after installing" toggle).
+        {"key": "github_token", "label": "GitHub access token (private repo)",
+         "type": "password", "secret": True, "required": False,
+         "placeholder": "only for a private repository",
+         "tip": "Only needed if the repository above is private. Used once so the server "
+                "can clone it, then handled like the other secrets here."},
+        {"key": "admin_password", "label": "Admin password (optional)",
+         "type": "password", "secret": True, "required": False,
+         "placeholder": "leave blank — first visitor sets it",
+         "tip": "Optional — leave it blank to install the app as-is: the first person to "
+                "open its address then picks the password on the setup page. Or type one "
+                "(6+ characters) to pre-set it, so the admin is ready on first boot."},
     ]
     # Auth is key OR password, so no single field is strictly required — deploy /
     # test validate that at least one was given and report clearly if not.
@@ -302,11 +327,25 @@ class SSHVMProvider(BaseDeployProvider):
         password = (creds.get("password") or "").strip()
         is_root = user == "root"
 
+        # Resolve the clone URL from the shared repo details — for a PRIVATE repo the
+        # access token is embedded so the server can fetch it (reuses the manual-target
+        # helper). The optional pre-set admin password is baked into the install's .env.
+        visibility = str(config.get("visibility") or "public").strip().lower()
+        git_token = (creds.get("github_token") or "").strip()
+        admin_password = (creds.get("admin_password") or "").strip()
+        clone_url = resolve_clone(repo, visibility, git_token)["clone_url"]
+
         if not host:
             yield done({"ok": False, "message": "No server address set."})
             return
         if not (creds.get("private_key") or password):
             yield done({"ok": False, "message": "Add an SSH private key or a login password first."})
+            return
+        if visibility == "private" and not git_token:
+            yield done({"ok": False, "message": "That repository is private — add a GitHub access token in Repo details, or set the repository to Public."})
+            return
+        if admin_password and len(admin_password) < 6:
+            yield done({"ok": False, "message": "The admin password must be at least 6 characters (or leave it blank to set it on first visit)."})
             return
 
         yield ev(f"Connecting to {user}@{host} over SSH…", phase="connect")
@@ -337,7 +376,8 @@ class SSHVMProvider(BaseDeployProvider):
 
             # ── Upload the shared install recipe and launch it detached ──
             yield ev("Uploading the install script…", phase="upload")
-            script = build_install_script(repo_url=repo, branch=branch, domain=domain, port=8080)
+            script = build_install_script(repo_url=clone_url, branch=branch, domain=domain, port=8080,
+                                          admin_password=admin_password)
             remote_script = f"/tmp/webagent-bootstrap-{int(time.time())}-{_secrets.token_hex(3)}.sh"
             await asyncio.to_thread(self._put, client, remote_script, script)
 

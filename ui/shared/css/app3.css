@@ -2558,6 +2558,11 @@ body.light-mode .files-restricted-card { background: var(--bg-elev) !important; 
 }
 .ac-save-overlay.ok  { color: var(--success); background: var(--success-soft); }
 .ac-save-overlay.err { color: var(--warning); background: var(--warning-soft); }
+/* Over a toggle the wrap is square, so the overlay's `border-radius: inherit`
+   comes out square and its corners poke past the pill-shaped switch underneath.
+   Give it the toggle's own pill radius (matching `.conn-toggle-track`) so the
+   green/orange confirm box hugs the switch shape with no square corners showing. */
+.ac-ability-toggle-wrap .ac-save-overlay { border-radius: 10px; }
 
 /* Tiny 1–2 word warning popup that floats just above the ⚠ triangle on a failed
    save, so the failure is unmissable even at a glance. Anchored to the overlay's

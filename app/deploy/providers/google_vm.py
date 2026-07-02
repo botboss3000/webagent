@@ -26,6 +26,7 @@ from app.deploy.base import BaseDeployProvider, done, ev
 from app.deploy.bootstrap import (
     DEFAULT_BRANCH, DEFAULT_REPO_URL, build_install_script,
 )
+from app.deploy.manual_common import resolve_clone
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +215,15 @@ class GoogleVMProvider(BaseDeployProvider):
          "tip": "Leave this as-is to install the standard WebAgent. Only change it if "
                 "you maintain your own copy (a fork) and want the server to run that "
                 "instead."},
+        # public / private. Supplied by the shared "Repo details" bar in the New-
+        # deployment panel (hidden from this cloud form); a private repo also needs a
+        # github_token below so the VM can clone it. Non-secret, so it lives here.
+        {"key": "visibility", "label": "Repository access", "type": "select",
+         "default": "public",
+         "options": [
+             {"value": "public", "label": "Public — anyone can clone it"},
+             {"value": "private", "label": "Private — needs an access token"},
+         ]},
         {"key": "branch", "label": "Version (git branch)", "type": "text",
          "default": DEFAULT_BRANCH,
          "tip": "Which line of the code to install. 'main' is the stable release — "
@@ -250,6 +260,15 @@ class GoogleVMProvider(BaseDeployProvider):
                 "with the 'Compute Admin' role, then open it → Keys → Add key → JSON "
                 "and download the file. Paste the file's entire contents here. It's "
                 "stored encrypted, and (with the option above) deleted after deploy."},
+        # OPTIONAL GitHub access token for a PRIVATE repository. Supplied by the shared
+        # "Repo details" bar (hidden from this cloud form). A SECRET so it rides the
+        # encrypted vault and is auto-discarded after a successful deploy with the
+        # cloud key. Embedded into the clone URL sent to the new VM (see deploy()).
+        {"key": "github_token", "label": "GitHub access token (private repo)",
+         "type": "password", "secret": True, "required": False,
+         "placeholder": "only for a private repository",
+         "tip": "Only needed if the repository above is private. Used once to let the "
+                "new server clone it, then discarded with the cloud key."},
         # OPTIONAL. A SECRET so it rides the encrypted vault (never deploy.json) and
         # is auto-discarded after a successful deploy with the cloud key. The Deploy
         # panel renders this into its OWN slot (above the cloud key), NOT the generic
@@ -331,6 +350,18 @@ class GoogleVMProvider(BaseDeployProvider):
         branch = (config.get("branch") or DEFAULT_BRANCH).strip() or DEFAULT_BRANCH
         domain = (config.get("domain") or "").strip()
 
+        # Resolve the clone URL from the shared repo details. For a PRIVATE repo the
+        # access token is embedded (https://TOKEN@host/…) so the new VM can fetch it;
+        # the token rides this one deploy, then the vault discards it with the cloud
+        # key. Reuses the manual-target helper (app/deploy/manual_common.resolve_clone).
+        # NB: `git_token`, not `token` — `token` is bound to the Google OAuth token below.
+        visibility = str(config.get("visibility") or "public").strip().lower()
+        git_token = (creds.get("github_token") or "").strip()
+        if visibility == "private" and not git_token:
+            yield done({"ok": False, "message": "That repository is private — add a GitHub access token in Repo details, or set the repository to Public."})
+            return
+        clone_url = resolve_clone(repo, visibility, git_token)["clone_url"]
+
         # Optional pre-set admin password (from the vault). Blank → the first visitor
         # to the server's address sets it via the setup page (open until an admin
         # exists). Typed → bake BOOTSTRAP_ADMIN_PASSWORD in (see bootstrap._env_body).
@@ -352,7 +383,7 @@ class GoogleVMProvider(BaseDeployProvider):
 
         name = f"webagent-{int(time.time())}-{_secrets.token_hex(2)}"
         startup = build_install_script(
-            repo_url=repo, branch=branch, domain=domain, port=8080,
+            repo_url=clone_url, branch=branch, domain=domain, port=8080,
             admin_password=admin_password,
         )
         # Optionally generate an SSH login for the VM so it can be added to the SSH

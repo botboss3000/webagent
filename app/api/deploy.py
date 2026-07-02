@@ -130,7 +130,11 @@ async def select(body: SelectBody):
 @router.post("/config")
 async def save_config(body: ConfigBody):
     await _require_admin(body.requesting_user_id)
-    if not get_provider(body.provider):
+    # "_repo" is a reserved, provider-less slot that holds the SHARED repo details
+    # (repo URL + public/private) the New-deployment panel carries into every target
+    # — a UI-prefill store only, never a deploy target. Non-secret, so it rides the
+    # same deploy.json config store as the real targets.
+    if body.provider != "_repo" and not get_provider(body.provider):
         raise HTTPException(status_code=400, detail="Unknown target")
     store.save_config(body.provider, body.config or {})
     return {"ok": True}
