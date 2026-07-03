@@ -1463,9 +1463,6 @@ async def stream_agent_events(
                     meta["cost"] = cost
                 return json.dumps(meta)
 
-            def _build_input() -> str:
-                return json.dumps(messages)
-
             async def _persist_stream_progress(force: bool = False) -> None:
                 """Create the in-progress assistant row on first token, then
                 throttle-update its content as the answer streams. Makes the
@@ -1868,7 +1865,6 @@ async def stream_agent_events(
                 # it to write tool calls as text instead of making structured calls.
                 # session_history.py reads tool calls from the `output` field instead.
                 meta_asst = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
-                inp = _build_input()
                 outp = json.dumps({"role": "assistant", "content": collected_content, "tool_calls": full_tool_calls})
                 db_start = time.time()
                 if streaming_asst_id is not None:
@@ -1886,7 +1882,6 @@ async def stream_agent_events(
                         parent_id=parent_interaction_id,
                         channel=channel,
                         metadata=meta_asst,
-                        input_data=inp,
                         output_data=outp,
                         sender_id=agent_id,
                         receiver_id=user_id,
@@ -1950,7 +1945,6 @@ async def stream_agent_events(
                         tool_msg = {"role": "tool", "content": error_json[:10000], "tool_call_id": tc.id}
                         messages.append(tool_msg)
 
-                        inp = _build_input()
                         outp = json.dumps({"role": "tool", "content": tool_msg["content"], "tool_call_id": tc.id, "name": tool_name, "success": False})
                         db_start = time.time()
                         inter_id = await db.insert_interaction(
@@ -1959,7 +1953,6 @@ async def stream_agent_events(
                             tool_call_id=tc.id,
                             channel=channel,
                             metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "Validation failed"}),
-                            input_data=inp,
                             output_data=outp,
                             sender_id=agent_id,
                             receiver_id=agent_id,
@@ -2021,14 +2014,13 @@ async def stream_agent_events(
                             }
                             tool_msg = {"role": "tool", "content": _loop_warn, "tool_call_id": tc.id}
                             messages.append(tool_msg)
-                            inp = _build_input()
                             outp = json.dumps({"role": "tool", "content": _loop_warn, "tool_call_id": tc.id, "name": tool_name, "success": False})
                             inter_id = await db.insert_interaction(
                                 user_id, session_id, role="tool", content=_loop_warn,
                                 parent_id=asst_id, tool_call_id=tc.id, tool_name=tool_name,
                                 channel=channel,
                                 metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "loop_blocked"}),
-                                input_data=inp, output_data=outp,
+                                output_data=outp,
                                 sender_id=agent_id, receiver_id=agent_id,
                             )
                             yield {"type": "db", "level": "db",
@@ -2164,7 +2156,6 @@ async def stream_agent_events(
                                     )
                                 tool_msg = {"role": "tool", "content": _gate_help, "tool_call_id": tc.id}
                                 messages.append(tool_msg)
-                                inp = _build_input()
                                 outp = json.dumps({"role": "tool", "content": tool_msg["content"], "tool_call_id": tc.id, "name": tool_name, "success": False})
                                 db_start = time.time()
                                 inter_id = await db.insert_interaction(
@@ -2174,7 +2165,6 @@ async def stream_agent_events(
                                     tool_name=tool_name,
                                     channel=channel,
                                     metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "Guardrail blocked — requires confirmation"}),
-                                    input_data=inp,
                                     output_data=outp,
                                     sender_id=agent_id,
                                     receiver_id=agent_id,
@@ -2298,7 +2288,6 @@ async def stream_agent_events(
                         tool_msg = {"role": "tool", "content": result["content"][:10000], "tool_call_id": tc.id}
                         messages.append(tool_msg)
                         
-                        inp = _build_input()
                         outp = json.dumps({"role": "tool", "content": result["content"][:10000], "tool_call_id": tc.id, "name": tool_name, "success": success, "duration_ms": result["duration_ms"]})
                         db_start = time.time()
                         # Offloaded: the tool-result row is the highest-frequency
@@ -2311,7 +2300,6 @@ async def stream_agent_events(
                             tool_name=tool_name,
                             channel=channel,
                             metadata=tool_exec_meta,
-                            input_data=inp,
                             output_data=outp,
                             sender_id=agent_id,
                             receiver_id=agent_id,
@@ -2437,7 +2425,6 @@ async def stream_agent_events(
             })
 
             meta_final = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
-            inp = _build_input()
             outp = json.dumps({"role": "assistant", "content": collected_content})
             db_start = time.time()
             if streaming_asst_id is not None:
@@ -2454,7 +2441,6 @@ async def stream_agent_events(
                     parent_id=parent_interaction_id,
                     channel=channel,
                     metadata=meta_final,
-                    input_data=inp,
                     output_data=outp,
                     sender_id=agent_id,
                     receiver_id=user_id,
@@ -2474,7 +2460,6 @@ async def stream_agent_events(
         if stall_stop_msg is not None:
             messages.append({"role": "assistant", "content": stall_stop_msg})
             meta_final = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
-            inp = _build_input()
             outp = json.dumps({"role": "assistant", "content": stall_stop_msg})
             db_start = time.time()
             inter_id = await db.insert_interaction(
@@ -2482,7 +2467,6 @@ async def stream_agent_events(
                 parent_id=parent_interaction_id,
                 channel=channel,
                 metadata=meta_final,
-                input_data=inp,
                 output_data=outp,
                 sender_id=agent_id,
                 receiver_id=user_id,
@@ -2554,6 +2538,7 @@ async def run_agent_loop_buffered(
     agent_template_id=None,
     allowed_tools=None,
     execution_mode: str = 'ask',
+    attachment_docs=None,
 ) -> str:
     """
     Compatibility wrapper that runs the streaming loop internally,
@@ -2581,6 +2566,11 @@ async def run_agent_loop_buffered(
             agent_template_id=agent_template_id,
             allowed_tools=allowed_tools,
             execution_mode=execution_mode,
+            # Raw attachment rows (images + files) for alternate engines that read
+            # them off disk via their own tools (e.g. claude_code). The default loop
+            # ignores this — it inlines images into user_message itself. Lets a turn
+            # handed to another device (app/devices/worker.py) still carry attachments.
+            attachment_docs=attachment_docs,
         ):
             if event_callback:
                 try:

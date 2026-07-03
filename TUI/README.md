@@ -212,13 +212,27 @@ runs on a fixed interval (managed mode, when enabled). Each tick it:
 
 **Liveness & process checks:**
 
-- **Health + PID** — `/health` probe plus whether the manager's tracked process is
-  still alive.
+- **Health + PID** — `/health` (**liveness** — is the process up?) plus whether the
+  manager's tracked process is still alive.
+- **Readiness (up-but-wedged recovery)** — liveness can pass while the server can't
+  do real work (its database round-trip is stuck). The app exposes a deeper
+  **`/health/ready`** that does one cheap DB round-trip and returns **503** when it
+  can't. The watchdog polls it and, on a **sustained** failure
+  (`readiness_fail_ticks` in a row, default 3 — so one briefly-busy moment never
+  counts), restarts the wedged server. This path does **not** defer to the guardian
+  (the guardian only checks liveness, so it sees a wedged server as healthy). Turn
+  it off with `readiness_recovery: false`.
 - **Crash-loop detection** — if the server keeps dying right after start, it stops
   auto-restarting (capped at `max_restarts_per_hour`) and **escalates** instead of
   flapping.
 - **Auto-restart with backoff** — recovers a server that *was* up (never fights the
   initial autostart), waiting `restart_backoff_seconds` and respecting the cap.
+- **Defers to the guardian.** When the external keep-alive guardian (below) is
+  **alive and enabled**, it — not this in-process watchdog — owns server relaunches.
+  The watchdog then **stands down** from the restart itself (still notifying, still
+  surfacing the incident), so the two supervisors never race to spawn `run.py` and
+  never stack two separate `max_restarts_per_hour` budgets into a doubled ceiling.
+  With the guardian off or dead, the watchdog restarts the server as before.
 - **Port / zombie detection** — distinguishes a clean server, an **untracked**
   instance the manager didn't start, and a **zombie** holding port 8080 without
   serving `/health` (which blocks a clean restart — the orphaned-LISTENER case
@@ -280,14 +294,21 @@ keeps **both** running:
 
 - **the web server** — if `/health` stops answering and a checkout is linked, it
   relaunches `run.py` from the checkout's venv (clearing a zombie port first, with
-  a crash-loop cap);
+  a crash-loop cap). While it's alive and enabled it is the **primary restarter**:
+  the in-process watchdog defers server relaunches to it (see above), so only one
+  supervisor ever spawns the server;
 - **one server only** — once the server is healthy, it kills any **other** WebAgent
   `run.py` tree on the machine besides the one actually serving port 8080. This
   stops a second launcher (e.g. a stray `WebAgent.bat`) from leaving a duplicate
   server running its own background loops against the same database — which is what
   let a single test fan-out balloon into 120+ runaway spawns. The guardian **adopts
   whichever process is serving** (it seeds from the live listener, so it can never
-  kill the live server) and reaps the rest. *Corollary: pick one launch path — let
+  kill the live server) and reaps the rest. The duplicate scan is the one genuinely
+  heavy step (a full process-table enumeration), so its interval is **adaptive**:
+  every 30s while things are churny, widening to ~2 min once a single clean server
+  has been up a while, and snapping back to 30s the moment anything changes (a fresh
+  launch, or the serving process changing) — same detection, far fewer scans at
+  idle. *Corollary: pick one launch path — let
   the guardian own the server; don't also run `WebAgent.bat` alongside it.*
 - **the TUI itself** — if the TUI process vanishes **without** a clean-quit marker
   (i.e. it crashed or its window was closed), it relaunches the TUI in a fresh

@@ -94,66 +94,57 @@
         </div>
 
         <!-- ── Export config (setup bundle) ── a static top-level row, sibling of
-             "+ New deployment". Tick what to include + Verify this app's admin
-             password → only then does the encrypted code + QR + Copy button
-             reveal (a correct password both authorises and encrypts). Expand is
-             wired by _wireBootRow('ac-deploy-export-row') in data-settings.js; the
-             Verify/Copy actions by deploy.js _initBootRows. Engine:
-             app/admin/bootstrap_bundle.py, via /admin/storage/bootstrap/*. This
-             (with Import below) folded in the old per-row DB "Share (QR)". -->
+             "+ New deployment". Tick what to include, click Generate code → the
+             code + Copy button reveal immediately (no password, no QR — just a
+             copyable code). Expand is wired by _wireBootRow('ac-deploy-export-row')
+             in data-settings.js; the Generate/Copy actions by deploy.js
+             _initBootRows. Engine: app/admin/bootstrap_bundle.py, via
+             /admin/storage/bootstrap/*. This (with Import below) folded in the
+             old per-row DB "Share (QR)". Never includes the admin login — the
+             real password can't be recovered from its stored hash. -->
         <div class="ac-row" id="ac-deploy-export-row">
           <div class="ac-ability-row">
-            <span class="ac-ability-icon"><i data-lucide="qr-code" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <span class="ac-ability-icon"><i data-lucide="share-2" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
             <div class="ac-ability-label">
               <div class="ac-ability-name">Export config to link another account</div>
-              <div class="ac-ability-desc">Package this install's setup into one encrypted code (or QR) so another WebAgent comes up ready-configured.</div>
+              <div class="ac-ability-desc">Package this install's setup into one copyable code so another WebAgent comes up ready-configured.</div>
             </div>
             <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
           </div>
           <div class="ac-ability-body">
-            <div class="ac-hint" style="font-size:11px;margin-bottom:8px;line-height:1.5;">Tick what to include, then verify this app's admin password to reveal the code — paste it into a freshly-cloned WebAgent (on its setup page, or into Import below).</div>
-            <label class="ac-boot-check" style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;cursor:pointer;"><input type="checkbox" data-boot-sec="admin" checked style="margin-top:2px;"><span><strong>Admin login</strong> — <span style="color:var(--fg-3);">the admin username + password</span></span></label>
+            <div class="ac-hint" style="font-size:11px;margin-bottom:8px;line-height:1.5;">Tick what to include, then generate the code — paste it into a freshly-cloned WebAgent (on its setup page, or into Import below).</div>
             <label class="ac-boot-check" style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;cursor:pointer;"><input type="checkbox" data-boot-sec="llm" checked style="margin-top:2px;"><span><strong>AI model &amp; key</strong> — <span style="color:var(--fg-3);">provider, preset model, the saved-model table + API key</span></span></label>
             <label class="ac-boot-check" style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;cursor:pointer;"><input type="checkbox" data-boot-sec="database" checked style="margin-top:2px;"><span><strong>Database</strong> — <span style="color:var(--fg-3);">the app database connection (+ password)</span></span></label>
             <label class="ac-boot-check" style="display:flex;align-items:flex-start;gap:8px;margin:4px 0;font-size:12px;cursor:pointer;"><input type="checkbox" data-boot-sec="vault" checked style="margin-top:2px;"><span><strong>Secrets vault</strong> — <span style="color:var(--fg-3);">which vault backend and its connection</span></span></label>
-            <label class="ac-label" style="margin-top:10px;">This app's admin password</label>
-            <div class="ac-boot-pw-row">
-              <input class="ac-input" type="password" data-boot-share-pw autocomplete="off" placeholder="unlocks + encrypts the code">
-              <button class="ac-btn ac-boot-verify" type="button" data-boot-share>Verify</button>
-            </div>
+            <div class="ac-ra-actions" style="margin-top:10px;"><button class="ac-btn ac-deploy-go-btn" type="button" data-boot-share>Generate code</button></div>
             <span class="ac-hint" data-boot-share-status style="display:block;margin-top:6px;"></span>
             <div data-boot-share-result style="display:none;margin-top:12px;">
-              <div class="ac-info-banner" style="border-left-color:var(--warning);font-size:11px;line-height:1.5;margin-bottom:8px;">Anyone with this code <em>and</em> the admin password can configure a new install with these keys. Treat it like a password — share it privately.</div>
-              <div data-boot-qr style="max-width:200px;margin:0 auto 8px;"></div>
+              <div class="ac-info-banner" style="border-left-color:var(--warning);font-size:11px;line-height:1.5;margin-bottom:8px;">Anyone with this code can configure a new install with these keys. Treat it like a password — share it privately.</div>
               <textarea data-boot-code readonly rows="3" style="width:100%;padding:6px 8px;border:var(--border-width) solid var(--border);border-radius:4px;font-size:11px;font-family:var(--font-mono,monospace);background:transparent;color:inherit;resize:vertical;word-break:break-all;"></textarea>
               <div class="ac-ra-actions" style="margin-top:6px;"><button class="ac-btn ac-deploy-go-btn" type="button" data-boot-copy><i data-lucide="copy"></i> Copy code</button></div>
             </div>
           </div>
         </div>
 
-        <!-- ── Import config (setup bundle) ── the mirror of Export. Paste a code
-             + Verify the SOURCE install's admin password → only then does a
-             read-only summary of what it carries + an Accept button reveal.
-             Accept adopts every carried section (overwrite) so this box takes on
-             the source's setup. Expand wired by _wireBootRow('ac-deploy-import-row');
-             Verify/Accept by deploy.js _initBootRows. -->
+        <!-- ── Import config (setup bundle) ── the mirror of Export. Paste a
+             code → Preview shows a read-only summary of what it carries + an
+             Accept button. Accept adopts every carried section (overwrite) so
+             this box takes on the source's setup. Expand wired by
+             _wireBootRow('ac-deploy-import-row'); Preview/Accept by deploy.js
+             _initBootRows. Never carries the admin login. -->
         <div class="ac-row" id="ac-deploy-import-row">
           <div class="ac-ability-row">
             <span class="ac-ability-icon"><i data-lucide="log-in" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
             <div class="ac-ability-label">
               <div class="ac-ability-name">Import config to link this account</div>
-              <div class="ac-ability-desc">Paste a code from another WebAgent to adopt its database, vault, model and login here.</div>
+              <div class="ac-ability-desc">Paste a code from another WebAgent to adopt its database, vault and model here.</div>
             </div>
             <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
           </div>
           <div class="ac-ability-body">
-            <div class="ac-hint" style="font-size:11px;margin-bottom:8px;line-height:1.5;">Paste a code from another WebAgent to bring its configuration into this install. Enter the <em>source</em> install's admin password to unlock it.</div>
-            <textarea data-boot-import-code rows="3" placeholder="Paste the setup code (WABOOT1…) here" style="width:100%;padding:6px 8px;border:var(--border-width) solid var(--border);border-radius:4px;font-size:11px;font-family:var(--font-mono,monospace);background:transparent;color:inherit;resize:vertical;word-break:break-all;"></textarea>
-            <label class="ac-label" style="margin-top:8px;">Source admin password</label>
-            <div class="ac-boot-pw-row">
-              <input class="ac-input" type="password" data-boot-import-pw autocomplete="off" placeholder="the admin password of the app you copied from">
-              <button class="ac-btn ac-boot-verify" type="button" data-boot-preview>Verify</button>
-            </div>
+            <div class="ac-hint" style="font-size:11px;margin-bottom:8px;line-height:1.5;">Paste a code from another WebAgent to bring its configuration into this install.</div>
+            <textarea data-boot-import-code rows="3" placeholder="Paste the setup code (WABOOT2…) here" style="width:100%;padding:6px 8px;border:var(--border-width) solid var(--border);border-radius:4px;font-size:11px;font-family:var(--font-mono,monospace);background:transparent;color:inherit;resize:vertical;word-break:break-all;"></textarea>
+            <div class="ac-ra-actions" style="margin-top:8px;"><button class="ac-btn ac-deploy-go-btn" type="button" data-boot-preview>Preview</button></div>
             <span class="ac-hint" data-boot-import-status style="display:block;margin-top:6px;"></span>
             <div data-boot-preview-result style="display:none;margin-top:12px;"></div>
           </div>
@@ -465,6 +456,109 @@
 
           </div><!-- /.ac-group-body -->
         </div><!-- /#ac-deploy-new-row -->
+      </div><!-- /.ac-list -->
+    </div><!-- /.ac-category-body -->
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       DOMAINS — connect a domain you own to the server you deployed. The sibling
+       of Deployment: where Deployment CREATES a server, this POINTS a domain at
+       one, by talking to the admin's DNS provider (Cloudflare, Namecheap, Porkbun,
+       DigitalOcean, Route 53, Google Cloud DNS) or, keylessly, telling the admin
+       the exact record to set themselves. Backed by /admin/dns/* (app/dns/); DNS
+       providers are drop-ins under app/dns/providers/ — adding one needs NO edit
+       here. All wiring lives in the sibling dns.js (initDns). Admin-only. The whole
+       interior (provider fields, the domain list, the server-IP list) is filled by
+       dns.js from the /catalog payload, exactly like the Deployment card. -->
+  <div class="ac-category-group" id="ac-dns-card" data-pa-area="domains">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="globe" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Domains</span>
+      <span id="ac-dns-badge" class="ac-category-count">loading…</span>
+    </div>
+    <div class="ac-category-body">
+      <div class="ac-list" id="ac-dns-list">
+        <div class="ac-row ac-group" id="ac-dns-main-row">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="link" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Connect a domain to your server</div>
+              <div class="ac-ability-desc">Point a domain you own at a server you deployed — the app sets the DNS record, then HTTPS issues itself.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-group-body">
+
+            <!-- STEP 1 — pick + connect the DNS provider. dns.js fills the <select>
+                 from /catalog and paints the provider's fields into #ac-dns-config
+                 (non-secret) + #ac-dns-creds (keys). The connect block hides for the
+                 keyless "Other / manual" provider. -->
+            <label class="ac-label" for="ac-dns-provider">Domain provider</label>
+            <select id="ac-dns-provider" class="ac-input" aria-label="Domain provider"></select>
+            <div id="ac-dns-summary" class="ac-hint" style="margin-top:8px;"></div>
+            <ul id="ac-dns-requires" class="ac-hint" style="margin:6px 0 0;padding-left:18px;"></ul>
+
+            <div id="ac-dns-connect-block">
+              <label class="ac-label" style="margin-top:12px;">Connect your account</label>
+              <div id="ac-dns-config" class="ac-ra-fields"></div>
+              <div id="ac-dns-creds" class="ac-ra-fields"></div>
+              <div class="ac-ra-actions" style="margin-top:10px;">
+                <button id="ac-dns-connect" class="ac-btn ac-deploy-go-btn" type="button">Connect</button>
+                <button id="ac-dns-test" class="ac-btn" type="button">Test</button>
+                <button id="ac-dns-disconnect" class="ac-btn" type="button" hidden>Disconnect</button>
+                <span id="ac-dns-connect-status" class="ac-hint" style="margin-left:6px;"></span>
+              </div>
+            </div>
+
+            <!-- STEP 2 — choose the domain + the server, then point it. -->
+            <div id="ac-dns-point-block" style="margin-top:16px;border-top:var(--border-width) solid var(--border-soft);padding-top:14px;">
+              <label class="ac-label" for="ac-dns-zone">Domain</label>
+              <!-- API providers: a picker of the domains the account controls
+                   (dns.js fills it after Connect). Manual provider: a plain text box
+                   for the domain. Only one shows at a time. -->
+              <div id="ac-dns-zone-wrap" style="display:flex;gap:8px;align-items:center;">
+                <select id="ac-dns-zone" class="ac-input" style="flex:1;"></select>
+                <button id="ac-dns-zone-refresh" class="ac-btn" type="button" title="Reload your domains">Reload</button>
+              </div>
+              <input id="ac-dns-domain" class="ac-input" type="text" placeholder="example.com"
+                     autocomplete="off" spellcheck="false" hidden>
+
+              <label class="ac-label" for="ac-dns-host" style="margin-top:10px;">Subdomain <span style="color:var(--fg-muted);font-weight:400;">— leave blank for the bare domain</span></label>
+              <input id="ac-dns-host" class="ac-input" type="text" placeholder="e.g. app  (or blank for example.com itself)"
+                     autocomplete="off" spellcheck="false">
+
+              <label class="ac-label" style="margin-top:10px;">Point at server</label>
+              <!-- dns.js fills this with the servers the app knows about (last
+                   deployments + saved SSH boxes) plus a "Type an IP…" entry that
+                   reveals the box below. -->
+              <select id="ac-dns-target" class="ac-input"></select>
+              <input id="ac-dns-ip" class="ac-input" type="text" placeholder="203.0.113.10"
+                     autocomplete="off" spellcheck="false" style="margin-top:6px;" hidden>
+
+              <div id="ac-dns-options" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:16px;align-items:center;">
+                <label style="display:flex;align-items:center;gap:6px;">
+                  <span class="ac-label" style="margin:0;">TTL</span>
+                  <input id="ac-dns-ttl" class="ac-input" type="number" value="300" min="60" style="width:90px;">
+                </label>
+                <label id="ac-dns-www-wrap" style="display:flex;align-items:center;gap:6px;">
+                  <input id="ac-dns-www" type="checkbox"> <span class="ac-label" style="margin:0;">Also point www</span>
+                </label>
+                <label id="ac-dns-proxied-wrap" style="display:none;align-items:center;gap:6px;">
+                  <input id="ac-dns-proxied" type="checkbox"> <span class="ac-label" style="margin:0;">Cloudflare proxy (orange cloud)</span>
+                </label>
+              </div>
+
+              <div class="ac-ra-actions" style="margin-top:12px;">
+                <button id="ac-dns-point" class="ac-btn ac-deploy-go-btn" type="button">Point domain</button>
+                <button id="ac-dns-verify" class="ac-btn" type="button">Verify</button>
+                <span id="ac-dns-status" class="ac-hint" style="margin-left:6px;"></span>
+              </div>
+              <div id="ac-dns-result" class="ac-hint" style="margin-top:8px;" hidden></div>
+              <pre id="ac-dns-log" class="ac-deploy-log" hidden></pre>
+            </div>
+
+          </div><!-- /.ac-group-body -->
+        </div><!-- /#ac-dns-main-row -->
       </div><!-- /.ac-list -->
     </div><!-- /.ac-category-body -->
   </div>
@@ -1008,6 +1102,99 @@
       </div><!-- /.ac-list -->
     </div><!-- /.ac-category-body -->
   </div><!-- /#ac-database-card -->
+
+  <!-- ════════════════════════════════════════════════════════════════
+       REMOTE ACCESS — one heading, one neat table (the shared ability-table
+       component: .ac-list / .ac-row / .ac-ability-row / .ac-ability-body).
+       This MERGES what used to be two separate, overlapping groups —
+       "Remote Access" (/admin/remote-access/*, wired in
+       ui/shared/js/remote-access.js) and "Tunnel" (/admin/tunnel-link/*, wired
+       in ui/shared/js/tunnel-link.js). Both backends are unchanged; this is a
+       UI reorg only. Two expandable rows:
+         1. Same network (Wi-Fi)      — the LAN addresses, stacked, each with a
+            copy + QR-popup button (ac-ra-sn-urls)
+         2. Reach it from anywhere    — the method configurator (ac-ra-method,
+            ac-ra-fields, start/stop/test/save, auto-start, runtime status)
+       (The former "On your phone" row — phone bookmark / signpost + the
+       tunnel.webagent.live scan-to-link — was removed from the UI. Its backend
+       endpoints and JS modules (remote-access.js phone/signpost wiring,
+       tunnel-link.js) remain but render nothing now that the markup is gone.)
+       EVERY element id the two JS modules read/write is preserved verbatim, so
+       the wiring keeps working untouched. The rows expand/collapse via
+       _wireBootRow() in the sibling data-settings.js (clicks on a control inside
+       a body never toggle the row — the listener is bound to the head only).
+       (Moved here from App Settings — it sits directly below the DATABASE card.)
+       ════════════════════════════════════════════════════════════════ -->
+  <div class="ac-category-group" id="ac-ra-card" data-pa-area="remote_access">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="radio-tower" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">Remote Access</span>
+      <span id="ac-ra-active-badge" class="ac-category-count">loading…</span>
+    </div>
+    <div class="ac-category-body">
+      <div id="ac-ra-env-banner" class="ac-info-banner" hidden style="border-left-color:var(--warning);color:var(--warning);font-size:11px;">
+        Config is env-locked (WEBAGENT_CONFIG_SOURCE=env). Settings can be viewed but not changed here.
+      </div>
+
+      <div class="ac-list" id="ac-ra-list" style="margin-top:10px;">
+
+        <!-- ── Row 1 · Same network (Wi-Fi) — open by default (the primary,
+             no-setup addresses; clicking the head still collapses it) ── -->
+        <div class="ac-row expanded" id="ac-ra-row-sn">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="wifi" class="lucide-icon" style="width:18px;height:18px;color:var(--success);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Same network (Wi-Fi)</div>
+              <div class="ac-ability-desc">Open this address on a device on the same Wi-Fi &mdash; no setup. (Plain http; secure-context features like Google sign-in need a tunnel.)</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <!-- Every LAN address stacked, uniform font/size/colour; each row gets
+                 its own Copy + QR button. QR opens a popup (built in remote-access.js). -->
+            <div id="ac-ra-sn-urls" class="ac-ra-sn-urls"></div>
+          </div>
+        </div>
+
+        <!-- ── Row 2 · Reach it from anywhere (the method configurator) ── -->
+        <div class="ac-row" id="ac-ra-row-net">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="globe" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Reach it from anywhere</div>
+              <div class="ac-ability-desc">Choose how this PC becomes reachable over the internet, configure it, then start it.</div>
+            </div>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <label class="ac-label">Remote method</label>
+            <select id="ac-ra-method" class="ac-input">
+              <option value="same_network">Same network only (no remote tunnel)</option>
+              <option value="ngrok">ngrok &mdash; app-managed tunnel</option>
+              <option value="cloudflare">Cloudflare &mdash; named tunnel on your domain</option>
+              <option value="tailscale">Tailscale &mdash; private mesh</option>
+              <option value="manual">Port-forward &mdash; manual</option>
+            </select>
+            <div id="ac-ra-blurb" class="ac-hint" style="line-height:1.5;"></div>
+            <div id="ac-ra-fields" class="ac-ra-fields"></div>
+
+            <div class="ac-ra-actions">
+              <button id="ac-ra-start" class="ac-btn ac-ra-icon-btn ac-ra-icon-btn-primary" type="button" title="Start" aria-label="Start"><i data-lucide="play"></i></button>
+              <button id="ac-ra-stop" class="ac-btn ac-ra-icon-btn" type="button" title="Stop" aria-label="Stop"><i data-lucide="square"></i></button>
+              <button id="ac-ra-test" class="ac-btn ac-ra-icon-btn" type="button" title="Test" aria-label="Test"><i data-lucide="activity"></i></button>
+              <button id="ac-ra-save-cfg" class="ac-btn ac-ra-icon-btn" type="button" title="Save settings" aria-label="Save settings"><i data-lucide="save"></i></button>
+              <label class="ac-ra-check-lbl">
+                <input type="checkbox" id="ac-ra-autostart"> Start on boot
+              </label>
+              <span id="ac-ra-status" class="ac-hint" style="margin-left:6px;"></span>
+            </div>
+            <div id="ac-ra-public-row" class="ac-hint" style="margin-top:8px;font-size:12px;"></div>
+          </div>
+        </div>
+
+      </div><!-- /.ac-list -->
+    </div><!-- /.ac-category-body -->
+  </div><!-- /#ac-ra-card -->
 
   <!-- ════════════════════════════════════════════════════════════════
        DANGER ZONE — reset selected data groups, or delete the whole install.

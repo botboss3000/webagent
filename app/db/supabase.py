@@ -188,7 +188,7 @@ class SupabaseBackend(StorageBackend):
             await self.assert_session_owned(user_id, session_id)
             response = (
                 self._client.table("interactions")
-                .select("id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, from_id, to_id, session_seq, turn_id, turn_seq, created_at")
+                .select("id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, output, from_id, to_id, session_seq, turn_id, turn_seq, created_at")
                 .eq("session_id", session_id)
                 .order("created_at", desc=False)
                 .execute()
@@ -217,7 +217,6 @@ class SupabaseBackend(StorageBackend):
         channel: Optional[str] = None,
         source: Optional[str] = None,
         metadata: Optional[str] = None,
-        input_data: Optional[str] = None,
         output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
         receiver_id: Optional[str] = None,
@@ -238,7 +237,6 @@ class SupabaseBackend(StorageBackend):
                 "channel": channel,
                 "source": source or 'user',
                 "metadata": metadata,
-                "input": input_data,
                 "output": output_data,
                 "from_id": sender_id,
                 "to_id": receiver_id,
@@ -284,7 +282,6 @@ class SupabaseBackend(StorageBackend):
                     "channel": r.get("channel"),
                     "source": r.get("source") or "user",
                     "metadata": r.get("metadata"),
-                    "input": r.get("input"),
                     "output": r.get("output"),
                     "from_id": r.get("from_id"),
                     "to_id": r.get("to_id"),
@@ -2264,7 +2261,7 @@ class SupabaseClient:
         parent_id: Optional[str] = None, tool_name: Optional[str] = None,
         tool_call_id: Optional[str] = None, channel: Optional[str] = None,
         source: Optional[str] = None,
-        metadata: Optional[str] = None, input_data: Optional[str] = None,
+        metadata: Optional[str] = None,
         output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
         receiver_id: Optional[str] = None,
@@ -2274,7 +2271,7 @@ class SupabaseClient:
         status: str = "complete",
     ) -> str:
         return await SupabaseClient._get_backend().insert_interaction(
-            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, source, metadata, input_data, output_data, sender_id, receiver_id,
+            user_id, session_id, role, content, parent_id, tool_name, tool_call_id, channel, source, metadata, output_data, sender_id, receiver_id,
             session_seq=session_seq, turn_id=turn_id, turn_seq=turn_seq, status=status,
         )
 

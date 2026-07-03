@@ -55,12 +55,8 @@ function _initAppSettings() {
   // Startup & Boot rows are now STANDARD config rows — the toggle / dropdown
   // sits inline on the right, no expandable body — so they need no row wiring
   // here (the selects/checkboxes are wired by their _initBoot* handlers).
-  // Remote Access is one neat table of expandable rows (Same network / Reach it
-  // from anywhere). Reuse the same head-click expand wiring — clicks on a control
-  // inside a body never toggle (see _wireBootRow). The bodies' element ids are
-  // owned by remote-access.js. (The former "On your phone" row was removed.)
-  _wireBootRow('ac-ra-row-sn', null);
-  _wireBootRow('ac-ra-row-net', null);
+  // Remote Access moved to the Data Settings tab (below the Database card) — its
+  // two expandable rows are now wired in ../data-settings/data-settings.js.
   // Advanced group — the two expandable rows moved here from the retired Data
   // Management tab (Config Files + Stream Buffer). Same head-click expand wiring;
   // their bodies' control ids are owned by ui/shared/js/storage.js.

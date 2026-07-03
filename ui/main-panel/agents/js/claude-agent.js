@@ -259,6 +259,18 @@ export function renderClaudeSettings(body, agent) {
       .then(ok => { if (ok) agent.default_execution_mode = val; return ok; }),
   });
 
+  // Remote Control default — which machine in the shared fleet runs this agent's
+  // chats. The whole turn is handed to the chosen device and ITS local `claude`
+  // does the work, so a Claude agent gets the same default-device behaviour as a
+  // normal agent. Stored in the shared metadata.default_target_device field
+  // (mirrors tab-config.js); read by chat-ui.js on session open to pre-select the
+  // chat's Remote Control pill. Only meaningful with a shared DB + a second device.
+  _deviceRow(list, {
+    value: agent.default_target_device,
+    onSave: (val) => _putAgentField(agent, { default_target_device: val }, null, { silent: true })
+      .then(ok => { if (ok) agent.default_target_device = val; return ok; }),
+  });
+
   _toggleRow(list, {
     label: "Forward this agent's persona",
     hint: "Send this agent's System prompt to Claude as an extra system prompt.",
@@ -572,6 +584,82 @@ function _modeRow(list, { value, onSave, onChange }) {
     sel.disabled = false;
     if (ok) { confirmed = selected; }
     else { sel.value = confirmed; descEl.textContent = HINTS[confirmed] || ''; }
+  });
+  return { row, sel, ctrl };
+}
+
+// One option row carrying the Remote Control default-device <select>. Mirrors
+// _modeRow's chrome (label + .ac-config-control + save overlay) but populates from
+// the shared device fleet (window.DevicePicker — the SAME list the chat pill uses)
+// and saves metadata.default_target_device. Empty value = "This device" (run this
+// agent's chats locally). Because the target-device hand-off happens ABOVE the
+// engine — the whole turn is shipped to the chosen device and ITS local `claude`
+// runs it — a Claude agent gets the same Remote Control default as a normal one.
+// This mirrors the normal Config tab's "Target device" section (tab-config.js).
+// The fleet loads async: we paint "This device" (+ any saved-but-offline value)
+// first, then fill in the rest.
+function _deviceRow(list, { value, onSave }) {
+  const HINT_LOCAL  = 'New chats run on this machine by default. You can still pick another per chat.';
+  const HINT_REMOTE = "New chats run on the chosen machine — its OWN Claude (login, files) does the work. "
+    + "If it’s offline they fall back to this device; you can still pick another per chat.";
+  const row = document.createElement('div'); row.className = 'ac-ability-row';
+  const lab = document.createElement('span'); lab.className = 'ac-ability-label';
+  const nameEl = document.createElement('span'); nameEl.className = 'ac-ability-name'; nameEl.textContent = 'Target device';
+  lab.appendChild(nameEl);
+  const descEl = document.createElement('span'); descEl.className = 'ac-ability-desc';
+  lab.appendChild(descEl);
+  const ctrl = document.createElement('span'); ctrl.className = 'ac-config-control';
+  const sel = document.createElement('select'); sel.className = 'ac-input ac-input-sm ac-config-sel';
+  ctrl.appendChild(sel);
+  row.appendChild(lab); row.appendChild(ctrl); list.appendChild(row);
+
+  let confirmed = (typeof value === 'string') ? value : '';
+  let loaded = null;  // last fleet list, so a re-render after save keeps it
+
+  // Rebuild the option list. `null` devices = pre-load paint (This device + any
+  // saved value only). Keeps a saved-but-offline device as an option so the choice
+  // still shows.
+  const _rebuild = (devices) => {
+    if (Array.isArray(devices)) loaded = devices;
+    const others = (Array.isArray(loaded) ? loaded : []).filter(d => d && !d.is_self);
+    const val = confirmed;
+    sel.innerHTML = '';
+    const mk = (v, t, selected) => {
+      const o = document.createElement('option'); o.value = v; o.textContent = t;
+      if (selected) o.selected = true; sel.appendChild(o);
+    };
+    mk('', 'This device', !val);
+    const seen = new Set(['']);
+    others.forEach(d => {
+      mk(d.instance_id, (d.label || d.instance_id) + (d.online ? '' : ' (offline)'), d.instance_id === val);
+      seen.add(d.instance_id);
+    });
+    if (val && !seen.has(val)) {
+      const lbl = (window.DevicePicker && window.DevicePicker.labelFor) ? window.DevicePicker.labelFor(val) : val;
+      mk(val, (lbl && lbl !== val ? lbl : val) + ' (offline)', true);
+    }
+    descEl.textContent = (!others.length && !val)
+      ? 'No other devices in your fleet yet — chats run on this machine. A target must have Claude signed in and its server running.'
+      : (val ? HINT_REMOTE : HINT_LOCAL);
+  };
+  _rebuild(null);
+  try {
+    if (window.DevicePicker && window.DevicePicker.load) {
+      window.DevicePicker.load().then(_rebuild).catch(() => {});
+    }
+  } catch (_) { /* fleet list is best-effort; the saved value still shows */ }
+
+  sel.addEventListener('change', async () => {
+    const selected = sel.value;
+    if (selected === confirmed) return;
+    sel.disabled = true;
+    _ovMarkSaving(ctrl);
+    let ok = false;
+    try { ok = await onSave(selected); } catch (_) { ok = false; }
+    _ovFlashCheck(ctrl, ok, ok ? '' : 'Save failed');
+    sel.disabled = false;
+    if (ok) { confirmed = selected; _rebuild(loaded); }
+    else { sel.value = confirmed; }
   });
   return { row, sel, ctrl };
 }

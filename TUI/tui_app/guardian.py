@@ -79,6 +79,12 @@ SERVER_SETTLE = 90.0         # after launching the server, give it this long to 
 TUI_RELAUNCH_GAP = 30.0      # min seconds between TUI relaunches (crash-loop guard +
                              # covers the window before the new TUI writes its pid)
 MAX_SERVER_RESTARTS_PER_HOUR = 5
+DORMANT_RETRY_SECONDS = 300.0  # when the server can't be launched at all (venv missing,
+                             # spawn keeps failing), the guardian used to EXIT — which
+                             # permanently ended keep-alive after a transient hiccup (e.g.
+                             # the venv briefly gone mid-`uv sync`). Instead it now goes
+                             # DORMANT: stays alive, keeps supervising the TUI, and retries
+                             # the server at this slow cadence until it comes back.
 
 
 # ── state-file locations (all in the TUI data dir) ────────────────────────────
@@ -446,6 +452,10 @@ class Guardian:
         self._last_tui_relaunch = 0.0
         self._consecutive_fails = 0
         self._last_reap = 0.0
+        self._reap_clean_streak = 0                   # consecutive scans that found no duplicate
+        self._last_listeners: set[int] = set()        # port-8080 owners seen at the last scan
+        self._dormant_reason: Optional[str] = None   # set when the server can't be launched
+        self._dormant_retry_at = 0.0                 # monotonic time of the next slow retry
 
     # ── singleton ─────────────────────────────────────────────────────────
     def _claim_singleton(self) -> bool:
@@ -487,10 +497,19 @@ class Guardian:
             return                                     # no checkout linked → nothing to keep
         if _is_healthy():
             self._consecutive_fails = 0                # success resets the counter
+            self._clear_dormant()                      # server is back → leave slow-retry mode
             return
         now = time.monotonic()
         if now - self._srv_launched_at < SERVER_SETTLE:
             return                                     # still booting — don't double-launch
+        if self._dormant_reason is not None:
+            # We've hit a hard launch failure (venv missing / spawn keeps failing) and are
+            # in slow-retry mode. Attempt again only every DORMANT_RETRY_SECONDS instead of
+            # every tick — but NEVER exit, so TUI supervision keeps running and the server
+            # comes back the moment the underlying problem (e.g. a mid-update venv) resolves.
+            if now < self._dormant_retry_at:
+                return
+            self._dormant_retry_at = now + DORMANT_RETRY_SECONDS
         self._srv_restart_times = [t for t in self._srv_restart_times if now - t < 3600]
         if len(self._srv_restart_times) >= MAX_SERVER_RESTARTS_PER_HOUR:
             if now - self._srv_pause_logged > 600:
@@ -501,17 +520,16 @@ class Guardian:
         if py is None:
             self._consecutive_fails += 1
             if self._consecutive_fails >= _FAIL_LIMIT:
-                _write_json_atomic(_gfail_file(),
-                                   {"reason": f"venv not found (looked for .venv/bin/python, venv/bin/python in {root})",
-                                    "consecutive_fails": self._consecutive_fails})
-                _log(f"giving up after {self._consecutive_fails} consecutive launch failures — venv not found")
-                raise SystemExit(1)                    # exit the guardian so the TUI sees it's dead
+                self._go_dormant(
+                    f"venv not found (looked for .venv/bin/python, venv/bin/python in {root})")
             return
         for pid in _pids_on_port(PORT):                # clear a zombie holding the port
             _terminate(pid)
         pid = self._spawn_server(py, root)
         if pid:
             self._consecutive_fails = 0                # success resets the counter
+            self._clear_dormant()                      # a spawn succeeded → leave slow-retry mode
+            self._reap_clean_streak = 0                # fresh launch → re-arm fast duplicate scans
             self._srv_launched_at = time.monotonic()
             self._srv_restart_times.append(self._srv_launched_at)
             # Wait for the server to start listening, then track the REAL
@@ -534,14 +552,56 @@ class Guardian:
         else:
             self._consecutive_fails += 1
             if self._consecutive_fails >= _FAIL_LIMIT:
-                _write_json_atomic(_gfail_file(),
-                                   {"reason": f"server launch failed {self._consecutive_fails} times in a row",
-                                    "consecutive_fails": self._consecutive_fails})
-                _log(f"giving up after {self._consecutive_fails} consecutive launch failures")
-                raise SystemExit(1)                    # exit the guardian
+                self._go_dormant(
+                    f"server launch failed {self._consecutive_fails} times in a row")
+
+    # ── dormant slow-retry (never exit on a hard launch failure) ──────────
+    def _go_dormant(self, reason: str) -> None:
+        """Enter slow-retry mode after too many hard launch failures. Records the
+        reason in the fail marker (so the TUI can show WHY the server is down) and
+        schedules the next attempt — but keeps the guardian process alive so it
+        goes on supervising the TUI and re-launches the server the moment the
+        underlying problem clears. Replaces the old ``raise SystemExit`` which
+        permanently killed keep-alive after a transient hiccup."""
+        first = self._dormant_reason is None
+        self._dormant_reason = reason
+        self._dormant_retry_at = time.monotonic() + DORMANT_RETRY_SECONDS
+        _write_json_atomic(_gfail_file(),
+                           {"reason": reason, "consecutive_fails": self._consecutive_fails,
+                            "dormant": True})
+        if first:
+            _log(f"cannot launch the server ({reason}) — entering slow-retry mode "
+                 f"(every {int(DORMANT_RETRY_SECONDS)}s); guardian stays alive to keep "
+                 "supervising the TUI and will relaunch when it can")
+
+    def _clear_dormant(self) -> None:
+        """Leave slow-retry mode once the server is launchable/healthy again: drop
+        the fail marker and reset the failure counter so the TUI stops showing the
+        stale 'guardian gave up' warning."""
+        if self._dormant_reason is None:
+            return
+        self._dormant_reason = None
+        self._consecutive_fails = 0
+        try:
+            _gfail_file().unlink()
+        except OSError:
+            pass
+        _log("server is launchable again — left slow-retry mode")
 
     # ── sole-authority over port 8080 ─────────────────────────────────────
-    REAP_INTERVAL = 30.0     # how often to scan for duplicate server trees
+    REAP_INTERVAL = 30.0     # base gap between duplicate-server scans (churny state)
+    REAP_BACKOFF_STEPS = 3   # widen up to REAP_INTERVAL*(1+STEPS) once proven stable (→ 120s)
+
+    def _reap_interval(self) -> float:
+        """How long to wait before the next duplicate scan. The scan itself is the
+        one genuinely heavy op in the loop — a full process-table enumeration
+        (PowerShell ``Get-CimInstance`` on Windows). Running it every 30s forever is
+        wasteful when a single clean server has been up for hours, so once several
+        scans in a row find no duplicate we widen the gap (30→60→90→120s). ANY churn
+        re-arms the fast cadence by zeroing ``_reap_clean_streak``: a fresh launch
+        (see _supervise_server) or the serving process changing between scans — the
+        moments a duplicate/orphan can actually appear."""
+        return self.REAP_INTERVAL * (1 + min(self._reap_clean_streak, self.REAP_BACKOFF_STEPS))
 
     def _reap_foreign_servers(self) -> None:
         """Enforce "one server, and it's the one I supervise": kill any *other*
@@ -552,19 +612,27 @@ class Guardian:
         is never mistaken for a duplicate. We adopt whatever is serving (seed from
         the live listener), so this can never kill the live server, and it converges
         even if some other launcher started it. Fail-safe at every step: any missing
-        signal → reap nothing."""
+        signal → reap nothing.
+
+        The gate uses an ADAPTIVE interval (see _reap_interval): the detection logic
+        is unchanged, we just pay for the heavy process-table scan less often once the
+        server has proven stable, and re-arm the fast cadence the moment anything
+        changes."""
         now = time.monotonic()
-        if now - self._last_reap < self.REAP_INTERVAL:
+        if now - self._last_reap < self._reap_interval():
             return
         if now - self._srv_launched_at < SERVER_SETTLE:
             return                                     # our own launch is still booting
         if not _is_healthy():
             return                                     # no stable serving tree to anchor on
         self._last_reap = now
-        listeners = _pids_on_port(PORT)
+        listeners = _pids_on_port(PORT)                # cheap netstat pre-check
+        if listeners != self._last_listeners:
+            self._reap_clean_streak = 0                # serving process changed → scan promptly
+            self._last_listeners = set(listeners)
         if not listeners:
             return
-        table = _proc_table()
+        table = _proc_table()                          # the heavy scan — now gated by the streak
         if not table:
             return                                     # can't see processes → don't guess
         parents = {pid: ppid for pid, ppid, _ in table}
@@ -572,7 +640,9 @@ class Guardian:
         runpy.discard(os.getpid())                     # never count ourselves
         foreign = _foreign_server_pids(listeners, runpy, parents)
         if not foreign:
+            self._reap_clean_streak += 1               # nothing to reap → allow backing off
             return
+        self._reap_clean_streak = 0                    # a duplicate appeared → stay on fast cadence
         for pid in sorted(foreign):
             if _terminate(pid):
                 _log(f"reaped duplicate web-server process (pid {pid}) — not the one serving :{PORT}")

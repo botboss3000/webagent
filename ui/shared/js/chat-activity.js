@@ -1572,24 +1572,6 @@ function _buildRow(entry, idx) {
   const body = document.createElement('div');
   body.className = 'ca-tool-body';
 
-  // ── Saved input (full messages sent to LLM) ──
-  if (entry._savedInput) {
-    const inputLbl = document.createElement('div');
-    inputLbl.className = 'ca-tool-label';
-    inputLbl.textContent = 'LLM Input (messages)';
-    body.appendChild(inputLbl);
-    const inputWrap = document.createElement('div');
-    inputWrap.className = 'ca-tool-pre-wrap';
-    const inputPre = document.createElement('pre');
-    inputPre.className = 'ca-tool-pre';
-    let inputText = entry._savedInput;
-    try { inputText = JSON.stringify(JSON.parse(entry._savedInput), null, 2); } catch (_) {}
-    inputPre.textContent = inputText;
-    inputWrap.appendChild(inputPre);
-    inputWrap.appendChild(_makeCopyBtn(inputText, 'LLM input'));
-    body.appendChild(inputWrap);
-  }
-
   // ── Saved output (full LLM response with tool calls) ──
   if (entry._savedOutput) {
     const outputLbl = document.createElement('div');

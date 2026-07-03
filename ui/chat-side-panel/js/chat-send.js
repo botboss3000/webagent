@@ -563,6 +563,11 @@ async function sendMessage() {
   };
   if (app.currentAgentId) base.agent_id = app.currentAgentId;
   if (_appControl) base.app_control = _appControl;
+  // Target device for this turn (same value stored on the outbox entry above). An
+  // instance id routes the turn to that device's worker; '' runs locally. This was
+  // missing from the primary send payload, so a targeted turn only ever dispatched
+  // on an outbox RETRY — the first (normal) send always ran locally. (see app/api/chat.py)
+  if (app.targetDevice) base.target_device = app.targetDevice;
   const payload = addAttachmentsToMessage(base);
   if (app.clearPendingAttachments) app.clearPendingAttachments();
 

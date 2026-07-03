@@ -49,7 +49,7 @@ class FakeNotifier:
         return None
 
 
-def _watchdog(store, state):
+def _watchdog(store, state, guardian_present=False):
     async def restart():
         state["restarts"] += 1
         return "restarted"
@@ -71,6 +71,12 @@ def _watchdog(store, state):
         coordinator=PlaybookCoordinator(store),
         clear_port=clear_port,
         run_command=run_command,
+        # These playbook tests exercise the watchdog's OWN restart path; pin the
+        # Stage-3 guardian check explicitly so they don't depend on whether a real
+        # keep-alive guardian happens to be running on the dev machine (which would
+        # otherwise make the watchdog defer and restart 0×). Guardian coordination
+        # has its own test below (test_restart_defers_to_guardian).
+        guardian_owns_restart=lambda: guardian_present,
     )
 
 
@@ -231,6 +237,90 @@ def test_loop_document_only():
     print("  ok  loop(document): records + ranks but takes no action")
 
 
+# ── 3b. Stage-3: two restart layers coordinate (guardian owns relaunch) ──────
+def test_restart_defers_to_guardian():
+    store = _store()
+    cfg = _cfg()
+
+    # Guardian PRESENT → the watchdog stands down: no second server spawn, and it
+    # doesn't burn its own restart budget. It still reports action-in-hand (True) so
+    # the playbook's verify window can confirm recovery once /health returns.
+    st = {"restarts": 0, "cleared": 0, "commands": [], "injects": []}
+    wd = _watchdog(store, st, guardian_present=True)
+    issued = run(wd._attempt_restart(cfg))
+    assert issued is True, "deferral reports action-in-hand (guardian will relaunch)"
+    assert st["restarts"] == 0, "watchdog must NOT restart while a live guardian owns it"
+    assert wd._restart_times == [], "deferral must not consume the watchdog restart budget"
+
+    # Guardian ABSENT → the watchdog restarts itself, exactly as before Stage 3.
+    st2 = {"restarts": 0, "cleared": 0, "commands": [], "injects": []}
+    wd2 = _watchdog(store, st2, guardian_present=False)
+    issued2 = run(wd2._attempt_restart(cfg))
+    assert issued2 is True and st2["restarts"] == 1, "no guardian → watchdog restarts itself"
+    assert len(wd2._restart_times) == 1, "a real restart IS counted against the budget"
+
+    # Through the playbook: guardian present → the restart remedy applies as a
+    # deferral (no spawn), the incident is still tracked, and /health recovering
+    # (the guardian did it) resolves the incident cleanly.
+    st3 = {"restarts": 0, "cleared": 0, "commands": [], "injects": []}
+    wd3 = _watchdog(store, st3, guardian_present=True)
+    run(wd3._remediate(cfg, key="server_down", label="Server down", kind="builtin",
+                       trigger={"health": "stopped"}))
+    assert st3["restarts"] == 0, "playbook restart remedy is deferred too"
+    assert len(wd3._open_incidents) == 1, "still tracked for verification"
+    run(wd3._verify_open_incidents(cfg, "running", []))
+    assert wd3._open_incidents == [], "the guardian's relaunch clears the open incident"
+    print("  ok  stage-3: watchdog defers restart to a live guardian, restarts when absent")
+
+
+# ── 3c. Stage-4: readiness recovery of an up-but-wedged server ───────────────
+def test_readiness_wedge_recovery():
+    import tui_app.watchdog as wdmod
+    store = _store()
+    cfg = _cfg(readiness_recovery=True, readiness_fail_ticks=2)
+
+    async def not_ready(*a, **k):
+        return "not_ready"
+
+    async def ready(*a, **k):
+        return "ready"
+
+    orig = wdmod.server_ready
+    try:
+        # Guardian PRESENT — proves a readiness wedge does NOT defer (the guardian
+        # only checks liveness, so it can't see a wedged-but-listening server).
+        st = {"restarts": 0, "cleared": 0, "commands": [], "injects": []}
+        wd = _watchdog(store, st, guardian_present=True)
+
+        wdmod.server_ready = not_ready
+        run(wd._handle_readiness(cfg, "running"))          # 1st fail: streak 1 < 2 → wait
+        assert st["restarts"] == 0 and wd._notready_streak == 1
+        run(wd._handle_readiness(cfg, "running"))          # 2nd fail: threshold → recover
+        assert st["restarts"] == 1, "a sustained wedge must restart even with a live guardian"
+        assert wd._notready_streak == 0, "streak resets after acting"
+
+        # One 'ready' result clears an in-progress streak (no false accumulation).
+        wdmod.server_ready = not_ready
+        run(wd._handle_readiness(cfg, "running"))          # streak → 1
+        wdmod.server_ready = ready
+        run(wd._handle_readiness(cfg, "running"))          # ready → reset, no restart
+        assert wd._notready_streak == 0 and st["restarts"] == 1
+
+        # Server not live → readiness is a no-op (the liveness path owns "down").
+        wdmod.server_ready = not_ready
+        run(wd._handle_readiness(cfg, "stopped"))
+        assert st["restarts"] == 1 and wd._notready_streak == 0
+
+        # Master switch off → never probes or acts.
+        st2 = {"restarts": 0, "cleared": 0, "commands": [], "injects": []}
+        wd2 = _watchdog(store, st2, guardian_present=True)
+        run(wd2._handle_readiness(_cfg(readiness_recovery=False), "running"))
+        assert st2["restarts"] == 0 and wd2._notready_streak == 0
+    finally:
+        wdmod.server_ready = orig
+    print("  ok  stage-4: sustained /health/ready wedge recovers the server (guardian can't see it)")
+
+
 # ── 4. agent tools via the registry ──────────────────────────────────────────
 def test_tools_roundtrip():
     store = _store()
@@ -261,5 +351,7 @@ if __name__ == "__main__":
     test_loop_safe_auto()
     test_loop_failure_learns()
     test_loop_document_only()
+    test_restart_defers_to_guardian()
+    test_readiness_wedge_recovery()
     test_tools_roundtrip()
     print("\nplaybook: ALL PASSED")

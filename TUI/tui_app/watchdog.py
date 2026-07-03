@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from . import playbook, sysmetrics
-from .env_probe import server_health
+from .env_probe import server_health, server_ready
 from .monstate import load_alarms, load_monitor_config
 from .notify import Notifier
 
@@ -130,11 +130,17 @@ class Watchdog:
         coordinator: Optional[Any] = None,
         clear_port: Optional[Callable[[], Awaitable[str]]] = None,
         run_command: Optional[Callable[[str], Awaitable[str]]] = None,
+        guardian_owns_restart: Optional[Callable[[], bool]] = None,
     ) -> None:
         self._get_root = get_project_root
         self._restart = restart_server
         self._notifier = notifier
         self._log = log
+        # Stage 3 — restart coordination. When the external keep-alive guardian is
+        # alive AND enabled, IT owns server relaunches; this in-process watchdog
+        # defers so the two never race to spawn run.py. Overridable for tests;
+        # ``None`` uses the real on-disk guardian probe (see _guardian_owns_restart).
+        self._guardian_owns_restart_fn = guardian_owns_restart
         # mk2: under self_heal autonomy, hand serious conditions to the agent as an
         # event so it can diagnose + remediate (not just notify/restart). Set by app.
         self._inject_event = inject_event
@@ -148,6 +154,8 @@ class Watchdog:
         self._open_incidents: list[dict[str, Any]] = []   # remedies awaiting verification
         self._doc_last: dict[str, float] = {}             # per-issue last documented (throttle)
         self._last_health: str = "unknown"
+        self._last_readiness: str = "unknown"        # last /health/ready result
+        self._notready_streak = 0                    # consecutive not_ready ticks (wedge detect)
         self._last_diag_id: int = 0
         self._primed = False
         self._seen_running = False                   # has the server been up this session?
@@ -156,6 +164,7 @@ class Watchdog:
         self._digest: dict[str, int] = {}           # signature → pending count ('digest')
         self._digest_last_flush = time.monotonic()
         self._rate_alert_at = 0.0                    # last error-rate alert (monotonic)
+        self._defer_alert_at = 0.0                   # last "deferred to guardian" notice (monotonic)
         self._res_alert_at: dict[str, float] = {}    # per-metric last resource alert (monotonic)
         self._warned_orphan = False                  # alerted about an untracked server?
         self._port_alert_at = 0.0                    # last zombie-port alert (monotonic)
@@ -189,6 +198,7 @@ class Watchdog:
             "error_rate_threshold": cfg.get("error_rate_threshold"),
             "max_restarts_per_hour": cfg.get("max_restarts_per_hour"),
             "last_health": self._last_health,
+            "last_readiness": self._last_readiness,
             "restarts_last_hour": len([t for t in self._restart_times if now - t < 3600]),
             "alarms": len(load_alarms()),
             "resources": self._last_resources,
@@ -217,14 +227,10 @@ class Watchdog:
         if root is None:
             return  # monitoring only runs in managed mode
 
-        # Python 3.14 on this machine has a broken environment (no ComSpec,
-        # corrupted SSL/Winsock) so httpx probes fail even when the server is
-        # healthy. Use _run_command (which goes through a clean shell) as the
-        # primary probe when available.
-        if self._run_command and root:
-            health = await self._probe_via_shell(PORT, root)
-        else:
-            health = await server_health(PORT)
+        # server_health() is now a robust stdlib (urllib) probe, so it works even
+        # on this machine's broken httpx/SSL 3.14 environment — no per-tick
+        # subprocess shell-out needed. One probe path for the whole app.
+        health = await server_health(PORT)
         db = _diag_db(root)
         if not self._primed:
             # First tick: just establish a baseline (current health + existing
@@ -240,6 +246,10 @@ class Watchdog:
         await self._handle_health(cfg, health)
         self._last_health = health
 
+        # Readiness (deeper than liveness): recover an up-but-wedged server whose DB
+        # round-trip keeps failing even though /health still answers.
+        await self._handle_readiness(cfg, health)
+
         await self._check_port(cfg, root, health)
         await self._check_resources(cfg, root)
 
@@ -251,26 +261,6 @@ class Watchdog:
         # Playbook: resolve/fail any remedy we applied that is now in its
         # verification window (did the condition actually clear?).
         await self._verify_open_incidents(cfg, health, new_rows)
-
-    async def _probe_via_shell(self, port: int, root: Path) -> str:
-        """Probe /health via a clean shell subprocess (_run_command).
-
-        On Python 3.14 with a broken Winsock/SSL environment, httpx fails
-        for every call. _run_command goes through ``cmd /c`` which creates
-        a clean process environment and works reliably.
-        """
-        venv_py = root / ".venv" / "Scripts" / "python.exe"
-        if not venv_py.is_file():
-            return await server_health(port)
-        try:
-            result = await self._run_command(
-                f'"{venv_py}"'
-                f' -c "import http.client; c=http.client.HTTPConnection(\'127.0.0.1\',{port},timeout=5);'
-                f' c.request(\'GET\',\'/health\'); r=c.getresponse(); print(r.status)"'
-            )
-            return "running" if result.strip() == "200" else "stopped"
-        except Exception:
-            return "unknown"
 
     async def _handle_health(self, cfg: dict[str, Any], health: str) -> None:
         if health == "running":
@@ -301,10 +291,54 @@ class Watchdog:
                                    "The playbook may be attempting recovery.")
         # health == "unknown" (probe indeterminate): take no action this tick.
 
-    async def _attempt_restart(self, cfg: dict[str, Any]) -> bool:
+    def _guardian_owns_restart(self) -> bool:
+        """True when the external keep-alive guardian is alive AND enabled — so IT,
+        not this in-process watchdog, should relaunch a down server.
+
+        Two supervisors both restarting the server means a genuine double-launch
+        race (two ``run.py`` spawns fighting over port 8080) and two independent
+        5/hr restart budgets stacking into a ~10/hr real ceiling. Deferring to the
+        guardian keeps exactly one restarter at a time. When the guardian is off or
+        dead this returns False and the watchdog restarts as before. Overridable via
+        the constructor for tests; otherwise it reads the guardian's own on-disk
+        pidfile + off-switch (no new process, no heavy import)."""
+        if self._guardian_owns_restart_fn is not None:
+            try:
+                return bool(self._guardian_owns_restart_fn())
+            except Exception:
+                return False
+        try:
+            from . import guardian  # lazy: keep the bare watchdog import-light
+            return guardian.guardian_alive() and guardian.read_enabled()
+        except Exception:
+            return False
+
+    async def _attempt_restart(self, cfg: dict[str, Any],
+                               defer_to_guardian: bool = True) -> bool:
         """Restart the server with backoff + a crash-loop guard. Returns True if a
-        restart was actually issued, False if the crash-loop guard paused it."""
+        restart was actually issued (or handed to the guardian), False if the
+        crash-loop guard paused it.
+
+        ``defer_to_guardian`` (default True) lets the guardian own the relaunch when
+        it's alive — right for a LIVENESS drop, which the guardian detects too. The
+        readiness/wedge path passes False: the guardian only knows liveness, so it
+        sees a wedged-but-listening server as healthy and won't act — the watchdog
+        must restart it itself."""
         now = time.monotonic()
+        # Stage 3: if the external guardian owns restarts, stand down — record it and
+        # notify (deduped) so the user still sees recovery is in hand, but DON'T spawn
+        # a second server or consume this watchdog's restart budget. The guardian's
+        # 5s poll relaunches within seconds; returning True lets the playbook's verify
+        # window confirm recovery when /health comes back.
+        if defer_to_guardian and self._guardian_owns_restart():
+            self._record("server down — deferring restart to the external guardian")
+            if now - self._defer_alert_at > 600:
+                self._defer_alert_at = now
+                await self._notify(
+                    cfg, "Server down",
+                    "The external keep-alive guardian is relaunching the server; the "
+                    "watchdog is standing down to avoid a double launch.")
+            return True
         self._restart_times = [t for t in self._restart_times if now - t < 3600]
         cap = int(cfg.get("max_restarts_per_hour") or 5)
         if len(self._restart_times) >= cap:
@@ -342,6 +376,44 @@ class Watchdog:
         # back up. This fires every time regardless of autonomy level.
         self._inject_restart_event(cfg, msg)
         return True
+
+    async def _handle_readiness(self, cfg: dict[str, Any], health: str) -> None:
+        """Recover an up-but-WEDGED server. Liveness (``/health``) can pass while the
+        app can't do real work — its DB round-trip is stuck. ``/health/ready`` reports
+        503 in that case; we act only on a **sustained** failure (N consecutive ticks)
+        so one briefly-busy DB moment never triggers a restart, and only while the
+        server is otherwise live (a down server is the liveness path's job).
+
+        This recovery does NOT defer to the guardian: the guardian only checks
+        liveness, so it sees a wedged server as healthy and won't restart it — the
+        watchdog must. Off unless ``readiness_recovery`` is set (default on)."""
+        if not cfg.get("readiness_recovery", True) or health != "running":
+            self._notready_streak = 0            # only meaningful for a live server
+            return
+        ready = await server_ready(PORT)
+        self._last_readiness = ready
+        if ready != "not_ready":                 # 'ready' or 'unknown' → not a confirmed wedge
+            self._notready_streak = 0
+            return
+        self._notready_streak += 1
+        threshold = max(1, int(cfg.get("readiness_fail_ticks") or 3))
+        if self._notready_streak < threshold:
+            return
+        self._notready_streak = 0                # reset so we don't re-fire every tick
+        self._record(f"server wedged — /health/ready failed {threshold}× in a row")
+        await self._notify(
+            cfg, "Server wedged",
+            "The server answers /health but its readiness check (a cheap database "
+            f"round-trip) has failed {threshold} times running — it looks alive but "
+            "can't do real work. Recovering it.")
+        self._maybe_inject(
+            cfg, "Server wedged",
+            "The server is up but not READY — its database round-trip keeps failing. "
+            "It's being restarted to recover; investigate why the DB stopped answering.")
+        # Restart only within the configured autonomy, same gate as a liveness drop —
+        # but never defer to the guardian (it can't see a readiness wedge).
+        if cfg.get("auto_restart") and cfg.get("autonomy") in ("auto_restart", "self_heal"):
+            await self._attempt_restart(cfg, defer_to_guardian=False)
 
     async def _check_port(self, cfg: dict[str, Any], root: Path, health: str) -> None:
         """Port/zombie detection: tell apart a clean server, an UNTRACKED server we

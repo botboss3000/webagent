@@ -1,6 +1,7 @@
 # Remote Access — setup guide
 
-The **Remote Access** card (App Config → **App Settings**) lets a phone or any
+The **Remote Access** card (App Config → **Data Settings**, below the Database
+card) lets a phone or any
 other device reach this WebAgent server. It offers several methods through one
 card; turn on whichever you want. All settings are admin-only.
 

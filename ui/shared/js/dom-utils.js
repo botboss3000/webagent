@@ -1440,3 +1440,127 @@ export function buildAbilitySearchPill(container, cfg = {}) {
 
   return { wrap, pill, input, focus: () => input.focus() };
 }
+
+
+// ── Floating menu (shared) ────────────────────────────────────────────────
+// Generic anchored popup menu used by the File Manager and Terminal drop-ins
+// (tab "more" menus, tree/terminal context menus, the production tools popover).
+// Hoisted out of the old files.js so the two views share it as infrastructure
+// rather than sharing code with each other. `items` is an array of:
+//   { icon, label, action, danger?, checked?, disabled? }  — a button
+//   { separator: true }                                     — a divider
+//   { info: true, label, id? }                              — a non-interactive line
+//   { field: true, label?, value?, placeholder?, fieldType?, fieldKey?, onInput?, onSave? }
+export function closeFloatingMenu() {
+  const m = document.getElementById('files-floating-menu');
+  if (m) m.remove();
+}
+
+export function openFloatingMenu(items, top, left) {
+  closeFloatingMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'files-tab-menu';
+  menu.id = 'files-floating-menu';
+
+  for (const item of items) {
+    if (item.separator) {
+      const hr = document.createElement('div');
+      hr.className = 'files-tab-menu-sep';
+      menu.appendChild(hr);
+      continue;
+    }
+    if (item.info) {
+      const row = document.createElement('div');
+      row.className = 'files-tab-menu-info';
+      if (item.id) row.id = item.id;
+      row.textContent = item.label || '';
+      menu.appendChild(row);
+      continue;
+    }
+    if (item.field) {
+      const wrap = document.createElement('div');
+      wrap.className = 'files-tab-menu-field';
+      if (item.label) {
+        const lab = document.createElement('label');
+        lab.textContent = item.label;
+        wrap.appendChild(lab);
+      }
+      const inp = document.createElement('input');
+      inp.type = item.fieldType || 'text';
+      inp.value = item.value || '';
+      inp.placeholder = item.placeholder || '';
+      inp.spellcheck = false;
+      inp.autocomplete = item.fieldType === 'password' ? 'new-password' : 'off';
+      if (item.fieldKey) inp.dataset.field = item.fieldKey;
+      inp.addEventListener('click', (e) => e.stopPropagation());
+      if (typeof item.onInput === 'function') {
+        inp.addEventListener('input', () => item.onInput(inp.value));
+      }
+      if (typeof item.onSave === 'function') {
+        inp.addEventListener('change', () => item.onSave(inp.value));
+        inp.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); item.onSave(inp.value); inp.blur(); }
+        });
+      }
+      wrap.appendChild(inp);
+      menu.appendChild(wrap);
+      continue;
+    }
+    const btn = document.createElement('button');
+    btn.className = 'files-tab-menu-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : '');
+    btn.type = 'button';
+    btn.disabled = !!item.disabled;
+    const i = document.createElement('i');
+    i.setAttribute('data-lucide', item.icon || 'circle');
+    i.className = 'lucide-icon';
+    btn.appendChild(i);
+    const lbl = document.createElement('span');
+    lbl.textContent = item.label;
+    btn.appendChild(lbl);
+    const check = document.createElement('span');
+    check.className = 'files-tab-menu-check';
+    check.textContent = '\u2713';
+    btn.appendChild(check);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeFloatingMenu();
+      if (!item.disabled && typeof item.action === 'function') item.action();
+    });
+    menu.appendChild(btn);
+  }
+
+  document.body.appendChild(menu);
+
+  const menuWidth = 180;
+  const rect = menu.getBoundingClientRect();
+  const menuHeight = rect.height || 8;
+  const clampedTop  = Math.max(8, Math.min(window.innerHeight - menuHeight - 8, top));
+  const clampedLeft = Math.max(8, Math.min(window.innerWidth  - menuWidth  - 8, left));
+  menu.style.top  = clampedTop + 'px';
+  menu.style.left = clampedLeft + 'px';
+
+  _refreshLucideIcons(menu);
+
+  // Dismiss handlers test the LIVE menu (by id), not this call's closure, so a
+  // stale handler self-heals instead of closing a freshly-reopened menu.
+  const cleanup = () => {
+    document.removeEventListener('mousedown', outside, true);
+    document.removeEventListener('contextmenu', outside, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const outside = (ev) => {
+    const cur = document.getElementById('files-floating-menu');
+    if (!cur) { cleanup(); return; }
+    if (!cur.contains(ev.target)) { closeFloatingMenu(); cleanup(); }
+  };
+  const onKey = (ev) => {
+    if (!document.getElementById('files-floating-menu')) { cleanup(); return; }
+    if (ev.key === 'Escape') { closeFloatingMenu(); cleanup(); }
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown', outside, true);
+    document.addEventListener('contextmenu', outside, true);
+    document.addEventListener('keydown', onKey, true);
+  }, 0);
+}

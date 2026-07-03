@@ -5,7 +5,7 @@ venv launcher `python run.py` spawns the actual uvicorn interpreter as a child, 
 the LISTENER is a child of the tracked pid)."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tui_app.guardian import _foreign_server_pids, _server_tree, _is_server_proc
+from tui_app.guardian import _foreign_server_pids, _server_tree, _is_server_proc, Guardian
 
 
 def test_reaps_nonserving_duplicate_keeps_serving_tree():
@@ -56,6 +56,19 @@ def test_is_server_proc_excludes_tui_and_guardian_and_scanners():
     assert not _is_server_proc("python -m tui_app")              # current module name
     assert not _is_server_proc("powershell -NoProfile -Command Get-CimInstance Win32_Process")
     assert not _is_server_proc("")
+
+
+def test_reap_interval_backs_off_when_clean_and_rearms_on_churn():
+    # Stage 5: the heavy process-table scan runs less often once the server is
+    # proven stable, and re-arms to the fast cadence on any churn.
+    g = Guardian()
+    base = Guardian.REAP_INTERVAL
+    assert g._reap_interval() == base                     # fresh guardian → fast cadence
+    for streak, mult in [(1, 2), (2, 3), (3, 4), (10, 4)]:  # widens, capped at STEPS(=3)
+        g._reap_clean_streak = streak
+        assert g._reap_interval() == base * mult
+    g._reap_clean_streak = 0                              # churn re-arms the fast cadence
+    assert g._reap_interval() == base
 
 
 if __name__ == "__main__":

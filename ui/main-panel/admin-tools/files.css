@@ -2011,6 +2011,43 @@ body.admin-restricted #main-panel { display: flex !important; }
   font-style: italic;
   font-size: 11px;
 }
+
+/* ── Skeleton placeholders (source-control) ─────────────────────────
+   Shimmer blocks shown while the panel structure + buttons are already up but
+   the git status / commit graph are still loading. Neutral, theme-aware fill
+   built from --ink-rgb so it reads on dark AND light. See renderGitSkeleton()
+   in ui/shared/js/files-git.js.
+   REMOVE-WHEN: the source-control panel drops skeleton-first loading. */
+@keyframes fg-skel-shimmer {
+  0%   { background-position: -180px 0; }
+  100% { background-position:  180px 0; }
+}
+.fg-skel {
+  display: inline-block;
+  border-radius: 4px;
+  background:
+    linear-gradient(90deg,
+      rgba(var(--ink-rgb), 0.05) 25%,
+      rgba(var(--ink-rgb), 0.12) 50%,
+      rgba(var(--ink-rgb), 0.05) 75%);
+  background-size: 180px 100%;
+  animation: fg-skel-shimmer 1.15s ease-in-out infinite;
+}
+/* Changes-list skeleton rows */
+.fg-skel-file { pointer-events: none; }
+.fg-skel-flag { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 auto; }
+.fg-skel-line { height: 9px; vertical-align: middle; }
+.fg-skel-line-sm { height: 7px; opacity: 0.75; }
+.fg-skel-count { width: 16px; height: 12px; border-radius: 6px; }
+/* Commit-graph skeleton rows */
+.fg-skel-graph-row { pointer-events: none; }
+.fg-skel-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  margin: calc((var(--row-h, 38px) - 9px) / 2) auto 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .fg-skel { animation: none; }
+}
 .fg-error {
   padding: 12px;
   color: var(--files-danger);

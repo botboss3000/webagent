@@ -520,6 +520,70 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
     }
   }
 
+  // ── Target device (Remote Control default) ────────────────────────────────
+  // Which device in the shared fleet runs this agent's chats by default. A fresh
+  // session pre-selects it in the chat Remote Control pill; if that device is
+  // offline the chat falls back to "this device", and the user can still pick a
+  // different device per session. Stored in metadata.default_target_device (an
+  // instance-id; '' = this device) and read by chat-ui.js on session open. The
+  // device list comes from window.DevicePicker (shared with the chat pill), loaded
+  // async — we paint "This device" (+ the saved value) first, then fill the fleet.
+  if (isEditable && !isMock) {
+    const g = _group(body, 'monitor-smartphone', 'Target device');
+    const list = _cfgList(g);
+    const { ctrl, descEl } = _cfgRow(list, 'Default device',
+      'New chats run here by default. If it’s offline they fall back to this device; you can still pick another per chat.');
+    const sel = document.createElement('select');
+    sel.className = 'ac-input ac-input-sm ac-config-sel'; sel.dataset.field = 'default_target_device';
+    const cur = (typeof agent.default_target_device === 'string') ? agent.default_target_device : '';
+    let confirmed = cur;
+    ctrl.appendChild(sel);
+
+    // Rebuild the option list from the live fleet. Keeps a saved-but-offline device
+    // as an option so the admin still sees their choice. `null` devices = pre-load
+    // paint (This device + saved value only).
+    const _rebuild = (devices) => {
+      const others = (Array.isArray(devices) ? devices : []).filter(d => d && !d.is_self);
+      const val = confirmed;
+      sel.innerHTML = '';
+      const mk = (value, text, selected) => {
+        const o = document.createElement('option'); o.value = value; o.textContent = text;
+        if (selected) o.selected = true; sel.appendChild(o);
+      };
+      mk('', 'This device', !val);
+      const seen = new Set(['']);
+      others.forEach(d => {
+        mk(d.instance_id, (d.label || d.instance_id) + (d.online ? '' : ' (offline)'), d.instance_id === val);
+        seen.add(d.instance_id);
+      });
+      if (val && !seen.has(val)) {
+        const lbl = (window.DevicePicker && window.DevicePicker.labelFor) ? window.DevicePicker.labelFor(val) : val;
+        mk(val, (lbl && lbl !== val ? lbl : val) + ' (offline)', true);
+      }
+      if (descEl) {
+        descEl.textContent = (!others.length && !val)
+          ? 'No other devices in your fleet yet — chats run on this device.'
+          : 'New chats run here by default. If it’s offline they fall back to this device; you can still pick another per chat.';
+      }
+    };
+    _rebuild(null);
+    try {
+      if (window.DevicePicker && window.DevicePicker.load) {
+        window.DevicePicker.load().then(_rebuild).catch(() => {});
+      }
+    } catch (_) { /* fleet list is best-effort; the saved value still shows */ }
+
+    sel.addEventListener('change', async () => {
+      const selected = sel.value;
+      if (selected === confirmed) return;
+      sel.disabled = true;
+      const ok = await _saveCfg(agent, { default_target_device: selected }, ctrl);
+      sel.disabled = false;
+      if (ok) { confirmed = selected; }
+      else { sel.value = confirmed; }
+    });
+  }
+
   // ── Chat Messages (per-agent UI copy) ─────────────────────────────────────
   // Genuine free-text fields → stay fields. Each field's placeholder shows the
   // current app-wide default (from app/defaults/app-prompts.json); leaving a field

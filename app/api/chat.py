@@ -1262,8 +1262,8 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
         user_interaction_id = await db.insert_interaction(
             request.user_id, request.session_id, role="user", content=request.message,
             channel="web_portal",
-            metadata=json.dumps({"source": "optimizer" if is_opt else "web_portal_chat"}),
-            input_data=json.dumps(request.model_dump(), default=str),
+            metadata=json.dumps({"source": "optimizer" if is_opt else "web_portal_chat",
+                                 **({"attachment_ids": request.attachment_ids} if request.attachment_ids else {})}),
             sender_id=request.user_id,
             receiver_id=agent["id"],
             source="optimizer" if is_opt else None,
@@ -1343,8 +1343,8 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
                 parent_id=user_interaction_id,
                 tool_name="memory_search",
                 channel="web_portal",
-                metadata=json.dumps({"brain": True, "skipped": True, "reason": _skip_reason}),
-                input_data=json.dumps({"query": request.message, "skipped": True}),
+                metadata=json.dumps({"brain": True, "skipped": True, "reason": _skip_reason,
+                                     "args": {"query": request.message, "skipped": True}}),
                 sender_id=agent["id"],
                 receiver_id=agent["id"],
             )
@@ -1452,8 +1452,8 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
                     "count": len(brain_results or []),
                     "brain": True,
                     "has_results": bool(brain_results),
+                    "args": {"query": request.message},
                 }),
-                input_data=json.dumps({"query": request.message}),
                 output_data=search_content,
                 sender_id=agent["id"],
                 receiver_id=agent["id"],
@@ -1884,11 +1884,14 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
     _user_meta = {"source": "web_portal_chat"}
     if client_msg_id:
         _user_meta["cmid"] = client_msg_id
+    if request.attachment_ids:
+        # The message -> attachment link (recovered on reload to re-render pasted
+        # images/files) rides in metadata now that the input column is gone.
+        _user_meta["attachment_ids"] = request.attachment_ids
     user_interaction_id = await db.insert_interaction(
         request.user_id, request.session_id, role="user", content=request.message,
         channel=channel,
         metadata=json.dumps(_user_meta),
-        input_data=json.dumps(request.model_dump(), default=str),
         sender_id=request.user_id,
         receiver_id=agent["id"],
     )
@@ -2094,8 +2097,8 @@ async def _run_turn_background(
                 user_id, session_id, role="tool",
                 content=json.dumps({"skipped": True, "reason": _skip_reason}),
                 parent_id=user_interaction_id, tool_name="memory_search", channel=channel,
-                metadata=json.dumps({"brain": True, "skipped": True, "reason": _skip_reason}),
-                input_data=json.dumps({"query": request.message, "skipped": True}),
+                metadata=json.dumps({"brain": True, "skipped": True, "reason": _skip_reason,
+                                     "args": {"query": request.message, "skipped": True}}),
                 sender_id=agent["id"], receiver_id=agent["id"],
             )
             await event_callback({"type": "pipeline", "level": "pipeline",
@@ -2294,8 +2297,9 @@ async def _run_turn_background(
                 user_id, session_id, role="tool", content=search_content,
                 parent_id=user_interaction_id, tool_name="memory_search", channel=channel,
                 metadata=json.dumps({"count": len(brain_results or []), "brain": True,
-                                     "has_results": bool(brain_results)}),
-                input_data=json.dumps({"query": request.message}), output_data=search_content,
+                                     "has_results": bool(brain_results),
+                                     "args": {"query": request.message}}),
+                output_data=search_content,
                 sender_id=agent["id"], receiver_id=agent["id"],
             )
             await event_callback({"type": "tool_result", "level": "agent", "tool": "memory_search",
@@ -2697,6 +2701,17 @@ async def chat_send(request: ChatRequest, fastapi_request: Request):
                 target_label=target_label,
                 payload={"run_in_session": request.session_id,
                          "execution_mode": getattr(request, "execution_mode", "ask") or "ask",
+                         # The user turn is already saved in the shared transcript;
+                         # the target rebuilds conversation history from it and must
+                         # EXCLUDE this id so the loop (which appends the prompt as the
+                         # live user_message) doesn't replay the same turn twice.
+                         "user_interaction_id": prep["user_interaction_id"],
+                         # Attachment ids so the target can re-resolve pasted images/
+                         # files from the shared DB and feed them to an engine (e.g.
+                         # claude_code) that reads them off disk. Server/DB-stored
+                         # attachments resolve on the target; browser-only ones can't
+                         # be fetched cross-device (the engine flags them unreadable).
+                         "attachment_ids": list(getattr(request, "attachment_ids", None) or []),
                          "source": "chat"},
             )
             logger.info("Chat turn handed to device %s (job %s, session %s)",
@@ -2901,8 +2916,7 @@ async def _save_chat_to_memory(
             parent_id=parent_interaction_id,
             tool_name="memory_save",
             channel="web_portal",
-            metadata=json.dumps({"brain": True, "slug": slug}),
-            input_data=json.dumps(save_args),
+            metadata=json.dumps({"brain": True, "slug": slug, "args": save_args}),
             output_data=save_content,
             sender_id=agent_id,
             receiver_id=agent_id,
@@ -3048,9 +3062,9 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
                 tool_name="route_attachment",
                 channel="web_portal",
                 metadata=json.dumps({"attachment": names, "decision": "unreadable",
-                                     "reason": reason, "error": True}),
-                input_data=json.dumps({"attachment": names, "decision": "unreadable",
-                                       "reason": reason}),
+                                     "reason": reason, "error": True,
+                                     "args": {"attachment": names, "decision": "unreadable",
+                                              "reason": reason}}),
                 output_data=guidance or "",
                 sender_id=agent_id or None,
                 receiver_id=agent_id or None,
@@ -3144,8 +3158,8 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
                     "cached": was_cached,
                     "error": not bool(desc),
                     "duration_ms": _img_ms,
+                    "args": tool_args,
                 }),
-                input_data=json.dumps(tool_args),
                 output_data=desc or "",
                 sender_id=agent_id or None,
                 receiver_id=agent_id or None,
@@ -3264,8 +3278,7 @@ async def _maybe_emit_app_control(db, request, user_interaction_id, desc_out,
             tool_name="app_control",
             channel=channel,
             metadata=json.dumps({"app_control": True, "region": fields["region"],
-                                 "page": fields["page"], "error": False}),
-            input_data=json.dumps(fields),
+                                 "page": fields["page"], "error": False, "args": fields}),
             output_data=summary,
             sender_id=agent_id or None,
             receiver_id=agent_id or None,

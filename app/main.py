@@ -59,6 +59,77 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
             response.headers["Expires"] = "0"
         return response
 
+
+import gzip as _gzip
+
+# The first load ships ~2.5 MB of JavaScript + ~0.8 MB of CSS as raw, UNCOMPRESSED
+# bytes (the UI is many small ES modules + per-page stylesheets, served straight
+# off disk by the /ui StaticFiles mount). Over anything slower than localhost —
+# the tunnel, mobile — that uncompressed payload is the dominant hard-refresh cost.
+#
+# This middleware gzips those responses. It is deliberately SCOPED to static UI
+# text assets (paths under /ui/ ending .js/.css/.json/.svg/.map/.html) so it can
+# NEVER touch a streaming or dynamic endpoint: chat/agent WebSockets, SSE, NDJSON
+# progress streams (commit/deploy), file downloads, or API JSON all pass straight
+# through untouched. Those static files are small, so buffering one to compress it
+# is safe; non-eligible requests are a zero-overhead pass-through. Only 200s with
+# no existing Content-Encoding are compressed (a 206 range / 304 replays as-is).
+_GZIP_EXT = (".js", ".css", ".json", ".svg", ".map", ".html")
+_GZIP_MIN_SIZE = 600  # below this, the gzip header overhead isn't worth it
+
+
+class StaticGzipMiddleware:
+    """Pure-ASGI gzip for static /ui text assets only (see note above)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        eligible = path.startswith("/ui/") and path.lower().endswith(_GZIP_EXT)
+        if eligible:
+            accepts_gzip = False
+            for k, v in scope.get("headers", []):
+                if k == b"accept-encoding" and b"gzip" in v.lower():
+                    accepts_gzip = True
+                    break
+            eligible = accepts_gzip
+        if not eligible:
+            return await self.app(scope, receive, send)
+
+        state = {"start": None, "chunks": [], "compress": False}
+
+        async def _send(message):
+            mtype = message["type"]
+            if mtype == "http.response.start":
+                # Hold the start line until the (small) body is fully buffered so we
+                # can rewrite Content-Length/-Encoding in one shot.
+                state["start"] = message
+                has_enc = any(k.lower() == b"content-encoding" for k, _ in message.get("headers", []))
+                state["compress"] = (message["status"] == 200 and not has_enc)
+                return
+            if mtype != "http.response.body":
+                return await send(message)
+            state["chunks"].append(message.get("body", b""))
+            if message.get("more_body"):
+                return  # keep buffering — a static file may arrive in chunks
+            raw = b"".join(state["chunks"])
+            start = state["start"]
+            if state["compress"] and len(raw) >= _GZIP_MIN_SIZE:
+                raw = _gzip.compress(raw)
+                headers = [(k, v) for (k, v) in start["headers"]
+                           if k.lower() not in (b"content-length", b"content-encoding")]
+                headers.append((b"content-encoding", b"gzip"))
+                headers.append((b"content-length", str(len(raw)).encode("latin-1")))
+                headers.append((b"vary", b"Accept-Encoding"))
+                start = {**start, "headers": headers}
+            await send(start)
+            await send({"type": "http.response.body", "body": raw, "more_body": False})
+
+        await self.app(scope, receive, _send)
+
 from app.api.chat import router as chat_router
 from app.api.terminal import router as terminal_router
 from app.api.agent import router as agent_router
@@ -88,6 +159,10 @@ try:
     from app.api.deploy import router as deploy_router
 except ImportError:
     deploy_router = None
+try:
+    from app.api.dns import router as dns_router
+except ImportError:
+    dns_router = None
 try:
     from app.admin.tunnel_link import router as admin_tunnel_link_router
 except ImportError:
@@ -298,6 +373,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(NoCacheMiddleware)
+# Gzip static /ui text assets (JS/CSS/HTML/JSON/SVG) — the big uncompressed
+# first-load payload. Scoped to static files only, so no streaming/API endpoint
+# is affected. See StaticGzipMiddleware above.
+app.add_middleware(StaticGzipMiddleware)
 
 # Decode the request's JWT once and stash the VERIFIED caller id in a
 # contextvar, so token-less admin chokepoints (app.auth.identity.resolve_admin_uid)
@@ -454,6 +533,11 @@ if admin_remote_access_router is not None:
 # Register Deploy (App Settings → Deploy: live one-click cloud deploy)
 if deploy_router is not None:
     app.include_router(deploy_router)
+
+# Register Domains (Data Settings → Domains: point a domain at a server via the
+# admin's DNS provider — Cloudflare/Namecheap/… drop-ins under app/dns/providers/)
+if dns_router is not None:
+    app.include_router(dns_router)
 
 # Register Tunnel Link (App Settings → Tunnel; talks to the hosted relay)
 if admin_tunnel_link_router is not None:
@@ -1074,6 +1158,41 @@ async def termux_installer():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.get("/health/ready", include_in_schema=False)
+async def health_ready():
+    """Shallow READINESS probe — deliberately deeper than the liveness ``/health``
+    above, which returns 200 as long as the process is up and the event loop turns.
+
+    A server can pass liveness while being unable to do real work: its database
+    connection has wedged (remote Postgres dropped, pool exhausted, a sync
+    round-trip stuck on the loop — see the chat hot-path latency notes). To the
+    Server-Manager that server looks healthy forever and is never recovered. This
+    endpoint does ONE cheap, indexed single-row read against whatever backend is
+    live, bounded by a short timeout and run OFF the event loop, and returns **503**
+    when it can't complete. The watchdog polls this and, on a *sustained* failure,
+    restarts the wedged server. Based purely on the live round-trip: a degraded
+    fallback to the local copy still reads fine → ready (a restart wouldn't fix a
+    remote outage anyway, so we must not restart-loop on it)."""
+    import asyncio
+    from fastapi.responses import JSONResponse
+
+    def _ping() -> None:
+        # Cheapest cross-backend round-trip that still proves the live connection
+        # answers. Runs in a worker thread (the DB backends are sync under async).
+        from app.db import get_db
+        get_db().get_raw_client().table("sessions").select("id").limit(1).execute()
+
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_ping), timeout=2.5)
+    except Exception as e:  # timeout, connection error, driver error → not ready
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "check": "db",
+                     "reason": f"{type(e).__name__}: {e}"[:200]},
+        )
+    return {"status": "ready"}
 
 
 @app.get("/robots.txt", include_in_schema=False)

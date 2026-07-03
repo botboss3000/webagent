@@ -4,22 +4,29 @@ Bootstrap bundle — one encrypted "setup code" that provisions a fresh install.
 WHAT THIS IS (in plain terms)
 -----------------------------
 An admin can package the pieces that make THIS install what it is — its database
-connection, its secrets-vault choice, its LLM provider + API key + preset model
-roster, and its admin login — into a single portable **code**. That code is
-carried to a freshly-cloned install (pasted on the setup page, pasted later in
-Data Settings, or dropped next to the clone as ``bootstrap.json``) where it is
+connection, its secrets-vault choice, and its LLM provider + API key + preset
+model roster — into a single portable **code**. That code is carried to a
+freshly-cloned install (pasted on the setup page, pasted later in Data
+Settings, or dropped next to the clone as ``bootstrap.json``) where it is
 decoded and applied, so the new box comes up already configured.
 
-THE ADMIN PASSWORD IS BOTH THE LOCK AND A PAYLOAD
--------------------------------------------------
-The code is encrypted with a key derived from the source install's **admin
-password** (PBKDF2-HMAC-SHA256 → Fernet). Nothing readable leaves the machine
-without it. To decode it on the other side you must type that same password —
-which then also becomes the new install's admin password (it rides in the
-``admin`` section). So a single act (typing the admin password) both unlocks the
-bundle and sets the login, and the more sensitive keys (LLM / DB / vault) sit
-behind that password. If the source install has no admin password, there is no
-key to encrypt with and sharing is refused with a clear message.
+TWO CODE FORMATS
+----------------
+The Data Settings Export/Import UI uses **keyless** ``WABOOT2`` codes
+(``encrypt_code_open`` / ``decrypt_code_open``): the encryption key travels
+with the code itself, so there's no password to type. This isn't a weaker
+lock — the export/import endpoints already require an authenticated admin, so
+a second shared secret was pure friction, not real security. These codes never
+carry the admin login (a real password can't be recovered from its stored
+hash without asking the admin to type it, and this path no longer does).
+
+The legacy **password-locked** ``WABOOT1`` format (``encrypt_code`` /
+``decrypt_code``, PBKDF2-HMAC-SHA256 → Fernet) still exists for the
+unauthenticated, fresh-install boot path: a hand-authored ``bootstrap.json``
+next to the clone, decoded with the ``BOOTSTRAP_ADMIN_PASSWORD`` env var (see
+``apply_boot_file``). That path has no logged-in admin to gate on yet, so the
+password still does double duty there — it unlocks the bundle AND, if an
+``admin`` section is present, becomes the new install's admin login.
 
 DELIBERATELY NOT A PLUGIN
 -------------------------
@@ -49,7 +56,9 @@ logger = logging.getLogger(__name__)
 
 # ── Bundle constants ────────────────────────────────────────────────────────
 
-CODE_PREFIX = "WABOOT1"          # version-stamped so the format can evolve
+CODE_PREFIX = "WABOOT1"          # legacy password-locked codes (bootstrap.json + BOOTSTRAP_ADMIN_PASSWORD boot path only)
+CODE_PREFIX_OPEN = "WABOOT2"     # keyless codes — used by the Data Settings Export/Import UI (no password needed;
+                                 # those endpoints are already admin-only, so there's no separate lock to add)
 BUNDLE_VERSION = 1
 _KDF_ITERATIONS = 200_000
 _SALT_BYTES = 16
@@ -126,19 +135,44 @@ def decrypt_code(code: str, password: str) -> str:
     return raw.decode("utf-8")
 
 
-# ── Admin-password verification ─────────────────────────────────────────────
+def encrypt_code_open(plaintext: str) -> str:
+    """Encrypt ``plaintext`` with a random key that travels WITH the code — no
+    password needed to decode. Used by the Data Settings Export/Import UI: those
+    endpoints already require an admin bearer token, so a second shared secret
+    doesn't add security, only friction. Format:
+    ``WABOOT2.<b64url(key)>.<fernet-token>``.
+    """
+    from cryptography.fernet import Fernet
 
-def verify_admin_password(password: str) -> bool:
-    """True when ``password`` matches the current admin account's password."""
+    key = Fernet.generate_key()
+    token = Fernet(key).encrypt(plaintext.encode("utf-8"))
+    key_b64 = key.decode("ascii").rstrip("=")
+    return f"{CODE_PREFIX_OPEN}.{key_b64}.{token.decode('ascii')}"
+
+
+def decrypt_code_open(code: str) -> str:
+    """Reverse :func:`encrypt_code_open`. Raises :class:`BundleError` on a
+    malformed or tampered code."""
+    from cryptography.fernet import Fernet, InvalidToken
+
+    s = (code or "").strip()
+    parts = s.split(".")
+    if len(parts) != 3 or parts[0] != CODE_PREFIX_OPEN:
+        raise BundleError("This doesn't look like a WebAgent setup code.")
     try:
-        from app.auth import users
-    except Exception:
-        return False
-    admin = users.get_user_by_id(ADMIN_USER_ID)
-    if admin is None:
-        return False
-    return users.authenticate(admin.username, password or "") is not None
+        pad = "=" * (-len(parts[1]) % 4)
+        key = (parts[1] + pad).encode("ascii")
+        token = parts[2].encode("ascii")
+    except Exception as e:
+        raise BundleError("The setup code is corrupted.") from e
+    try:
+        raw = Fernet(key).decrypt(token)
+    except (InvalidToken, Exception) as e:
+        raise BundleError("The setup code is corrupted or was tampered with.") from e
+    return raw.decode("utf-8")
 
+
+# ── Admin-password check (still used by _section_present / the boot-file path) ──
 
 def has_admin_password() -> bool:
     """True when an admin account exists at all (i.e. a password is set)."""
@@ -218,14 +252,17 @@ async def _gather_vault() -> Optional[dict]:
     return {"mode": mode, "config": st.get("config") or {}}
 
 
-async def gather_bundle(sections: List[str], admin_password_plain: str) -> dict:
-    """Assemble the requested sections into a bundle dict (pre-encryption)."""
+async def gather_bundle(sections: List[str]) -> dict:
+    """Assemble the requested sections into a bundle dict (pre-encryption).
+
+    Admin login is never gathered here — the real password can't be recovered
+    from its stored hash, and the Export/Import UI no longer asks the admin to
+    type it. (The ``admin`` section is still supported on the *apply* side, for
+    a hand-authored ``bootstrap.json`` used to provision a fresh headless
+    install — see ``apply_boot_file``.)
+    """
     out: Dict[str, Any] = {}
     wanted = set(sections or [])
-    if SECTION_ADMIN in wanted:
-        a = await _gather_admin(admin_password_plain)
-        if a:
-            out[SECTION_ADMIN] = a
     if SECTION_LLM in wanted:
         l = await _gather_llm()
         if l:
@@ -241,28 +278,26 @@ async def gather_bundle(sections: List[str], admin_password_plain: str) -> dict:
     return {"v": BUNDLE_VERSION, "sections": out}
 
 
-async def export_code(sections: List[str], admin_password: str) -> str:
-    """Verify the admin password, gather the chosen sections, and return an
-    encrypted code. Raises :class:`BundleError` if there's no admin password to
-    lock it with, or the supplied password is wrong."""
-    if not has_admin_password():
-        raise BundleError(
-            "Set an admin password on this install before sharing its setup — "
-            "the password is what encrypts the code."
-        )
-    if not verify_admin_password(admin_password):
-        raise BundleError("That admin password is incorrect.")
-    bundle = await gather_bundle(sections, admin_password)
+async def export_code(sections: List[str]) -> str:
+    """Gather the chosen sections and return a portable code. No password is
+    required — the export endpoint is already admin-only."""
+    bundle = await gather_bundle(sections)
     if not bundle.get("sections"):
         raise BundleError("Nothing to share — none of the selected sections had any data.")
-    return encrypt_code(json.dumps(bundle, separators=(",", ":")), admin_password)
+    return encrypt_code_open(json.dumps(bundle, separators=(",", ":")))
 
 
 # ── Decode + preview ────────────────────────────────────────────────────────
 
-def decode_bundle(code: str, password: str) -> dict:
-    """Decrypt + parse a code into its bundle dict. Raises BundleError."""
-    raw = decrypt_code(code, password)
+def decode_bundle(code: str, password: str = "") -> dict:
+    """Decrypt + parse a code into its bundle dict. Raises BundleError.
+
+    Keyless ``WABOOT2`` codes (from the Export/Import UI) need no password —
+    the key travels with the code. Legacy password-locked ``WABOOT1`` codes
+    (from ``BOOTSTRAP_ADMIN_PASSWORD``-driven boot-file provisioning) still do.
+    """
+    s = (code or "").strip()
+    raw = decrypt_code_open(s) if s.startswith(CODE_PREFIX_OPEN + ".") else decrypt_code(s, password)
     try:
         obj = json.loads(raw)
     except Exception as e:
@@ -290,7 +325,7 @@ def _summarize_section(name: str, data: dict) -> str:
     return name
 
 
-async def preview(code: str, password: str) -> dict:
+async def preview(code: str, password: str = "") -> dict:
     """Decode a code and report, per section, what it carries and whether this
     install already has that thing configured (so the UI can offer fill/overwrite/
     skip). Never applies anything."""

@@ -78,6 +78,12 @@ class UpdateAgentRequest(BaseModel):
     # | 'auto'. Stored in metadata['default_execution_mode']; the chat pill seeds a
     # fresh session from it (ui/chat-side-panel/js/chat-ui.js). Blank ⇒ 'ask'.
     default_execution_mode: Optional[str] = None
+    # Default Remote Control target device for NEW sessions with this agent — the
+    # instance-id of a device in the shared fleet (stored in
+    # metadata['default_target_device']). Blank ⇒ run on "this device" (local).
+    # A fresh session pre-selects it in the chat Remote Control pill, falling back
+    # to local when that device is offline (ui/chat-side-panel/js/chat-ui.js).
+    default_target_device: Optional[str] = None
     # Per-agent LLM override (stored in metadata['llm_config'])
     llm_config: Optional[Dict[str, Any]] = None
     # Per-agent chat UI copy override — partial dict of _CHAT_UI_KEYS, merged
@@ -272,6 +278,10 @@ def _safe_agent(agent: dict) -> dict:
         else:
             _dem = ""
     result["default_execution_mode"] = _dem
+    # Default Remote Control target device (instance-id) for NEW sessions. Edited on
+    # the Config tab and read by ui/chat-side-panel/js/chat-ui.js to pre-select the
+    # chat's target-device pill. Empty ⇒ run locally ("this device").
+    result["default_target_device"] = (meta.get("default_target_device") or "") if isinstance(meta, dict) else ""
     # Derive a single ``system`` flag the agents page uses to keep utility agents
     # (Suggested Replies / user-impersonator, source-controller, Agent Manager,
     # etc.) off the user's list by default, behind a "Show system agents" toggle.
@@ -567,6 +577,7 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
     claude_code_in = payload.pop("claude_code", None)
     terminal_chat_in = payload.pop("terminal_chat", None)
     exec_mode_in = payload.pop("default_execution_mode", None)
+    target_device_in = payload.pop("default_target_device", None)
     # Normalize the default chat mode (accept legacy read/write aliases) and reject
     # anything else so the metadata only ever holds 'ask' | 'plan' | 'auto'.
     if exec_mode_in is not None:
@@ -583,7 +594,8 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
     # metadata so they don't clobber each other or the rest of the blob.
     if (llm_config_in is not None or chat_ui_in is not None or claude_code_in is not None
             or terminal_chat_in is not None
-            or icon_in is not None or exec_mode_in is not None):
+            or icon_in is not None or exec_mode_in is not None
+            or target_device_in is not None):
         current = await db.get_agent_by_id(agent_id)
         meta = {}
         if current:
@@ -617,6 +629,11 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
             meta["icon"] = icon_in.strip() or ""
         if exec_mode_in is not None:
             meta["default_execution_mode"] = exec_mode_in
+        if target_device_in is not None:
+            # Instance-id of the default Remote Control device; blank clears it
+            # (run locally). Stored raw — the chat pill resolves the label + online
+            # state from the live device list.
+            meta["default_target_device"] = str(target_device_in).strip()
         updates["metadata"] = meta
 
     updated = await db.update_agent_fields(

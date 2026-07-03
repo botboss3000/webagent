@@ -2,9 +2,11 @@
 
 /**
  * Data Settings tab — data-oriented app configuration. Groups: DEPLOYMENT (moved
- * here out of App Settings), APP ACCESS (access mode + social sign-in), and
- * DATABASE (the storage/secrets/encryption rows moved here out of the Data
- * Management page). More data-related settings groups can be added over time.
+ * here out of App Settings), APP ACCESS (access mode + social sign-in), DATABASE
+ * (the storage/secrets/encryption rows moved here out of the Data Management
+ * page), and REMOTE ACCESS (the Wi-Fi / tunnel card, moved here out of App
+ * Settings — sits directly below DATABASE). More data-related settings groups
+ * can be added over time.
  *
  * Mirrors the other App Config section modules (Data Management, App Settings): a
  * section partial (data-settings.html) fills the #ac-section-slot-data-settings
@@ -24,6 +26,7 @@ import { initStickyNav } from '../sticky-nav.js';
 import { createPageAssistant } from '../page-assistant.js';
 import { spawnWebagentPageChat } from '../../../chat-widget/js/chat-widget.js';
 import { initDeploy } from './deploy.js';
+import { initDns } from './dns.js';
 import { initAppAccess } from './app-access.js';
 import { initSocialAuth } from './social-auth.js';
 import { initDangerZone } from './danger-zone.js';
@@ -38,7 +41,7 @@ import { initMediaCacheSettings } from './media-cache-settings.js';
 // assistant.js) runs in COMPOSER mode here too, owning this page's static
 // #ac-ds-pa-* pill's send / Enter / voice / file-uploads. The prompt it hands
 // WebAgent changes with the section the mouse is over (the data-pa-area groups
-// in data-settings.html: deployment · app_access · database); on send it opens a
+// in data-settings.html: deployment · app_access · database · remote_access); on send it opens a
 // floating WebAgent (the manager) chat via spawnWebagentPageChat. The whole
 // assistant is steered toward helping the admin get people SIGNED IN to this
 // instance. Text catalog (placeholders + idea hints + prompts) lives in
@@ -109,6 +112,13 @@ export function init() {
   // NB: ac-deploy-target-row is NOT wired here — its in-header dropdown drives the
   // row's expand/collapse (deploy.js _syncTargetPanel), not a header click.
   initDeploy();
+  // Domains card — connect a domain you own to a server you deployed. Sibling of
+  // Deployment: picks a DNS provider (Cloudflare/Namecheap/… drop-ins), connects,
+  // lists your domains, and points one at a server's IP (streamed) then verifies
+  // it resolves. Owns its own /admin/dns/* fetch; sets window.__refreshDns (called
+  // on section-show in nav.js). The main row's head-expand is wired below. See ./dns.js.
+  _wireBootRow('ac-dns-main-row');
+  initDns();
   // App Access card — the access-mode radios (moved out of the Users page). Owns
   // its own /admin/settings/app load + auto-save; sets window.__refreshAppAccess
   // (called on section-show in nav.js). See ./app-access.js.
@@ -121,6 +131,13 @@ export function init() {
   // here from Data Management. Their control drivers (storage.js, data-management.js)
   // bind by id and load on App-Config open (settings-view.js); we only wire the rows.
   _wireDatabaseRows();
+  // Remote Access card — moved here from App Settings, sits directly below the
+  // Database card. Its own `.ac-category-group` (#ac-ra-card), so it is NOT
+  // covered by _wireDatabaseRows (scoped to #ac-database-card); wire its two
+  // expandable rows here. The bodies' control ids are owned by remote-access.js,
+  // which loads + fetches on App-Config open via settings-view.js — unchanged.
+  _wireBootRow('ac-ra-row-sn');
+  _wireBootRow('ac-ra-row-net');
   // Memory Cache (RAM) row — On/Off + memory budget for the in-browser media
   // cache (media-cache.js). Owns its own /admin/settings/app load + auto-save and
   // live preview via WA_APPEARANCE. Row expand/collapse comes from _wireDatabaseRows

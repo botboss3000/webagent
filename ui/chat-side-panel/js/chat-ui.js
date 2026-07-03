@@ -278,6 +278,11 @@ export function initChat() {
   // choice is remembered per session, like the execution mode above.
   app.targetDevice = '';
   const targetBtn = document.getElementById('chat-target-btn');
+  // Friendly-name fallback: the server (and the picker) hand us a device's label
+  // when the executor is chosen/applied. Cache it so the pill can show the name
+  // even for a device that's offline or not yet in the picker's loaded list
+  // (DevicePicker.labelFor would otherwise fall back to the raw instance id).
+  const _targetLabelCache = {};
 
   function _renderTargetPill() {
     if (!targetBtn) return;
@@ -285,16 +290,64 @@ export function initChat() {
     const inst = app.targetDevice || '';
     if (inst) {
       targetBtn.classList.add('targeting');
-      const lbl = (window.DevicePicker && window.DevicePicker.labelFor)
+      let lbl = (window.DevicePicker && window.DevicePicker.labelFor)
         ? window.DevicePicker.labelFor(inst) : inst;
+      if ((!lbl || lbl === inst) && _targetLabelCache[inst]) lbl = _targetLabelCache[inst];
       if (labelEl) labelEl.textContent = lbl;
-      targetBtn.title = 'Running on ' + lbl + ' — click to change';
+      targetBtn.title = 'Remote Control: running on ' + lbl + ' — click to change';
     } else {
       targetBtn.classList.remove('targeting');
       if (labelEl) labelEl.textContent = '';
-      targetBtn.title = 'Run on… choose which device runs your next message';
+      targetBtn.title = 'Remote Control — choose which device runs your next message';
     }
   }
+
+  // The active agent's configured "Default device" (Config tab →
+  // metadata.default_target_device, served on the agent record as
+  // default_target_device). Returns the instance-id or '' (none configured).
+  function _agentDefaultDevice() {
+    try {
+      const id = app.currentAgentId;
+      if (!id) return '';
+      const list = window.__agentsSharedData && window.__agentsSharedData.agents;
+      if (Array.isArray(list)) {
+        const a = list.find(x => x && x.id === id);
+        const d = a && a.default_target_device;
+        if (d && typeof d === 'string') return d;
+      }
+    } catch (_) { /* non-fatal — no configured default */ }
+    return '';
+  }
+
+  // Apply the agent's configured default device for a session that has NO explicit
+  // per-session executor. Only takes effect if that device is currently ONLINE;
+  // when it's offline (or unknown) the chat stays on "this device". Async — needs
+  // the live fleet list to check reachability. Deliberately does NOT persist (no
+  // localStorage / session-metadata write): it's a soft default re-evaluated on
+  // every open, so a device coming back online is auto-picked next time and the
+  // user's own pick (which does persist) always wins. Guards on the session id +
+  // an unset target both before and after the await so it can't clobber a choice
+  // made while the fleet list was loading.
+  async function _applyAgentDefaultTarget(sid) {
+    const want = _agentDefaultDevice();
+    if (!want) return;
+    if (app.currentSessionId !== sid || app.targetDevice) return;
+    try {
+      const devices = (window.DevicePicker && window.DevicePicker.load)
+        ? await window.DevicePicker.load() : [];
+      if (app.currentSessionId !== sid || app.targetDevice) return;
+      const dev = Array.isArray(devices) ? devices.find(d => d && d.instance_id === want) : null;
+      if (dev && dev.online && !dev.is_self) {
+        app.targetDevice = dev.instance_id;
+        _targetLabelCache[dev.instance_id] = dev.label || dev.instance_id;
+        _renderTargetPill();
+      }
+      // Offline / unknown → leave it on "this device" (the fall-back the user chose).
+    } catch (_) { /* best-effort — stay local */ }
+  }
+  // Exposed so session-load.js can apply the agent default when a fetched session
+  // has no stored Remote Control executor.
+  app.applyAgentDefaultTarget = _applyAgentDefaultTarget;
 
   function _applyTargetDevice() {
     const sid = app.currentSessionId;
@@ -306,6 +359,10 @@ export function initChat() {
       } catch (_) { /* best-effort */ }
     }
     _renderTargetPill();
+    // No explicit per-session choice → fall back to the agent's configured default
+    // device (applied only when it's online; otherwise the pill stays on "this
+    // device"). Non-persisting, so it re-evaluates each open.
+    if (!app.targetDevice) _applyAgentDefaultTarget(sid);
   }
 
   if (targetBtn) {
@@ -318,18 +375,16 @@ export function initChat() {
       e.preventDefault();
       if (!window.DevicePicker || !window.DevicePicker.open) return;
       window.DevicePicker.open(targetBtn, {
-        title: 'Run this chat on',
+        title: 'Remote Control — run this chat on',
         currentInstance: app.targetDevice || '',
         onSelect: (sel) => {
-          app.targetDevice = sel.is_self ? '' : (sel.instance_id || '');
-          const sid = app.currentSessionId;
-          if (sid) {
-            try {
-              if (app.targetDevice) localStorage.setItem('chat_target_device_' + sid, app.targetDevice);
-              else localStorage.removeItem('chat_target_device_' + sid);
-            } catch (_) { /* best-effort */ }
-          }
-          _renderTargetPill();
+          const inst = sel.is_self ? '' : (sel.instance_id || '');
+          const label = sel.is_self ? '' : (sel.label || '');
+          app.setTargetDevice(inst, label);
+          // Persist on the SESSION (not just this browser) so any device that
+          // opens this session routes to the same executor. Best-effort — the
+          // local pill already reflects the choice.
+          _persistTargetDeviceToSession(app.currentSessionId, inst, label);
         },
       });
     });
@@ -338,6 +393,39 @@ export function initChat() {
   // Export reload so session switches re-read the per-session target (mirrors
   // app.reloadExecutionMode).
   app.reloadTargetDevice = _applyTargetDevice;
+
+  // Set the Remote Control executor for the CURRENT session locally: update the
+  // pill + the fast localStorage seed. Mirrors app.setExecutionMode. The server
+  // (session metadata) is the cross-device source of truth — session-load.js
+  // applies data.remote_executor through here on open, and the picker's onSelect
+  // both calls this AND persists to the session. '' = run locally.
+  app.setTargetDevice = function (instance, label) {
+    const inst = instance || '';
+    app.targetDevice = inst;
+    if (inst && label) _targetLabelCache[inst] = label;
+    const sid = app.currentSessionId;
+    if (sid) {
+      try {
+        if (inst) localStorage.setItem('chat_target_device_' + sid, inst);
+        else localStorage.removeItem('chat_target_device_' + sid);
+      } catch (_) { /* best-effort */ }
+    }
+    _renderTargetPill();
+  };
+
+  // Persist the chosen executor onto the session row (metadata) so it follows the
+  // session across devices, not just this browser. Fire-and-forget.
+  function _persistTargetDeviceToSession(sid, inst, label) {
+    if (!sid) return;
+    fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '?db=local.db'), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        remote_executor_instance: inst || '',
+        remote_executor_label: label || '',
+      }),
+    }).catch(() => { /* pill already reflects the choice; sync is best-effort */ });
+  }
 
   // ── Agent-driven mode switch (set_execution_mode tool → WS echo) ──
   // The backend broadcasts an `execution_mode` event when the agent flips the

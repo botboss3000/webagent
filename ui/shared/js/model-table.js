@@ -893,16 +893,26 @@ export function mountModelTable(host, opts = {}) {
     if (!apiKey) return setModelStatus('Please enter an API Key');
     if (!S.selectedModel) return setModelStatus('Please select a model');
     const capText = S.selCaps.text !== false, capImage = !!S.selCaps.image, capImageOut = !!S.selCaps.imageOut;
-    await adapter.saveSingle({ provider, base_url: baseUrl, api_key: apiKey, model: S.selectedModel, providers: S.providerConfigs, text_capable: capText, image_capable: capImage, image_out_capable: capImageOut });
+    // saveSingle persists the ONE top-level default-brain slot (provider/url/key/
+    // model) — it must only be touched when this model is actually meant to become
+    // that default. That's true for the very first model ever added (the agent
+    // needs SOMETHING to run on) or for any later text-capable add (mirroring the
+    // radio-clearing gate below). A later image-in/out-only or non-text worker add
+    // must NOT overwrite the default — previously it did unconditionally, which is
+    // why adding a second (purpose-specific) model silently clobbered the first.
+    const becomesDefault = capText || !S.providers.length;
+    if (becomesDefault) {
+      await adapter.saveSingle({ provider, base_url: baseUrl, api_key: apiKey, model: S.selectedModel, providers: S.providerConfigs, text_capable: capText, image_capable: capImage, image_out_capable: capImageOut });
+    }
     const dupe = S.providers.find(p => p.provider === provider && p.model === S.selectedModel && p.base_url === baseUrl);
     if (!dupe) {
       const newP = { provider, base_url: baseUrl, api_key: apiKey, model: S.selectedModel, enabled: true, text_capable: capText, image_capable: capImage, use_for_image: capImage, image_out_capable: capImageOut, use_for_image_out: capImageOut, high_effort_capable: false, _uid: ++S.uid };
       S.providers.push(newP);
       await adapter.saveRoster({ providers: S.providers });
       // Append ONLY the new row — no full rebuild/reload, so the list (and scroll)
-      // stays put. The just-added model became the default via saveSingle above, so
-      // its radio is checked; clear the others to keep the single-selection invariant.
-      // First model ever? There's no header yet — do a one-time full render.
+      // stays put. If this add became the default (becomesDefault above), its
+      // radio is checked below; clear the others to keep the single-selection
+      // invariant. First model ever? There's no header yet — do a one-time full render.
       const cfgAnchor = table.querySelector('.ac-model-cfg-row');
       if (table.querySelector('.ac-saved-head')) {
         // Only a text/brain model can become the default; clear the other radios

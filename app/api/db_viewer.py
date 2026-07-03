@@ -572,10 +572,17 @@ async def restore_session(
 
 
 class SessionPatchRequest(BaseModel):
-    """Body for PATCH /sessions/{id} — rename, pin, and/or hide."""
+    """Body for PATCH /sessions/{id} — rename, pin, hide, or set the Remote
+    Control executor."""
     title: Optional[str] = None
     pinned: Optional[bool] = None
     hidden: Optional[bool] = None
+    # Remote Control (session roaming): which device runs this session's turns.
+    # Persisted in session metadata so EVERY device that opens the session routes
+    # its sends to the same executor (not a per-browser local choice). An empty
+    # string clears it = run locally. ``None`` (field omitted) leaves it unchanged.
+    remote_executor_instance: Optional[str] = None
+    remote_executor_label: Optional[str] = None
 
 
 class SessionReorderRequest(BaseModel):
@@ -591,9 +598,11 @@ async def patch_session(
     request: Request,
     db: str = Query("local.db", description="Database filename"),
 ):
-    """Update a session's title, pinned, and/or hidden state."""
-    if req.title is None and req.pinned is None and req.hidden is None:
-        raise HTTPException(status_code=400, detail="Provide title, pinned, and/or hidden")
+    """Update a session's title, pinned, hidden, and/or Remote Control executor."""
+    if (req.title is None and req.pinned is None and req.hidden is None
+            and req.remote_executor_instance is None):
+        raise HTTPException(status_code=400,
+                            detail="Provide title, pinned, hidden, and/or remote_executor_instance")
 
     db_path = _get_db_path(db)
     try:
@@ -607,12 +616,12 @@ async def patch_session(
 
         sets = []
         params: list[object] = []
-        if req.title is not None:
-            sets.append("title = ?")
-            params.append(req.title)
-            # A manual rename wins over the auto-namer: lock it so the background
-            # Session Namer ability (plugins/abilities/Core/session_titler/)
-            # stops overwriting it.
+        # Any field that lives in the metadata JSON (auto_title_locked, the Remote
+        # Control executor) merges into a SINGLE read-modify-write so two of them in
+        # one request can't each emit their own `metadata = ?` and clobber the other.
+        _meta_dirty = False
+        _meta: dict = {}
+        if req.title is not None or req.remote_executor_instance is not None:
             try:
                 cur.execute("SELECT metadata FROM sessions WHERE id = ?", (session_id,))
                 _mrow = cur.fetchone()
@@ -621,7 +630,28 @@ async def patch_session(
                     _meta = {}
             except Exception:
                 _meta = {}
+        if req.title is not None:
+            sets.append("title = ?")
+            params.append(req.title)
+            # A manual rename wins over the auto-namer: lock it so the background
+            # Session Namer ability (plugins/abilities/Core/session_titler/)
+            # stops overwriting it.
             _meta["auto_title_locked"] = True
+            _meta_dirty = True
+        if req.remote_executor_instance is not None:
+            # Remote Control: stamp (or clear) which device runs this session. An
+            # empty instance means "run locally" — drop the key so a cleared
+            # session is indistinguishable from one that never had an executor.
+            inst = (req.remote_executor_instance or "").strip()
+            if inst:
+                _meta["remote_executor"] = {
+                    "instance_id": inst,
+                    "label": (req.remote_executor_label or "").strip() or inst,
+                }
+            else:
+                _meta.pop("remote_executor", None)
+            _meta_dirty = True
+        if _meta_dirty:
             sets.append("metadata = ?")
             params.append(json.dumps(_meta))
         if req.pinned is not None:
@@ -1280,21 +1310,21 @@ def _strip_folded_attachments(content: str) -> str:
     return content[:idx].rstrip() if idx != -1 else content
 
 
-def _user_row_attachments(input_raw, att_by_id):
+def _user_row_attachments(meta_raw, att_by_id):
     """Resolve the attachment records referenced by a stored user turn.
 
-    The message -> attachment link lives in the user row's input JSON
+    The message -> attachment link lives in the user row's metadata JSON
     (`attachment_ids`); the bytes live in the session's attachments table. Returns
     frontend-shaped records (matching renderAttachmentElement / _resolveAttachmentUrl)
     so a reloaded user bubble can re-render its pasted images/files — the live
     bubble renders them from the send flow, but a cold reload has only the row.
-    Reads the raw input column directly so it still works in light mode (where the
-    serialized message's `input` is blanked).
+    Reads metadata directly so it still works in light mode (metadata is never
+    slimmed).
     """
-    if not input_raw or not att_by_id:
+    if not meta_raw or not att_by_id:
         return []
     try:
-        ids = (json.loads(input_raw) or {}).get("attachment_ids") or []
+        ids = (json.loads(meta_raw) or {}).get("attachment_ids") or []
     except Exception:
         return []
     return [att_by_id[i] for i in ids if i in att_by_id]
@@ -1308,7 +1338,7 @@ def get_session_messages(
     before_id: Optional[str] = Query(None, description="If set, return the batch of messages immediately older than this message (backward pagination)"),
     after_id: Optional[str] = Query(None, description="If set, return the batch of messages immediately newer than this message (forward pagination)"),
     around_id: Optional[str] = Query(None, description="If set, return a window centred on this message: up to `limit` older rows plus up to `limit` newer rows. Used to reopen a session on the user's saved scroll position without downloading the whole tail."),
-    light: int = Query(0, description="When 1, blank the heavy tool-call bodies (per-turn LLM input, tool results, tool-call arguments) while keeping the wire shape. Tool-call headings (names + durations) still render; the full bodies load on demand via /session-turn-detail when the user expands a panel."),
+    light: int = Query(0, description="When 1, blank the heavy tool-call bodies (tool results, tool-call arguments) while keeping the wire shape. Tool-call headings (names + durations) still render; the full bodies load on demand via /session-turn-detail when the user expands a panel."),
     db: str = Query("local.db", description="Database filename"),
 ):
     """Return a window of a session's messages, oldest-first.
@@ -1357,6 +1387,10 @@ def get_session_messages(
         # applies this on load so the pill matches what the server will actually
         # do, even on a cold device. None when never set (UI defaults to Ask).
         _session_exec_mode = None
+        # Remote Control executor for this session (instance_id + label) — the chat
+        # pill applies it on load so EVERY device that opens the session shows and
+        # routes to the same executor. None when the session runs locally.
+        _session_remote_exec = None
         try:
             cur.execute(
                 "SELECT user_id, participants, metadata FROM sessions WHERE id = ?",
@@ -1372,6 +1406,12 @@ def get_session_messages(
                         _mv = _smeta.get("execution_mode")
                         if isinstance(_mv, str) and _mv:
                             _session_exec_mode = _mv
+                        _re = _smeta.get("remote_executor")
+                        if isinstance(_re, dict) and _re.get("instance_id"):
+                            _session_remote_exec = {
+                                "instance_id": _re.get("instance_id"),
+                                "label": _re.get("label") or _re.get("instance_id"),
+                            }
                 except (json.JSONDecodeError, TypeError):
                     pass
                 try:
@@ -1453,12 +1493,11 @@ def get_session_messages(
         fetch_n = lim + 1
 
         # Light mode blanks the heavy bodies while keeping the wire shape, so the
-        # renderer is unchanged but the transcript opens on a tiny payload. The
-        # per-turn LLM input (the whole message history — the dominant cost) is
-        # dropped; tool result bodies are blanked; the assistant's output is
-        # slimmed to just the tool-call NAMES (so the "N tool calls" heading and
-        # each row's name + duration still render). Full bodies load on demand
-        # when the user expands a panel — see /session-turn-detail.
+        # renderer is unchanged but the transcript opens on a tiny payload. Tool
+        # result bodies are blanked and the assistant's output is slimmed to just
+        # the tool-call NAMES (so the "N tool calls" heading and each row's name +
+        # duration still render). Full bodies load on demand when the user expands
+        # a panel — see /session-turn-detail.
         def _is_brain_row(meta_str):
             # Loop-node memory rows (the pre-turn search / post-turn save) carry
             # metadata.brain=True. That distinguishes them from a model-issued
@@ -1481,7 +1520,6 @@ def get_session_messages(
             # expanded.
             if m.get("_synth_tool"):
                 return m
-            m["input"] = None
             role = m.get("role")
             if role == "assistant":
                 out = m.get("output")
@@ -1516,14 +1554,13 @@ def get_session_messages(
                 "output": row[8],
                 "metadata": row[9],
                 "parent_id": row[10],
-                "input": row[11],
             }
             # Hide any image-description block folded into the user turn — it is
             # shown as a process_image tool row, not inside the user's bubble.
             if m.get("role") == "user":
                 m["content"] = _strip_folded_attachments(m.get("content"))
                 # Re-attach the turn's pasted images/files so they survive reload.
-                _atts = _user_row_attachments(row[11], att_by_id)
+                _atts = _user_row_attachments(row[9], att_by_id)
                 if _atts:
                     m["attachments"] = _atts
             elif m.get("role") == "tool" and m.get("tool_name") in ("process_image", "route_attachment", "app_control") \
@@ -1555,7 +1592,7 @@ def get_session_messages(
             _status_col = "status" if _has_status else "'complete' AS status"
             _base = (
                 f'SELECT id, session_id, role, content, tool_name, created_at, {_status_col}, '
-                f'session_seq, output, metadata, parent_id, input FROM interactions'
+                f'session_seq, output, metadata, parent_id FROM interactions'
             )
 
             if around_ts is not None:
@@ -1713,6 +1750,7 @@ def get_session_messages(
             "max_session_seq": max_session_seq,
             "context_tokens": context_tokens,
             "execution_mode": _session_exec_mode,
+            "remote_executor": _session_remote_exec,
         }
     except HTTPException:
         raise
@@ -1732,7 +1770,7 @@ async def get_session_turn_detail(
     The chat transcript opens in ``light`` mode (tool-call bodies blanked — see
     /session-messages). When the user expands a tool-call panel, the frontend
     calls this for just the assistant ids in that panel and gets back, per id,
-    the full LLM ``input``/``output``/``metadata`` plus the child tool rows'
+    the full LLM ``output``/``metadata`` plus the child tool rows'
     ``content``/``output``/``metadata`` to populate the body. This keeps the
     rarely-viewed heavy payload off the initial load entirely.
     """
@@ -1776,11 +1814,11 @@ async def get_session_turn_detail(
 
         id_list = [s for s in (ids or "").split(",") if s]
         details = {}
-        needs_merge = []  # ids whose fat input/output may be split-local (hybrid)
+        needs_merge = []  # ids whose fat output may be split-local (hybrid)
         for aid in id_list:
             try:
                 cur.execute(
-                    "SELECT input, output, metadata FROM interactions WHERE id = ? AND session_id = ?",
+                    "SELECT output, metadata FROM interactions WHERE id = ? AND session_id = ?",
                     (aid, session_id),
                 )
                 r = cur.fetchone()
@@ -1805,15 +1843,15 @@ async def get_session_turn_detail(
                             needs_merge.append(tr[0])
                 except Exception:
                     pass
-                details[aid] = {"input": r[0], "output": r[1], "metadata": r[2], "tools": tools}
-                if r[0] is None or r[1] is None:
+                details[aid] = {"output": r[0], "metadata": r[1], "tools": tools}
+                if r[0] is None:
                     needs_merge.append(aid)
             except Exception:
                 continue
 
-        # Hybrid split: the fat input/output for newer rows live in the LOCAL
+        # Hybrid split: the fat output for newer rows lives in the LOCAL
         # side-table, not on the remote skeleton this viewer just queried. Restore
-        # them so the admin sees the full payloads. Strict no-op when hybrid is off.
+        # it so the admin sees the full payloads. Strict no-op when hybrid is off.
         try:
             from app.db.hybrid import hybrid_enabled, load_local_payloads_sync
             if needs_merge and hybrid_enabled():
@@ -1822,8 +1860,6 @@ async def get_session_turn_detail(
                     for _aid, _d in details.items():
                         p = payloads.get(_aid)
                         if p:
-                            if _d.get("input") is None and p.get("input") is not None:
-                                _d["input"] = p["input"]
                             if _d.get("output") is None and p.get("output") is not None:
                                 _d["output"] = p["output"]
                         for _t in _d.get("tools", []):
@@ -1884,14 +1920,14 @@ def get_session_tail(
             _has_status = False
         _status_col = "status" if _has_status else "'complete' AS status"
         _cols = (f'id, session_id, role, content, tool_name, created_at, {_status_col}, '
-                 f'session_seq, output, metadata, parent_id, input')
+                 f'session_seq, output, metadata, parent_id')
 
         def _row_to_msg(row):
             return {
                 "id": row[0], "session_id": row[1], "role": row[2], "content": row[3],
                 "tool_name": row[4], "created_at": row[5], "status": row[6],
                 "session_seq": row[7], "output": row[8], "metadata": row[9],
-                "parent_id": row[10], "input": row[11],
+                "parent_id": row[10],
             }
 
         messages = []
@@ -2489,7 +2525,7 @@ async def stream_interactions(
         limit_clause = "" if since else "LIMIT 200"
 
         cur.execute(
-            f'SELECT id, session_id, role, content, tool_name, metadata, input, output, created_at '
+            f'SELECT id, session_id, role, content, tool_name, metadata, output, created_at '
             f'FROM interactions WHERE {where_clause} ORDER BY created_at ASC {limit_clause}',
             params
         )

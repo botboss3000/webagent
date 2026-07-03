@@ -237,6 +237,10 @@ body.light-mode .sessions-back-btn { color: var(--fg-2); }
 
 #sessions-table tbody tr {
   transition: background 0.1s;
+  cursor: pointer;   /* whole row is clickable → switches chat to this session */
+}
+/* Bin view: rows aren't loadable, so don't advertise them as clickable. */
+#sessions-table.bin-view tbody tr {
   cursor: default;
 }
 #sessions-table tbody tr:hover {
@@ -392,6 +396,39 @@ body.light-mode .sessions-back-btn { color: var(--fg-2); }
 .sessions-empty-hint {
   font-size: 11px;
   color: var(--fg-4);
+}
+
+/* ── Per-row loading (after a row is clicked, while its chat loads) ──
+   The clicked row gets a moving shimmer + a spinner in its caret cell so it's
+   obvious which session is opening. Cleared once loadSessionChat resolves. */
+@keyframes sessions-row-shimmer {
+  0%   { background-position: -450px 0; }
+  100% { background-position:  450px 0; }
+}
+#sessions-table tbody tr.sessions-row-loading {
+  cursor: progress;
+  pointer-events: none;
+  background: linear-gradient(90deg,
+    var(--accent-soft) 0%,
+    rgba(var(--brand-rgb), 0.20) 50%,
+    var(--accent-soft) 100%);
+  background-size: 450px 100%;
+  animation: sessions-row-shimmer 1.1s linear infinite;
+}
+#sessions-table tbody tr.sessions-row-loading td {
+  color: var(--fg-4);
+}
+/* Spinner replaces whatever normally sits in the caret cell (chevron / nothing). */
+.sessions-row-loading td.col-caret > :not(.sess-row-spinner) { display: none; }
+.sess-row-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(var(--brand-rgb), 0.25);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: lucide-spin 0.7s linear infinite;
+  vertical-align: middle;
 }
 
 /* ── Loading state ── */

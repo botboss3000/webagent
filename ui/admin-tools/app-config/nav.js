@@ -57,6 +57,7 @@ export function _showSection(section) {
   // Deploy card + App Access card live on the Data Settings tab — refresh both
   // when that tab shows (each re-reads its own persisted state).
   if (section === 'data-settings' && typeof window.__refreshDeploy === 'function') window.__refreshDeploy();
+  if (section === 'data-settings' && typeof window.__refreshDns === 'function') window.__refreshDns();
   if (section === 'data-settings' && typeof window.__refreshAppAccess === 'function') window.__refreshAppAccess();
   if (section === 'data-settings' && typeof window.__refreshSocialAuth === 'function') window.__refreshSocialAuth();
   if (section === 'data-settings' && typeof window.__refreshDangerZone === 'function') window.__refreshDangerZone();

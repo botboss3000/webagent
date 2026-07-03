@@ -14,6 +14,8 @@
   "notify_on_server_down": true,
   "notify_on_recovery": true,
   "digest_minutes": 60,
+  "readiness_recovery": true,
+  "readiness_fail_ticks": 3,
   "remediation_mode": "safe_auto",
   "remediation_confidence_threshold": 0.6,
   "program_trigger_after": 3

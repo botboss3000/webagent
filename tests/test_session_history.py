@@ -25,7 +25,6 @@ def _ir(
         tool_name=tool_name,
         tool_call_id=tool_call_id,
         metadata=None,
-        input=None,
         created_at=datetime.now(timezone.utc),
     )
 

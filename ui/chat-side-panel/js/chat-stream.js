@@ -218,7 +218,7 @@ function _appendToolRows(panel, calls) {
 
 // ── Lazy tool-call bodies ───────────────────────────────────────────────────
 // A transcript loaded from history arrives "light": each call has its heading
-// (tool name + duration) but NOT its body (arguments, result, LLM input/output)
+// (tool name + duration) but NOT its body (arguments, result, LLM output)
 // — those were never downloaded. The first time a panel is opened, fetch the
 // full bodies for just that panel's turns and rebuild its rows in place.
 
@@ -265,7 +265,6 @@ async function _ensureToolDetail(container) {
       if (d.output) { try { outObj = JSON.parse(d.output); } catch (_) {} }
       const tc = outObj && Array.isArray(outObj.tool_calls) ? outObj.tool_calls[c._detailIdx] : null;
       if (tc && tc.function) { try { c.args = JSON.parse(tc.function.arguments); } catch (_) { c.args = {}; } }
-      c._savedInput = d.input || null;
       c._savedOutput = d.output || null;
       // Tool result — match by name (first), mirroring the history build.
       const tools = Array.isArray(d.tools) ? d.tools : [];

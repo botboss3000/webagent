@@ -78,23 +78,11 @@ async def _run_simulated_conversation(
     - transcript: list of entries for planner/closer viewing
       (roles: sim_user | worker | tool_call | tool_result)
     - db_rows: list of dicts matching the real session interaction format,
-      with full input/output/metadata fields identical to normal local.db sessions.
+      with full output/metadata fields identical to normal local.db sessions.
       Caller should INSERT these directly into the temp DB interactions table.
     """
     import time as _time
     import uuid as _uuid_sim
-
-    def _msgs_json(msgs):
-        """Serialise the message list for storage in the input column."""
-        safe = []
-        for m in msgs:
-            entry = {"role": m.get("role"), "content": m.get("content")}
-            if m.get("tool_calls"):
-                entry["tool_calls"] = m["tool_calls"]
-            if m.get("tool_call_id"):
-                entry["tool_call_id"] = m["tool_call_id"]
-            safe.append(entry)
-        return json.dumps(safe, ensure_ascii=False)
 
     worker_messages = [{"role": "system", "content": worker_system_prompt}]
     sim_messages = [{"role": "system", "content": sim_user_prompt}]
@@ -121,7 +109,6 @@ async def _run_simulated_conversation(
     db_rows.append({
         "id": _open_id, "role": "user", "content": sim_text,
         "tool_name": None, "tool_call_id": None, "parent_id": None,
-        "input": json.dumps({"user_id": test_uid, "session_id": test_session_id, "message": sim_text}),
         "output": "",
         "metadata": json.dumps({"sim_role": "sim_user"}),
     })
@@ -133,7 +120,6 @@ async def _run_simulated_conversation(
 
         try:
             # ── Worker responds ───────────────────────────────────────────────
-            _input_snap = _msgs_json(worker_messages)
             _w_start = _time.time()
             w_resp = await llm_client.chat.completions.create(
                 model=llm_model,
@@ -167,7 +153,6 @@ async def _run_simulated_conversation(
                 db_rows.append({
                     "id": _asst_tc_id, "role": "assistant", "content": _asst_tc_content,
                     "tool_name": None, "tool_call_id": None, "parent_id": parent_id,
-                    "input": _input_snap,
                     "output": json.dumps({"role": "assistant", "content": w_msg.content, "tool_calls": _tc_list}),
                     "metadata": json.dumps({"model": llm_model, "turn": turn_num,
                                             "duration_ms": _w_dur, "iteration": tool_iterations}),
@@ -206,7 +191,6 @@ async def _run_simulated_conversation(
                     db_rows.append({
                         "id": _tool_row_id, "role": "tool", "content": tc_result[:4000],
                         "tool_name": fn_name, "tool_call_id": tc.id, "parent_id": _asst_tc_id,
-                        "input": _msgs_json(worker_messages[:-1]),  # messages before tool result added
                         "output": json.dumps({"role": "tool", "content": tc_result,
                                               "tool_call_id": tc.id, "name": fn_name}),
                         "metadata": json.dumps({"success": _success, "duration_ms": _tool_dur,
@@ -215,7 +199,6 @@ async def _run_simulated_conversation(
                     parent_id = _tool_row_id
 
                 # Worker continues after seeing tool results
-                _input_snap = _msgs_json(worker_messages)
                 _w_start = _time.time()
                 w_resp2 = await llm_client.chat.completions.create(
                     model=llm_model,
@@ -244,7 +227,6 @@ async def _run_simulated_conversation(
         db_rows.append({
             "id": _final_id, "role": "assistant", "content": worker_text,
             "tool_name": None, "tool_call_id": None, "parent_id": parent_id,
-            "input": _msgs_json(worker_messages[:-1]),
             "output": json.dumps({"role": "assistant", "content": worker_text}),
             "metadata": json.dumps({"model": llm_model, "turn": turn_num, "duration_ms": _w_dur}),
         })
@@ -289,8 +271,7 @@ async def _run_simulated_conversation(
         db_rows.append({
             "id": _follow_id, "role": "user", "content": sim_text,
             "tool_name": None, "tool_call_id": None, "parent_id": parent_id,
-            "input": json.dumps({"user_id": test_uid, "session_id": test_session_id, "message": sim_text}),
-            "output": "",
+                "output": "",
             "metadata": json.dumps({"sim_role": "sim_user", "terminal": is_terminal}),
         })
         parent_id = _follow_id
@@ -575,22 +556,21 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
             elapsed = time.time() - start_time
 
             # 10. Store interactions in the temp DB using the full real-session format:
-            #     - user rows: input = request context JSON
-            #     - assistant rows: input = messages array, output = raw API response JSON
-            #     - tool rows: input = messages at call time, output = tool result JSON,
+            #     - assistant rows: output = raw API response JSON
+            #     - tool rows: output = tool result JSON,
             #                  metadata = {success, duration_ms, input_params}
             _ts_base = now  # reuse the existing ISO timestamp; rows share session_id so order is fine
             for row in sim_db_rows:
                 temp_conn.execute(
                     "INSERT INTO interactions "
                     "(id, session_id, parent_id, role, content, tool_name, tool_call_id, "
-                    "input, output, source, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sim_conversation', ?, ?)",
+                    "output, source, metadata, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sim_conversation', ?, ?)",
                     (
                         row["id"], test_session_id, row.get("parent_id"),
                         row["role"], row["content"][:4000],
                         row.get("tool_name"), row.get("tool_call_id"),
-                        row.get("input", ""), row.get("output", ""),
+                        row.get("output", ""),
                         row.get("metadata", "{}"),
                         _ts_base,
                     )

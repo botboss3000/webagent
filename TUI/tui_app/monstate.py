@@ -97,8 +97,11 @@ def update_monitor_config(**changes: Any) -> dict[str, Any]:
             if isinstance(val, list):
                 cfg[key] = [str(c) for c in val if str(c).strip()]
             continue
+        if key == "readiness_recovery":
+            cfg[key] = bool(val)
+            continue
         if key in ("interval_seconds", "error_rate_threshold", "max_restarts_per_hour",
-                   "restart_backoff_seconds", "digest_minutes"):
+                   "restart_backoff_seconds", "digest_minutes", "readiness_fail_ticks"):
             try:
                 cfg[key] = max(1, int(val))
             except (TypeError, ValueError):

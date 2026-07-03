@@ -343,7 +343,6 @@ CREATE TABLE IF NOT EXISTS interactions (
     tool_call_id TEXT,
     channel TEXT,
     metadata TEXT,
-    input TEXT,
     output TEXT,
     source TEXT,
     from_id TEXT,
@@ -3204,7 +3203,7 @@ class LocalBackend(StorageBackend):
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, from_id, to_id, source, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
+                "SELECT id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, output, from_id, to_id, source, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
                 (session_id,),
             ).fetchall()
             return [InteractionRecord(**dict(r)) for r in rows]
@@ -3248,7 +3247,6 @@ class LocalBackend(StorageBackend):
         tool_call_id: Optional[str] = None,
         channel: Optional[str] = None,
         metadata: Optional[str] = None,
-        input_data: Optional[str] = None,
         output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
         receiver_id: Optional[str] = None,
@@ -3267,8 +3265,8 @@ class LocalBackend(StorageBackend):
             try:
                 interaction_id = _uuid()
                 conn.execute(
-                    "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source, from_id, to_id, session_seq, turn_id, turn_seq, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input_data, output_data, source or 'user', sender_id, receiver_id, session_seq, turn_id, turn_seq, status),
+                    "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, output, source, from_id, to_id, session_seq, turn_id, turn_seq, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (interaction_id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, output_data, source or 'user', sender_id, receiver_id, session_seq, turn_id, turn_seq, status),
                 )
                 conn.commit()
                 logger.debug("Inserted interaction %s", interaction_id)
@@ -3283,7 +3281,7 @@ class LocalBackend(StorageBackend):
         """Bulk-insert interactions in one transaction.
 
         Each row dict may contain any of the columns: id, session_id, parent_id,
-        role, content, tool_name, tool_call_id, channel, metadata, input, output,
+        role, content, tool_name, tool_call_id, channel, metadata, output,
         source, from_id, to_id, session_seq, turn_id, turn_seq, created_at.
         Missing optional fields default to None / sane defaults.
         Caller is responsible for session ownership.
@@ -3310,7 +3308,6 @@ class LocalBackend(StorageBackend):
                         r.get("tool_call_id"),
                         r.get("channel"),
                         r.get("metadata"),
-                        r.get("input"),
                         r.get("output"),
                         r.get("source") or "user",
                         r.get("from_id"),
@@ -3322,8 +3319,8 @@ class LocalBackend(StorageBackend):
                     ))
                 # Use COALESCE to keep schema default when created_at is None.
                 conn.executemany(
-                    "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, input, output, source, from_id, to_id, session_seq, turn_id, turn_seq, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))",
+                    "INSERT INTO interactions (id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, output, source, from_id, to_id, session_seq, turn_id, turn_seq, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))",
                     values,
                 )
                 conn.commit()

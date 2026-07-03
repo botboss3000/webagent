@@ -14,7 +14,7 @@ transcript and the logs first.
 This is the ground truth for what happened in the session, turn by turn.
 
 - Filter `interactions` by `session_id`, order by `created_at`.
-- Useful columns: `role` (user / assistant / tool), `tool_name`, `content`, `input`, `output`,
+- Useful columns: `role` (user / assistant / tool), `tool_name`, `content`, `output`,
   `status`. Assistant rows carry the model's `tool_calls` in `output`; tool rows carry the tool's
   result (and `success: false` / blocked messages) in `content` / `output`.
 - This shows the **sequence**: what the user asked, what the model decided, which tools it called,

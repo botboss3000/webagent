@@ -105,7 +105,7 @@ function _buildToolResultsByParent(messages) {
 // Build the per-call objects for one assistant message's saved tool_calls.
 // `turnNum` > 0 makes each row show a "Turn N" badge when expanded.
 // `light`: the payload carries only tool-call NAMES (+ durations) — the heavy
-// bodies (arguments, results, LLM input/output) were never downloaded, so each
+// bodies (arguments, results, LLM output) were never downloaded, so each
 // call is stamped with `_needsDetail` + `_detailMsgId`/`_detailIdx` so the panel
 // can lazy-fetch them via /session-turn-detail the first time it's opened.
 function _buildCallsForMessage(msg, toolResultsByParent, turnNum, light) {
@@ -129,7 +129,6 @@ function _buildCallsForMessage(msg, toolResultsByParent, turnNum, light) {
       errorType: null,
       turn: turnNum || 0,
       open: false,
-      _savedInput: msg.input || null,
       _savedOutput: msg.output || null,
       _savedToolOutput: resultEntry ? resultEntry.output : null,
       _savedToolMetadata: resultEntry ? resultEntry.metadata : null,
@@ -190,13 +189,12 @@ function _isSynthToolRow(msg, idToRole) {
 }
 
 // Build one tool-call panel entry straight from a persisted synthetic tool row.
-// Its body ships even in light mode (see db_viewer _slim), so the panel shows
-// the saved args (image prompt / search query) + result with no lazy fetch.
+// The args (image prompt / search query) live in the row's metadata, which is
+// never slimmed, so the panel shows args + result on reload with no lazy fetch.
 function _buildSynthCall(msg) {
-  let args = {};
-  try { if (msg.input) args = JSON.parse(msg.input) || {}; } catch (_) {}
   let meta = {};
   try { if (msg.metadata) meta = JSON.parse(msg.metadata) || {}; } catch (_) {}
+  const args = (meta && meta.args) || {};
   return {
     tool: msg.tool_name,
     args: args,
@@ -206,7 +204,6 @@ function _buildSynthCall(msg) {
     errorType: null,
     turn: 0,
     open: false,
-    _savedInput: msg.input || null,
     _savedToolOutput: msg.output || null,
     _savedToolMetadata: msg.metadata || null,
     _detailMsgId: msg.id || null,
@@ -686,6 +683,28 @@ export async function loadSessionChat(sessionId) {
     // sets it before loadSessionChat), so the key is written for the right session.
     if (!data.restricted && data.execution_mode && typeof app.setExecutionMode === 'function') {
       try { app.setExecutionMode(data.execution_mode); } catch (_) { /* best-effort */ }
+    }
+
+    // Remote Control executor is likewise a SESSION property (metadata), so the
+    // server is the source of truth across devices — apply it on load, overriding
+    // the localStorage seed from reloadTargetDevice() above. Null ⇒ run locally.
+    if (!data.restricted && typeof app.setTargetDevice === 'function') {
+      const _re = data.remote_executor;
+      try {
+        if (_re && _re.instance_id) {
+          // Session has an explicitly stored executor → it wins (across devices).
+          app.setTargetDevice(_re.instance_id, _re.label || '');
+        } else {
+          // No stored executor (never set, or cleared to local) → fall back to the
+          // agent's configured default device (applied only if it's online; else
+          // stays local). Clear any stale seed first, then let the agent default —
+          // which is non-persisting and online-checked — decide.
+          app.setTargetDevice('', '');
+          if (typeof app.applyAgentDefaultTarget === 'function') {
+            app.applyAgentDefaultTarget(sessionId);
+          }
+        }
+      } catch (_) { /* best-effort */ }
     }
 
     if (sessionId !== app._lastLoadedSessionId) {

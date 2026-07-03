@@ -232,8 +232,20 @@ def _pack_llm_secret(config: dict) -> str:
 
 def _unpack_llm_secret(secret_ref: str) -> dict:
     """Parse a packed bundle. A bare key string (legacy / env-seeded rows) is
-    treated as just the default key."""
+    treated as just the default key.
+
+    ``secret_ref`` should already be plaintext by the time it gets here (the
+    storage layer decrypts it — see EncryptedStorageBackend in app/db/interface.py).
+    If decryption failed there (e.g. no DEK available for this device/vault),
+    that layer now returns "" rather than the raw ciphertext, but treat a
+    still-encrypted-looking string as unavailable here too rather than smuggling
+    it into a config as if it were a real key.
+    """
     if not secret_ref:
+        return {}
+    from app.encryption.interface import is_ciphertext
+    if is_ciphertext(secret_ref):
+        logger.error("LLM secret_ref is still encrypted (decrypt must have failed) — ignoring it")
         return {}
     s = secret_ref.strip()
     if s.startswith("{"):

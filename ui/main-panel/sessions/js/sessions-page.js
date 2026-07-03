@@ -145,6 +145,11 @@ function _renderTable(sessions) {
   const loading = _qs('sessions-loading');
   if (!tbody) return;
 
+  // Rows are only clickable/loadable in the active view; flag the table so the
+  // CSS can drop the pointer cursor in the recycling bin.
+  const table = _qs('sessions-table');
+  if (table) table.classList.toggle('bin-view', _binView);
+
   if (loading) loading.style.display = 'none';
 
   if (!sessions || sessions.length === 0) {
@@ -285,10 +290,29 @@ async function _loadAndRender() {
 
 // ── Row click: switch to that session ──────────────────────────────
 
+// Toggle the "opening…" state on a clicked row: a shimmer over the row plus a
+// spinner in its caret cell, so it's obvious which session is loading.
+function _setRowLoading(tr, on) {
+  if (!tr) return;
+  tr.classList.toggle('sessions-row-loading', on);
+  const caret = tr.querySelector('td.col-caret');
+  if (!caret) return;
+  if (on) {
+    if (!caret.querySelector('.sess-row-spinner')) {
+      const sp = document.createElement('span');
+      sp.className = 'sess-row-spinner';
+      caret.appendChild(sp);
+    }
+  } else {
+    caret.querySelector('.sess-row-spinner')?.remove();
+  }
+}
+
 // Make `sessionId` the active chat session (switching agent if needed) and
 // optionally jump to a main-panel tab afterwards ('genui' = Gen UI,
 // 'browser' = Browser page). Shared by row clicks and the Links badges.
-function _switchToSession(sessionId, agentId, { tab = null, title = null } = {}) {
+// `row` (when given) shows a per-row loading animation until the chat resolves.
+async function _switchToSession(sessionId, agentId, { tab = null, title = null, row = null } = {}) {
   if (_binView || !sessionId) return;  // recycled sessions aren't loadable
   if (agentId && app.currentAgentId !== agentId) {
     app.currentAgentId = agentId;
@@ -296,7 +320,12 @@ function _switchToSession(sessionId, agentId, { tab = null, title = null } = {})
   app.currentSessionId = sessionId;
   app.sessionTitle = title || sessionId.slice(0, 12);
 
-  loadSessionChat(sessionId);
+  _setRowLoading(row, true);
+  try {
+    await loadSessionChat(sessionId);
+  } finally {
+    _setRowLoading(row, false);
+  }
   populateSessionSelect(app.currentUserId);
 
   if (tab && typeof window.__setMainTab === 'function') {
@@ -309,6 +338,7 @@ function _onRowClick(e) {
   if (!tr || !tr.dataset.sessionId) return;
   _switchToSession(tr.dataset.sessionId, tr.dataset.agentId, {
     title: tr.querySelector('.col-title')?.textContent,
+    row: tr,
   });
 }
 

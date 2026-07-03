@@ -3,7 +3,7 @@
 // Reconnect coordinator — re-establishes the agent WebSocket and all terminals
 // after the tab wakes / network returns, and renders restart status. initReconnect().
 
-import { reconnectAllTerminals } from './files.js';
+import { reconnectAllTerminals } from '../../admin-tools/terminal/terminal-view.js';
 import { connectAgent } from './agentWs.js';
 import { apiPath } from './config.js';
 import { setChatHeaderReachable } from './user-panel.js';

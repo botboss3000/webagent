@@ -133,6 +133,11 @@
     };
   }
 </script>
+<!-- Warm the TLS/DNS connection to the script CDNs the head loads from, so those
+     render-affecting fetches don't each pay a fresh handshake. (The Google Fonts
+     origins are already preconnected near the top of <head>.) -->
+<link rel="preconnect" href="https://unpkg.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <!-- Lucide icons (UMD — same version as UI kit) -->
 <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
 <!-- Markdown rendering + syntax highlighting + HTML sanitiser. Used by the
@@ -174,6 +179,12 @@
 <link rel="stylesheet" href="./ui/chat-widget/chat-widget.css">
 <!-- Design system tokens + visual overrides (loaded last to take effect) -->
 <link rel="stylesheet" href="./ui/shared/css/design-system.css">
+<!-- Warm the boot module chain in parallel with HTML parsing + the partial
+     fetches. main.js is imported LATE in <body> (only after the partial loader
+     resolves), so without this the browser wouldn't start downloading it until
+     then; preloading lets its download overlap everything before it. -->
+<link rel="modulepreload" href="./ui/shared/js/partial-loader.js">
+<link rel="modulepreload" href="./ui/shared/js/main.js">
 <!-- Global border + font knobs from app-settings.json (via /api/v1/auth/ui-config).
      Render-blocking right after the design tokens so its CSS-variable overrides
      win the cascade and are in place before the app mounts. -->
@@ -384,25 +395,36 @@
       }
     } catch (_) {}
 
-    // Check if app needs setup (no admin account exists yet).
-    // Redirect to setup page before anything else loads.
+    // Check if app needs first-run setup (no admin account exists yet), and if
+    // so redirect to the setup wizard.
+    //
+    // This USED to be a SYNCHRONOUS XMLHttpRequest — it hard-blocked first paint
+    // on a network round-trip on EVERY load, leaving a blank white screen until
+    // the server answered (fast on localhost, seconds on a slow/mobile link). An
+    // app that is set up STAYS set up, so we now cache that fact: once we've seen
+    // initialized=true we skip the check entirely (zero network on the critical
+    // path). Only a browser that has never confirmed setup does an ASYNC probe,
+    // which redirects a genuinely-unconfigured install to /setup without ever
+    // freezing the paint.
     (function checkSetup() {
-      var xhr = new XMLHttpRequest();
-      xhr.open('GET', '/api/v1/auth/setup-status', false);  // sync
       try {
-        xhr.send();
-        if (xhr.status === 200) {
-          var data = JSON.parse(xhr.responseText);
-          if (!data.initialized) {
+        if (localStorage.getItem('wa_setup_initialized') === '1') return;  // already known set up
+      } catch (_) {}
+      fetch('/api/v1/auth/setup-status', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data) return;
+          if (data.initialized) {
+            try { localStorage.setItem('wa_setup_initialized', '1'); } catch (_) {}
+          } else {
             window.location.href = '/setup.html';
-            return;
           }
-        }
-      } catch (_) {
-        // Server unreachable — the partial loader will also fail and show a
-        // visible notice. Log a compact hint here since this runs first.
-        console.warn('[WebAgent] Backend unreachable during setup check — server may be down.');
-      }
+        })
+        .catch(function () {
+          // Server unreachable — the partial loader also fails and shows a visible
+          // notice; log a compact hint here since this runs first.
+          console.warn('[WebAgent] Backend unreachable during setup check — server may be down.');
+        });
     })();
   })();
 </script>

@@ -12,11 +12,15 @@ read-only. Nothing here mutates anything.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -105,33 +109,94 @@ def probe_machine() -> MachineProbe:
     )
 
 
+def _probe_health_sync(port: int, timeout: float) -> str:
+    """Blocking ``/health`` probe on the **standard library** (urllib + socket),
+    returning 'running' | 'stopped' | 'unknown'.
+
+    Deliberately stdlib-only: this machine's Python 3.14 has a broken httpx/SSL
+    environment where every httpx call fails even against a healthy server, which
+    used to force the watchdog to shell out to a subprocess on every tick. The
+    stdlib path has no such problem, so one robust probe now serves the status
+    dot, the launch gate, and the watchdog alike.
+
+    Classified by **TCP reachability first**, which is the reliable signal on
+    localhost:
+
+    * We open a raw TCP connection. A listening socket accepts the handshake in
+      the kernel *instantly* — even if the app is pegged at 100% CPU — so a
+      successful connect always means a server is really there. A DOWN server
+      fails to connect: it either refuses (RST) or, on hosts whose firewall
+      silently DROPS packets to dead ports (this machine does), the connect times
+      out. Both mean "no usable server", so **any connect failure → 'stopped'**,
+      which is what lets the watchdog actually recover a down server here (the old
+      httpx probe mis-read a dropped-packet timeout as indeterminate and never
+      recovered).
+    * Once connected, we ask ``/health``. A clean reply classifies it: <500 →
+      'running', >=500 → 'unknown'. If the port accepts but the HTTP read then
+      fails/hangs, the server is listening but not answering properly → 'unknown'
+      (present-but-wedged; we don't kill on that signal alone)."""
+    host = "127.0.0.1"
+    connect_timeout = min(timeout, 2.0)
+    try:                                     # 1) is anything actually listening?
+        socket.create_connection((host, port), timeout=connect_timeout).close()
+    except OSError:
+        return "stopped"                     # refused OR dropped/timeout → no server
+    try:                                     # 2) it accepts — does /health answer?
+        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=timeout) as resp:
+            return "running" if resp.status < 500 else "unknown"
+    except urllib.error.HTTPError as e:      # answered with an HTTP error code
+        return "running" if e.code < 500 else "unknown"
+    except (urllib.error.URLError, OSError):
+        return "unknown"                     # listening but not answering cleanly → wedged
+
+
+def _probe_ready_sync(port: int, timeout: float) -> str:
+    """Blocking **readiness** probe on ``/health/ready`` (stdlib), returning
+    'ready' | 'not_ready' | 'unknown'.
+
+    Readiness is deeper than the liveness ``/health`` that :func:`server_health`
+    checks: the app answers ``/health/ready`` with 503 when it's up but can't do
+    real work (a wedged DB round-trip). We map only a clean 200 to 'ready' and only
+    an explicit 503 to 'not_ready'; anything else — nothing listening, the endpoint
+    missing on an OLDER server build (404), or an ambiguous error — is 'unknown', so
+    the caller takes NO readiness action on a signal it can't trust. Liveness owns
+    the "is it even up?" question; this only refines a server already known live."""
+    host = "127.0.0.1"
+    connect_timeout = min(timeout, 2.0)
+    try:                                     # nothing listening → liveness' job, not ours
+        socket.create_connection((host, port), timeout=connect_timeout).close()
+    except OSError:
+        return "unknown"
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/health/ready", timeout=timeout) as resp:
+            return "ready" if resp.status < 400 else "unknown"
+    except urllib.error.HTTPError as e:      # 503 = explicitly not ready; 404 (old build) = unknown
+        return "not_ready" if e.code == 503 else "unknown"
+    except (urllib.error.URLError, OSError):
+        return "unknown"
+
+
+async def server_ready(port: int = 8080, timeout: float = 2.5) -> str:
+    """Probe the local server's READINESS (``/health/ready``). Returns
+    'ready' | 'not_ready' | 'unknown'. Async wrapper over the blocking stdlib probe
+    so the Textual loop never stalls. Only meaningful for a server already known
+    live via :func:`server_health` — 'unknown' means "don't act on this"."""
+    return await asyncio.to_thread(_probe_ready_sync, port, timeout)
+
+
 async def server_health(port: int = 8080, timeout: float = 2.5) -> str:
     """Probe the local WebAgent server. Returns 'running' | 'stopped' | 'unknown'.
 
-    Uses the app's ``/health`` endpoint. A refused connection means stopped; any
-    HTTP reply means something is listening (treated as running).
+    Async wrapper that runs the blocking stdlib probe in a worker thread so the
+    Textual event loop never stalls on a slow reply.
 
     The timeout is deliberately generous. A *refused* connection (nothing on the
-    port) raises ``ConnectError`` immediately, so 'stopped' is always detected
-    fast regardless of this value — the timeout only bounds how long we wait on a
-    server that DID accept the connection. The first probe of a freshly started
-    WebAgent (cold httpx + a warming app) can take ~1s+, so a tight timeout (we
-    used 0.6s) misreported a healthy server as 'unknown', leaving the status dot
-    stuck on "checking" and the auto-start health gate falsely failing. 2.5s
-    absorbs a cold/loaded probe while staying under the 3s status-poll cadence;
-    the launcher uses a comparable 5s tolerance."""
-    try:
-        import httpx
-    except ImportError:
-        return "unknown"
-    # Short connect (a down server fails fast via ConnectError anyway), generous
-    # read so a slow-but-healthy reply isn't misclassified as a timeout.
-    limits = httpx.Timeout(timeout, connect=min(timeout, 2.0))
-    try:
-        async with httpx.AsyncClient(timeout=limits) as client:
-            resp = await client.get(f"http://127.0.0.1:{port}/health")
-        return "running" if resp.status_code < 500 else "unknown"
-    except httpx.ConnectError:
-        return "stopped"
-    except httpx.HTTPError:
-        return "unknown"
+    port) fails immediately, so 'stopped' is always detected fast regardless of
+    this value — the timeout only bounds how long we wait on a server that DID
+    accept the connection. The first probe of a freshly started WebAgent (a
+    warming app) can take ~1s+, so a tight timeout (we used 0.6s) misreported a
+    healthy server as 'unknown', leaving the status dot stuck on "checking" and
+    the auto-start health gate falsely failing. 2.5s absorbs a cold/loaded probe
+    while staying under the 3s status-poll cadence; the launcher uses a
+    comparable 5s tolerance."""
+    return await asyncio.to_thread(_probe_health_sync, port, timeout)

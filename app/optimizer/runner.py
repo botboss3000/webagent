@@ -338,7 +338,7 @@ def _ensure_session(uid, sid, orig):
         _retry_db_write(_do)
 
 
-def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None, input_data=None, output_data=None, temp_db_path=None):
+def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None, output_data=None, temp_db_path=None):
     """Insert an interaction into the optimizer's temp DB (or local.db fallback)."""
     import json
     
@@ -347,9 +347,9 @@ def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None
             _now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             c = sqlite3.connect(temp_db_path)
             c.execute(
-                "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,to_id,input,output,created_at) "
-                "VALUES (?,?,?,?,?,'optimizer',?,?,?,?,?)",
-                (str(uuid.uuid4()), sid, role, content, source, from_id, to_id, input_data, output_data, _now),
+                "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,to_id,output,created_at) "
+                "VALUES (?,?,?,?,?,'optimizer',?,?,?,?)",
+                (str(uuid.uuid4()), sid, role, content, source, from_id, to_id, output_data, _now),
             )
             c.commit()
             c.close()
@@ -364,9 +364,9 @@ def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None
             _now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             c = raw()
             c.execute(
-                "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,to_id,input,output,created_at) "
-                "VALUES (?,?,?,?,?,'optimizer',?,?,?,?,?)",
-                (str(uuid.uuid4()), sid, role, content, source, from_id, to_id, input_data, output_data, _now),
+                "INSERT INTO interactions (id,session_id,role,content,source,channel,from_id,to_id,output,created_at) "
+                "VALUES (?,?,?,?,?,'optimizer',?,?,?,?)",
+                (str(uuid.uuid4()), sid, role, content, source, from_id, to_id, output_data, _now),
             )
             c.commit()
             c.close()

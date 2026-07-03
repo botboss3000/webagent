@@ -13,7 +13,7 @@
  * Bump CACHE on each release so the activate handler drops the prior cache.
  */
 
-const CACHE = "webagent-v178";
+const CACHE = "webagent-v186";
 const STATIC_PATTERN = /\.(css|js|json|svg|png|ico|woff2?)$/;
 const CDN_PATTERN = /^(https?:)?\/\/(fonts\.googleapis|cdn\.jsdelivr|unpkg)\./;
 const API_PATTERN = /^\/api\//;
@@ -49,6 +49,18 @@ const PRECACHE = [
   "/ui/shared/css/app-control-point.css",
   "/ui/shared/css/index.css",
   "/ui/shared/css/design-system.css",
+  // Core boot JS — the stable top of the module chain that gates first paint.
+  // Precaching these means a normal reload serves them instantly instead of
+  // re-fetching. Kept to the few files that rarely move; every OTHER module is
+  // runtime-cached on first use by staleWhileRevalidate below, so this list
+  // never needs to track the full (139-file) import graph. (A hard refresh
+  // bypasses the SW entirely — this helps ordinary reloads + repeat visits.)
+  "/ui/shared/js/appearance.js",
+  "/ui/shared/js/header-build.js",
+  "/ui/shared/js/partial-loader.js",
+  "/ui/shared/js/main.js",
+  "/ui/shared/js/db-select.js",
+  "/ui/shared/js/device-picker.js",
   "/ui/main-panel/agents/agent-loop/loop.css",
   "/ui/main-panel/agents/agent-loop/loop-visual.css",
   "/ui/main-panel/genui/genui.css",

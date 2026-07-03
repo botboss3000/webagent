@@ -88,7 +88,6 @@ class InteractionRecord(BaseModel):
     tool_call_id: Optional[str] = None    # for tool role
     channel: Optional[str] = None         # source: 'webagent_ui' | 'telegram' | 'web_portal' | 'api'
     metadata: Optional[str] = None        # JSON: model, turn, duration, tokens
-    input: Optional[str] = None           # JSON: the exact messages array sent to LLM
     output: Optional[str] = None          # JSON: the complete response/result for this interaction
     template_id: Optional[str] = None     # agent template id used for this interaction
     from_id: Optional[str] = None         # user id or agent id who sent it

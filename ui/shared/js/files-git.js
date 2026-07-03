@@ -184,12 +184,77 @@ function reapplyStickyState(body) {
   }
 }
 
+// ── Skeleton-first paint ────────────────────────────────────────────
+//
+// The panel used to blank to a single "Loading…" line until BOTH the git status
+// and the commit graph had returned — so on a slow / remote repo the user stared
+// at nothing and couldn't even press Commit & Push. Instead we paint the whole
+// panel STRUCTURE on the first frame — repo selector, commit box, and every action
+// button (live and clickable immediately) — with a shimmer over the two areas that
+// still have to load: the Changes list and the commit graph. renderGitPanel() then
+// swaps each shimmer for real data the moment its own fetch lands. The commit /
+// push / pull actions run entirely server-side (they never read _state.status), so
+// the buttons are safe to enable optimistically — pressing Commit & Push before the
+// Changes list has painted just runs the server flow, which cleanly reports
+// "Nothing to commit" when there was nothing to do.
+// REMOVE-WHEN: the source-control panel drops skeleton-first loading.
+function renderChangesSkeleton() {
+  const rows = ['62%', '48%', '70%'].map((w) => `
+      <div class="fg-file fg-skel-file">
+        <span class="fg-skel fg-skel-flag"></span>
+        <span class="fg-skel fg-skel-line" style="width:${w};"></span>
+      </div>`).join('');
+  return `
+    <details class="fg-section fg-changes" open>
+      <summary><span>Changes</span><span class="fg-skel fg-skel-count"></span></summary>
+      <div class="fg-file-list">${rows}</div>
+    </details>`;
+}
+
+function renderGraphSkeleton() {
+  const rows = ['72%', '54%', '80%', '46%', '66%', '58%'].map((w) => `
+      <div class="fg-graph-row fg-skel-graph-row">
+        <div class="fg-graph-row-head">
+          <div class="fg-graph-col" style="width:${GRAPH_LANE_W}px;">
+            <span class="fg-skel fg-skel-dot"></span>
+          </div>
+          <div class="fg-graph-meta">
+            <div class="fg-graph-msg-line"><span class="fg-skel fg-skel-line" style="width:${w};"></span></div>
+            <div class="fg-graph-sub"><span class="fg-skel fg-skel-line fg-skel-line-sm" style="width:34%;"></span></div>
+          </div>
+        </div>
+      </div>`).join('');
+  return `
+    <div class="fg-section fg-graph">
+      <div class="fg-section-title">Commit graph <span class="fg-graph-hint">(all branches)</span></div>
+      <div class="fg-graph-list" style="--lane-w:${GRAPH_LANE_W}px; --row-h:${GRAPH_ROW_H}px;">${rows}</div>
+    </div>`;
+}
+
+// Paint the full panel structure with shimmers over the not-yet-loaded data areas
+// and wire every button so the panel is usable from the first frame. Called on
+// open (before any fetch) and re-called whenever we still have no status to show.
+function renderGitSkeleton(rootEl) {
+  if (!rootEl) return;
+  const body = rootEl.querySelector('#fg-body');
+  if (!body) return;
+  body.innerHTML =
+    renderRepoSelector() +
+    renderChangesSkeleton() +
+    renderCommitSection({ file_count: 1, ahead: 0 }) +   // buttons live + enabled from frame 1
+    renderSyncSection({ has_remote: true }) +            // Pull / Push / Merge / Refresh clickable now
+    renderProductionSection({}) +                        // shows its own Loading card (or hides when not builtin)
+    renderGraphSkeleton();
+  wireEvents(rootEl, null, null);
+  if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
+}
+
 function renderGitPanel(rootEl) {
   if (!rootEl) return;
   const body = rootEl.querySelector('#fg-body');
   if (!body) return;
   if (_state.loading && !_state.status) {
-    body.innerHTML = '<div class="fg-loading">Loading…</div>';
+    renderGitSkeleton(rootEl);
     return;
   }
   // Status error AND no cached status = can't render anything useful. Still show
@@ -210,7 +275,7 @@ function renderGitPanel(rootEl) {
   const s = _state.status;
   const g = _state.graph;
   if (!s) {
-    body.innerHTML = '<div class="fg-loading">Loading…</div>';
+    renderGitSkeleton(rootEl);
     return;
   }
   body.innerHTML = renderRepoSelector() +
@@ -1776,11 +1841,11 @@ async function refreshGit(rootEl, { remote = false, localOnly = false } = {}) {
   _state.loading = true;
   _state.err = null;
   _state.graphErr = null;
-  // If we have no data yet, show the loading placeholder; otherwise keep the
-  // current panel painted and let the refresh repaint it in place.
+  // If we have no data yet, show the skeleton (structure + live buttons + shimmer);
+  // otherwise keep the current panel painted and let the refresh repaint it in place.
   const body = rootEl.querySelector('#fg-body');
   if (body && !_state.status) {
-    body.innerHTML = '<div class="fg-loading">Loading…</div>';
+    renderGitSkeleton(rootEl);
   }
 
   if (localOnly) {
@@ -1815,9 +1880,14 @@ export async function openGitPanel(rootEl) {
     _opened = true;
     initGitMainPills();
   }
-  // Load the repo list first so the selector strip shows the active repo on the
-  // very first paint (cheap; just reads the registry + the active repo's origin).
+  // Paint the full panel skeleton right now — repo selector, commit box and every
+  // action button appear (and work) on the first frame, with a shimmer over the
+  // Changes list + commit graph until their data lands. See renderGitSkeleton.
+  renderGitSkeleton(rootEl);
+  // Load the repo list (cheap; reads the registry + the active repo's origin) then
+  // repaint the selector with the real active repo — unless status already landed.
   await loadRepos();
+  if (!_state.status) renderGitSkeleton(rootEl);
   await refreshGit(rootEl);
   // Load the Production section's status once the dev panel has painted (this
   // repaints the body with the Production card filled in). Kept off the auto-poll

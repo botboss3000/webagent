@@ -18,6 +18,7 @@ PUBLIC_PATHS = {
     "/setup.html",
     "/ui/setup.html",
     "/health",
+    "/health/ready",
     "/favicon.ico",
     "/favicon.svg",
     "/api/v1/auth/login",

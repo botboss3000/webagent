@@ -52,15 +52,28 @@ class SyncedSpec:
 # addition is data, not new control flow.
 #
 # ``interactions`` is the transcript (Stage 2): written local-first + pushed as a
-# SKELETON — the fat ``input``/``output`` over the split gate are stripped to NULL
-# on the remote (full copy stays local). It is push-only: the remote has no
+# SKELETON — the fat ``input`` column over the split gate is stripped to NULL on
+# the remote (the full copy stays local). It is push-only: the remote has no
 # per-row ``updated_at`` to watermark on, and a second device gets the transcript
 # through the hybrid's warm-on-open mirror instead of the puller.
+#
+# REMOTE-CONTROL CONTINUITY: only ``input`` is fat-stripped, NOT ``output``. The
+# ``output`` column carries each assistant turn's tool_calls (see
+# app/agent/session_history.py `_extract_tool_calls_from_output`) — it is what
+# pairs an assistant's tool calls to their result rows when history is rebuilt on
+# ANOTHER device (Remote Control takeover / session roaming). Stripping it broke
+# takeover on tool-heavy turns: the remote skeleton kept the tool RESULT rows but
+# lost the assistant's tool_calls, so a second device rebuilt an invalid history
+# (a tool result with no preceding call) that the model API rejects. ``input`` is
+# ~99% of the transcript's byte weight and is never read on rebuild, so it stays
+# stripped; ``output`` (small) always rides along on the remote. Pushing ``input``
+# in full also stalls the event loop (megabyte upserts run synchronously on it)
+# and, when a row carries a stray NUL, wedges the queue in a permanent retry.
 from app.db.hybrid import _FAT_THRESHOLD_CHARS  # noqa: E402  (source of the gate)
 
 SYNCED_SPECS: Dict[str, SyncedSpec] = {
     "interactions": SyncedSpec(
-        "interactions", fat_cols=("input", "output"),
+        "interactions", fat_cols=("input",),
         strip_over=_FAT_THRESHOLD_CHARS, push_only=True),
     "sessions": SyncedSpec("sessions"),
     "session_summaries": SyncedSpec("session_summaries"),
@@ -85,6 +98,14 @@ class SyncEngine:
         self._specs = specs if specs is not None else SYNCED_SPECS
         self._outbox = Outbox(self._local)
         self._interval = interval_seconds
+        # Remote Control live-stream cadence: while rows are actively flowing (a
+        # live turn — most importantly one running on THIS device that a viewer on
+        # ANOTHER device has open and is polling), the pusher runs at this faster
+        # interval so the streaming assistant row reaches the shared DB in ~1s and
+        # the viewer's reconcile poll renders it near-live instead of in 5s steps.
+        # It relaxes back to _interval once the flow stops (see _run).
+        self._fast_interval = 1.0
+        self._active_grace = 3.0  # stay fast this long after the last non-empty push
         # When False the loop only PUSHES the local outbox to the remote and never
         # pulls remote→local. Stage 2 runs push-only; the puller is turned on in
         # Stage 4 after the "no authz/identity/billing read resolves from local"
@@ -134,14 +155,32 @@ class SyncEngine:
                 continue
             try:
                 rows = self._local_rows(table, spec.key, ids)
-                for row in rows:
-                    self._push_row(table, spec, row)
-                    pushed += 1
-                # Clear every seq for the ids we handled (present or already gone).
-                for rid in ids:
-                    cleared.extend(seqs_by_key.get((table, rid), []))
             except Exception as e:
-                logger.warning("sync: push of table %r failed (%s); leaving queued", table, e)
+                # Reading the local batch failed as a whole — transient; retry next tick.
+                logger.warning("sync: read of table %r failed (%s); leaving queued", table, e)
+                continue
+            # Push each row on its own so one unpushable row can't wedge the batch.
+            present = set()
+            for row in rows:
+                rid = str(row.get(spec.key))
+                present.add(rid)
+                try:
+                    # The remote upsert is a synchronous network round-trip; run it
+                    # on a worker thread so a slow remote can't freeze the main event
+                    # loop (which also serves every HTTP request + the LLM stream).
+                    await asyncio.to_thread(self._push_row, table, spec, row)
+                    pushed += 1
+                    cleared.extend(seqs_by_key.get((table, rid), []))
+                except Exception as e:
+                    # Leave this one row queued (a transient remote error will
+                    # succeed on a later tick); the rest of the batch still clears,
+                    # so a single stuck row no longer starves the whole queue.
+                    logger.warning("sync: push of %r row %r failed (%s); leaving row queued",
+                                   table, rid, e)
+            # Ids enqueued but already gone from local — clear their stale markers.
+            for rid in ids:
+                if rid not in present:
+                    cleared.extend(seqs_by_key.get((table, rid), []))
 
         await self._outbox.clear(cleared)
         return pushed
@@ -161,6 +200,14 @@ class SyncEngine:
             # so cross-device readers and JSON consumers still see it.
             if spec.strip_over <= 0 or len(str(val)) > spec.strip_over:
                 payload[col] = None
+        # PostgreSQL text columns reject NUL (0x00) bytes outright, so a single
+        # transcript row carrying a stray null (garbled tool output, a bad paste)
+        # would otherwise fail forever and wedge this table's push queue. Strip
+        # NUL from every text value — the readable content is preserved and the
+        # full copy still lives in the local hot store.
+        for _col, _v in payload.items():
+            if isinstance(_v, str) and "\x00" in _v:
+                payload[_col] = _v.replace("\x00", "")
         self._remote.get_raw_client().table(table).upsert(payload, on_conflict=spec.key).execute()
 
     # ── Puller: remote → local ───────────────────────────────────────────────
@@ -191,7 +238,10 @@ class SyncEngine:
             q = q.gt(spec.watermark, wm)
         q = q.order(spec.watermark, desc=False).limit(limit)
         try:
-            remote_rows = list(q.execute().data or [])
+            # Remote fetch is a synchronous round-trip — run it off the main event
+            # loop so the per-tick pull (one per synced table) can't stall requests.
+            res = await asyncio.to_thread(q.execute)
+            remote_rows = list(res.data or [])
         except Exception as e:
             logger.warning("sync: pull of table %r failed: %s", spec.table, e)
             return 0
@@ -231,14 +281,26 @@ class SyncEngine:
         return {"pushed": pushed, "pulled": pulled}
 
     async def _run(self) -> None:
-        logger.info("hybrid sync engine started (interval=%.1fs)", self._interval)
+        import time as _time
+        logger.info("hybrid sync engine started (interval=%.1fs, fast=%.1fs)",
+                    self._interval, self._fast_interval)
+        active_until = 0.0
         while not self._stop.is_set():
+            result = None
             try:
-                await self.sync_once()
+                result = await self.sync_once()
             except Exception as e:  # never let one bad tick kill the loop
                 logger.warning("sync tick failed: %s", e)
+            # Adaptive cadence: a non-empty push means rows are actively flowing —
+            # stay on the fast interval for a short grace window so a live turn
+            # (e.g. a Remote Control run streaming here while a viewer polls from
+            # another device) syncs near-live. Idle ticks relax to the base rate.
+            now = _time.monotonic()
+            if result and result.get("pushed"):
+                active_until = now + self._active_grace
+            interval = self._fast_interval if now < active_until else self._interval
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 pass
         logger.info("hybrid sync engine stopped")

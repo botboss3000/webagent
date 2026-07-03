@@ -215,6 +215,19 @@ class DeviceWorker:
         # back in that same conversation; an automation/broadcast job has none.
         run_in_session = (payload.get("run_in_session") or "").strip() or None
         execution_mode = payload.get("execution_mode") or "ask"
+        # Pasted images/files handed off with the turn. The default loop ignores
+        # these (it inlines images into the prompt itself); an alternate engine
+        # (e.g. claude_code) reads them off disk via its own tools. Resolved from
+        # the shared DB — server/DB-stored attachments come through; a browser-only
+        # attachment returns nothing here and the engine reports it unreadable.
+        attachment_docs = []
+        for _att_id in (payload.get("attachment_ids") or []):
+            try:
+                _att = await db.get_attachment(_att_id)
+                if _att:
+                    attachment_docs.append(_att)
+            except Exception:
+                pass
 
         agent = await db.get_agent_by_id(agent_id) if agent_id else None
         if not agent:
@@ -295,13 +308,39 @@ class DeviceWorker:
             except Exception:
                 raw_allowed = []
 
+        # Remote Control continuity: a chat hand-off CONTINUES an existing
+        # conversation, so the taking-over device must rebuild that conversation's
+        # history and feed it to the loop — otherwise the turn runs context-blind
+        # (history=None) and the agent has no memory of the chat it was handed. A
+        # job that minted its own session (automation/broadcast) has nothing to
+        # rebuild and starts fresh. resync_session first re-pulls the transcript
+        # from the shared authority so this device doesn't continue from a stale
+        # local copy of a session another device has since advanced. The current
+        # user turn is excluded from the rebuilt history because the loop appends
+        # it as the live user_message (leaving it in would replay it twice).
+        history = None
+        if run_in_session:
+            try:
+                if hasattr(db, "resync_session"):
+                    await db.resync_session(owner_user_id, session_id)
+                from app.agent.session_history import build_openai_history_from_session
+                _uid_turn = payload.get("user_interaction_id")
+                _exclude = {_uid_turn} if _uid_turn else None
+                history = await build_openai_history_from_session(
+                    db, owner_user_id, session_id,
+                    exclude_interaction_ids=_exclude, agent_id=agent_id)
+            except Exception as e:
+                logger.warning("device job: history rebuild failed for session %s: %s",
+                               session_id, e)
+                history = None
+
         reply = await run_agent_loop_buffered(
             user_id=owner_user_id,
             session_id=session_id,
             user_message=prompt_text,
             system_prompt=system_prompt,
             agent_id=agent_id,
-            history=None,
+            history=history,
             channel="device",
             timeout_seconds=600,
             db=db,
@@ -309,6 +348,7 @@ class DeviceWorker:
             allowed_tools=raw_allowed or None,
             max_turns=agent.get("max_turn_count", 0),
             execution_mode=execution_mode,
+            attachment_docs=attachment_docs or None,
         )
         return session_id, reply or ""
 

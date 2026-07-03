@@ -61,14 +61,12 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # ── Interactions split tuning ─────────────────────────────────────────────────
-# A fat column value LARGER than this (chars) is pulled OFF the remote authority
-# and kept only in the local hot store; anything at or under it stays inline on
-# the remote skeleton (small + almost always valid JSON, so cross-device readers
-# and any JSON consumers are unaffected). Phase 0 showed the `input` column alone
-# is 44.9 MB across a few hundred tool rows — those whales are exactly what this
-# gate moves local, while a short user message or tiny tool result rides along on
-# the skeleton untouched. The sync engine's push imports this same constant, so
-# the strip gate is defined in exactly one place.
+# A fat column value LARGER than this (chars) would be pulled OFF the remote
+# authority and kept only in the local hot store; anything at or under it stays
+# inline on the remote skeleton. The interactions transcript currently declares
+# no fat columns (see the sync engine's SYNCED_SPECS), so nothing is stripped —
+# the constant is kept as the single definition point should a fat column be
+# reintroduced.
 _FAT_THRESHOLD_CHARS = 2048
 
 
@@ -77,9 +75,9 @@ def _now_iso() -> str:
 
 
 def load_local_payloads_sync(ids) -> Dict[str, dict]:
-    """Read the full ``input``/``output`` for interaction ids from the LOCAL store
+    """Read the full ``output`` for interaction ids from the LOCAL store
     directly (no HybridBackend instance needed), returning
-    ``{id: {"input":.., "output":..}}``.
+    ``{id: {"output":..}}``.
 
     For read paths that query the remote skeleton on their own connection (the
     admin DB Viewer) and want to restore the fat payloads the local-first hot
@@ -99,10 +97,10 @@ def load_local_payloads_sync(ids) -> Dict[str, dict]:
     try:
         for i in range(0, len(ids), 400):
             chunk = ids[i:i + 400]
-            q = ("SELECT id, input, output FROM interactions "
+            q = ("SELECT id, output FROM interactions "
                  f"WHERE id IN ({','.join('?' * len(chunk))})")
             for row in conn.execute(q, chunk).fetchall():
-                out[row["id"]] = {"input": row["input"], "output": row["output"]}
+                out[row["id"]] = {"output": row["output"]}
     except Exception:
         pass
     finally:
@@ -210,7 +208,7 @@ class HybridBackend:
     # ══════════════════════════════════════════════════════════════════════════
     # Stage 2 — local-first transcript, background push
     #
-    # The FULL interaction row (content + the fat `input`/`output`) is written to
+    # The FULL interaction row (content + `output`) is written to
     # the LOCAL SQLite hot store FIRST — the id is minted locally and the write
     # completes without touching the network, so a turn never waits on the remote.
     # The row is then recorded in the local OUTBOX; the background SyncEngine
@@ -229,7 +227,7 @@ class HybridBackend:
     # created_at which the local row defaults to now on a fresh write and is
     # preserved verbatim when mirroring existing remote rows.
     _ICOLS = ("id", "session_id", "parent_id", "role", "content", "tool_name",
-              "tool_call_id", "channel", "metadata", "input", "output", "source",
+              "tool_call_id", "channel", "metadata", "output", "source",
               "from_id", "to_id", "session_seq", "turn_id", "turn_seq", "status")
 
     # (The remote skeleton's fat-column stripping now lives in the sync engine's
@@ -277,6 +275,24 @@ class HybridBackend:
             logger.warning("hybrid: mirroring session %s to local failed: %s", session_id, e)
             # Don't wedge writes if the mirror hiccups — allow the local row to be
             # created; the session upsert above usually succeeded first.
+
+    async def resync_session(self, user_id: str, session_id: str) -> None:
+        """Force a re-pull of a session's transcript from the remote authority,
+        overriding the once-per-process warm cache.
+
+        The transcript is push-only (the SyncEngine never pulls interactions back),
+        and ``_ensure_local_session`` warms a given session's local copy exactly
+        once. That's fine for a session that only ever runs on one device — but
+        Remote Control hands a session BACK AND FORTH between devices. When a device
+        takes over a turn it may already hold a STALE local copy (warmed earlier,
+        missing the turns another device has since written + pushed to remote).
+        Discarding the warm marker and re-warming pulls the missing turns in
+        (INSERT OR IGNORE, so the device's own full-fidelity rows are untouched and
+        only the genuinely-missing rows are added)."""
+        seen = getattr(self, "_mirrored", None)
+        if seen is not None:
+            seen.discard(session_id)
+        await self._ensure_local_session(user_id, session_id)
 
     async def _local_write_full(self, row: Dict[str, Any]) -> None:
         """Upsert one FULL interaction row into the local store (all columns)."""
@@ -346,7 +362,6 @@ class HybridBackend:
         tool_call_id: Optional[str] = None,
         channel: Optional[str] = None,
         metadata: Optional[str] = None,
-        input_data: Optional[str] = None,
         output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
         receiver_id: Optional[str] = None,
@@ -364,7 +379,7 @@ class HybridBackend:
         await self._local_write_full({
             "id": rid, "session_id": session_id, "parent_id": parent_id, "role": role,
             "content": content, "tool_name": tool_name, "tool_call_id": tool_call_id,
-            "channel": channel, "metadata": metadata, "input": input_data,
+            "channel": channel, "metadata": metadata,
             "output": output_data, "source": source or "user", "from_id": sender_id,
             "to_id": receiver_id, "session_seq": session_seq, "turn_id": turn_id,
             "turn_seq": turn_seq, "status": status,
@@ -390,7 +405,7 @@ class HybridBackend:
                 "role": r.get("role", "tool"), "content": r.get("content", ""),
                 "tool_name": r.get("tool_name"), "tool_call_id": r.get("tool_call_id"),
                 "channel": r.get("channel"), "metadata": r.get("metadata"),
-                "input": r.get("input"), "output": r.get("output"),
+                "output": r.get("output"),
                 "source": r.get("source") or "user", "from_id": r.get("from_id"),
                 "to_id": r.get("to_id"), "session_seq": r.get("session_seq"),
                 "turn_id": r.get("turn_id"), "turn_seq": r.get("turn_seq"),

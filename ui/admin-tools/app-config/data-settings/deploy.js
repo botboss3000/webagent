@@ -708,14 +708,12 @@ async function _hubSave(row) {
 
 async function _bootShare(row) {
   const status = row.querySelector('[data-boot-share-status]');
-  const pw = row.querySelector('[data-boot-share-pw]')?.value || '';
   const sections = Array.from(row.querySelectorAll('[data-boot-sec]:checked')).map(el => el.dataset.bootSec);
   const set = (m, err) => { if (status) { status.textContent = m || ''; status.style.color = err ? 'var(--danger)' : ''; } };
   if (!sections.length) return set('Pick at least one thing to include.', true);
-  if (!pw) return set('Enter this app’s admin password.', true);
   set('Creating…');
   let r;
-  try { r = await _post('/admin/storage/bootstrap/export', { sections, admin_password: pw }); }
+  try { r = await _post('/admin/storage/bootstrap/export', { sections }); }
   catch (e) { return set(e.message, true); }
   if (!r.ok) return set(r.error || 'Could not create the code.', true);
   set('');
@@ -723,21 +721,6 @@ async function _bootShare(row) {
   const codeEl = row.querySelector('[data-boot-code]');
   if (codeEl) codeEl.value = r.code;
   if (result) result.style.display = '';
-  // Fetch a QR of the code (same server generator the deploy/remote-access cards use).
-  const qrHost = row.querySelector('[data-boot-qr]');
-  if (qrHost) {
-    qrHost.innerHTML = '<div class="ac-hint" style="text-align:center;padding:10px;">Generating QR…</div>';
-    try {
-      const q = await _post('/admin/storage/qr', { text: r.code });
-      if (q && q.qr_svg) {
-        qrHost.innerHTML = q.qr_svg;
-        const svg = qrHost.querySelector('svg');
-        if (svg) { svg.style.width = '100%'; svg.style.height = 'auto'; svg.style.display = 'block'; }
-      } else {
-        qrHost.innerHTML = '<div class="ac-hint" style="text-align:center;padding:10px;">QR needs the “qrcode” package — copy the code instead.</div>';
-      }
-    } catch { qrHost.innerHTML = ''; }
-  }
 }
 
 async function _bootCopy(row, btn) {
@@ -749,13 +732,11 @@ async function _bootCopy(row, btn) {
 async function _bootPreview(row) {
   const status = row.querySelector('[data-boot-import-status]');
   const code = row.querySelector('[data-boot-import-code]')?.value?.trim() || '';
-  const pw = row.querySelector('[data-boot-import-pw]')?.value || '';
   const set = (m, err) => { if (status) { status.textContent = m || ''; status.style.color = err ? 'var(--danger)' : ''; } };
   if (!code) return set('Paste a setup code.', true);
-  if (!pw) return set('Enter the source admin password.', true);
   set('Decoding…');
   let r;
-  try { r = await _post('/admin/storage/bootstrap/preview', { code, password: pw }); }
+  try { r = await _post('/admin/storage/bootstrap/preview', { code }); }
   catch (e) { return set(e.message, true); }
   if (!r.ok) return set(r.error || 'Could not decode the code.', true);
   set('');
@@ -787,7 +768,6 @@ async function _bootPreview(row) {
 async function _bootApply(row) {
   const status = row.querySelector('[data-boot-apply-status]');
   const code = row.querySelector('[data-boot-import-code]')?.value?.trim() || '';
-  const pw = row.querySelector('[data-boot-import-pw]')?.value || '';
   const set = (m, err) => { if (status) { status.textContent = m || ''; status.style.color = err ? 'var(--danger)' : ''; } };
   // Every carried section is adopted (overwrite) — see _bootPreview. The names
   // were stashed on the result host when the preview decoded the code.
@@ -797,7 +777,7 @@ async function _bootApply(row) {
   if (!window.confirm('Apply this setup to this install?\n\nThis replaces your current settings for everything the code carries.')) return;
   set('Applying…');
   let r;
-  try { r = await _post('/admin/storage/bootstrap/apply', { code, password: pw, choices }); }
+  try { r = await _post('/admin/storage/bootstrap/apply', { code, choices }); }
   catch (e) { return set(e.message, true); }
   if (r.ok === false) return set(r.error || 'Apply failed.', true);
   const lines = Object.entries(r.results || {}).map(([k, v]) => k + ': ' + v).join(' · ');
@@ -815,9 +795,10 @@ function _bootInvalidate(row, resultSel, statusSel) {
 }
 
 // Wire the two static setup-bundle rows: their expand is handled by
-// _wireBootRow in data-settings.js; here we bind the Verify / Copy / Accept
-// actions (Accept is built into the preview result, so it's delegated) and hide
-// a stale result whenever a field is edited after a Verify. Idempotent.
+// _wireBootRow in data-settings.js; here we bind the Generate / Copy / Preview /
+// Accept actions (Accept is built into the preview result, so it's delegated)
+// and hide a stale result whenever a field is edited after a Generate/Preview.
+// Idempotent.
 function _initBootRows() {
   const exp = _qs('ac-deploy-export-row');
   if (exp && !exp.dataset.bootWired) {

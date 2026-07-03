@@ -46,6 +46,7 @@ data/config/agent-abilities.json
 data/config/debug-config.json
 data/config/optimizer.json
 data/config/deploy.json
+data/config/dns.json
 data/config/server-manager.json
 data/config/production-mirror.json
 data/config/git-repos.json

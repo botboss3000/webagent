@@ -213,10 +213,14 @@ too:** a new `ui/admin-tools/<id>/` folder with a `page.json` (carrying `html` +
 `entry`/`start`/`stop` + optional `css`) gets its strip icon built from the
 catalog, its partial auto-loaded (its `<template data-slot="#admin-tools">` main +
 optional `#files-sidebar` panel), and its lifecycle driven by a dynamic `import()`
-of its `entry` — exactly like a main page. The eight built-in admin views keep
-their HTML partials + lifecycles wired inline (in `partial-loader.js`'s
-`ADMIN_SUB_PAGES` and `files.js`) because they predate this; only **new** views
-use the descriptor `entry`/`start`/`stop`.
+of its `entry` — exactly like a main page. **Every** admin view is now a true
+drop-in: the last two inline built-ins — the File Manager (Explorer) and the
+Terminal — were split into `ui/admin-tools/explorer/explorer-view.js` and
+`ui/admin-tools/terminal/terminal-view.js` (each owns its own tab engine and
+shares no code with the other), so `partial-loader.js`'s `ADMIN_SUB_PAGES` and
+`BUILTIN_ADMIN_IDS` are now empty and `ui/shared/js/files.js` is purely the
+shared Admin-Tools frame that dispatches every view via its descriptor
+`entry`/`start`/`stop`.
 Each admin view also owns its **own collapse / switch-display control** in its panel
 header (`.files-panel-collapse-btn`, auto-injected) — there is no shared strip
 collapse button.
@@ -642,7 +646,7 @@ philosophy but is driven entirely from the UI, with no rebuild.
   `GET …/production/status`, `POST …/production/release` (NDJSON stream, like the
   ⭐ commit-and-push).
 - **UI, two surfaces sharing one exclude list:** the **File Explorer**
-  (`ui/shared/js/files.js`) has an **eye toggle** that flips the tree into
+  (`ui/admin-tools/explorer/explorer-view.js`) has an **eye toggle** that flips the tree into
   *production-preview* mode — a checkbox on every folder **and file** (ticked =
   ships, untick = dev-only; a path under an excluded folder shows unticked +
   locked), repainting in place via `refreshProdMarks()` with no tree reload.

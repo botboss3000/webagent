@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 from app.models.schemas import InteractionRecord
 from app.db.turn_cache import turn_cached
+from app.encryption.interface import is_ciphertext
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,6 @@ class StorageBackend(ABC):
         tool_call_id: Optional[str] = None,
         channel: Optional[str] = None,
         metadata: Optional[str] = None,
-        input_data: Optional[str] = None,
         output_data: Optional[str] = None,
         sender_id: Optional[str] = None,
         receiver_id: Optional[str] = None,
@@ -150,7 +150,7 @@ class StorageBackend(ABC):
         """Bulk-insert interaction rows in a single round-trip.
 
         Each dict may contain: id, session_id, parent_id, role, content,
-        tool_name, tool_call_id, channel, metadata, input, output, source,
+        tool_name, tool_call_id, channel, metadata, output, source,
         from_id, to_id, session_seq, turn_id, turn_seq, created_at.
 
         Caller is responsible for session ownership. Default impl falls back
@@ -169,7 +169,6 @@ class StorageBackend(ABC):
                 tool_call_id=r.get("tool_call_id"),
                 channel=r.get("channel"),
                 metadata=r.get("metadata"),
-                input_data=r.get("input"),
                 output_data=r.get("output"),
                 sender_id=r.get("from_id"),
                 receiver_id=r.get("to_id"),
@@ -1088,12 +1087,26 @@ class EncryptedStorageBackend:
         ref = row.get("secret_ref")
         if ref:
             try:
-                row["secret_ref"] = await self._enc.decrypt(user_id, ref)
+                decrypted = await self._enc.decrypt(user_id, ref)
             except Exception as e:
+                decrypted = None
                 logger.warning(
                     "decrypt failed for user=%s service=%s label=%s: %s",
                     user_id, service, label, e,
                 )
+            if decrypted is not None and is_ciphertext(decrypted):
+                # The backend handed back the ciphertext unchanged (e.g. no DEK
+                # available for this key version) — decryption silently failed.
+                # Never let a still-encrypted blob pass for a real secret; a
+                # caller (e.g. the LLM key rehydrator) would otherwise treat it
+                # as a literal API key/password.
+                logger.error(
+                    "decrypt returned ciphertext unchanged for user=%s service=%s label=%s — "
+                    "treating secret_ref as unavailable",
+                    user_id, service, label,
+                )
+                decrypted = None
+            row["secret_ref"] = decrypted or ""
         return row
 
     async def auth_element_set(
@@ -1127,10 +1140,21 @@ class EncryptedStorageBackend:
             if not self._is_vault_call(r.get("user_id", ""), r.get("service", "")):
                 ref = r.get("secret_ref")
                 if ref:
+                    decrypted = None
                     try:
-                        r["secret_ref"] = await self._enc.decrypt(r.get("user_id", ""), ref)
+                        decrypted = await self._enc.decrypt(r.get("user_id", ""), ref)
                     except Exception as e:
                         logger.warning("decrypt failed in list: %s", e)
+                    if decrypted is not None and is_ciphertext(decrypted):
+                        # Same guard as auth_element_get — never surface an
+                        # unchanged ciphertext blob as if it were the real secret.
+                        logger.error(
+                            "decrypt returned ciphertext unchanged in list for user=%s service=%s — "
+                            "treating secret_ref as unavailable",
+                            r.get("user_id", ""), r.get("service", ""),
+                        )
+                        decrypted = None
+                    r["secret_ref"] = decrypted or ""
             out.append(r)
         return out
 

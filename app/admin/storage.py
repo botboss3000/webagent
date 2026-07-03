@@ -325,39 +325,39 @@ async def make_qr(body: QrBody):
 
 
 # ── Routes: bootstrap setup bundle ──────────────────────────────────────────
-# One encrypted "setup code" that carries this install's DB + vault + LLM (key +
-# preset model roster) + admin login to a freshly-cloned install. The code is
-# encrypted with the admin password (see app/admin/bootstrap_bundle.py) — export
-# verifies it, import/preview require it to decode. The unauthenticated
+# One portable "setup code" that carries this install's DB + vault + LLM (key +
+# preset model roster) to a freshly-cloned install. This UI (export/preview/
+# apply) needs no password — the endpoints are already admin-only, and the code
+# is encrypted with a key that travels with it (app/admin/bootstrap_bundle.py,
+# encrypt_code_open/decode_bundle). It never carries the admin login (the real
+# password can't be recovered from its stored hash). The unauthenticated
 # first-run variant lives in app/auth/__init__.py (setup_bundle) since a fresh
-# install has no admin to gate on yet. The former per-row DB "Share (QR)" folded
-# into this bundle (database is now just one selectable section).
+# install has no admin to gate on yet, and still uses a password-locked code —
+# see bootstrap_bundle.py's module docstring. The former per-row DB "Share (QR)"
+# folded into this bundle (database is now just one selectable section).
 
 
 class BootstrapExportBody(BaseModel):
     requesting_user_id: str
-    # Which sections to include: any of admin/llm/database/vault.
+    # Which sections to include: any of llm/database/vault.
     sections: list = []
-    # The admin password — both authorises the export AND encrypts the code.
-    admin_password: str = ""
 
 
 class BootstrapImportBody(BaseModel):
     requesting_user_id: str
     code: str = ""
-    # The SOURCE install's admin password, needed to decrypt the code.
-    password: str = ""
     # section → "fill" | "overwrite" | "skip" (apply only). Absent = fill-blanks.
     choices: Dict[str, str] = {}
 
 
 @router.post("/bootstrap/export")
 async def bootstrap_export(body: BootstrapExportBody):
-    """Package the chosen sections of THIS install into an encrypted setup code."""
+    """Package the chosen sections of THIS install into a portable setup code."""
     await _require_admin(body.requesting_user_id)
     from app.admin import bootstrap_bundle as bb
+    sections = [s for s in (body.sections or list(bb.ALL_SECTIONS)) if s != bb.SECTION_ADMIN]
     try:
-        code = await bb.export_code(body.sections or list(bb.ALL_SECTIONS), body.admin_password)
+        code = await bb.export_code(sections)
     except bb.BundleError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "code": code}
@@ -365,13 +365,12 @@ async def bootstrap_export(body: BootstrapExportBody):
 
 @router.post("/bootstrap/preview")
 async def bootstrap_preview(body: BootstrapImportBody):
-    """Decode a pasted code (needs the source admin password) and report, per
-    section, what it carries and whether this install already has it — WITHOUT
-    applying anything."""
+    """Decode a pasted code and report, per section, what it carries and
+    whether this install already has it — WITHOUT applying anything."""
     await _require_admin(body.requesting_user_id)
     from app.admin import bootstrap_bundle as bb
     try:
-        return {"ok": True, **await bb.preview(body.code, body.password)}
+        return {"ok": True, **await bb.preview(body.code)}
     except bb.BundleError as e:
         return {"ok": False, "error": str(e)}
 
@@ -384,7 +383,7 @@ async def bootstrap_apply(body: BootstrapImportBody):
         raise HTTPException(status_code=403, detail="Config is env-locked; edit deployment env vars to change.")
     from app.admin import bootstrap_bundle as bb
     try:
-        bundle = bb.decode_bundle(body.code, body.password)
+        bundle = bb.decode_bundle(body.code)
     except bb.BundleError as e:
         return {"ok": False, "error": str(e)}
     return await bb.apply_bundle(bundle, body.choices or {})

@@ -125,7 +125,6 @@ TABLES: List[Table] = [
         Column("tool_call_id", "TEXT"),
         Column("channel", "TEXT"),
         Column("metadata", "TEXT"),
-        Column("input", "TEXT"),
         Column("output", "TEXT"),
         Column("source", "TEXT"),
         Column("from_id", "TEXT"),
