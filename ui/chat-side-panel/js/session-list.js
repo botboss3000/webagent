@@ -55,7 +55,26 @@ function _formatRelativeTime(dateStr) {
 
 // ── Related sessions (spawns + browser sessions) ───────────────────────────
 
+// Collapse concurrent same-session refreshes into a single fetch. On load the
+// init call, the first list render, and the 15s poll can all fire
+// _fetchRelatedSessions() for the same session at once — firing 3 identical
+// /related round-trips (each opens a fresh Postgres connection + a heavy query
+// server-side, observed back-to-back in the diagnostics feed). While one is in
+// flight for the CURRENT session, later callers reuse the same promise. Keyed by
+// session id so a session switch still triggers a fresh fetch.
+let _relatedInFlight = null; // { sid, promise }
 async function _fetchRelatedSessions() {
+  const _sid = app.currentSessionId;
+  if (_relatedInFlight && _relatedInFlight.sid === _sid) return _relatedInFlight.promise;
+  const promise = _fetchRelatedSessionsInner();
+  _relatedInFlight = { sid: _sid, promise };
+  promise.finally(() => {
+    if (_relatedInFlight && _relatedInFlight.promise === promise) _relatedInFlight = null;
+  });
+  return promise;
+}
+
+async function _fetchRelatedSessionsInner() {
   const subHeader = document.getElementById('chat-sub-header');
   const parentEl = document.getElementById('chat-sub-parent');
   const spawnsEl = document.getElementById('chat-sub-spawns');
@@ -137,7 +156,10 @@ async function _fetchRelatedSessions() {
         // order. The member's real name stays in the hover tooltip.
         const label = sp.label || `Spawn ${i + 1}`;
         const tipName = sp.name || label;
-        const roleIcon = sp.role === 'closer' ? 'flag' : sp.role === 'planner' ? 'wand-2' : 'git-branch';
+        const roleIcon = sp.role === 'closer' ? 'flag'
+                       : sp.role === 'planner' ? 'wand-2'
+                       : sp.role === 'delegate' ? 'share-2'
+                       : 'git-branch';
         const statusIcon = sp.status === 'running' || sp.status === 'queued'
           ? icon('loader-2', { size: '10px' })
           : sp.status === 'done'

@@ -195,14 +195,39 @@ async def memory(
                 return json.dumps({"status": "error", "message": "slug required for upsert action"})
             if not compiled_truth:
                 return json.dumps({"status": "error", "message": "compiled_truth required for upsert action"})
+            # Near-duplicate guard: if a semantically near-identical fact already
+            # exists under a DIFFERENT slug, update THAT row instead of adding a
+            # restatement — one row per fact, newest wording wins. Runs on the
+            # in-process embedder (free); degrades to a plain insert if the
+            # embedder is unavailable or nothing similar is found. See memory_dedup.
+            target_slug = slug
+            merged_from = None
+            try:
+                from app.agent.memory_dedup import find_duplicate_memory
+                dup = await find_duplicate_memory(db, user_id, slug, compiled_truth)
+            except Exception as _dedup_err:
+                logger.debug("memory dedup skipped: %s", _dedup_err)
+                dup = None
+            if dup:
+                target_slug = dup["slug"]
+                merged_from = slug
             result = await db.memory_upsert(
-                user_id, slug,
+                user_id, target_slug,
                 page_type=page_type or "note",
-                title=title or slug,
+                title=title or target_slug,
                 compiled_truth=compiled_truth,
                 timeline=timeline or "",
             )
-            return json.dumps({"status": "ok", "slug": slug, "action": "upserted"})
+            resp = {"status": "ok", "slug": target_slug, "action": "upserted"}
+            if merged_from:
+                resp["action"] = "merged"
+                resp["merged_from"] = merged_from
+                resp["note"] = (
+                    f"Recognised as a near-duplicate of existing memory "
+                    f"'{target_slug}' (similarity {dup['similarity']:.2f}); updated "
+                    f"that entry in place instead of creating a new one."
+                )
+            return json.dumps(resp)
 
         elif action == "delete":
             if not slug:
@@ -298,6 +323,133 @@ async def session_search(
         return json.dumps({"status": "ok", "query": query, "count": len(matches), "results": matches})
     except Exception as e:
         logger.error("session_search failed: %s", e)
+        return json.dumps({"status": "error", "message": str(e)})
+
+
+# ── Similar sessions (semantic, whole-conversation) ───────────────────────────
+# Sibling of session_search. Where session_search matches KEYWORDS inside
+# individual messages, this ranks whole past CONVERSATIONS by meaning — the
+# "which past chat is like this one?" question. Built on the in-process embedder
+# (local, free): it embeds each recent session's title + opening message on the
+# fly and cosine-ranks them, so it needs NO new storage or migration. Degrades to
+# a title keyword match if the embedder is unavailable. Candidate set is capped
+# at the most recent N sessions to bound cost (stated in the result).
+
+_SIMILAR_SESSIONS_SCAN = 80  # most-recent sessions embedded per call (cost bound)
+
+
+def _sim_cosine(a, b) -> float:
+    import math
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = na = nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    return dot / (math.sqrt(na) * math.sqrt(nb) + 1e-12)
+
+
+async def similar_sessions(
+    query: str,
+    limit: int = 8,
+    user_id: str = "",
+    exclude_session_id: str = "",
+) -> str:
+    """
+    Find PAST chat sessions whose TOPIC is semantically similar to `query`.
+
+    Unlike session_search (which keyword-matches individual messages), this ranks
+    whole past *conversations* by meaning — use it to resurface "the chat where we
+    set up X" or to find prior sessions on the same topic so you can continue
+    rather than start over. Describe the topic in `query` (e.g. "setting up the
+    deploy pipeline"). Only the most recent sessions are scanned.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        q = (query or "").strip()
+        if not q:
+            return json.dumps({"status": "error", "message": "query required"})
+
+        # Candidate whole-conversation texts: title + first user message, newest
+        # first. One correlated query — works on SQLite and the Postgres-portable
+        # connection (same `?` placeholder + LIKE the rest of this module uses).
+        conn = db._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT s.id, s.title, s.created_at,
+                          (SELECT i.content FROM interactions i
+                             WHERE i.session_id = s.id AND i.role = 'user'
+                             ORDER BY i.created_at ASC LIMIT 1) AS first_msg
+                     FROM sessions s
+                    WHERE s.user_id = ?
+                    ORDER BY s.created_at DESC
+                    LIMIT ?""",
+                (user_id, _SIMILAR_SESSIONS_SCAN),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        # Normalise rows (sqlite3.Row or tuple) into candidate dicts with text.
+        cands = []
+        for r in rows or []:
+            sid = r[0] if not isinstance(r, dict) else r.get("id")
+            title = (r[1] if not isinstance(r, dict) else r.get("title")) or ""
+            created = r[2] if not isinstance(r, dict) else r.get("created_at")
+            first_msg = (r[3] if not isinstance(r, dict) else r.get("first_msg")) or ""
+            if sid and sid == exclude_session_id:
+                continue
+            text = f"{title}. {first_msg[:300]}".strip(". ").strip()
+            if not text:
+                continue
+            cands.append({"session_id": sid, "title": title,
+                          "created_at": created, "text": text})
+        if not cands:
+            return json.dumps({"status": "ok", "query": query, "count": 0,
+                               "results": [], "scanned": len(rows or [])})
+
+        # Semantic rank (local embedder). Any failure → keyword fallback on title.
+        results = []
+        mode = "semantic"
+        try:
+            from app.agent.embed import embed_text
+            qv = await embed_text(q)
+            scored = []
+            for c in cands:
+                try:
+                    cv = await embed_text(c["text"])
+                except Exception:
+                    continue
+                scored.append((_sim_cosine(qv, cv), c))
+            scored.sort(key=lambda x: -x[0])
+            for score, c in scored[:max(1, int(limit or 8))]:
+                results.append({
+                    "session_id": c["session_id"],
+                    "title": c["title"] or "(untitled)",
+                    "similarity": round(float(score), 3),
+                    "created_at": c["created_at"],
+                })
+        except Exception as embed_err:
+            logger.debug("similar_sessions: embed unavailable, keyword fallback: %s", embed_err)
+            mode = "keyword_fallback"
+            ql = q.lower()
+            for c in cands:
+                if ql in (c["title"] or "").lower() or ql in c["text"].lower():
+                    results.append({
+                        "session_id": c["session_id"],
+                        "title": c["title"] or "(untitled)",
+                        "created_at": c["created_at"],
+                    })
+                if len(results) >= max(1, int(limit or 8)):
+                    break
+
+        return json.dumps({
+            "status": "ok", "query": query, "mode": mode,
+            "scanned": len(cands), "count": len(results), "results": results,
+        })
+    except Exception as e:
+        logger.error("similar_sessions failed: %s", e)
         return json.dumps({"status": "error", "message": str(e)})
 
 

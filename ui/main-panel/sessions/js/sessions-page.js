@@ -275,16 +275,62 @@ function _toggleGroup(sid) {
   _updateTrashButton();
 }
 
-async function _loadAndRender() {
+// Fill the table body with phantom "shimmer" rows that mirror the real column
+// layout, so the first paint has the table's shape instead of a lone centered
+// spinner. Uses the shared skeleton primitives (sk-shimmer in app3.css).
+function _renderSkeletonRows(count = 8) {
+  const tbody = _qs('sessions-table-body');
+  const empty = _qs('sessions-empty');
   const loading = _qs('sessions-loading');
-  if (loading) loading.style.display = 'flex';
+  if (!tbody) return;
+  if (empty) empty.style.display = 'none';
+  if (loading) loading.style.display = 'none';   // skeleton rows replace the spinner
+  const cell = (w) => `<td><span class="sess-sk sk-shimmer" style="width:${w};"></span></td>`;
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    html += `<tr class="sessions-skeleton-row" aria-hidden="true">
+      <td class="col-caret"></td>
+      <td class="col-check"></td>
+      ${cell('70%')}${cell('85%')}${cell('46px')}${cell('40px')}${cell('30%')}${cell('55%')}${cell('55%')}${cell('45%')}${cell('55%')}${cell('60%')}
+    </tr>`;
+  }
+  tbody.innerHTML = html;
+}
+
+async function _loadAndRender() {
+  const tbody = _qs('sessions-table-body');
+  const wrap  = _qs('sessions-table-wrap');
+  // First load (nothing rendered yet) shows skeleton rows; a background
+  // auto-refresh (data already present) refreshes in place instead, so the
+  // table doesn't flash back to skeletons every 30s.
+  const firstLoad = !_sessionsData || _sessionsData.length === 0;
+
+  // Preserve the user's scroll position and checkbox selection across the
+  // rebuild — the 30s auto-refresh must not yank them to the top or drop
+  // whatever they'd selected.
+  const prevScroll  = wrap ? wrap.scrollTop : 0;
+  const prevChecked = new Set(_getSelectedSessionIds());
+
+  if (firstLoad) _renderSkeletonRows();
 
   _sessionsData = await _fetchSessions();
   _renderTable(_sessionsData);
-  // Reload replaces every row, so any prior selection is gone — clear the
-  // header toggle to match and repaint the toolbar (resting recycle icon).
-  const checkAll = _qs('sessions-check-all');
-  if (checkAll) checkAll.classList.remove('checked');
+
+  // Re-apply the prior selection to the freshly rebuilt rows (or clear the
+  // header toggle if nothing was selected).
+  if (prevChecked.size) {
+    document.querySelectorAll('.sessions-check-cell').forEach(c => {
+      if (c.dataset.sessionId && prevChecked.has(c.dataset.sessionId)) {
+        c.classList.add('checked');
+        c.closest('tr')?.classList.add('selected');
+      }
+    });
+  } else {
+    const checkAll = _qs('sessions-check-all');
+    if (checkAll) checkAll.classList.remove('checked');
+  }
+  // Restore scroll after the rebuild.
+  if (wrap && prevScroll) wrap.scrollTop = prevScroll;
   _updateTrashButton();
 }
 

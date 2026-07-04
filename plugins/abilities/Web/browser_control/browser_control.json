@@ -17,7 +17,8 @@
     "web_session_fetch",
     "web_session_graphql",
     "vault_login",
-    "cookie_allowlist"
+    "cookie_allowlist",
+    "browser_popup"
   ],
   "order": 1,
   "credentials": {

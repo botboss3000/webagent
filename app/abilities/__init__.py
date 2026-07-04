@@ -79,6 +79,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -224,9 +225,19 @@ def _load(force: bool = False) -> Dict[str, Dict[str, Any]]:
             # gating. See base (plugins/abilities/Core/base) and virtual_ability_for_tool.
             is_virtual = bool(desc.get("virtual", False))
             is_placeholder = bool(desc.get("placeholder", False))
+            # An app_function is a background app SERVICE, not an agent tool. Some
+            # of them (the wired-in core singletons — scheduler, watchdog, sync
+            # engine, …) own no ability runtime at all: they are just a descriptor
+            # that gives an admin a toggle in App Settings ▸ App Functions, and the
+            # matching core service reads ``ability_app_enabled(id)`` at boot. So —
+            # like a virtual row — an app_function is intentionally runtime-less and
+            # must NOT be coerced to a "coming soon" placeholder for lacking a .py.
+            is_app_function = bool(desc.get("app_function", False))
             # Only ability-kind requires a .py; oauth/credential/channel can work
-            # without one, and a virtual ability is intentionally runtime-less.
-            if not is_placeholder and not is_virtual and kind == "ability" and not has_runtime:
+            # without one, and a virtual / app_function ability is intentionally
+            # runtime-less.
+            if (not is_placeholder and not is_virtual and not is_app_function
+                    and kind == "ability" and not has_runtime):
                 is_placeholder = True
             if is_placeholder:
                 kind = "placeholder"
@@ -254,6 +265,18 @@ def _load(force: bool = False) -> Dict[str, Dict[str, Any]]:
                 "placeholder": is_placeholder,
                 "status": desc.get("status") or "stable",
                 "protected": bool(desc.get("protected", False)),
+                # App function: a BACKGROUND app service, not an agent-invoked
+                # ability. The agent never chooses to use it — it runs
+                # automatically for the app itself (e.g. Session Namer auto-titles
+                # chats, Context Control's compaction train, the Render Recorder
+                # flight recorder). Purely a UI-classification flag: an app_function
+                # is rendered in App Settings ▸ App Functions instead of the two
+                # ability tables, and is excluded from ui_catalog()'s abilities +
+                # group members. It changes NOTHING at runtime — tool-building,
+                # context-strategy resolution, turn hooks and background services
+                # all still read this same catalog and key off locked_on /
+                # context_strategy / enabled exactly as before. See ui_catalog().
+                "app_function": bool(desc.get("app_function", False)),
                 # On-by-default at the app level: an ability with no explicit
                 # admin toggle stored in data/config/agent-abilities.json falls
                 # back to this. SHIP POLICY — abilities are ON by default, so a
@@ -330,7 +353,20 @@ def ability_module(ability_id: str) -> Optional[Any]:
         if spec is None or spec.loader is None:
             return None
         mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        # Register under the spec name BEFORE executing. A dynamically loaded
+        # module that is absent from sys.modules cannot have its own namespace
+        # resolved later — which breaks any Pydantic model defined in it (e.g. a
+        # request body on the ability's `router`): FastAPI leaves the body
+        # TypeAdapter a deferred "mock" and validation fails at request time with
+        # "not fully defined". Inserting it first (the documented importlib
+        # pattern) lets those models finalize. The synthetic dotted name is
+        # unique per ability and never collides with a real import path.
+        sys.modules[spec.name] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            sys.modules.pop(spec.name, None)
+            raise
         _MODULE_CACHE[ability_id] = mod
         return mod
     except Exception as e:
@@ -357,6 +393,37 @@ def background_service_hooks() -> List[Dict[str, Any]]:
                 "stop": getattr(mod, "stop_background", None),
             })
     return hooks
+
+
+def ability_routers() -> List[Dict[str, Any]]:
+    """Discover abilities that ship their own FastAPI endpoints. Returns
+    {id, router} for every ability module exposing a module-level ``router``
+    (and/or a ``ROUTERS`` list of them).
+
+    The drop-in twin of :func:`background_service_hooks`: an ability that needs
+    HTTP routes (e.g. a browser-intake + admin-read API) declares a ``router`` in
+    its plugin file and core's generic mount loop (see app/main.py "ability
+    router") includes it — with **no** ``include_router`` line per ability. Drop
+    the folder in, its routes appear; delete it, they vanish. Router discovery is
+    independent of the app-enable toggle (mirrors the always-mounted page/service
+    hooks); an excluded edition strips the folder entirely instead."""
+    _load()
+    out: List[Dict[str, Any]] = []
+    for aid, entry in _load().items():
+        if not entry.get("has_runtime"):
+            continue
+        mod = ability_module(aid)
+        if mod is None:
+            continue
+        single = getattr(mod, "router", None)
+        if single is not None:
+            out.append({"id": aid, "router": single})
+        many = getattr(mod, "ROUTERS", None)
+        if isinstance(many, (list, tuple)):
+            for r in many:
+                if r is not None:
+                    out.append({"id": aid, "router": r})
+    return out
 
 
 async def turn_hooks_for_agent(agent_id: str) -> list:
@@ -400,15 +467,21 @@ async def turn_hooks_for_agent(agent_id: str) -> list:
         if callable(hook):
             hooks.append(hook)
 
-    # ── Built-in turn hooks (grouped under Core ▸ Base, always run) ──
-    # The session namer is not a separate catalog entry anymore; it runs
-    # unconditionally on every turn (locked-on, no tools to gate).
+    # ── Session Namer turn hook (an APP FUNCTION, gated at the app level) ──
+    # The namer auto-titles a chat after its first few turns. It carries no
+    # agent tool and no per-agent connection row, so it can't ride the enabled|
+    # locked_on loop above — it's toggled once, app-wide, from App Settings ▸ App
+    # Functions (stored in agent-abilities.json). Dispatch it only when that
+    # toggle resolves ON (ships ON by default). ``session_titler`` isn't in the
+    # ``enabled|locked_on`` set precisely because it's an app_function, not an
+    # agent-facing ability.
     try:
-        from plugins.abilities.Core.session_titler.session_titler import (
-            TURN_HOOK as _session_namer_hook,
-        )
-        if callable(_session_namer_hook):
-            hooks.append(_session_namer_hook)
+        if ability_app_enabled("session_titler"):
+            from plugins.abilities.Core.session_titler.session_titler import (
+                TURN_HOOK as _session_namer_hook,
+            )
+            if callable(_session_namer_hook):
+                hooks.append(_session_namer_hook)
     except Exception:
         logger.debug("session_titler not available", exc_info=True)
 
@@ -788,6 +861,9 @@ def ui_catalog() -> Dict[str, Any]:
             "default_enabled": entry.get("default_enabled", False),
             # Safety device — always-on, fixed toggle (cannot be turned off).
             "locked_on": entry.get("locked_on", False),
+            # Background app service, not an agent ability — rendered in App
+            # Settings ▸ App Functions, excluded from the two ability tables below.
+            "app_function": entry.get("app_function", False),
             # Resolved live on/off: a locked-on safety ability is forced ON
             # regardless of any stored admin choice; otherwise stored admin
             # choice ▸ descriptor default.
@@ -811,17 +887,47 @@ def ui_catalog() -> Dict[str, Any]:
                                     and entry["credentials"].get("fields")),
         }
 
+    # ── Split off background APP FUNCTIONS ──────────────────────────────────
+    # An app_function (Session Namer, Context Control's compaction train, the
+    # Render Recorder) is a background service the app runs for itself, not an
+    # agent-invoked ability. It is lifted OUT of the abilities map + its group so
+    # neither ability table (admin Agent Tools, per-agent Abilities tab) shows it;
+    # it renders in App Settings ▸ App Functions instead. Nothing else changes —
+    # runtime still reads these from _load() (locked_on / context_strategy /
+    # background-service hooks all resolve exactly as before).
+    app_functions: Dict[str, Any] = {}
+    for aid in [a for a, m in abilities.items() if m.get("app_function")]:
+        app_functions[aid] = abilities.pop(aid)
+
     # Display names for member sorting
     name_of: Dict[str, str] = {aid: a["display_name"] for aid, a in abilities.items()}
 
-    # Bucket members by group
+    # Bucket members by group (app functions already removed from `abilities`)
     by_group: Dict[str, List[str]] = {}
     for aid, a in abilities.items():
         by_group.setdefault(a["group"], []).append(aid)
 
+    # A group whose ONLY descriptors are app_functions (e.g. the "System" group
+    # that holds the wired-in background services) must NOT surface as an empty
+    # category card in either ability table — its members all render in App
+    # Settings ▸ App Functions instead. Suppress only these pure-app-function
+    # groups; a genuinely empty group (a _group.json with no descriptors at all)
+    # still appears, as before.
+    _grp_has_real: Dict[str, bool] = {}
+    _grp_has_appfn: Dict[str, bool] = {}
+    for e in cat.values():
+        g = e.get("group")
+        if e.get("app_function"):
+            _grp_has_appfn[g] = True
+        else:
+            _grp_has_real[g] = True
+    _appfn_only_groups = {g for g in _grp_has_appfn if not _grp_has_real.get(g)}
+
     # Ensure groups with only _group.json and no members still appear
     for gid in groups_meta:
         if gid not in by_group:
+            if gid in _appfn_only_groups:
+                continue  # pure app-function group — rendered under App Functions
             by_group[gid] = []
 
     # Build group list with sorted members
@@ -848,9 +954,20 @@ def ui_catalog() -> Dict[str, Any]:
     for g in groups:
         g.pop("_order", None)
 
+    # App functions carry the SAME shape as abilities (id, display_name, kind,
+    # description, icon, color, enabled, locked_on, config-presence, …) so the App
+    # Functions panel renders them with the shared row + settings helpers. They
+    # are keyed by id (no groups — the panel shows one flat table), sorted by the
+    # descriptor `order` then display name.
+    app_function_list = sorted(
+        app_functions.values(),
+        key=lambda a: (a.get("order", 100), (a.get("display_name") or "").lower()),
+    )
+
     return {
         "groups": groups,
         "abilities": abilities,
+        "app_functions": app_function_list,
     }
 
 
@@ -871,12 +988,15 @@ def ability_ids(kind: Optional[str] = "ability") -> List[str]:
 def _seedable_ability_ids() -> List[str]:
     """Toggleable abilities that make sense to pre-enable on an agent — every
     kind="ability" entry EXCEPT display-only ``virtual`` rows (Core ▸ Base),
-    which gate nothing so a connection row for them would be inert. Placeholder
-    (coming-soon) abilities are already excluded (kind="placeholder"). Catalog
-    order is preserved."""
+    which gate nothing so a connection row for them would be inert, and
+    ``app_function`` background services (Session Namer, the scheduler, …), which
+    are app-level only — a per-agent connection row for one would be meaningless.
+    Placeholder (coming-soon) abilities are already excluded (kind="placeholder").
+    Catalog order is preserved."""
     return [
         aid for aid, e in _load().items()
         if e.get("kind") == "ability" and not e.get("virtual")
+        and not e.get("app_function")
     ]
 
 
@@ -986,6 +1106,30 @@ def ability_default_enabled(ability_id: str) -> bool:
     ids stay False."""
     e = _load().get(ability_id)
     return bool(e and e.get("default_enabled", True))
+
+
+def ability_app_enabled(ability_id: str) -> bool:
+    """Resolved app-level on/off for an ability — the SAME resolution ui_catalog
+    bakes into each row: a ``locked_on`` safety device is always True; otherwise
+    the admin's stored choice (data/config/agent-abilities.json) wins, falling back
+    to the descriptor ``default_enabled`` (SHIP POLICY: True when unset). Used by
+    background dispatchers that have no per-agent connection row to key off — e.g.
+    the Session Namer turn hook, an app_function gated only at the app level.
+    Fails ON if the config store can't be read (never silently disables a default
+    -on function)."""
+    e = _load().get(ability_id)
+    if not e:
+        return False
+    if e.get("locked_on"):
+        return True
+    try:
+        from app.admin import ability_config as _abcfg
+        stored = _abcfg.get_ability_enabled(ability_id)
+    except Exception:
+        stored = None
+    if stored is None:
+        return bool(e.get("default_enabled", True))
+    return bool(stored)
 
 
 def ability_is_locked_on(ability_id: str) -> bool:

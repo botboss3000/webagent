@@ -1,7 +1,19 @@
-"""Simple user store. Admin account created via setup page or BOOTSTRAP_ADMIN_PASSWORD env var.
+"""User account store — login credentials for users and admins.
 
-Uses bcrypt directly (passlib has compat issues on Windows + Python 3.14).
-Supports remember-me tokens for persistent sessions."""
+Storage is the shared database's central `user_accounts` table (the account
+plane), NOT a local file: every instance/device sees one identical account list,
+so a login created on one server works on all of them. The methods are pinned to
+the authority DB by app/db/router.py CONTROL_METHODS, so they are never routed to
+a per-tenant database.
+
+Passwords are bcrypt hashes (bcrypt directly — passlib has compat issues on
+Windows + Python 3.14), never plaintext. Remember-me tokens support persistent
+sessions.
+
+History: this used to persist to app/auth/users.json. On first boot after the
+move, `migrate_legacy_file()` imports that file into the DB and renames it to
+`users.json.bak` (kept as a backup, never deleted). See `bootstrap_admin_from_env`
+and `migrate_legacy_file`, both called from the app startup hook (app/main.py)."""
 
 import json
 import logging
@@ -14,7 +26,14 @@ import bcrypt
 
 logger = logging.getLogger(__name__)
 
+# Legacy per-instance store — read ONCE by migrate_legacy_file() to seed the DB,
+# then renamed to <name>.bak. No longer the source of truth.
 _USER_FILE = Path(__file__).resolve().parent / "users.json"
+
+# Canonical bootstrap-admin id. The login NAME may be anything the operator picks,
+# but the user_id stays fixed so every admin gate (is_admin seed, delete
+# protection, open-mode fallback) keys off one stable value.
+ADMIN_USER_ID = "admin"
 
 # How long a fresh login pass stays valid before it must renew, per user.
 # This is the default for any account that hasn't picked its own value on the
@@ -38,6 +57,9 @@ def clamp_session_lifetime(minutes: int) -> int:
 # ── Data ────────────────────────────────────────────────────────────────────
 
 class User:
+    """In-memory view of one `user_accounts` row. Read-only value object — all
+    mutations go through the async functions below (which write the DB)."""
+
     __slots__ = ("username", "password_hash", "user_id", "display_name",
                  "remember_token", "is_approved",
                  "session_lifetime_minutes", "auto_renew", "social_links")
@@ -87,16 +109,39 @@ class User:
             display_name=d.get("display_name", d["username"]),
             remember_token=d.get("remember_token", ""),
             is_approved=d.get("is_approved", True),
-            # Older users.json files predate these keys — fall back to the
-            # defaults so existing accounts load unchanged.
             session_lifetime_minutes=d.get("session_lifetime_minutes",
                                            DEFAULT_SESSION_LIFETIME_MINUTES),
             auto_renew=d.get("auto_renew", True),
             social_links=d.get("social_links", {}),
         )
 
+    @classmethod
+    def from_row(cls, row: Optional[dict]) -> Optional["User"]:
+        """Build a User from a `user_accounts` DB row (or None → None). Coerces
+        the DB's integer flags to bool and parses the social_links JSON text."""
+        if not row:
+            return None
+        links = row.get("social_links")
+        if isinstance(links, str):
+            try:
+                links = json.loads(links or "{}")
+            except Exception:
+                links = {}
+        return cls(
+            username=row["username"],
+            password_hash=row.get("password_hash", ""),
+            user_id=row["user_id"],
+            display_name=row.get("display_name") or row["username"],
+            remember_token=row.get("remember_token", "") or "",
+            is_approved=bool(row.get("is_approved", 1)),
+            session_lifetime_minutes=row.get("session_lifetime_minutes",
+                                             DEFAULT_SESSION_LIFETIME_MINUTES),
+            auto_renew=bool(row.get("auto_renew", 1)),
+            social_links=links if isinstance(links, dict) else {},
+        )
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+
+# ── Password / token helpers ─────────────────────────────────────────────────
 
 def _hash_password(password: str) -> str:
     """Return bcrypt hash as string."""
@@ -118,56 +163,44 @@ def _generate_remember_token() -> str:
     return secrets.token_hex(32)
 
 
-# ── Store ───────────────────────────────────────────────────────────────────
-
-_users: dict[str, User] = {}  # username → User
-
-
-def _load():
-    if _USER_FILE.exists():
-        try:
-            data = json.loads(_USER_FILE.read_text(encoding="utf-8"))
-            for d in data:
-                u = User.from_dict(d)
-                _users[u.username] = u
-        except Exception as e:
-            logger.warning("Failed to load users.json: %s", e)
+def _db():
+    """The storage backend. Imported lazily to avoid an import cycle and so the
+    account methods route to the central authority DB (CONTROL_METHODS)."""
+    from app.db import get_db
+    return get_db()
 
 
-def _persist():
-    try:
-        _USER_FILE.write_text(
-            json.dumps([u.to_dict() for u in _users.values()], indent=2),
-            encoding="utf-8",
-        )
-    except Exception as e:
-        logger.warning("Failed to persist users.json: %s", e)
+# ── Read API (async, DB-backed) ──────────────────────────────────────────────
+
+async def authenticate(username: str, password: str) -> Optional[User]:
+    """Verify credentials. Returns User on success, None on failure."""
+    row = await _db().get_user_account_by_username(username)
+    if row is None:
+        return None
+    if not _verify_password(password, row.get("password_hash", "")):
+        return None
+    return User.from_row(row)
 
 
-def _bootstrap_admin():
-    """On first start, create admin from env var BOOTSTRAP_ADMIN_PASSWORD if set."""
-    password = _os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "")
-    _have_admin = any(u.user_id == "admin" for u in _users.values())
-    if password and not _have_admin:
-        admin = User(
-            username="admin",
-            password_hash=_hash_password(password),
-            user_id="admin",
-            display_name="Admin",
-        )
-        _users["admin"] = admin
-        _persist()
-        logger.info("Bootstrap admin created from BOOTSTRAP_ADMIN_PASSWORD env var")
-    elif not _have_admin:
-        logger.info("No admin user found. App is in uninitialized state.")
+async def get_user(username: str) -> Optional[User]:
+    return User.from_row(await _db().get_user_account_by_username(username))
 
 
-def admin_exists() -> bool:
-    """Return whether an admin user account exists.
+async def get_user_by_id(user_id: str) -> Optional[User]:
+    """Look up a user by user_id (vs username)."""
+    return User.from_row(await _db().get_user_account_by_id(user_id))
 
-    Keyed on the canonical bootstrap user_id ("admin"), NOT on the login name,
-    so an admin who chose a custom login name is still recognised as set up."""
-    return any(u.user_id == "admin" for u in _users.values())
+
+async def list_users() -> list[User]:
+    """Return all registered users."""
+    rows = await _db().list_user_accounts()
+    return [User.from_row(r) for r in rows]
+
+
+async def admin_exists() -> bool:
+    """Whether an admin account exists, keyed on the canonical bootstrap user_id
+    ("admin") — so an admin who chose a custom login name still counts."""
+    return (await _db().get_user_account_by_id(ADMIN_USER_ID)) is not None
 
 
 def is_default_seed() -> bool:
@@ -176,50 +209,39 @@ def is_default_seed() -> bool:
     return False
 
 
-# Load existing users; bootstrap admin from env var if set
-_load()
-_bootstrap_admin()
+# ── Remember-me tokens ───────────────────────────────────────────────────────
 
-
-# ── Public API ──────────────────────────────────────────────────────────────
-
-def authenticate(username: str, password: str) -> Optional[User]:
-    """Verify credentials. Returns User on success, None on failure."""
-    user = _users.get(username)
-    if user is None:
-        return None
-    if not _verify_password(password, user.password_hash):
-        return None
-    return user
-
-
-def get_user(username: str) -> Optional[User]:
-    return _users.get(username)
-
-
-def set_remember_token(username: str) -> Optional[str]:
+async def set_remember_token(username: str) -> Optional[str]:
     """Generate and store a new remember token for the user.
     Returns the token string, or None if user not found.
     Every call invalidates the previous token (single-session)."""
-    user = _users.get(username)
-    if user is None:
+    row = await _db().get_user_account_by_username(username)
+    if row is None:
         return None
-    user.remember_token = _generate_remember_token()
-    _persist()
-    return user.remember_token
+    token = _generate_remember_token()
+    await _db().update_user_account(row["user_id"], remember_token=token)
+    return token
 
 
-def resolve_remember_token(token: str) -> Optional[User]:
+async def resolve_remember_token(token: str) -> Optional[User]:
     """Look up user by remember token. Returns User or None."""
-    for user in _users.values():
-        if user.remember_token and user.remember_token == token:
-            return user
-    return None
+    return User.from_row(await _db().get_user_account_by_remember_token(token))
 
 
-def register_user(username: str, password: str, display_name: str = "",
-                  is_approved: bool = True,
-                  user_id: Optional[str] = None) -> Optional[User]:
+async def clear_remember_token(username: str) -> bool:
+    """Clear the remember token for a user (sign-out)."""
+    row = await _db().get_user_account_by_username(username)
+    if row is None:
+        return False
+    await _db().update_user_account(row["user_id"], remember_token="")
+    return True
+
+
+# ── Registration / mutation ──────────────────────────────────────────────────
+
+async def register_user(username: str, password: str, display_name: str = "",
+                        is_approved: bool = True,
+                        user_id: Optional[str] = None) -> Optional[User]:
     """Register a new user. Returns User on success, None if username taken.
     Set is_approved=False when admin approval is required.
 
@@ -228,59 +250,70 @@ def register_user(username: str, password: str, display_name: str = "",
     login name can be anything the operator chooses while the canonical admin id
     that the rest of the app keys privileges on stays fixed.
     """
-    if username in _users:
-        return None
-    user = User(
+    row = await _db().create_user_account(
+        user_id=user_id or username,
         username=username,
         password_hash=_hash_password(password),
-        user_id=user_id or username,
         display_name=display_name or username,
         is_approved=is_approved,
     )
-    _users[username] = user
-    _persist()
+    user = User.from_row(row)
+    # The bootstrap admin's *privilege* (user_profiles.is_admin) must travel with
+    # its *login* on EVERY backend. The is_admin=1 seed historically lived only in
+    # the LocalBackend SQLite migrations, so a shared/remote control DB (Postgres/
+    # Supabase) never received it — a signed-in "admin" then had no Admin Tools.
+    # Stamping it here (a backend-agnostic, control-DB-routed write) closes that
+    # gap for the setup page, the env-var bootstrap, and the bundle path alike.
+    if user is not None and user.user_id == ADMIN_USER_ID:
+        try:
+            await _db().set_user_admin(ADMIN_USER_ID, True)
+        except Exception as e:  # best-effort — never block account creation
+            logger.warning("Could not stamp is_admin on the bootstrap admin: %s", e)
     return user
 
 
-def list_users() -> list[User]:
-    """Return all registered users."""
-    return list(_users.values())
-
-
-def set_user_approval(username: str, is_approved: bool) -> Optional[User]:
+async def set_user_approval(username: str, is_approved: bool) -> Optional[User]:
     """Set the is_approved flag on a user. Returns updated User or None."""
-    user = _users.get(username)
-    if user is None:
+    row = await _db().get_user_account_by_username(username)
+    if row is None:
         return None
-    user.is_approved = is_approved
-    _persist()
-    return user
+    return User.from_row(
+        await _db().update_user_account(row["user_id"], is_approved=is_approved)
+    )
 
 
-def delete_user(username: str) -> bool:
-    """Remove a user from the store. Returns True if deleted."""
-    user = _users.get(username)
-    if user is None:
+async def delete_user(username: str) -> bool:
+    """Remove a user from the store. Returns True if deleted.
+    Protects the bootstrap admin regardless of its (possibly custom) login name."""
+    row = await _db().get_user_account_by_username(username)
+    if row is None:
         return False
-    # Protect the bootstrap admin regardless of its (possibly custom) login name.
-    if user.user_id == "admin":
+    if row["user_id"] == "admin":
         return False
-    del _users[username]
-    _persist()
-    return True
+    return await _db().delete_user_account(row["user_id"])
 
 
-def get_user_by_id(user_id: str) -> Optional[User]:
-    """Look up a user by user_id (vs username)."""
-    for u in _users.values():
-        if u.user_id == user_id:
-            return u
-    return None
+async def set_session_policy(username: str, lifetime_minutes: int,
+                             auto_renew: bool) -> Optional[User]:
+    """Set a user's session policy (login-pass lifetime + auto-renew).
+
+    The lifetime is clamped into the allowed range. Returns the updated User,
+    or None if the user is not found. Does NOT touch the remember token —
+    callers decide whether to issue/clear it based on the new auto_renew value.
+    """
+    row = await _db().get_user_account_by_username(username)
+    if row is None:
+        return None
+    return User.from_row(await _db().update_user_account(
+        row["user_id"],
+        session_lifetime_minutes=clamp_session_lifetime(lifetime_minutes),
+        auto_renew=bool(auto_renew),
+    ))
 
 
 # ── Social sign-in links ────────────────────────────────────────────────────
 
-def get_user_by_social(provider: str, external_id: str) -> Optional[User]:
+async def get_user_by_social(provider: str, external_id: str) -> Optional[User]:
     """Find the user who has linked this (provider, external_id), or None.
 
     Keyed on the provider's STABLE id (not email) so a user keeps their account
@@ -288,71 +321,43 @@ def get_user_by_social(provider: str, external_id: str) -> Optional[User]:
     """
     if not provider or not external_id:
         return None
-    ext = str(external_id)
-    for u in _users.values():
-        if str(u.social_links.get(provider, "")) == ext:
-            return u
-    return None
+    return User.from_row(await _db().get_user_account_by_social(provider, external_id))
 
 
-def link_social(username: str, provider: str, external_id: str) -> Optional[User]:
+async def link_social(username: str, provider: str, external_id: str) -> Optional[User]:
     """Record that `username`'s account is linked to (provider, external_id)."""
-    user = _users.get(username)
-    if user is None or not provider or not external_id:
+    if not provider or not external_id:
         return None
-    user.social_links[provider] = str(external_id)
-    _persist()
-    return user
+    row = await _db().get_user_account_by_username(username)
+    if row is None:
+        return None
+    try:
+        links = json.loads(row.get("social_links") or "{}")
+    except Exception:
+        links = {}
+    links[provider] = str(external_id)
+    return User.from_row(
+        await _db().update_user_account(row["user_id"], social_links=links)
+    )
 
 
-def register_social_user(email: str, display_name: str, provider: str,
-                         external_id: str, is_approved: bool = True) -> Optional[User]:
+async def register_social_user(email: str, display_name: str, provider: str,
+                               external_id: str, is_approved: bool = True) -> Optional[User]:
     """Create a new account for a first-time social sign-in and link it.
 
     The password is a random, unusable value — the person signs in through the
     provider, not with a password. Returns None if the email is already taken
     (the caller should link to the existing account instead).
     """
-    if email in _users:
-        return None
-    user = User(
+    row = await _db().create_user_account(
+        user_id=email,
         username=email,
         password_hash=_hash_password(secrets.token_urlsafe(32)),
-        user_id=email,
         display_name=display_name or email,
         is_approved=is_approved,
         social_links={provider: str(external_id)} if provider and external_id else None,
     )
-    _users[email] = user
-    _persist()
-    return user
-
-
-def clear_remember_token(username: str) -> bool:
-    """Clear the remember token for a user (sign-out)."""
-    user = _users.get(username)
-    if user is None:
-        return False
-    user.remember_token = ""
-    _persist()
-    return True
-
-
-def set_session_policy(username: str, lifetime_minutes: int,
-                       auto_renew: bool) -> Optional[User]:
-    """Set a user's session policy (login-pass lifetime + auto-renew).
-
-    The lifetime is clamped into the allowed range. Returns the updated User,
-    or None if the user is not found. Does NOT touch the remember token —
-    callers decide whether to issue/clear it based on the new auto_renew value.
-    """
-    user = _users.get(username)
-    if user is None:
-        return None
-    user.session_lifetime_minutes = clamp_session_lifetime(lifetime_minutes)
-    user.auto_renew = bool(auto_renew)
-    _persist()
-    return user
+    return User.from_row(row)
 
 
 # ── Self-service profile/password/delete ────────────────────────────────────
@@ -361,49 +366,52 @@ class UpdateConflict(Exception):
     """Raised when a username/email change collides with an existing user."""
 
 
-def update_user(current_username: str,
-                new_username: Optional[str] = None,
-                new_display_name: Optional[str] = None) -> Optional[User]:
+async def update_user(current_username: str,
+                      new_username: Optional[str] = None,
+                      new_display_name: Optional[str] = None) -> Optional[User]:
     """Update a user's username (email) and/or display name.
 
     Keeps user_id stable so existing DB references stay valid.
     Raises UpdateConflict if new_username collides with another user.
     Returns the updated User, or None if current_username not found.
     """
-    user = _users.get(current_username)
-    if user is None:
+    row = await _db().get_user_account_by_username(current_username)
+    if row is None:
         return None
 
+    updates: dict = {}
     if new_username is not None and new_username != current_username:
-        if new_username in _users:
-            raise UpdateConflict(new_username)
-        # Rekey the dict entry
-        del _users[current_username]
-        user.username = new_username
-        _users[new_username] = user
-
+        updates["username"] = new_username
     if new_display_name is not None:
-        user.display_name = new_display_name or user.username
+        updates["display_name"] = new_display_name or (new_username or current_username)
 
-    _persist()
-    return user
+    if not updates:
+        return User.from_row(row)
+
+    try:
+        updated = await _db().update_user_account(row["user_id"], **updates)
+    except ValueError:
+        # DB raised on a UNIQUE(username) collision.
+        raise UpdateConflict(new_username)
+    return User.from_row(updated)
 
 
-def change_password(username: str, new_password: str) -> bool:
+async def change_password(username: str, new_password: str) -> bool:
     """Set a new password hash for the user.
 
     Caller must verify the current password first (e.g. via authenticate()).
     Returns True on success, False if user not found.
     """
-    user = _users.get(username)
-    if user is None:
+    row = await _db().get_user_account_by_username(username)
+    if row is None:
         return False
-    user.password_hash = _hash_password(new_password)
-    _persist()
+    await _db().update_user_account(
+        row["user_id"], password_hash=_hash_password(new_password)
+    )
     return True
 
 
-def delete_user_self(username: str) -> tuple[bool, str]:
+async def delete_user_self(username: str) -> tuple[bool, str]:
     """Delete the user identified by `username` (self-service).
 
     Blocks deletion of the bootstrap admin (user_id == "admin").
@@ -411,11 +419,98 @@ def delete_user_self(username: str) -> tuple[bool, str]:
       - "not_found"  — username not in store
       - "protected"  — the admin seed cannot be deleted
     """
-    user = _users.get(username)
-    if user is None:
+    row = await _db().get_user_account_by_username(username)
+    if row is None:
         return False, "not_found"
-    if user.user_id == "admin":
+    if row["user_id"] == "admin":
         return False, "protected"
-    del _users[username]
-    _persist()
-    return True, ""
+    ok = await _db().delete_user_account(row["user_id"])
+    return (True, "") if ok else (False, "not_found")
+
+
+# ── Startup: legacy-file migration + env-var admin bootstrap ──────────────────
+
+async def migrate_legacy_file() -> int:
+    """One-time import of the old app/auth/users.json into the DB.
+
+    Only runs when the DB has NO accounts yet (a fresh move) AND the legacy file
+    exists — so it never clobbers accounts already in the DB. On success the file
+    is renamed to `users.json.bak` (kept as a backup, never deleted). Returns the
+    number of accounts imported. Best-effort: logs and returns 0 on any failure so
+    a bad file can never block startup."""
+    try:
+        if not _USER_FILE.exists():
+            return 0
+        if await _db().count_user_accounts() > 0:
+            return 0  # DB already populated — the move already happened
+        data = json.loads(_USER_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("Legacy users.json migration skipped (unreadable): %s", e)
+        return 0
+
+    imported = 0
+    for d in data or []:
+        try:
+            u = User.from_dict(d)
+            created = await _db().create_user_account(
+                user_id=u.user_id,
+                username=u.username,
+                password_hash=u.password_hash,
+                display_name=u.display_name,
+                is_approved=u.is_approved,
+                session_lifetime_minutes=u.session_lifetime_minutes,
+                auto_renew=u.auto_renew,
+                social_links=u.social_links,
+            )
+            if created and u.remember_token:
+                # Preserve live "remember me" sessions across the move.
+                await _db().update_user_account(u.user_id, remember_token=u.remember_token)
+            if created:
+                imported += 1
+        except Exception as e:  # noqa: BLE001 — one bad row must not abort the rest
+            logger.warning("Failed to import legacy account %r: %s", d.get("username"), e)
+
+    if imported:
+        logger.info("Migrated %d account(s) from users.json into the shared DB", imported)
+    try:
+        _USER_FILE.rename(_USER_FILE.with_suffix(".json.bak"))
+    except Exception as e:
+        logger.warning("Could not rename legacy users.json to .bak: %s", e)
+    return imported
+
+
+async def bootstrap_admin_from_env() -> None:
+    """On first start, create the admin from BOOTSTRAP_ADMIN_PASSWORD if set and
+    no admin exists yet. Replaces the old import-time bootstrap (which can't reach
+    the async DB). Called from the app startup hook AFTER migrate_legacy_file()."""
+    password = _os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "")
+    if not password:
+        return
+    if await admin_exists():
+        return
+    await register_user(ADMIN_USER_ID, password, "Admin", user_id=ADMIN_USER_ID)
+    logger.info("Bootstrap admin created from BOOTSTRAP_ADMIN_PASSWORD env var")
+
+
+async def ensure_admin_privilege() -> bool:
+    """Self-heal: guarantee the bootstrap admin's profile carries is_admin=1 in the
+    ACTIVE control database, whatever the backend.
+
+    The admin *login* lives in user_accounts; the *privilege* lives in
+    user_profiles.is_admin. That privilege was only ever seeded by the LocalBackend
+    SQLite migrations, so a box whose control DB is a shared/remote Postgres or
+    Supabase (e.g. a fresh deploy that inherits an existing shared database) ends up
+    with a valid admin login but NO admin privilege — signed in, yet locked out of
+    Admin Tools. Run once at startup (after the account bootstrap) it repairs any
+    such box, and repairs the shared DB itself so later deploys inherit the flag.
+
+    No-op (returns False) when no admin login exists yet, so it never creates a
+    stray privileged profile on a truly fresh, not-yet-set-up box."""
+    if not await admin_exists():
+        return False
+    try:
+        await _db().set_user_admin(ADMIN_USER_ID, True)
+        return True
+    except Exception as e:  # best-effort — must never block startup
+        logger.warning("Could not ensure is_admin on the bootstrap admin: %s", e)
+        return False

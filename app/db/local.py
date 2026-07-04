@@ -36,7 +36,7 @@ def _ensure_np():
 
 from app.models.schemas import InteractionRecord
 from app.db.interface import StorageBackend
-from app.agent.embed import embed_text, EMBED_DIM
+from app.agent.embed import embed_text, embed_dim, embed_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +130,12 @@ def cascade_delete_clones(conn, root_session_ids) -> int:
         (orchestrator_session_id → spawn_session_id / spawn_agent_id) WHEN it
         exists; if the table is absent (orchestration ability never used) it
         simply no-ops.
-      • Only ever deletes agent rows whose ``status='clone'`` — a real fleet agent
-        can never be caught by this sweep even if its id appears in the ledger.
+      • Only ever deletes an agent row — AND its agent-scoped data (prompts,
+        connections, abilities) — whose ``status='clone'``. A real fleet agent can
+        never be caught by this sweep even if its id appears in the ledger (e.g. a
+        ``kind='delegate'`` row points at an agent the user owns): only the
+        delegate SUB-SESSION and the ledger row are cleaned up, its config is left
+        wholly intact.
 
     Operates on the caller's open DBAPI connection (does NOT commit). Returns the
     number of clone agents removed."""
@@ -163,19 +167,36 @@ def cascade_delete_clones(conn, root_session_ids) -> int:
                 conn.execute("DELETE FROM sessions WHERE id = ?", (spawn_sid,))
                 queue.append(spawn_sid)  # this clone may have orchestrated sub-clones
             if spawn_aid:
-                cur = conn.execute(
-                    "DELETE FROM agents WHERE id = ? AND status = 'clone'", (spawn_aid,))
+                # Only a throwaway CLONE's agent record + its agent-scoped data
+                # (prompts / connections / abilities) may be reaped. A real saved
+                # agent can appear in this ledger too — a `kind='delegate'` row
+                # points at an agent the user built and owns (e.g. a Local Claude
+                # Code specialist someone delegated a task to). We must clean up
+                # only its delegate SUB-SESSION (done above) and the ledger row
+                # (below), NEVER the agent's own config. Gate every agent-scoped
+                # delete on the agent actually being a clone — checked up front so
+                # it's robust across drivers whose DELETE rowcount is unreliable.
+                was_clone = False
                 try:
-                    if cur.rowcount and cur.rowcount > 0:
-                        removed += cur.rowcount
+                    srow = conn.execute(
+                        "SELECT status FROM agents WHERE id = ?", (spawn_aid,)).fetchone()
+                    was_clone = bool(srow) and (srow[0] == "clone")
                 except Exception:  # noqa: BLE001
-                    pass
-                conn.execute("DELETE FROM agent_prompts WHERE agent_id = ?", (spawn_aid,))
-                for tbl in ("agent_connections", "agent_abilities"):
+                    was_clone = False
+                if was_clone:
+                    cur = conn.execute(
+                        "DELETE FROM agents WHERE id = ? AND status = 'clone'", (spawn_aid,))
                     try:
-                        conn.execute(f"DELETE FROM {tbl} WHERE agent_id = ?", (spawn_aid,))
+                        if cur.rowcount and cur.rowcount > 0:
+                            removed += cur.rowcount
                     except Exception:  # noqa: BLE001
                         pass
+                    conn.execute("DELETE FROM agent_prompts WHERE agent_id = ?", (spawn_aid,))
+                    for tbl in ("agent_connections", "agent_abilities"):
+                        try:
+                            conn.execute(f"DELETE FROM {tbl} WHERE agent_id = ?", (spawn_aid,))
+                        except Exception:  # noqa: BLE001
+                            pass
         try:
             conn.execute("DELETE FROM agent_spawns WHERE orchestrator_session_id = ?", (sid,))
         except Exception:  # noqa: BLE001
@@ -428,7 +449,9 @@ CREATE TABLE IF NOT EXISTS background_leader (
 --     A claimed job carries a TTL'd lease so a crashed claimer's job is reclaimed.
 CREATE TABLE IF NOT EXISTS device_presence (
     instance_id TEXT PRIMARY KEY,
-    label TEXT,                                  -- friendly name (hostname)
+    label TEXT,                                  -- friendly name (hostname; self-reported by the device)
+    custom_label TEXT,                           -- admin's chosen display name; overrides label, never overwritten by the heartbeat
+    custom_icon TEXT,                            -- admin's chosen icon (Lucide name); overrides the platform icon
     capabilities TEXT NOT NULL DEFAULT '{}',     -- JSON: platform, has_browser, …
     endpoint TEXT,                               -- reachable base URL for nudges (optional)
     last_seen TEXT,                              -- ISO heartbeat; stale = offline
@@ -1187,6 +1210,24 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     last_login_at       TEXT
 );
 
+-- Account/identity plane — login credentials (was app/auth/users.json).
+-- Central table (never per-tenant routed; see app/db/router.py CONTROL_METHODS).
+-- password_hash is bcrypt, never plaintext. Sibling of user_profiles by user_id.
+CREATE TABLE IF NOT EXISTS user_accounts (
+    user_id                     TEXT PRIMARY KEY,
+    username                    TEXT NOT NULL UNIQUE,
+    password_hash               TEXT NOT NULL DEFAULT '',
+    display_name                TEXT NOT NULL DEFAULT '',
+    remember_token              TEXT NOT NULL DEFAULT '',
+    is_approved                 INTEGER NOT NULL DEFAULT 1,
+    session_lifetime_minutes    INTEGER NOT NULL DEFAULT 43200,
+    auto_renew                  INTEGER NOT NULL DEFAULT 1,
+    social_links                TEXT NOT NULL DEFAULT '{}',
+    created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_user_accounts_remember ON user_accounts(remember_token);
+
 -- ============================================================
 -- Per-Agent External Data Sources
 -- Each agent can attach data sources (SQL DBs, doc stores, REST APIs,
@@ -1884,6 +1925,8 @@ class LocalBackend(StorageBackend):
                 """CREATE TABLE IF NOT EXISTS device_presence (
                     instance_id TEXT PRIMARY KEY,
                     label TEXT,
+                    custom_label TEXT,
+                    custom_icon TEXT,
                     capabilities TEXT NOT NULL DEFAULT '{}',
                     endpoint TEXT,
                     last_seen TEXT,
@@ -1920,6 +1963,17 @@ class LocalBackend(StorageBackend):
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_device_presence_seen ON device_presence(last_seen)"
             )
+            # ── Migration: admin display overrides on device_presence ──
+            # custom_label / custom_icon let an admin rename a device and pick its
+            # icon from the Instances page; both live in the shared DB (so every
+            # device shows the same) and are NEVER written by the heartbeat, so the
+            # override survives every check-in. Guarded ADD COLUMN (no IF NOT EXISTS
+            # in SQLite) so re-runs are no-ops on already-migrated DBs.
+            cursor = conn.execute("PRAGMA table_info(device_presence)")
+            _dp_cols = {row[1] for row in cursor.fetchall()}
+            for _col in ("custom_label", "custom_icon"):
+                if _col not in _dp_cols:
+                    conn.execute(f"ALTER TABLE device_presence ADD COLUMN {_col} TEXT")
             conn.commit()
 
             # ── Migration: self-healing/auto-resume columns on session_runs ──
@@ -3352,6 +3406,35 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
+    async def stamp_interaction_seq(
+        self,
+        interaction_id: str,
+        session_seq: int,
+        turn_id: Optional[str] = None,
+        turn_seq: Optional[int] = None,
+    ) -> None:
+        """Backfill the ordering columns (session_seq / turn_id / turn_seq) on an
+        already-inserted interaction row.
+
+        A row is often written before its RunBuffer-allocated sequence number is
+        known (the user turn is saved, then the buffer starts; an assistant row is
+        created on the first token, then finalized). This stamps the number in
+        afterwards. On the plain (non-hybrid) backend the row lives in this same
+        store, so it updates directly; the HybridBackend overrides this to write
+        the LOCAL copy (where the local-first row actually lives) and enqueue the
+        change for the background push to remote."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE interactions SET session_seq=?, turn_id=COALESCE(?, turn_id), "
+                    "turn_seq=COALESCE(?, turn_seq) WHERE id=?",
+                    (session_seq, turn_id, turn_seq, interaction_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     # ── Diagnostics (flight-recorder durable store) ───────────────────────────
 
     async def insert_diagnostics_batch(self, rows: List[Dict[str, Any]]) -> int:
@@ -4731,7 +4814,7 @@ class LocalBackend(StorageBackend):
         for r in rows:
             if r["embedding"]:
                 vec = np.frombuffer(r["embedding"], dtype=np.float32)
-                if vec.shape[0] == EMBED_DIM:
+                if vec.shape[0] == embed_dim():
                     memory_ids.append(r["memory_id"])
                     vecs.append(vec)
         if not vecs:
@@ -4822,6 +4905,78 @@ class LocalBackend(StorageBackend):
         conn.commit()  # release the write lock now — don't carry it into the next source's embeds
         if pending:
             logger.debug("Stored %d chunks for memory %s (%s)", len(pending), memory_id, source)
+
+    async def reindex_embeddings(
+        self, *, tables: tuple = ("memory_chunks", "doc_chunks"), batch: int = 64
+    ) -> dict:
+        """Re-embed every stored chunk with the CURRENT embedding model/source.
+
+        Run after an admin switches embedding source/model: the old vectors were
+        produced by a different model (usually a different width too), so a search
+        against them returns nothing useful — they must be regenerated. SQLite
+        stores embeddings as raw float32 BLOBs with no fixed width, so nothing in
+        the schema changes here; each blob is simply overwritten (the Postgres
+        backend overrides this to also resize its fixed-width vector column).
+
+        Mirrors _embed_and_store_chunks' discipline: do the slow embed work with
+        NO write lock held, then take the lock only for short write bursts, so a
+        long reindex never starves other writers (chat, session titler, …).
+        """
+        target_dim = embed_dim()
+        out: dict = {"model": embed_model_name(), "dim": target_dim, "tables": {}}
+        for table in tables:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(f"SELECT id, chunk_text FROM {table}").fetchall()
+            except Exception as e:
+                logger.warning("reindex: cannot read %s (skipping): %s", table, e)
+                conn.close()
+                out["tables"][table] = {"error": str(e)}
+                continue
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            written = failed = 0
+            pending: list = []  # (blob_or_None, id)
+
+            async def _flush(items):
+                if not items:
+                    return
+                async with self._write_lock:
+                    c = self._get_conn()
+                    try:
+                        for blob, rid in items:
+                            c.execute(
+                                f"UPDATE {table} SET embedding = ? WHERE id = ?",
+                                (blob, rid),
+                            )
+                        c.commit()
+                    finally:
+                        c.close()
+
+            for r in rows:
+                txt = (r["chunk_text"] or "")
+                blob = None
+                if txt.strip():
+                    try:
+                        emb = await embed_text(txt)
+                        blob = struct.pack(f"{len(emb)}f", *emb)
+                        written += 1
+                    except Exception as e:
+                        failed += 1
+                        logger.warning("reindex embed failed (%s id=%s): %s", table, r["id"], e)
+                pending.append((blob, r["id"]))
+                if len(pending) >= batch:
+                    await _flush(pending)
+                    pending = []
+            await _flush(pending)
+            out["tables"][table] = {"rows": len(rows), "written": written, "failed": failed}
+            logger.info("reindex %s: %d rows, %d embedded, %d failed (dim=%d)",
+                        table, len(rows), written, failed, target_dim)
+        return out
 
     # ---- Session Search ----
 
@@ -5603,6 +5758,81 @@ class LocalBackend(StorageBackend):
             return cfg if isinstance(cfg, dict) else None
         finally:
             conn.close()
+
+    async def get_session_context_override(self, session_id: str) -> Optional[dict]:
+        """Return this session's per-chat Context-Control override, or None if unset.
+
+        The footer compaction panel saves a small ``{compact_threshold, tail_fraction}``
+        block (fractions 0..1) under ``metadata['context_override']`` so ONE chat can
+        tune its own compaction without touching the agent default — mirroring the
+        per-session model override. Only the keys the user changed are present."""
+        if not session_id:
+            return None
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row or not row["metadata"]:
+                return None
+            try:
+                meta = json.loads(row["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                return None
+            ov = meta.get("context_override") if isinstance(meta, dict) else None
+            return ov if isinstance(ov, dict) and ov else None
+        finally:
+            conn.close()
+
+    async def set_session_context_override(
+        self, session_id: str, updates: Dict[str, Any]
+    ) -> Optional[dict]:
+        """Merge per-chat Context-Control overrides into this session's metadata.
+
+        ``updates`` maps override keys (``compact_threshold`` / ``tail_fraction``) to
+        a fraction (0..1) to set, or ``None`` to clear that one key. When no override
+        keys remain the whole ``context_override`` block is removed and the chat
+        falls back to the agent's Context Control settings. Takes effect on the next
+        turn (the gauge + the next automatic/manual compaction re-resolve settings).
+        Returns the new override dict (or None when cleared)."""
+        if not session_id:
+            return None
+        updates = updates or {}
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return None
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                ov = meta.get("context_override")
+                ov = dict(ov) if isinstance(ov, dict) else {}
+                for key, val in updates.items():
+                    if val is None:
+                        ov.pop(key, None)
+                    else:
+                        ov[key] = val
+                if ov:
+                    meta["context_override"] = ov
+                    result = ov
+                else:
+                    meta.pop("context_override", None)
+                    result = None
+                conn.execute(
+                    "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), session_id),
+                )
+                conn.commit()
+                return result
+            finally:
+                conn.close()
 
     async def set_session_llm_override(
         self, session_id: str, model: Optional[str]
@@ -6425,6 +6655,44 @@ class LocalBackend(StorageBackend):
 
     # ---- Agent Resolution & Session Binding ----
 
+    async def find_default_agent(self, user_id: str) -> Optional[dict]:
+        """Authoritative singleton lookup for a user's **WebAgent** — their oldest
+        ACTIVE agent cloned from the ``default`` template.
+
+        Returns the agents row (dict, with ``source='custom'``) or ``None``. This is
+        the anti-duplication cornerstone: the idempotent provisioner calls it BEFORE
+        creating a WebAgent, so a device never mints a second one when one already
+        exists. It is deliberately NOT overridden on the HybridBackend, so
+        ``__getattr__`` routes it to the REMOTE authority (Postgres) — the whole
+        point is to see agents this device's local mirror may not have pulled yet,
+        which is exactly the gap that let every device spawn its own duplicate.
+
+        Clones (``status='clone'``) and trashed rows are excluded; ties break on the
+        earliest creation so the choice is stable across devices."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                """SELECT * FROM agents
+                   WHERE template_id = 'default'
+                     AND (status IS NULL OR status = '' OR status = 'active')
+                     AND EXISTS (
+                           SELECT 1 FROM json_each(admin_users) WHERE value = ?
+                         )
+                   ORDER BY (sort_order IS NULL), sort_order ASC, created_at ASC
+                   LIMIT 1""",
+                (user_id,),
+            ).fetchone()
+            if not row:
+                return None
+            entry = dict(row)
+            entry["source"] = "custom"
+            return entry
+        except Exception as e:
+            logger.error("find_default_agent failed for %s: %s", user_id, e)
+            return None
+        finally:
+            conn.close()
+
     async def resolve_agent(self, user_id: str, template_id: str) -> dict:
         """
         Resolve an agent for a user + template combo.
@@ -6988,6 +7256,55 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def delete_device(self, instance_id):
+        """Remove a device's presence row (admin unlink of a stale device). This
+        only clears the record — it never reaches the machine; a still-running
+        device pointed at this database re-registers on its next heartbeat.
+        Returns the number of rows removed (0 if it was already gone)."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM device_presence WHERE instance_id = ?",
+                    (instance_id,),
+                )
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
+    async def set_device_override(self, instance_id, label=None, icon=None):
+        """Set the admin's custom display name / icon for a device (shared
+        registry). These override the self-reported hostname + platform icon and
+        are NEVER written by the heartbeat, so they persist across check-ins and
+        show identically on every device pointed at this database.
+
+        Semantics per field: None = leave unchanged; "" (empty) = clear the
+        override (fall back to the default); any other string = set it. Only an
+        EXISTING presence row is updated (a device must have checked in to be
+        renamed); returns True when a row was updated."""
+        sets, params = [], []
+        if label is not None:
+            sets.append("custom_label = ?")
+            params.append(label or None)
+        if icon is not None:
+            sets.append("custom_icon = ?")
+            params.append(icon or None)
+        if not sets:
+            return False
+        params.append(instance_id)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    f"UPDATE device_presence SET {', '.join(sets)} WHERE instance_id = ?",
+                    params,
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
     async def enqueue_device_job(self, *, owner_user_id, prompt, agent_id=None,
                                  target_instance=None, target_label=None,
                                  created_by_instance=None, payload=None):
@@ -7056,6 +7373,20 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
         return claimed
+
+    async def get_device_job(self, job_id):
+        """Fetch a single device job by id (or None). Lets the Instances page poll
+        an enqueued fleet ACTION's outcome — status / result_excerpt / error — for
+        actions that leave no visible heartbeat state (git pull, commit+push)."""
+        conn = self._get_conn()
+        try:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM device_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            return dict(row) if row is not None else None
+        finally:
+            conn.close()
 
     async def finish_device_job(self, job_id, *, status, result_excerpt=None,
                                 error=None, session_id=None):
@@ -7927,6 +8258,192 @@ class LocalBackend(StorageBackend):
         return await self.set_user_appearance(user_id, current)
 
     # ──────────────────────────────────────────────────────────────────────────
+    # User Accounts — the login/credential plane (was app/auth/users.json).
+    # CENTRAL: registered in app/db/router.py CONTROL_METHODS so these always hit
+    # the authority DB, never a per-tenant database. password_hash is bcrypt.
+    # The set of updatable columns is fixed (see _USER_ACCOUNT_COLS) so a caller
+    # can't smuggle arbitrary column names into the UPDATE.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    _USER_ACCOUNT_COLS = (
+        "username", "password_hash", "display_name", "remember_token",
+        "is_approved", "session_lifetime_minutes", "auto_renew", "social_links",
+    )
+
+    async def get_user_account_by_id(self, user_id: str) -> Optional[dict]:
+        """Return the user_accounts row for this canonical user_id, or None."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM user_accounts WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def get_user_account_by_username(self, username: str) -> Optional[dict]:
+        """Return the account whose login name matches `username`, or None."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM user_accounts WHERE username = ?", (username,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def get_user_account_by_remember_token(self, token: str) -> Optional[dict]:
+        """Return the account holding this (non-empty) remember token, or None."""
+        if not token:
+            return None
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM user_accounts WHERE remember_token = ? AND remember_token != ''",
+                (token,),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def get_user_account_by_social(self, provider: str, external_id: str) -> Optional[dict]:
+        """Return the account linked to (provider, external_id), or None.
+
+        social_links is a small JSON map {provider: external_id}; there are few
+        accounts, so a scan-and-match in Python is simpler and fully portable
+        (no JSON SQL functions across SQLite/Postgres)."""
+        if not provider or not external_id:
+            return None
+        ext = str(external_id)
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM user_accounts WHERE social_links LIKE ?",
+                (f'%"{provider}"%',),
+            ).fetchall()
+        finally:
+            conn.close()
+        for row in rows:
+            d = dict(row)
+            try:
+                links = json.loads(d.get("social_links") or "{}")
+            except Exception:
+                links = {}
+            if str(links.get(provider, "")) == ext:
+                return d
+        return None
+
+    async def list_user_accounts(self) -> List[dict]:
+        """Return every account row (ordered by creation)."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM user_accounts ORDER BY created_at ASC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def count_user_accounts(self) -> int:
+        """Return how many accounts exist (used for the first-run / seed gate)."""
+        conn = self._get_conn()
+        try:
+            return int(conn.execute("SELECT COUNT(*) FROM user_accounts").fetchone()[0])
+        finally:
+            conn.close()
+
+    async def create_user_account(self, user_id: str, username: str,
+                                  password_hash: str, display_name: str = "",
+                                  is_approved: bool = True,
+                                  session_lifetime_minutes: int = 43200,
+                                  auto_renew: bool = True,
+                                  social_links: Optional[dict] = None) -> Optional[dict]:
+        """Insert a new account. Returns the row, or None if the username or
+        user_id is already taken (mirrors the old register_user contract)."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                clash = conn.execute(
+                    "SELECT 1 FROM user_accounts WHERE user_id = ? OR username = ?",
+                    (user_id, username),
+                ).fetchone()
+                if clash:
+                    return None
+                now = _now_iso()
+                conn.execute(
+                    "INSERT INTO user_accounts (user_id, username, password_hash, "
+                    "display_name, remember_token, is_approved, session_lifetime_minutes, "
+                    "auto_renew, social_links, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)",
+                    (user_id, username, password_hash, display_name or username,
+                     1 if is_approved else 0, int(session_lifetime_minutes),
+                     1 if auto_renew else 0, json.dumps(social_links or {}), now, now),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM user_accounts WHERE user_id = ?", (user_id,)
+                ).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+
+    async def update_user_account(self, user_id: str, **fields) -> Optional[dict]:
+        """Update whitelisted columns on an account. Returns the updated row, or
+        None if the account doesn't exist. Raises ValueError('username_taken')
+        if a username change collides with another account.
+
+        Booleans are coerced to 0/1; a dict `social_links` is JSON-encoded."""
+        updates = {k: v for k, v in fields.items() if k in self._USER_ACCOUNT_COLS}
+        if not updates:
+            return await self.get_user_account_by_id(user_id)
+        if "is_approved" in updates:
+            updates["is_approved"] = 1 if updates["is_approved"] else 0
+        if "auto_renew" in updates:
+            updates["auto_renew"] = 1 if updates["auto_renew"] else 0
+        if isinstance(updates.get("social_links"), dict):
+            updates["social_links"] = json.dumps(updates["social_links"])
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                if not conn.execute(
+                    "SELECT 1 FROM user_accounts WHERE user_id = ?", (user_id,)
+                ).fetchone():
+                    return None
+                if "username" in updates:
+                    taken = conn.execute(
+                        "SELECT 1 FROM user_accounts WHERE username = ? AND user_id != ?",
+                        (updates["username"], user_id),
+                    ).fetchone()
+                    if taken:
+                        raise ValueError("username_taken")
+                sets = ", ".join(f"{k} = ?" for k in updates)
+                vals = list(updates.values()) + [_now_iso(), user_id]
+                conn.execute(
+                    f"UPDATE user_accounts SET {sets}, updated_at = ? WHERE user_id = ?",
+                    vals,
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM user_accounts WHERE user_id = ?", (user_id,)
+                ).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+
+    async def delete_user_account(self, user_id: str) -> bool:
+        """Delete an account by user_id. Returns True if a row was removed."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM user_accounts WHERE user_id = ?", (user_id,)
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    # ──────────────────────────────────────────────────────────────────────────
     # Multi-agent: template listing and custom agent CRUD
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -8744,11 +9261,15 @@ class LocalBackend(StorageBackend):
         """
         conn = self._get_conn()
         try:
+            # Bump updated_at with the status flip so the hybrid puller carries this
+            # trash to every device's local mirror (it pulls only rows whose
+            # watermark advanced); otherwise the trashed agent would linger in the
+            # agents dropdown on other devices until a cold start.
             cursor = conn.execute(
-                """UPDATE agents SET status = 'trashed'
+                """UPDATE agents SET status = 'trashed', updated_at = ?
                    WHERE id = ?
                    AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)""",
-                (agent_id, user_id),
+                (_now_iso(), agent_id, user_id),
             )
             conn.commit()
             return cursor.rowcount > 0
@@ -8763,10 +9284,10 @@ class LocalBackend(StorageBackend):
         conn = self._get_conn()
         try:
             cursor = conn.execute(
-                """UPDATE agents SET status = 'active'
+                """UPDATE agents SET status = 'active', updated_at = ?
                    WHERE id = ? AND status = 'trashed'
                    AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)""",
-                (agent_id, user_id),
+                (_now_iso(), agent_id, user_id),
             )
             conn.commit()
             return cursor.rowcount > 0
@@ -9785,7 +10306,7 @@ class LocalBackend(StorageBackend):
         for r in rows:
             if r["embedding"]:
                 v = np.frombuffer(r["embedding"], dtype=np.float32)
-                if v.shape[0] == EMBED_DIM:
+                if v.shape[0] == embed_dim():
                     ids.append(r["id"])
                     vecs.append(v)
                     meta.append({

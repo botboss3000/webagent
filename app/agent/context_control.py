@@ -252,6 +252,25 @@ async def get_context_settings(
         "max_cars": _as_int(s.get("max_cars"), DEFAULT_MAX_CARS, 2),
         "summary_model": str(s.get("summary_model") or ""),
     })
+
+    # Per-session override (saved from the chat footer's compaction panel) wins over
+    # the agent's stored knobs for THIS one conversation — mirroring how the
+    # per-session model override layers over the agent/app default. Only the two
+    # user-facing percentages can be tuned per-chat; everything else stays agent-wide.
+    if session_id:
+        try:
+            ov = await db.get_session_context_override(session_id)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("context_control: session override read skipped: %s", e)
+            ov = None
+        if isinstance(ov, dict):
+            if ov.get("compact_threshold") is not None:
+                resolved["compact_threshold"] = _as_float(
+                    ov.get("compact_threshold"), resolved["compact_threshold"], 0.0, 1.0)
+            if ov.get("tail_fraction") is not None:
+                resolved["tail_fraction"] = _as_float(
+                    ov.get("tail_fraction"), resolved["tail_fraction"], 0.0, 1.0)
+
     return resolved
 
 

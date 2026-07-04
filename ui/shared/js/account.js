@@ -15,6 +15,9 @@ import { getPrefs, setGlobalEnabled, hintsGloballyEnabled } from '../../tutorial
 // "My appearance" per-user theme editor. Self-fills its slot only when the admin
 // has enabled per-user themes (App Settings → Appearance); otherwise removes it.
 import { mountMyAppearance } from './appearance-me.js';
+// "Your database" per-user connect panel. Self-fills its slot only when the
+// admin has turned on Multi-tenant data (App Settings); otherwise removes itself.
+import { mountMyDatabase } from './tenant-db.js';
 
 let _wired = false;
 
@@ -203,6 +206,15 @@ function renderTab() {
   appearanceSlot.id = 'account-appearance-slot';
   wrap.appendChild(appearanceSlot);
 
+  // ── Your database (per-user bring-your-own-database) ──
+  // A slot that mountMyDatabase() fills only when the admin has turned on
+  // Multi-tenant data, letting this user point their interaction data at their
+  // own Postgres. Removes itself when the feature is off.
+  const databaseSlot = document.createElement('section');
+  databaseSlot.className = 'account-section';
+  databaseSlot.id = 'account-database-slot';
+  wrap.appendChild(databaseSlot);
+
   // ── Danger zone ──
   const danger = document.createElement('section');
   danger.className = 'account-section account-danger-zone';
@@ -234,6 +246,8 @@ function renderTab() {
 
   // Fill (or remove) the per-user theme editor now that the slot is in the DOM.
   mountMyAppearance(document.getElementById('account-appearance-slot'));
+  // Fill (or remove) the per-user "Your database" panel.
+  mountMyDatabase(document.getElementById('account-database-slot'));
 }
 
 function wireHandlers() {

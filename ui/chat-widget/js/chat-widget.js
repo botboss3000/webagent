@@ -40,6 +40,7 @@ import { authHeaders } from '../../shared/js/left-login.js';
 import { randomUUID } from '../../shared/js/uuid.js';
 import { registerSessionSubscriber } from '../../shared/js/agentWs.js';
 import { icon } from '../../shared/js/icons.js';
+import { chatMsg } from '../../shared/js/app-prompts.js';
 import { _fillAgentBubble } from '../../chat-side-panel/js/chat-bubble.js';
 import { buildToolRow } from '../../shared/js/chat-activity.js';
 
@@ -560,6 +561,20 @@ export function createChatWidget(opts = {}) {
         break;
       case 'session_title':
         if (ev.status === 'done' && ev.title) st.els.title.textContent = ev.title;
+        break;
+      case 'session_deleted':
+        // This widget's session was permanently deleted elsewhere (another device
+        // via the hybrid tombstone sync). Its transcript is gone — stop polling,
+        // show "Session not found", and lock the input so nothing more can be sent
+        // into a session that no longer exists.
+        if ((ev.session_id || ev.sessionId) === st.sessionId) {
+          _stopReconcile();
+          st.settled = true;
+          _addBubble('agent', chatMsg('session_deleted_notice')).classList.add('cw-error');
+          if (st.els.input) { st.els.input.value = ''; st.els.input.disabled = true; }
+          if (st.els.sendBtn) st.els.sendBtn.disabled = true;
+          _setStatus('error');
+        }
         break;
       default:
         break; // pipeline / db / attachment etc. — not rendered in the mini view

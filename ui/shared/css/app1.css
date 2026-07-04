@@ -858,6 +858,88 @@ body.light-mode .chat-activity-bar {
 .chat-model-picker .cmp-cost-chip.cmp-cost-free { background: var(--success-soft); color: var(--success); }
 .chat-model-picker .cmp-detail-muted { color: var(--fg-3); font-style: italic; }
 
+/* ── Context-compaction section (bottom of the model picker) ────────────────
+   Two sliders ("compact at %" / "keep verbatim %") tune this chat's compaction,
+   plus a "Compact now" button that folds the conversation immediately. Saved as a
+   per-session override (POST /api/v1/chat/session-compaction). */
+.chat-model-picker .cmp-compact {
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: var(--border-width) solid var(--border-soft);
+  }
+.chat-model-picker .cmp-cc-head {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--fg-3);
+    margin-bottom: 8px;
+  }
+.chat-model-picker .cmp-cc-row { margin-bottom: 10px; }
+.chat-model-picker .cmp-cc-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 3px;
+  }
+.chat-model-picker .cmp-cc-label { font-size: 12px; color: var(--fg-1); font-weight: 500; }
+.chat-model-picker .cmp-cc-val {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    border-radius: 3px;
+    padding: 0 2px;
+  }
+/* Brief flash after a save lands (green ok / red fail), then fades back. */
+.chat-model-picker .cmp-cc-val.cmp-cc-saved { animation: cmpCcSaved 0.9s ease-out; }
+.chat-model-picker .cmp-cc-val.cmp-cc-failed { animation: cmpCcFailed 0.9s ease-out; }
+@keyframes cmpCcSaved {
+    0% { background: var(--success-soft); color: var(--success); }
+    100% { background: transparent; color: var(--accent); }
+  }
+@keyframes cmpCcFailed {
+    0% { background: var(--danger-soft); color: var(--danger); }
+    100% { background: transparent; color: var(--accent); }
+  }
+.chat-model-picker .cmp-cc-slider {
+    width: 100%;
+    margin: 2px 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+.chat-model-picker .cmp-cc-hint {
+    font-size: 10px;
+    line-height: 1.35;
+    color: var(--fg-3);
+    margin-top: 2px;
+  }
+.chat-model-picker .cmp-cc-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 2px;
+    padding: 7px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: var(--border-width) solid var(--accent-line);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+.chat-model-picker .cmp-cc-btn:hover { background: var(--accent-mid); color: var(--fg-1); }
+.chat-model-picker .cmp-cc-btn-status { font-size: 10px; color: var(--fg-3); font-weight: 500; }
+.chat-model-picker .cmp-cc-note {
+    font-size: 10px;
+    color: var(--fg-3);
+    text-align: center;
+    margin-top: 6px;
+  }
+
 /* ── Local Claude Code footer panel ────────────────────────────────────────
    Opens in place of the model picker for claude_code agents (see chat-activity.js
    _toggleClaudePanel). Borrows the .chat-model-picker container chrome; these
@@ -1059,64 +1141,10 @@ body.light-mode .chat-skills-btn {
   }
 .chat-skills-btn .csp-badge.visible { opacity: 1; }
 
-/* ── Terminal-keys toggle + in-pill key view ──────────────────────────────
-   Terminal Chat only. The footer toggle (.chat-term-keys-btn) reuses the
-   .chat-skills-btn glass skin and adds .term-keys-open to #chat-input-area. The
-   pill (#chat-input-row) then hides its normal controls and the #chat-term-keypad
-   grid OVERLAYS the whole pill box — same border, radius, background and resting
-   height — so the composer literally BECOMES a number pad + arrows + shortcut keys
-   (ui/chat-side-panel/js/chat-terminal-keys.js). A view the pill takes on, not a
-   separate panel. Theme via design-system tokens. */
-.chat-term-keys-btn[data-active="1"] {
-    border-color: color-mix(in oklab, var(--accent) 55%, transparent);
-    color: var(--accent);
-  }
-/* When open: hide every normal pill child, then overlay the key grid across the
-   FULL pill grid (cols 1/-1, rows 1/-1) held at the pill's resting height so the
-   box keeps its exact size. The 3×8 keys fill that box — no separate sizing. */
-#chat-input-area.term-keys-open #chat-input-row > :not(.chat-term-keypad) { display: none; }
-.chat-term-keypad { display: none; }
-#chat-input-area.term-keys-open .chat-term-keypad {
-    display: grid;
-    grid-column: 1 / -1;
-    grid-row: 1 / -1;
-    grid-template-columns: repeat(8, minmax(0, 1fr));
-    grid-template-rows: repeat(3, 1fr);
-    gap: 5px;
-    width: 100%;
-    min-height: var(--chat-pill-min-height, 96px);
-  }
-.ctk-chip {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    padding: 0 3px;
-    border-radius: 7px;
-    border: var(--border-width) solid color-mix(in oklab, currentColor 14%, transparent);
-    background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent));
-    color: var(--fg-2, var(--fg-3));
-    font-family: 'JetBrains Mono', ui-monospace, Menlo, Monaco, monospace;
-    font-size: 12px;
-    font-weight: 600;
-    line-height: 1;
-    white-space: nowrap;
-    overflow: hidden;
-    cursor: pointer;
-    user-select: none;
-    -webkit-user-select: none;
-    -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-  }
-.ctk-chip:hover { border-color: color-mix(in oklab, var(--accent) 45%, transparent); color: var(--accent); }
-.ctk-chip:active { transform: translateY(1px); }
-/* Lucide SVG inside chips must not swallow taps (same fix as .chat-skills-btn > *). */
-.ctk-chip > * { pointer-events: none; }
-.ctk-chip svg { width: 15px; height: 15px; }
+/* The Terminal-keys toggle + in-pill key view styling is PLUGIN-OWNED — it ships
+   with the terminal_chat engine at plugins/engines/terminal_chat/ui/terminal-keys.css
+   and is injected only when a Terminal Chat session mounts, so the core carries none
+   of it (nor the .chat-term-keys-btn / .chat-term-keypad / .ctk-chip rules). */
 
 /* ── Execution mode button (single cycle: Read → Ask → Auto → Read) ─────
    Sits above the chat pill, right-aligned alongside continue/stop buttons.
@@ -1624,6 +1652,21 @@ body.light-mode .chat-loading-wrap {
     border: 1px solid var(--error-bubble-border);
     color: var(--danger);
     align-self: flex-start;
+  }
+/* "Session not found" — shown in place of the transcript when the open session
+   was permanently deleted elsewhere (agentWs.js 'session_deleted'). Reuses the
+   error-bubble palette (correct in both themes) but centres itself as a standalone
+   notice rather than a left-aligned reply. */
+.chat-bubble.agent.session-deleted-notice {
+    background: var(--error-bubble-bg);
+    border: 1px solid var(--error-bubble-border);
+    color: var(--danger);
+    align-self: center;
+    text-align: center;
+    max-width: 320px;
+    margin: auto;
+    padding: 16px 14px;
+    font-weight: 500;
   }
 /* Passive heads-up from the Git Control repo-change watcher (see
    plugins/abilities/Administrator/git_control + agentWs.js 'repo_change_notice').

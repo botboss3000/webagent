@@ -10,6 +10,7 @@ import { _refreshLucideIcons } from '../../shared/js/dom-utils.js';
 import { app } from '../../shared/js/state.js';
 import { apiPath } from '../../shared/js/config.js';
 import { getAccessMode, fetchAccessMode, authHeaders } from '../../shared/js/left-login.js';
+import { chatMsg } from '../../shared/js/app-prompts.js';
 import { addChatBubble, updateLastBubble, linkifyText, _renderMarkdownBody, _refreshAllBubbleTimes } from './chat-bubble.js';
 import { _addBubbleActions } from './chat-bubble-actions.js';
 import {
@@ -41,7 +42,6 @@ import {
 import { initChatTunnel } from '../../shared/js/chatTunnel.js';
 import { initTaskFrames } from './chat-task-frames.js';
 import { initTerminalChatEngine } from './chat-terminal-engine.js';
-import { initTerminalKeys } from './chat-terminal-keys.js';
 
 /** Whether the user has explicitly locked auto-scroll. */
 let _scrollLocked = true;
@@ -170,6 +170,38 @@ export function initChat() {
   app.autoResizeChatInput = () => _autoResizePill(app.chatInput);
   app.focusChatInput = () => { if (app.chatInput) app.chatInput.focus(); };
   app._sendStopMessage = sendStopMessage;
+  // Let shared modules fire a chat send programmatically (e.g. the footer
+  // compaction panel's "Compact now" button, which stages "/compact" + sends).
+  app.sendChatMessage = sendMessage;
+
+  // ── "Session not found" (open session permanently deleted elsewhere) ──
+  // Fired from agentWs on a `session_deleted` event — another tab, or another
+  // device via the hybrid tombstone sync. When it targets the OPEN session we
+  // drop the (now-erased) transcript, show a centred notice, and lock the
+  // composer. clearSessionNotFound() undoes the lock when the user navigates to a
+  // live session (called at the top of loadSessionChat). A recycle does NOT fire
+  // this — a binned session's transcript is still viewable.
+  app.onSessionDeleted = function (event) {
+    const targetId = (event && (event.session_id || event.sessionId)) || '';
+    // Its local mirror row is already gone — refresh the sidebar so it drops out.
+    if (app.currentUserId && typeof app.populateSessionSelect === 'function') {
+      try { app.populateSessionSelect(app.currentUserId); } catch (_) { /* best-effort */ }
+    }
+    if (!targetId || targetId !== app.currentSessionId) return;
+    app._sessionNotFound = targetId;
+    if (app.chatMessages) {
+      app.chatMessages.innerHTML = '';
+      addChatBubble('agent', chatMsg('session_deleted_notice'), 'session-deleted-notice');
+    }
+    if (app.chatInput) { app.chatInput.value = ''; app.chatInput.disabled = true; }
+    if (app.chatSend) app.chatSend.disabled = true;
+  };
+  app.clearSessionNotFound = function () {
+    if (!app._sessionNotFound) return;
+    app._sessionNotFound = null;
+    if (app.chatInput) app.chatInput.disabled = false;
+    // The send button's enabled state is re-derived by loadSessionChat.
+  };
 
   // ── Event wiring ──
   app.chatSend.addEventListener('click', sendMessage);
@@ -188,10 +220,10 @@ export function initChat() {
   // Terminal-tunnel UI
   try { initChatTunnel(); } catch (_) { /* non-fatal */ }
   try { initTaskFrames(); } catch (_) { /* non-fatal */ }
-  // Terminal Chat engine — live xterm.js view when agent uses terminal_chat engine
+  // Terminal Chat engine — live xterm.js view when agent uses terminal_chat engine.
+  // Its on-screen keys (footer toggle + number-pad) are plugin-owned and loaded
+  // lazily by the engine only when a terminal-chat session mounts.
   try { initTerminalChatEngine(); } catch (_) { /* non-fatal */ }
-  // On-screen number-pad / shortcut keys for Terminal Chat (footer toggle).
-  try { initTerminalKeys(); } catch (_) { /* non-fatal */ }
 
   app.chatInput.addEventListener('input', () => {
     if (!_canChat()) { app.chatSend.disabled = true; _updateInputRowState(); return; }

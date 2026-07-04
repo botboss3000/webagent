@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS agent_spawns (
     resume_attempts          INTEGER,
     heartbeat_at             TEXT,
     claim_token              TEXT,
+    kind                     TEXT,
     created_at               TEXT,
     updated_at               TEXT
 )
@@ -146,7 +147,7 @@ def _ensure_table(conn) -> None:
         # (older installs created the table without them).
         for col, decl in (("resume_attempts", "INTEGER"),
                           ("heartbeat_at", "TEXT"), ("claim_token", "TEXT"),
-                          ("depth", "INTEGER")):
+                          ("depth", "INTEGER"), ("kind", "TEXT")):
             _run(f"ALTER TABLE agent_spawns ADD COLUMN {col} {decl}")
         _TABLE_READY = True
 
@@ -172,13 +173,13 @@ def _spawns_create(**f) -> dict:
                 """INSERT INTO agent_spawns
                    (id, user_id, orchestrator_session_id, orchestrator_agent_id,
                     spawn_session_id, spawn_agent_id, name, task, status,
-                    result_summary, next_check_at, check_note, depth, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    result_summary, next_check_at, check_note, depth, kind, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (row_id, f.get("user_id"), f.get("orchestrator_session_id"),
                  f.get("orchestrator_agent_id"), f.get("spawn_session_id"),
                  f.get("spawn_agent_id"), f.get("name") or "", f.get("task") or "",
                  f.get("status") or "pending", None, None, None,
-                 f.get("depth"), now, now),
+                 f.get("depth"), f.get("kind"), now, now),
             )
             conn.commit()
             row = conn.execute("SELECT * FROM agent_spawns WHERE id = ?", (row_id,)).fetchone()
@@ -385,6 +386,17 @@ _SPAWN_PREAMBLE = (
     "needed, and report results clearly and concisely so the orchestrator can "
     "act on them. If you need a decision or more detail, ask in your reply.\n\n"
     "## Your task / directive\n"
+)
+
+# A delegation runs a REAL saved agent (its own persona/abilities/engine), so we
+# never touch its prompt — instead the incoming task is framed inline as the first
+# message. Kept short so it doesn't fight the agent's own identity.
+_DELEGATION_PREAMBLE = (
+    "[DELEGATED TASK] Another agent has handed you the task below to work on in "
+    "this session. Carry it out with your own tools and judgement, then reply with "
+    "the result clearly so it can be reported back. If you need a decision or more "
+    "detail, say so in your reply.\n\n"
+    "## Task\n"
 )
 
 # Tools that are inherently destructive regardless of an agent's own policy —
@@ -976,6 +988,127 @@ async def _copy_orchestrator_context(db, user_id: str, from_session_id: str,
     return len(rows)
 
 
+async def _resolve_delegate_target(user_id: str, ref: str) -> Optional[dict]:
+    """Resolve a delegation target among the user's OWN saved agents.
+
+    Unlike a clone spawn (built fresh + clamped to the orchestrator's ceiling), a
+    delegation runs a REAL agent the user deliberately built — with its own
+    persona, abilities and runtime engine (e.g. a Local Claude Code agent whose
+    metadata.engine == 'claude_code'). We therefore resolve against the user's
+    actual agent roster, not the template list, so the specific configured
+    instance (its working folder, model, etc.) is the one that runs.
+
+    `ref` may be an agent id (exact) or a name (case-insensitive). Pipeline agents
+    and ephemeral clones are never delegation targets. Returns the agent dict
+    (with 'engine' folded in for display) or None if nothing matches."""
+    from app.db import get_db
+    db = get_db()
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    try:
+        agents = await db.list_agents_for_user(user_id, include_admin=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("delegate target lookup failed: %s", e)
+        return None
+
+    def _engine_of(a: dict) -> str:
+        meta = a.get("metadata")
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta or "{}")
+            except Exception:  # noqa: BLE001
+                meta = {}
+        return str((meta or {}).get("engine") or "").strip() if isinstance(meta, dict) else ""
+
+    eligible = [a for a in (agents or [])
+                if not a.get("is_pipeline") and a.get("status") not in ("clone", "clone_trashed")]
+    # id match first (unambiguous), then exact-name (case-insensitive).
+    match = next((a for a in eligible if str(a.get("id")) == ref), None)
+    if not match:
+        match = next((a for a in eligible
+                      if str(a.get("name") or "").strip().lower() == ref.lower()), None)
+    if not match:
+        return None
+    match = dict(match)
+    match["engine"] = _engine_of(match)
+    return match
+
+
+async def _create_delegation(*, user_id, orchestrator_session_id, orchestrator_agent_id,
+                             target_agent_id, target_name, task, name="",
+                             context_inherit=False) -> dict:
+    """Materialize a DELEGATION: a spawn-family sub-session bound to an EXISTING
+    saved agent (not a fresh clone), plus its agent_spawns ledger row tagged
+    kind='delegate'.
+
+    Reuses the spawn family plumbing wholesale — same ledger, same run/re-wake
+    path, same follow-up timers, same tab-bar surfacing (the /related endpoint
+    groups on orchestrator_session_id) — so a delegated agent behaves like any
+    other family member. The ONE deliberate difference from _create_spawn: no
+    clone is built and no ability/permission clamping happens. The target runs as
+    its real self (its persona, abilities and metadata.engine), because it is an
+    agent the user owns and configured. Because the sub-session is bound to that
+    real agent, the loop's per-agent engine dispatch routes a Local Claude Code
+    target through the `claude` CLI automatically on its first turn.
+
+    Still enforces the per-agent orchestration limits (a delegation counts toward
+    the same spawn caps, so it can't flood the account)."""
+    # ── Enforce the same per-agent orchestration limits as a spawn ──────────
+    parent_depth = await _compute_spawn_depth(orchestrator_session_id)
+    new_depth = parent_depth + 1
+    limit_error = await _enforce_spawn_limits(
+        orchestrator_agent_id, orchestrator_session_id, parent_depth)
+    if limit_error:
+        return {"id": "__blocked__", "error": True,
+                "message": limit_error, "parent_depth": parent_depth, "new_depth": new_depth}
+
+    from app.db import get_db
+    db = get_db()
+    deleg_name = (name or "").strip() or (target_name or "").strip() \
+        or (task[:40].strip() if task else "Delegate")
+
+    spawn_session_id = f"spawn-{uuid.uuid4().hex[:10]}"
+    meta = json.dumps({
+        "source": "delegation",
+        "orchestrator_session_id": orchestrator_session_id,
+        "orchestrator_agent_id": orchestrator_agent_id,
+        "delegate_agent_id": target_agent_id,
+        "spawn_name": deleg_name,
+    })
+    conn = _db_conn()
+    if conn is not None:
+        try:
+            conn.execute(
+                "INSERT INTO sessions (id, user_id, title, agent_id, metadata) VALUES (?, ?, ?, ?, ?)",
+                (spawn_session_id, user_id, deleg_name[:60], target_agent_id, meta),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    try:
+        await db.bind_session_to_agent(spawn_session_id, target_agent_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+    if context_inherit:
+        try:
+            n = await _copy_orchestrator_context(
+                db, user_id, orchestrator_session_id, spawn_session_id)
+            if n > 0:
+                deleg_name = f"{deleg_name} [ctx:{n}]"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Context inheritance for delegation failed (non-fatal): %s", e)
+
+    row = _spawns_create(
+        user_id=user_id, orchestrator_session_id=orchestrator_session_id,
+        orchestrator_agent_id=orchestrator_agent_id, spawn_session_id=spawn_session_id,
+        spawn_agent_id=target_agent_id, name=deleg_name, task=task or "", status="pending",
+        depth=new_depth, kind="delegate",
+    )
+    return row
+
+
 async def _rewake_orchestrator(user_id: str, orchestrator_session_id: str, note: str) -> None:
     """Re-engage the orchestrator with a system-style event note (fire-and-forget)."""
     try:
@@ -1033,6 +1166,9 @@ async def _run_spawn_turn(*, user_id, spawn_id, spawn_session_id, message, wait,
     spawn = _spawns_get(spawn_id) or {}
     orch_session = spawn.get("orchestrator_session_id")
     spawn_name = spawn.get("name") or spawn_id
+    # A delegation (real saved agent) reads as "Delegation" in re-wake events; a
+    # clone helper stays "Spawn". Both are managed with the same helper tools.
+    noun = "Delegation" if spawn.get("kind") == "delegate" else "Spawn"
 
     # Mark queued up-front: it has a live runner (below) but may sit waiting for a
     # run slot under heavy fan-out. 'queued' (not 'running') keeps the orphan
@@ -1054,7 +1190,7 @@ async def _run_spawn_turn(*, user_id, spawn_id, spawn_session_id, message, wait,
             _spawns_update(spawn_id, status="done", result_summary=(reply or "")[:2000])
             if notify_on_done and orch_session:
                 await _rewake_orchestrator(user_id, orch_session, (
-                    f"[ORCHESTRATION EVENT] Spawn '{spawn_name}' (id {spawn_id}) finished.\n\n"
+                    f"[ORCHESTRATION EVENT] {noun} '{spawn_name}' (id {spawn_id}) finished.\n\n"
                     f"Result:\n{(reply or '').strip()[:2000]}\n\n"
                     "Decide what to do next: reply with message_spawn, read its full "
                     "transcript with read_spawn, spawn more helpers, or report back."
@@ -1065,7 +1201,7 @@ async def _run_spawn_turn(*, user_id, spawn_id, spawn_session_id, message, wait,
             if notify_on_done and orch_session:
                 await _rewake_orchestrator(
                     user_id, orch_session,
-                    f"[ORCHESTRATION EVENT] Spawn '{spawn_name}' (id {spawn_id}) errored: {e}",
+                    f"[ORCHESTRATION EVENT] {noun} '{spawn_name}' (id {spawn_id}) errored: {e}",
                 )
         finally:
             hb.cancel()
@@ -1781,6 +1917,125 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
             logger.warning("list_delegatable_agents error: %s", e)
             return json.dumps({"error": str(e)})
 
+    # ── Task delegation to a saved agent (spawn-family member, NOT a handoff) ──
+    # Sibling of spawn_agent, but the worker is one of the user's REAL saved
+    # agents (its own persona/abilities/engine — e.g. a Local Claude Code agent),
+    # run in its own sub-session and surfaced as a tab like any spawn. Distinct
+    # from delegate_to_agent, which hands the WHOLE current session over in place.
+    async def list_task_delegatable_agents() -> str:
+        """List the saved agents you can hand a discrete TASK to with
+        delegate_task_to_agent. These are the user's real agents (each runs as
+        itself — its own persona, abilities and runtime engine), NOT ephemeral
+        clones. The `engine` field tells you how each one runs; `is_claude_code`
+        marks a Local Claude Code agent (answered by the machine's `claude` CLI)."""
+        from app.db import get_db
+        db = get_db()
+        try:
+            agents = await db.list_agents_for_user(user_id, include_admin=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("list_task_delegatable_agents error: %s", e)
+            return _err(str(e))
+        available = []
+        for a in agents or []:
+            if a.get("is_pipeline") or a.get("status") in ("clone", "clone_trashed"):
+                continue
+            if str(a.get("id")) == str(agent_id):
+                continue  # don't offer the orchestrator itself
+            meta = a.get("metadata")
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta or "{}")
+                except Exception:  # noqa: BLE001
+                    meta = {}
+            engine = str((meta or {}).get("engine") or "").strip() if isinstance(meta, dict) else ""
+            available.append({
+                "agent_id":      a.get("id"),
+                "name":          a.get("name") or a.get("id"),
+                "description":   a.get("description", ""),
+                "engine":        engine or "default",
+                "is_claude_code": engine == "claude_code",
+                "source":        a.get("source", ""),
+            })
+        return json.dumps({"agents": available})
+
+    async def delegate_task_to_agent(agent: str, task: str, name: str = "",
+                                     wait: bool = None, check_back_minutes: float = 0,
+                                     context_inherit: bool = False) -> str:
+        """Hand a discrete TASK to one of your saved agents, which runs it as a
+        family member you can watch as a tab — NOT a whole-session handoff.
+
+        Unlike spawn_agent (which builds a locked-down clone of you), the target
+        here is a REAL agent you own: it runs as itself, with its own persona,
+        abilities and runtime engine. Use this to route work to a specialist you
+        built — including a Local Claude Code agent, whose task genuinely runs
+        through the machine's `claude` CLI. Call list_task_delegatable_agents
+        first to see valid targets.
+
+        - ``agent`` — which saved agent to hand the task to (its name or id).
+        - ``task`` — the self-contained task for it to carry out.
+        - ``name`` — optional short label for the delegation's tab/session.
+        - ``wait`` — True = block and return its reply now; False = fork and be
+          re-woken when it finishes. Omit to use your configured default.
+        - ``check_back_minutes`` — optional follow-up timer to re-check it.
+        - ``context_inherit`` — if True, copy your whole conversation so far into
+          the delegate's session so it knows the background (one-way copy).
+
+        The delegated agent appears in the chat sub-header next to spawns; manage
+        it with the same tools (message_spawn / read_spawn / quote_spawn /
+        stop_spawn / schedule_spawn_check). Returns the delegation's spawn_id."""
+        if not (task or "").strip():
+            return _err("Provide a task to delegate.")
+        target = await _resolve_delegate_target(user_id, agent)
+        if not target:
+            return _err(f"No saved agent matches '{agent}'. Call "
+                        "list_task_delegatable_agents to see valid names/ids.")
+        if str(target.get("id")) == str(agent_id):
+            return _err("That target is you — pick a different agent to delegate to.")
+        try:
+            deleg = await _create_delegation(
+                user_id=user_id, orchestrator_session_id=session_id,
+                orchestrator_agent_id=agent_id or None,
+                target_agent_id=target["id"], target_name=target.get("name") or "",
+                task=task, name=name or "", context_inherit=bool(context_inherit))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("delegate_task_to_agent create failed: %s", e)
+            return _err(f"Could not create delegation: {e}")
+        if deleg.get("error"):
+            return json.dumps({"status": "error",
+                               "error": deleg.get("message") or "Limit reached.",
+                               "detail": deleg})
+
+        spawn_id = deleg["id"]
+        if check_back_minutes and float(check_back_minutes) > 0:
+            try:
+                _spawns_update(spawn_id, next_check_at=_iso_minutes_from_now(float(check_back_minutes)),
+                               check_note=f"Scheduled check-in on delegation '{deleg['name']}'.")
+            except Exception:  # noqa: BLE001
+                pass
+
+        first_message = _DELEGATION_PREAMBLE + (task or "").strip()
+        if wait is None:
+            cfg = await _load_orch_config(agent_id)
+            wait = cfg.get("default_spawn_mode") == "wait"
+        result = await _run_spawn_turn(user_id=user_id, spawn_id=spawn_id,
+                                       spawn_session_id=deleg["spawn_session_id"],
+                                       message=first_message, wait=bool(wait))
+        out = {"status": "ok", "spawn_id": spawn_id, "name": deleg["name"],
+               "delegated_to": target.get("name") or target["id"],
+               "agent_id": target["id"], "engine": target.get("engine") or "default",
+               "spawn_session_id": deleg["spawn_session_id"],
+               "mode": "wait" if wait else "fork", "run_status": result.get("status")}
+        if wait:
+            out["reply"] = result.get("reply", "")
+            if result.get("status") == "error":
+                out["error"] = result.get("error")
+        else:
+            out["note"] = ("Delegation forked — the agent runs on its own and you'll be "
+                           "re-woken with its result. Track it with list_spawns; talk to it "
+                           "with message_spawn; read its work with read_spawn; get its final "
+                           "answer with quote_spawn.")
+        return json.dumps(out)
+
     # ── run_optimizer — start an interactive optimizer session ────────────────
     # Folded in from the former core block in app/tools/loader.py. Same gating:
     # the ability must be enabled (build_tools only runs then) and optimizer
@@ -1846,6 +2101,8 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         "promote_spawn": promote_spawn,
         "delegate_to_agent": delegate_to_agent,
         "list_delegatable_agents": list_delegatable_agents,
+        "delegate_task_to_agent": delegate_task_to_agent,
+        "list_task_delegatable_agents": list_task_delegatable_agents,
     }
     if not user_id.startswith("opt_"):
         out["run_optimizer"] = run_optimizer
@@ -1860,7 +2117,8 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
 # still runs under its own session's tool gating, and a clone starts with NO
 # destructive permissions — so the real side effects were already guarded.
 # (Auto execution mode runs everything without a pause.)
-DESTRUCTIVE: set = {"spawn_agent", "delegate_to_agent", "run_optimizer"}
+DESTRUCTIVE: set = {"spawn_agent", "delegate_to_agent", "delegate_task_to_agent",
+                    "run_optimizer"}
 
 TOOL_SCHEMAS = {
     "spawn_agent": {
@@ -1945,6 +2203,24 @@ TOOL_SCHEMAS = {
         "type": "object",
         "properties": {},
         "required": [],
+    },
+    # ── Task delegation to a saved agent (spawn-family member; NOT a handoff) ──
+    "list_task_delegatable_agents": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+    "delegate_task_to_agent": {
+        "type": "object",
+        "properties": {
+            "agent": {"type": "string", "description": "Which of your saved agents to hand the task to — its name or id (see list_task_delegatable_agents). Can be a Local Claude Code agent; its task then runs through the machine's `claude` CLI."},
+            "task": {"type": "string", "description": "The self-contained task for that agent to carry out."},
+            "name": {"type": "string", "description": "Optional short label for the delegation's tab/session."},
+            "wait": {"type": "boolean", "description": "True = block and return its reply now. False = fork and be re-woken when it finishes. Leave unset to use the agent's configured default."},
+            "check_back_minutes": {"type": "number", "description": "Optional: set a follow-up timer (minutes) to re-check the delegated agent even if still running."},
+            "context_inherit": {"type": "boolean", "description": "If True, copy your entire conversation so far into the delegate's session so it knows the background. One-way copy (its later turns don't flow back). Default False."},
+        },
+        "required": ["agent", "task"],
     },
     # ── run_optimizer (folded in from the former core loader block) — schema is
     #    verbatim what the loader applied, so behavior is identical. ──

@@ -9,7 +9,7 @@ import sqlite3
 import time
 import uuid
 from typing import List, Any, Dict, Optional
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.models.schemas import ChatRequest, ChatResponse
@@ -61,6 +61,19 @@ def _spawn_bg(coro, *, label: str = "bg") -> None:
     task.add_done_callback(_done)
 
 
+def _cancel_if_pending(task) -> None:
+    """Cancel a still-running helper task so it isn't orphaned when a turn errors
+    out before its result is awaited. Without this, a fired ``memory_search`` /
+    read-fan-out keeps running detached against the shared main-loop client after
+    the turn already 500'd — logging "Task exception was never retrieved" and
+    burning a stray round-trip. A no-op if the task is None or already done."""
+    try:
+        if task is not None and not task.done():
+            task.cancel()
+    except Exception:
+        pass
+
+
 # ── Concurrent pure-DB reads ──
 # On a remote Postgres (e.g. Supabase) every DB call is a network round-trip of
 # tens-to-hundreds of ms. The storage layer is synchronous psycopg wearing an
@@ -92,18 +105,17 @@ async def _gather_db_concurrent(*factories):
     if not factories:
         return []
 
-    # Each factory runs in its OWN worker thread (fresh loop) so the blocking
-    # round-trips TRULY overlap instead of serializing on the one event-loop
-    # thread, and the main loop stays free for the LLM stream. Safe now that the
-    # write guard is thread-agnostic (_DbWriteLock); the earlier failure was the
-    # loop-bound asyncio.Lock. ONLY pure-DB reads belong here — never anything
-    # that touches the embedding client or the WS broadcaster (see
-    # app/db/offload.py's hard rule).
-    def _drive(factory):
-        return asyncio.run(factory())
-
+    # Each factory runs on the PERSISTENT DB-worker pool (app/db/offload.py) so the
+    # blocking round-trips TRULY overlap instead of serializing on the event-loop
+    # thread, and the main loop stays free for the LLM stream. This uses db_offload
+    # rather than the old ``asyncio.to_thread(lambda: asyncio.run(factory()))``: that
+    # pattern spun up and tore down a BRAND-NEW event loop on every call and queued
+    # behind unrelated work in the shared default executor — exactly the two costs
+    # offload.py's docstring documents as the reason the persistent pool exists.
+    # db_offload copies the turn-cache ContextVar, so caching still works. ONLY
+    # pure-DB reads belong here — never the embedding client or WS broadcaster.
     return await asyncio.gather(
-        *(asyncio.to_thread(_drive, f) for f in factories),
+        *(db_offload(f) for f in factories),
         return_exceptions=True,
     )
 
@@ -993,6 +1005,71 @@ async def set_session_model_effort(req: SessionEffortRequest):
             "reasoning_effort": effort_map.get((req.model or "").strip(), "default")}
 
 
+# ── Per-session compaction override ──────────────────────────────────────────
+# The footer model panel carries a small "Context compaction" section: two sliders
+# ("compact at % full" / "keep verbatim %") and a "Compact now" button. The sliders
+# save HERE as a per-session override so one chat can tune its own compaction without
+# changing the agent-wide Context Control settings; the loop's get_context_settings
+# layers this over the agent default each turn. "Compact now" just sends /compact.
+
+class SessionCompactionRequest(BaseModel):
+    user_id: str
+    session_id: str
+    # Percentages (0..100) from the footer sliders; None leaves that knob unchanged.
+    compact_threshold_pct: Optional[float] = None
+    tail_fraction_pct: Optional[float] = None
+
+
+@router.get("/session-compaction")
+async def get_session_compaction(
+    session_id: str = Query(...),
+    agent_id: Optional[str] = Query(None),
+    user_id: Optional[str] = Query(None),
+):
+    """Return the EFFECTIVE compaction settings for this chat — the agent's Context
+    Control knobs with any per-session override layered on top — so the footer panel
+    shows the live "compact at %" / "keep verbatim %". Also reports whether each value
+    is a per-session override or inherited from the agent (so the UI can hint that)."""
+    db = get_db()
+    aid = (agent_id or "").strip()
+    if not aid:
+        aid = (await db.get_session_agent_id(session_id)) or ""
+    from app.agent.context_control import get_context_settings
+    settings = await get_context_settings(db, aid, session_id, user_id)
+    try:
+        override = await db.get_session_context_override(session_id)
+    except Exception:
+        override = None
+    override = override if isinstance(override, dict) else {}
+    return {
+        "enabled": bool(settings.get("enabled")),
+        "compaction_enabled": bool(settings.get("compaction_enabled")),
+        "compact_threshold_pct": round(float(settings.get("compact_threshold", 0.85)) * 100),
+        "tail_fraction_pct": round(float(settings.get("tail_fraction", 0.30)) * 100),
+        "overridden": {
+            "compact_threshold": "compact_threshold" in override,
+            "tail_fraction": "tail_fraction" in override,
+        },
+    }
+
+
+@router.post("/session-compaction")
+async def set_session_compaction(req: SessionCompactionRequest):
+    """Save this chat's per-session compaction override (the footer sliders). Each
+    percentage is stored as a fraction and clamped to the same safe range as the
+    ability's config panel; it takes effect on the next turn's gauge and the next
+    automatic/manual compaction. Omitted fields are left unchanged."""
+    db = get_db()
+    await _ensure_session(db, req.user_id, req.session_id)
+    updates: Dict[str, Any] = {}
+    if req.compact_threshold_pct is not None:
+        updates["compact_threshold"] = max(0.1, min(0.99, req.compact_threshold_pct / 100.0))
+    if req.tail_fraction_pct is not None:
+        updates["tail_fraction"] = max(0.05, min(0.9, req.tail_fraction_pct / 100.0))
+    ov = await db.set_session_context_override(req.session_id, updates)
+    return {"ok": True, "context_override": ov or {}}
+
+
 @router.put("/suggestions/config")
 async def update_suggestions_config(req: SuggestionsConfigRequest):
     """Update the Suggested-Replies runtime config. Used by the impersonator
@@ -1281,15 +1358,12 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
         )
         try:
             _user_ss, _user_ts = _run_buffer.next_seq()
-            _conn = db._get_conn()
-            try:
-                _conn.execute(
-                    "UPDATE interactions SET session_seq=?, turn_id=?, turn_seq=? WHERE id=?",
-                    (_user_ss, user_interaction_id, _user_ts, user_interaction_id),
-                )
-                _conn.commit()
-            finally:
-                _conn.close()
+            # Stamp the ordering number where the local-first row actually lives.
+            # (A raw db._get_conn() UPDATE would hit the REMOTE authority, where the
+            # just-inserted row doesn't exist yet, match zero rows, and leave the row
+            # NULL-session_seq forever — invisible to the reconcile tail.)
+            await db_offload(lambda: db.stamp_interaction_seq(
+                user_interaction_id, _user_ss, user_interaction_id, _user_ts))
         except Exception as _seqerr:
             logger.debug("Failed to backfill seq on user row (buffered): %s", _seqerr)
 
@@ -1582,6 +1656,9 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
         )
 
     except Exception as e:
+        # Don't strand the brain lookup we may have fired earlier — cancel it so it
+        # doesn't run on detached against the shared embedding client after we 500.
+        _cancel_if_pending(locals().get("_brain_task"))
         # Make sure we mark the run buffer ended even on error path.
         try:
             await get_run_buffer_registry().end_turn(request.session_id)
@@ -1617,8 +1694,88 @@ def _find_interaction_by_cmid(db, session_id: str, client_msg_id: str) -> Option
         conn.close()
 
 
-@with_turn_cache
+# ── Idempotent-send serialization (cmid TOCTOU guard) ──
+# The dedupe check + the user-row insert inside _prepare_send_inner straddle slow
+# prep (attachment load, image-describe — seconds). Two sends carrying the SAME
+# client_msg_id — the outbox retrying an unconfirmed send, the exact case the
+# feature exists for — could BOTH pass the "have I seen this cmid?" check before
+# either inserted, double-inserting the message and starting two runs. We
+# serialize same-cmid sends on a per-cmid lock so the retry waits, then sees the
+# first insert and short-circuits as a duplicate. Process-local: closes the
+# common case (one browser → one server via its per-user WS); a cross-process
+# dupe of an identical cmid is out of scope (that needs a DB unique constraint).
+_CMID_LOCKS: Dict[str, asyncio.Lock] = {}
+_CMID_LOCK_REFS: Dict[str, int] = {}
+
+
+def _cmid_lock_acquire_ref(cmid: str) -> asyncio.Lock:
+    """Get (or create) the lock for this cmid and bump its refcount. Sync + no
+    await, so it is atomic w.r.t. other coroutines on the single event loop."""
+    lock = _CMID_LOCKS.get(cmid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _CMID_LOCKS[cmid] = lock
+    _CMID_LOCK_REFS[cmid] = _CMID_LOCK_REFS.get(cmid, 0) + 1
+    return lock
+
+
+def _cmid_lock_release_ref(cmid: str) -> None:
+    """Drop a ref; evict the lock when the last holder/waiter is gone so the
+    registry can't grow unbounded across many distinct message ids."""
+    n = _CMID_LOCK_REFS.get(cmid, 0) - 1
+    if n <= 0:
+        _CMID_LOCK_REFS.pop(cmid, None)
+        _CMID_LOCKS.pop(cmid, None)
+    else:
+        _CMID_LOCK_REFS[cmid] = n
+
+
+# Recently-accepted (session, cmid) → user-row id, kept IN PROCESS. The per-cmid
+# lock serializes two same-cmid sends, but the second's DB dedupe read may not yet
+# see the first's just-committed insert (remote Postgres read-after-write across
+# pooled connections isn't instant — a plain DB check alone still lets the racing
+# pair both run). This map gives the serialized second send IMMEDIATE visibility
+# of the first's insert without a DB round-trip, closing the race deterministically.
+# Bounded FIFO so it can't grow without limit.
+_RECENT_CMIDS: Dict[str, str] = {}
+_RECENT_CMIDS_CAP = 4096
+
+
+def _recent_cmid_key(session_id: str, cmid: str) -> str:
+    return session_id + "\x1f" + cmid
+
+
+def _recent_cmid_get(session_id: str, cmid: str) -> Optional[str]:
+    return _RECENT_CMIDS.get(_recent_cmid_key(session_id, cmid))
+
+
+def _recent_cmid_put(session_id: str, cmid: str, interaction_id: str) -> None:
+    _RECENT_CMIDS[_recent_cmid_key(session_id, cmid)] = interaction_id
+    # Dict preserves insertion order; drop the oldest once over the cap.
+    while len(_RECENT_CMIDS) > _RECENT_CMIDS_CAP:
+        try:
+            _RECENT_CMIDS.pop(next(iter(_RECENT_CMIDS)))
+        except (StopIteration, KeyError):
+            break
+
+
 async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[str, Any]:
+    """Serialize sends that share a client_msg_id around the real prep so the
+    dedupe check + insert can't race into a double-insert. No cmid → straight
+    through (no contention)."""
+    cmid = getattr(request, "client_msg_id", None)
+    if not cmid:
+        return await _prepare_send_inner(request, fastapi_request)
+    lock = _cmid_lock_acquire_ref(cmid)
+    try:
+        async with lock:
+            return await _prepare_send_inner(request, fastapi_request)
+    finally:
+        _cmid_lock_release_ref(cmid)
+
+
+@with_turn_cache
+async def _prepare_send_inner(request: ChatRequest, fastapi_request: Request) -> Dict[str, Any]:
     """Synchronous prep shared by /send and /stream.
 
     Does everything that must happen *before* we hand the turn to the Run
@@ -1710,11 +1867,17 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
     # turn so the retry resolves without a duplicate row or a second agent run.
     client_msg_id = getattr(request, "client_msg_id", None)
     if client_msg_id:
-        try:
-            _existing_id = _find_interaction_by_cmid(db, request.session_id, client_msg_id)
-        except Exception as _dedup_err:
-            logger.debug("client_msg_id dedupe lookup failed (will insert): %s", _dedup_err)
-            _existing_id = None
+        # In-process first: catches a concurrent duplicate whose DB write isn't yet
+        # visible to this read's connection (the per-cmid lock serialized us behind
+        # the first send, which recorded here right after its insert). Fall back to
+        # the DB check for cross-process / post-restart retries.
+        _existing_id = _recent_cmid_get(request.session_id, client_msg_id)
+        if not _existing_id:
+            try:
+                _existing_id = _find_interaction_by_cmid(db, request.session_id, client_msg_id)
+            except Exception as _dedup_err:
+                logger.debug("client_msg_id dedupe lookup failed (will insert): %s", _dedup_err)
+                _existing_id = None
         if _existing_id:
             logger.info(
                 "Duplicate send for session %s (cmid=%s) — returning existing turn %s",
@@ -1896,6 +2059,11 @@ async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[
         receiver_id=agent["id"],
     )
     _perf.mark("user_message_persisted", turn_id=user_interaction_id)
+    # Publish to the in-process dedupe map BEFORE releasing the per-cmid lock (the
+    # wrapper holds it until this coroutine returns), so a serialized same-cmid
+    # retry sees it immediately even if the DB write isn't visible on its read yet.
+    if client_msg_id:
+        _recent_cmid_put(request.session_id, client_msg_id, user_interaction_id)
 
     # Record the mode this turn runs in so the pill is restorable server-side.
     # Pure UI-restore bookkeeping the turn never reads back — defer it off the
@@ -1982,23 +2150,14 @@ async def _run_turn_background(
     except Exception as _rse:
         logger.debug("run_state_begin failed: %s", _rse)
     # Backfill seq on the already-saved user row from the buffer's first slot.
-    # The write is a synchronous round-trip, so run it in a worker thread to keep
-    # the event loop free (see app/db/offload.py).
+    # Stamp it where the local-first row lives (a raw db._get_conn() UPDATE targets
+    # the REMOTE authority, where the row isn't pushed yet → zero rows matched → the
+    # row stays NULL-session_seq and the reconcile tail never sees it). Offloaded so
+    # the non-hybrid (direct-remote) path keeps its round-trip off the event loop.
     try:
         _user_ss, _user_ts = _run_buffer.next_seq()
-
-        def _backfill_seq():
-            _conn = db._get_conn()
-            try:
-                _conn.execute(
-                    "UPDATE interactions SET session_seq=?, turn_id=?, turn_seq=? WHERE id=?",
-                    (_user_ss, user_interaction_id, _user_ts, user_interaction_id),
-                )
-                _conn.commit()
-            finally:
-                _conn.close()
-
-        await asyncio.to_thread(_backfill_seq)
+        await db_offload(lambda: db.stamp_interaction_seq(
+            user_interaction_id, _user_ss, user_interaction_id, _user_ts))
     except Exception as _seqerr:
         logger.debug("Failed to backfill seq on user row: %s", _seqerr)
 
@@ -2427,6 +2586,12 @@ async def _run_turn_background(
         except Exception:
             pass
     finally:
+        # Cancel any helper tasks (brain lookup / read fan-out) still in flight if the
+        # turn is unwinding before they were awaited — otherwise they run detached and
+        # log an unretrieved exception. locals().get avoids an unbound name if we
+        # errored before they were assigned. No-op when already awaited/done.
+        _cancel_if_pending(locals().get("_brain_task"))
+        _cancel_if_pending(locals().get("_reads_task"))
         # The turn is done — drop any prewarm bundle so the NEXT turn re-warms with
         # history that includes the reply just produced (see app/agent/turn_prewarm).
         try:
@@ -3321,6 +3486,26 @@ async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: 
             _buf.stamp_event(event)
     except Exception as _be:
         logger.debug("RunBuffer stamp failed for session %s: %s", session_id, _be)
+
+    # Backfill the ordering number onto the assistant transcript ROW as its "db"
+    # event is stamped. The loop saves the assistant row (on first token / at step
+    # finalize) WITHOUT a session_seq — so without this it stays NULL and the
+    # reconcile tail's `session_seq IS NOT NULL` filter can never see it (the agent
+    # message goes missing on any DB-reconcile render). The stamp goes local-first
+    # via the same helper the user row uses, so the row becomes visible immediately
+    # and the push carries the number to remote too.
+    try:
+        if (event.get("type") == "db" and event.get("role") == "assistant"
+                and event.get("id") and event.get("session_seq") is not None):
+            _asst_id = event.get("id")
+            _asst_ss = int(event.get("session_seq"))
+            _asst_tid = event.get("turn_id")
+            _asst_ts = event.get("turn_seq")
+            _db_seq = get_db()
+            await db_offload(lambda: _db_seq.stamp_interaction_seq(
+                _asst_id, _asst_ss, _asst_tid, _asst_ts))
+    except Exception as _ae:
+        logger.debug("assistant row seq backfill failed for session %s: %s", session_id, _ae)
 
     # Durable in-flight-op snapshot: persist which tool is running so a refresh
     # can re-show the live "in-process" indicator (cleared when the tool finishes

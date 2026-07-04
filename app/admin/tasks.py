@@ -309,6 +309,17 @@ async def _llm_decide_related(prior_user_msgs: List[str], new_msg: str) -> Optio
     """
     if not _LLM_DEFAULT_ENABLED:
         return None
+    # App-level on/off: Task Grouping is an app_function (App Settings ▸ App
+    # Functions). When an admin turns it off, skip the LLM tie-breaker entirely
+    # and fall back to the keyword verdict — no model calls. Checked live so the
+    # toggle takes effect immediately (no restart). Fails ON (never silently
+    # disables a default-on function if the catalog/config can't be read).
+    try:
+        from app.abilities import ability_app_enabled
+        if not ability_app_enabled("task_grouping"):
+            return None
+    except Exception:
+        pass
     recent = [m.strip() for m in prior_user_msgs if m and m.strip()][-_LLM_PRIOR_USER_MSGS:]
     new_msg = (new_msg or "").strip()
     if not recent or not new_msg:

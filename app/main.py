@@ -137,9 +137,10 @@ from app.api.browser_stream import router as browser_stream_router
 from app.api.connector_ws import router as connector_ws_router
 from app.api.uploads import router as uploads_router
 from app.api.db_viewer import router as db_viewer_router
+from app.api.tenant_db import router as tenant_db_router
 from app.api.diagnostics import router as diagnostics_router
-from app.api.recordings import router as recordings_router
 from app.api.features import router as features_router
+from app.api.boot import router as boot_router  # GET /api/v1/boot — read-only page-boot aggregator
 from app.api.browser_log import router as browser_log_router
 try:
     from app.admin.review import router as admin_router
@@ -476,10 +477,16 @@ app.include_router(browser_stream_router)
 app.include_router(connector_ws_router)
 app.include_router(uploads_router)
 app.include_router(db_viewer_router)
+app.include_router(tenant_db_router)
 app.include_router(diagnostics_router)
 app.include_router(browser_log_router)
-app.include_router(recordings_router)
+# NOTE: the render-recording API (/api/v1/recordings) is no longer wired here —
+# it now ships inside the Render Recorder drop-in ability
+# (plugins/abilities/Administrator/render_recorder/) and is auto-mounted by the
+# generic ability-router loop further below. Delete that folder and the routes
+# (and the whole feature) vanish with no edit here.
 app.include_router(features_router)
+app.include_router(boot_router)
 for _admin_r in (admin_router, admin_db_router, admin_storage_router):
     if _admin_r is not None:
         app.include_router(_admin_r)
@@ -593,6 +600,24 @@ try:
 except Exception as _e:
     logger.warning("Page backend discovery failed: %s", _e)
 
+# ── Drop-in ability routers ──
+# An ability folder (plugins/abilities/<group>/<id>/) may ship its own FastAPI
+# ``router`` — a browser-intake / admin-read API that comes and goes with the
+# folder, needing NO include_router() line above. Discovered + mounted generically
+# here (the HTTP twin of the "ability-background" service loop). Shipped consumer:
+# the Render Recorder ability's /api/v1/recordings endpoints. Each is isolated: a
+# broken ability API is skipped, never failing app boot.
+try:
+    from app import abilities as _abilities_mgr
+    for _spec in _abilities_mgr.ability_routers():
+        try:
+            app.include_router(_spec["router"])
+            logger.info("Registered drop-in ability backend: %s", _spec["id"])
+        except Exception as _e:
+            logger.warning("Could not mount ability backend %s: %s", _spec.get("id"), _e)
+except Exception as _e:
+    logger.warning("Ability backend discovery failed: %s", _e)
+
 # ── Restart endpoint ──
 # POST /api/v1/restart shuts down the server process.
 # Works with WebAgent.bat which loops uvicorn in a :restart cycle.
@@ -638,20 +663,38 @@ _UI_DIR = _APP_DIR.parent / "ui"
 
 
 class _UIStaticFiles(StaticFiles):
-    """Serve ui/ assets but NEVER the Python source of a page's drop-in backend
-    (``server.py`` etc.). Page folders may now hold a ``*.py`` router that is
-    imported server-side; it must not be downloadable. 404 any .py / pyc /
-    __pycache__ path so source stays private."""
+    """Serve drop-in frontend assets but NEVER the Python source alongside them
+    (a page/engine's ``server.py`` / adapter, ``*.py.bak`` backups, etc.). Both
+    the ``/ui`` mount (page folders may hold a server-side router) and the
+    ``/plugins/engines`` mount (each engine folder holds its Python adapter next
+    to an optional ``ui/`` asset folder) use this so source stays private. 404 any
+    .py / .pyc / .pyo / .bak / __pycache__ path."""
 
     async def get_response(self, path, scope):
         norm = path.replace("\\", "/").lower()
-        if norm.endswith((".py", ".pyc", ".pyo")) or "__pycache__/" in norm:
+        if norm.endswith((".py", ".pyc", ".pyo", ".bak")) or "__pycache__/" in norm:
             from starlette.responses import PlainTextResponse
             return PlainTextResponse("Not Found", status_code=404)
         return await super().get_response(path, scope)
 
 
 app.mount("/ui", _UIStaticFiles(directory=str(_UI_DIR)), name="ui")
+
+# Engine-owned frontend assets. An alternate-engine folder
+# (plugins/engines/<id>/) may ship a ``ui/`` folder with its own JS/CSS — the
+# frontend twin of the engine's Python adapter. The core loads it lazily (dynamic
+# import) only when that engine's session mounts, so a normal agent never fetches
+# it. Served generically here (no per-engine wiring) at /plugins/engines/…; the
+# _UIStaticFiles guard keeps every engine's Python adapter private. Shipped
+# consumer: the terminal_chat engine's on-screen keys
+# (plugins/engines/terminal_chat/ui/terminal-keys.{js,css}).
+_ENGINES_DIR = _APP_DIR.parent / "plugins" / "engines"
+try:
+    if _ENGINES_DIR.is_dir():
+        app.mount("/plugins/engines", _UIStaticFiles(directory=str(_ENGINES_DIR)), name="engines")
+        logger.info("Engine frontend assets mounted at /plugins/engines")
+except Exception as e:
+    logger.warning("Could not mount /plugins/engines: %s", e)
 
 _ROOT_INDEX_HTML = _APP_DIR.parent / "index.html"
 
@@ -1027,6 +1070,12 @@ async def shutdown():
         _engine = getattr(app.state, "hybrid_sync_engine", None)
         if _engine is not None:
             await _engine.stop()
+    except Exception:
+        pass
+    # Close the DB-viewer's shared autocommit connection pool (chat-panel reads).
+    try:
+        from app.db.pg_portable import close_viewer_pool
+        close_viewer_pool()
     except Exception:
         pass
 
@@ -1413,13 +1462,10 @@ async def startup():
     except Exception as _diag_err:
         logger.warning("Diagnostic recorder failed to start: %s", _diag_err)
 
-    # Start the client render recorder's background batch-writer + pruner. It is
-    # idle (accepts nothing) until render_recording_enabled is turned on.
-    try:
-        from app.agent.render_recorder import start_render_recorder
-        start_render_recorder()
-    except Exception as _rr_err:
-        logger.warning("Render recorder failed to start: %s", _rr_err)
+    # (The client render recorder's background writer is no longer started here —
+    # it now ships in the Render Recorder drop-in ability
+    # (plugins/abilities/Administrator/render_recorder/) and is started by the
+    # generic "ability-background" leader service below, like any drop-in service.)
 
     # Warm the memory embedding client in the background so the FIRST chat turn's
     # memory_search doesn't pay the cold-start penalty (~7.5s cold vs ~0.3s warm).
@@ -1472,6 +1518,26 @@ async def startup():
             )
     except Exception as _seed_err:
         logger.warning("Agent template seed at startup failed: %s", _seed_err)
+
+    # Account store: one-time import of the legacy app/auth/users.json into the
+    # central user_accounts DB table (kept as a .bak backup), then create the
+    # admin from BOOTSTRAP_ADMIN_PASSWORD if set and none exists. Runs here (not
+    # at import) because the account store is now async/DB-backed. Both steps are
+    # self-gating no-ops once done, so this is safe on every boot.
+    try:
+        from app.auth import users as _auth_users
+        _migrated = await _auth_users.migrate_legacy_file()
+        if _migrated:
+            logger.info("Account store: migrated %d account(s) from users.json → DB", _migrated)
+        await _auth_users.bootstrap_admin_from_env()
+        # Self-heal the admin PRIVILEGE (user_profiles.is_admin), which the
+        # SQLite-only seed misses on a shared/remote control DB — so a fresh
+        # deploy that inherits an existing shared database still unlocks Admin
+        # Tools. Runs AFTER apply_boot_file activated that shared DB above.
+        if await _auth_users.ensure_admin_privilege():
+            logger.info("Account store: ensured bootstrap admin has is_admin=1 in the active control DB")
+    except Exception as _acct_err:
+        logger.warning("Account store migration/bootstrap at startup failed: %s", _acct_err)
 
     # First-boot: enable all admin Agent Tools so the app ships ready to "do
     # everything". Runs once (marker-guarded) so later admin disables persist.
@@ -1554,6 +1620,23 @@ async def startup():
     except Exception as _bf_err:
         logger.warning("admin_users backfill failed: %s", _bf_err)
 
+    # ── App Functions gate — admin on/off for the wired-in background services ──
+    # Each singleton below (sync engine, scheduler, event runtime, watchdog,
+    # boot-orphan-resume, remote access, device worker) has a matching drop-in
+    # descriptor under plugins/abilities/System/ carrying "app_function": true, so
+    # it appears as a toggle in App Settings ▸ App Functions. Its start site is
+    # gated on ``ability_app_enabled(<id>)`` — the same app-level toggle store
+    # (data/config/agent-abilities.json). Failing ON: if the catalog/config can't
+    # be read the service still starts (a default-on service is never silently
+    # suppressed). The toggle takes effect on the next restart (these all wire up
+    # once at boot), matching how the panel's description reads.
+    def _appfn_on(_ability_id: str) -> bool:
+        try:
+            from app import abilities as _abilities_gate
+            return _abilities_gate.ability_app_enabled(_ability_id)
+        except Exception:
+            return True
+
     # ── Hybrid local-first sync engine (Stage 2) ──
     # When the hybrid backend is active (SQLite hot store in front of the Postgres
     # authority), interaction writes land locally first and are queued in a local
@@ -1577,12 +1660,24 @@ async def startup():
         _inner = _sync_db
         if not isinstance(_inner, HybridBackend):
             _inner = getattr(_sync_db, "_inner", None)
-        if _hybrid_on() and isinstance(_inner, HybridBackend):
+        if _hybrid_on() and isinstance(_inner, HybridBackend) and _appfn_on("hybrid_sync"):
             from app.db.sync import SyncEngine
             _engine = SyncEngine(_inner, pull_enabled=True)
             _engine.start()
             app.state.hybrid_sync_engine = _engine
             logger.info("Hybrid sync engine started (push + pull, syncing local replica <-> remote)")
+            # One-shot back-fill: push agents that exist only in this device's local
+            # mirror (created before it joined the shared DB, or during a Postgres
+            # outage) up to the authority, so they stop being invisible to other
+            # devices. Enqueues into the outbox the engine just started draining.
+            try:
+                _recon = await _inner.reconcile_local_only_agents()
+                if _recon.get("pushed") or _recon.get("skipped_dup_default"):
+                    logger.info("Hybrid startup agent reconcile: %s", _recon)
+            except Exception as _recon_err:
+                logger.warning("Hybrid startup agent reconcile failed: %s", _recon_err)
+        elif _hybrid_on() and isinstance(_inner, HybridBackend):
+            logger.info("Hybrid sync engine disabled via App Functions (hybrid_sync) — skipping")
     except Exception as _sync_err:
         logger.warning("Hybrid sync engine failed to start: %s", _sync_err)
 
@@ -1611,7 +1706,10 @@ async def startup():
             from app.scheduler import stop_scheduler
             await stop_scheduler()
 
-        _leader.register("scheduler", _start_scheduler, _stop_scheduler)
+        if _appfn_on("scheduler"):
+            _leader.register("scheduler", _start_scheduler, _stop_scheduler)
+        else:
+            logger.info("Scheduler disabled via App Functions (scheduler) — not registered")
 
         async def _start_events():
             from app.events import start_event_runtime
@@ -1621,7 +1719,10 @@ async def startup():
             from app.events import stop_event_runtime
             await stop_event_runtime()
 
-        _leader.register("event-runtime", _start_events, _stop_events)
+        if _appfn_on("event_runtime"):
+            _leader.register("event-runtime", _start_events, _stop_events)
+        else:
+            logger.info("Event runtime disabled via App Functions (event_runtime) — not registered")
 
         async def _start_ability_bg():
             from app import abilities as _abilities_mgr
@@ -1652,7 +1753,10 @@ async def startup():
             if _n_resumed:
                 logger.info("Self-healing: re-ignited %d orphaned run(s) at boot", _n_resumed)
 
-        _leader.register("boot-orphan-resume", _resume_orphans, None, oneshot=True)
+        if _appfn_on("boot_orphan_resume"):
+            _leader.register("boot-orphan-resume", _resume_orphans, None, oneshot=True)
+        else:
+            logger.info("Boot orphan-resume disabled via App Functions (boot_orphan_resume) — not registered")
 
         async def _start_watchdog():
             from app.agent.watchdog import start_watchdog
@@ -1662,7 +1766,10 @@ async def startup():
             from app.agent.watchdog import stop_watchdog
             await stop_watchdog()
 
-        _leader.register("watchdog", _start_watchdog, _stop_watchdog)
+        if _appfn_on("watchdog"):
+            _leader.register("watchdog", _start_watchdog, _stop_watchdog)
+        else:
+            logger.info("Run watchdog disabled via App Functions (watchdog) — not registered")
 
         async def _start_remote():
             from app.remote_access import start_remote_access
@@ -1672,7 +1779,10 @@ async def startup():
             from app.remote_access import stop_remote_access
             await stop_remote_access()
 
-        _leader.register("remote-access", _start_remote, _stop_remote)
+        if _appfn_on("remote_access"):
+            _leader.register("remote-access", _start_remote, _stop_remote)
+        else:
+            logger.info("Remote access disabled via App Functions (remote_access) — not registered")
 
         await _leader.start()
     except Exception as _leader_err:
@@ -1686,8 +1796,11 @@ async def startup():
     # See app/devices/. Harmless on a single, unshared instance — there are simply
     # no other devices, so it just heartbeats itself.
     try:
-        from app.devices import start_device_worker
-        await start_device_worker()
+        if _appfn_on("device_worker"):
+            from app.devices import start_device_worker
+            await start_device_worker()
+        else:
+            logger.info("Multi-device worker disabled via App Functions (device_worker) — skipping")
     except Exception as _dev_err:
         logger.warning("Failed to start device worker: %s", _dev_err)
 
@@ -1724,6 +1837,16 @@ async def startup():
         await migrate_llm_secrets()
     except Exception as _mig_err:
         logger.warning("LLM secret migration skipped: %s", _mig_err)
+
+    # ── Prime the shared Git-page GitHub token from the encrypted vault (and
+    #    migrate a legacy plaintext provider.json token into it once), so every
+    #    device signed into the same vault resolves the same key and the agent's
+    #    Git Control ability has it before any UI request runs. ──
+    try:
+        from app.api.github import _prime_shared_token_from_vault
+        await _prime_shared_token_from_vault()
+    except Exception as _gh_err:
+        logger.warning("Git token vault prime skipped: %s", _gh_err)
 
 
 if __name__ == "__main__":

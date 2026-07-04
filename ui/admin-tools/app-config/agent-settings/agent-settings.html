@@ -65,6 +65,49 @@
         <div class="ac-actions" style="margin-left:23px;">
           <button id="ac-app-settings-save" class="ac-btn ac-btn-primary">Save</button>
         </div>
+
+        <!-- ── Memory embeddings (app/agent/embed.py) — APP-WIDE, admin-only.
+             Lives HERE (relocated into the model-table Advanced panel), never on
+             the per-agent Config-tab model table: every stored memory vector
+             shares one column + width, so all agents MUST embed identically —
+             this is a single global choice, not a per-agent one. "Cloud" =
+             same provider as the chat model; "Local" = an in-process FastEmbed
+             model (no network hop on every memory search). Switching source or
+             model re-embeds every saved memory via POST
+             /admin/settings/embedding/reindex — driven by _initEmbeddingControl
+             in agent-settings.js. Colours use design-system tokens only. -->
+        <div id="ac-embed-block" style="border-top:var(--border-width) solid var(--border);margin:18px 23px 0;padding-top:14px;">
+          <label class="ac-label" style="display:flex;align-items:center;gap:8px;padding:0;">
+            <i data-lucide="brain" class="lucide-icon" style="width:15px;height:15px;color:var(--accent);"></i>
+            <span>Memory embeddings</span>
+          </label>
+          <div class="ac-hint" style="margin:2px 0 10px 23px;">Which engine turns memories into searchable vectors — applied app-wide to every agent. <strong>Cloud</strong> uses your chat provider; <strong>Local</strong> runs a small model in-process, removing the network round-trip on every memory search.</div>
+
+          <div style="margin-left:23px;max-width:340px;">
+            <label class="ac-label" for="ac-embed-source">Source</label>
+            <select id="ac-embed-source" class="ac-input">
+              <option value="cloud">Cloud — same provider as chat model</option>
+              <option value="local">Local — in-process (FastEmbed)</option>
+            </select>
+
+            <div id="ac-embed-local-row" style="display:none;margin-top:10px;">
+              <label class="ac-label" for="ac-embed-model">Local model</label>
+              <select id="ac-embed-model" class="ac-input"></select>
+              <div id="ac-embed-local-warn" class="ac-hint" style="display:none;color:var(--warning);margin-top:6px;"></div>
+            </div>
+
+            <div id="ac-embed-current" class="ac-hint" style="margin-top:8px;"></div>
+          </div>
+
+          <div class="ac-info-banner" style="margin:10px 0 0 23px;font-size:11px;max-width:520px;">
+            Switching the source or model <strong>re-embeds every saved memory</strong> so old and new vectors match. During the rebuild, memory search falls back to keyword-only. The memory store is small, so this is quick.
+          </div>
+
+          <div class="ac-actions" style="margin:12px 0 0 23px;">
+            <button id="ac-embed-reindex" class="ac-btn ac-btn-primary">Apply &amp; re-embed</button>
+          </div>
+          <span id="ac-embed-status" class="ac-status" style="display:none;margin:8px 0 0 23px;"></span>
+        </div>
       </div>
       <span id="ac-settings-status" class="ac-status" style="display:none;margin-top:8px;"></span>
     </div>

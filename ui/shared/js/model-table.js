@@ -248,6 +248,7 @@ export function mountModelTable(host, opts = {}) {
     defaultUid: null,           // _uid of the row currently picked as the default
   };
   let fetchDebounce = null, autosaveDebounce = null;
+  let modelsBusy = 0;   // >0 while the provider's available-model list is loading (drives the + button spinner)
   const docListeners = [];
 
   // ── default endpoint helpers (adapter may override any) ──
@@ -292,11 +293,6 @@ export function mountModelTable(host, opts = {}) {
   host.innerHTML = '';
   const root = document.createElement('div');
   root.className = 'mt-root';
-
-  const loader = document.createElement('div');
-  loader.className = 'ac-model-loader';
-  loader.innerHTML = `<span class="ac-spinner"></span><span>Loading models…</span>`;
-  root.appendChild(loader);
 
   const table = document.createElement('div');
   table.className = 'ac-list ac-model-config ac-cfg-collapsed';
@@ -388,6 +384,12 @@ export function mountModelTable(host, opts = {}) {
   addToggle.type = 'button'; addToggle.className = 'ac-model-add-toggle';
   addToggle.title = 'Add a model'; addToggle.setAttribute('aria-label', 'Add a model');
   addToggle.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
+  // Spinner shown ON the + button while the provider's available-model list loads
+  // (the one genuinely slow fetch — it powers the "Search models…" box for adding
+  // a model). Hidden by default; CSS swaps the + glyph for it while `.loading`.
+  const addSpin = document.createElement('span');
+  addSpin.className = 'ac-model-add-spinner'; addSpin.setAttribute('aria-hidden', 'true');
+  addToggle.appendChild(addSpin);
   advActions.appendChild(advToggle); advActions.appendChild(addToggle);
   advHead.appendChild(advActions);
   const advBody = document.createElement('div');
@@ -462,22 +464,33 @@ export function mountModelTable(host, opts = {}) {
     });
   }
 
+  // Reflect the in-flight provider-model fetch on the + button (counter-based so
+  // overlapping debounced calls don't clear the spinner early).
+  function setAddBusy(on) {
+    modelsBusy = Math.max(0, modelsBusy + (on ? 1 : -1));
+    addToggle.classList.toggle('loading', modelsBusy > 0);
+  }
   async function loadModels() {
     const provider = S.currentProvider === '_custom' ? '' : S.currentProvider;
     const key = keyInput.value.trim();
     const base = urlInput.value.trim() || S.presets[S.currentProvider]?.base_url || '';
     if (!key) { setModelStatus('Enter an API key to see available models.'); S.allModels = []; modelDd.style.display = 'none'; return; }
     setModelStatus('Loading models…');
-    const data = await fetchModels({ provider, api_key: key, base_url: base });
-    if (!data || data.error) {
-      setModelStatus(data && data.error === 'No API key configured' ? 'Enter an API key to see available models.' : `Error: ${(data && data.error) || 'failed'}`);
-      S.allModels = []; return;
-    }
-    S.allModels = data.models || [];
-    setModelStatus(S.allModels.length ? `${S.allModels.length} models available. Type to filter.` : 'No models available.');
-    if (S.selectedModel) {
-      const sel = S.allModels.find(m => m.id === S.selectedModel);
-      if (sel) { S.selCaps = { text: sel.text_capable !== false, image: !!sel.image_capable, imageOut: !!sel.image_out_capable }; renderDetectedCaps(sel); }
+    setAddBusy(true);
+    try {
+      const data = await fetchModels({ provider, api_key: key, base_url: base });
+      if (!data || data.error) {
+        setModelStatus(data && data.error === 'No API key configured' ? 'Enter an API key to see available models.' : `Error: ${(data && data.error) || 'failed'}`);
+        S.allModels = []; return;
+      }
+      S.allModels = data.models || [];
+      setModelStatus(S.allModels.length ? `${S.allModels.length} models available. Type to filter.` : 'No models available.');
+      if (S.selectedModel) {
+        const sel = S.allModels.find(m => m.id === S.selectedModel);
+        if (sel) { S.selCaps = { text: sel.text_capable !== false, image: !!sel.image_capable, imageOut: !!sel.image_out_capable }; renderDetectedCaps(sel); }
+      }
+    } finally {
+      setAddBusy(false);
     }
   }
   function scheduleFetch() { clearTimeout(fetchDebounce); fetchDebounce = setTimeout(loadModels, 500); }
@@ -964,17 +977,30 @@ export function mountModelTable(host, opts = {}) {
   docListeners.push(['click', ddAway]);
 
   // ── load / reload ──
+  // Progressive load: show the table FRAME immediately (kept collapsed, so only
+  // the slim +/advanced action row is visible) with a lightweight inline spinner
+  // over the saved-models area — instead of hiding the whole panel behind one
+  // centered spinner until the per-user config read returns.
+  //
+  // The provider list (fetchPresets — has an INSTANT local fallback) and the saved
+  // config (the slow per-user vault+DB read) are INDEPENDENT, so they're fetched
+  // together rather than one after the other; the config read, in turn, is a
+  // single combined bundle (see the admin adapter) instead of two round-trips.
   async function reload() {
-    loader.classList.add('show'); table.style.display = 'none';
+    table.style.display = '';
+    table.classList.add('ac-cfg-collapsed');   // keep the add-a-model form hidden while loading
     try {
-      S.presets = await fetchPresets();
+      const [presets, cfg] = await Promise.all([
+        Promise.resolve(fetchPresets()).catch(() => ({})),
+        Promise.resolve(adapter.loadConfig()).catch((e) => { console.warn('model-table: load failed', e); return {}; }),
+      ]);
+      S.presets = presets || {};
       provSel.innerHTML = '';
       for (const [k, preset] of Object.entries(S.presets)) {
         const o = document.createElement('option'); o.value = k; o.textContent = preset.name; provSel.appendChild(o);
       }
       const custom = document.createElement('option'); custom.value = '_custom'; custom.textContent = 'Custom'; provSel.appendChild(custom);
 
-      const cfg = (await adapter.loadConfig()) || {};
       S.providerConfigs = cfg.providerConfigs || {};
       S.currentProvider = (cfg.provider && S.presets[cfg.provider]) ? cfg.provider : '_custom';
       provSel.value = S.currentProvider;
@@ -1007,9 +1033,9 @@ export function mountModelTable(host, opts = {}) {
       table.classList.toggle('ac-cfg-collapsed', hasSaved);
       if (keyInput.value) loadModels();
     } catch (e) {
-      console.warn('model-table: load failed', e);
+      console.warn('model-table: render failed', e);
     } finally {
-      loader.classList.remove('show'); table.style.display = '';
+      table.style.display = '';   // frame was shown up front; nothing to un-hide
     }
   }
 

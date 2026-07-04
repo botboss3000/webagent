@@ -478,6 +478,14 @@ async def _record_billing_usage(
         agent = await db_offload(lambda: db.get_agent_by_id(agent_id))
         if not agent:
             return None
+        # Billing is the CENTRAL account plane: usage_events, wallets, trials and
+        # subscriptions must stay in one place even when interaction data is
+        # scattered across per-user databases (multi-tenant). Resolve the control
+        # DB and use it for every billing read/write below; the agent CONFIG is
+        # still read via `db` (the caller's own database in the self-contained
+        # model). No-op in single-tenant mode (get_control_db() == the one DB).
+        from app.db import get_control_db
+        cdb = get_control_db()
         provider_cents = int(round((llm_cost or 0) * 100)) if llm_cost else 0
         usage = _billing_pricing.Usage(
             input_tokens=int(input_tokens or 0),
@@ -485,7 +493,7 @@ async def _record_billing_usage(
             provider_cost_cents=provider_cents,
             message_count=1,
         )
-        result = await _billing_pricing.resolve_charge(agent, user_id, usage, db)
+        result = await _billing_pricing.resolve_charge(agent, user_id, usage, cdb)
         charge = result.end_user_charge_cents
 
         # The end user pays `charge`; the agent admin keeps it. An optional
@@ -494,12 +502,14 @@ async def _record_billing_usage(
         # and record its own accounting below.
         import uuid as _uuid
         event_id = str(_uuid.uuid4())
-        deducted_cents, agent_earnings_cents = await _billing_ext.apply_split(db, agent, charge)
+        deducted_cents, agent_earnings_cents = await _billing_ext.apply_split(cdb, agent, charge)
 
-        # Insert usage_events row (always, even free/exempt, for visibility)
+        # Insert usage_events row (always, even free/exempt, for visibility).
+        # cdb (control) — usage_events is central so the admin dashboard/metrics
+        # keep working when interaction data lives in per-user databases.
         try:
-            if hasattr(db, "_get_conn"):
-                conn = db._get_conn()
+            if hasattr(cdb, "_get_conn"):
+                conn = cdb._get_conn()
                 try:
                     conn.execute(
                         "INSERT INTO usage_events ("
@@ -522,8 +532,8 @@ async def _record_billing_usage(
                     conn.commit()
                 finally:
                     conn.close()
-            elif hasattr(db, "get_raw_client"):
-                db.get_raw_client().table("usage_events").insert({
+            elif hasattr(cdb, "get_raw_client"):
+                cdb.get_raw_client().table("usage_events").insert({
                     "id": event_id,
                     "agent_id": agent_id,
                     "user_id": user_id,
@@ -549,7 +559,7 @@ async def _record_billing_usage(
 
         # Record any extension-side accounting (no-op without a billing extension).
         await _billing_ext.apply_record(
-            db, event_id=event_id, agent_id=agent_id, user_id=user_id,
+            cdb, event_id=event_id, agent_id=agent_id, user_id=user_id,
             end_user_charge_cents=charge, deducted_cents=deducted_cents,
             retained_cents=agent_earnings_cents, interaction_id=interaction_id,
         )
@@ -563,7 +573,7 @@ async def _record_billing_usage(
         ):
             try:
                 await _billing_wallet.credit(
-                    db,
+                    cdb,
                     owner_type="user",
                     owner_id=user_id,
                     amount_cents=-result.end_user_charge_cents,
@@ -577,8 +587,8 @@ async def _record_billing_usage(
         # Decrement trial counters if applicable
         if result.is_trial:
             try:
-                if hasattr(db, "_get_conn"):
-                    conn = db._get_conn()
+                if hasattr(cdb, "_get_conn"):
+                    conn = cdb._get_conn()
                     try:
                         conn.execute(
                             "UPDATE trials SET messages_remaining = "
@@ -601,7 +611,7 @@ async def _record_billing_usage(
                 admins = roles.get("admin_users") or []
                 if admins:
                     await _billing_wallet.credit(
-                        db,
+                        cdb,
                         owner_type="agent_admin",
                         owner_id=admins[0],
                         amount_cents=agent_earnings_cents,
@@ -752,6 +762,19 @@ async def stream_agent_events(
       'auto' — all tools allowed without confirmation.
     Legacy values are normalized: 'read' -> 'plan', 'write' -> 'ask'.
     """
+    # Multi-tenant (bring-your-own-database): pin data-plane routing to THIS run's
+    # user for the whole turn, so every get_db() below — and in the tools, memory
+    # and db_offload calls this loop makes — resolves to this user's own database.
+    # This is the single chokepoint every agent turn funnels through (interactive,
+    # buffered, background, automation and self-heal resume), which is why setting
+    # the caller-uid contextvar here reliably covers the non-HTTP paths where it is
+    # not already set by the request middleware. No-op in single-tenant mode.
+    try:
+        from app.auth.identity import set_verified_caller_uid
+        if user_id:
+            set_verified_caller_uid(user_id)
+    except Exception:  # noqa: BLE001 — never let routing setup break a turn
+        pass
     # Normalize the execution mode to the canonical Ask/Plan/Auto set, accepting
     # the legacy Read/Write/Auto names so in-flight sessions, saved DB values and
     # the TUI bridge keep working. Anything unrecognized falls back to 'ask'.
@@ -1050,6 +1073,104 @@ async def stream_agent_events(
         _active_ability_set = set(_active_ability_names)
         _suppressed_ability_set = set(_suppressed_ability_names)
 
+        # ── Semantic routing: hint + auto-reveal (drop-in, best-effort) ──
+        # Rank the agent's discoverable-and-unloaded abilities against what the
+        # user just asked (in-process embeddings, free). The top matches are
+        # starred in the [ABILITIES] menu (hint); the single strongest match above
+        # a high bar is loaded automatically (auto-reveal) so the agent skips the
+        # notice → load_ability → act round-trip. Everything is guarded: any
+        # failure just leaves the plain alphabetical menu with no auto-reveal.
+        # See app/agent/ability_router.py.
+        _ability_route = {"ranked": [], "starred": [], "reveal": None, "reveal_score": None}
+        try:
+            from app.agent.ability_router import route_abilities as _route_ab, message_text as _rt_text
+            from app.abilities import ui_catalog as _ui_cat0
+            _msg_txt = _rt_text(user_message)
+            if _msg_txt.strip():
+                _cat0 = (_ui_cat0() or {}).get("abilities", {})
+                _cands, _seen_ab = [], set()
+                for _tn in tools:
+                    _aid0 = _tm_ability_for_tool(_tn)
+                    if not _aid0 or _aid0 in _seen_ab:
+                        continue
+                    if _tm_ability_revealed(_aid0, _agent_ability_modes, _active_ability_set,
+                                            _suppressed_ability_set, ability_default=_agent_discovery_default):
+                        continue
+                    _seen_ab.add(_aid0)
+                    _m0 = _cat0.get(_aid0, {})
+                    _cands.append({
+                        "id": _aid0,
+                        "name": _m0.get("display_name") or _aid0,
+                        "desc": _m0.get("skill_summary") or _m0.get("description") or "",
+                        "tools": _m0.get("tools") or [],
+                    })
+                if _cands:
+                    _ability_route = await _route_ab(_msg_txt, _cands)
+        except Exception as _rterr:
+            logger.debug("ability routing skipped: %s", _rterr)
+
+        # Auto-reveal: silently activate the single strongest match, mirroring
+        # load_ability (persist active-ability + skill so the per-iteration schema
+        # build sends its tools this turn), and inline its how-to so instructions
+        # and tools arrive together — not a turn apart.
+        _reveal_id = _ability_route.get("reveal")
+        if _reveal_id and _reveal_id not in _active_ability_set:
+            try:
+                from app.abilities import ability_feature_with_skill as _afs
+                from app.agent.ability_skills import _skill_from_feature as _sff
+                _sk_body, _sk_handle = "", ""
+                _feat = _afs(_reveal_id)
+                if _feat:
+                    _sk = _sff(_feat, _reveal_id)
+                    if _sk:
+                        _sk_body = _sk.get("body") or ""
+                        _sk_handle = _sk.get("handle") or ""
+                if session_id:
+                    await db.set_session_active_ability(session_id, _reveal_id, True)
+                    if _sk_handle:
+                        try:
+                            await db.set_session_active_skill(session_id, _sk_handle, True)
+                        except Exception:
+                            pass
+                _active_ability_set.add(_reveal_id)
+                _active_ability_names.append(_reveal_id)
+                if _sk_body:
+                    system_prompt = (system_prompt or "") + "\n\n# [AUTO-LOADED ABILITY]\n" + _sk_body
+                _rv_score = _ability_route.get("reveal_score")
+                yield {"type": "pipeline", "level": "pipeline",
+                       "step": "ability_auto_revealed", "ability_id": _reveal_id,
+                       "score": round(_rv_score, 3) if isinstance(_rv_score, (int, float)) else None}
+                logger.info("auto-revealed ability %s (score=%s) for session %s",
+                            _reveal_id, _rv_score, str(session_id)[:12])
+            except Exception as _rverr:
+                logger.debug("auto-reveal of %s failed: %s", _reveal_id, _rverr)
+
+        # ── Agent suggestions (proactive delegation hint, best-effort) ──
+        # If this agent can delegate, rank the user's saved specialist agents
+        # against the message and surface the strong matches up front — the PUSH
+        # counterpart to the pull-only list_delegatable_agents tool. Gated so it
+        # only appears for orchestrators, and only when a specialist actually fits.
+        try:
+            _can_delegate = any(t in tools for t in (
+                "list_delegatable_agents", "delegate_to_agent",
+                "delegate_task_to_agent", "spawn_agent"))
+            if _can_delegate and _ability_route is not None:
+                from app.agent.ability_router import suggest_agents as _suggest_agents, message_text as _rt_text2
+                _msg_txt2 = _rt_text2(user_message)
+                if _msg_txt2.strip():
+                    _tmpls = await db.list_agent_templates(include_admin=True)
+                    _tmpl_cands = [{
+                        "id": _t.get("id"),
+                        "name": _t.get("name") or _t.get("id"),
+                        "desc": _t.get("trigger_description") or _t.get("description") or "",
+                    } for _t in (_tmpls or []) if _t.get("id") and not _t.get("is_pipeline")]
+                    _agent_hint = await _suggest_agents(
+                        _msg_txt2, _tmpl_cands, exclude_id=agent_template_id)
+                    if _agent_hint:
+                        system_prompt = (system_prompt or "") + "\n\n" + _agent_hint
+        except Exception as _aserr:
+            logger.debug("agent suggestions skipped: %s", _aserr)
+
         # # [TOOLS] — exclude tools whose gating ability is discoverable-and-unloaded
         # (they are reachable only by loading the ability) or session-suppressed.
         _idx_entries = []
@@ -1098,7 +1219,13 @@ async def stream_agent_events(
                         "name": _meta.get("display_name") or _aid,
                         "desc": _meta.get("skill_summary") or _meta.get("description") or "",
                     })
-            _ab_index = _tm_render_abilities(_ab_entries)
+            # Message-aware ordering + starring from the semantic router (hint).
+            # Empty route (embedder off / no message) ⇒ plain alphabetical menu.
+            _ab_index = _tm_render_abilities(
+                _ab_entries,
+                starred=_ability_route.get("starred"),
+                order=[r.get("id") for r in _ability_route.get("ranked", []) if r.get("id")],
+            )
             if _ab_index:
                 system_prompt = (system_prompt or "") + "\n\n" + _ab_index
         except Exception as _aie:
@@ -2340,9 +2467,16 @@ async def stream_agent_events(
                                 agent_template_id = _tpl_id
                                 agent_name = _ag_name  # Update prefix for new agent
 
-                                # Reload tools for the new template
+                                # Reload tools for the new template. Carry the SAME
+                                # gating the initial load got (bug fix): the per-session
+                                # tool/ability state (session_id) and the block list
+                                # (this run's agent-deny + global admin denies). Without
+                                # them a delegated-to agent silently regains tools the
+                                # session had disabled. The block list is fail-closed —
+                                # it can only withhold tools, never grant new ones.
                                 from app.tools.loader import load_tools as _load_tools
                                 tools = await _load_tools(user_id, agent_id=agent_id, agent_template_id=_tpl_id,
+                                                          allowed_tools=allowed_tools, session_id=session_id,
                                                           gate_caller_access=True)
 
                                 # Inject new agent's resolved prompts as a system message
@@ -2497,10 +2631,18 @@ async def stream_agent_events(
         # Finalize any in-progress streaming answer so it isn't stranded as
         # 'streaming' forever — the partial text is kept, marked 'interrupted'.
         if streaming_asst_id is not None:
+            # Finalize the partial answer even though we're mid-cancellation. A HARD
+            # cancel (a replace past the grace window, or the watchdog frozen-kill)
+            # re-raises CancelledError at the next await — a bare `await` here would be
+            # abandoned, stranding the row as status='streaming' (a forever "typing…"
+            # bubble that only a server reboot clears). Shield the write so it runs to
+            # completion, and swallow the re-raised cancel so the finalize isn't skipped.
             try:
-                await db.update_interaction(
+                await asyncio.shield(db.update_interaction(
                     streaming_asst_id, content=collected_content, status="interrupted",
-                )
+                ))
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 pass
         yield {"type": "interrupted", "level": "agent", "message": str(e), "asst_id": streaming_asst_id}

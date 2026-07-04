@@ -10,9 +10,10 @@ working-tree changes + commit graph instead.
 Two kinds of entry:
 
 - **The built-in WebAgent repo** is always present and is *synthesized on the fly*
-  (never persisted): its folder is the project root and its remote/token are read
-  live — the shared ``github_token`` in ``provider.json`` plus git ``origin`` — so
-  selecting it behaves byte-for-byte like today. It can't be edited or removed here.
+  (never persisted): its folder is the project root, its ``origin`` is read live
+  from git, and its shared GitHub token comes from the **encrypted vault** (primed
+  by ``github.py`` — see :func:`_shared_token`), with ``provider.json`` kept as a
+  plaintext local mirror. It can't be edited or removed here.
 - **Added repos** are stored in ``data/config/git-repos.json`` (gitignored, exactly
   like the shared token) with their own ``folder`` / ``remote_url`` / ``token``.
 
@@ -52,8 +53,37 @@ BUILTIN_LABEL = "WebAgent (this app)"
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+# Vault-authoritative override for the built-in repo's shared GitHub token.
+# The shared token now lives in the ENCRYPTED VAULT (app/deploy/credentials.py,
+# service ``deploy_github_token``) so it is durable and travels to every device
+# signed into the same vault — the Deploy panel already used that key, so the Git
+# page and Deploy now share ONE token. ``github.py`` reads the vault (async) and
+# primes this in-memory override at startup + before each token-sensitive request;
+# every sync git path here then resolves the vault token without an await.
+# ``provider.json`` stays a plaintext LOCAL mirror/fallback (resilience + the sync
+# fast-path). When the override is set (even to "") it WINS over provider.json.
+_SHARED_TOKEN_OVERRIDE: str | None = None
+
+
+def set_shared_token_override(token: str | None) -> None:
+    """Set (or clear with ``None``) the in-memory shared-token override primed from
+    the vault. Called by ``github.py`` after it reads the vault."""
+    global _SHARED_TOKEN_OVERRIDE
+    _SHARED_TOKEN_OVERRIDE = token
+
+
+def builtin_token() -> str:
+    """Public accessor for the built-in repo's shared GitHub token (vault override
+    if primed, else the provider.json mirror)."""
+    return _shared_token()
+
+
 def _shared_token() -> str:
-    """The single shared GitHub token the Git page has always used."""
+    """The single shared GitHub token for the built-in repo. Prefers the
+    vault-primed override; falls back to the ``provider.json`` mirror when the
+    override has not been primed yet (e.g. before the first vault read)."""
+    if _SHARED_TOKEN_OVERRIDE is not None:
+        return _SHARED_TOKEN_OVERRIDE
     try:
         if _TOKEN_FILE.is_file():
             data = json.loads(_TOKEN_FILE.read_text(encoding="utf-8"))

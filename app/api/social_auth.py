@@ -168,7 +168,7 @@ async def _complete(provider_id: str, request: Request, code, state, error, *, f
     if not external_id and not email:
         return _error_page(f"{name} did not return an identity we can sign in with.")
 
-    user, created = _resolve_account(provider_id, external_id, email, display)
+    user, created = await _resolve_account(provider_id, external_id, email, display)
     if user is None:
         return _error_page(
             f"{name} did not share an email address, so a new account could not "
@@ -201,23 +201,23 @@ async def _complete(provider_id: str, request: Request, code, state, error, *, f
     return _success_page(token, user)
 
 
-def _resolve_account(provider_id: str, external_id: str, email: str, display: str):
+async def _resolve_account(provider_id: str, external_id: str, email: str, display: str):
     """(user, created). Link by provider id, else by email, else create.
 
     New accounts follow the app's access mode: instant in Open Registration,
     pending admin approval in Private.
     """
     # 1. Already linked to this exact provider identity.
-    user = user_store.get_user_by_social(provider_id, external_id) if external_id else None
+    user = await user_store.get_user_by_social(provider_id, external_id) if external_id else None
     if user is not None:
         return user, False
 
     # 2. An existing account with the same email — link the provider to it.
     if email:
-        existing = user_store.get_user(email)
+        existing = await user_store.get_user(email)
         if existing is not None:
             if external_id:
-                user_store.link_social(existing.username, provider_id, external_id)
+                await user_store.link_social(existing.username, provider_id, external_id)
             return existing, False
 
     # 3. Brand-new account. Needs an email to key the username on.
@@ -225,14 +225,14 @@ def _resolve_account(provider_id: str, external_id: str, email: str, display: st
         return None, False
     from app.admin.settings import get_access_mode
     auto_approve = get_access_mode() != "admin_approval"
-    created = user_store.register_social_user(
+    created = await user_store.register_social_user(
         email, display, provider_id, external_id, is_approved=auto_approve
     )
     if created is None:
         # Lost a create race — adopt the now-existing account.
-        existing = user_store.get_user(email)
+        existing = await user_store.get_user(email)
         if existing is not None and external_id:
-            user_store.link_social(existing.username, provider_id, external_id)
+            await user_store.link_social(existing.username, provider_id, external_id)
         return existing, False
     return created, True
 

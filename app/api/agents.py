@@ -18,6 +18,7 @@ POST /api/v1/agents/test                — run a test message through an agent 
 GET  /api/v1/agents/{agent_id}/members  — list agent admins + members with stats (agent admin only)
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +31,55 @@ from app.db import get_db
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["agents"])
+
+# Default WebAgent description — shared by every provisioning path so the
+# auto-provision, the /agents/ensure-default endpoint and the frontend all mint
+# an identical row.
+_WEBAGENT_NAME = "WebAgent"
+_WEBAGENT_DESC = ("Your all-purpose WebAgent — chat, tools, web, browser, code, "
+                  "pages, and source control.")
+
+# ── Idempotent WebAgent provisioning ────────────────────────────────────────
+# The WebAgent is a per-user SINGLETON. Two things used to mint duplicates: the
+# chat panel's "ensure" and the Agents page's auto-provision could both create
+# one before either committed, and — worse on a shared DB — a device whose local
+# mirror didn't yet hold the user's real WebAgent would decide there was none and
+# create a fresh one, so every device accumulated empty duplicates. The fix is a
+# single race-safe get-or-create that (a) serialises per user in-process and
+# (b) checks the AUTHORITY (find_default_agent routes to remote on the hybrid
+# backend) before creating.
+_provision_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _provision_lock(user_id: str) -> asyncio.Lock:
+    lk = _provision_locks.get(user_id)
+    if lk is None:
+        lk = asyncio.Lock()
+        _provision_locks[user_id] = lk
+    return lk
+
+
+async def provision_default_agent(db, user_id: str) -> dict:
+    """Return the user's WebAgent, creating it only if the authority has none.
+
+    Race-safe: serialised per user, and the existence check reads the authority
+    (not the possibly-stale local mirror) so concurrent devices converge on ONE
+    WebAgent instead of each creating its own."""
+    async with _provision_lock(user_id):
+        try:
+            existing = await db.find_default_agent(user_id)
+        except Exception as e:
+            logger.warning("provision_default_agent: find_default_agent failed (%s); "
+                           "will create", e)
+            existing = None
+        if existing:
+            return existing
+        return await db.create_custom_agent(
+            user_id=user_id,
+            name=_WEBAGENT_NAME,
+            description=_WEBAGENT_DESC,
+            template_id="default",
+        )
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -445,12 +495,11 @@ async def list_agents(request: Request, user_id: str = Query(...), include_syste
     # the very first visit.
     if not out and not include_system and not bin_view and not clones_view:
         try:
-            new_agent = await db.create_custom_agent(
-                user_id=user_id,
-                name="WebAgent",
-                description="Your all-purpose WebAgent — chat, tools, web, browser, code, pages, and source control.",
-                template_id="default",
-            )
+            # Idempotent get-or-create against the AUTHORITY — never blindly mints a
+            # second WebAgent. Handles the case where the user's real WebAgent
+            # exists on the shared DB but this device's local mirror hasn't pulled
+            # it yet (the empty `out` above), which is what produced the duplicates.
+            new_agent = await provision_default_agent(db, user_id)
             if new_agent:
                 safe = _safe_agent(new_agent)
                 # Clear the cached shared data so downstream consumers pick it up
@@ -509,6 +558,38 @@ async def create_agent(req: CreateAgentRequest, request: Request):
     await notify_user(req.user_id, {
         "type": "agent_created", "user_id": req.user_id, "agent": safe,
     })
+    return {"agent": safe}
+
+
+class EnsureDefaultRequest(BaseModel):
+    user_id: str
+
+
+@router.post("/agents/ensure-default")
+async def ensure_default_agent(req: EnsureDefaultRequest, request: Request):
+    """Return the caller's WebAgent, creating it only if one doesn't already
+    exist on the authority. Idempotent — the chat panel calls this on load, so
+    repeated calls (and concurrent devices) all resolve to the SAME agent instead
+    of minting duplicates. Contrast with POST /agents, which always creates."""
+    db = get_db()
+    req.user_id = await assert_caller_is(request, req.user_id)
+    agent = await provision_default_agent(db, req.user_id)
+    # A freshly-created WebAgent gets the same admin payment exemption POST
+    # /agents grants; a reused one already has it (the insert is a no-op).
+    try:
+        if await db.is_user_admin(req.user_id):
+            await _maybe_auto_exempt_agent(db, agent["id"], req.user_id)
+    except Exception:
+        pass
+    safe = _safe_agent(agent)
+    # Live-sync open tabs/devices (harmless if the agent already existed).
+    try:
+        from app.api.chat import notify_user
+        await notify_user(req.user_id, {
+            "type": "agent_created", "user_id": req.user_id, "agent": safe,
+        })
+    except Exception:
+        pass
     return {"agent": safe}
 
 
@@ -1343,6 +1424,18 @@ async def delete_agent(request: Request, agent_id: str, user_id: str = Query(...
         deleted = await db.trash_custom_agent(agent_id=agent_id, user_id=user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Agent not found, not owned by this user, or is a system agent.")
+    # A permanent delete erases the agent row from the authority, so the hybrid
+    # puller (which only ever pulls rows whose watermark advanced) can never carry
+    # the erasure to another device's local mirror — it would show a ghost agent in
+    # the dropdown until cold start. Drop a tombstone so peers prune it (and its
+    # sessions/transcript) on the next sync tick. (Soft trash needs no tombstone:
+    # the status flip rides the normal watermark pull.)
+    if permanent:
+        try:
+            from app.db.sync.tombstones import record_tombstones
+            record_tombstones(db, [("agents", agent_id)], user_id)
+        except Exception:  # noqa: BLE001
+            pass
     # Live-sync every open tab/device: a permanent delete drops the card from the
     # bin view; a soft delete moves it out of the main grid into the bin.
     from app.api.chat import notify_user
@@ -1524,6 +1617,17 @@ def _inject_ability_rows() -> None:
 _inject_ability_rows()
 
 
+# Short-TTL cache for the ability catalog. The catalog is GLOBAL (no per-user /
+# per-agent data) but each fetch does a filesystem re-scan (reload() walks
+# plugins/abilities/) synchronously on the event loop. At cold page-load the
+# browser calls this ~2× while ~30 other requests contend for the loop, so an
+# uncached scan serialized and measured ~12s (47ms warm). Caching the scan result
+# for a few seconds collapses the boot's repeat calls to a single scan and keeps
+# the drop-in story honest (edit a descriptor → reload the page → see it within
+# the TTL). Tunable via WEBAGENT_CATALOG_CACHE_SECONDS; set 0 to always re-scan.
+_CATALOG_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
+
+
 @router.get("/abilities/catalog")
 async def get_abilities_catalog():
     """Render-time metadata for the two ability panels (admin Agent Settings +
@@ -1531,19 +1635,30 @@ async def get_abilities_catalog():
     from the drop-in files in plugins/abilities/ — so both panels render
     generically with no hardcoded per-ability constants.
     """
+    import os as _os
+    import time as _time
+    try:
+        ttl = float(_os.environ.get("WEBAGENT_CATALOG_CACHE_SECONDS") or 8.0)
+    except ValueError:
+        ttl = 8.0
+    now = _time.monotonic()
+    cached = _CATALOG_CACHE.get("data")
+    if ttl > 0 and cached is not None and (now - _CATALOG_CACHE["at"]) < ttl:
+        return cached
     try:
         from app.abilities import ui_catalog, reload
-        # Re-scan plugins/abilities/ on each catalog fetch (once per page load) so
-        # a freshly-dropped or freshly-edited <id>.json descriptor appears with no
-        # server restart — the discovery scan is a handful of small dir reads.
-        # Mirrors the pages catalog above; keeps the drop-in story honest (edit a
-        # descriptor, reload the page, see the change) instead of "stale until
-        # restart".
+        # Re-scan plugins/abilities/ so a freshly-dropped or freshly-edited
+        # <id>.json descriptor appears with no server restart — the discovery scan
+        # is a handful of small dir reads. Mirrors the pages catalog above.
         reload()
-        return ui_catalog()
+        data = ui_catalog()
+        _CATALOG_CACHE["data"] = data
+        _CATALOG_CACHE["at"] = now
+        return data
     except Exception as e:
         logger.warning("Could not build abilities catalog: %s", e)
-        return {"groups": [], "abilities": {}, "credential_members": []}
+        # Serve the last good catalog if we have one, else an empty shell.
+        return cached or {"groups": [], "abilities": {}, "credential_members": []}
 
 
 @router.get("/pages/catalog")
@@ -2348,6 +2463,15 @@ async def list_agent_members(request: Request, agent_id: str, user_id: str = Que
     """
     from app.auth.users import get_user_by_id as _auth_get_user_by_id
 
+    async def _load_auth_map(uids: list[str]) -> dict:
+        """Pre-fetch account rows for `uids` (the store is async now, but the
+        per-row _build() below is sync, so gather them up front like the other
+        *_map lookups)."""
+        out: dict[str, object] = {}
+        for _uid in uids:
+            out[_uid] = await _auth_get_user_by_id(_uid)
+        return out
+
     db = get_db()
     user_id = await assert_caller_is(request, user_id)
     if not await _is_agent_admin(db, agent_id, user_id):
@@ -2404,10 +2528,12 @@ async def list_agent_members(request: Request, agent_id: str, user_id: str = Que
     finally:
         conn.close()
 
+    auth_map = await _load_auth_map(all_ids)
+
     def _build(uid: str) -> dict:
         prof = profile_map.get(uid, {})
         ident = identity_map.get(uid, {})
-        auth_user = _auth_get_user_by_id(uid)
+        auth_user = auth_map.get(uid)
         username = auth_user.username if auth_user else None
         display_name = (
             (auth_user.display_name if auth_user else None)

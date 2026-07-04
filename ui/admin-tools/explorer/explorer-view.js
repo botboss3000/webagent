@@ -1007,10 +1007,25 @@ async function toggleDir(node, path, depth) {
   persistExpanded();
 }
 
+// Phantom shimmer rows for the file tree while /tree loads — indented bars that
+// echo the tree's shape instead of a plain "Loading…" line. `.sk-shimmer` (the
+// animated fill) is shared in ui/shared/css/app3.css.
+function _treeSkeletonHtml(rows = 9) {
+  // [indent-level, bar-width%] — a plausible folder/file mix.
+  const shape = [[0, 62], [1, 48], [1, 70], [2, 40], [0, 55], [1, 66], [1, 44], [0, 72], [1, 50]];
+  let html = '';
+  for (let i = 0; i < rows; i++) {
+    const [lvl, w] = shape[i % shape.length];
+    html += `<div class="files-tree-sk-row" style="padding-left:${12 + lvl * 16}px;" aria-hidden="true">`
+          + `<span class="files-tree-sk-bar sk-shimmer" style="width:${w}%;"></span></div>`;
+  }
+  return html;
+}
+
 async function loadRoot() {
   const tree = document.getElementById('files-tree');
   if (!tree) return;
-  tree.innerHTML = '<div class="files-tree-loading">Loading…</div>';
+  tree.innerHTML = _treeSkeletonHtml();
   try {
     const data = await apiFetch('/tree?path=' + encodeURIComponent(currentRoot || ''));
     currentRoot = data.path || currentRoot;

@@ -9,7 +9,9 @@
  *
  * Public API on window.DevicePicker:
  *   load(force)            -> Promise<device[]>      (cached ~8s; [{instance_id,label,online,last_seen,is_self}])
- *   labelFor(instanceId)   -> string                 ('This device' for '', else the device's label)
+ *   selfId()               -> string                 (this device's own fleet instance-id, '' if not yet loaded)
+ *   labelFor(instanceId)   -> string                 ('This device' for '' or this device's id, else the device's label)
+ *   claudeReady(device)    -> bool                   (can this device run a Claude-Code agent — `claude` CLI installed)
  *   open(anchorEl, opts)   -> opens the floating menu near anchorEl
  *   closeAll()             -> dismiss any open menu
  *
@@ -26,6 +28,7 @@
   const PICKER = {};
   let _cache = null;
   let _cacheAt = 0;
+  let _selfId = '';   // this device's own fleet instance-id (from the load response)
   const CACHE_MS = 8000;
 
   function _apiPath(p) { return (window.apiPath ? window.apiPath(p) : p); }
@@ -45,6 +48,10 @@
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       _cache = Array.isArray(data.devices) ? data.devices : [];
+      // Remember this device's own fleet id so callers can pin "This device" to a
+      // concrete identity (the endpoint returns it as `self`; fall back to the
+      // is_self row if an older server omits it).
+      _selfId = data.self || (( _cache.find(d => d && d.is_self) || {}).instance_id) || _selfId;
       _cacheAt = now;
     } catch (e) {
       console.warn('[DevicePicker] load failed:', e);
@@ -53,8 +60,20 @@
     return _cache;
   }
 
+  function selfId() { return _selfId; }
+
+  // Can this device run a Claude-Code agent? True only if it reported the `claude`
+  // CLI installed in its presence capabilities. Unknown/older servers (no `claude`
+  // key) return true so we never falsely flag a device as unable — the runtime
+  // "Claude not accessible on this device" notice is the real safety net.
+  function claudeReady(device) {
+    const c = device && device.capabilities;
+    if (!c || typeof c.claude === 'undefined') return true;
+    return c.claude === true;
+  }
+
   function labelFor(instanceId) {
-    if (!instanceId) return 'This device';
+    if (!instanceId || instanceId === _selfId) return 'This device';
     const d = (_cache || []).find(x => x.instance_id === instanceId);
     return d ? (d.label || instanceId) : instanceId;
   }
@@ -182,7 +201,9 @@
   }
 
   PICKER.load = load;
+  PICKER.selfId = selfId;
   PICKER.labelFor = labelFor;
+  PICKER.claudeReady = claudeReady;
   PICKER.open = open;
   PICKER.closeAll = closeAll;
   window.DevicePicker = PICKER;

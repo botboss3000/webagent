@@ -554,6 +554,7 @@ let _modelPickerEl = null;       // the floating dropdown container
 let _modelPickerInput = null;    // search input inside the picker
 let _modelPickerList = null;     // scrollable list inside the picker
 let _modelPickerDetail = null;   // detail footer (description + cost)
+let _compactEl = null;           // context-compaction section (sliders + "Compact now")
 let _allAvailableModels = [];    // fetched model list
 let _currentModelName = '';      // the currently-selected model id (for highlight)
 let _sessionModelUsage = {};     // { [modelId]: {input, output, total} } for this session
@@ -587,11 +588,48 @@ function _buildModelPicker() {
   picker.appendChild(input);
   picker.appendChild(list);
   picker.appendChild(detail);
+  // ── Context-compaction section (below the model list) ──
+  // Two sliders tune THIS chat's compaction — "compact at % full" (when older turns
+  // start folding into summaries) and "keep verbatim %" (how much recent history
+  // stays word-for-word) — saved as a per-session override. "Compact now" folds the
+  // conversation immediately by sending /compact through the normal pipeline.
+  const compact = document.createElement('div');
+  compact.className = 'cmp-compact';
+  compact.innerHTML =
+      `<div class="cmp-cc-head">Context compaction</div>`
+    + `<div class="cmp-cc-row">`
+    +   `<div class="cmp-cc-top"><span class="cmp-cc-label">Compact at</span>`
+    +     `<span class="cmp-cc-val" data-val="threshold">85%</span></div>`
+    +   `<input type="range" class="cmp-cc-slider" data-key="threshold" min="10" max="99" step="1" value="85">`
+    +   `<div class="cmp-cc-hint">How full this chat gets before older turns are auto-summarized.</div>`
+    + `</div>`
+    + `<div class="cmp-cc-row">`
+    +   `<div class="cmp-cc-top"><span class="cmp-cc-label">Keep verbatim</span>`
+    +     `<span class="cmp-cc-val" data-val="tail">30%</span></div>`
+    +   `<input type="range" class="cmp-cc-slider" data-key="tail" min="5" max="90" step="1" value="30">`
+    +   `<div class="cmp-cc-hint">Share of the window always kept word-for-word (newest turns).</div>`
+    + `</div>`
+    + `<button type="button" class="cmp-cc-btn">`
+    +   `<span class="cmp-cc-btn-label">Compact now</span>`
+    +   `<span class="cmp-cc-btn-status"></span></button>`
+    + `<div class="cmp-cc-note">Applies to this chat only — takes effect next turn.</div>`;
+  picker.appendChild(compact);
   document.body.appendChild(picker);
   _modelPickerEl = picker;
   _modelPickerInput = input;
   _modelPickerList = list;
   _modelPickerDetail = detail;
+  _compactEl = compact;
+
+  // Slider "input" updates the live % label; "change" (on release) saves it.
+  compact.querySelectorAll('.cmp-cc-slider').forEach(sl => {
+    sl.addEventListener('input', () => _onCompactSlide(sl));
+    sl.addEventListener('change', () => _onCompactCommit(sl));
+    // Don't let a click inside the picker bubble to the document close handler.
+    sl.addEventListener('click', (e) => e.stopPropagation());
+  });
+  const compactBtn = compact.querySelector('.cmp-cc-btn');
+  if (compactBtn) compactBtn.addEventListener('click', (e) => { e.stopPropagation(); _runCompactNow(compactBtn); });
 
   // Search filtering
   input.addEventListener('input', () => _renderModelPickerList(input.value.toLowerCase()));
@@ -981,6 +1019,101 @@ async function _selectModel(modelId) {
   }
 }
 
+// ── Context-compaction panel (bottom of the model picker) ────────────────────
+
+// Map a slider's data-key to the label + save field it drives.
+const _CC_FIELDS = {
+  threshold: { valSel: 'threshold', field: 'compact_threshold_pct' },
+  tail: { valSel: 'tail', field: 'tail_fraction_pct' },
+};
+
+function _ccValEl(key) {
+  return _compactEl ? _compactEl.querySelector(`.cmp-cc-val[data-val="${key}"]`) : null;
+}
+
+// Live label update while dragging (no save yet).
+function _onCompactSlide(slider) {
+  const key = slider.dataset.key;
+  const el = _ccValEl(key);
+  if (el) el.textContent = slider.value + '%';
+}
+
+// Persist on release. Flash the label to confirm the save landed.
+async function _onCompactCommit(slider) {
+  const meta = _CC_FIELDS[slider.dataset.key];
+  if (!meta) return;
+  const el = _ccValEl(slider.dataset.key);
+  const ok = await _saveCompaction(meta.field, parseInt(slider.value, 10));
+  if (el) {
+    el.classList.remove('cmp-cc-saved', 'cmp-cc-failed');
+    // Force a reflow so re-adding the class re-triggers the flash animation.
+    void el.offsetWidth;
+    el.classList.add(ok ? 'cmp-cc-saved' : 'cmp-cc-failed');
+  }
+}
+
+/** POST one compaction field (a whole percent) for this session. Returns true on a
+ *  confirmed save; no-op (false) outside a chat session. */
+async function _saveCompaction(field, pct) {
+  const sid = app.currentSessionId || '';
+  if (!sid) return false;
+  try {
+    const headers = { 'Content-Type': 'application/json', ...authHeaders() };
+    const res = await fetch(apiPath('/api/v1/chat/session-compaction'), {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        user_id: app.currentUserId || '',
+        session_id: sid,
+        [field]: pct,
+      }),
+    });
+    return res.ok;
+  } catch (e) {
+    console.warn('Failed to save compaction setting:', e);
+    return false;
+  }
+}
+
+/** Load the effective compaction settings for the current chat and reflect them on
+ *  the two sliders + labels. Best-effort — leaves the defaults on any failure. */
+async function _loadCompactionSettings() {
+  if (!_compactEl) return;
+  const sid = app.currentSessionId || '';
+  if (!sid) return;
+  try {
+    const qs = new URLSearchParams({ session_id: sid });
+    if (app.currentAgentId) qs.set('agent_id', app.currentAgentId);
+    if (app.currentUserId) qs.set('user_id', app.currentUserId);
+    const res = await fetch(apiPath('/api/v1/chat/session-compaction?' + qs.toString()),
+      { headers: { ...authHeaders() } });
+    if (!res.ok) return;
+    const d = await res.json();
+    const set = (key, pct) => {
+      const sl = _compactEl.querySelector(`.cmp-cc-slider[data-key="${key}"]`);
+      const el = _ccValEl(key);
+      if (sl && typeof pct === 'number') sl.value = String(pct);
+      if (el && typeof pct === 'number') el.textContent = pct + '%';
+    };
+    set('threshold', d.compact_threshold_pct);
+    set('tail', d.tail_fraction_pct);
+  } catch (_) { /* best-effort — sliders keep their defaults */ }
+}
+
+/** Fire "/compact" through the normal send pipeline (it locks the composer + shows
+ *  the activity chip exactly like typing it) and close the picker. */
+function _runCompactNow(btn) {
+  const statusEl = btn ? btn.querySelector('.cmp-cc-btn-status') : null;
+  const sid = app.currentSessionId || '';
+  if (!sid || typeof app.sendChatMessage !== 'function' || !app.chatInput) {
+    if (statusEl) statusEl.textContent = 'unavailable';
+    return;
+  }
+  if (_modelPickerEl) _modelPickerEl.style.display = 'none';
+  app.chatInput.value = '/compact';
+  try { app.sendChatMessage(); }
+  catch (e) { console.warn('Compact-now send failed:', e); }
+}
+
 // Toggle the picker open/close when clicking the footer left area
 function _toggleModelPicker() {
   if (_modelPickerEl && _modelPickerEl.style.display !== 'none') {
@@ -1020,6 +1153,9 @@ function _toggleModelPicker() {
   _fetchSessionModelUsage().then(() => {
     _renderModelPickerList(_modelPickerInput.value.toLowerCase());
   });
+
+  // Pull this chat's effective compaction settings into the sliders.
+  _loadCompactionSettings();
 
   // Fetch the curated list, render it, then fill in context/description/cost in
   // the background and re-render so each row shows its chips + detail.

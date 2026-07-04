@@ -80,8 +80,17 @@ _VAULT_LABEL = "default"
 
 
 def _get_token() -> str:
-    """The shared Git-page token from ``provider.json`` — the legacy fallback
-    used when no production-specific key is stored in the vault."""
+    """The shared Git-page token — the fallback used when no production-specific key
+    is stored in the vault. It now lives in the encrypted vault (service
+    ``deploy_github_token``); ``git_repos.builtin_token()`` returns the vault-primed
+    value, with the ``provider.json`` mirror as a last resort."""
+    try:
+        from app import git_repos
+        tok = git_repos.builtin_token()
+        if tok:
+            return tok
+    except Exception:  # noqa: BLE001
+        pass
     try:
         if _TOKEN_FILE.is_file():
             import json
@@ -742,7 +751,9 @@ async def copy_events(message: str = ""):
     # message / message_ready / message_fallback phases mirror the ⭐ exactly.
     dev_short = _dev_head_short()
     ex_note = (", ".join(sorted(excludes)) if excludes else "none")
-    deterministic = (f"Release from dev {dev_short or '(uncommitted)'} — {copied} files\n\n"
+    # ASCII hyphen, not an em-dash: git-on-Windows stores a literal "—" in the
+    # commit arg double-encoded, which shows up as "â€”" in the commit history.
+    deterministic = (f"Release from dev {dev_short or '(uncommitted)'} - {copied} files\n\n"
                      f"Generated production mirror. Excluded folders: {ex_note}.")
     if message and message.strip():
         commit_msg = message.strip()

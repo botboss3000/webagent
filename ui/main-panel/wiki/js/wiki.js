@@ -311,9 +311,25 @@ function _renderSidebarFoot() {
 
 // ── Load articles + render the sidebar ────────────────────────────────────────
 
+// Phantom shimmer rows for the sidebar tree while articles load — a set of
+// category-header + article-row placeholders, so the sidebar has structure
+// instead of a bare "Loading…" line. `.sk-shimmer` is shared (app3.css).
+function _treeSkeleton(groups = 3, rowsPer = 3) {
+  let html = '';
+  for (let g = 0; g < groups; g++) {
+    html += '<div class="wiki-tree-sk-group">';
+    html += '<span class="wiki-sk sk-shimmer wiki-tree-sk-head"></span>';
+    for (let r = 0; r < rowsPer; r++) {
+      html += '<span class="wiki-sk sk-shimmer wiki-tree-sk-row"></span>';
+    }
+    html += '</div>';
+  }
+  return html;
+}
+
 async function _refresh() {
   const tree = _q('.wiki-tree');
-  if (tree) tree.innerHTML = '<div class="wiki-loading">Loading&hellip;</div>';
+  if (tree) tree.innerHTML = _treeSkeleton();
   try {
     const data = await _api('/api/v1/wiki');
     if (!_active) return;
@@ -603,9 +619,36 @@ function _showArticleSurface() {
   if (art) art.hidden = false;
 }
 
+// Show the reader with phantom shimmer placeholders (title bar + body lines)
+// while the article fetch is in flight, so opening an article doesn't blank
+// the surface. _renderReader() overwrites these with the real content.
+function _showReaderSkeleton() {
+  _showArticleSurface();
+  const layout = _q('.wiki-reader-layout');
+  if (layout) layout.hidden = false;
+  const ed = _q('.wiki-editor'); if (ed) ed.hidden = true;
+  const rev = _q('.wiki-revisions'); if (rev) rev.hidden = true;
+  // Hide the TOC while loading (_buildToc re-evaluates it on render). We
+  // deliberately DON'T touch the badge/meta/tag/backlink containers — those are
+  // shown/hidden per-child by _renderReader, so hiding the wrappers here would
+  // leave them hidden after render.
+  const toc = _q('.wiki-toc'); if (toc) toc.hidden = true;
+  const title = _q('.wiki-reader-title');
+  if (title) title.innerHTML = '<span class="wiki-sk sk-shimmer wiki-reader-sk-title"></span>';
+  const body = _q('.wiki-reader-body');
+  if (body) {
+    const widths = ['92%', '84%', '96%', '70%', '', '88%', '90%', '60%'];
+    body.innerHTML = widths.map(w =>
+      w ? `<span class="wiki-sk sk-shimmer wiki-reader-sk-line" style="width:${w};"></span>`
+        : '<span class="wiki-reader-sk-gap"></span>'
+    ).join('');
+  }
+}
+
 // ── Open / read an article ───────────────────────────────────────────────────
 
 async function _openArticle(slug) {
+  _showReaderSkeleton();   // paint placeholders immediately, before the fetch
   try {
     const data = await _api(`/api/v1/wiki/${encodeURIComponent(slug)}`);
     _current = data.article;

@@ -235,16 +235,34 @@ class HybridBackend:
 
     # ── Warm SQLite: pull a session + its transcript from remote on first touch ──
 
-    async def _ensure_local_session(self, user_id: str, session_id: str) -> None:
-        """Mirror a session into the local store once per process. Cheap no-op
-        after the first call for a given session."""
-        seen = getattr(self, "_mirrored", None)
+    # How long a session's local mirror is trusted before a read re-pulls any rows
+    # another device has since written + pushed. Bounds cross-device staleness on
+    # the typed read paths (history rebuild / Remote Control) without paying a
+    # remote round-trip on every read. The chat panel's live tail makes its own
+    # local-vs-remote decision (see get_session_tail), so this need not be tiny.
+    _MIRROR_TTL = 8.0
+
+    async def _ensure_local_session(self, user_id: str, session_id: str,
+                                    refresh: bool = False) -> None:
+        """Warm a session's local mirror.
+
+        First touch does a full pull. Thereafter WRITE callers (``refresh=False``)
+        treat it as a cheap once-per-process no-op — the owning device holds every
+        row it wrote local-first, so re-pulling would only add a pointless remote
+        round-trip on the hot write path. READ callers (``refresh=True``) re-pull
+        at most every ``_MIRROR_TTL`` seconds (INSERT OR IGNORE, so it only ADDS
+        rows another device has since written + pushed — the local copy's own
+        full-fidelity rows are untouched), bounding cross-device staleness on the
+        history-rebuild / Remote-Control read paths without a per-read round-trip."""
+        seen = getattr(self, "_mirror_at", None)
         if seen is None:
-            seen = set()
-            self._mirrored = seen
-        if session_id in seen:
+            seen = {}
+            self._mirror_at = seen
+        now = time.monotonic()
+        last = seen.get(session_id)
+        if last is not None and (not refresh or (now - last) < self._MIRROR_TTL):
             return
-        seen.add(session_id)
+        seen[session_id] = now
         try:
             rraw = self._remote.get_raw_client()
             srows = rraw.table("sessions").select("*").eq("id", session_id).execute().data or []
@@ -289,9 +307,9 @@ class HybridBackend:
         Discarding the warm marker and re-warming pulls the missing turns in
         (INSERT OR IGNORE, so the device's own full-fidelity rows are untouched and
         only the genuinely-missing rows are added)."""
-        seen = getattr(self, "_mirrored", None)
+        seen = getattr(self, "_mirror_at", None)
         if seen is not None:
-            seen.discard(session_id)
+            seen.pop(session_id, None)
         await self._ensure_local_session(user_id, session_id)
 
     async def _local_write_full(self, row: Dict[str, Any]) -> None:
@@ -332,6 +350,40 @@ class HybridBackend:
             finally:
                 conn.close()
 
+    async def stamp_interaction_seq(
+        self,
+        interaction_id: str,
+        session_seq: int,
+        turn_id: Optional[str] = None,
+        turn_seq: Optional[int] = None,
+    ) -> None:
+        """Backfill ordering columns on a LOCAL-first row where it actually lives.
+
+        The transcript is written local-first; the row does NOT exist on the remote
+        authority until the background push lands. A backfill aimed at the remote
+        (the default ``_get_conn`` target) would match zero rows and the row would
+        stay NULL-``session_seq`` forever — invisible to the reconcile tail's
+        ``session_seq IS NOT NULL`` filter. So write the LOCAL copy and re-enqueue
+        it, so the push carries the stamped number to remote too."""
+        fields = {"session_seq": session_seq}
+        if turn_id is not None:
+            fields["turn_id"] = turn_id
+        if turn_seq is not None:
+            fields["turn_seq"] = turn_seq
+        await self._local_update(interaction_id, fields)
+        await self._enqueue("interactions", interaction_id)
+
+    async def next_session_seq(self, session_id: str, count: int = 1) -> int:
+        """Allocate the next ordering number from the LOCAL store.
+
+        The local hot store is the source of truth for the transcript (rows are
+        written local-first and only some devices' rows ever reach a given local
+        copy), so the highest ``session_seq`` seen locally is the correct basis for
+        the next value. Reading the remote authority here (the ``__getattr__``
+        default) would under-count whenever local rows haven't pushed yet and hand
+        back a colliding number."""
+        return await self._local.next_session_seq(session_id, count)
+
     def _outbox(self):
         """Lazily-built local outbox — the durable queue the background SyncEngine
         drains to the remote authority. Kept here so a write can enqueue even when
@@ -350,6 +402,93 @@ class HybridBackend:
             await self._outbox().enqueue(table, row_id)
         except Exception as e:
             logger.warning("hybrid: outbox enqueue for %s/%s failed: %s", table, row_id, e)
+
+    async def reconcile_local_only_agents(self) -> dict:
+        """Back-fill agents that live ONLY in this device's local mirror up to the
+        shared authority.
+
+        The outbox only carries changes made *through* the hybrid write path, so an
+        agent created while this device was a standalone LocalBackend (single-device
+        mode, or a Postgres outage that fell back to local) never gets pushed once
+        the device joins the shared DB — it stays invisible to every other device
+        forever (the exact bug that stranded the user's Claude agent). This one-shot
+        reconciliation, run at startup, finds owned/active/non-clone local agents the
+        authority is missing and enqueues them for the normal background push.
+
+        Guard for the WebAgent singleton: a local-only ``default`` agent is pushed
+        only when its owner has NO active ``default`` on the authority yet — so we
+        recover a genuinely-unsynced WebAgent but never propagate a race duplicate.
+
+        Returns a small summary dict; never raises (best-effort)."""
+        import json as _json
+        summary = {"scanned": 0, "pushed": 0, "skipped_present": 0, "skipped_dup_default": 0}
+        try:
+            # 1. Remote authority: which agent ids already exist, and which owners
+            #    already have an active default (the singleton guard).
+            remote_ids: set = set()
+            remote_default_owners: set = set()
+            rc = self._remote.get_raw_client()
+            for r in (rc.table("agents").select("id,template_id,status,admin_users").execute().data or []):
+                remote_ids.add(str(r.get("id")))
+                if r.get("template_id") == "default" and (r.get("status") or "") in ("", "active"):
+                    admins = r.get("admin_users")
+                    if isinstance(admins, str):
+                        try:
+                            admins = _json.loads(admins)
+                        except Exception:
+                            admins = []
+                    for u in (admins or []):
+                        remote_default_owners.add(u)
+
+            # 2. Local pipeline template ids — internal machinery, never user agents.
+            pipeline_ids: set = set()
+            conn = self._local._get_conn()
+            try:
+                for row in conn.execute("SELECT id FROM agent_templates WHERE is_pipeline = 1").fetchall():
+                    pipeline_ids.add(row["id"])
+                local_rows = conn.execute(
+                    """SELECT id, template_id, status, admin_users
+                       FROM agents
+                       WHERE (status IS NULL OR status = '' OR status = 'active')"""
+                ).fetchall()
+            finally:
+                conn.close()
+
+            # 3. Decide + enqueue.
+            to_push: list = []
+            for row in local_rows:
+                d = dict(row)
+                summary["scanned"] += 1
+                aid = str(d.get("id"))
+                if aid in remote_ids:
+                    summary["skipped_present"] += 1
+                    continue
+                if d.get("template_id") in pipeline_ids:
+                    continue
+                admins = d.get("admin_users")
+                if isinstance(admins, str):
+                    try:
+                        admins = _json.loads(admins)
+                    except Exception:
+                        admins = []
+                if not admins:  # unowned — not a user-facing agent
+                    continue
+                if d.get("template_id") == "default":
+                    # Singleton guard: don't propagate a duplicate WebAgent.
+                    if any(u in remote_default_owners for u in admins):
+                        summary["skipped_dup_default"] += 1
+                        continue
+                to_push.append(aid)
+
+            for aid in to_push:
+                await self._enqueue("agents", aid)
+                summary["pushed"] += 1
+
+            if summary["pushed"] or summary["skipped_dup_default"]:
+                logger.info("hybrid: reconciled local-only agents → %s", summary)
+        except Exception as e:
+            logger.warning("hybrid: reconcile_local_only_agents failed: %s", e)
+        return summary
 
     async def insert_interaction(
         self,
@@ -439,7 +578,7 @@ class HybridBackend:
         # Safety net: if the local mirror is missing (a mirror hiccup left the
         # session out of the local store), fall back to the remote authority so a
         # read NEVER hard-fails a chat — degrade, don't break.
-        await self._ensure_local_session(user_id, session_id)
+        await self._ensure_local_session(user_id, session_id, refresh=True)
         try:
             return await self._local.fetch_interactions(user_id, session_id)
         except PermissionError:
@@ -447,7 +586,7 @@ class HybridBackend:
             return await self._remote.fetch_interactions(user_id, session_id)
 
     async def fetch_first_user_messages(self, user_id: str, session_id: str, limit: int = 3):
-        await self._ensure_local_session(user_id, session_id)
+        await self._ensure_local_session(user_id, session_id, refresh=True)
         try:
             return await self._local.fetch_first_user_messages(user_id, session_id, limit)
         except PermissionError:
@@ -597,3 +736,28 @@ class HybridBackend:
             except Exception as e:
                 logger.debug("hybrid: local assemble_prompt fell back: %s", e)
         return await self._remote.assemble_prompt(agent_id, user_id=user_id)
+
+    async def list_agents_for_user(self, user_id, include_admin=False, view="active"):
+        """Serve the agents ROSTER (dropdown + Agents page) from the local mirror.
+
+        The sync puller keeps the whole `agents` table mirrored locally, so this
+        display list — NOT an authz decision — reads with no network round-trip.
+        The same ownership/membership filtering runs on the identical local schema,
+        so the per-user scoping is unchanged. Access ENFORCEMENT stays remote
+        (is_user_admin / get_agent_roles / the Stage-3 authoritative user_mode read
+        in chat._enforce_agent_access_policy), never this list.
+
+        Two fallbacks to the remote authority: the 'clones' view needs the
+        remote-only `agent_spawns` ledger, and an EMPTY local result (a device
+        whose first puller tick hasn't landed yet) reads through to remote so a
+        cold start still shows the roster."""
+        if view != "clones":
+            try:
+                rows = await self._local.list_agents_for_user(
+                    user_id, include_admin, view=view)
+                if rows:
+                    return rows
+            except Exception as e:
+                logger.debug("hybrid: local list_agents_for_user fell back: %s", e)
+        return await self._remote.list_agents_for_user(
+            user_id, include_admin, view=view)

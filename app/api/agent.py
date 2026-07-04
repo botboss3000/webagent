@@ -117,6 +117,15 @@ async def agent_websocket(websocket: WebSocket):
                 return
             user_id = verified
 
+        # Multi-tenant: pin data-plane DB routing to this verified user for the
+        # whole WS connection, so pre-loop reads (replay/reconcile) and the turn
+        # itself resolve to the user's own database. No-op in single-tenant mode.
+        try:
+            from app.auth.identity import set_verified_caller_uid
+            set_verified_caller_uid(user_id)
+        except Exception:  # noqa: BLE001
+            pass
+
         # Register as a per-user listener — receives ALL events for this user
         register_user_listener(user_id, websocket)
         logger.info(f"User subscriber registered for user {user_id}")

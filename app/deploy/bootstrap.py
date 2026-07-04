@@ -41,6 +41,7 @@ echo "WebAgent bootstrap starting at $(date)"
 export DEBIAN_FRONTEND=noninteractive
 
 REPO_URL="__REPO_URL__"
+ORIGIN_URL="__ORIGIN_URL__"
 BRANCH="__BRANCH__"
 DOMAIN="__DOMAIN__"
 PORT="__PORT__"
@@ -218,10 +219,16 @@ FAILEOF
 trap 'on_error $LINENO' ERR
 
 # ── App user + code ──
-next_step "Cloning WebAgent repository" "$REPO_URL @ $BRANCH"
+# Show the CLEAN address (never $REPO_URL, which for a private repo carries the
+# access token) so the token never lands in this log or the holding page.
+next_step "Cloning WebAgent repository" "${ORIGIN_URL:-$BRANCH} @ $BRANCH"
 id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"
 rm -rf "$APP_DIR"
 git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$APP_DIR"
+# The clone URL may embed the access token (private repo). Reset origin to the
+# CLEAN address so the token is never persisted in the box's .git/config; the app
+# authenticates future fetch/push with the token from its own vault instead.
+if [ -n "$ORIGIN_URL" ]; then git -C "$APP_DIR" remote set-url origin "$ORIGIN_URL"; fi
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR"
 
 # ── Python venv + dependencies (forgiving: optional packages never abort) ──
@@ -294,6 +301,16 @@ cat > "$APP_DIR/.env" <<'ENVEOF'
 __ENV_BODY__
 ENVEOF
 chown "$APP_USER":"$APP_USER" "$APP_DIR/.env"
+
+# ── Pre-loaded configuration bundle (optional) ──
+# When the admin chose "Include this app's configuration" on the Deploy panel, a
+# password-locked WABOOT1 setup code is written here as bootstrap.json. On first
+# boot the app (app/admin/bootstrap_bundle.apply_boot_file) decrypts it with the
+# BOOTSTRAP_ADMIN_PASSWORD baked into .env above, applies the carried AI / vault /
+# database config, activates the database, then renames the file. A QUOTED heredoc
+# ('BOOTEOF') so the code is written byte-for-byte. The whole block is substituted
+# from Python — it is empty when nothing was embedded.
+__BOOTSTRAP_WRITE__
 
 # ── systemd service ──
 next_step "Installing system service"
@@ -401,21 +418,53 @@ def _env_body(port: int, admin_password: str) -> str:
     return "\n".join(lines)
 
 
+def _bootstrap_write_block(bootstrap_code: str) -> str:
+    """The shell that writes the optional pre-loaded ``bootstrap.json`` on the box.
+
+    Empty when nothing was embedded. The code is a ``WABOOT1.<b64url>.<token>``
+    string — base64url + dots, no shell metacharacters — so a QUOTED heredoc
+    ('BOOTEOF', nothing expanded) writes it verbatim and safely."""
+    code = (bootstrap_code or "").strip()
+    if not code:
+        return ""
+    return (
+        'echo "Writing pre-loaded configuration bundle"\n'
+        'cat > "$APP_DIR/bootstrap.json" <<\'BOOTEOF\'\n'
+        f"{code}\n"
+        "BOOTEOF\n"
+        'chown "$APP_USER":"$APP_USER" "$APP_DIR/bootstrap.json"'
+    )
+
+
 def build_install_script(
-    *, repo_url: str, branch: str = "main", domain: str = "", port: int = 8080,
-    admin_password: str = "",
+    *, repo_url: str, origin_url: str = "", branch: str = "main", domain: str = "",
+    port: int = 8080, admin_password: str = "", bootstrap_code: str = "",
 ) -> str:
     """Render the install script for one deploy with the chosen settings.
 
+    ``repo_url`` is the clone URL — for a PRIVATE repo it carries the access token
+    so the box can fetch it. ``origin_url`` is the CLEAN address (no token); when
+    given, the box resets its git ``origin`` to it after cloning so the token is
+    never persisted in ``.git/config`` (and never printed to the install log).
+    Defaults to ``repo_url`` when omitted (public repos, where they're identical).
+
     ``admin_password`` (optional) pre-sets the first admin on the new VM (see
-    ``_env_body``). Leave it blank to let the first visitor set the password."""
+    ``_env_body``). Leave it blank to let the first visitor set the password.
+
+    ``bootstrap_code`` (optional) is a password-locked ``WABOOT1`` setup code
+    (from ``app/deploy/config_embed``) carrying this app's AI / vault / database
+    config; when present it is written as ``bootstrap.json`` on the box and applied
+    on first boot (unlocked with ``admin_password`` via ``BOOTSTRAP_ADMIN_PASSWORD``)."""
+    clean_origin = (origin_url or repo_url or "").strip()
     return (
         _SCRIPT
         .replace("__REPO_URL__", (repo_url or "").strip())
+        .replace("__ORIGIN_URL__", clean_origin)
         .replace("__BRANCH__", (branch or "main").strip() or "main")
         .replace("__DOMAIN__", (domain or "").strip())
         .replace("__PORT__", str(port or 8080))
         .replace("__ENV_BODY__", _env_body(port, admin_password))
+        .replace("__BOOTSTRAP_WRITE__", _bootstrap_write_block(bootstrap_code))
     )
 
 

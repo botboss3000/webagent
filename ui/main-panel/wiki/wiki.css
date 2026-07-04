@@ -935,6 +935,19 @@
   padding: 24px 12px;
 }
 
+/* Skeleton placeholders (sidebar tree + article reader) shown while data loads.
+   `.sk-shimmer` (the animated fill) is shared in ui/shared/css/app3.css; these
+   rules only give the phantom elements their shape. */
+.wiki-sk { display: block; border-radius: 6px; }
+.wiki-tree-sk-group { padding: 6px 10px 12px; }
+.wiki-tree-sk-head { width: 42%; height: 10px; margin: 8px 0 10px; opacity: 0.75; }
+.wiki-tree-sk-row  { width: 82%; height: 11px; margin: 9px 0; }
+.wiki-tree-sk-row:nth-child(3) { width: 66%; }
+.wiki-tree-sk-row:nth-child(4) { width: 74%; }
+.wiki-reader-sk-title { width: 58%; height: 26px; border-radius: 8px; margin-bottom: 20px; }
+.wiki-reader-sk-line  { height: 14px; margin: 12px 0; }
+.wiki-reader-sk-gap   { display: block; height: 14px; }
+
 /* ── Toast ── */
 .wiki-toast {
   position: absolute;

@@ -723,7 +723,7 @@ trimmed copy*, this lets you *directly view and commit to* any other local repo.
 | Secrets vaults | `app/secrets/` | ✅ drop-in (auto-discovered by `cls.name`) |
 | Storage backends | `app/db/` | ⚠️ mode switch (irreducible-fallback heavy; left as-is) |
 | Built-in tools (web search…) | abilities | ✅ catalogued + editionable (web search via `web_access`) |
-| **Agent abilities** | **`plugins/abilities/`** | ✅ **drop-in + self-contained tools** (one FOLDER per ability — `plugins/abilities/<Group>/<id>/` holding `<id>.json` descriptor, `<id>.py` runtime with `build_tools()` handlers + `TOOL_SCHEMAS`/`DESTRUCTIVE` + any background service, optional `<id>.skill.md`, and any support files; both ability panels + the loader's generic discovery + the catalog all read it — no per-ability wiring in core) |
+| **Agent abilities** | **`plugins/abilities/`** | ✅ **drop-in + self-contained tools** (one FOLDER per ability — `plugins/abilities/<Group>/<id>/` holding `<id>.json` descriptor, `<id>.py` runtime with `build_tools()` handlers + `TOOL_SCHEMAS`/`DESTRUCTIVE` + any background service (`start_background`/`stop_background`) + an optional FastAPI **`router`** (auto-mounted), optional `<id>.skill.md`, and any support files; both ability panels + the loader's generic discovery + the catalog all read it — no per-ability wiring in core) |
 
 > **The root `plugins/` tree.** As of the abilities refactor the canonical home
 > for drop-in capability files is a top-level **`plugins/`** folder (sibling to
@@ -895,6 +895,121 @@ default** — for both **permission** (`auto`/`ask`/`deny`) and **visibility**
      can't be deleted from the UI either. Only the on/off is fixed — the ability's
      `config.settings` knobs stay freely editable. Check via
      `abilities.ability_is_locked_on(id)`.
+
+### Infrastructure abilities — a long-lived service + its own HTTP API
+
+An ability need not gate an agent tool at all. Two generic seams let a whole
+**observability / infrastructure** subsystem live as a drop-in ability (`tools: []`),
+so a production edition strips it by deleting the folder — no core edit:
+
+- **`start_background` / `stop_background` (background service).** An ability module
+  that defines these async hooks gets its service discovered by
+  `abilities.background_service_hooks()` and started by core's **`ability-background`**
+  leader service (`app/main.py`) — the drop-in policy explicitly forbids adding a
+  per-ability startup line to `main.py`. (Leader-gated, so in multi-instance only the
+  leader pre-warms it; single-process wins leadership instantly, so behaviour is
+  unchanged.)
+- **`router` (self-mounted HTTP API).** An ability module that exposes a module-level
+  FastAPI `router` (or a `ROUTERS` list) gets it discovered by
+  `abilities.ability_routers()` and included by core's generic **ability-router** mount
+  loop (`app/main.py`, the HTTP twin of the service loop) — no `include_router` line per
+  ability. Router discovery is independent of the app-enable toggle (mirrors the
+  always-mounted page/service hooks); an excluded edition strips the folder instead.
+
+**Shipped consumer: the Render Recorder ability**
+(`plugins/abilities/Administrator/render_recorder/`), the browser-side flight recorder
+(sibling of the always-core server-side `diagnostics`). Its one file holds the engine,
+its `/api/v1/recordings` API (browser intake + admin read/clear/toggle), and its
+service hooks. It ships **off by default** (`default_enabled:false`), and capture is
+separately gated by the `render_recording_enabled` app setting — the ability toggle is
+the presence/edition switch, that flag is the live on/off. Delete the folder → the
+capture service, the API routes, and the feature all vanish with no edit to `main.py`.
+
+## App functions — background services, not agent abilities (`app_function`)
+
+Some catalog entries are **not** things an agent chooses to use — they run
+**automatically for the app itself**: the **Session Namer** (auto-titles a chat
+after its opening turns), **Context Control**'s automatic compaction train, and
+the **Render Recorder** flight recorder. These share a trait: no agent decides to
+invoke them, so listing them in the two *ability* tables (admin Agent Tools + the
+per-agent Abilities tab) is misleading. A descriptor opts out with
+**`"app_function": true`**.
+
+- **It is a UI-classification flag ONLY — runtime is untouched.** `_load()` reads
+  the flag; `ui_catalog()` then lifts every `app_function` OUT of its `abilities`
+  map and its group's `members`, into a separate top-level **`app_functions`**
+  list. Both ability tables render from `groups`/`abilities`, so they simply stop
+  showing these rows — no per-table edit. Everything the *runtime* keys off still
+  reads the full `_load()` catalog, so tool-building, `context_strategy_for_agent`,
+  `turn_hooks_for_agent`, `background_service_hooks()` and `ability_routers()` all
+  resolve exactly as before. An `app_function` keeps its `locked_on` /
+  `context_strategy` / `build_tools` / service+router hooks and behaves identically.
+- **The App Functions table** lives in **App Settings** (not Agent Settings):
+  a `.ac-category-group` shell (`#ac-app-functions-list`) in
+  `ui/admin-tools/app-config/app-settings/app-settings.html`, rendered by
+  `app-functions.js` from the catalog's `app_functions` list. Each entry is an
+  expandable `.ac-row` with an on/off toggle and (for a non-`simple` function) a
+  settings body. It **reuses the same endpoints and shared helpers** as the admin
+  ability table — on/off via `POST/DELETE /admin/integrations/abilities/{id}`,
+  config via `GET/PUT /api/v1/abilities/{id}/config` (+ `/config-schema`), rows via
+  `_buildSettingsRowsHtml` — so an app function's toggle + knobs persist to
+  `data/config/agent-abilities.json` exactly like an ability's. A drop-in that sets
+  `app_function:true` appears here with **no** edit to the panel or the HTML.
+- **Session Namer** got a descriptor (`session_titler.json`, `app_function:true`,
+  ships ON) so it has a real on/off for the first time. Its turn hook is no longer
+  dispatched unconditionally — `turn_hooks_for_agent` gates it on
+  `ability_app_enabled("session_titler")` (the app-level resolver: `locked_on` →
+  on, else stored admin choice ▸ descriptor default, fail-**on**).
+- **Context Control was split** (its three agent tools ≠ its background service).
+  The descriptor is now `app_function:true` with **`tools: []`**, so it leaves the
+  ability tables; the automatic compaction train (its `CONTEXT_STRATEGY` +
+  `locked_on` flags) still resolves and runs. Its three agent-facing tools —
+  `compact_context` / `recall_compacted` / `search_this_session` — are now listed
+  under **Core ▸ Base** (`base.json` `tools`), i.e. **always-on for every agent**:
+  because the descriptor no longer gates them (`tools_map()['context_control']` is
+  empty), `ability_for_tool()` returns None and `virtual_ability_for_tool()` labels
+  them Base, while `context_control.build_tools()` still *creates* them at runtime
+  (the loader's locked-on union runs it regardless of any per-agent row). Its
+  compaction knobs (token limit, threshold, self-compaction posture, …) now render
+  as **app-level** settings in the App Functions table, read via
+  `effective_ability_config` (admin app-level base with no per-agent override).
+
+### Descriptor-only app functions — a toggle for a wired-in core service
+
+An `app_function` does **not** need an ability runtime. A descriptor with **no
+`<id>.py`** is normally coerced to a "coming soon" placeholder; an `app_function`
+(like a `virtual` row) is **exempt** from that coercion (`_load()`), so a
+bare `<id>.json` stays a real, toggleable row. This is how a **wired-in core
+singleton** — one hardcoded in `app/main.py`'s startup, not a drop-in — gets an
+admin on/off without becoming a plugin: ship a descriptor, then gate the service's
+**start site** on `ability_app_enabled(<id>)`.
+
+These live under **`plugins/abilities/System/`** (a pure-app-function group, so
+`ui_catalog()` suppresses its otherwise-empty category card from the two ability
+tables). Two classes ship there:
+
+- **Behavioural (checked live).** *Task Grouping* — `app/admin/tasks.py` gates the
+  LLM tie-breaker on `ability_app_enabled("task_grouping")` and falls back to the
+  keyword rule when off (no model calls). *Diagnostics Recorder* — the flight
+  recorder in `app/agent/diagnostics.py` ANDs its `enabled` flag with
+  `ability_app_enabled("diagnostics_recorder")` at construction (its advanced knobs
+  — ring size, retention, persist level — stay JSON-only in `app-settings.json`).
+- **Boot-time core singletons (apply after a restart).** `app/main.py` gates each
+  start site on `_appfn_on(<id>)` (a fail-**on** wrapper over `ability_app_enabled`):
+  **Scheduler** (`scheduler`), **Event Runtime** (`event_runtime`), **Run Watchdog**
+  (`watchdog`), **Resume Runs at Startup** (`boot_orphan_resume`), **Hybrid Database
+  Sync** (`hybrid_sync`), **Multi-Device Worker** (`device_worker`), **Remote Access
+  Tunnel** (`remote_access`). All wire up once at boot, so a toggle change takes
+  effect on the next restart — each descriptor's `description` says so. Turning one
+  off simply skips its `_leader.register(...)` (or start call); nothing else changes.
+
+These are descriptor-only on purpose: they gate `has_runtime=False`, so
+`tools_map()`/`background_service_hooks()`/`ability_routers()` all skip them, and
+`_seedable_ability_ids()` excludes every `app_function` (an app-level service is
+never a per-agent connection). Adding another such toggle is: drop a `<id>.json`
+under `System/` with `app_function:true` + `default_enabled:true`, then gate the
+one start site on `ability_app_enabled("<id>")`. No panel, HTML, or core-registry
+edit.
 
 ## Promoting a feature / cutting a build
 

@@ -171,6 +171,11 @@ function _closeMenu() {
 function _renderMenu() {
   const menu = _qs('dash-inst-menu');
   if (!menu) return;
+  // .dash-inst-menu is itself the scrollable list (overflow-y:auto, capped
+  // height), so reassigning its innerHTML zeroes its scrollTop. The 5s metrics
+  // poll re-renders this while it may be open, which would jump the open dropdown
+  // back to the top mid-scroll — capture the offset and restore it after.
+  const _prevTop = menu.scrollTop;
   const rows = state.instances.map(_menuRow).join('');
   menu.innerHTML =
     _selfBlock()
@@ -182,6 +187,7 @@ function _renderMenu() {
     + '<i data-lucide="plus" style="width:16px;height:16px;"></i><span>Start a new instance</span></button>';
   _refreshLucideIcons(menu);
   _paintPills();   // fill the DB + health pills now that they exist in the menu
+  if (_prevTop) menu.scrollTop = _prevTop;   // keep the open dropdown where it was
 }
 
 // The status header at the top of the dropdown — this instance's name + url and

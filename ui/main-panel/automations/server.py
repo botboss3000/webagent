@@ -202,6 +202,7 @@ def _decorate_spawn(row: dict) -> dict:
         "spawn_agent_id": row.get("spawn_agent_id"),
         "spawn_session_id": row.get("spawn_session_id"),
         "name": row.get("name") or "",
+        "kind": row.get("kind") or "spawn",
         "task": (row.get("task") or "")[:120],
         "status": row.get("status"),
         "result_summary": (row.get("result_summary") or "")[:200],
@@ -833,17 +834,23 @@ async def _list_spawns_by_agent(orchestrator_agent_id: str, bin_view: bool = Fal
                     resume_attempts INTEGER,
                     heartbeat_at TEXT,
                     claim_token TEXT,
+                    kind TEXT,
                     deleted_at TEXT,
                     created_at TEXT,
                     updated_at TEXT
                 )"""
             )
-            # Add deleted_at to pre-existing spawn tables (guarded; SQLite has no
-            # ADD COLUMN IF NOT EXISTS).
+            # Add later columns to pre-existing spawn tables (guarded; SQLite has
+            # no ADD COLUMN IF NOT EXISTS). `kind` marks a delegation to a real
+            # saved agent vs. an ordinary clone spawn (owned by the orchestration
+            # plugin, added here too so the column exists whichever subsystem
+            # created the table first).
             try:
                 have = {r[1] for r in conn.execute("PRAGMA table_info(agent_spawns)").fetchall()}
                 if "deleted_at" not in have:
                     conn.execute("ALTER TABLE agent_spawns ADD COLUMN deleted_at TEXT")
+                if "kind" not in have:
+                    conn.execute("ALTER TABLE agent_spawns ADD COLUMN kind TEXT")
             except Exception:
                 pass
             for idx_sql in [

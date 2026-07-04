@@ -193,6 +193,16 @@ class RunManager:
         h = self._runs.get(session_id)
         if h and h.task is task:
             self._runs.pop(session_id, None)
+        # Evict the per-session lock too — otherwise the map grows one entry per
+        # session id ever seen (spawn-/optimizer-/closer-/slash-command sessions
+        # each have a unique id), a slow leak on a long-lived server. Only when the
+        # lock is free AND no run remains, so we never yank a lock a concurrent
+        # start_or_replace is holding (that would let two starters use different
+        # lock objects and race the single session_runs row). If it's busy we keep
+        # it — same as today, so this can only reduce growth, never regress.
+        lk = self._session_locks.get(session_id)
+        if lk is not None and not lk.locked() and session_id not in self._runs:
+            self._session_locks.pop(session_id, None)
 
     async def interrupt(self, session_id: str, db, cause: str = "user_stop") -> bool:
         """Request a graceful stop. Sets the DB interrupt flag the loop polls;

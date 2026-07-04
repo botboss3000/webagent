@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -82,6 +84,18 @@ SYNCED_SPECS: Dict[str, SyncedSpec] = {
     "webhook_registrations": SyncedSpec("webhook_registrations"),
     "agent_automations": SyncedSpec("agent_automations"),
     "agent_event_subscriptions": SyncedSpec("agent_event_subscriptions"),
+    # ── Chat-panel read tables (mirrored so the panel reads them locally) ──
+    # `agents` powers the agents dropdown + Agents page roster (served local-first
+    # by HybridBackend.list_agents_for_user). Config AUTHORITY still lives on the
+    # remote — the Stage-3 version-stamp governs the OPEN agent's prompt freshness;
+    # this pull just keeps the display ROSTER local. `agent_prompts` is deliberately
+    # NOT pulled: Stage-3 replaces its slots wholesale to propagate deletions, which
+    # the upsert-only puller can't express.
+    "agents": SyncedSpec("agents"),
+    # `session_runs` gives the session-list its live run badges. Keyed by
+    # session_id (no `id` column). Pulled at the fast 1s cadence while a turn is
+    # actively pushing, so a running session's badge stays ~1s fresh on the mirror.
+    "session_runs": SyncedSpec("session_runs", key="session_id"),
 }
 
 
@@ -114,6 +128,37 @@ class SyncEngine:
         self._watermarks: Dict[str, Optional[str]] = {}
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
+        # ── Adaptive per-table pull backoff (idle round-trip suppression) ──
+        # Each pull is a remote round-trip even when nothing has changed. A table
+        # that returns nothing for several consecutive ticks is "quiet" — usually
+        # permanently empty (genui/webhooks/automations here had NO local watermark
+        # so they did an unfiltered `SELECT * … LIMIT 500` full scan EVERY tick
+        # forever) or simply unchanged. Once quiet AND the engine is idle (no rows
+        # flowing), we re-check that table only every _quiet_interval seconds
+        # instead of every tick, cutting the steady-state background round-trip
+        # tax from ~10/tick to ~1-2. The backoff is driven by "did this pull return
+        # rows", so ANY table with real cross-device activity resets to eager on
+        # its own (e.g. a viewer's session_runs stays live while a remote turn
+        # streams, because each pull keeps returning the advancing run row). While
+        # ACTIVE (a live local turn is pushing) the backoff is bypassed entirely.
+        self._quiet: Dict[str, int] = {}          # consecutive empty pulls / table
+        self._next_pull: Dict[str, float] = {}    # monotonic time a quiet table is due
+        try:
+            self._quiet_after = max(1, int(os.environ.get("WEBAGENT_SYNC_QUIET_AFTER") or 3))
+        except ValueError:
+            self._quiet_after = 3
+        try:
+            self._quiet_interval = max(
+                1.0, float(os.environ.get("WEBAGENT_SYNC_QUIET_SECONDS") or 15.0))
+        except ValueError:
+            self._quiet_interval = 15.0
+        # Hold the first full sweep briefly after start so it doesn't compete with
+        # the very first page-load API burst right after a (re)start. 0 disables.
+        try:
+            self._startup_delay = max(0.0, float(
+                os.environ.get("WEBAGENT_SYNC_STARTUP_DELAY") or 5.0))
+        except ValueError:
+            self._startup_delay = 5.0
 
     @property
     def outbox(self) -> Outbox:
@@ -126,25 +171,75 @@ class SyncEngine:
 
         Entries are grouped by table, the CURRENT row is re-read from local (so
         repeated edits coalesce), fat columns are stripped, and each row is
-        upserted on its key. Only entries that push cleanly are cleared, so a
-        remote outage simply leaves them queued for the next pass."""
+        upserted on its key. An entry whose LATEST op for its key is ``delete``
+        is instead propagated as a remote DELETE (the local row is already gone).
+        Only entries that push cleanly are cleared, so a remote outage simply
+        leaves them queued for the next pass."""
         pending = await self._outbox.pending(batch)
         if not pending:
             return 0
 
-        # Preserve arrival order but de-dup (table,row_id) to the latest need.
-        by_table: Dict[str, List[str]] = {}
+        # Preserve arrival order but de-dup (table,row_id) to the LATEST op. A
+        # delete enqueued after upserts (rename-then-delete) wins → the row is
+        # removed remotely, not resurrected.
+        upserts_by_table: Dict[str, List[str]] = {}
+        deletes_by_table: Dict[str, List[str]] = {}
+        latest_op: Dict[Tuple[str, str], str] = {}
         seqs_by_key: Dict[Tuple[str, str], List[int]] = {}
         for e in pending:
             t, rid, seq = e["table_name"], e["row_id"], e["seq"]
             seqs_by_key.setdefault((t, rid), []).append(seq)
-            ids = by_table.setdefault(t, [])
+            latest_op[(t, rid)] = (e.get("op") or "upsert")
+        for (t, rid), op in latest_op.items():
+            bucket = deletes_by_table if op == "delete" else upserts_by_table
+            ids = bucket.setdefault(t, [])
             if rid not in ids:
                 ids.append(rid)
 
         pushed = 0
         cleared: List[int] = []
-        for table, ids in by_table.items():
+
+        # ── Resurrection guard ──
+        # Never re-push an upsert for a row that has been HARD-deleted (tombstoned)
+        # on the authority. A queued sessions/agents upsert on THIS device — e.g. a
+        # mark-read or rename that raced a permanent delete on ANOTHER device — would
+        # otherwise re-create the row remotely, and the delete would bounce back to
+        # every device (the classic delete-vs-update resurrection). We check the
+        # visible tables only: interactions self-heal because the tombstone's local
+        # cascade removes their rows, leaving nothing to push.
+        for _t in ("sessions", "agents"):
+            _ids = upserts_by_table.get(_t)
+            if not _ids:
+                continue
+            try:
+                dead = await asyncio.to_thread(self._remote_tombstoned, _t, _ids)
+            except Exception:  # noqa: BLE001
+                dead = set()
+            if dead:
+                upserts_by_table[_t] = [i for i in _ids if i not in dead]
+                for rid in dead:
+                    cleared.extend(seqs_by_key.get((_t, rid), []))
+                logger.info("sync: suppressed %d resurrecting upsert(s) to %r "
+                            "(row was hard-deleted on the authority)", len(dead), _t)
+
+        # ── Deletes: issue a remote DELETE per id (no local row to re-read) ──
+        for table, ids in deletes_by_table.items():
+            spec = self._specs.get(table)
+            if not spec:
+                for rid in ids:
+                    cleared.extend(seqs_by_key.get((table, rid), []))
+                continue
+            for rid in ids:
+                try:
+                    await asyncio.to_thread(self._delete_row, table, spec, rid)
+                    pushed += 1
+                    cleared.extend(seqs_by_key.get((table, rid), []))
+                except Exception as e:
+                    logger.warning("sync: delete of %r row %r failed (%s); leaving queued",
+                                   table, rid, e)
+
+        # ── Upserts: re-read the current local row(s) and push ──
+        for table, ids in upserts_by_table.items():
             spec = self._specs.get(table)
             if not spec:
                 # Unknown table — drop the marker so it doesn't wedge the queue.
@@ -188,6 +283,25 @@ class SyncEngine:
     def _local_rows(self, table: str, key: str, ids: List[str]) -> List[dict]:
         res = self._local.get_raw_client().table(table).select("*").in_(key, ids).execute()
         return list(res.data or [])
+
+    def _delete_row(self, table: str, spec: SyncedSpec, rid: str) -> None:
+        """Propagate a local hard-delete to the remote authority (portable
+        DELETE … WHERE key = rid). Runs on a worker thread via push_pending."""
+        self._remote.get_raw_client().table(table).delete().eq(spec.key, rid).execute()
+
+    def _remote_tombstoned(self, table: str, ids: List[str]) -> set:
+        """Return the subset of ``ids`` that carry a hard-delete tombstone on the
+        authority (so an upsert of them would resurrect a deleted row). One bounded
+        ``id IN (...)`` lookup; empty set on any error / missing table."""
+        from app.db.sync.tombstones import TOMBSTONE_TABLE
+        want = [f"{table}:{i}" for i in ids]
+        try:
+            res = (self._remote.get_raw_client().table(TOMBSTONE_TABLE)
+                   .select("id").in_("id", want).execute())
+            got = {r.get("id") for r in (res.data or [])}
+        except Exception:  # noqa: BLE001
+            return set()
+        return {i for i in ids if f"{table}:{i}" in got}
 
     def _push_row(self, table: str, spec: SyncedSpec, row: dict) -> None:
         payload = dict(row)
@@ -268,34 +382,228 @@ class SyncEngine:
             self._watermarks[spec.table] = newest
         return applied
 
+    # ── Tombstone puller: carry HARD deletes remote → local ──────────────────
+
+    def _apply_tombstone_local(self, conn, table_name: str, row_id: str) -> List[str]:
+        """Apply one hard-delete tombstone to the LOCAL mirror. A ``sessions`` or
+        ``agents`` tombstone cascades to its attached transcript locally (so we
+        never need a tombstone per interaction row); anything else is a plain
+        single-row delete by ``id``. Best-effort per statement — a missing table
+        (feature never used on this device) is skipped, not fatal.
+
+        Returns the list of SESSION ids this erased, so the caller can tell any
+        open chat on those sessions to drop its transcript in real time (an agent
+        delete cascades to several)."""
+        def _try(sql, params):
+            try:
+                conn.execute(sql, params)
+            except Exception:  # noqa: BLE001
+                pass
+        if table_name == "sessions":
+            _try("DELETE FROM interactions WHERE session_id = ?", (row_id,))
+            for t in ("session_summaries", "pipeline_events", "session_runs"):
+                _try(f"DELETE FROM {t} WHERE session_id = ?", (row_id,))
+            _try("DELETE FROM sessions WHERE id = ?", (row_id,))
+            return [row_id]
+        elif table_name == "agents":
+            # Remove the agent AND everything hanging off it — its sessions, their
+            # transcripts, and its agent-scoped config — mirroring the authority's
+            # delete_custom_agent so no phantom session is left pointing at a
+            # now-deleted agent.
+            try:
+                sids = [r[0] for r in conn.execute(
+                    "SELECT id FROM sessions WHERE agent_id = ?", (row_id,)).fetchall()]
+            except Exception:  # noqa: BLE001
+                sids = []
+            for sid in sids:
+                _try("DELETE FROM interactions WHERE session_id = ?", (sid,))
+                for t in ("session_summaries", "pipeline_events", "session_runs"):
+                    _try(f"DELETE FROM {t} WHERE session_id = ?", (sid,))
+            _try("DELETE FROM sessions WHERE agent_id = ?", (row_id,))
+            for t in ("agent_prompts", "agent_connections", "agent_abilities",
+                      "agent_automations", "agent_event_subscriptions"):
+                _try(f"DELETE FROM {t} WHERE agent_id = ?", (row_id,))
+            _try("DELETE FROM agents WHERE id = ?", (row_id,))
+            return sids
+        else:
+            _try(f"DELETE FROM {table_name} WHERE id = ?", (row_id,))
+            return []
+
+    async def pull_tombstones(self, limit: int = 500) -> int:
+        """Pull hard-delete tombstones the remote has that are newer than our
+        watermark and apply each as a local delete. Mirrors ``pull_table`` (same
+        ``deleted_at`` high-water mark), and keeps a LOCAL copy of every applied
+        tombstone so the watermark survives a restart and we don't re-scan the
+        whole ledger each boot. Idempotent: re-applying a delete for a row that is
+        already gone locally is a harmless no-op."""
+        from app.db.sync.tombstones import TOMBSTONE_TABLE, ensure_tombstone_table
+
+        # Local high-water mark (max deleted_at we've already applied).
+        wm = self._watermarks.get(TOMBSTONE_TABLE)
+        if wm is None:
+            lconn = self._local._get_conn()
+            try:
+                ensure_tombstone_table(lconn)
+                lconn.commit()
+                row = lconn.execute(
+                    f"SELECT MAX(deleted_at) FROM {TOMBSTONE_TABLE}").fetchone()
+                wm = row[0] if row and row[0] is not None else None
+            except Exception:  # noqa: BLE001
+                wm = None
+            finally:
+                lconn.close()
+
+        q = self._remote.get_raw_client().table(TOMBSTONE_TABLE).select("*")
+        if wm is not None:
+            q = q.gt("deleted_at", wm)
+        q = q.order("deleted_at", desc=False).limit(limit)
+        try:
+            res = await asyncio.to_thread(q.execute)
+            tombstones = list(res.data or [])
+        except Exception as e:
+            # Table absent (no hard delete ever recorded) or a transient remote
+            # error — nothing to apply this tick.
+            logger.debug("sync: tombstone pull skipped (%s)", e)
+            return 0
+        if not tombstones:
+            return 0
+
+        applied = 0
+        newest = wm
+        # (user_id, table_name, row_id, [affected_session_ids])
+        notify: List[Tuple[str, str, str, List[str]]] = []
+        async with self._local._write_lock:
+            conn = self._local._get_conn()
+            try:
+                ensure_tombstone_table(conn)
+                for ts in tombstones:
+                    table_name = ts.get("table_name")
+                    row_id = ts.get("row_id")
+                    if not table_name or row_id is None:
+                        continue
+                    rid = str(row_id)
+                    affected_sids = self._apply_tombstone_local(conn, table_name, rid)
+                    # Drop any queued push for this id so we never re-send an upsert
+                    # that would resurrect it on the authority (belt-and-suspenders
+                    # with the push-time resurrection guard).
+                    try:
+                        conn.execute(
+                            "DELETE FROM hybrid_outbox WHERE table_name = ? AND row_id = ?",
+                            (table_name, rid))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    # Record locally so this tombstone advances our watermark and
+                    # is never re-applied after a restart.
+                    try:
+                        conn.execute(
+                            f"INSERT OR REPLACE INTO {TOMBSTONE_TABLE} "
+                            "(id, table_name, row_id, user_id, deleted_at) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (ts.get("id") or f"{table_name}:{rid}", table_name,
+                             rid, ts.get("user_id"), ts.get("deleted_at")),
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if ts.get("user_id"):
+                        notify.append((ts["user_id"], table_name, rid, affected_sids))
+                    applied += 1
+                    d = ts.get("deleted_at")
+                    if d is not None and (newest is None or str(d) > str(newest)):
+                        newest = d
+                conn.commit()
+            finally:
+                conn.close()
+        if newest is not None:
+            self._watermarks[TOMBSTONE_TABLE] = newest
+        # Tell any open chat on THIS device that its session/agent was erased
+        # elsewhere, so it can drop the transcript and show "Session not found"
+        # in real time instead of waiting for a failed reconcile. Best-effort.
+        for user_id, table_name, rid, affected_sids in notify:
+            try:
+                from app.api.chat import notify_user
+                # An open chat drops its transcript on session_deleted. Emit one per
+                # erased session — for a session tombstone that's the row itself; for
+                # an agent tombstone it's each of the agent's now-deleted sessions.
+                for sid in (affected_sids or ([rid] if table_name == "sessions" else [])):
+                    await notify_user(user_id, {
+                        "type": "session_deleted", "user_id": user_id,
+                        "session_id": sid, "permanent": True, "reason": "remote_delete"})
+                if table_name == "agents":
+                    await notify_user(user_id, {
+                        "type": "agent_deleted", "user_id": user_id,
+                        "agent_id": rid, "permanent": True, "reason": "remote_delete"})
+            except Exception:  # noqa: BLE001
+                pass
+        if applied:
+            logger.info("sync: applied %d hard-delete tombstone(s) to local mirror", applied)
+        return applied
+
     # ── Combined tick + background loop ──────────────────────────────────────
 
-    async def sync_once(self) -> dict:
+    async def sync_once(self, active: bool = True) -> dict:
+        """One push+pull tick. ``active`` = rows are actively flowing (a live turn
+        is pushing); when False, quiet tables are pulled on the backoff cadence
+        instead of every tick. Defaults True so direct/test calls always pull
+        everything."""
         pushed = await self.push_pending()
         pulled = 0
+        tombstoned = 0
         if self._pull_enabled:
+            now = time.monotonic()
             for spec in self._specs.values():
                 if spec.push_only:
                     continue  # transcript etc. — pushed, never pulled
-                pulled += await self.pull_table(spec)
-        return {"pushed": pushed, "pulled": pulled}
+                # Skip a quiet table this tick unless it's due or we're active.
+                if (not active
+                        and self._quiet.get(spec.table, 0) >= self._quiet_after
+                        and now < self._next_pull.get(spec.table, 0.0)):
+                    continue
+                n = await self.pull_table(spec)
+                pulled += n
+                if n > 0:
+                    # Real change → back to eager (this table matters right now).
+                    self._quiet[spec.table] = 0
+                    self._next_pull[spec.table] = 0.0
+                else:
+                    self._quiet[spec.table] = self._quiet.get(spec.table, 0) + 1
+                    if self._quiet[spec.table] >= self._quiet_after:
+                        self._next_pull[spec.table] = now + self._quiet_interval
+            # Apply hard-delete tombstones AFTER the upsert pulls, so a delete that
+            # lands in the same tick as a stale upsert wins (the row is removed, not
+            # re-added). Pulled EVERY tick (one cheap watermarked round-trip) — a
+            # permanent delete on another device should clear the ghost row here
+            # promptly, not wait out the backoff.
+            tombstoned = await self.pull_tombstones()
+        return {"pushed": pushed, "pulled": pulled, "tombstoned": tombstoned}
 
     async def _run(self) -> None:
-        import time as _time
-        logger.info("hybrid sync engine started (interval=%.1fs, fast=%.1fs)",
-                    self._interval, self._fast_interval)
+        logger.info("hybrid sync engine started (interval=%.1fs, fast=%.1fs, "
+                    "startup_delay=%.1fs)",
+                    self._interval, self._fast_interval, self._startup_delay)
+        # Startup grace: let the first client's page-load API burst clear before
+        # the first full pull sweep competes for the connection pool.
+        if self._startup_delay > 0:
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self._startup_delay)
+            except asyncio.TimeoutError:
+                pass
         active_until = 0.0
         while not self._stop.is_set():
+            # Whether THIS tick is "active" is decided by recent pushes (set below
+            # from prior ticks). On the first tick active_until=0 → not active, but
+            # quiet counters are 0 so every table still pulls (full first sweep).
+            now = time.monotonic()
+            active = now < active_until
             result = None
             try:
-                result = await self.sync_once()
+                result = await self.sync_once(active=active)
             except Exception as e:  # never let one bad tick kill the loop
                 logger.warning("sync tick failed: %s", e)
             # Adaptive cadence: a non-empty push means rows are actively flowing —
             # stay on the fast interval for a short grace window so a live turn
             # (e.g. a Remote Control run streaming here while a viewer polls from
             # another device) syncs near-live. Idle ticks relax to the base rate.
-            now = _time.monotonic()
+            now = time.monotonic()
             if result and result.get("pushed"):
                 active_until = now + self._active_grace
             interval = self._fast_interval if now < active_until else self._interval

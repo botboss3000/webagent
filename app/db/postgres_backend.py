@@ -290,10 +290,17 @@ def _make_postgres_backend_class():
                 _min = max(1, int(os.environ.get("WEBAGENT_PG_POOL_MIN") or 4))
             except ValueError:
                 _min = 4
+            # max 24 (was 16): the page-boot burst fires ~15-20 remote-touching
+            # reads at once (each through the db-worker pool, default 16) while the
+            # background sync engine also wants connections; 24 gives that burst
+            # room + headroom for the live stream. Safe on the TRANSACTION-mode
+            # pooler (6543, no per-client cap) and direct; if pinned to the
+            # SESSION-mode pooler (5432, cap ~15) with several instances, lower via
+            # WEBAGENT_PG_POOL_MAX so the instances don't exhaust the cap.
             try:
-                _max = max(_min, int(os.environ.get("WEBAGENT_PG_POOL_MAX") or 16))
+                _max = max(_min, int(os.environ.get("WEBAGENT_PG_POOL_MAX") or 24))
             except ValueError:
-                _max = max(_min, 16)
+                _max = max(_min, 24)
             self._pool = ConnectionPool(
                 self._conninfo,
                 min_size=_min,
@@ -552,6 +559,96 @@ def _make_postgres_backend_class():
                 d["frontmatter"] = _json.loads(d.get("frontmatter") or "{}")
                 d["rank"] = round(1.0 - float(dist), 4) if dist is not None else 0.0
                 out.append(d)
+            return out
+
+        async def reindex_embeddings(self, *, tables=("memory_chunks", "doc_chunks"),
+                                     batch=64) -> dict:
+            """Re-embed every stored chunk with the CURRENT model, resizing the
+            fixed-width pgvector column to the new model's width first.
+
+            Unlike SQLite (raw BLOBs, any width), pgvector enforces the column's
+            declared dimension, so a model switch that changes width must ALTER the
+            column. pgvector won't change a column type while it still holds vectors
+            of the old width, so the sequence per table is: drop the ANN index →
+            NULL out the old vectors → ALTER the column to vector(N) → re-embed →
+            rebuild the index at the new width. Embeds run with no DB txn held; the
+            writes go in short committed bursts."""
+            import psycopg
+            import numpy as np
+            from app.agent.embed import embed_text, embed_dim, embed_model_name
+
+            target_dim = embed_dim()
+            out: dict = {"model": embed_model_name(), "dim": target_dim, "tables": {}}
+            for table in tables:
+                idx = f"idx_{table}_embedding_hnsw"
+                # 1. Resize the column (index dropped up front, rebuilt in step 3).
+                try:
+                    with psycopg.connect(self._conninfo, autocommit=True,
+                                         prepare_threshold=None) as c:
+                        c.execute(f"DROP INDEX IF EXISTS {idx}")
+                        c.execute(f"UPDATE {table} SET embedding = NULL")
+                        c.execute(f"ALTER TABLE {table} "
+                                  f"ALTER COLUMN embedding TYPE vector({target_dim})")
+                except Exception as e:
+                    logger.warning("reindex: could not resize %s to vector(%d): %s",
+                                   table, target_dim, e)
+                    out["tables"][table] = {"error": str(e)}
+                    continue
+
+                # 2. Read rows, then re-embed with no DB connection held.
+                conn = self._get_conn()
+                try:
+                    rows = conn.execute(f"SELECT id, chunk_text FROM {table}").fetchall()
+                finally:
+                    conn.close()
+
+                written = failed = 0
+                pending: list = []  # (np_embedding, id)
+
+                async def _flush(items, _table=table):
+                    if not items:
+                        return
+                    c = self._get_conn()
+                    try:
+                        for emb, rid in items:
+                            c.execute(
+                                f"UPDATE {_table} SET embedding = ? WHERE id = ?",
+                                (emb, rid),
+                            )
+                        c.commit()
+                    finally:
+                        c.close()
+
+                for r in rows:
+                    txt = (r["chunk_text"] or "")
+                    if not txt.strip():
+                        continue
+                    try:
+                        emb = np.array(await embed_text(txt), dtype=np.float32)
+                    except Exception as e:
+                        failed += 1
+                        logger.warning("reindex embed failed (%s id=%s): %s",
+                                       table, r["id"], e)
+                        continue
+                    pending.append((emb, r["id"]))
+                    written += 1
+                    if len(pending) >= batch:
+                        await _flush(pending)
+                        pending = []
+                await _flush(pending)
+
+                # 3. Rebuild the ANN index at the new width.
+                try:
+                    with psycopg.connect(self._conninfo, autocommit=True,
+                                         prepare_threshold=None) as c:
+                        c.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON {table} "
+                                  f"USING hnsw (embedding vector_cosine_ops)")
+                except Exception as e:
+                    logger.warning("reindex: rebuild index %s failed: %s", idx, e)
+
+                out["tables"][table] = {"rows": len(rows), "written": written, "failed": failed}
+                logger.info("reindex %s (pg): %d rows, %d embedded, %d failed (dim=%d)",
+                            table, len(rows), written, failed, target_dim)
             return out
 
         # ---- doc_chunks: embeddings + full-text overrides ----

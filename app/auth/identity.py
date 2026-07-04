@@ -179,7 +179,7 @@ async def resolve_admin_uid(claimed_uid: Optional[str]) -> Optional[str]:
 
     The single chokepoint for the body/query-param admin gates across the admin
     routers (users, storage, deploy, remote-access, tunnel-link, events,
-    server-manager). Resolution, in order:
+    instances). Resolution, in order:
 
       1. 'open' access mode → the bootstrap admin (local single-user / tunnel
          convenience, no cross-tenant risk).

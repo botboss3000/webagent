@@ -36,6 +36,10 @@ import { spawnWebagentPageChat } from '../../../chat-widget/js/chat-widget.js';
 // context-wrapped message; here it runs in COMPOSER mode (it also owns this page's
 // static #ac-pa-* pill's send/Enter/voice/uploads). See ../page-assistant.js.
 import { createPageAssistant } from '../page-assistant.js';
+// App Functions table — the background app services (Session Namer, Context
+// Control compaction, Render Recorder) split out of the ability tables. Rendered
+// from the ability catalog's `app_functions` list. See ./app-functions.js.
+import { initAppFunctions } from './app-functions.js';
 // LIVE theme switch (Light · Dark · System) in the Design header reuses the
 // user-dropdown's theme logic so the two controls never diverge. setTheme owns
 // apply + persist; highlightThemeOption syncs every `.theme-option` on the page.
@@ -67,12 +71,21 @@ function _initAppSettings() {
   _initBootTooltip();
   _initBootSplash();
   _initAllowUserAppearance();
+  _wireBootRow('ac-row-multitenant', null);
+  _initMultiTenant();
   // Advanced row inside Model Settings — expandable compact row with checkboxes
   _wireAdvancedRow();
   _initMainPanelPages();
   _initAdminPanelPages();
+  _initAppFunctions();
   _initAppearance();
   _initPageAssistant();
+}
+
+// App Functions table — background app services (not agent abilities). Rendered
+// from the ability catalog's `app_functions` list into #ac-app-functions-list.
+function _initAppFunctions() {
+  initAppFunctions().catch(() => { /* non-fatal — the rest of the page still loads */ });
 }
 
 // -- Page-assistant chat pill --------------------------------------------------
@@ -577,6 +590,45 @@ function _initAllowUserAppearance() {
   });
 }
 
+// Multi-tenant data master switch — app-WIDE server-side setting (multi_tenant
+// in app-settings.json), mirroring the Allow-per-user-themes switch above.
+// Flipping it autosaves via the merge-friendly POST /admin/settings/app. When on,
+// each user's interaction data routes to their own database (they connect one from
+// their account page via ui/shared/js/tenant-db.js); backend routing lives in
+// app/db/router.py + app/db/tenant.py. Off = the single shared database (default).
+function _reflectMultiTenant(chk) {
+  const lbl = _qs('ac-multitenant-label');
+  const badge = _qs('ac-multitenant-badge');
+  const on = !!chk.checked;
+  if (lbl) lbl.textContent = on ? 'On — each user uses their own database' : 'Off — single shared database';
+  if (badge) badge.textContent = on ? 'On' : 'Off';
+}
+
+function _initMultiTenant() {
+  const chk = _qs('ac-multitenant');
+  if (!chk) return;
+  const wrap = chk.closest('.ac-ability-toggle-wrap');
+  chk.addEventListener('change', async () => {
+    if (!isAdmin()) { showRestrictedModal(); chk.checked = !chk.checked; return; }
+    _markSaving(wrap);
+    try {
+      const res = await _fetch(apiPath('/admin/settings/app'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ multi_tenant: chk.checked }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      _reflectMultiTenant(chk);
+      _flashSaveCheck(wrap, true);
+    } catch (e) {
+      console.warn('app-settings: save multi_tenant failed', e);
+      chk.checked = !chk.checked;  // revert on failure
+      _reflectMultiTenant(chk);
+      _flashSaveCheck(wrap, false, e.message);
+    }
+  });
+}
+
 // Allowed values for the boot dropdowns. Declared BEFORE the init functions
 // that reference them so the symbols are defined regardless of load/eval order
 // (strict-mode declaration-before-use discipline — see CLAUDE.md / Codebase
@@ -640,6 +692,8 @@ async function _loadAppSettings(data) {
     if (tt) tt.checked = data.hints_enabled !== false;
     const au = _qs('ac-allow-user-appearance');
     if (au) au.checked = data.allow_user_appearance === true;
+    const mt = _qs('ac-multitenant');
+    if (mt) { mt.checked = data.multi_tenant === true; _reflectMultiTenant(mt); }
     const gp = _qs('ac-global-system-prompt');
     if (gp) gp.value = data.global_system_prompt || '';
   } catch (e) {
@@ -1154,8 +1208,10 @@ export function init() {
   // Sticky section navigator (shared — see ../sticky-nav.js). Re-measure each
   // time App Settings is shown: at init() the section may be hidden (everything
   // measures 0), so the section hook is where the offsets actually land.
-  initStickyNav('app-settings');
-  registerSectionHook('app-settings', () => initStickyNav('app-settings'));
+  // mobileCarousel: on a phone this section shows a horizontal heading-chip strip
+  // sub-header instead of the stacked sticky headings (see ../sticky-nav.js).
+  initStickyNav('app-settings', { mobileCarousel: true });
+  registerSectionHook('app-settings', () => initStickyNav('app-settings', { mobileCarousel: true }));
 }
 
 export async function load() {

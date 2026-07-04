@@ -9,7 +9,12 @@ Provides endpoints for:
 - Store / check GitHub token (for HTTPS auth)
 
 Note: the GitHub token is a single shared credential (the repo is shared).
-Unlike LLM keys, it's NOT per-user — stored in provider.json only.
+Unlike LLM keys, it's NOT per-user. It now lives in the ENCRYPTED VAULT
+(``app/deploy/credentials.py``, service ``deploy_github_token`` — the same key the
+Deploy panel uses) so it is durable and travels to every device signed into the
+same vault. ``provider.json`` is kept only as a plaintext LOCAL mirror/fallback for
+the synchronous git fast-path; ``_prime_shared_token_from_vault`` makes the vault
+authoritative (and migrates a legacy provider.json-only token into it once).
 """
 
 import asyncio
@@ -52,7 +57,7 @@ def _get_token() -> str:
 
 
 def _save_token(token: str) -> None:
-    """Write GitHub token to provider.json."""
+    """Write GitHub token to provider.json (the local mirror of the vault key)."""
     try:
         data = {}
         if _TOKEN_FILE.is_file():
@@ -62,6 +67,107 @@ def _save_token(token: str) -> None:
     except Exception as e:
         logger.error("Failed to save GitHub token: %s", e)
         raise HTTPException(status_code=500, detail=f"Failed to save token: {e}")
+
+
+def _mirror_token(token: str) -> None:
+    """Best-effort local mirror write — never raises (used off the HTTP path)."""
+    try:
+        _save_token(token)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("could not mirror github token to provider.json: %s", e)
+
+
+# ── Vault-backed shared token (durable + shared across devices) ──────────────
+# The built-in repo's shared GitHub token lives in the encrypted vault (service
+# ``deploy_github_token``, shared with the Deploy panel). These helpers make the
+# vault the source of truth and keep the sync git paths (git_repos override +
+# provider.json mirror + _TOKEN_CACHE) primed from it. The repo's CLEAN address is
+# stored in the SAME vault row (non-secret) so a device — or a new deployment —
+# sharing the vault gets the URL + token SEPARATELY, never a tokenized URL.
+
+def _clean_repo_url(raw: str) -> str:
+    """A git remote URL with any embedded credentials stripped and SSH form turned
+    into https — safe to store/share as the repo address (the token lives
+    separately). Blank/unparseable → ''."""
+    u = (raw or "").strip()
+    if not u:
+        return ""
+    m = re.match(r"^[\w.+-]+@([^:/]+):(.+)$", u)     # git@host:owner/repo → https
+    if m:
+        u = f"https://{m.group(1)}/{m.group(2)}"
+    u = re.sub(r"^(https?://)[^/@]+@", r"\1", u)      # strip https://user[:tok]@host
+    return u
+
+
+async def _save_repo_url_to_vault(raw: str) -> None:
+    """Mirror the built-in repo's clean address into the shared vault row. Cheap:
+    the credentials layer skips the write when the URL is unchanged. Never raises."""
+    try:
+        clean = _clean_repo_url(raw)
+        if clean:
+            from app.deploy import credentials as dc
+            await dc.save_github_repo_url(clean)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("could not save repo url to vault: %s", e)
+
+
+async def _prime_shared_token_from_vault() -> str:
+    """Resolve the shared GitHub token from the vault and prime every sync git path.
+
+    Vault-authoritative: whatever the vault holds wins (so a token saved on another
+    device signed into the same vault shows up here). If the vault is empty but a
+    legacy plaintext token still sits in provider.json, migrate it into the vault
+    once. Safe to call anywhere — it never raises."""
+    try:
+        from app.deploy import credentials as dc
+        try:
+            tok = await dc.get_github_token()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("vault github token read failed: %s", e)
+            tok = ""
+        if not tok:
+            legacy = _get_token()
+            if legacy:
+                try:
+                    if await dc.save_github_token(legacy):
+                        logger.info("Migrated legacy Git-page token into the vault.")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("could not migrate Git-page token to vault: %s", e)
+                tok = legacy
+        git_repos.set_shared_token_override(tok)
+        _cache_token(tok)
+        if tok and tok != _get_token():
+            _mirror_token(tok)   # keep the local fallback in step with the vault
+        # Also record this app's own repo address (clean) in the shared vault row,
+        # so a device / new deployment sharing the vault knows the repo URL too.
+        await _save_repo_url_to_vault(git_repos._builtin_origin())
+        return tok
+    except Exception as e:  # noqa: BLE001
+        logger.debug("prime shared token failed: %s", e)
+        return ""
+
+
+async def _save_shared_token(token: str) -> None:
+    """Persist the shared GitHub token to the vault (durable + shared) and prime the
+    local sync paths. A blank token clears it everywhere."""
+    from app.deploy import credentials as dc
+    token = (token or "").strip()
+    if not token:
+        try:
+            await dc.clear_github_token()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("could not clear vault github token: %s", e)
+        git_repos.set_shared_token_override("")
+        _cache_token("")
+        _mirror_token("")
+        return
+    try:
+        await dc.save_github_token(token)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("could not save github token to vault: %s", e)
+    git_repos.set_shared_token_override(token)
+    _cache_token(token)
+    _mirror_token(token)
 
 
 # ── Token cache (set before sync git calls) ──
@@ -95,7 +201,7 @@ def _use_active_repo() -> None:
         _cache_token(token or _get_token())
     except Exception:  # noqa: BLE001
         _ACTIVE_REPO = _PROJECT_ROOT
-        _cache_token(_get_token())
+        _cache_token(git_repos.builtin_token() or _get_token())
 
 
 def _pin_to_project_root() -> None:
@@ -104,7 +210,9 @@ def _pin_to_project_root() -> None:
     the user has selected on the Source Control page."""
     global _ACTIVE_REPO
     _ACTIVE_REPO = _PROJECT_ROOT
-    _cache_token(_get_token())
+    # Prefer the vault-primed shared token (set at startup / before remote ops);
+    # fall back to the provider.json mirror if it hasn't been primed yet.
+    _cache_token(git_repos.builtin_token() or _get_token())
 
 
 def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
@@ -915,6 +1023,7 @@ async def get_line_stats(request: Request):
 async def push_to_remote(request: Request):
     """Push commits to the remote."""
     _require_admin(request)
+    await _prime_shared_token_from_vault()   # refresh the shared key from the vault
     _use_active_repo()
 
     stdout, stderr, rc = _git_push(timeout=30)
@@ -1067,6 +1176,35 @@ def _fallback_commit_message(stat_out: str, untracked: list[str]) -> str:
     return f"{title}\n\n{body}"
 
 
+_STAT_MAX_FILE_LINES = 60
+
+
+def _bound_stat(stat_out: str, max_lines: int = _STAT_MAX_FILE_LINES) -> str:
+    """Cap a ``git diff --stat`` block so a huge changeset can't bury the real diff
+    under a wall of filenames.
+
+    A normal dev commit touches a handful of files, but a production-mirror release
+    stages the WHOLE trimmed tree (~1000 files). Left un-capped, the ``--stat`` list
+    becomes a ~50KB block of paths that dwarfs the 6KB diff window, pushing the
+    commit-message sub-call past the model's context / its short timeout — so every
+    release fell back to the deterministic "Release from dev…" line. Keep the first
+    *max_lines* per-file lines plus git's trailing ``N files changed …`` summary,
+    replacing the omitted files with a ``... (+K more files)`` marker. Small commits
+    (≤ max_lines files) pass through unchanged."""
+    lines = (stat_out or "").strip().splitlines()
+    file_lines = [ln for ln in lines if "|" in ln]
+    summary = [ln for ln in lines if "|" not in ln and ln.strip()]
+    if len(file_lines) <= max_lines:
+        return (stat_out or "").strip()
+    kept = file_lines[:max_lines]
+    omitted = len(file_lines) - len(kept)
+    out = "\n".join(kept)
+    out += f"\n  ... (+{omitted} more files)"
+    if summary:
+        out += "\n" + "\n".join(summary)
+    return out
+
+
 async def _generate_commit_message(stat_out: str, full_diff: str,
                                    untracked: list[str]) -> tuple[str, str, str]:
     """Write a conventional-commit message from the diff via a lightweight LLM
@@ -1081,11 +1219,12 @@ async def _generate_commit_message(stat_out: str, full_diff: str,
         or os.environ.get("OPENROUTER_MODEL")
         or "deepseek/deepseek-v4-flash"
     )
+    stat_window = _bound_stat(stat_out)
     diff_window = full_diff[:6000] if full_diff else "(no diff)"
     if full_diff and len(full_diff) > 6000:
         diff_window += f"\n... (truncated, {len(full_diff)} total bytes)"
     summary = (
-        f"Changed files:\n{stat_out.strip() or 'N/A'}\n\n"
+        f"Changed files:\n{stat_window or 'N/A'}\n\n"
         "Untracked:\n"
         + ("\n".join(f"  {f}" for f in untracked) if untracked else "  (none)")
         + f"\n\nDiff:\n{diff_window}"
@@ -1315,6 +1454,7 @@ async def commit_and_push(req: CommitPushRequest, request: Request):
     """
     _require_admin(request)
     # Commit + push the repo the user currently has selected (with its own key).
+    await _prime_shared_token_from_vault()   # refresh the shared key from the vault
     _use_active_repo()
 
     if req.stream:
@@ -1389,21 +1529,24 @@ def _files_changed_between(old: str, new: str) -> list[str]:
     return [line.strip() for line in out.split("\n") if line.strip()]
 
 
-@router.post("/pull")
-async def pull_from_remote(request: Request):
-    """Pull from remote. Returns whether backend files changed so the
-    caller can decide to restart the server.
-    """
-    _require_admin(request)
-    _use_active_repo()
+async def pull_repo() -> dict:
+    """Fetch + fast-forward the CURRENTLY-ACTIVE repo (caller decides which repo is
+    active via ``_use_active_repo`` / ``_pin_to_project_root`` first).
 
+    The single source of truth for a pull: used by the ``/pull`` UI route AND the
+    cross-device ``git_pull`` fleet action (app/devices/actions.py), so both behave
+    identically. Returns a structured dict (status: pulled / error) and NEVER raises
+    for an ordinary git failure — the caller decides how to surface it (the route
+    turns an error into an HTTP 500; the device action lets the error land on the
+    job row for the Instances page to poll).
+    """
     before = _head_hash()
     stdout, stderr, rc = _run_git(["pull"], timeout=30)
     if rc != 0:
         detail = stderr.strip()
         if "Authentication failed" in stderr or "could not read" in stderr:
             detail += "\n\nSet your GitHub token in the File Manager sidebar (source-control view)."
-        raise HTTPException(status_code=500, detail=detail)
+        return {"status": "error", "message": detail or "git pull failed"}
     after = _head_hash()
 
     files = _files_changed_between(before, after)
@@ -1418,6 +1561,21 @@ async def pull_from_remote(request: Request):
         "files_changed": files,
         "backend_changed": backend_changed,
     }
+
+
+@router.post("/pull")
+async def pull_from_remote(request: Request):
+    """Pull from remote. Returns whether backend files changed so the
+    caller can decide to restart the server.
+    """
+    _require_admin(request)
+    await _prime_shared_token_from_vault()   # refresh the shared key from the vault
+    _use_active_repo()
+
+    result = await pull_repo()
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("message"))
+    return result
 
 
 @router.get("/branches")
@@ -1607,16 +1765,16 @@ async def set_token(req: TokenRequest, request: Request):
     Single shared token — same for all users (the repo is shared).
     """
     _require_admin(request)
-    _save_token(req.token)
-    _cache_token(req.token)
+    await _save_shared_token(req.token)   # vault = source of truth (+ local mirror)
     logger.info("GitHub token saved")
     return {"status": "ok", "message": "GitHub token saved."}
 
 
 @router.get("/token-status")
 async def token_status():
-    """Check if a GitHub token is configured."""
-    token = _get_token()
+    """Check if a GitHub token is configured. Primes from the vault first, so a
+    token stored on another device sharing the vault is reflected here."""
+    token = await _prime_shared_token_from_vault()
     return {
         "configured": bool(token),
         "masked": f"{token[:4]}****" if len(token) > 8 else ("****" if token else ""),
@@ -1637,11 +1795,14 @@ async def set_remote_url(req: RemoteUrlRequest, request: Request):
         raise HTTPException(status_code=500, detail=stderr.strip() or "Failed to set remote URL")
     git_repos.invalidate_origin_cache()   # the built-in repo's cached origin just changed
     # Keep the registry's stored remote in sync when a non-built-in repo is active,
-    # so the saved entry and the repo's git config don't drift apart.
+    # so the saved entry and the repo's git config don't drift apart. When the
+    # built-in repo is active, mirror the new clean address into the shared vault.
     try:
         active = git_repos.get_active_full()
         if not active.get("builtin"):
             git_repos.update_repo(active["id"], remote_url=req.url)
+        else:
+            await _save_repo_url_to_vault(req.url)
     except Exception:  # noqa: BLE001
         pass
     logger.info("Remote origin URL changed to %s", req.url)
@@ -1706,9 +1867,9 @@ async def update_git_repo(repo_id: str, req: RepoUpdateRequest, request: Request
 
     The built-in WebAgent repo is a special case: its folder is pinned to this
     app's own root and can't change, but its GitHub address (git ``origin``) and
-    its shared GitHub key (provider.json) ARE editable here — the same two things
-    the standalone remote-URL / key fields already change, surfaced through the
-    repo selector's Edit form for parity with added repos.
+    its shared GitHub key (now stored in the vault) ARE editable here — the same two
+    things the standalone remote-URL / key fields already change, surfaced through
+    the repo selector's Edit form for parity with added repos.
     """
     _require_admin(request)
     if repo_id == git_repos.BUILTIN_ID:
@@ -1726,9 +1887,10 @@ async def update_git_repo(repo_id: str, req: RepoUpdateRequest, request: Request
                 raise HTTPException(status_code=400,
                                     detail=stderr.strip() or "Failed to set remote URL")
             git_repos.invalidate_origin_cache()   # built-in origin just changed
-        # Save the shared GitHub key (blank = keep the existing one).
+            await _save_repo_url_to_vault(req.remote_url)   # share the new address via the vault
+        # Save the shared GitHub key to the vault (blank = keep the existing one).
         if req.token:
-            _save_token(req.token)
+            await _save_shared_token(req.token)
         _use_active_repo()
         return {"status": "ok", "repos": git_repos.list_repos()}
     try:

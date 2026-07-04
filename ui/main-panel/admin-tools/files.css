@@ -557,6 +557,20 @@ body {
   font-style: italic;
 }
 
+/* Skeleton tree rows shown while /tree loads (built by _treeSkeletonHtml).
+   `.sk-shimmer` (animated fill) is shared in ui/shared/css/app3.css. */
+.files-tree-sk-row {
+  display: flex;
+  align-items: center;
+  height: 24px;
+}
+.files-tree-sk-bar {
+  display: block;
+  height: 10px;
+  border-radius: 5px;
+  max-width: 220px;
+}
+
 /* ── Resize handle ───────────────────────────────────────── */
 
 .files-resize-handle {
@@ -2938,12 +2952,27 @@ input.fg-remote-input-inline {
    When Settings is the active view there's no sidebar panel — only the
    strip. The settings main takes the remaining width. These rules sit
    late in the cascade so they override .maximized (mobile) and the
-   user's persisted split width without touching data-state. */
+   user's persisted split width without touching data-state.
+
+   PANEL-LESS-NO-BAND: two extra declarations kill the empty vertical band
+   that used to show between the icon strip and the page on panel-less views:
+   (1) `transition: none` — the sidebar's base `transition: width, min-width`
+       was the real culprit. When you navigate in from a panel view (wide
+       sidebar) the min-width transition never settled on the 38px pin and
+       left the sidebar stuck at its 160px min-width floor — a ~120px empty
+       band — because a *running* transition holds its own value and overrides
+       even `!important`. Removing the transition here lets the pin land
+       instantly at 38px (or 184px when the rail is expanded).
+   (2) the strip-fill rule below makes the icon strip occupy the FULL sidebar
+       width, so the sidebar and its only visible child are the same width and
+       there is no leftover strip (the strip's rigid `flex: 0 0 38px` basis
+       otherwise left it ~10px short of the expanded 184px rail). */
 .files-sidebar[data-view="settings"] {
   width: 38px !important;
   min-width: 38px !important;
   max-width: 38px !important;
   flex: 0 0 38px;
+  transition: none !important;
 }
 .files-sidebar[data-view="settings"] ~ .files-resize-handle { display: none; }
 .files-sidebar[data-view="settings"] .files-sidebar-panel { display: none; }
@@ -2954,10 +2983,21 @@ input.fg-remote-input-inline {
   min-width: 38px !important;
   max-width: 38px !important;
   flex: 0 0 38px;
+  transition: none !important;
 }
 .files-sidebar[data-view="dashboard"] ~ .files-resize-handle { display: none; }
 .files-sidebar[data-view="dashboard"] .files-sidebar-panel { display: none; }
 .files-sidebar[data-view="dashboard"].maximized ~ .files-main:not([hidden]) { display: flex; }
+/* Strip fills the whole sidebar on the panel-less views (settings / dashboard)
+   so there is no empty band beside it — in both the 38px collapsed rail and
+   the 184px expanded rail. Scoped to these views so panel views keep the
+   strip at its rigid 38px beside their sub-panel. (Instances carries the same
+   pair of rules in its own instances.css to stay a self-contained drop-in.) */
+.files-sidebar[data-view="settings"] .files-sidebar-strip,
+.files-sidebar[data-view="dashboard"] .files-sidebar-strip {
+  flex: 1 1 auto;
+  width: 100%;
+}
 /* Mobile .maximized normally hides the right side; for settings we want
    the settings main visible. */
 .files-sidebar[data-view="settings"].maximized ~ .files-main:not([hidden]) { display: flex; }

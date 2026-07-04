@@ -87,7 +87,7 @@ class TermuxProvider(BaseDeployProvider):
     # ── command generation (the single source of truth) ──
     def build_command(self, github_url: str, visibility: str = "public",
                       token: str = "", branch: str = "", install_dir: str = "",
-                      admin_password: str = "") -> Dict[str, Any]:
+                      admin_password: str = "", bootstrap_code: str = "") -> Dict[str, Any]:
         """Build everything the phone row needs from the admin's inputs.
 
         ALWAYS succeeds (never ``{ok: False}``): the row shows this command live as
@@ -115,7 +115,14 @@ class TermuxProvider(BaseDeployProvider):
         # leading env assignment (POSIX). Blank → no prefix at all (the first visitor
         # sets the password). Keep BYTE-IDENTICAL to deploy.js `_buildTermux`.
         a = mc.resolve_admin(admin_password)
-        admin_prefix = ("WA_ADMIN_PW='" + a["password"] + "' ") if a["prewire"] else ""
+        # The env prefix carries the optional pre-set admin password AND, when the
+        # "Include this app's configuration" toggle is on, a password-locked WABOOT1
+        # setup code (WA_BOOTSTRAP_CODE) that termux-setup.sh writes to bootstrap.json
+        # for first-boot provisioning. The code is base64url + dots (no shell
+        # metacharacters), so single-quoting is safe. Only the BARE case (no code)
+        # must stay byte-identical to deploy.js `_buildTermux`; the embedded case is
+        # server-built only (the browser has no access to the secrets).
+        admin_prefix = mc.env_prefix_posix(a, bootstrap_code)
 
         # ONE command for both Termux and plain Linux: install git with whatever
         # package manager is present (Termux's `pkg`, or apt/dnf/pacman with sudo

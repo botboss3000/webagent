@@ -56,6 +56,12 @@ encryption = [
     "sqlcipher3>=0.6.2; sys_platform == 'win32'",
     "sqlcipher3-binary>=0.6.0; sys_platform == 'linux'",
 ]
+# In-process ("local") memory embeddings — FastEmbed (ONNX Runtime, CPU, no GPU).
+# The app DEFAULTS to local embeddings (embedding_source = "local"), so this extra
+# is normally wanted. app/agent/embed.py lazy-imports it and degrades to
+# keyword-only search if it's absent (e.g. an edition that ships cloud-only), so a
+# fresh install without it still boots. Install with:  uv sync --extra embeddings-local
+embeddings-local = ["fastembed>=0.3.0"]
 
 [build-system]
 requires = ["hatchling"]

@@ -80,15 +80,20 @@ const METHOD_META = {
       'Enter that tunnel’s name and its hostname in the fields below.',
       'Click Start (▶) — the fixed https hostname goes live.',
     ],
+    // `quick` comes first: it's the quick-vs-stable choice. When ticked, the
+    // named-tunnel fields below are hidden (they only apply to a stable tunnel)
+    // — see _applyCloudflareMode. The background process follows this flag:
+    // ticked → `cloudflared tunnel --url http://localhost:<port>`; unticked →
+    // `cloudflared tunnel run <name>`.
     fields: [
+      { key: 'quick', label: 'Quick tunnel — random trycloudflare.com address, no account', type: 'checkbox', full: true,
+        tip: 'Tick for the no-account throwaway option: Cloudflare hands out a random https://…trycloudflare.com address that lasts until you stop the tunnel. Untick to use your own named tunnel + fixed hostname below.' },
       { key: 'tunnel', label: 'Named tunnel', placeholder: 'my-pc',
         tip: { text: 'The name of the tunnel you made with “cloudflared tunnel create”. Only for the stable, named-tunnel setup — leave blank if you’re using a Quick tunnel.', link: { url: 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/', label: 'Create a named tunnel' } } },
       { key: 'hostname', label: 'Fixed hostname', placeholder: 'pc.webagent.live',
         tip: 'The https address on your own domain that you routed to this tunnel (e.g. pc.example.com). Devices open this to reach the PC. Set once with “cloudflared tunnel route dns”.' },
       { key: 'bin_path', label: 'cloudflared path (optional)', placeholder: 'blank = find on PATH',
         tip: 'Where the cloudflared program lives on this PC. Leave blank to let the app find it on your system PATH — only set this if you installed it somewhere unusual.' },
-      { key: 'quick', label: 'Quick tunnel (random trycloudflare.com address)', type: 'checkbox', full: true,
-        tip: 'Tick for the no-account throwaway option: Cloudflare hands out a random https://…trycloudflare.com address that lasts until you stop the tunnel. Untick to use your named tunnel + hostname above.' },
     ],
   },
   tailscale: {
@@ -236,6 +241,29 @@ function _closeQrPopup() {
  *  this same button (so the button toggles). */
 function _toggleQrPopup(url, svg, anchor) {
   if (_qrPopup && _qrPopupAnchor === anchor) { _closeQrPopup(); return; }
+  _showQrPopup(url, svg, anchor);
+}
+
+// The Same-network QR codes arrive pre-rendered per URL from the status endpoint.
+// The "Reach it from anywhere" address, by contrast, is dynamic (a live tunnel
+// URL that only exists once started), so it has no baked-in SVG — we fetch its
+// QR on demand from the shared server-side generator (POST /admin/storage/qr,
+// the same one the Deploy config-share QR uses) and cache it per address.
+const _qrCache = {};
+async function _fetchQrSvg(text) {
+  if (Object.prototype.hasOwnProperty.call(_qrCache, text)) return _qrCache[text];
+  try {
+    const r = await _post('/admin/storage/qr', { text });
+    _qrCache[text] = r && r.ok ? r.qr_svg : null;
+  } catch { _qrCache[text] = null; }
+  return _qrCache[text];
+}
+
+/** QR toggle for the dynamic remote address: fetch the SVG (once) then show the
+ *  same popover the Same-network rows use. */
+async function _toggleRemoteQr(url, anchor) {
+  if (_qrPopup && _qrPopupAnchor === anchor) { _closeQrPopup(); return; }
+  const svg = await _fetchQrSvg(url);
   _showQrPopup(url, svg, anchor);
 }
 
@@ -523,6 +551,7 @@ function _renderMethodPanel(method) {
 
   meta.fields.forEach(f => {
     const wrap = document.createElement('div');
+    wrap.dataset.fieldWrap = f.key;   // so _applyCloudflareMode can hide it
     if (f.full) wrap.style.gridColumn = '1 / -1';
     const lab = document.createElement('label');
     lab.className = 'ac-label';
@@ -547,6 +576,13 @@ function _renderMethodPanel(method) {
     inp.id = 'ac-ra-fld-' + f.key;
     inp.dataset.key = f.key;
 
+    // Persist on change so the choice survives a refresh (no Save click needed).
+    // The authtoken field is excluded — it's saved into ngrok's own config, not
+    // ours, and _gatherConfig skips it anyway.
+    if (f.action !== 'authtoken' && !f.key.startsWith('__')) {
+      inp.addEventListener('change', () => _autoSaveConfig(method));
+    }
+
     if (f.action === 'authtoken') {
       const row = document.createElement('div');
       row.style.display = 'flex';
@@ -566,6 +602,24 @@ function _renderMethodPanel(method) {
     }
     fields.appendChild(wrap);
   });
+
+  // Cloudflare: the Quick-tunnel toggle hides the named-tunnel fields (they only
+  // apply to a stable tunnel), so the quick-vs-stable choice reads clearly.
+  if (method === 'cloudflare') {
+    const quick = _qs('ac-ra-fld-quick');
+    if (quick) quick.addEventListener('change', _applyCloudflareMode);
+    _applyCloudflareMode();
+  }
+}
+
+/** Show the named-tunnel (stable) fields only when Quick tunnel is unticked. */
+function _applyCloudflareMode() {
+  const quick = _qs('ac-ra-fld-quick');
+  if (!quick) return;
+  const hide = quick.checked;
+  document
+    .querySelectorAll('#ac-ra-fields [data-field-wrap="tunnel"], #ac-ra-fields [data-field-wrap="hostname"]')
+    .forEach(w => { w.style.display = hide ? 'none' : ''; });
 }
 
 // Where to download each managed tunnel's binary if it isn't installed yet.
@@ -645,6 +699,17 @@ function _renderRuntime() {
     copyBtn.innerHTML = '<i data-lucide="copy"></i>';
     copyBtn.addEventListener('click', () => _copy(href));
     line.appendChild(copyBtn);
+    // QR button — mirrors the Same-network rows so the remote address is just as
+    // easy to open on a phone (scan) as to copy. The SVG is fetched on demand
+    // (the address is dynamic) — see _toggleRemoteQr.
+    const qrBtn = document.createElement('button');
+    qrBtn.className = 'ac-btn ac-ra-icon-btn';
+    qrBtn.type = 'button';
+    qrBtn.title = 'Show QR code';
+    qrBtn.setAttribute('aria-label', 'Show QR code');
+    qrBtn.innerHTML = '<i data-lucide="qr-code"></i>';
+    qrBtn.addEventListener('click', () => _toggleRemoteQr(href, qrBtn));
+    line.appendChild(qrBtn);
     row.appendChild(line);
     _refreshLucideIcons(line);
   }
@@ -694,6 +759,27 @@ async function _saveConfig() {
   } catch (e) { _setStatus(e.message, 'err'); }
 }
 
+// Auto-save the config for `method` a beat after any field changes, so choices
+// (e.g. the Cloudflare Quick-tunnel toggle, the named-tunnel name/hostname)
+// persist across a page refresh with no Save click. We keep the local _status
+// mirror in sync so switching method away and back doesn't show a stale form,
+// and deliberately do NOT re-render (that would steal focus mid-edit).
+let _autoSaveTimer = null;
+function _autoSaveConfig(method) {
+  if (!isAdmin()) return;
+  clearTimeout(_autoSaveTimer);
+  _autoSaveTimer = setTimeout(async () => {
+    const config = _gatherConfig(method);
+    try {
+      await _post('/admin/remote-access/config', { method, config });
+      if (_status && _status.methods && _status.methods[method]) {
+        _status.methods[method].config = config;
+      }
+      _setStatus('Saved.', 'ok');
+    } catch (e) { _setStatus(e.message, 'err'); }
+  }, 400);
+}
+
 async function _saveAuthtoken(token) {
   if (!isAdmin()) return;
   if (!token) { _setStatus('Paste a token first', 'err'); return; }
@@ -709,6 +795,15 @@ async function _start() {
   const method = (_qs('ac-ra-method') || {}).value || 'same_network';
   _setStatus('Starting ' + method.replace('_', ' ') + '…');
   try {
+    // Persist the current form BEFORE starting so the background process matches
+    // what's on screen — e.g. the Cloudflare "Quick tunnel" choice decides
+    // whether cloudflared runs `tunnel --url http://localhost:<port>` (quick) or
+    // `tunnel run <name>` (stable). Without this, Play would use the last SAVED
+    // config and silently ignore an unsaved quick/stable switch.
+    const meta = METHOD_META[method];
+    if (meta && meta.fields.length) {
+      await _post('/admin/remote-access/config', { method, config: _gatherConfig(method) });
+    }
     const r = await _post('/admin/remote-access/start', { method });
     if (r.ok) _setStatus(r.public_url ? ('Live at ' + r.public_url) : 'Started.', 'ok');
     else _setStatus((r.error || 'Failed') + (r.output ? (' — ' + r.output) : ''), 'err');

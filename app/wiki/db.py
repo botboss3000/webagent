@@ -33,7 +33,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from app.agent.embed import embed_text, EMBED_DIM
+from app.agent.embed import embed_text, embed_dim
 
 logger = logging.getLogger(__name__)
 
@@ -505,7 +505,7 @@ class WikiStore:
         for r in rows:
             if r["embedding"]:
                 vec = np.frombuffer(r["embedding"], dtype=np.float32)
-                if vec.shape[0] == EMBED_DIM:
+                if vec.shape[0] == embed_dim():
                     article_ids.append(r["article_id"])
                     vecs.append(vec)
         if not vecs:

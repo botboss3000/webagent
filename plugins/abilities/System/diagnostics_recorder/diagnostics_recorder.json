@@ -1,0 +1,14 @@
+{
+  "display_name": "Diagnostics Recorder",
+  "kind": "ability",
+  "icon": "activity",
+  "color": "#bb9af7",
+  "description": "Background flight recorder that captures server warnings, errors, tracebacks, run outcomes and tool metrics for after-the-fact diagnosis. Advanced tuning (ring size, retention) lives in app-settings.json. Applies after a restart.",
+  "simple": true,
+  "app_function": true,
+  "default_enabled": true,
+  "status": "stable",
+  "order": 2,
+  "tools": [],
+  "_note": "App function, not an agent ability. Distinct from the agent-facing 'diagnostics' read ability. Its runtime is app/agent/diagnostics.py, whose recorder ANDs its enabled flag with ability_app_enabled('diagnostics_recorder') at construction. Descriptor-only by design."
+}

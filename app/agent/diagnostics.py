@@ -125,7 +125,14 @@ class DiagnosticRecorder:
 
     def __init__(self) -> None:
         s = _read_settings()
-        self.enabled: bool = bool(s.get("diagnostics_enabled", True))
+        # Two gates AND together: the app-settings.json master flag (with its
+        # advanced knobs — ring size, retention, persist level) AND the admin
+        # App Functions toggle (App Settings ▸ App Functions → "Diagnostics
+        # Recorder"), which is the app-level on/off stored in agent-abilities.json.
+        # Read once at construction, so a toggle change takes effect on the next
+        # restart. Fails ON if the catalog/config can't be read (a default-on
+        # recorder is never silently suppressed).
+        self.enabled: bool = bool(s.get("diagnostics_enabled", True)) and self._app_function_enabled()
         ring_size = int(s.get("diagnostics_ring_size", DEFAULT_RING_SIZE) or DEFAULT_RING_SIZE)
         self.retention_rows = int(s.get("diagnostics_retention_rows", DEFAULT_RETENTION_ROWS) or DEFAULT_RETENTION_ROWS)
         self.retention_hours = float(s.get("diagnostics_retention_hours", DEFAULT_RETENTION_HOURS) or DEFAULT_RETENTION_HOURS)
@@ -157,6 +164,18 @@ class DiagnosticRecorder:
         self._last_prune: float = 0.0
         # Lightweight running counters for the stats endpoint.
         self._counts: Dict[str, int] = {k: 0 for k in LEVELS}
+
+    @staticmethod
+    def _app_function_enabled() -> bool:
+        """The admin App Functions toggle for the Diagnostics Recorder — the
+        app-level on/off stored in data/config/agent-abilities.json, surfaced as a
+        drop-in descriptor (plugins/abilities/System/diagnostics_recorder). Fails
+        ON so a default-on recorder is never silently suppressed by a read error."""
+        try:
+            from app.abilities import ability_app_enabled
+            return bool(ability_app_enabled("diagnostics_recorder"))
+        except Exception:
+            return True
 
     # ── Capture ────────────────────────────────────────────────────────────
 

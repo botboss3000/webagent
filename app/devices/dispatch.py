@@ -56,6 +56,37 @@ async def list_devices(online_within_seconds: int = 60) -> List[Dict[str, Any]]:
         return []
 
 
+async def remove_device(instance_id: str) -> bool:
+    """Drop a device's presence row from the shared registry (admin unlink of a
+    stale/offline device). This clears the RECORD only — it never reaches the
+    machine, so a still-running device pointed at this database will re-appear on
+    its next heartbeat. Returns True if the delete was issued without error."""
+    from app.db import get_db
+    db = get_db()
+    try:
+        await db.delete_device(instance_id)
+        return True
+    except Exception as e:
+        logger.debug("remove_device failed: %s", e)
+        return False
+
+
+async def set_device_override(instance_id: str, *, label: Optional[str] = None,
+                              icon: Optional[str] = None) -> bool:
+    """Set the admin's custom display name / icon for a device in the shared
+    registry (the Instances-page rename). Overrides the self-reported hostname +
+    platform icon, lives in the shared DB (so every device shows the same), and
+    is never overwritten by the heartbeat. Per field: None = leave unchanged,
+    "" = clear the override, else set it. Returns True when a row was updated."""
+    from app.db import get_db
+    db = get_db()
+    try:
+        return bool(await db.set_device_override(instance_id, label=label, icon=icon))
+    except Exception as e:
+        logger.debug("set_device_override failed: %s", e)
+        return False
+
+
 async def resolve_target(target: str, *, online_within_seconds: int = 60
                          ) -> Optional[Dict[str, Any]]:
     """Look a stored target up in the presence registry. Matches by instance_id

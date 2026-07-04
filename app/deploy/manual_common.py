@@ -113,6 +113,51 @@ def resolve_admin(admin_password: str = "") -> Dict[str, Any]:
     return {"prewire": True, "password": pw, "warning": warning}
 
 
+def safe_bootstrap_code(bootstrap_code: str = "") -> str:
+    """Sanity-gate a WABOOT1 setup code before it is spliced into a shell command.
+
+    A real code is ``WABOOT1.<b64url>.<token>`` — base64url characters and dots
+    only. If anything else shows up (a quote, whitespace, a shell metacharacter)
+    we refuse it rather than let it break out of the single-quoted embedding — the
+    command falls back to a bare install (no ``WA_BOOTSTRAP_CODE``). Defensive: the
+    generator never produces such a string, but a pasted command runs on a device
+    we don't control."""
+    c = (bootstrap_code or "").strip()
+    if not c:
+        return ""
+    if any(ch in c for ch in "'\"\n\r \t`$\\|&;<>(){}"):
+        return ""
+    return c
+
+
+def env_prefix_posix(admin: Dict[str, Any], bootstrap_code: str = "") -> str:
+    """The leading ``VAR='val' `` env assignments carried into a POSIX setup script:
+    the optional pre-set admin password (``WA_ADMIN_PW``) and, when configuration is
+    embedded, the locked setup code (``WA_BOOTSTRAP_CODE``). Empty when neither is
+    set. With no code this is byte-identical to the old admin-only prefix, so the
+    browser's live command mirror still matches the bare case."""
+    parts = []
+    if admin.get("prewire"):
+        parts.append("WA_ADMIN_PW='" + admin["password"] + "'")
+    code = safe_bootstrap_code(bootstrap_code)
+    if code:
+        parts.append("WA_BOOTSTRAP_CODE='" + code + "'")
+    return (" ".join(parts) + " ") if parts else ""
+
+
+def env_prefix_windows(admin: Dict[str, Any], bootstrap_code: str = "") -> str:
+    """PowerShell counterpart of :func:`env_prefix_posix`: leading
+    ``$env:VAR='val'; `` assignments the child powershell inherits. Empty when
+    neither is set; byte-identical to the old admin-only prefix with no code."""
+    parts = []
+    if admin.get("prewire"):
+        parts.append("$env:WA_ADMIN_PW='" + admin["password"] + "';")
+    code = safe_bootstrap_code(bootstrap_code)
+    if code:
+        parts.append("$env:WA_BOOTSTRAP_CODE='" + code + "';")
+    return (" ".join(parts) + " ") if parts else ""
+
+
 def resolve_clone(github_url: str, visibility: str = "public", token: str = "") -> Dict[str, Any]:
     """Work out the clone target from the admin's inputs — shared by every manual
     platform provider (only the surrounding shell command differs per platform).
@@ -123,10 +168,12 @@ def resolve_clone(github_url: str, visibility: str = "public", token: str = "") 
     fork. A private repo with no token yet still renders the command's shape via an
     obvious fill-in token, flagged so the row can nudge the admin to finish it.
 
-    Returns ``{repo, clone_url, private, default_repo, placeholder_token,
-    warning}``. ``clone_url`` is what goes into ``git clone`` — for a PRIVATE repo
-    the access token is embedded (``https://TOKEN@host/...``) so the device can
-    fetch it; the token is never stored.
+    Returns ``{repo, clone_url, clean_url, private, default_repo,
+    placeholder_token, warning}``. ``clone_url`` is what goes into ``git clone`` —
+    for a PRIVATE repo the access token is embedded (``https://TOKEN@host/...``) so
+    the device can fetch it; the token is never stored. ``clean_url`` is the same
+    address WITHOUT any token — what the deployed box's git ``origin`` should be
+    reset to after cloning, so the PAT is never persisted in its ``.git/config``.
     """
     typed = (github_url or "").strip()
     default_repo = not typed
@@ -158,6 +205,13 @@ def resolve_clone(github_url: str, visibility: str = "public", token: str = "") 
         # the splice reads naturally.
         clone_url = "https://" + tok + "@" + strip_scheme(repo)
 
-    return {"repo": repo, "clone_url": clone_url, "private": private,
-            "default_repo": default_repo, "placeholder_token": placeholder_token,
-            "warning": warning}
+    # The clean address (no token) — safe to persist as the box's git origin. Drop
+    # any ``userinfo@`` in the authority so an already-tokenized input can't leak.
+    rest = strip_scheme(repo)
+    at, slash = rest.find("@"), rest.find("/")
+    if at != -1 and (slash == -1 or at < slash):
+        rest = rest[at + 1:]
+    clean_url = ("https://" + rest) if repo else repo
+    return {"repo": repo, "clone_url": clone_url, "clean_url": clean_url,
+            "private": private, "default_repo": default_repo,
+            "placeholder_token": placeholder_token, "warning": warning}

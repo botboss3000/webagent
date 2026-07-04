@@ -23,6 +23,24 @@ let _host = null;
 let _active = false;
 let _tsid = null;
 
+// The on-screen keys are PLUGIN-OWNED: their JS + CSS ship with the terminal_chat
+// engine (plugins/engines/terminal_chat/ui/) and are fetched lazily the first time
+// a Terminal Chat session mounts, so a normal agent never loads them and the footer
+// keyboard button only exists for terminal-chat agents. Absolute URL so it resolves
+// the same under /app or /setup base paths. Cached after the first import.
+const _KEYS_MODULE_URL = '/plugins/engines/terminal_chat/ui/terminal-keys.js';
+let _keysMod = null;
+
+async function _ensureKeysModule() {
+  if (_keysMod) return _keysMod;
+  try {
+    _keysMod = await import(_KEYS_MODULE_URL);
+  } catch (_) {
+    _keysMod = null;   // plugin absent / stripped edition — terminal still works, just no on-screen keys
+  }
+  return _keysMod;
+}
+
 // ── Build the terminal host ────────────────────────────────────────────────
 
 function _buildHost() {
@@ -174,8 +192,14 @@ function _mount(tsid) {
   _connect(tsid);
   app.terminalChat = { active: true, tsid: tsid };
   if (app.chatInput) app.chatInput.placeholder = 'Type and press Enter to send to terminal';
-  // Reveal the on-screen number-pad / shortcut-key toggle in the footer.
-  try { if (app.showTerminalKeys) app.showTerminalKeys(); } catch (_) {}
+  // Lazily load the plugin-owned on-screen keys and inject the footer toggle +
+  // in-pill number-pad. Handing it the two callables it needs keeps it fully
+  // decoupled from core app state.
+  _ensureKeysModule().then((m) => {
+    // Bail if the session was torn down before the module finished loading.
+    if (!_active || !m || typeof m.mountTerminalKeys !== 'function') return;
+    try { m.mountTerminalKeys({ sendKey: sendTerminalInput, focus: focusTerminalChat }); } catch (_) {}
+  });
   _active = true;
 }
 
@@ -191,7 +215,10 @@ function _unmount() {
   _tsid = null;
   _active = false;
   app.terminalChat = { active: false };
-  try { if (app.hideTerminalKeys) app.hideTerminalKeys(); } catch (_) {}
+  // Remove the plugin-owned footer toggle + in-pill keypad (restores the pill).
+  if (_keysMod && typeof _keysMod.unmountTerminalKeys === 'function') {
+    try { _keysMod.unmountTerminalKeys(); } catch (_) {}
+  }
   if (app.chatInput) app.chatInput.placeholder = 'Message…';
 }
 
@@ -223,8 +250,9 @@ export function deactivateTerminalChat() {
 }
 
 // Send raw bytes to the live PTY. Prefers the WS (already open for output);
-// falls back to the HTTP /write endpoint the chat pill uses. Drives the
-// on-screen number-pad / shortcut keys (ui/chat-side-panel/js/chat-terminal-keys.js).
+// falls back to the HTTP /write endpoint the chat pill uses. Handed to the
+// plugin-owned on-screen keys (plugins/engines/terminal_chat/ui/terminal-keys.js)
+// at mount so each key chip fires a single keystroke to the PTY.
 export function sendTerminalInput(data) {
   if (!data) return;
   if (_ws && _ws.readyState === WebSocket.OPEN) {
@@ -250,7 +278,8 @@ export function initTerminalChatEngine() {
   // Called from session-load.js when a session for a terminal_chat agent loads.
   app.activateTerminalChat = activateTerminalChat;
   app.deactivateTerminalChat = deactivateTerminalChat;
-  // Used by the on-screen number-pad / shortcut keys (chat-terminal-keys.js).
+  // Kept on app for any external caller; the plugin-owned on-screen keys are now
+  // handed these callables directly at mount (they no longer read app state).
   app.terminalChatKey = sendTerminalInput;
   app.terminalChatFocus = focusTerminalChat;
 

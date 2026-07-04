@@ -18,6 +18,19 @@
   overflow: hidden;
   background: transparent;
   position: relative;
+  /* Single source of truth for the page's side inset — the one edge margin from
+     the panel edge to content. Feeds BOTH the toolbar and the scrollable table
+     area so they share the exact same margin and can never drift apart (same
+     approach as the agents page's --agents-content-inset and App Settings'
+     --ac-content-inset). Narrowed to 10px on mobile via the @media override
+     directly below. */
+  --automations-content-inset: 20px;
+}
+/* Mobile / narrow screens: halve the side inset (20px → 10px) so content gets
+   back ~20px of width on small viewports. One override drives every side margin
+   on the page. 800px matches the app-wide mobile breakpoint. */
+@media (max-width: 800px) {
+  #tab-automations { --automations-content-inset: 10px; }
 }
 
 /* ── Toolbar ── */
@@ -25,7 +38,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 20px 12px;
+  padding: 14px var(--automations-content-inset) 12px;
   flex-shrink: 0;
 }
 #automations-toolbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -123,7 +136,7 @@ body.light-mode #automations-back-btn { color: var(--fg-2); }
   overflow-x: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb, var(--bg-tint)) transparent;
-  padding: 0 16px 24px;
+  padding: 0 var(--automations-content-inset) 24px;
 }
 #automations-table-wrap::-webkit-scrollbar { width: 5px; height: 5px; }
 #automations-table-wrap::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, var(--bg-tint)); border-radius: 3px; }
@@ -430,6 +443,21 @@ body.light-mode .auto-toggle-input:checked + .auto-toggle-slider { background: r
 .auto-empty-icon { color: var(--fg-4); opacity: 0.3; margin-bottom: 12px; }
 .auto-empty-text { font-size: 14px; font-weight: 600; color: var(--fg-3); margin-bottom: 4px; }
 .auto-empty-hint { font-size: 11px; color: var(--fg-4); }
+
+/* ── Skeleton rows (first-load placeholder) ──
+   Phantom shimmer rows shown while the first dashboard fetch is in flight, so
+   the table has its column shape immediately instead of a lone spinner.
+   `.sk-shimmer` (the animated fill) is shared in ui/shared/css/app3.css. */
+#automations-table tbody tr.auto-skeleton-row {
+  cursor: default;
+  pointer-events: none;
+}
+.auto-sk {
+  display: block;
+  height: 11px;
+  border-radius: 6px;
+  max-width: 150px;
+}
 
 /* ── Loading state ── */
 .auto-loading {

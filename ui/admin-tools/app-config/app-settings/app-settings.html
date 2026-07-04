@@ -49,6 +49,27 @@
     </div>
   </div>
 
+  <!-- ── App Functions ──
+       Background app SERVICES that run for the app itself, not agent-invoked
+       abilities — so they live HERE, not in the Agent Tools / Abilities tables.
+       Each row is an expandable `.ac-row` (on/off toggle + optional settings body),
+       rendered dynamically from the ability catalog's `app_functions` list by the
+       sibling app-functions.js (into #ac-app-functions-list). A drop-in ability
+       marked `"app_function": true` in its descriptor appears here automatically —
+       no edit to this file. See docs/claude/production-editions.md "App functions". -->
+  <div class="ac-category-group" id="ac-app-functions-card" data-pa-area="app_functions">
+    <div class="ac-category-summary" style="cursor:default;">
+      <i data-lucide="cog" class="lucide-icon" style="width:16px;height:16px;color:var(--accent);"></i>
+      <span class="ac-category-title">App Functions</span>
+    </div>
+    <div class="ac-category-body">
+      <div class="ac-hint" style="margin-bottom:8px;">
+        Background services the app runs on its own — not tools an agent chooses to use. Turn one off to stop that automatic behaviour app-wide.
+      </div>
+      <div id="ac-app-functions-list" class="ac-list"></div>
+    </div>
+  </div>
+
   <!-- ── Design (Startup & Boot + Appearance, one unified table) ── -->
   <!-- The old "Startup & Boot" and "Appearance" groups were merged into a single
        "Design" category whose body is ONE `.ac-list` table (#ac-design-list) — no
@@ -368,6 +389,38 @@
               <button id="ac-storage-sbuf-save" class="ac-btn ac-btn-primary">Save</button>
               <span id="ac-storage-sbuf-status" class="ac-hint" style="margin-left:6px;"></span>
             </div>
+          </div>
+        </div>
+
+        <!-- ── Row · Multi-tenant data (per-user bring-your-own-database) ──
+             App-wide switch saved server-side (multi_tenant in app-settings.json).
+             OFF = single shared DB (default, unchanged). ON = each user's
+             interaction data routes to their own database (they connect it from
+             their account page → ui/shared/js/tenant-db.js; backend
+             app/db/router.py + app/db/tenant.py). Wired in app-settings.js
+             (_initMultiTenant); state loaded in _loadAppSettings. -->
+        <div class="ac-row" id="ac-row-multitenant">
+          <div class="ac-ability-row">
+            <span class="ac-ability-icon"><i data-lucide="database" class="lucide-icon" style="width:18px;height:18px;color:var(--accent);"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Multi-tenant data</div>
+              <div class="ac-ability-desc">Let each user store their chats, memories and secrets in their own database.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-multitenant-badge"></span>
+            <span class="ac-row-chevron"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              <strong>Off (default):</strong> everyone shares this one database — nothing changes.<br>
+              <strong>On:</strong> each signed-in user's interaction data (sessions, chats, memories, agents and their own LLM keys) is stored in a Postgres database <em>they</em> connect from their account page, while this central database keeps only accounts, the shared agent catalog and billing. A user who hasn't connected their own database falls back to this shared one.
+            </div>
+            <span class="ac-config-control" style="margin-top:12px;display:inline-flex;align-items:center;gap:10px;">
+              <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+                <input type="checkbox" id="ac-multitenant" class="conn-toggle">
+                <span class="conn-toggle-track"></span>
+              </label>
+              <span class="ac-hint" id="ac-multitenant-label">Off — single shared database</span>
+            </span>
           </div>
         </div>
 

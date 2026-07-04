@@ -121,7 +121,7 @@ async def login(req: LoginRequest):
     If remember_me is True, a persistent remember token is generated
     (invalidates any previous one). Returns it alongside the JWT.
     """
-    user = authenticate(req.email, req.password)
+    user = await authenticate(req.email, req.password)
     if user is None:
         _record_auth_event("warning", f"Failed sign-in for {req.email}")
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -147,7 +147,7 @@ async def login(req: LoginRequest):
     # on as a standing account preference — either way the silent refresh then
     # keeps the session alive so it never dies in place at the lifetime mark.
     if req.remember_me or user.auto_renew:
-        remember = set_remember_token(req.email)
+        remember = await set_remember_token(req.email)
         if remember:
             resp.remember_token = remember
 
@@ -166,7 +166,7 @@ async def recall(req: RecallRequest):
     Called when user returns and the JWT has expired / doesn't exist yet.
     Returns a fresh access_token.
     """
-    user = resolve_remember_token(req.remember_token)
+    user = await resolve_remember_token(req.remember_token)
     if user is None:
         _record_auth_event("warning", "Auto-login failed (invalid or expired remember token)")
         raise HTTPException(status_code=401, detail="Invalid or expired remember token")
@@ -205,7 +205,7 @@ async def register(req: RegisterRequest):
     from app.admin.settings import get_access_mode as _gam
     mode = _gam()
     auto_approve = (mode != "admin_approval")
-    user = register_user(req.email, req.password, req.display_name, is_approved=auto_approve)
+    user = await register_user(req.email, req.password, req.display_name, is_approved=auto_approve)
     if user is None:
         raise HTTPException(status_code=409, detail="Email already registered")
     _record_auth_event("info", f"New account registered: {user.username}"
@@ -461,7 +461,7 @@ class SetupAdminResponse(BaseModel):
 @router.get("/setup-status", response_model=SetupStatusResponse)
 async def setup_status():
     """Public endpoint: returns whether an admin account exists."""
-    return SetupStatusResponse(initialized=admin_exists())
+    return SetupStatusResponse(initialized=await admin_exists())
 
 
 @router.post("/setup-admin", response_model=SetupAdminResponse)
@@ -474,7 +474,7 @@ async def setup_admin(req: SetupAdminRequest, request: Request):
     first-visitor action. There is deliberately NO localhost restriction: a fresh
     install (including a freshly-deployed cloud server, whose own browser is
     remote) must always be able to reach this page to set the very first password."""
-    if admin_exists():
+    if await admin_exists():
         raise HTTPException(status_code=400, detail="Admin already exists")
 
     if len(req.password) < 6:
@@ -484,7 +484,7 @@ async def setup_admin(req: SetupAdminRequest, request: Request):
     # The canonical admin user_id stays "admin" so every downstream admin gate
     # (DB is_admin seed, open-mode fallback, delete protection) keeps working.
     login_name = (req.username or "").strip() or "admin"
-    user = register_user(
+    user = await register_user(
         login_name, req.password, req.display_name or "Admin",
         user_id=_BOOTSTRAP_ADMIN_ID,
     )
@@ -523,7 +523,7 @@ async def setup_bundle(req: SetupBundleRequest):
     password both decrypts the bundle and becomes the admin login — so one typed
     value unlocks the keys AND claims the box. Applies DB/vault/LLM/admin and
     returns a token so the setup page logs straight in."""
-    if admin_exists():
+    if await admin_exists():
         raise HTTPException(status_code=400, detail="Admin already exists")
 
     from app.admin import bootstrap_bundle as bb
@@ -540,10 +540,16 @@ async def setup_bundle(req: SetupBundleRequest):
 
     # Guarantee an admin exists even if the bundle didn't carry one: the password
     # they typed becomes the admin password.
-    if not admin_exists():
-        register_user("admin", req.password, "Admin", user_id=_BOOTSTRAP_ADMIN_ID)
+    if not await admin_exists():
+        await register_user("admin", req.password, "Admin", user_id=_BOOTSTRAP_ADMIN_ID)
 
-    user = get_user_by_id(_BOOTSTRAP_ADMIN_ID)
+    # Ensure the admin PRIVILEGE too: if the bundle's shared DB already carried the
+    # admin login, register_user was skipped above, so its is_admin flag may be
+    # absent on this (possibly remote) control DB. Self-heal so Admin Tools unlock.
+    from app.auth.users import ensure_admin_privilege
+    await ensure_admin_privilege()
+
+    user = await get_user_by_id(_BOOTSTRAP_ADMIN_ID)
     if user is None:
         raise HTTPException(status_code=500, detail="Setup failed to create an admin account")
 
@@ -681,7 +687,7 @@ def _require_auth(request: Request) -> tuple[str, str]:
 async def get_me(request: Request):
     """Return the currently authenticated user's profile."""
     username, _user_id = _require_auth(request)
-    user = get_user(username)
+    user = await get_user(username)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return MeResponse(
@@ -699,7 +705,7 @@ async def patch_me(request: Request, body: UpdateMeRequest):
     Returns a fresh JWT because the `sub` claim may have changed.
     """
     current_username, _user_id = _require_auth(request)
-    user = get_user(current_username)
+    user = await get_user(current_username)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -710,7 +716,7 @@ async def patch_me(request: Request, body: UpdateMeRequest):
         raise HTTPException(status_code=400, detail="Invalid email address")
 
     try:
-        updated = update_user(
+        updated = await update_user(
             current_username,
             new_username=new_email,
             new_display_name=new_display,
@@ -746,16 +752,16 @@ async def post_change_password(request: Request, body: ChangePasswordRequest):
     if not body.new_password or len(body.new_password) < 4:
         raise HTTPException(status_code=400, detail="New password must be at least 4 characters")
 
-    verified = authenticate(username, body.current_password)
+    verified = await authenticate(username, body.current_password)
     if verified is None:
         raise HTTPException(status_code=401, detail="Current password is incorrect")
 
-    ok = change_password(username, body.new_password)
+    ok = await change_password(username, body.new_password)
     if not ok:
         raise HTTPException(status_code=404, detail="User not found")
 
     # Rotate remember token so old persistent credentials can't auto-login.
-    new_remember = set_remember_token(username) or ""
+    new_remember = await set_remember_token(username) or ""
     return ChangePasswordResponse(status="ok", remember_token=new_remember)
 
 
@@ -768,11 +774,11 @@ async def delete_me(request: Request, body: DeleteMeRequest):
     """
     username, _user_id = _require_auth(request)
 
-    verified = authenticate(username, body.password)
+    verified = await authenticate(username, body.password)
     if verified is None:
         raise HTTPException(status_code=401, detail="Password is incorrect")
 
-    ok, reason = delete_user_self(username)
+    ok, reason = await delete_user_self(username)
     if not ok:
         if reason == "protected":
             raise HTTPException(status_code=403, detail="The bootstrap admin account cannot be deleted")
@@ -810,7 +816,7 @@ class UpdateSessionPolicyResponse(BaseModel):
 async def get_my_session_policy(request: Request):
     """Return the caller's session policy (login-pass lifetime + auto-renew)."""
     username, _user_id = _require_auth(request)
-    user = get_user(username)
+    user = await get_user(username)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return SessionPolicyResponse(
@@ -829,11 +835,11 @@ async def put_my_session_policy(request: Request, body: UpdateSessionPolicyReque
     when off the ticket is cleared (the session simply ends at the lifetime).
     """
     username, _user_id = _require_auth(request)
-    user = get_user(username)
+    user = await get_user(username)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    updated = set_session_policy(
+    updated = await set_session_policy(
         username,
         clamp_session_lifetime(body.lifetime_minutes),
         bool(body.auto_renew),
@@ -847,9 +853,9 @@ async def put_my_session_policy(request: Request, body: UpdateSessionPolicyReque
     )
     remember = ""
     if updated.auto_renew:
-        remember = set_remember_token(username) or ""
+        remember = await set_remember_token(username) or ""
     else:
-        clear_remember_token(username)
+        await clear_remember_token(username)
     return UpdateSessionPolicyResponse(
         lifetime_minutes=updated.session_lifetime_minutes,
         auto_renew=updated.auto_renew,

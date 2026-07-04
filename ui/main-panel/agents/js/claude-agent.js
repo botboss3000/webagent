@@ -591,17 +591,21 @@ function _modeRow(list, { value, onSave, onChange }) {
 // One option row carrying the Remote Control default-device <select>. Mirrors
 // _modeRow's chrome (label + .ac-config-control + save overlay) but populates from
 // the shared device fleet (window.DevicePicker — the SAME list the chat pill uses)
-// and saves metadata.default_target_device. Empty value = "This device" (run this
-// agent's chats locally). Because the target-device hand-off happens ABOVE the
-// engine — the whole turn is shipped to the chosen device and ITS local `claude`
-// runs it — a Claude agent gets the same Remote Control default as a normal one.
-// This mirrors the normal Config tab's "Target device" section (tab-config.js).
-// The fleet loads async: we paint "This device" (+ any saved-but-offline value)
-// first, then fill in the rest.
+// and saves metadata.default_target_device.
+//   • "None" (the DEFAULT, blank '') = no pin — each chat runs on whichever device
+//     is messaging the agent (it roams to wherever you are).
+//   • "This device" pins the current machine's own fleet id (so the choice reads as
+//     *this* device from any other one, not a relative '' each device saw as itself).
+//   • any other device pins that device by its concrete id.
+// Because the target-device hand-off happens ABOVE the engine — the whole turn is
+// shipped to the chosen device and ITS local `claude` runs it — a Claude agent gets
+// the same Remote Control default as a normal one. Mirrors the normal Config tab's
+// "Target device" section (tab-config.js). The fleet loads async: we paint "None"
+// (+ any saved-but-offline value) first, then fill in the rest.
 function _deviceRow(list, { value, onSave }) {
-  const HINT_LOCAL  = 'New chats run on this machine by default. You can still pick another per chat.';
+  const HINT_NONE   = 'By default a chat runs on whichever device is messaging the agent. Pick a machine to always run there.';
   const HINT_REMOTE = "New chats run on the chosen machine — its OWN Claude (login, files) does the work. "
-    + "If it’s offline they fall back to this device; you can still pick another per chat.";
+    + "If it’s offline they fall back to the messaging device; you can still pick another per chat.";
   const row = document.createElement('div'); row.className = 'ac-ability-row';
   const lab = document.createElement('span'); lab.className = 'ac-ability-label';
   const nameEl = document.createElement('span'); nameEl.className = 'ac-ability-name'; nameEl.textContent = 'Target device';
@@ -616,31 +620,61 @@ function _deviceRow(list, { value, onSave }) {
   let confirmed = (typeof value === 'string') ? value : '';
   let loaded = null;  // last fleet list, so a re-render after save keeps it
 
-  // Rebuild the option list. `null` devices = pre-load paint (This device + any
-  // saved value only). Keeps a saved-but-offline device as an option so the choice
-  // still shows.
+  // Rebuild the option list. `null` devices = pre-load paint (None + any saved value
+  // only). Keeps a saved-but-offline device as an option so the choice still shows.
   const _rebuild = (devices) => {
     if (Array.isArray(devices)) loaded = devices;
-    const others = (Array.isArray(loaded) ? loaded : []).filter(d => d && !d.is_self);
+    const all = Array.isArray(loaded) ? loaded : [];
+    const selfDev = all.find(d => d && d.is_self);
+    const selfId = (selfDev && selfDev.instance_id)
+      || ((window.DevicePicker && window.DevicePicker.selfId && window.DevicePicker.selfId()) || '');
+    const others = all.filter(d => d && !d.is_self);
     const val = confirmed;
+    const isNone = !val;                         // blank/absent = roam to messenger
+    const isSelf = !!selfId && val === selfId;   // pinned to THIS machine
+    // Claude-readiness: a device can only run a Claude agent if it has the `claude`
+    // CLI installed (reported in its presence capabilities). Flag any that can't so
+    // a target is caught BEFORE you send, not just by the runtime notice. Unknown =
+    // treat as ready (older server / not yet loaded) so we never cry wolf.
+    const ready = (d) => (window.DevicePicker && window.DevicePicker.claudeReady)
+      ? window.DevicePicker.claudeReady(d) : true;
+    const NO_CLAUDE = ' — no Claude';
     sel.innerHTML = '';
     const mk = (v, t, selected) => {
       const o = document.createElement('option'); o.value = v; o.textContent = t;
       if (selected) o.selected = true; sel.appendChild(o);
     };
-    mk('', 'This device', !val);
-    const seen = new Set(['']);
+    // Default: no pin — the agent runs on whichever device is messaging it.
+    mk('', 'None — runs on the messaging device', isNone);
+    // "This device" pins the current machine's real fleet id; only offered once the
+    // fleet has loaded (before that selfId is unknown). Name shown in parens.
+    if (selfId) {
+      const selfName = selfDev ? String(selfDev.label || '').trim() : '';
+      const base = selfName ? ('This device (' + selfName + ')') : 'This device';
+      mk(selfId, base + (selfDev && !ready(selfDev) ? NO_CLAUDE : ''), isSelf);
+    }
+    const seen = new Set(['', selfId]);
     others.forEach(d => {
-      mk(d.instance_id, (d.label || d.instance_id) + (d.online ? '' : ' (offline)'), d.instance_id === val);
+      const suffix = (d.online ? '' : ' (offline)') + (ready(d) ? '' : NO_CLAUDE);
+      mk(d.instance_id, (d.label || d.instance_id) + suffix, d.instance_id === val);
       seen.add(d.instance_id);
     });
     if (val && !seen.has(val)) {
       const lbl = (window.DevicePicker && window.DevicePicker.labelFor) ? window.DevicePicker.labelFor(val) : val;
       mk(val, (lbl && lbl !== val ? lbl : val) + ' (offline)', true);
     }
-    descEl.textContent = (!others.length && !val)
-      ? 'No other devices in your fleet yet — chats run on this machine. A target must have Claude signed in and its server running.'
-      : (val ? HINT_REMOTE : HINT_LOCAL);
+    // Warn loudly when the PINNED target is known and can't run Claude — chats sent
+    // there will fail until Claude Code is installed on it.
+    const pinnedDev = isNone ? null : (isSelf ? selfDev : others.find(d => d.instance_id === val));
+    const warnNoClaude = !!(pinnedDev && !ready(pinnedDev));
+    descEl.classList.toggle('ac-desc-warn', warnNoClaude);
+    descEl.textContent = warnNoClaude
+      ? 'Claude isn’t installed on the pinned device — chats sent there will fail until Claude Code is installed on it. Install it there, or pick another device.'
+      : (isNone
+          ? HINT_NONE
+          : (!others.length
+              ? 'Pinned to this machine — chats run here. A remote target must have Claude signed in and its server running.'
+              : HINT_REMOTE));
   };
   _rebuild(null);
   try {

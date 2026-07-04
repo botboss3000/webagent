@@ -17,7 +17,7 @@ export async function _renderMembersTab(body, agent) {
     body.innerHTML = '<div style="padding:20px;color:var(--fg-3);font-size:13px;text-align:center;">Save this agent first to manage members.</div>';
     return;
   }
-  body.innerHTML = '<div class="members-loading">Loading members\u2026</div>';
+  body.innerHTML = _membersSkeleton();
 
   let admins = [], members = [], userMode = agent.user_mode || 'anonymous';
   try {
@@ -119,4 +119,24 @@ function _buildMembersSection(agent, title, rows, kind, panelBody) {
     });
   }
   sec.appendChild(table); return sec;
+}
+
+// Loading skeleton — echoes the access-policy card + two member sections so the
+// tab has structure while the /members fetch resolves (shared .sk-shimmer in app3.css).
+function _membersSkeleton() {
+  const dot = '<span class="mem-sk sk-shimmer" style="width:14px;height:14px;border-radius:50%;flex:none;"></span>';
+  const opt = (w) => `<div class="mem-sk-opt">${dot}<span class="mem-sk sk-shimmer" style="width:${w};"></span></div>`;
+  const row = (w) => `<div class="mem-sk-row"><span class="mem-sk sk-shimmer" style="width:${w};"></span></div>`;
+  const section = (titleW, rows) => `<div class="mem-sk-section">
+      <span class="mem-sk sk-shimmer mem-sk-head" style="width:${titleW};"></span>
+      ${rows.map(row).join('')}
+    </div>`;
+  return `<div class="members-skeleton" aria-hidden="true">
+    <div class="mem-sk-policy">
+      <span class="mem-sk sk-shimmer mem-sk-head" style="width:90px;"></span>
+      ${opt('62%')}${opt('54%')}${opt('68%')}
+    </div>
+    ${section('64px', ['78%', '66%'])}
+    ${section('82px', ['84%', '70%', '58%'])}
+  </div>`;
 }

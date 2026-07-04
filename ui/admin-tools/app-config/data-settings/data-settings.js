@@ -26,7 +26,8 @@ import { initStickyNav } from '../sticky-nav.js';
 import { createPageAssistant } from '../page-assistant.js';
 import { spawnWebagentPageChat } from '../../../chat-widget/js/chat-widget.js';
 import { initDeploy } from './deploy.js';
-import { initDns } from './dns.js';
+// initDns moved with the domain card to the Instances page's New Deployment tab
+// (ui/admin-tools/instances/new-deployment/new-deployment.js). Not used here now.
 import { initAppAccess } from './app-access.js';
 import { initSocialAuth } from './social-auth.js';
 import { initDangerZone } from './danger-zone.js';
@@ -81,10 +82,16 @@ function _wireBootRow(rowId) {
 // The exclusion list matches Data Management, including `.ac-tri`: the Encryption
 // and Hybrid rows carry their toggle IN the header, so a click on it must run its
 // own storage.js handler, never collapse the row.
+//   Note: we walk ALL `.ac-row`s in the card, not just direct `.ac-list` children,
+//   so the two rows now nested inside the "User Data" group (#ac-row-userdata →
+//   GenUI Storage + Chat Attachments) get their own expand handler too. Each row's
+//   handler binds to its OWN `:scope > .ac-ability-row` head (the group head for
+//   the group row, each member's head for the members), so a click on a nested
+//   member never bubbles to the group head, and vice-versa.
 function _wireDatabaseRows() {
   const card = _qs('ac-database-card');
   if (!card) return;
-  for (const row of card.querySelectorAll('.ac-list > .ac-row')) {
+  for (const row of card.querySelectorAll('.ac-row')) {
     const head = row.querySelector(':scope > .ac-ability-row');
     if (!head || head.dataset.rowWired) continue;
     head.dataset.rowWired = '1';
@@ -96,29 +103,23 @@ function _wireDatabaseRows() {
 }
 
 export function init() {
-  // Deployment card — expandable rows. The local-deployments list (built by
-  // deploy.js), then a "+ New deployment" group that opens to reveal TWO bars: the
-  // shared Repo-details row and the Deploy-target row (its dropdown reveals the
-  // per-target panels — cloud / local checkout / Linux / Windows / Mac). Their body
-  // ids are owned by deploy.js (initDeploy below wires the buttons, the fetch, each
-  // panel's live command/QR, the target-panel switch + the Current-deployment bar).
-  _wireBootRow('ac-deploy-new-row');
-  _wireBootRow('ac-deploy-repo-row');
-  // The two setup-bundle rows (Export / Import) — their Verify/Copy/Accept
-  // actions are wired inside initDeploy (_initBootRows); only the head-expand is
-  // wired here, exactly like the sibling rows above.
-  _wireBootRow('ac-deploy-export-row');
-  _wireBootRow('ac-deploy-import-row');
-  // NB: ac-deploy-target-row is NOT wired here — its in-header dropdown drives the
-  // row's expand/collapse (deploy.js _syncTargetPanel), not a header click.
+  // The DEPLOYMENT card was REMOVED from this page. Its local-deployments list —
+  // this app's hold-to-restart + port editor, plus any sibling checkouts on this
+  // machine — MOVED to the Admin Tools → Instances page, into the "This device"
+  // tile's Overview as a "Server" section (ui/admin-tools/instances/instances.js).
+  // The "+ New deployment" flow had already moved to that page's "New instance"
+  // tile. So deploy.js's repo/target/instances elements are all absent here now.
+  //
+  // initDeploy() is STILL called — but ONLY for the Export / Import setup-bundle
+  // rows, which live in the DATABASE card's "Data Migration" row: initDeploy's
+  // _initBootRows wires their Generate/Copy/Preview/Accept actions by id. Every
+  // other element it looks for (cloud form, deploy target, #ac-deploy-instances)
+  // is absent on this page, so its `?.` guards make those a no-op (and _loadInstances
+  // returns early with no #ac-deploy-instances host). The boot rows' head-expand is
+  // handled by _wireDatabaseRows() below (it walks every `.ac-row` in
+  // #ac-database-card, incl. these nested ones) — NOT wired here, or the two
+  // handlers would cancel each other out.
   initDeploy();
-  // Domains card — connect a domain you own to a server you deployed. Sibling of
-  // Deployment: picks a DNS provider (Cloudflare/Namecheap/… drop-ins), connects,
-  // lists your domains, and points one at a server's IP (streamed) then verifies
-  // it resolves. Owns its own /admin/dns/* fetch; sets window.__refreshDns (called
-  // on section-show in nav.js). The main row's head-expand is wired below. See ./dns.js.
-  _wireBootRow('ac-dns-main-row');
-  initDns();
   // App Access card — the access-mode radios (moved out of the Users page). Owns
   // its own /admin/settings/app load + auto-save; sets window.__refreshAppAccess
   // (called on section-show in nav.js). See ./app-access.js.
@@ -154,12 +155,15 @@ export function init() {
   _initPageAssistant();
   // Sticky section navigator (shared — see ../sticky-nav.js). Re-measure each time
   // this section is shown (hidden at init() → everything measures 0).
-  initStickyNav('data-settings');
-  registerSectionHook('data-settings', () => initStickyNav('data-settings'));
+  // mobileCarousel: on a phone this section shows a horizontal heading-chip strip
+  // sub-header instead of the stacked sticky headings (see ../sticky-nav.js).
+  initStickyNav('data-settings', { mobileCarousel: true });
+  registerSectionHook('data-settings', () => initStickyNav('data-settings', { mobileCarousel: true }));
 }
 
 export function load() {
-  // The Deployment content loads itself: initDeploy() paints the local-deployments
-  // list straight away and sets window.__refreshDeploy, which nav.js calls on
-  // section-show for a fresh catalog. Nothing else to load here yet.
+  // Nothing to load here yet. initDeploy() (in init above) sets window.__refreshDeploy,
+  // which nav.js calls on section-show for a fresh deploy catalog — now only relevant
+  // to the Export/Import setup-bundle bars, since the local-deployments list moved to
+  // the Instances page's "This device" tile.
 }

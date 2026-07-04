@@ -2135,24 +2135,21 @@ body.light-mode .ac-model-badge {
 
 /* ── Spinning loader for the models panel ── */
 @keyframes ac-spin { to { transform: rotate(360deg); } }
-.ac-model-loader {
+/* The + (add-a-model) button shows a spinner IN PLACE OF its glyph while the
+   provider's available-model list loads — that fetch is the one genuinely slow
+   part of the panel (it powers the "Search models…" box), so its indicator sits
+   right on the control that opens the add-a-model form. */
+.ac-model-add-spinner {
   display: none;
-  align-items: center;
-  justify-content: center;
-  padding: 32px 0;
-  gap: 10px;
-  color: var(--fg-3);
-  font-size: 13px;
-}
-.ac-model-loader.show { display: flex; }
-.ac-model-loader .ac-spinner {
-  width: 20px;
-  height: 20px;
-  border: 2.5px solid var(--border);
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--border);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: ac-spin 0.7s linear infinite;
 }
+.ac-model-add-toggle.loading > svg { display: none; }
+.ac-model-add-toggle.loading > .ac-model-add-spinner { display: block; }
 
 /* ── Light mode overrides ── */
 body.light-mode #app-config-header { background: transparent; }
@@ -2543,6 +2540,17 @@ body.light-mode .files-restricted-card { background: var(--bg-elev) !important; 
   -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+/* Claude target-device readiness warning (claude-agent.js `_deviceRow`): the pinned
+   device can't run a Claude agent (no `claude` CLI). Coloured with the theme-aware
+   --warning token (reads in both themes) and un-clamped so the full notice shows —
+   the base desc clamps to one line, which would truncate this. */
+.ac-ability-desc.ac-desc-warn {
+  color: var(--warning);
+  font-weight: 500;
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
 }
 /* Icon-less rows (e.g. the config / settings rows built by dom-utils) put the
    description flush under the title, since there's no icon column to clear. */
@@ -3408,6 +3416,11 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
 .ac-ra-icon-btn:hover { color: var(--accent); border-color: var(--accent); opacity: 1; }
 .ac-ra-icon-btn .lucide-icon,
 .ac-ra-icon-btn svg { width: 15px; height: 15px; }
+/* Clone-current-repo (Repo-to-deploy header) busy state — dim + gently spin the
+   icon while it reads the current repo. See deploy.js _cloneCurrentRepo. */
+.ac-deploy-repo-clone-busy { opacity: 0.55; pointer-events: none; }
+.ac-deploy-repo-clone-busy svg { animation: ac-deploy-spin 0.8s linear infinite; }
+@keyframes ac-deploy-spin { to { transform: rotate(360deg); } }
 /* Primary icon button (Start) — accent-filled to stand out from the rest. */
 .ac-ra-icon-btn-primary {
   background: var(--accent);
@@ -3803,6 +3816,18 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
 }
 .ac-field-link:hover { text-decoration: underline; }
 
+/* Inline "how to get this" help under a form field — the field's `tip` spelled
+   out visibly (not behind the hover ⓘ badge) while a provider is being set up.
+   Used by dns.js `_buildField(..., showTip=true)`; collapses back to the badge
+   once the provider is connected. Muted, small, its own line under the input. */
+.ac-field-help {
+  margin-top: 5px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--fg-3);
+  word-break: break-word;
+}
+
 /* Rich help bubble — carries a paragraph, an optional (project-ID-driven) link,
    and screenshot thumbnails, not just one line of text. Made clickable (the plain
    bubble is pointer-events:none) so the link inside can be followed. */
@@ -4118,11 +4143,12 @@ body.light-mode .ac-category-desc {
   color: var(--fg-3);
 }
 
-/* ── MOBILE sub-header tab strip (Agent Settings) ───────────────────────────
+/* ── MOBILE sub-header tab strip (Data / App / Agent Settings) ──────────────
    Opt-in via initStickyNav(id,{mobileCarousel}) — JS in
    ui/admin-tools/app-config/sticky-nav.js (`_buildCarousel`/`_syncMode`). On a
-   mobile-width viewport the opted-in section (today: Agent Settings) swaps its
-   STACKED sticky headings for a horizontal, swipeable strip of its section
+   mobile-width viewport an opted-in section (Data Settings, App Settings, Agent
+   Settings) swaps its STACKED sticky headings for a horizontal, swipeable strip
+   of its section
    headings. That strip is a GENUINE SUB-HEADER: `_buildCarousel` inserts the
    `.ac-mnav` into #app-config-subnav — a sibling directly beneath
    #app-config-tabs-wrap and OUTSIDE the content scroller — so it spans the full
@@ -4135,15 +4161,26 @@ body.light-mode .ac-category-desc {
    from the DOM there and the host is hidden. */
 
 /* The sub-header host: hidden on desktop / on any tab without a carousel. Shown
-   only on mobile while Agent Settings is the active section (and once its strip is
-   built, so an empty host adds no border). */
+   only on mobile while a carousel-enabled section (Data / App / Agent Settings) is
+   active (and once its strip is built, so an empty host adds no border). */
 #app-config-subnav { display: none; }
 .ac-mnav { display: block; }
 
 @media (max-width: 800px) {
+  #app-config-container:has(#ac-section-data-settings.active) #app-config-subnav:not(:empty),
+  #app-config-container:has(#ac-section-app-settings.active) #app-config-subnav:not(:empty),
   #app-config-container:has(#ac-section-agent-settings.active) #app-config-subnav:not(:empty) {
     display: block;
     flex-shrink: 0;                   /* a fixed header row in the flex column, never squeezed */
+  }
+  /* Each opted-in section parks its OWN strip in the shared host (tagged with
+     data-section), and a strip built earlier stays parked when you switch tabs —
+     so show only the strip whose section is currently active, hide the rest. */
+  #app-config-subnav > .ac-mnav { display: none; }
+  #app-config-container:has(#ac-section-data-settings.active) #app-config-subnav > .ac-mnav[data-section="data-settings"],
+  #app-config-container:has(#ac-section-app-settings.active) #app-config-subnav > .ac-mnav[data-section="app-settings"],
+  #app-config-container:has(#ac-section-agent-settings.active) #app-config-subnav > .ac-mnav[data-section="agent-settings"] {
+    display: block;
   }
   /* Un-stack the in-flow headings for a carousel section so they scroll naturally
      instead of pinning top/bottom. Higher specificity than the base
@@ -4890,3 +4927,40 @@ body.light-mode .ac-main-panel-item .ac-mp-name-input:focus {
 /* The select inside a theme row (e.g. the in-body Background select) sizes itself;
    cap it so the row breathes. */
 .ac-theme-row .ac-input { max-width: 190px; width: 100%; }
+
+/* ── Skeleton loading placeholders (shared) ─────────────────────────────────
+   Phantom "shimmer" shapes shown while a page's data loads, so the layout has
+   form from the first paint instead of a blank area or a lone spinner. Lives in
+   this globally-loaded sheet so EVERY page (including fragment-loaded pages with
+   no sheet of their own) can compose skeletons from the same primitives.
+
+   Usage: give an element `sk-shimmer` for the animated fill, plus a shape helper
+   (`sk-line` for a text row, `sk-block` for a rounded panel, `sk-circle` for an
+   avatar/icon). Size via inline style or a page-local class. Theme-aware — the
+   gradient is built from design-system elevation vars, so it works in dark and
+   light with no per-page colours.
+
+   The Agents page (ui/main-panel/agents/agents.css) was the original home of
+   `.sk-shimmer`; its `.agent-skeleton .sk-icon/.sk-lines/.sk-line` LAYOUT stays
+   page-local, but the shimmer paint + keyframe were promoted HERE. */
+.sk-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--bg-elev) 25%,
+    var(--bg-elev-2) 37%,
+    var(--bg-elev) 63%
+  );
+  background-size: 400% 100%;
+  animation: skShimmer 1.4s ease-in-out infinite;
+}
+@keyframes skShimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: 0 0; }
+}
+/* Generic shape helpers — combine with `sk-shimmer`. */
+.sk-line   { height: 11px; border-radius: 6px; }
+.sk-block  { border-radius: 8px; }
+.sk-circle { border-radius: 50%; }
+@media (prefers-reduced-motion: reduce) {
+  .sk-shimmer { animation: none; }
+}

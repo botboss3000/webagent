@@ -9,7 +9,8 @@
       "new_session_bubble": "New session. Start typing below.",
       "switched_agent_bubble": "Switched agent. New session started.",
       "pill_placeholder": "Chat with the agent",
-      "pill_locked_placeholder": "Sign in to chat — this app does not allow anonymous use."
+      "pill_locked_placeholder": "Sign in to chat — this app does not allow anonymous use.",
+      "session_deleted_notice": "Session not found — it was deleted."
     }
   },
   "page_assistants": {

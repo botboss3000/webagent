@@ -739,6 +739,68 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
     async def _cookie_allowlist(**kw):
         return await cookie_allowlist_tool(_uid, **kw)
 
+    async def _browser_popup_wrapper(
+        mode: str = "open",
+        url: Optional[str] = None,
+        title: Optional[str] = None,
+        browser_session_id: Optional[str] = None,
+    ) -> str:
+        """Show the user a web page in a floating in-app browser window (or close it).
+
+        Use this to hand a page to the USER to look at or interact with — "have a
+        look at this", "check this site", "confirm this looks right" — rather than
+        just reading it yourself. mode='open' pops a small draggable browser window
+        on their screen showing `url`; mode='close' dismisses it. The page renders
+        through the in-app browser proxy (the same Playwright-backed view as the
+        Browser page), so sites that refuse plain <iframe> embedding still display.
+        The user can always close the window themselves. Requires a live chat
+        session on screen (not available on background / event-triggered runs).
+        """
+        m = (mode or "open").lower()
+        if not session_id:
+            return ("Can't show a browser popup: this run has no live UI session "
+                    "attached (it may be a background or event-triggered run).")
+
+        if m == "close":
+            event = {"type": "ui_command", "action": "browser_popup", "mode": "close"}
+            try:
+                from app.api.chat import _emit_to_visualizers
+                await _emit_to_visualizers(session_id, event, user_id=user_id)
+            except Exception as e:  # noqa: BLE001 — reaching the screen is best-effort
+                return f"Couldn't reach the user's screen to close the popup: {e}"
+            return "Closed the browser popup on the user's screen."
+
+        # mode == "open"
+        if not url:
+            return "Provide a url to show in the popup (for mode='open')."
+        # Light scheme fix so the header's "open in a real tab" link is absolute;
+        # the proxy itself normalises whatever it receives.
+        target = url.strip()
+        if target and not re.match(r"^[a-z][a-z0-9+.-]*://", target, re.IGNORECASE):
+            if " " not in target and "." in target.split("/", 1)[0]:
+                target = "https://" + target
+
+        try:
+            bs_id = _resolve_browser_session(user_id, agent_id or "", browser_session_id)
+        except PermissionError as _pe:
+            return f"Can't open the browser popup: {_pe}"
+
+        event = {
+            "type": "ui_command",
+            "action": "browser_popup",
+            "mode": "open",
+            "url": target,
+            "title": title or "",
+            "bs_id": bs_id,
+        }
+        try:
+            from app.api.chat import _emit_to_visualizers
+            await _emit_to_visualizers(session_id, event, user_id=user_id)
+        except Exception as e:  # noqa: BLE001
+            return f"Couldn't reach the user's screen to open the popup: {e}"
+        return (f"Opened a browser popup on the user's screen showing {target}. "
+                "They can look at it and close it when done (or ask me to close it).")
+
     return {
         "browser_action": _browser_action_wrapper,
         "browser_backend": _browser_backend_wrapper,
@@ -748,6 +810,7 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         "web_session_graphql": _session_graphql,
         "vault_login": _vault_login_wrapper,
         "cookie_allowlist": _cookie_allowlist,
+        "browser_popup": _browser_popup_wrapper,
     }
 
 
@@ -893,6 +956,24 @@ TOOL_SCHEMAS = {
                         "description": "list = show kept sites; add/remove = manage them."},
             "domain": {"type": "string", "default": "",
                         "description": "Site to keep/forget cookies for, e.g. 'example.com' (for add/remove)."},
+        },
+        "required": [],
+    },
+    "browser_popup": {
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string", "enum": ["open", "close"], "default": "open",
+                      "description": "'open' shows a floating browser window on the user's screen at `url`; "
+                                     "'close' dismisses it."},
+            "url": {"type": "string",
+                     "description": "The page to show the user (required for mode='open'). Rendered through the "
+                                    "in-app browser proxy, so sites that block plain embedding still display."},
+            "title": {"type": "string",
+                       "description": "Optional short header label for the popup (e.g. the site name or what "
+                                      "you want them to check)."},
+            "browser_session_id": {"type": "string",
+                                    "description": "Optional browser tab to render through. Omit to use the "
+                                                   "agent's own shared tab."},
         },
         "required": [],
     },

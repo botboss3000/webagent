@@ -99,7 +99,7 @@ class WindowsProvider(BaseDeployProvider):
     # ── command generation (the single source of truth) ──
     def build_command(self, github_url: str, visibility: str = "public",
                       token: str = "", branch: str = "", install_dir: str = "",
-                      admin_password: str = "") -> Dict[str, Any]:
+                      admin_password: str = "", bootstrap_code: str = "") -> Dict[str, Any]:
         """Build everything the Windows row needs. ALWAYS succeeds (never
         ``{ok: False}``) — see ``manual_common.resolve_clone`` for why. Returns
         ``{ok, command, run_command, clone_display, steps, instructions,
@@ -110,7 +110,10 @@ class WindowsProvider(BaseDeployProvider):
         # Optional pre-set admin password → an env assignment before the setup script
         # (PowerShell); empty when blank. BYTE-IDENTICAL to deploy.js `_buildWindows`.
         a = mc.resolve_admin(admin_password)
-        admin_ps = ("$env:WA_ADMIN_PW='" + a["password"] + "'; ") if a["prewire"] else ""
+        # __ADMIN__ carries the pre-set admin password AND, when configuration is
+        # embedded, the locked WA_BOOTSTRAP_CODE that windows-setup.ps1 writes to
+        # bootstrap.json. Byte-identical to deploy.js `_buildWindows` in the bare case.
+        admin_ps = mc.env_prefix_windows(a, bootstrap_code)
         command = (_TEMPLATE.replace("__CLONE__", r["clone_url"])
                    .replace("__BRANCH__", branch).replace("__DIR__", directory)
                    .replace("__ADMIN__", admin_ps))

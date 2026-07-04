@@ -329,11 +329,36 @@ function _populateFilter() {
   sel.innerHTML = html;
 }
 
+// Fill the table body with phantom "shimmer" rows matching the column layout,
+// so the first paint has the table's shape instead of a lone centered spinner.
+// Uses the shared skeleton primitives (sk-shimmer in app3.css).
+function _renderSkeletonRows(count = 8) {
+  const tbody = _qs('automations-table-body');
+  const empty = _qs('automations-empty');
+  const loading = _qs('automations-loading');
+  if (!tbody) return;
+  if (empty) empty.style.display = 'none';
+  if (loading) loading.style.display = 'none';   // skeleton rows replace the spinner
+  const cell = (w) => `<td><span class="auto-sk sk-shimmer" style="width:${w};"></span></td>`;
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    html += `<tr class="auto-skeleton-row" aria-hidden="true">
+      <td class="col-check"></td>
+      ${cell('70%')}${cell('85%')}${cell('46px')}${cell('50%')}${cell('60%')}${cell('55%')}${cell('55%')}${cell('55%')}${cell('30px')}${cell('60%')}${cell('34px')}
+    </tr>`;
+  }
+  tbody.innerHTML = html;
+}
+
 // ── Data loading ───────────────────────────────────────────────────
 
 async function _loadAndRender() {
   const loading = _qs('automations-loading');
-  if (loading) loading.style.display = 'flex';
+  // First load (no data yet) shows skeleton rows; a background auto-refresh
+  // (data already present) refreshes in place so it doesn't flash to skeletons.
+  const firstLoad = !_agentsData.length && !_webhooksData.length && !_clonesData.length;
+  if (firstLoad) _renderSkeletonRows();
+  else if (loading) loading.style.display = 'flex';
 
   const data = await _fetchDashboard();
   if (!data) {

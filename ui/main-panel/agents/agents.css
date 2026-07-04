@@ -180,6 +180,19 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Single source of truth for the page's side inset — the one edge margin from
+     the panel edge to content. Feeds the squares grid, the carousel row, the
+     carousel chevrons AND the opened-agent detail region, so they all share the
+     exact same margin and can never drift apart (same approach as App Settings'
+     --ac-content-inset). Narrowed to 10px on mobile via the @media override
+     directly below. */
+  --agents-content-inset: 20px;
+}
+/* Mobile / narrow screens: halve the side inset (20px → 10px) so content gets
+   back ~20px of width on small viewports. One override drives every side margin
+   on the page. 800px matches the app-wide mobile breakpoint. */
+@media (max-width: 800px) {
+  #agents-grid { --agents-content-inset: 10px; }
 }
 #agents-grid.carousel {
   overflow-y: auto;
@@ -213,7 +226,7 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
   gap: 12px;
   /* Bottom padding was 120px to clear the old floating footer pill (now removed);
      a normal gutter is enough. */
-  padding: 16px 20px 24px;
+  padding: 16px var(--agents-content-inset) 24px;
   scrollbar-width: thin;
   scrollbar-color: var(--bg-tint) transparent;
 }
@@ -233,7 +246,7 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
      9+3 = 12 bottom) so the card sits in the same place as before, but the
      scroller gets 3px of internal room for the activated card's 2px glow ring
      (overflow-y: hidden would otherwise clip the ring's top/bottom edges). */
-  padding: 13px 20px 9px;
+  padding: 13px var(--agents-content-inset) 9px;
 }
 #agents-grid.carousel .agents-squares {
   flex: 1 1 auto;
@@ -275,8 +288,8 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
 .agents-carousel-chev:hover { color: var(--fg-1); }
 /* Sit just inside the card's vertical borders (the wrap's 20px padding edge),
    never past them. */
-.agents-carousel-chev.left  { left: 20px; }
-.agents-carousel-chev.right { right: 20px; }
+.agents-carousel-chev.left  { left: var(--agents-content-inset); }
+.agents-carousel-chev.right { right: var(--agents-content-inset); }
 #agents-grid.carousel .agents-squares-wrap.can-scroll-left  .agents-carousel-chev.left  { display: flex; }
 #agents-grid.carousel .agents-squares-wrap.can-scroll-right .agents-carousel-chev.right { display: flex; }
 
@@ -303,7 +316,7 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
   display: block;
   flex: 0 0 auto;
   /* Bottom padding was 120px to clear the old floating footer pill (now removed). */
-  padding: 0 20px 32px;
+  padding: 0 var(--agents-content-inset) 32px;
 }
 /* In this shared-scroll layout the card grows to its natural height instead of
    being a fixed 520px box with its own inner scroll — the outer #agents-grid
@@ -440,23 +453,9 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
 }
 .agent-skeleton .sk-line.long  { width: 70%; }
 .agent-skeleton .sk-line.short { width: 38%; }
-.sk-shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--bg-elev) 25%,
-    var(--bg-elev-2) 37%,
-    var(--bg-elev) 63%
-  );
-  background-size: 400% 100%;
-  animation: agentSkeletonShimmer 1.4s ease-in-out infinite;
-}
-@keyframes agentSkeletonShimmer {
-  0%   { background-position: 100% 0; }
-  100% { background-position: 0 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .sk-shimmer { animation: none; }
-}
+/* `.sk-shimmer` + its keyframe + reduced-motion now live in the globally-loaded
+   ui/shared/css/app3.css (shared skeleton primitives) so every page can reuse
+   them; only the agent-card LAYOUT above stays page-local. */
 
 /* ── Agent card ──
    Collapsed: square showing icon + name only.
@@ -488,10 +487,13 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
 }
 .agent-card.activated:hover { border-color: var(--brand); }
 .agent-card.active {
-  border-color: var(--brand);
-  /* Opaque, theme-following header band: a brand-tinted gradient sheen over the
-     solid panel surface (the var(--bg-1) base keeps it opaque; the gradient is
-     "dynamic" — it re-tints with the palette in both dark and light mode). */
+  /* FLAT REDESIGN: no card border or rounded frame — the open agent reads as
+     base content, not a boxed card. Kept opaque (needed so the sticky header
+     hides content scrolling beneath it) via a brand-tinted gradient sheen over
+     the solid panel surface (the var(--bg-1) base keeps it opaque; the gradient
+     re-tints with the palette in both dark and light mode). */
+  border: none;
+  border-radius: 0;
   background:
     linear-gradient(135deg,
       rgba(var(--brand-rgb), 0.16) 0%,
@@ -502,6 +504,9 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
   justify-content: flex-start;
   text-align: left;
   gap: 10px;
+  /* Horizontal padding 0 so the icon/name/tabs align to the same single edge
+     margin (the detail-region's 20px side padding) as the body content below. */
+  padding: 14px 0;
   height: auto;
   width: auto;
 }
@@ -680,11 +685,14 @@ body.light-mode .agent-card-desc { color: var(--fg-2); }
 .agent-card-tabs-wrap {
   position: relative;
   min-width: 0;
-  margin: 4px -10px -14px;
+  /* Header horizontal padding is now 0 (flat redesign), so the strip needs no
+     negative side margins to span the header width — only the -14px bottom to
+     cancel the header's bottom padding and sit flush on the header's edge. */
+  margin: 4px 0 -14px;
   border-top: var(--border-width) solid var(--border-soft);
   overflow: hidden;
-  border-bottom-left-radius: 9px;
-  border-bottom-right-radius: 9px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 /* When a detail panel follows, the card's bottom corners are squared off, so
    square the strip to match. */
@@ -898,14 +906,18 @@ body.light-mode .agent-card-close-btn:hover { background: var(--bg-tint); color:
 body.light-mode .agent-card-chat-btn { color: var(--fg-3); }
 body.light-mode .agent-card-chat-btn:hover { background: rgba(var(--brand-rgb), 0.10); color: var(--brand); }
 
-/* ── Per-row inline expand panel ── */
+/* ── Per-row inline expand panel ──
+   FLAT REDESIGN: the open agent is NOT a bordered card floating on the page —
+   it's the base content of the panel. So no visible box border, no boxed
+   background, no rounded card frame. The detail body sits directly on the page
+   background and its content aligns to the SAME single edge margin as the
+   header above it (the detail-region's 20px side padding). No nested second
+   margin. See .agent-detail-body (horizontal padding zeroed) and
+   .agent-card.active (border/radius stripped, horizontal padding zeroed). */
 .agent-detail-panel {
-  background: var(--bg-0);
-  /* Width is variable-driven so the global no-border setting (--border-width: 0
-     from app-settings.json) turns this accent outline off like every other
-     structural border; the accent colour stays as the card's emphasis hue. */
-  border: var(--border-width) solid var(--brand);
-  border-radius: 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   overflow: hidden;
   animation: agents-expand 0.18s ease;
 }
@@ -945,7 +957,10 @@ body.light-mode .agent-card-chat-btn:hover { background: rgba(var(--brand-rgb), 
   flex: 1;
   min-height: 0; /* required for overflow-y: auto to work inside a flex child */
   overflow-y: auto;
-  padding: 18px;
+  /* Horizontal padding is 0: the single edge margin is supplied by the
+     detail-region's 20px side padding, so content aligns to it directly with no
+     nested second margin. Only top/bottom padding remains for vertical rhythm. */
+  padding: 18px 0;
   scrollbar-width: thin;
   scrollbar-color: var(--bg-tint) transparent;
 }
@@ -1635,7 +1650,8 @@ body.light-mode .agent-card:hover     { background: var(--bg-elev); border-color
 body.light-mode .agent-card.active    { border-color: var(--brand); }
 body.light-mode .agent-card.activated { border-color: var(--brand); }
 body.light-mode .agent-row .agent-card.active { border-bottom-color: var(--border); }
-body.light-mode .agent-detail-panel   { background: var(--bg-1); border-color: var(--brand); }
+/* Flat redesign: no boxed surface/border in light mode either — sits on the page. */
+body.light-mode .agent-detail-panel   { background: transparent; }
 body.light-mode .agent-card-name      { color: var(--fg-1); }
 
 body.light-mode .agents-btn           { background: var(--bg-0); border-color: var(--border); color: var(--fg-1); }
@@ -2308,6 +2324,20 @@ body.light-mode .conn-google-account { background: var(--bg-1); border-color: va
   color: var(--fg-3);
   padding: 8px 12px;
 }
+/* ── Members loading skeleton — shape helpers only; shimmer fill from .sk-shimmer (app3.css) ── */
+.members-skeleton { padding: 4px 2px; }
+.mem-sk { display: block; height: 11px; border-radius: 6px; }
+.mem-sk-head { height: 12px; margin-bottom: 12px; }
+.mem-sk-policy {
+  padding: 12px 14px;
+  border: var(--border-width) solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+.mem-sk-opt { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+.mem-sk-section { margin-bottom: 18px; }
+.mem-sk-row { padding: 10px 0; border-bottom: var(--border-width) solid var(--border); }
+.mem-sk-row:last-child { border-bottom: none; }
 .members-notice {
   font-size: 11px;
   color: var(--fg-3);

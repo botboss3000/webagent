@@ -174,11 +174,11 @@ def decrypt_code_open(code: str) -> str:
 
 # ── Admin-password check (still used by _section_present / the boot-file path) ──
 
-def has_admin_password() -> bool:
+async def has_admin_password() -> bool:
     """True when an admin account exists at all (i.e. a password is set)."""
     try:
         from app.auth import users
-        return users.get_user_by_id(ADMIN_USER_ID) is not None
+        return await users.get_user_by_id(ADMIN_USER_ID) is not None
     except Exception:
         return False
 
@@ -187,7 +187,7 @@ def has_admin_password() -> bool:
 
 async def _gather_admin(password_plain: str) -> Optional[dict]:
     from app.auth import users
-    admin = users.get_user_by_id(ADMIN_USER_ID)
+    admin = await users.get_user_by_id(ADMIN_USER_ID)
     if admin is None:
         return None
     return {
@@ -207,6 +207,24 @@ async def _gather_llm() -> Optional[dict]:
         logger.warning("bootstrap: could not read LLM config: %s", e)
         return None
     return cfg if isinstance(cfg, dict) and cfg else None
+
+
+def _strip_llm_section_secrets(llm: dict) -> dict:
+    """Return the LLM section with every API key blanked, keeping the non-secret
+    provider / default model / saved-model roster.
+
+    Used by the deploy embed path (``config_embed``) when the new server will run
+    on THIS app's shared database + inline vault: there the keys already resolve
+    from shared infrastructure on boot, so re-shipping them in the bundle is
+    redundant. Reuses the SAME stripper the settings save path uses so the shape
+    stays identical. Fail-safe: if stripping can't complete, keep the working
+    keys — a redundant embed is harmless; a half-stripped one might not be."""
+    try:
+        from app.admin.settings import _strip_provider_secrets
+        return _strip_provider_secrets(llm)
+    except Exception as e:
+        logger.warning("bootstrap: could not strip LLM keys, keeping them: %s", e)
+        return llm
 
 
 async def _gather_database() -> Optional[dict]:
@@ -252,20 +270,29 @@ async def _gather_vault() -> Optional[dict]:
     return {"mode": mode, "config": st.get("config") or {}}
 
 
-async def gather_bundle(sections: List[str]) -> dict:
+async def gather_bundle(sections: List[str], *, strip_llm_secrets: bool = False) -> dict:
     """Assemble the requested sections into a bundle dict (pre-encryption).
 
-    Admin login is never gathered here — the real password can't be recovered
-    from its stored hash, and the Export/Import UI no longer asks the admin to
-    type it. (The ``admin`` section is still supported on the *apply* side, for
-    a hand-authored ``bootstrap.json`` used to provision a fresh headless
-    install — see ``apply_boot_file``.)
+    Admin login is NOT gathered here. The Export/Import UI can't recover a
+    plaintext password from a stored hash and no longer asks for it; the deploy
+    path doesn't need to carry the admin at all, because logins live in the shared
+    ``user_accounts`` table and so travel with the ``database`` section itself. (A
+    plaintext ``admin`` section is still honoured on the *apply* side for a
+    hand-authored ``bootstrap.json`` — see ``apply_boot_file``.)
+
+    ``strip_llm_secrets`` blanks the LLM API keys while keeping the rest of the
+    LLM section. The deploy embed path sets this when the new server will read the
+    keys from a shared database + inline vault anyway (see ``config_embed``); the
+    generic Export/Import path leaves it off so a code pasted into an unrelated
+    box still carries working keys.
     """
     out: Dict[str, Any] = {}
     wanted = set(sections or [])
     if SECTION_LLM in wanted:
         l = await _gather_llm()
         if l:
+            if strip_llm_secrets:
+                l = _strip_llm_section_secrets(l)
             out[SECTION_LLM] = l
     if SECTION_DATABASE in wanted:
         d = await _gather_database()
@@ -278,13 +305,35 @@ async def gather_bundle(sections: List[str]) -> dict:
     return {"v": BUNDLE_VERSION, "sections": out}
 
 
-async def export_code(sections: List[str]) -> str:
+async def export_code(sections: List[str], *, strip_llm_secrets: bool = False) -> str:
     """Gather the chosen sections and return a portable code. No password is
-    required — the export endpoint is already admin-only."""
-    bundle = await gather_bundle(sections)
+    required — the export endpoint is already admin-only.
+
+    ``strip_llm_secrets`` is forwarded to :func:`gather_bundle`; the deploy embed
+    path passes it when the LLM keys are already resolvable from shared infra."""
+    bundle = await gather_bundle(sections, strip_llm_secrets=strip_llm_secrets)
     if not bundle.get("sections"):
         raise BundleError("Nothing to share — none of the selected sections had any data.")
     return encrypt_code_open(json.dumps(bundle, separators=(",", ":")))
+
+
+async def export_locked_code(sections: List[str], password: str) -> str:
+    """Gather the chosen sections and return a PASSWORD-LOCKED ``WABOOT1`` code.
+
+    NOTE: the Deploy "Include this app's configuration" path no longer uses this —
+    it embeds a keyless ``WABOOT2`` code (:func:`export_code`) so it doesn't need
+    an admin password (see ``app/deploy/config_embed``). This helper is retained
+    only for producing a hand-authored, password-locked ``bootstrap.json`` for the
+    ``BOOTSTRAP_ADMIN_PASSWORD`` boot path (``apply_boot_file`` still decodes such a
+    file). Admin login is never part of the bundle; only the requested
+    llm/database/vault sections travel.
+    """
+    if not (password or "").strip():
+        raise BundleError("A password is required to lock the configuration bundle.")
+    bundle = await gather_bundle(sections)
+    if not bundle.get("sections"):
+        raise BundleError("None of the selected sections had any data to include.")
+    return encrypt_code(json.dumps(bundle, separators=(",", ":")), password)
 
 
 # ── Decode + preview ────────────────────────────────────────────────────────
@@ -340,13 +389,13 @@ async def preview(code: str, password: str = "") -> dict:
             "summary": _summarize_section(name, sections[name]),
             "present_now": await _section_present(name),
         })
-    return {"sections": rows, "initialized": _is_initialized()}
+    return {"sections": rows, "initialized": await _is_initialized()}
 
 
 async def _section_present(name: str) -> bool:
     """Does this install already have this section configured?"""
     if name == SECTION_ADMIN:
-        return has_admin_password()
+        return await has_admin_password()
     if name == SECTION_LLM:
         cfg = await _gather_llm()
         return bool(cfg and (cfg.get("api_key") or cfg.get("model")))
@@ -362,10 +411,10 @@ async def _section_present(name: str) -> bool:
     return False
 
 
-def _is_initialized() -> bool:
+async def _is_initialized() -> bool:
     try:
         from app.auth import users
-        return users.admin_exists()
+        return await users.admin_exists()
     except Exception:
         return False
 
@@ -373,21 +422,24 @@ def _is_initialized() -> bool:
 # ── Apply ───────────────────────────────────────────────────────────────────
 
 async def _apply_admin(data: dict, choice: str) -> str:
+    # Only reached for a hand-authored bootstrap.json that includes a plaintext
+    # ``admin`` section (the deploy path carries no admin — logins live in the
+    # shared user_accounts table, so a shared-DB box already has it).
     from app.auth import users
     username = data.get("username") or "admin"
     password = data.get("password") or ""
     display = data.get("display_name") or "Admin"
     if not password:
         return "skipped (no password in bundle)"
-    if not users.admin_exists():
-        users.register_user(username, password, display_name=display,
-                             is_approved=True, user_id=ADMIN_USER_ID)
+    if not await users.admin_exists():
+        await users.register_user(username, password, display_name=display,
+                                  is_approved=True, user_id=ADMIN_USER_ID)
         return f"created admin “{username}”"
     # Admin already exists.
     if choice == MERGE_OVERWRITE:
-        admin = users.get_user_by_id(ADMIN_USER_ID)
+        admin = await users.get_user_by_id(ADMIN_USER_ID)
         if admin:
-            users.change_password(admin.username, password)
+            await users.change_password(admin.username, password)
             return "reset existing admin password"
     return "kept existing admin"
 
@@ -455,9 +507,20 @@ async def _apply_database(data: dict, choice: str, activate: bool) -> str:
 
 
 def _section_present_sync_db() -> bool:
+    """Does this install have a database DELIBERATELY configured?
+
+    A brand-new clone has no ``db_connection.json`` on disk — ``load_config()``
+    still hands back the built-in default (``provider="sqlite"``), which is
+    truthy. Trusting that default would make ``_apply_database`` treat every fresh
+    box as "already configured" and silently drop a carried database on a
+    fill-merge (the exact bug that stopped deploy bundles from bringing their DB
+    across). So "present" means a config file was actually SAVED, not merely the
+    in-memory default.
+    """
     try:
-        from app.db.connection_config import load_config
-        return bool(getattr(load_config(), "provider", None))
+        import os
+        from app.db import connection_config as cc
+        return os.path.exists(cc._CONFIG_FILE)
     except Exception:
         return False
 
@@ -527,11 +590,16 @@ async def apply_boot_file() -> Optional[dict]:
     """On startup: if a ``bootstrap.json`` is present AND the install is not yet
     initialized, provision from it, then scrub the LLM key out of the file.
 
-    The file may hold either a raw (unencrypted) bundle JSON — for a trusted
-    operator who secures the file themselves — or an encrypted code string, in
-    which case ``BOOTSTRAP_ADMIN_PASSWORD`` (the same env var that already presets
-    the admin) is the decryption key. Applying only ever happens on a fresh
-    install (no admin yet), so it never clobbers a configured box.
+    The file may hold any of three things:
+      * a **keyless ``WABOOT2`` code** — what the Deploy panel's "Include this
+        app's configuration" writes; it decodes on its own, no password;
+      * a legacy **password-locked ``WABOOT1`` code** — decoded with
+        ``BOOTSTRAP_ADMIN_PASSWORD`` (the same env var that presets the admin),
+        for a hand-authored encrypted ``bootstrap.json``;
+      * a raw (unencrypted) bundle JSON — for a trusted operator who secures the
+        file themselves.
+    Applying only ever happens on a fresh install (no LLM configured yet), so it
+    never clobbers a configured box.
     """
     path = _boot_file()
     if path is None:
@@ -553,10 +621,18 @@ async def apply_boot_file() -> Optional[dict]:
         return None
 
     bundle: Optional[dict] = None
-    if text.startswith(CODE_PREFIX + "."):
+    if text.startswith(CODE_PREFIX_OPEN + "."):
+        # Keyless code (the Deploy "Include this app's configuration" path) — the
+        # key travels with the code, so no BOOTSTRAP_ADMIN_PASSWORD is needed.
+        try:
+            bundle = decode_bundle(text)
+        except BundleError as e:
+            logger.warning("bootstrap: could not decode %s: %s", path, e)
+            return None
+    elif text.startswith(CODE_PREFIX + "."):
         pw = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "")
         if not pw:
-            logger.warning("bootstrap.json is an encrypted code but BOOTSTRAP_ADMIN_PASSWORD is unset — cannot decode.")
+            logger.warning("bootstrap.json is a password-locked code but BOOTSTRAP_ADMIN_PASSWORD is unset — cannot decode.")
             return None
         try:
             bundle = decode_bundle(text, pw)

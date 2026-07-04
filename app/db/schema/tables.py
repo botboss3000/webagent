@@ -588,6 +588,29 @@ TABLES: List[Table] = [
         Column("last_login_at", "TEXT"),
     ]),
 
+    # The account/identity plane — login credentials. Central (never per-tenant
+    # routed): see app/db/router.py CONTROL_METHODS. Was formerly the per-instance
+    # file app/auth/users.json; moved into the shared DB so every instance sees
+    # one identical account list (multi-device / multi-instance login). The
+    # password is a bcrypt hash — never plaintext. Sibling of user_profiles
+    # (same user_id key); kept a SEPARATE table so the auth secrets stay apart
+    # from the per-user preferences/admin-flag plane.
+    Table("user_accounts", [
+        Column("user_id", "TEXT", nullable=False, primary_key=True),
+        Column("username", "TEXT", nullable=False),          # login name / email; unique
+        Column("password_hash", "TEXT", nullable=False, default="''"),  # bcrypt
+        Column("display_name", "TEXT", nullable=False, default="''"),
+        Column("remember_token", "TEXT", nullable=False, default="''"),
+        Column("is_approved", "INTEGER", nullable=False, default="1"),
+        Column("session_lifetime_minutes", "INTEGER", nullable=False, default="43200"),
+        Column("auto_renew", "INTEGER", nullable=False, default="1"),
+        Column("social_links", "TEXT", nullable=False, default="'{}'"),  # JSON {provider: external_id}
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=[
+        "UNIQUE(username)",
+    ]),
+
     Table("data_sources", [
         Column("id", "TEXT", nullable=False, primary_key=True),
         Column("user_id", "TEXT", nullable=False),
@@ -954,7 +977,9 @@ TABLES: List[Table] = [
     # instance_id (or broadcast jobs, target_instance NULL) via an atomic claim.
     Table("device_presence", [
         Column("instance_id", "TEXT", nullable=False, primary_key=True),
-        Column("label", "TEXT"),                                              # friendly name (hostname)
+        Column("label", "TEXT"),                                              # friendly name (hostname; self-reported by the device)
+        Column("custom_label", "TEXT"),                                       # admin's chosen display name (overrides label); never touched by the heartbeat
+        Column("custom_icon", "TEXT"),                                        # admin's chosen icon (Lucide name; overrides the platform icon)
         Column("capabilities", "TEXT", nullable=False, default="'{}'"),       # JSON: platform, has_browser, …
         Column("endpoint", "TEXT"),                                           # reachable base URL for nudges
         Column("last_seen", "TEXT"),                                          # ISO heartbeat; stale = offline

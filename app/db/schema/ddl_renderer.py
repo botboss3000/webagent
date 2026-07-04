@@ -70,10 +70,21 @@ def _render_default(default: str, dialect: str) -> str:
 
 def _render_column(c: Column, dialect: str) -> str:
     col_type = _TYPE_MAP[dialect][c.type]
-    # pgvector: render the dimensionality, e.g. vector(1536). Other dialects
-    # store the raw float32 bytes as BLOB, so no dimension is emitted.
-    if c.type == "VECTOR" and dialect == "postgres" and c.vector_dim:
-        col_type = f"vector({c.vector_dim})"
+    # pgvector: render the dimensionality, e.g. vector(384). Other dialects store
+    # the raw float32 bytes as BLOB, so no dimension is emitted. The width tracks
+    # the ACTIVE embedding source (app default is local bge-small = 384), so a
+    # fresh Postgres install creates the column at the size the app will actually
+    # write; c.vector_dim is only the static fallback. A later source/model switch
+    # resizes existing columns via the reindex ALTER — this only sizes new installs.
+    if c.type == "VECTOR" and dialect == "postgres":
+        dim = c.vector_dim
+        try:
+            from app.agent.embed import embed_dim as _active_embed_dim
+            dim = _active_embed_dim() or dim
+        except Exception:
+            pass  # embed module unavailable at render time → static fallback
+        if dim:
+            col_type = f"vector({dim})"
     parts = [c.name, col_type]
     # MySQL: TEXT columns cannot have a literal DEFAULT — strip in that case
     has_default = c.default is not None
@@ -280,6 +291,25 @@ def _render_all(dialect: str, idempotent: bool = True) -> str:
 
     for idx in INDEXES:
         parts.append(_render_index(idx, dialect, idempotent))
+
+    # Postgres: an ANN index for every pgvector column so similarity search is a
+    # server-side index scan, not a sequential distance-to-every-row scan. HNSW
+    # (vs ivfflat) needs no training pass and works on an empty/growing table, so
+    # it fits tables that fill up incrementally (memory_chunks, doc_chunks). The
+    # `vector_cosine_ops` opclass must match the `<=>` operator used by the search
+    # queries, or the planner ignores the index. Best-effort: if the running
+    # pgvector predates HNSW (<0.5.0) the CREATE fails and the bootstrap's
+    # per-statement try/except simply leaves that column on the sequential scan.
+    if dialect == "postgres":
+        exists = "IF NOT EXISTS " if idempotent else ""
+        for t in ordered:
+            for c in t.columns:
+                if c.type == "VECTOR":
+                    parts.append(
+                        f"-- ANN index for {t.name}.{c.name} (pgvector HNSW, cosine)\n"
+                        f"CREATE INDEX {exists}idx_{t.name}_{c.name}_hnsw\n"
+                        f"    ON {t.name} USING hnsw ({c.name} vector_cosine_ops);"
+                    )
 
     for f in FTS_TABLES:
         if dialect == "sqlite":

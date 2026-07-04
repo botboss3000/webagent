@@ -211,18 +211,11 @@ def _pg_conninfo_for(db: str):
         return None
 
 
-def _open(db: str = "local.db"):
-    """Open the right connection for `db`. Returns (conn, dialect).
+def _open_local_sqlite(db: str = "local.db"):
+    """Open the on-disk SQLite file for `db` (plaintext through db_crypto).
 
-    - Postgres active + main DB → standalone autocommit PgPortableConnection
-      ('postgres'). Autocommit isolates each statement so the endpoints'
-      best-effort per-statement guards behave like they do on SQLite.
-    - Otherwise the SQLite file ('sqlite').
-    """
-    conninfo = _pg_conninfo_for(db)
-    if conninfo:
-        from app.db.pg_portable import connect_standalone
-        return connect_standalone(conninfo), "postgres"
+    Factored out of `_open` so the chat-panel READ endpoints can force the local
+    file even when Postgres is the active backend (see `_open_read`)."""
     # Route through db_crypto so the viewer can open SQLCipher-encrypted files.
     # Map the canonical filenames to their db_id; anything else (per-session temp
     # / sibling DBs) is opened as plaintext via an unrecognised id. db_crypto sets
@@ -235,14 +228,225 @@ def _open(db: str = "local.db"):
     }
     db_id = _DB_ID_BY_FILE.get(Path(db).name, "_viewer_other")
     conn = db_crypto.connect(str(_get_db_path(db)), db_id)
-    return conn, "sqlite"
+    # Under hybrid the local file is written continuously by the backend (streaming
+    # persist), the sync puller, and now the panel's own local-first writes. WAL
+    # lets readers proceed during a write, but a concurrent WRITER must wait for the
+    # lock — without a busy_timeout it would raise "database is locked" immediately.
+    # Give these short-lived panel connections a few seconds to acquire it.
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+    except Exception:
+        pass
+    return conn
+
+
+def _open(db: str = "local.db"):
+    """Open the right connection for `db`. Returns (conn, dialect).
+
+    - Postgres active + main DB → standalone autocommit PgPortableConnection
+      ('postgres'). Autocommit isolates each statement so the endpoints'
+      best-effort per-statement guards behave like they do on SQLite.
+    - Otherwise the SQLite file ('sqlite').
+    """
+    conninfo = _pg_conninfo_for(db)
+    if conninfo:
+        # Reuse a warm autocommit connection from the shared viewer pool instead of
+        # paying a fresh TLS handshake per call (the polled tail/related endpoints
+        # hit this often). Falls back to a standalone connection automatically.
+        from app.db.pg_portable import connect_viewer_pooled
+        return connect_viewer_pooled(conninfo), "postgres"
+    return _open_local_sqlite(db), "sqlite"
+
+
+def _open_read(db: str = "local.db"):
+    """Read-only opener for the CHAT-PANEL endpoints (session list, transcript,
+    live-reconcile tail, related/family). Returns (conn, dialect).
+
+    When the hybrid local-first layer is active AND `db` is the main database,
+    serve the read from the LOCAL SQLite mirror — sub-millisecond, no network —
+    instead of a fresh remote round-trip. The mirror is kept current by the sync
+    puller (sessions / agents / session_runs / …) and the local-first transcript
+    writes; a session that hasn't been mirrored on this device yet reads back
+    empty, so callers that need a hard guarantee fall back to `_open` themselves
+    (see get_session_messages). Everything else — the admin DB Viewer, arbitrary
+    table browsing, all writes — keeps using `_open` and sees the real active
+    backend.
+
+    IMPORTANT: the local mirror is NOT user-scoped (the puller pulls every remote
+    row), so callers MUST keep their existing per-user WHERE filters. They already
+    do — this only swaps where the same query runs."""
+    try:
+        if _pg_conninfo_for(db) is not None:
+            from app.db.hybrid import hybrid_enabled
+            if hybrid_enabled():
+                return _open_local_sqlite(db), "sqlite"
+    except Exception:
+        # Any doubt about the local mirror → fall back to the authoritative open.
+        pass
+    return _open(db)
+
+
+# ── Cross-device transcript reconcile (Remote Control split-transcript fix) ────
+# The chat read endpoints serve from the LOCAL mirror for speed, but `interactions`
+# are PUSH-ONLY: a device pushes its own writes to the remote authority and NEVER
+# pulls back rows another device wrote into the SAME session. So when Remote Control
+# runs a turn on a different device, the SENDER (and any third viewer) reads only
+# its own half of the transcript — the executor's reply lives on the executor + the
+# remote authority but never reaches the viewer's local store, so it stays invisible
+# even on reload (the reload only escapes to remote when the local copy is COMPLETELY
+# empty, and the sender isn't — it holds its own user turn). This is the "split
+# transcript" bug. Before a chat read we pull any of the session's remote rows this
+# device is missing into local (INSERT OR IGNORE — the device's own full-fidelity
+# rows are untouched, only genuinely-absent rows are added), bounded to at most once
+# per `_PULL_TTL` seconds per session so a fast poll doesn't hammer the remote. This
+# mirrors HybridBackend._ensure_local_session(refresh=True), which the raw-SQL viewer
+# endpoints bypass. No-op on single-device installs and on sessions that already have
+# every row locally (the INSERT OR IGNORE finds nothing new).
+_PULL_AT: dict = {}
+_PULL_TTL = 3.0
+
+
+def _reconcile_session_from_remote(db: str, session_id: str) -> None:
+    if not session_id:
+        return
+    try:
+        if _pg_conninfo_for(db) is None:
+            return
+        from app.db.hybrid import hybrid_enabled
+        if not hybrid_enabled():
+            return
+    except Exception:
+        return
+    now = time.monotonic()
+    last = _PULL_AT.get(session_id)
+    if last is not None and (now - last) < _PULL_TTL:
+        return
+    _PULL_AT[session_id] = now
+    try:
+        from app.db import get_db
+        bk = get_db()
+        hyb = getattr(bk, "backend", bk)
+        remote = getattr(hyb, "_remote", None)
+        if remote is None:
+            return
+        rraw = remote.get_raw_client()
+        irows = rraw.table("interactions").select("*").eq(
+            "session_id", session_id).execute().data or []
+        if not irows:
+            return
+        conn = _open_local_sqlite(db)
+        try:
+            cols = list(irows[0].keys())
+            col_sql = ",".join(cols)
+            ph = ",".join("?" * len(cols))
+            # (1) Add any genuinely-missing rows. INSERT OR IGNORE never touches a
+            # row this device already holds full-fidelity — only foreign rows land.
+            conn.executemany(
+                f"INSERT OR IGNORE INTO interactions ({col_sql}) VALUES ({ph})",
+                [tuple(r.get(c) for c in cols) for r in irows],
+            )
+            # (2) Finalize a foreign row that was pulled while still STREAMING (its
+            # id already existed locally with partial text, so (1) ignored it). Only
+            # promote to a TERMINAL remote state (complete/error/interrupted) and
+            # only when the local copy isn't already there — this refreshes the
+            # executor's finished reply without clobbering a fresher local streaming
+            # row (a device only streams its OWN runs, shown live over WS anyway).
+            for r in irows:
+                st = r.get("status")
+                if st in ("complete", "error", "interrupted"):
+                    conn.execute(
+                        "UPDATE interactions SET content=?, status=?, output=?, "
+                        "metadata=?, session_seq=? WHERE id=? AND "
+                        "(status IS NULL OR status != ?)",
+                        (r.get("content"), st, r.get("output"), r.get("metadata"),
+                         r.get("session_seq"), r.get("id"), st),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("reconcile_session_from_remote(%s) failed: %s", session_id, e)
+
+
+def _hybrid_backend_for(db: str):
+    """Return the active HybridBackend (unwrapped from the encryption decorator)
+    when the local-first layer is on AND `db` is the main database, else None.
+
+    Used by the chat-panel WRITE endpoints (rename / delete) to apply the edit to
+    the LOCAL mirror immediately — so the panel's now-local reads are instantly
+    consistent — and queue the authoritative push to the remote via the sync
+    engine's outbox (no remote round-trip in the request)."""
+    try:
+        if _pg_conninfo_for(db) is None:
+            return None
+        from app.db.hybrid import hybrid_enabled, HybridBackend
+        if not hybrid_enabled():
+            return None
+        from app.db import get_db
+        inst = get_db()
+        inner = inst if isinstance(inst, HybridBackend) else getattr(inst, "_inner", None)
+        return inner if isinstance(inner, HybridBackend) else None
+    except Exception:
+        return None
+
+
+async def _enqueue_remote_push(hb, ids, op: str = "upsert") -> None:
+    """Queue ``sessions`` rows for the sync engine to push to the remote authority.
+
+    ``op='upsert'`` propagates a rename / pin / hide / soft-delete (status flip);
+    ``op='delete'`` propagates a hard delete (the pusher issues a remote DELETE)."""
+    ids = [i for i in (ids or []) if i]
+    if not hb or not ids:
+        return
+    try:
+        from app.db.sync.outbox import Outbox
+        await Outbox(hb.local).enqueue_many([("sessions", i, op) for i in ids])
+    except Exception as e:
+        logger.warning("hybrid: enqueue of session push failed: %s", e)
+
+
+def _hard_delete_family(conn, targets) -> dict:
+    """Erase a session run-family — interactions, summaries, pipeline events, the
+    session rows themselves, and the spawned-clone cascade — on ``conn``, commit,
+    and return counts. Runs identically on the local mirror and the remote
+    authority (portable SQL), so a hard delete cleans BOTH."""
+    cur = conn.cursor()
+    interactions_deleted = 0
+    session_deleted = 0
+    for tid in targets:
+        cur.execute('DELETE FROM interactions WHERE session_id = ?', (tid,))
+        interactions_deleted += cur.rowcount
+        cur.execute('DELETE FROM session_summaries WHERE session_id = ?', (tid,))
+        try:
+            cur.execute('DELETE FROM pipeline_events WHERE session_id = ?', (tid,))
+        except Exception:
+            pass
+        cur.execute('DELETE FROM sessions WHERE id = ?', (tid,))
+        session_deleted += cur.rowcount
+    # Cascade: an orchestrator session takes its spawned CLONES with it — their
+    # agents, sessions and transcripts (recursively). Best-effort; only touches
+    # status='clone' agents, so a real agent is never caught.
+    clones_deleted = 0
+    try:
+        from app.db.local import cascade_delete_clones
+        clones_deleted = cascade_delete_clones(conn, targets)
+    except Exception as _ce:  # noqa: BLE001
+        logger.debug("clone cascade on session delete failed: %s", _ce)
+    conn.commit()
+    return {
+        "interactions_deleted": interactions_deleted,
+        "session_deleted": session_deleted,
+        "clones_deleted": clones_deleted,
+    }
 
 
 def _resolve_session_db(session_id: str, fallback_db: str = "local.db") -> str:
     """If a session has temp_db_path in its metadata, route to that temp DB.
-    Otherwise return fallback_db. Reads from the active backend (SQLite or PG)."""
+    Otherwise return fallback_db. Reads local-first when hybrid is on (this is a
+    hot pre-read on every transcript/tail open) — falls back to the active
+    backend automatically."""
     try:
-        conn, _dialect = _open(fallback_db)
+        conn, _dialect = _open_read(fallback_db)
         try:
             row = conn.execute("SELECT metadata FROM sessions WHERE id=?", (session_id,)).fetchone()
         finally:
@@ -362,6 +566,9 @@ async def delete_user(
     _auth: dict = Depends(require_db_auth),
 ):
     """Delete all sessions, interactions, and messages for a user."""
+    caller_uid, is_admin = _get_caller(_auth)
+    if not is_admin and caller_uid != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this user's data")
     db_path = _get_db_path(db)
     try:
         conn, _dialect = _open(db)
@@ -430,8 +637,13 @@ async def delete_session(
     explicit ``permanent=true`` call from the future sessions page).
     """
     db_path = _get_db_path(db)
+    hb = _hybrid_backend_for(db)
     try:
-        conn, _dialect = _open(db)
+        # Local-first: apply the recycle/delete to the LOCAL mirror (instant, and
+        # consistent with the panel's now-local reads). The authoritative push is
+        # queued below — an upsert of the recycled row for a soft delete, or a
+        # remote DELETE for a hard erase — and drained by the sync engine in ~1s.
+        conn, _dialect = (_open_local_sqlite(db), "sqlite") if hb else _open(db)
         cur = conn.cursor()
 
         # Ownership gate: only the session's owner/participant (or an admin, or
@@ -461,7 +673,12 @@ async def delete_session(
             except Exception:
                 pass
             if has_status:
-                cur.execute("UPDATE sessions SET status = 'recycled' WHERE id = ?", (session_id,))
+                # Bump updated_at alongside the status flip: the puller on ANOTHER
+                # device only pulls rows whose watermark (updated_at) advanced, so
+                # without this the recycle would never reach a second device's local
+                # mirror and the session would linger there until a cold start.
+                # (restore_session already stamps the time the same way.)
+                cur.execute("UPDATE sessions SET status = 'recycled', updated_at = datetime('now') WHERE id = ?", (session_id,))
                 recycled = cur.rowcount
                 # A real session row was recycled → carry its children to the bin
                 # too. If NOTHING matched (recycled == 0), this is a "phantom"
@@ -473,11 +690,17 @@ async def delete_session(
                 # disappears.
                 if recycled:
                     children_recycled = 0
+                    recycled_ids = [session_id]
                     for cid in child_ids:
-                        cur.execute("UPDATE sessions SET status = 'recycled' WHERE id = ?", (cid,))
+                        cur.execute("UPDATE sessions SET status = 'recycled', updated_at = datetime('now') WHERE id = ?", (cid,))
+                        if cur.rowcount:
+                            recycled_ids.append(cid)
                         children_recycled += cur.rowcount
                     conn.commit()
                     conn.close()
+                    # Push the status flip to the remote authority (upsert).
+                    if hb:
+                        await _enqueue_remote_push(hb, recycled_ids, "upsert")
                     logger.info(f"Recycled session {session_id[:12]}: {recycled} session, "
                                 f"{children_recycled} children")
                     return {
@@ -493,31 +716,45 @@ async def delete_session(
         # Phantom-safe: deleting by session_id removes the orphan interactions
         # even when no `sessions` row exists.
         targets = [session_id] + [c for c in child_ids if c != session_id]
-        interactions_deleted = 0
-        session_deleted = 0
-        for tid in targets:
-            cur.execute('DELETE FROM interactions WHERE session_id = ?', (tid,))
-            interactions_deleted += cur.rowcount
-            cur.execute('DELETE FROM session_summaries WHERE session_id = ?', (tid,))
-            try:
-                cur.execute('DELETE FROM pipeline_events WHERE session_id = ?', (tid,))
-            except Exception:
-                pass
-            cur.execute('DELETE FROM sessions WHERE id = ?', (tid,))
-            session_deleted += cur.rowcount
-
-        # Cascade: an orchestrator session takes its spawned CLONES with it —
-        # their agents, sessions and transcripts (recursively). Best-effort; only
-        # touches status='clone' agents, so a real agent is never caught.
-        clones_deleted = 0
-        try:
-            from app.db.local import cascade_delete_clones
-            clones_deleted = cascade_delete_clones(conn, targets)
-        except Exception as _ce:  # noqa: BLE001
-            logger.debug("clone cascade on session delete failed: %s", _ce)
-
-        conn.commit()
+        counts = _hard_delete_family(conn, targets)
         conn.close()
+        interactions_deleted = counts["interactions_deleted"]
+        session_deleted = counts["session_deleted"]
+        clones_deleted = counts["clones_deleted"]
+
+        # A permanent erase must ALSO clean the shared remote authority — leaving
+        # orphan transcript on the server would contradict the intent and could
+        # resurface as a phantom session on another device. Hard delete is rare
+        # (emptying the bin / an explicit permanent call), so a synchronous remote
+        # pass is acceptable — unlike soft actions it is NOT queued to the outbox
+        # (the outbox is row-id keyed and can't express "delete all interactions
+        # for session X").
+        if hb:
+            try:
+                rconn, _ = _open(db)
+                try:
+                    _hard_delete_family(rconn, targets)
+                finally:
+                    rconn.close()
+            except Exception as _re:  # noqa: BLE001
+                logger.warning("hybrid: remote hard-delete replication failed (%s); "
+                               "rows may linger on the authority", _re)
+            # Tombstone each erased session so OTHER devices prune it from their
+            # local mirror on the next puller tick. Without this the row is simply
+            # absent from the remote and the watermark-based puller can never learn
+            # it was deleted, leaving a ghost session until the peer cold-starts.
+            try:
+                from app.db.sync.tombstones import record_tombstones
+                from app.db import get_db as _get_db
+                owner = None
+                try:
+                    from app.auth.identity import caller_uid_sync
+                    owner = caller_uid_sync(request)
+                except Exception:  # noqa: BLE001
+                    pass
+                record_tombstones(_get_db(), [("sessions", t) for t in targets], owner)
+            except Exception as _te:  # noqa: BLE001
+                logger.debug("hybrid: session tombstone record failed: %s", _te)
 
         logger.info(f"Deleted session {session_id[:12]}: {session_deleted} session(s) "
                     f"(+{len(targets) - 1} family), {interactions_deleted} interactions, "
@@ -544,8 +781,10 @@ async def restore_session(
 ):
     """Restore a recycled session back to active status."""
     db_path = _get_db_path(db)
+    hb = _hybrid_backend_for(db)
     try:
-        conn, _dialect = _open(db)
+        # Local-first (see delete_session) + queued upsert push.
+        conn, _dialect = (_open_local_sqlite(db), "sqlite") if hb else _open(db)
         cur = conn.cursor()
         # Ownership gate (open/local mode + admins pass; non-owner refused).
         if _session_access_ok(cur, session_id, request, None) is False:
@@ -553,17 +792,22 @@ async def restore_session(
             raise HTTPException(status_code=403, detail="Not authorized for this session")
         cur.execute("UPDATE sessions SET status = 'active', updated_at = datetime('now') WHERE id = ? AND status = 'recycled'", (session_id,))
         restored = cur.rowcount
+        restored_ids = [session_id]
         # Bring the run-family back with the parent (mirrors the recycle cascade).
         children_restored = 0
         try:
             from app.db.local import resolve_child_sessions
             for cid in resolve_child_sessions(conn, [session_id]):
                 cur.execute("UPDATE sessions SET status = 'active', updated_at = datetime('now') WHERE id = ? AND status = 'recycled'", (cid,))
+                if cur.rowcount:
+                    restored_ids.append(cid)
                 children_restored += cur.rowcount
         except Exception as _re:  # noqa: BLE001
             logger.debug("child-session restore cascade failed: %s", _re)
         conn.commit()
         conn.close()
+        if hb:
+            await _enqueue_remote_push(hb, restored_ids, "upsert")
         return {"success": True, "session_id": session_id, "restored": restored, "children_restored": children_restored}
     except HTTPException:
         raise
@@ -605,8 +849,14 @@ async def patch_session(
                             detail="Provide title, pinned, hidden, and/or remote_executor_instance")
 
     db_path = _get_db_path(db)
+    hb = _hybrid_backend_for(db)
     try:
-        conn, _dialect = _open(db)
+        # Local-first: when hybrid is on, apply the rename/pin/hide to the LOCAL
+        # mirror (instant, and consistent with the panel's now-local list read),
+        # then queue the authoritative push below — no remote round-trip in the
+        # request. Any session the user can see to rename came FROM the local list,
+        # so it's present in the mirror and the UPDATE matches.
+        conn, _dialect = (_open_local_sqlite(db), "sqlite") if hb else _open(db)
         cur = conn.cursor()
 
         # Ownership gate (open/local mode + admins pass; non-owner refused).
@@ -680,6 +930,10 @@ async def patch_session(
 
         if affected == 0:
             raise HTTPException(status_code=404, detail="Session not found")
+        # Queue the authoritative remote push (a rename/pin/hide is an upsert of
+        # the row; the sync engine re-reads the current local row and pushes it).
+        if hb:
+            await _enqueue_remote_push(hb, [session_id], "upsert")
         return {"success": True, "session_id": session_id, "affected": affected}
     except HTTPException:
         raise
@@ -709,8 +963,11 @@ async def reorder_sessions(
     if not req.order:
         return {"success": True, "updated": 0}
     db_path = _get_db_path(db)
+    hb = _hybrid_backend_for(db)
     try:
-        conn, _dialect = _open(db)
+        # Local-first (drag order must reflect instantly in the now-local list) +
+        # queued upsert push of every row whose sort_order changed.
+        conn, _dialect = (_open_local_sqlite(db), "sqlite") if hb else _open(db)
         cur = conn.cursor()
         # Auto-add the column on older DBs (mirrors the pinned guard above).
         cur.execute("PRAGMA table_info(sessions)")
@@ -718,15 +975,20 @@ async def reorder_sessions(
         if "sort_order" not in cols:
             cur.execute("ALTER TABLE sessions ADD COLUMN sort_order INTEGER")
         updated = 0
+        pushed_ids = []
         for position, sid in enumerate(req.order):
             cur.execute(
                 "UPDATE sessions SET sort_order = ?, updated_at = CURRENT_TIMESTAMP "
                 "WHERE id = ? AND user_id = ?",
                 (position, sid, req.user_id),
             )
+            if cur.rowcount:
+                pushed_ids.append(sid)
             updated += cur.rowcount
         conn.commit()
         conn.close()
+        if hb:
+            await _enqueue_remote_push(hb, pushed_ids, "upsert")
         return {"success": True, "updated": updated}
     except HTTPException:
         raise
@@ -775,8 +1037,29 @@ def list_sessions(
 
     db_path = _get_db_path(db)
     try:
-        conn, _dialect = _open(db)
-        conn.row_factory = sqlite3.Row
+        # Chat-panel session list → served from the local mirror when hybrid is on
+        # (the puller keeps `sessions` current within ~5s; the user's own edits are
+        # instant). The per-user WHERE filter below still scopes the rows.
+        conn, _dialect = _open_read(db)
+        if _dialect == "sqlite" and _pg_conninfo_for(db) is not None:
+            # Cold-mirror guard: this query LEFT-... actually INNER-joins agents and
+            # drops sessions whose agent row is absent. Before the first puller tick
+            # pulls `agents`, that would hide every agent-bound session. If no agents
+            # are mirrored yet, read the authoritative remote until the pull lands.
+            try:
+                _warm = conn.execute("SELECT 1 FROM agents LIMIT 1").fetchone()
+            except Exception:
+                _warm = None
+            if _warm is None:
+                conn.close()
+                conn, _dialect = _open(db)
+        # Only a plain stdlib sqlite3 connection needs its row_factory set here.
+        # db_crypto's SQLCipher connections already carry a dict-capable Row (and
+        # MUST NOT be reassigned — stdlib sqlite3.Row rejects a cipher cursor), and
+        # PgPortableConnection ignores it. Guarding avoids breaking reads off an
+        # encrypted local mirror now that this endpoint reads local.
+        if isinstance(conn, sqlite3.Connection):
+            conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
         sessions = []
@@ -998,8 +1281,11 @@ def list_sessions(
 async def mark_session_read(session_id: str, request: Request, db: str = Query("local.db", description="Database filename")):
     """Mark a session as read by setting read_at to now."""
     db_path = _get_db_path(db)
+    hb = _hybrid_backend_for(db)
     try:
-        conn, _dialect = _open(db)
+        # Local-first so the list's unread badge (computed from read_at) clears
+        # instantly; queued upsert keeps the remote read-state in step.
+        conn, _dialect = (_open_local_sqlite(db), "sqlite") if hb else _open(db)
         # Ownership gate (open/local mode + admins pass; non-owner refused).
         if _session_access_ok(conn.cursor(), session_id, request, None) is False:
             conn.close()
@@ -1010,6 +1296,8 @@ async def mark_session_read(session_id: str, request: Request, db: str = Query("
         )
         conn.commit()
         conn.close()
+        if hb:
+            await _enqueue_remote_push(hb, [session_id], "upsert")
         return {"ok": True, "session_id": session_id}
     except HTTPException:
         raise
@@ -1067,6 +1355,10 @@ def get_session_related(
               "group_kind": None, "root_label": "Main"}
 
     try:
+        # NOTE: stays on the authoritative backend. Reads `agent_spawns` +
+        # `browser_sessions`, which are NOT mirrored to local (written remote-only
+        # during operations), so the family tree would be empty on the mirror.
+        # Its per-call connection is pooled (Tier C).
         conn, _dialect = _open(db)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
@@ -1103,8 +1395,14 @@ def get_session_related(
 
                 # ── 2. The family's spawned helpers (siblings of THIS session
                 #       when it is a spawn; own children when it is the root) ──
+                # `kind` distinguishes an ordinary clone spawn (NULL/'' — the
+                # historical default) from a delegation to a REAL saved agent
+                # ('delegate'), which the tab bar labels + icons differently.
+                # COALESCE keeps the query working on older ledgers created before
+                # the column existed.
                 spawn_rows = cur.execute(
-                    """SELECT id, spawn_session_id, name, task, status, result_summary, created_at
+                    """SELECT id, spawn_session_id, name, task, status, result_summary,
+                              created_at, COALESCE(kind, '') AS kind
                        FROM agent_spawns
                        WHERE orchestrator_session_id = ?
                        ORDER BY created_at ASC""",
@@ -1119,6 +1417,7 @@ def get_session_related(
                         "status": r["status"],
                         "result_summary": r["result_summary"],
                         "created_at": r["created_at"],
+                        "kind": r["kind"] or "spawn",
                     }
                     for r in spawn_rows
                 ]
@@ -1134,11 +1433,14 @@ def get_session_related(
                     result["root_label"] = "Main"
                     # Unified children list (label=None → frontend defaults to
                     # "Spawn N"); same shape the optimizer family produces below.
+                    # A delegation carries role 'delegate' and shows the target
+                    # agent's own name as its tab label (a clone spawn stays
+                    # label=None → the frontend falls back to "Spawn N").
                     result["children"] = [
                         {
                             "session_id": s["spawn_session_id"],
-                            "label": None,
-                            "role": "spawn",
+                            "label": (s["name"] if s.get("kind") == "delegate" else None),
+                            "role": ("delegate" if s.get("kind") == "delegate" else "spawn"),
                             "name": s["name"],
                             "status": s["status"],
                         }
@@ -1364,8 +1666,30 @@ def get_session_messages(
     if resolved_db != db:
         db = resolved_db
     db_path = _get_db_path(db)
+    # Remote Control continuity: pull any rows another device wrote into this
+    # session into the local mirror first (bounded), so a device that only viewed
+    # or only sent a remotely-executed turn sees the WHOLE transcript, not just its
+    # own half. No-op single-device / when already complete locally. See helper.
+    _reconcile_session_from_remote(db, session_id)
     try:
-        conn, _dialect = _open(db)
+        # Transcript open → local mirror when hybrid is on (the transcript is
+        # written local-first, so on the originating device it's the freshest copy
+        # and costs no network). Cold-session safety net: if this session has NOT
+        # been mirrored on THIS device yet (e.g. it was created/chatted on another
+        # device and never opened here), the local read would be empty — so probe
+        # for any local row and fall back to the authoritative remote when absent.
+        conn, _dialect = _open_read(db)
+        if _dialect == "sqlite" and _pg_conninfo_for(db) is not None:
+            try:
+                _local_hit = conn.execute(
+                    "SELECT 1 FROM interactions WHERE session_id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+            except Exception:
+                _local_hit = None
+            if _local_hit is None:
+                conn.close()
+                conn, _dialect = _open(db)
         cur = conn.cursor()
         # Same-second tie-breaker for stable pagination: SQLite has an implicit
         # monotonic `rowid`; Postgres doesn't, so fall back to the (uuid) `id`.
@@ -1902,8 +2226,58 @@ def get_session_tail(
     resolved_db = _resolve_session_db(session_id, db)
     if resolved_db != db:
         db = resolved_db
+    # Remote Control continuity: pull rows another device wrote into this session
+    # into the local mirror (bounded) so a viewer's live poll surfaces the executor's
+    # turns. Paired with the executor stamping session_seq (app/devices/worker.py) so
+    # the pulled rows pass this endpoint's `session_seq > after` filter.
+    _reconcile_session_from_remote(db, session_id)
     try:
-        conn, _dialect = _open(db)
+        # Local-first read, matching the initial load (/session-messages). The
+        # transcript is written local-first, so on the device that OWNS the run
+        # (and same-machine cross-worker setups that share the local file) the local
+        # hot store is the freshest, network-free copy — and reading it here keeps
+        # the live poll CONSISTENT with the initial load instead of racing the
+        # remote's ~1s sync lag (the two disagreeing was the flicker).
+        #
+        # `interactions` is push-only (a viewer on ANOTHER machine never receives a
+        # run's live rows into its local mirror), so two explicit fallbacks to the
+        # authoritative REMOTE preserve the cross-DEVICE path — decided from LOCAL
+        # reads only, so a normal poll still pays no remote round-trip:
+        #   (a) COLD VIEWER — no local rows for this session at all, or
+        #   (b) ACTIVE FOREIGN RUN — a run is 'running' but its assistant row isn't
+        #       in the local store, i.e. it's streaming on another machine.
+        # (`session_runs` IS pulled into the local mirror, so the run-state probe is
+        # a local read.) The narrow residual — a foreign message written AND
+        # completed entirely between two idle polls on a different machine — surfaces
+        # on the next run or reload; single-device and active cross-device are exact.
+        conn, _dialect = _open_read(db)
+        if _dialect == "sqlite" and _pg_conninfo_for(db) is not None:
+            _use_remote = False
+            try:
+                _exists = conn.execute(
+                    "SELECT 1 FROM interactions WHERE session_id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+                if _exists is None:
+                    _use_remote = True                       # (a) cold viewer
+                else:
+                    _rs = conn.execute(
+                        "SELECT status, assistant_interaction_id "
+                        "FROM session_runs WHERE session_id = ?",
+                        (session_id,),
+                    ).fetchone()
+                    if _rs and _rs[0] == "running" and _rs[1]:
+                        _has_asst = conn.execute(
+                            "SELECT 1 FROM interactions WHERE id = ? LIMIT 1",
+                            (_rs[1],),
+                        ).fetchone()
+                        if _has_asst is None:
+                            _use_remote = True               # (b) active foreign run
+            except Exception:
+                _use_remote = False
+            if _use_remote:
+                conn.close()
+                conn, _dialect = _open(db)
         cur = conn.cursor()
 
         # Same participant gate as /session-messages (False = deny; None/True = proceed).

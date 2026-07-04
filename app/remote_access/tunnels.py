@@ -168,6 +168,15 @@ class ManagedTunnel:
     def is_alive(self) -> bool:
         return bool(self.proc and self.proc.poll() is None)
 
+    @property
+    def public_url(self) -> str:
+        """The already-resolved public address, read synchronously (no network).
+        Unlike ``resolve_public_url`` this never queries ngrok's API — it returns
+        whatever has been learned so far (parsed from stdout / known up front for a
+        named tunnel), so it's safe to call from the event loop e.g. when stamping
+        the presence heartbeat."""
+        return self._public_url
+
     def recent_output(self, n: int = 12) -> str:
         return "\n".join(list(self._out)[-n:])
 

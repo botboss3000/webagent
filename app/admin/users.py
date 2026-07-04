@@ -143,9 +143,9 @@ async def list_users_with_stats(requesting_user_id: str = Query(...)):
     finally:
         conn.close()
 
-    # Registered users from users.json
+    # Registered users from the central user_accounts table
     out = []
-    for u in list_users():
+    for u in await list_users():
         prof = profile_map.get(u.user_id, {})
         out.append({
             "username": u.username,
@@ -178,10 +178,10 @@ async def approve_user(user_id: str, req: _ApprovalRequest):
     """Approve a pending account. Admin only."""
     db = get_db()
     await _require_admin(db, req.requesting_user_id)
-    u = get_user_by_id(user_id)
+    u = await get_user_by_id(user_id)
     if u is None:
         raise HTTPException(status_code=404, detail="User not found")
-    set_user_approval(u.username, True)
+    await set_user_approval(u.username, True)
     return {"user_id": user_id, "is_approved": True}
 
 
@@ -190,12 +190,12 @@ async def revoke_user(user_id: str, req: _ApprovalRequest):
     """Revoke approval (lock the account). Admin only."""
     db = get_db()
     await _require_admin(db, req.requesting_user_id)
-    u = get_user_by_id(user_id)
+    u = await get_user_by_id(user_id)
     if u is None:
         raise HTTPException(status_code=404, detail="User not found")
     if u.username == "admin":
         raise HTTPException(status_code=400, detail="Cannot revoke the built-in admin account")
-    set_user_approval(u.username, False)
+    await set_user_approval(u.username, False)
     return {"user_id": user_id, "is_approved": False}
 
 
@@ -204,12 +204,12 @@ async def delete_user_endpoint(user_id: str, requesting_user_id: str = Query(...
     """Delete a user account. Admin only. Built-in admin cannot be deleted."""
     db = get_db()
     await _require_admin(db, requesting_user_id)
-    u = get_user_by_id(user_id)
+    u = await get_user_by_id(user_id)
     if u is None:
         raise HTTPException(status_code=404, detail="User not found")
     if u.username == "admin":
         raise HTTPException(status_code=400, detail="Cannot delete the built-in admin account")
-    ok = auth_delete_user(u.username)
+    ok = await auth_delete_user(u.username)
     if not ok:
         raise HTTPException(status_code=400, detail="Could not delete user")
     return {"user_id": user_id, "deleted": True}

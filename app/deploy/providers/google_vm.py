@@ -158,6 +158,11 @@ class GoogleVMProvider(BaseDeployProvider):
     # The Cloud VMs sign-in panel collects this "id" (the project) plus the
     # service-account "key" below — enough to connect and list every VM.
     connect_config_keys = ["project_id"]
+    # Extra non-secret settings mirrored into the shared vault alongside the project
+    # id (see manager._mirror_keys), so a second device on a shared vault DB inherits
+    # the deploy Zone too — WITHOUT the zone appearing in the sign-in form or gating
+    # the "connected" check (those read connect_config_keys only).
+    shared_config_keys = ["zone"]
     # Reveal the deploy form in STAGES so it never overwhelms: first only the
     # project ID (config_fields[0]), then the key (the first credential field),
     # then the rest of the settings + the action buttons. Honoured by deploy.js
@@ -211,8 +216,21 @@ class GoogleVMProvider(BaseDeployProvider):
          "default": "e2-small",
          "tip": "Bigger machines cost more per month but serve more people at once. "
                 "Pick a starting size below — you can resize the server later if you "
-                "outgrow it. The note under the menu describes who each size suits.",
+                "outgrow it. The note under the menu describes who each size suits. "
+                "The first option is Google's free tier — read its note for the catch.",
          "options": [
+             {"value": "e2-micro", "label": "Free tier — e2-micro · 2 vCPU (shared) · 1 GB",
+              "note": "Free forever on Google's Always-Free tier — but with strict "
+                      "limits. It only stays free when the zone is one of US Iowa, "
+                      "Oregon or S. Carolina (the default US Central above qualifies), "
+                      "only ONE such VM per Google account counts as free, and only "
+                      "the first 30 GB of disk and 1 GB/month of North-America network "
+                      "traffic are free — go over any of these and Google bills the "
+                      "excess at normal rates. It has just 1 GB of memory, which is "
+                      "too small to run the browser tools or several agents on the box "
+                      "itself — those will run it out of memory. Best used as a tiny, "
+                      "always-on hub that hands the heavy work off to your other, "
+                      "bigger devices (see Remote Control)."},
              {"value": "e2-small", "label": "Small — e2-small · 2 vCPU · 2 GB",
               "note": "Cheapest. Best for trying it out or a personal instance — "
                       "about 1–3 people using it at once. Tight on memory: heavy "
@@ -436,7 +454,9 @@ class GoogleVMProvider(BaseDeployProvider):
         if visibility == "private" and not git_token:
             yield done({"ok": False, "message": "That repository is private — add a GitHub access token in Repo details, or set the repository to Public."})
             return
-        clone_url = resolve_clone(repo, visibility, git_token)["clone_url"]
+        _clone = resolve_clone(repo, visibility, git_token)
+        clone_url = _clone["clone_url"]        # may embed the token (private repo)
+        origin_url = _clone["clean_url"]       # clean address the box's origin resets to
 
         # Optional pre-set admin password (from the vault). Blank → the first visitor
         # to the server's address sets it via the setup page (open until an admin
@@ -459,8 +479,12 @@ class GoogleVMProvider(BaseDeployProvider):
 
         name = f"webagent-{int(time.time())}-{_secrets.token_hex(2)}"
         startup = build_install_script(
-            repo_url=clone_url, branch=branch, domain=domain, port=8080,
+            repo_url=clone_url, origin_url=origin_url, branch=branch, domain=domain, port=8080,
             admin_password=admin_password,
+            # Optional pre-loaded configuration bundle (the Deploy panel's "Include
+            # this app's configuration" toggle). The manager gathered + encrypted it
+            # into config["_bootstrap_code"] before this deploy; blank when off.
+            bootstrap_code=config.get("_bootstrap_code", ""),
         )
         # Optionally generate an SSH login for the VM so it can be added to the SSH
         # target's saved servers afterwards. GCE's guest agent provisions the user

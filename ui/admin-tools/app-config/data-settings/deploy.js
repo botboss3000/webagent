@@ -1,7 +1,24 @@
 'use strict';
 
 /**
- * Deploy — App Configuration → Data Settings → Deployment card.
+ * Deploy — the install-a-new-copy engine behind the Instances page's "New
+ * instance" tile ("New Deployment" tab, ui/admin-tools/instances/new-deployment/)
+ * and the Export/Import setup-bundle bars in Data Settings → Database → Data
+ * Migration. (It NO LONGER backs a "Deployment card" — that Data Settings section
+ * was removed; its hold-to-restart + port editor MOVED to the Instances page's
+ * "This device" tile "Server" section, and its sibling local checkouts became
+ * first-class grid TILES — both re-implemented natively in
+ * ui/admin-tools/instances/instances.js (`_serverSectionHtml` + `_localTiles` /
+ * `_renderLocalOverview`). The list/restart
+ * functions below — _loadInstances / _renderInstances / _instBar / _hubBody /
+ * _siblingBody / _onInstClick / _instAction / _instRemove / _instSave / _hubSave /
+ * _beginResetHold & the reset-hold helpers — are therefore ORPHANED: no
+ * #ac-deploy-instances host exists on any page any more, so they never render/fire.
+ * The register-a-checkout form functions (_registerAdd / _checkRegisterFolder /
+ * _seedRegisterPort / _nextFreePort) STAY LIVE — the New Deployment tab's "This
+ * device" target still uses them.
+ * DEACTIVATED (orphaned): the instances-LIST + hub-RESTART machinery.
+ * REMOVE-WHEN: a cleanup pass excises the orphaned list/restart functions above.)
  *
  * Live one-click deploy of this app onto a cloud target (Google VM today; AWS,
  * a plain Linux box and Docker are drop-in targets to follow). Talks to
@@ -35,6 +52,7 @@ let _preserve = null;       // {provider, cfg:{}, cred:{}} | null
 
 // ── Manual install row state (one QR popover open at a time across all rows) ──
 let _qrTimer = null;        // debounce timer for the (server-side) QR refresh
+const _embedTimers = {};    // per-row debounce for the server-built command (embed mode)
 let _qrPop = null;          // the floating QR popover element, or null
 let _qrAnchor = null;       // the QR button it was opened from
 let _qrDesc = null;         // which manual-row descriptor the open QR belongs to
@@ -53,17 +71,323 @@ function _current() { return (_catalog && (_catalog.providers || []).find(p => p
 function _readSharedRepo() {
   return {
     github_url: (_qs('ac-deploy-repo-url')?.value || '').trim(),
-    visibility: _qs('ac-deploy-repo-visibility')?.value || 'public',
+    // The Public/Private choice is auto-detected (no manual picker). It follows the
+    // last GitHub access-check verdict (_lastProbe): only a CONFIRMED-public repo is
+    // public; everything else (private, needs-auth, unknown) counts as private so a
+    // token is used to clone. A blank verdict = the default standard repo = public.
+    visibility: (_lastProbe && _lastProbe !== 'public') ? 'private' : 'public',
     token: (_qs('ac-deploy-repo-token')?.value || '').trim(),
     branch: (_qs('ac-deploy-repo-branch')?.value || '').trim(),
-    admin_password: _qs('ac-deploy-repo-admin-pw')?.value || '',
+    // Blank when the field is locked (shared-database deploy): the admin login is
+    // carried from THIS install instead of pre-set here — see _syncSharedDbLocks.
+    admin_password: (_qs('ac-deploy-repo-admin-pw') && !_qs('ac-deploy-repo-admin-pw').disabled)
+      ? _qs('ac-deploy-repo-admin-pw').value : '',
+    // "Include this app's configuration" — carry AI keys / vault / database onto the
+    // new install. Locked with the admin password above (see _syncEmbedMode). The
+    // sections are the ticked boxes; empty list = nothing to include.
+    embed_config: (_qs('ac-deploy-embed-mode')?.value || 'bare') === 'include',
+    embed_sections: Array.from(document.querySelectorAll('#ac-deploy-embed-opts [data-embed-sec]:checked'))
+      .map(el => el.dataset.embedSec),
   };
 }
-// Show the access-token field only when the repo is Private.
-function _syncSharedToken() {
-  const vis = _qs('ac-deploy-repo-visibility');
+
+// Show/hide the section tick-boxes for the include mode, and refresh the note that
+// warns when a password is still needed to lock the bundle.
+function _syncEmbedMode() {
+  const include = (_qs('ac-deploy-embed-mode')?.value || 'bare') === 'include';
+  const opts = _qs('ac-deploy-embed-opts');
+  if (opts) opts.hidden = !include;
+  _updateEmbedNote();
+  _updateRepoModeLine();
+  _syncSharedDbLocks();
+}
+
+// When the new install will share THIS app's database ("Database (shared)" ticked
+// while including configuration), two Configuration controls are locked because
+// they're handled for you:
+//   • Admin password — logins live in the shared database's user_accounts table, so
+//     a box pointed at that database already has this admin and reuses it; there's
+//     nothing to pre-set. Field disabled + explained.
+//   • AI model & key — the key is already reachable via the shared database, so the
+//     box is greyed but kept TICKED: the backend still ships whatever the new box
+//     can't resolve on its own (it strips only the genuinely redundant key), so
+//     un-including it here would risk a box that can't reach the model.
+function _syncSharedDbLocks() {
+  const include = (_qs('ac-deploy-embed-mode')?.value || 'bare') === 'include';
+  const dbCb = document.querySelector('#ac-deploy-embed-opts [data-embed-sec="database"]');
+  const shared = include && !!(dbCb && dbCb.checked);
+
+  const pw = _qs('ac-deploy-repo-admin-pw');
+  if (pw) {
+    pw.disabled = shared;
+    pw.style.opacity = shared ? '0.55' : '';
+    if (shared) pw.value = '';               // don't also pre-set a password we're carrying
+  }
+  const pwNote = _qs('ac-deploy-admin-pw-note');
+  if (pwNote) { pwNote.style.display = shared ? 'flex' : 'none'; if (shared) _refreshLucideIcons(pwNote); }
+
+  const llmCb = document.querySelector('#ac-deploy-embed-opts [data-embed-sec="llm"]');
+  if (llmCb) {
+    llmCb.disabled = shared;
+    if (shared) llmCb.checked = true;        // stays included; backend decides what to ship
+    const row = llmCb.closest('.ac-boot-check');
+    if (row) row.style.opacity = shared ? '0.7' : '';
+  }
+  const llmNote = _qs('ac-deploy-llm-lock-note');
+  if (llmNote) llmNote.style.display = shared ? '' : 'none';
+}
+
+// The Repo-to-deploy row's second line is a live config-mode indicator, visible
+// without expanding the row: "Bare config" (the new install starts empty) or
+// "Includes this app’s config" (the include toggle in the body is on — set by the
+// clone button or the expanded selector). Kept in sync via _syncEmbedMode.
+function _updateRepoModeLine() {
+  const el = _qs('ac-deploy-repo-mode');
+  if (!el) return;
+  const include = (_qs('ac-deploy-embed-mode')?.value || 'bare') === 'include';
+  el.textContent = include ? 'Includes this app’s config' : 'Bare config';
+}
+
+// The live note under the section tick-boxes. Including configuration no longer
+// needs an admin password (the bundle is keyless — see app/deploy/config_embed);
+// the note just confirms what will be carried onto the new install.
+function _updateEmbedNote() {
+  const note = _qs('ac-deploy-embed-note');
+  if (!note) return;
+  const include = (_qs('ac-deploy-embed-mode')?.value || 'bare') === 'include';
+  if (!include) { note.textContent = ''; return; }
+  note.style.color = '';
+  note.textContent = 'Ready — the ticked settings are packaged into the install command and set up on the new install automatically on first open.';
+}
+// "Clone current repo" — the icon button in the Repo-to-deploy row header. Fills
+// the bar from the repo the Source Control page is pointed at (GET
+// /admin/deploy/current-repo): its origin URL, current branch, and — when it's a
+// private repo with a stored token — the token + Private visibility, so a private
+// fork deploys with no re-typing. The token rides the (masked, never-persisted)
+// token field exactly like a typed one. On success the header URL updates (that's
+// the visible feedback) and the active target's command re-renders; feedback rides
+// the header URL text (`_flashRepoHead`) since the header has no status line.
+let _repoHeadTimer = null;
+function _flashRepoHead(text, isErr) {
+  const head = _qs('ac-deploy-repo-head');
+  if (!head) return;
+  if (_repoHeadTimer) { clearTimeout(_repoHeadTimer); _repoHeadTimer = null; }
+  head.textContent = ': ' + text;
+  head.style.color = isErr ? 'var(--danger)' : '';
+  // Restore the real repo URL after the transient message.
+  _repoHeadTimer = setTimeout(() => { head.style.color = ''; _updateRepoHead(); }, 3500);
+}
+
+async function _cloneCurrentRepo() {
+  if (!isAdmin()) return;
+  const btn = _qs('ac-deploy-repo-clone');
+  if (btn) { btn.disabled = true; btn.classList.add('ac-deploy-repo-clone-busy'); }
+  _flashRepoHead('reading current repo…');
+  try {
+    const r = await _get('/current-repo');
+    if (!r.ok || !r.github_url) { _flashRepoHead('no repository URL found for the current repo', true); return; }
+    const url = _qs('ac-deploy-repo-url'); if (url) url.value = r.github_url;
+    const branch = _qs('ac-deploy-repo-branch'); if (branch && r.branch) branch.value = r.branch;
+    const token = _qs('ac-deploy-repo-token'); if (token) token.value = r.token || '';
+    // A stored token came back → reveal the (now pre-filled) token field right away,
+    // so the real key is visible while the probe runs; the probe then confirms it.
+    if ((r.token || '').trim()) _showTokenField(true);
+    _probeRepo();                // auto-detect public/private for the cloned URL (+token)
+    _updateRepoHead();           // header now shows the cloned URL
+    // Cloning THIS install means carrying its configuration onto the new one too —
+    // flip the include toggle on (the body's section boxes + note reveal, and the
+    // header's "Includes this app’s config" line updates). No admin password is
+    // needed for the config — the bundle is keyless (see config_embed).
+    const emb = _qs('ac-deploy-embed-mode'); if (emb) emb.value = 'include';
+    _syncEmbedMode();
+    // Re-render whichever manual command is showing so it picks up the new repo.
+    const desc = MANUAL_ROWS.find(d => d.id === (_qs('ac-deploy-target')?.value || ''));
+    if (desc) _manualRender(desc);
+    _persistSharedRepo();        // keep the non-secret URL/visibility/branch (token isn't saved)
+    // A private repo with no stored token needs one typed below — nudge via the head.
+    if (r.visibility === 'private' && !r.has_token) _flashRepoHead(r.github_url.replace(/^https?:\/\//, '') + ' — private, add a token', true);
+  } catch (e) { _flashRepoHead(e.message, true); }
+  finally { if (btn) { btn.disabled = false; btn.classList.remove('ac-deploy-repo-clone-busy'); } }
+}
+
+// ── Repository access auto-detection ─────────────────────────────────────────
+// The Public/Private choice is no longer a manual dropdown. The app quietly asks
+// GitHub about the entered URL (POST /admin/deploy/probe-repo) and shows the result:
+//   • public        → green shield; no token needed; token field hidden.
+//   • unknown       → 404 with no token (private OR wrong address): amber note +
+//                     the token field slides in.
+//   • authenticated → the pasted token can read a private repo: green "access
+//                     confirmed" under the token field.
+//   • denied        → the token can't reach it: red note under the token field.
+//   • error         → GitHub didn't answer (rate-limit/network): neutral note; the
+//                     token field is revealed anyway so a private deploy isn't blocked.
+// The "visibility" the backend still needs (whether to inject a token when cloning)
+// is derived purely from a token being present — see _readSharedRepo.
+let _probeTimer = null;          // debounce for the URL/token-driven probe
+let _lastProbe = '';             // last probe verdict (public/authenticated/…) — drives visibility
+let _savedKeyOnFile = false;     // a reusable GitHub key is stored in the vault
+let _savedKeyMasked = '';        // masked hint for that saved key (never the key)
+
+function _repoStatusEl() { return _qs('ac-deploy-repo-status'); }
+function _tokenStatusEl() { return _qs('ac-deploy-repo-token-status'); }
+
+// Paint one status line with a lucide icon + message in a colour. Blank msg hides it.
+function _setRepoLine(el, icon, msg, color) {
+  if (!el) return;
+  if (!msg) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = 'flex';
+  el.style.color = color || '';
+  el.innerHTML = (icon ? '<i data-lucide="' + icon + '" style="width:15px;height:15px;flex:0 0 auto;"></i>' : '')
+    + '<span>' + _esc(msg) + '</span>';
+  _refreshLucideIcons(el);
+}
+
+// Show/hide the access-token field. Never hides it while it holds a typed token
+// (the admin may be mid-deploy of a private repo).
+function _showTokenField(on) {
   const wrap = _qs('ac-deploy-repo-token-wrap');
-  if (wrap) wrap.style.display = (vis && vis.value === 'private') ? '' : 'none';
+  if (!wrap) return;
+  const hasToken = (_qs('ac-deploy-repo-token')?.value || '').trim();
+  wrap.style.display = (on || hasToken) ? '' : 'none';
+}
+
+// Apply a probe result (the whole response) to the status lines, the token field's
+// visibility, and the saved-key controls. `r.used_saved` = the stored key did the
+// check (field was blank); `r.has_saved` = a reusable key is on file.
+function _applyProbeState(r) {
+  r = r || {};
+  const state = r.state || 'unknown';
+  const usedSaved = !!r.used_saved;
+  _savedKeyOnFile = !!r.has_saved;
+  const typedTok = (_qs('ac-deploy-repo-token')?.value || '').trim();
+
+  if (state === 'public') {
+    _setRepoLine(_repoStatusEl(), 'shield-check', 'Public repository — no access token needed.', 'var(--success)');
+    _setRepoLine(_tokenStatusEl(), '', '');
+    _showTokenField(false);
+  } else if (state === 'authenticated') {
+    _showTokenField(true);
+    if (usedSaved) {
+      _setRepoLine(_repoStatusEl(), 'shield-check', 'Private repository — confirmed with your saved GitHub key.', 'var(--success)');
+      _setRepoLine(_tokenStatusEl(), '', '');
+    } else {
+      _setRepoLine(_repoStatusEl(), 'lock', 'Private repository.', 'var(--fg-muted)');
+      _setRepoLine(_tokenStatusEl(), 'shield-check', 'Access confirmed — this token can read the repository.', 'var(--success)');
+    }
+  } else if (state === 'denied') {
+    _showTokenField(true);
+    _setRepoLine(_repoStatusEl(), 'alert-triangle', 'Couldn’t confirm this repository is public — it may be private or the address may be wrong.', 'var(--warning, var(--danger))');
+    _setRepoLine(_tokenStatusEl(), 'x', usedSaved
+      ? 'Your saved GitHub key can’t access this repository — paste one that can.'
+      : 'This token can’t access that repository.', 'var(--danger)');
+  } else if (state === 'error') {
+    _setRepoLine(_repoStatusEl(), 'help-circle', r.detail || 'Couldn’t check right now.', 'var(--fg-muted)');
+    _showTokenField(true);
+    if (!typedTok) _setRepoLine(_tokenStatusEl(), '', '');
+  } else {
+    // unknown: private OR wrong address, and no key reached it — amber, reveal field.
+    _setRepoLine(_repoStatusEl(), 'alert-triangle', 'Couldn’t confirm this repository is public — it may be private or the address may be wrong. Add an access token to continue.', 'var(--warning, var(--danger))');
+    _showTokenField(true);
+    _setRepoLine(_tokenStatusEl(), '', '');
+  }
+  _renderSavedKeyControls(state, typedTok);
+}
+
+// Run the detection for the current URL (+ token if the field holds one, else the
+// vault-stored key server-side). A blank URL clears everything (the default standard
+// repo is public). Guards against a stale response arriving after the admin has
+// changed the URL again.
+async function _probeRepo() {
+  const url = (_qs('ac-deploy-repo-url')?.value || '').trim();
+  if (!url) {
+    _lastProbe = '';
+    _setRepoLine(_repoStatusEl(), '', '');
+    _setRepoLine(_tokenStatusEl(), '', '');
+    _showTokenField(false);
+    _renderSavedKeyControls('', '');
+    return;
+  }
+  if (!isAdmin()) return;
+  const token = (_qs('ac-deploy-repo-token')?.value || '').trim();
+  _setRepoLine(_repoStatusEl(), 'loader', 'Checking repository…', 'var(--fg-muted)');
+  try {
+    const r = await _post('/admin/deploy/probe-repo', { github_url: url, token });
+    if ((_qs('ac-deploy-repo-url')?.value || '').trim() !== url) return;   // superseded
+    _lastProbe = r.state || 'unknown';
+    _applyProbeState(r);
+  } catch {
+    _lastProbe = 'error';
+    _applyProbeState({ state: 'error', detail: 'Couldn’t check right now.' });
+  }
+  // The verdict just set the effective visibility (+ whether a saved key applies), so
+  // rebuild the active manual command to match (public → no token; private → token).
+  const desc = MANUAL_ROWS.find(d => d.id === (_qs('ac-deploy-target')?.value || ''));
+  if (desc) _manualRender(desc);
+}
+
+// Paint the saved-key line (always visible when a key is on file, so it can be
+// Removed anytime) + the "Save key for reuse" button (only when a freshly-typed key
+// just proved it can read a private repo, so we only ever offer to store a WORKING
+// key). The Remove link and Save button are wired once in _initSharedRepo.
+function _renderSavedKeyControls(state, typedTok) {
+  const savedLine = _qs('ac-deploy-repo-saved-key');
+  const savedText = _qs('ac-deploy-repo-saved-key-text');
+  if (savedLine) {
+    savedLine.style.display = _savedKeyOnFile ? 'flex' : 'none';
+    if (savedText) savedText.textContent = _savedKeyMasked
+      ? ('Saved GitHub key on file (' + _savedKeyMasked + ') — reused for private clones')
+      : 'Saved GitHub key on file — reused for private clones';
+    _refreshLucideIcons(savedLine);
+  }
+  const actions = _qs('ac-deploy-repo-token-actions');
+  const saveBtn = _qs('ac-deploy-repo-token-save');
+  const canSave = state === 'authenticated' && !!typedTok;   // a working, freshly-typed key
+  if (saveBtn) saveBtn.textContent = _savedKeyOnFile ? 'Replace saved key' : 'Save key for reuse';
+  if (actions) actions.style.display = canSave ? '' : 'none';
+}
+
+// Load whether a reusable GitHub key is stored (admin-only; never the key itself).
+async function _loadSavedKeyStatus() {
+  if (!isAdmin()) return;
+  try {
+    const r = await _get('/github-token');
+    _savedKeyOnFile = !!r.configured;
+    _savedKeyMasked = r.masked || '';
+  } catch { _savedKeyOnFile = false; _savedKeyMasked = ''; }
+  _renderSavedKeyControls(_lastProbe, (_qs('ac-deploy-repo-token')?.value || '').trim());
+}
+
+// Store the typed token in the vault as the reusable key, then clear the field and
+// re-check (so the status flips to the saved-key path and the secret leaves the DOM).
+async function _saveTokenKey() {
+  const tok = (_qs('ac-deploy-repo-token')?.value || '').trim();
+  if (!tok) return;
+  const btn = _qs('ac-deploy-repo-token-save');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await _post('/admin/deploy/github-token', { token: tok });
+    _savedKeyOnFile = !!r.configured;
+    _savedKeyMasked = r.masked || '';
+    const t = _qs('ac-deploy-repo-token'); if (t) t.value = '';
+    await _probeRepo();
+  } catch (e) { _setRepoLine(_tokenStatusEl(), 'x', e.message, 'var(--danger)'); }
+  finally { if (btn) btn.disabled = false; }
+}
+
+// Forget the stored reusable key, then re-check (a private repo falls back to amber).
+async function _removeTokenKey(e) {
+  if (e) e.preventDefault();
+  try {
+    await _post('/admin/deploy/github-token/clear', {});
+    _savedKeyOnFile = false; _savedKeyMasked = '';
+    await _probeRepo();
+  } catch (er) { _setRepoLine(_tokenStatusEl(), 'x', er.message, 'var(--danger)'); }
+}
+
+// Debounced entry point used by the URL / token input handlers.
+function _probeRepoSoon() {
+  if (_probeTimer) clearTimeout(_probeTimer);
+  _probeTimer = setTimeout(_probeRepo, 550);
 }
 // Echo the chosen repo on the collapsed Repo-details bar, so "Repo details: <repo>"
 // is visible without expanding it. Blank → the standard WebAgent repo; the scheme
@@ -163,22 +487,20 @@ function _renderAll() {
     sel.value = want;
   }
   _prefillSharedRepo();
-  _syncSharedToken();
+  _probeRepo();                   // auto-detect access for the pre-filled repo URL
   _renderProvider();
   _renderManualPrefill();
   _syncTargetPanel();
 }
 
-// Pre-fill the shared Repo-details bar from the reserved "_repo" slot (URL +
-// visibility only; the token + admin password are never persisted). Only fills a
-// blank field, so it never clobbers something the admin is mid-typing.
+// Pre-fill the shared Repo-details bar from the reserved "_repo" slot (URL + branch
+// only; the token + admin password are never persisted, and access is re-detected
+// from the URL). Only fills a blank field, so it never clobbers mid-typing.
 function _prefillSharedRepo() {
   const repo = (_catalog && _catalog.shared_repo) || {};
   const url = _qs('ac-deploy-repo-url');
-  const vis = _qs('ac-deploy-repo-visibility');
   const branch = _qs('ac-deploy-repo-branch');
   if (url && !url.value && repo.github_url) url.value = repo.github_url;
-  if (vis && repo.visibility) vis.value = repo.visibility;
   if (branch && !branch.value && repo.branch) branch.value = repo.branch;
   _updateRepoHead();
 }
@@ -349,14 +671,16 @@ function _resetMorePanel() {
 // on it); "Save server" stores the current form as a named server; "Delete"
 // removes one. Every Google VM you create is auto-added server-side. The whole
 // block is hidden for targets that aren't profile-aware (p.saved_servers false).
+let _serversCache = [];         // last-rendered saved servers (for the live control sync)
 function _renderServers(p) {
   const wrap = _qs('ac-deploy-servers-wrap');
   const sel = _qs('ac-deploy-servers');
   if (!wrap || !sel) return;
-  if (!p || !p.saved_servers) { wrap.style.display = 'none'; return; }
+  if (!p || !p.saved_servers) { wrap.style.display = 'none'; _serversCache = []; return; }
   wrap.style.display = '';
 
   const servers = p.servers || [];
+  _serversCache = servers;
   const active = p.active_server || '';
   const opts = ['<option value="">＋ New server…</option>'];
   servers.forEach(s => {
@@ -367,17 +691,30 @@ function _renderServers(p) {
   sel.innerHTML = opts.join('');
   sel.value = active;
 
-  const cur = servers.find(s => s.id === active);
+  _syncServerControls();         // name field + Delete button follow the dropdown selection
+}
+
+// Point the name field + the Delete button at whatever server is CURRENTLY chosen in
+// the dropdown — driven off the live <select> value, not a server round-trip, so the
+// Delete button appears the instant a real saved server is picked and hides on
+// "＋ New server…". Called on render AND on every dropdown change (see _onServerSelect).
+function _syncServerControls() {
+  const sel = _qs('ac-deploy-servers');
+  if (!sel) return;
+  const id = sel.value || '';
+  const cur = _serversCache.find(s => s.id === id);
   const labelInp = _qs('ac-deploy-server-label');
   if (labelInp) labelInp.value = cur ? (cur.label || '') : '';
   const delBtn = _qs('ac-deploy-server-delete');
-  if (delBtn) delBtn.style.display = active ? '' : 'none';
+  if (delBtn) delBtn.style.display = id ? '' : 'none';
 }
 
 // Pick a saved server (or "New server…") → load it into the working form.
 async function _onServerSelect() {
   if (!isAdmin()) return;
   _preserve = null;              // loading a saved server's own values — those win
+  _resetDeleteBtn();             // clear any half-finished hold from the previous selection
+  _syncServerControls();         // reveal/hide Delete immediately — before the round-trip
   const server_id = (_qs('ac-deploy-servers') || {}).value || '';
   _setStatus(server_id ? 'Loading server…' : 'Cleared — enter a new server below.');
   try {
@@ -570,9 +907,9 @@ function _instBar(i) {
 
 // The hub's body: change this app's own port (persist + relaunch). The SETUP
 // BUNDLE tools (export / import a config code) are NO LONGER nested here — they
-// are two static top-level rows in #ac-deploy-list (see data-settings.html →
-// #ac-deploy-export-row / #ac-deploy-import-row), siblings of "+ New deployment",
-// wired below in initDeploy. Engine: app/admin/bootstrap_bundle.py.
+// are two expandable rows nested in the DATABASE card's "Data Migration" row
+// (see data-settings.html → #ac-deploy-export-row / #ac-deploy-import-row),
+// still wired below in initDeploy by id. Engine: app/admin/bootstrap_bundle.py.
 function _hubBody(i) {
   return '<label class="ac-label">Change this app’s port</label>'
     + '<input class="ac-input" type="number" min="1024" max="65535" data-hub-port value="' + _escAttr(String(i.port)) + '">'
@@ -698,11 +1035,12 @@ async function _hubSave(row) {
   } catch (e) { setStatus(e.message, true); }
 }
 
-// ── Setup bundle: export / import (the two static rows in #ac-deploy-list) ────
+// ── Setup bundle: export / import (nested in the "Data Migration" row) ────────
 // "Export config to link another account" (#ac-deploy-export-row) and "Import
-// config to link this account" (#ac-deploy-import-row) are static top-level rows
-// (siblings of "+ New deployment"), wired in initDeploy. `row` here is that bar
-// element. All server-side (crypto in Python): browser crypto.subtle is
+// config to link this account" (#ac-deploy-import-row) are two expandable rows
+// nested in the DATABASE card's "Data Migration" row, wired in initDeploy by id.
+// `row` here is that bar element. All server-side (crypto in Python): browser
+// crypto.subtle is
 // unavailable on plain-http LAN addresses, and moving config between devices is
 // the whole point.
 
@@ -866,6 +1204,10 @@ async function _registerAdd() {
     if (_qs('ac-inst-port')) _qs('ac-inst-port').value = '';
     setStatus('Added.', 'ok');
     await _loadInstances();
+    // The New-Deployment "This device" target lives on the Instances page now; nudge
+    // it to refresh so the freshly-registered checkout appears as a tile immediately
+    // (instead of waiting for its 20s poll). No-op anywhere else.
+    try { window.__instancesReloadLocal && window.__instancesReloadLocal(); } catch {}
   } catch (e) { setStatus(e.message, 'err'); }
 }
 
@@ -1290,6 +1632,10 @@ function _manualInputs(desc) {
     branch: repo.branch,
     install_dir: (_qs(desc.dir)?.value || '').trim(),
     admin_password: repo.admin_password,
+    // When "Include this app's configuration" is on the command is server-built
+    // (see _manualRender) — these tell the server what to pack in.
+    embed_config: repo.embed_config,
+    embed_sections: repo.embed_sections,
   };
 }
 
@@ -1312,23 +1658,58 @@ function _renderManualPrefill() {
 // always-visible box (instant, no network). If this row's QR popover is open,
 // refresh its code too.
 function _manualRender(desc) {
-  const r = desc.build(_manualInputs(desc));
+  const inp = _manualInputs(desc);
   const code = _qs(desc.cmd);
-  if (code) code.textContent = r.command;
-
-  // The run-only (already-installed) command follows the chosen install folder
-  // (Termux/Windows); macOS ignores it. Paint it from the same resolved folder.
   const runCode = _qs(desc.run);
-  if (runCode && desc.runBuild) runCode.textContent = desc.runBuild(r.directory);
-
-  // A real warning in red; otherwise a gentle note about which repo/folder is in
-  // use, or a nudge to finish a private repo's token.
   const status = _qs(desc.status);
-  if (status) {
-    if (r.warning) { status.textContent = r.warning; status.style.color = 'var(--danger)'; }
-    else if (r.placeholderToken) { status.textContent = 'Enter your access token above to finish the command.'; status.style.color = ''; }
-    else if (r.defaultRepo) { status.textContent = 'Installing the standard WebAgent repository — enter an address above only to install your own fork.'; status.style.color = ''; }
-    else { status.textContent = ''; status.style.color = ''; }
+  const qrBtn = _qs(desc.qrBtn);
+
+  if (inp.embed_config) {
+    // "Include this app's configuration": the command carries a locked bundle of
+    // this install's AI keys / vault / database, and only the SERVER holds those
+    // secrets — so the browser can't build it. Fetch it from the server instead
+    // (debounced), hide the QR (a QR can't hold a kilobyte-scale bundle), and show
+    // the returned command. A missing/short password comes back as a warning.
+    if (qrBtn) qrBtn.style.display = 'none';
+    if (_qrPop && _qrDesc === desc) _closeQr();
+    // Only fetch for the target the admin is actually looking at — the other two
+    // manual rows also render on load, but building each one gathers + encrypts
+    // secrets server-side, so don't fire three requests for two hidden panels.
+    const activeTarget = (_qs('ac-deploy-target')?.value || '') === desc.id;
+    if (!activeTarget) { if (code) code.textContent = ''; return; }
+    if (status) { status.textContent = 'Preparing command with your configuration…'; status.style.color = ''; }
+    clearTimeout(_embedTimers[desc.id]);
+    _embedTimers[desc.id] = setTimeout(async () => {
+      let r;
+      try { r = await _post('/admin/deploy/command', { provider: desc.id, ...inp, persist: false }); }
+      catch {
+        if (status) { status.textContent = 'Couldn’t reach the server to build the command. If you just updated WebAgent, restart it and try again.'; status.style.color = 'var(--danger)'; }
+        return;
+      }
+      if (code) code.textContent = r.command || '';
+      if (runCode && desc.runBuild) runCode.textContent = desc.runBuild(r.install_dir || '');
+      if (status) {
+        if (r.warning) { status.textContent = r.warning; status.style.color = 'var(--danger)'; }
+        else if (r.embedded) { status.textContent = 'This command carries your encrypted configuration — it’s long, so use Copy (a QR can’t hold it).'; status.style.color = ''; }
+        else { status.textContent = ''; status.style.color = ''; }
+      }
+    }, 300);
+  } else {
+    // Bare command — built live in the browser (never empty, no server round-trip).
+    if (qrBtn) qrBtn.style.display = '';
+    const r = desc.build(inp);
+    if (code) code.textContent = r.command;
+    // The run-only (already-installed) command follows the chosen install folder
+    // (Termux/Windows); macOS ignores it. Paint it from the same resolved folder.
+    if (runCode && desc.runBuild) runCode.textContent = desc.runBuild(r.directory);
+    // A real warning in red; otherwise a gentle note about which repo/folder is in
+    // use, or a nudge to finish a private repo's token.
+    if (status) {
+      if (r.warning) { status.textContent = r.warning; status.style.color = 'var(--danger)'; }
+      else if (r.placeholderToken) { status.textContent = 'Enter your access token above to finish the command.'; status.style.color = ''; }
+      else if (r.defaultRepo) { status.textContent = 'Installing the standard WebAgent repository — enter an address above only to install your own fork.'; status.style.color = ''; }
+      else { status.textContent = ''; status.style.color = ''; }
+    }
   }
 
   // Steps + note never change — fill them once.
@@ -1475,7 +1856,7 @@ function _placeQr(panel, anchor) {
 // written, not built from field descriptors. Idempotent — a `wired` flag stops
 // re-runs from stacking.
 function _wireManualTips() {
-  const sel = ['#ac-deploy-repo-row .ac-label[data-tip]']
+  const sel = ['#ac-deploy-repo-row .ac-label[data-tip]', '#ac-deploy-config-row .ac-label[data-tip]']
     .concat(MANUAL_ROWS.map(d => '#' + d.row + ' .ac-label[data-tip]')).join(', ');
   document.querySelectorAll(sel).forEach(lab => {
     if (lab.dataset.tipWired) return;
@@ -1495,13 +1876,13 @@ function _initSharedRepo() {
   const url = _qs('ac-deploy-repo-url');
   if (url && !url.dataset.wired) {
     url.dataset.wired = '1';
-    url.addEventListener('input', () => { _updateRepoHead(); rerenderActive(); });  // instant, client-side
-    url.addEventListener('change', () => { rerenderActive(); _persistSharedRepo(); });
+    url.addEventListener('input', () => { _updateRepoHead(); rerenderActive(); _probeRepoSoon(); });  // instant, client-side
+    url.addEventListener('change', () => { rerenderActive(); _persistSharedRepo(); _probeRepo(); });
   }
-  const vis = _qs('ac-deploy-repo-visibility');
-  if (vis && !vis.dataset.wired) {
-    vis.dataset.wired = '1';
-    vis.addEventListener('change', () => { _syncSharedToken(); rerenderActive(); _persistSharedRepo(); });
+  const clone = _qs('ac-deploy-repo-clone');
+  if (clone && !clone.dataset.wired) {
+    clone.dataset.wired = '1';
+    clone.addEventListener('click', _cloneCurrentRepo);
   }
   const branch = _qs('ac-deploy-repo-branch');
   if (branch && !branch.dataset.wired) {
@@ -1512,13 +1893,41 @@ function _initSharedRepo() {
   const token = _qs('ac-deploy-repo-token');
   if (token && !token.dataset.wired) {
     token.dataset.wired = '1';
-    token.addEventListener('input', rerenderActive);                       // never persisted
+    token.addEventListener('input', () => { rerenderActive(); _probeRepoSoon(); });  // never persisted; re-checks access
   }
+  // Reusable GitHub key: Save (store the typed key) + Remove (forget the stored one).
+  const saveKeyBtn = _qs('ac-deploy-repo-token-save');
+  if (saveKeyBtn && !saveKeyBtn.dataset.wired) {
+    saveKeyBtn.dataset.wired = '1';
+    saveKeyBtn.addEventListener('click', _saveTokenKey);
+  }
+  const removeKeyLink = _qs('ac-deploy-repo-token-remove');
+  if (removeKeyLink && !removeKeyLink.dataset.wired) {
+    removeKeyLink.dataset.wired = '1';
+    removeKeyLink.addEventListener('click', _removeTokenKey);
+  }
+  _loadSavedKeyStatus();          // reflect any already-stored reusable key on the bar
   const pw = _qs('ac-deploy-repo-admin-pw');
   if (pw && !pw.dataset.wired) {
     pw.dataset.wired = '1';
-    pw.addEventListener('input', rerenderActive);                          // never persisted
+    // The password also locks the embedded config bundle — refresh the include-note
+    // and (if a manual target with include on) rebuild its server command.
+    pw.addEventListener('input', () => { _updateEmbedNote(); rerenderActive(); });   // never persisted
   }
+  // "What to set up on the new install" — the include/bare mode + its section boxes.
+  const embMode = _qs('ac-deploy-embed-mode');
+  if (embMode && !embMode.dataset.wired) {
+    embMode.dataset.wired = '1';
+    embMode.addEventListener('change', () => { _syncEmbedMode(); rerenderActive(); });
+  }
+  document.querySelectorAll('#ac-deploy-embed-opts [data-embed-sec]').forEach(cb => {
+    if (cb.dataset.wired) return;
+    cb.dataset.wired = '1';
+    // Ticking/unticking "Database (shared)" re-locks the admin-password + AI-key
+    // controls (they're carried/handled for a shared DB) — see _syncSharedDbLocks.
+    cb.addEventListener('change', () => { _syncSharedDbLocks(); _updateEmbedNote(); rerenderActive(); });
+  });
+  _syncEmbedMode();              // set the initial include-opts visibility + note
   _updateRepoHead();             // show the default repo on the bar before any load
 }
 
@@ -2066,6 +2475,11 @@ async function _saveSettings() {
     const repo = _readSharedRepo();
     const config = { ..._gather('cfg'), repo_url: repo.github_url, visibility: repo.visibility };
     if (repo.branch) config.branch = repo.branch;   // blank → provider default (main)
+    // "Include this app's configuration": the manager (run_deploy) reads these off
+    // the saved config, gathers + encrypts the chosen sections with the admin
+    // password, and writes them onto the new server as bootstrap.json.
+    config.embed_config = repo.embed_config;
+    config.embed_sections = repo.embed_sections;
     await _post('/admin/deploy/config', { provider: _provider(), config });
     const creds = _gather('cred');
     if (repo.admin_password) creds.admin_password = repo.admin_password;
@@ -2098,9 +2512,17 @@ async function _deploy() {
   if (!isAdmin() || _busy) return;
   const p = _current();
   if (!p) return;
+  // Disable Activate the instant it's clicked — a disabled <button> stops
+  // dispatching clicks, so this closes the double-click race that could spin up
+  // two instances (the _busy guard below isn't set until after the async save +
+  // confirm, leaving a window open). It stays disabled until the page is
+  // refreshed; only a cancelled confirm re-enables it so an accidental cancel
+  // doesn't lock the admin out.
+  const goBtn = _qs('ac-deploy-go');
+  if (goBtn) goBtn.disabled = true;
   // Persist whatever's typed first, so the deploy uses the latest settings/key.
   const saved = await _saveSettings();
-  if (!saved) return;
+  if (!saved) { if (goBtn) goBtn.disabled = false; return; }
   // Word the confirm to match the target: a cloud target CREATES a billable
   // server; an "existing server" target (creates_server === false) just installs
   // onto a machine the admin already owns.
@@ -2110,7 +2532,7 @@ async function _deploy() {
         + 'It replaces any existing WebAgent install there.')
     : ('Deploy WebAgent to ' + (p.display_name || 'the cloud') + '?\n\n'
         + 'This creates a real, billable server on your cloud account.');
-  if (!window.confirm(confirmMsg)) return;
+  if (!window.confirm(confirmMsg)) { if (goBtn) goBtn.disabled = false; return; }
   _busy = true;
   _setStatus('Deploying…');
   _logReset();

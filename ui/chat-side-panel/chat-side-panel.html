@@ -142,16 +142,11 @@
 		    <button id="chat-voice-btn" class="chat-pill-voice" title="Record voice"><i data-lucide="mic" style="width:22px;height:22px;"></i></button>
 		    <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:22px;height:22px;"></i></button>
     <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
-    <!-- TERMINAL-KEYS VIEW — Terminal Chat only. An alternate "view" the pill takes
-         on: when #chat-input-area gets .term-keys-open (footer #chat-term-keys-btn)
-         the pill's normal controls (attach/textarea/mic/send) hide and this grid
-         OVERLAYS the whole pill box — same border, radius, background and resting
-         height — turning the composer into a number pad + arrows + shortcut keys
-         (Esc/Tab/⇧Tab/Enter/^C…). Each key fires a SINGLE keystroke to the live PTY
-         (no Enter appended). Built + wired in ui/chat-side-panel/js/chat-terminal-keys.js;
-         bytes via app.terminalChatKey (ui/chat-side-panel/js/chat-terminal-engine.js).
-         REMOVE-WHEN: the Terminal Chat engine is dropped. -->
-    <div id="chat-term-keypad" class="chat-term-keypad"></div>
+    <!-- TERMINAL-KEYS VIEW is PLUGIN-OWNED: the #chat-term-keypad grid (and its
+         footer #chat-term-keys-btn toggle) are injected at runtime into this pill
+         by the terminal_chat engine's own frontend
+         (plugins/engines/terminal_chat/ui/terminal-keys.js), loaded lazily only when
+         a Terminal Chat session mounts — so nothing for it lives in this core markup. -->
   </div>
   <div id="chat-footer-row" class="chat-footer-row">
 	    <div class="chat-footer-left">
@@ -169,10 +164,9 @@
 	      <!-- The dedicated model-name button was removed; the model picker is still
 	           opened by clicking the token/cost group on the footer's left
 	           (.chat-footer-left → _onFooterClick in chat-activity.js). -->
-	      <!-- Terminal-keys toggle — hidden until Terminal Chat mode activates
-           (shown/hidden by ui/chat-side-panel/js/chat-terminal-keys.js). Opens
-           the #chat-term-keypad panel above. -->
-      <button id="chat-term-keys-btn" class="chat-skills-btn chat-term-keys-btn" title="Terminal keys — arrows, number pad & shortcuts" type="button" hidden><i data-lucide="keyboard" style="width:20px;height:20px;"></i></button>
+	      <!-- Terminal-keys toggle (#chat-term-keys-btn) is PLUGIN-OWNED and injected
+           here at runtime by plugins/engines/terminal_chat/ui/terminal-keys.js only
+           while a Terminal Chat session is mounted — no core markup for it. -->
       <button id="chat-abilities-btn" class="chat-skills-btn" title="Abilities — click to turn each on/off for this chat">
 	        <i data-lucide="blocks" style="width:20px;height:20px;"></i>
 	        <span id="chat-abilities-badge" class="csp-badge">0</span>

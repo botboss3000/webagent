@@ -26,6 +26,7 @@ const _DEFAULTS = {
   switched_agent_bubble: 'Switched agent. New session started.',
   pill_placeholder: 'Chat with the agent',
   pill_locked_placeholder: 'Sign in to chat — this app does not allow anonymous use.',
+  session_deleted_notice: 'Session not found — it was deleted.',
 };
 
 let _chat = { ..._DEFAULTS };

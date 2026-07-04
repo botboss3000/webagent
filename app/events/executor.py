@@ -119,9 +119,19 @@ async def execute_event_subscription(
     from app.agent.prompts import build_system_prompt
     from app.admin.integrations import is_ability_enabled_for_agent
 
-    db = get_db()
     agent_id = sub["agent_id"]
     user_id = sub["owner_user_id"]
+    # Multi-tenant: background fire with no request context — pin the data-plane
+    # router to the subscription OWNER before resolving db, so the session +
+    # interactions written for this fire land in the owner's own database. No-op
+    # in single-tenant mode.
+    try:
+        from app.auth.identity import set_verified_caller_uid
+        if user_id:
+            set_verified_caller_uid(user_id)
+    except Exception:  # noqa: BLE001
+        pass
+    db = get_db()
     prompt_text = sub.get("prompt") or ""
     preferred_channel = sub.get("channel")
     label = sub.get("task_label") or f"{sub.get('source','event')}:{sub.get('event_type','?')}"

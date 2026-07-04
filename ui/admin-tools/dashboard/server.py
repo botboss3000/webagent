@@ -287,9 +287,14 @@ def _memory_mb() -> Optional[float]:
 
 # ── operational card sections (agents / users / sessions / health / tools / security) ─
 def _raw_rows(table: str, cols: str, limit: int, order: Optional[str] = None) -> List[Dict[str, Any]]:
-    """One raw-client table read (worker-thread caller wraps this)."""
-    from app.db import get_db
-    q = get_db().get_raw_client().table(table).select(cols)
+    """One raw-client table read (worker-thread caller wraps this).
+
+    Reads the CONTROL (central) database: this is the admin-global dashboard, and
+    billing/usage_events + the account plane live centrally. In multi-tenant mode
+    individual users' private data lives in their own databases and is not part of
+    this global view by design. No-op difference in single-tenant mode."""
+    from app.db import get_control_db
+    q = get_control_db().get_raw_client().table(table).select(cols)
     if order:
         q = q.order(order, desc=True)
     res = q.limit(limit).execute()
@@ -358,7 +363,7 @@ async def _users_section(window_s: float) -> Dict[str, Any]:
                            "new_in_window": 0, "recent": []}
     try:
         from app.auth.users import list_users
-        accounts = list_users() or []
+        accounts = await list_users() or []
         profiles = await asyncio.to_thread(
             _raw_rows, "user_profiles", "user_id,is_admin,created_at,last_login_at", 2000)
         prof = {p.get("user_id"): p for p in profiles}
@@ -767,9 +772,13 @@ async def _fetch_usage_rows(start: float) -> List[Dict[str, Any]]:
     tail — which is what lets a frequent poll show activity the instant it
     happens instead of waiting for the push to remote. Non-hybrid installs just
     query the single active backend. Either side failing degrades to the other
-    (never hard-fails the chart)."""
-    from app.db import get_db
-    db = get_db()
+    (never hard-fails the chart).
+
+    Reads the CONTROL (central) database — usage_events is the central billing
+    plane in multi-tenant mode (see app/agent/loop.py). No-op difference in
+    single-tenant mode."""
+    from app.db import get_control_db
+    db = get_control_db()
     local = getattr(db, "local", None)
     remote = getattr(db, "remote", None)
     if local is not None and remote is not None:

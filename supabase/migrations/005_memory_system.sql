@@ -78,10 +78,13 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_memory ON memory_chunks(memory_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_source ON memory_chunks(chunk_source);
 
--- HNSW index for vector search (create after data is loaded):
--- CREATE INDEX IF NOT EXISTS idx_chunks_embedding
---     ON memory_chunks USING hnsw (embedding vector_cosine_ops)
---     WITH (m = 16, ef_construction = 200);
+-- HNSW index for vector search. HNSW builds fine on an empty table (no training
+-- pass, unlike ivfflat), so it can be created up front. Name + opclass match what
+-- the app's DDL renderer emits (idx_memory_chunks_embedding_hnsw, vector_cosine_ops
+-- for the `<=>` cosine operator) so IF NOT EXISTS dedupes if both paths run.
+CREATE INDEX IF NOT EXISTS idx_memory_chunks_embedding_hnsw
+    ON memory_chunks USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 200);
 
 
 -- ============================================================

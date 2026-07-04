@@ -321,15 +321,19 @@ def _existing_page_labels(area: str) -> List[str]:
 async def _recall_user_context(user_id: Optional[str], query: str, limit: int = 4) -> List[str]:
     """Best-effort recall of what we know about THIS user from the default
     WebAgent's memory (cross-session) so suggestions can be personalised — e.g.
-    a user who runs a bakery gets "Add a bakery menu page". Uses the fast FTS-only
-    path (no embedding round-trip) since this fires on hover. Returns short
-    snippets; empty on any failure (personalisation is optional)."""
+    a user who runs a bakery gets "Add a bakery menu page". Uses the full hybrid
+    (keyword + semantic) recall path: embeddings are now in-process/local by
+    default (no network round-trip, no API cost), so the semantic leg is fast
+    enough to run even on hover and catches related-but-differently-worded
+    memories keyword search would miss. Degrades to keyword-only automatically if
+    the local engine isn't installed. Returns short snippets; empty on any failure
+    (personalisation is optional)."""
     if not user_id or not (query or "").strip():
         return []
     try:
         from app.db import get_db
         db = get_db()
-        rows = await db.memory_search(user_id, query, limit=limit, vector=False)
+        rows = await db.memory_search(user_id, query, limit=limit, vector=True)
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("suggestions: memory recall failed: %s", e)
         return []

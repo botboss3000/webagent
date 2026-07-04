@@ -354,11 +354,13 @@ def _maybe_build_postgres():
     return None
 
 
-def get_db() -> StorageBackend:
+def get_control_db() -> StorageBackend:
     """
-    Get the current storage backend instance.
+    Get the central/control storage backend instance — the one database the admin
+    signed into. This is the single shared database in single-tenant mode, and the
+    account/agent-catalog/billing plane in multi-tenant mode.
 
-    Lazily creates the backend based on the current mode.
+    Lazily creates the backend based on the current mode. Cached in _db_instance.
 
     Returns:
         StorageBackend implementation (SupabaseBackend or LocalBackend), possibly
@@ -462,6 +464,45 @@ def get_db() -> StorageBackend:
         _db_instance = _maybe_wrap_encryption(base)
 
     return _db_instance
+
+
+def get_db() -> StorageBackend:
+    """
+    The storage backend for the current request/turn.
+
+    Single-tenant (default): returns the central control backend unchanged — every
+    caller shares the one admin-configured database, exactly as before.
+
+    Multi-tenant ON (App Settings → Multi-tenant data): returns a TenantRouterBackend
+    that keeps the account/admin plane on the central database but routes each
+    caller's interaction data (sessions, chats, memories, agents, secrets) to THAT
+    user's own database. The ~90 existing call sites are unchanged: the router
+    duck-types StorageBackend (see app/db/router.py).
+    """
+    control = get_control_db()
+    try:
+        from app.admin.settings import get_multi_tenant_enabled
+        if not get_multi_tenant_enabled():
+            return control
+    except Exception:  # noqa: BLE001 — never let a settings read break DB access
+        return control
+    from app.db.router import TenantRouterBackend
+    return TenantRouterBackend(control)
+
+
+def get_data_db(user_id: Optional[str]) -> StorageBackend:
+    """Explicit data-plane backend for a specific user — the user's own database
+    when multi-tenant is on and they have one, else the central backend. Used by
+    background jobs / raw-SQL paths that must target a KNOWN user rather than the
+    ambient request caller. Safe in single-tenant mode (returns central)."""
+    try:
+        from app.admin.settings import get_multi_tenant_enabled
+        if not get_multi_tenant_enabled():
+            return get_control_db()
+    except Exception:  # noqa: BLE001
+        return get_control_db()
+    from app.db.tenant import resolve_data_backend
+    return resolve_data_backend(user_id)
 
 
 async def get_db_stats() -> dict:

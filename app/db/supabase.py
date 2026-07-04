@@ -1220,6 +1220,43 @@ class SupabaseBackend(StorageBackend):
         lb = LocalBackend()
         return await lb.resolve_agent(user_id, template_id)
 
+    async def find_default_agent(self, user_id: str) -> Optional[dict]:
+        """Authoritative WebAgent singleton lookup — the user's oldest ACTIVE
+        agent cloned from the ``default`` template (or None). Mirrors
+        LocalBackend.find_default_agent; used by the idempotent provisioner so a
+        device reuses the existing WebAgent instead of minting a duplicate."""
+        try:
+            rows = (
+                self._client.table("agents")
+                .select("*")
+                .eq("template_id", "default")
+                .execute()
+            ).data or []
+        except Exception as e:
+            logger.error("find_default_agent (supabase) failed: %s", e)
+            return None
+        import json as _json
+        cand = []
+        for r in rows:
+            status = (r.get("status") or "")
+            if status not in ("", "active"):
+                continue
+            admins = r.get("admin_users")
+            if isinstance(admins, str):
+                try:
+                    admins = _json.loads(admins)
+                except Exception:
+                    admins = []
+            if user_id not in (admins or []):
+                continue
+            cand.append(r)
+        if not cand:
+            return None
+        cand.sort(key=lambda r: str(r.get("created_at") or ""))
+        entry = dict(cand[0])
+        entry["source"] = "custom"
+        return entry
+
     async def get_session_agent_id(self, session_id: str) -> Optional[str]:
         """Get the agent_id bound to a session from sessions table."""
         try:
@@ -2115,6 +2152,39 @@ class SupabaseBackend(StorageBackend):
             d["online"] = bool(d.get("last_seen") and d["last_seen"] >= cutoff)
         return rows
 
+    async def delete_device(self, instance_id):
+        """Remove a device's presence row (admin unlink of a stale device). Clears
+        the record only; a still-running device re-registers on its next
+        heartbeat. Returns True on success."""
+        try:
+            self._client.table("device_presence").delete().eq(
+                "instance_id", instance_id).execute()
+            return True
+        except Exception as e:
+            logger.error("delete_device error: %s", e)
+            return False
+
+    async def set_device_override(self, instance_id, label=None, icon=None):
+        """Set the admin's custom display name / icon for a device (shared
+        registry). Overrides the self-reported hostname + platform icon; never
+        touched by the heartbeat, so it persists and shows on every device. Per
+        field: None = leave unchanged; "" = clear the override; else set it.
+        Returns True on success."""
+        patch = {}
+        if label is not None:
+            patch["custom_label"] = label or None
+        if icon is not None:
+            patch["custom_icon"] = icon or None
+        if not patch:
+            return False
+        try:
+            self._client.table("device_presence").update(patch).eq(
+                "instance_id", instance_id).execute()
+            return True
+        except Exception as e:
+            logger.error("set_device_override error: %s", e)
+            return False
+
     async def enqueue_device_job(self, *, owner_user_id, prompt, agent_id=None,
                                  target_instance=None, target_label=None,
                                  created_by_instance=None, payload=None):
@@ -2171,6 +2241,18 @@ class SupabaseBackend(StorageBackend):
             except Exception as e:
                 logger.debug("claim_device_jobs update %s failed: %s", jid, e)
         return claimed
+
+    async def get_device_job(self, job_id):
+        """Single device job by id (or None) — backs the Instances-page poll of a
+        fleet ACTION's outcome (git pull / commit+push leave no heartbeat state)."""
+        try:
+            res = (self._client.table("device_jobs")
+                   .select("*").eq("id", job_id).limit(1).execute())
+            data = res.data or []
+            return data[0] if data else None
+        except Exception as e:
+            logger.error("get_device_job error: %s", e)
+            return None
 
     async def finish_device_job(self, job_id, *, status, result_excerpt=None,
                                 error=None, session_id=None):

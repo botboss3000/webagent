@@ -69,24 +69,24 @@ async function findWebagentAgent(userId) {
 }
 
 async function createWebagentAgent(userId) {
-  const res = await fetch(apiPath('/api/v1/agents'), {
+  // Idempotent get-or-create on the server: /agents/ensure-default returns the
+  // EXISTING WebAgent when one is already present on the authority, and only
+  // creates one otherwise. This is what stops duplicate WebAgents piling up when
+  // several devices (or this page's two ensure paths) resolve the singleton at
+  // once \u2014 the old code POSTed /agents, which ALWAYS created a new row.
+  const res = await fetch(apiPath('/api/v1/agents/ensure-default'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({
-      user_id: userId,
-      name: 'WebAgent',
-      description: 'Your all-purpose WebAgent \u2014 chat, tools, web, browser, code, pages, and source control.',
-      template_id: WEBAGENT_TEMPLATE_ID,
-    }),
+    body: JSON.stringify({ user_id: userId }),
   });
   if (!res.ok) {
-    let detail = `agent create failed (${res.status})`;
+    let detail = `agent ensure failed (${res.status})`;
     try { const e = await res.json(); detail = e.detail || detail; } catch (_) {}
     throw new Error(detail);
   }
   const data = await res.json();
   const id = data.agent && data.agent.id;
-  if (!id) throw new Error('agent create returned no id');
+  if (!id) throw new Error('agent ensure returned no id');
   _webagentIdCache.set(userId, id);
   if (typeof app.populateAgentSelect === 'function') {
     try { await app.populateAgentSelect(userId); } catch (_) {}
@@ -96,6 +96,9 @@ async function createWebagentAgent(userId) {
 
 async function ensureWebagentAgent(userId) {
   if (!userId) throw new Error('not signed in');
+  // Prefer the local find (cheap, avoids a round-trip when the roster already
+  // holds the WebAgent); fall back to the authoritative server get-or-create,
+  // which is itself idempotent so a miss here can never mint a duplicate.
   return (await findWebagentAgent(userId)) || (await createWebagentAgent(userId));
 }
 

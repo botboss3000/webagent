@@ -72,9 +72,28 @@ function _adminModelAdapter() {
   const headers = { 'Content-Type': 'application/json' };
   return {
     loadConfig: async () => {
+      // ONE combined read (single vault+DB resolve on the server) instead of two
+      // sequential round-trips for the default model + the roster. Falls back to
+      // the two reads IN PARALLEL if the bundle endpoint isn't available yet
+      // (older backend / server not yet restarted after this change).
       let single = {}, multi = {};
-      try { const r = await _fetch(apiPath('/admin/settings/provider')); if (r.ok) single = await r.json(); } catch (_) {}
-      try { const r = await _fetch(apiPath('/admin/settings/multi-providers')); if (r.ok) multi = await r.json(); } catch (_) {}
+      try {
+        const r = await _fetch(apiPath('/admin/settings/provider-bundle'));
+        if (r.ok) {
+          const b = await r.json();
+          single = b.provider || {};
+          multi = { providers: b.roster || [] };
+        } else {
+          throw new Error('no-bundle');   // fall through to the legacy parallel pair
+        }
+      } catch (_) {
+        const [r1, r2] = await Promise.all([
+          _fetch(apiPath('/admin/settings/provider')).catch(() => null),
+          _fetch(apiPath('/admin/settings/multi-providers')).catch(() => null),
+        ]);
+        try { if (r1 && r1.ok) single = await r1.json(); } catch (_e) {}
+        try { if (r2 && r2.ok) multi = await r2.json(); } catch (_e) {}
+      }
       return {
         provider: single.provider, base_url: single.base_url, api_key: single.api_key, model: single.model,
         text_capable: single.text_capable, image_capable: single.image_capable, image_out_capable: single.image_out_capable,
@@ -197,6 +216,88 @@ async function _saveSuggestionsCheckbox() {
   } catch (e) {
     cb.checked = !cb.checked;  // revert on failure
     _flashSaveCheck(ctrl, false, e.message);
+  }
+}
+
+// -- Memory embeddings source/model (app/agent/embed.py) --------------------
+// APP-WIDE, admin-only. Relocated (with the other model extras) into the model
+// table's Advanced panel. NOT per-agent: every stored memory vector shares one
+// column + width, so all agents must embed identically. Applying a change
+// re-embeds every saved memory via POST /admin/settings/embedding/reindex.
+function _initEmbeddingControl() {
+  const src = _qs('ac-embed-source');
+  if (!src) return;
+  src.addEventListener('change', () => {
+    const localRow = _qs('ac-embed-local-row');
+    if (localRow) localRow.style.display = (src.value === 'local') ? '' : 'none';
+  });
+  const btn = _qs('ac-embed-reindex');
+  if (btn) btn.addEventListener('click', _applyEmbeddingReindex);
+}
+
+async function _loadEmbeddingControl() {
+  const src = _qs('ac-embed-source');
+  if (!src) return;
+  try {
+    const res = await _fetch(apiPath('/admin/settings/embedding'));
+    if (!res.ok) return;
+    const cfg = await res.json();
+    src.value = (cfg.source === 'local') ? 'local' : 'cloud';
+    const modelSel = _qs('ac-embed-model');
+    if (modelSel) {
+      modelSel.innerHTML = '';
+      (cfg.local_models || []).forEach((m) => {
+        const o = document.createElement('option');
+        o.value = m.id;
+        o.textContent = `${m.id} · ${m.dim}-dim`;
+        modelSel.appendChild(o);
+      });
+      if (cfg.source === 'local' && cfg.model) modelSel.value = cfg.model;
+    }
+    const localRow = _qs('ac-embed-local-row');
+    if (localRow) localRow.style.display = (cfg.source === 'local') ? '' : 'none';
+    const warn = _qs('ac-embed-local-warn');
+    if (warn) {
+      if (!cfg.local_available) {
+        warn.style.display = '';
+        warn.textContent = `In-process engine not installed — ${cfg.local_reason || 'run: uv sync --extra embeddings-local'}. Selecting Local needs it.`;
+      } else {
+        warn.style.display = 'none';
+      }
+    }
+    const cur = _qs('ac-embed-current');
+    if (cur) cur.innerHTML = `Active: <strong>${_esc(cfg.source)}</strong> · <code>${_esc(cfg.model)}</code> · ${cfg.dim}-dim`;
+  } catch (_) {}
+}
+
+async function _applyEmbeddingReindex() {
+  if (!isAdmin()) { showRestrictedModal(); return; }
+  const src = _qs('ac-embed-source');
+  const modelSel = _qs('ac-embed-model');
+  const btn = _qs('ac-embed-reindex');
+  const status = _qs('ac-embed-status');
+  if (!src) return;
+  const source = (src.value === 'local') ? 'local' : 'cloud';
+  const model = (source === 'local' && modelSel) ? modelSel.value : '';
+  if (!window.confirm('Re-embed every saved memory with the selected engine? During the rebuild, memory search falls back to keyword-only.')) return;
+  if (btn) btn.disabled = true;
+  if (status) { status.style.display = ''; status.style.color = 'var(--fg-3)'; status.textContent = 'Re-embedding all memories… this can take a moment.'; }
+  try {
+    const res = await _fetch(apiPath('/admin/settings/embedding/reindex'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ embedding_source: source, embedding_model: model }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    const parts = Object.entries((data.result && data.result.tables) || {})
+      .map(([t, r]) => `${t}: ${r.written ?? 0}/${r.rows ?? 0}`).join(', ');
+    if (status) { status.style.color = 'var(--success)'; status.textContent = `Done — now ${_esc(data.source)} · ${_esc(data.model)} · ${data.dim}-dim. Reindexed ${parts || 'nothing'}.`; }
+    _loadEmbeddingControl();
+  } catch (e) {
+    if (status) { status.style.color = 'var(--danger)'; status.textContent = `Failed: ${e.message}`; }
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -1737,6 +1838,8 @@ export function init() {
   // the AI-suggestions toggle never saving).
   _initSuggestionsCheckbox();
   _loadSuggestionsCheckbox();
+  _initEmbeddingControl();
+  _loadEmbeddingControl();
 
   // ── Automation Engine: wire buttons now, load data lazily on first expand ──
   // Both halves (scheduler + event sources) hit admin-only endpoints, so defer
@@ -1801,6 +1904,7 @@ export function load() {
   _lastAgentLoadAt = Date.now();
   _modelTable?.reload();
   _loadSuggestionsCheckbox();
+  _loadEmbeddingControl();
   _loadIntegrations();
 }
 

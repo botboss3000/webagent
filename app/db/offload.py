@@ -87,13 +87,16 @@ from typing import Any, Awaitable, Callable
 
 def _worker_count() -> int:
     """Size of the DB-worker pool. Kept UNDER the Postgres connection-pool cap so
-    workers never wait on a connection that doesn't exist. Tunable via env; a
-    handful of workers is plenty of parallelism for the per-turn read fan-out
-    while leaving connection headroom for the live stream + background pollers."""
+    workers never wait on a connection that doesn't exist. Tunable via env. The
+    default (16) is the concurrency ceiling for the page-boot API burst: every
+    remote read funnels through this pool, so at boot ~15-20 dynamic-data calls
+    fire at once and this bounds how many run in parallel (was 8 → the burst
+    queued in waves; measured ~12s cold-load contention). 16 stays under the PG
+    pool cap (default 24) so a worker always has a connection to check out."""
     try:
-        n = int(os.environ.get("WEBAGENT_DB_WORKERS") or 8)
+        n = int(os.environ.get("WEBAGENT_DB_WORKERS") or 16)
     except ValueError:
-        n = 8
+        n = 16
     return max(1, n)
 
 

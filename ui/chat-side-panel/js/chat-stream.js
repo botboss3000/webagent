@@ -266,9 +266,12 @@ async function _ensureToolDetail(container) {
       const tc = outObj && Array.isArray(outObj.tool_calls) ? outObj.tool_calls[c._detailIdx] : null;
       if (tc && tc.function) { try { c.args = JSON.parse(tc.function.arguments); } catch (_) { c.args = {}; } }
       c._savedOutput = d.output || null;
-      // Tool result — match by name (first), mirroring the history build.
+      // Tool result — match by name (first), then fall back to positional order
+      // (tools are returned in call order), mirroring the history build. The
+      // positional fallback covers tool rows saved WITHOUT a tool_name — e.g.
+      // older Local Claude Code turns whose engine didn't stamp it.
       const tools = Array.isArray(d.tools) ? d.tools : [];
-      const tr = tools.find(t => t.tool_name === c.tool);
+      const tr = tools.find(t => t.tool_name === c.tool) || tools[c._detailIdx] || null;
       if (tr) {
         if (tr.content != null) c.result = tr.content;
         c._savedToolOutput = tr.output || null;

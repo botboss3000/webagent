@@ -28,15 +28,57 @@ def _field_defaults(fields) -> Dict[str, Any]:
     return out
 
 
+def _mirror_keys(p) -> list:
+    """The non-secret keys a target mirrors into the shared vault, so its cloud
+    setup travels with a shared vault DB. Two sources, de-duplicated:
+      • ``connect_config_keys`` — the sign-in 'id' fields (the Google project id).
+      • ``shared_config_keys``  — extra settings worth carrying but NOT part of the
+        sign-in form (e.g. the deploy Zone), so mirroring them never clutters the
+        Cloud VMs sign-in panel or the 'connected' check (which read the connect
+        keys directly). Empty for targets that declare neither."""
+    keys = list(getattr(p, "connect_config_keys", []) or [])
+    for k in (getattr(p, "shared_config_keys", []) or []):
+        if k not in keys:
+            keys.append(k)
+    return keys
+
+
+async def _load_config(p) -> Dict[str, Any]:
+    """The effective non-secret config for a target, assembled in priority order:
+    field defaults → the vault's shared keys (project id, zone) → the local
+    deploy.json working copy on top. The vault layer is what lets a SECOND device
+    signed into a shared vault DB inherit the cloud setup (project id + zone) even
+    though deploy.json is a local file; a value typed locally still wins, so
+    same-device behaviour is unchanged. Targets with no mirror keys just get
+    defaults + local, as before."""
+    base = _field_defaults(p.config_fields)
+    mk = _mirror_keys(p)
+    shared = await credentials.read_connect(p.id, mk) if mk else {}
+    return {**base, **shared, **store.get_config(p.id)}
+
+
+async def save_config(provider_id: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Save a target's non-secret settings to deploy.json AND mirror its sign-in
+    'id' fields into the vault, so the cloud connection travels with a shared vault
+    DB. The Deploy card's Save routes here (the reserved ``_repo`` slot has no
+    provider, so it just writes the file — no mirror)."""
+    saved = store.save_config(provider_id, config or {})
+    p = get_provider(provider_id)
+    mk = _mirror_keys(p) if p else []
+    if mk:
+        await credentials.save_connect(provider_id, mk, config or {})
+    return saved
+
+
 async def build_catalog() -> Dict[str, Any]:
     """Everything the panel needs to render, for every discovered target."""
     providers = []
     for p in list_providers():
         ok_avail, reason = p.available()
-        cfg = store.get_config(p.id)
-        # Layer saved config over the field defaults so the form shows sensible
-        # starting values on a fresh install.
-        merged = {**_field_defaults(p.config_fields), **cfg}
+        # Layer the saved config (incl. the vault's shared connect id) over the
+        # field defaults so the form shows sensible starting values on a fresh
+        # install — and inherits the project id from a shared vault DB.
+        merged = await _load_config(p)
         cred_view = await credentials.public_view(p.id, p.credential_fields, p.credential_required)
         entry = {
             "id": p.id,
@@ -67,14 +109,25 @@ async def build_catalog() -> Dict[str, Any]:
             entry["servers"] = await _server_views(p)
             entry["active_server"] = store.get_active_server(p.id)
         providers.append(entry)
+    # The SHARED repo details (repo URL + public/private) the New-deployment panel
+    # carries into every target, kept in the reserved "_repo" slot so the panel can
+    # pre-fill the Repo-details bar. Non-secret; the token + admin password are never
+    # persisted. When this device has no local "_repo" yet, fall back to the repo URL
+    # stored in the shared vault (see credentials.save_github_repo_url) — so a device
+    # signed into the same vault pre-fills the same repo without re-typing it.
+    shared_repo = dict(store.get_config("_repo") or {})
+    if not str(shared_repo.get("github_url") or "").strip():
+        try:
+            from app.deploy import credentials
+            vurl = await credentials.get_github_repo_url()
+            if vurl:
+                shared_repo["github_url"] = vurl
+        except Exception:  # noqa: BLE001
+            pass
     return {
         "providers": providers,
         "active_provider": store.get_active_provider() or (providers[0]["id"] if providers else ""),
-        # The SHARED repo details (repo URL + public/private) the New-deployment
-        # panel carries into every target, kept in the reserved "_repo" slot so the
-        # panel can pre-fill the Repo-details bar. Non-secret; the token + admin
-        # password are never persisted.
-        "shared_repo": store.get_config("_repo"),
+        "shared_repo": shared_repo,
     }
 
 
@@ -228,13 +281,28 @@ async def run_deploy(provider_id: str) -> AsyncIterator[Dict[str, Any]]:
         yield done({"ok": False, "message": reason or "This target is unavailable."})
         return
 
-    config = {**_field_defaults(p.config_fields), **store.get_config(provider_id)}
+    config = await _load_config(p)
     creds = await credentials.read(provider_id, p.credential_fields)
     required = p.credential_required if p.credential_required is not None else \
         [f["key"] for f in p.credential_fields if f.get("secret")]
     if required and not all(str(creds.get(k, "")).strip() for k in required):
         yield done({"ok": False, "message": "Cloud key is missing. Fill in the credentials first."})
         return
+
+    # Optionally gather THIS app's config (AI keys / vault / database) into a
+    # keyless bundle to pre-load on the new server — the Deploy panel's "Include
+    # this app's configuration" toggle. We inject it into config["_bootstrap_code"]
+    # so the shared install script writes it as bootstrap.json; first boot applies
+    # it (no admin password needed — decoupled, see config_embed). An empty include
+    # only warns (build_embed_code returns a reason) — the deploy still proceeds bare.
+    from app.deploy import config_embed
+    if config_embed.wants_embed(config):
+        code, warn = await config_embed.build_embed_code(config)
+        if warn:
+            yield ev(warn, phase="embed", level="warn")
+        if code:
+            config["_bootstrap_code"] = code
+            yield ev("Including this app's configuration on the new server.", phase="embed", level="ok")
 
     final: Dict[str, Any] = {"ok": False, "message": "Deploy produced no result."}
     try:
@@ -274,7 +342,7 @@ async def run_destroy(provider_id: str) -> AsyncIterator[Dict[str, Any]]:
     if not p:
         yield done({"ok": False, "message": "Unknown deploy target."})
         return
-    config = {**_field_defaults(p.config_fields), **store.get_config(provider_id)}
+    config = await _load_config(p)
     creds = await credentials.read(provider_id, p.credential_fields)
     required = p.credential_required if p.credential_required is not None else \
         [f["key"] for f in p.credential_fields if f.get("secret")]
@@ -353,7 +421,7 @@ async def manageable_providers() -> Dict[str, Any]:
         if not getattr(p, "supports_instances", False):
             continue
         ok_avail, reason = p.available()
-        cfg = {**_field_defaults(p.config_fields), **store.get_config(p.id)}
+        cfg = await _load_config(p)
         has_key = await _has_key(p)
         connect_ready = _connect_ready(p, cfg)
         out.append({
@@ -389,7 +457,7 @@ async def list_instances(provider_id: str) -> Dict[str, Any]:
     ok_avail, reason = p.available()
     if not ok_avail:
         return {"ok": False, "instances": [], "detail": reason or "This target is unavailable."}
-    config = {**_field_defaults(p.config_fields), **store.get_config(provider_id)}
+    config = await _load_config(p)
     if not await _has_key(p):
         return {"ok": False, "instances": [], "needs_key": True, "needs_connect": True,
                 "detail": "Connect your cloud account to manage your servers — enter its id and key."}
@@ -425,6 +493,13 @@ async def save_connection(provider_id: str, values: Dict[str, Any]) -> Dict[str,
     if cfg_updates:
         merged = {**store.get_config(provider_id), **cfg_updates}
         store.save_config(provider_id, merged)
+    # Mirror the non-secret shared keys (project id, zone) into the vault too, so
+    # the whole cloud connection travels with a shared vault DB — a second device on
+    # the same vault inherits the project id + zone, not just the key. (The sign-in
+    # panel only submits the connect id, so blank keys keep whatever's stored.)
+    mk = _mirror_keys(p)
+    if mk:
+        await credentials.save_connect(provider_id, mk, values)
 
     cred_updates = {k: v for k, v in values.items() if k in cred_keys}
     if cred_updates:
@@ -449,12 +524,17 @@ async def disconnect(provider_id: str, forget_config: bool = False) -> Dict[str,
         return {"ok": False, "detail": "Unknown cloud target."}
     await credentials.forget(provider_id)
     if forget_config:
+        # Locally, clear only the sign-in id (leave harmless settings like zone/repo
+        # in deploy.json). The vault's mirror row holds the whole shared set (id +
+        # zone) and is dropped entirely, so the account fully leaves a shared vault DB.
         keys = list(getattr(p, "connect_config_keys", []) or [])
         if keys:
             cfg = dict(store.get_config(provider_id))
             for k in keys:
                 cfg.pop(k, None)
             store.save_config(provider_id, cfg)
+        if _mirror_keys(p):
+            await credentials.forget_connect(provider_id)
         return {"ok": True, "detail": "Account removed — its key and id were cleared."}
     return {"ok": True, "detail": "Signed out — the cloud key was removed from the vault."}
 
@@ -472,7 +552,7 @@ async def run_instance_action(provider_id: str, action: str, zone: str,
     if not await _has_key(p):
         yield done({"ok": False, "message": "No cloud key is stored — add your cloud key to manage servers."})
         return
-    config = {**_field_defaults(p.config_fields), **store.get_config(provider_id)}
+    config = await _load_config(p)
     creds = await credentials.read(provider_id, p.credential_fields)
     instance = {"name": name, "zone": zone}
 

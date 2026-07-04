@@ -119,7 +119,11 @@ function _buildCallsForMessage(msg, toolResultsByParent, turnNum, light) {
     try { args = JSON.parse(tc.function.arguments); } catch (_) {}
     const toolName = tc.function.name;
     const results = toolResultsByParent[msg.id] || [];
-    const resultEntry = results.find(r => r.tool_name === toolName);
+    // Pair by tool name, then fall back to positional order within this parent's
+    // results. Both lists are per-assistant-row and in call order, so results[i]
+    // is the i-th call's result — this covers tool rows saved WITHOUT a tool_name
+    // (e.g. older Local Claude Code turns, whose engine didn't stamp it).
+    const resultEntry = results.find(r => r.tool_name === toolName) || results[i] || null;
     return {
       tool: toolName,
       args: args,
@@ -597,6 +601,9 @@ export function _syncTerminalChat(sessionId) {
 }
 
 export async function loadSessionChat(sessionId) {
+  // Lift any "Session not found" lock from a previously-open deleted session so
+  // the composer works again on this live one (no-op when nothing was locked).
+  if (typeof app.clearSessionNotFound === 'function') app.clearSessionNotFound();
   // Restore per-session execution mode (Ask/Plan/Auto) when loading any session
   if (typeof app.reloadExecutionMode === 'function') app.reloadExecutionMode();
   if (typeof app.reloadTargetDevice === 'function') app.reloadTargetDevice();

@@ -39,8 +39,9 @@
  * The scroller is the shared `#app-config-content` for every page.
  *
  * MOBILE SUB-HEADER (opt-in) — a section can pass `{ mobileCarousel: true }` to
- * initStickyNav (today only Agent Settings does). On a mobile-width viewport that
- * section drops the vertical sticky stacking and instead renders its headings as a
+ * initStickyNav (Data Settings, App Settings, and Agent Settings all do). On a
+ * mobile-width viewport that section drops the vertical sticky stacking and
+ * instead renders its headings as a
  * horizontal, swipeable strip of underline tabs in #app-config-subnav — a genuine
  * SUB-HEADER that sits directly beneath the app-config tab strip and OUTSIDE the
  * content scroller, so it spans the full width and mirrors the tab strip's look

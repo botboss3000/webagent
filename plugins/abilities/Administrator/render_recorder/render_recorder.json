@@ -1,0 +1,14 @@
+{
+  "display_name": "Render Recorder",
+  "kind": "ability",
+  "icon": "clapperboard",
+  "color": "#bb9af7",
+  "description": "Browser-side flight recorder — captures HTML snapshots, DOM changes, JS errors, UI lag and failed network calls so an admin can replay a rendering problem. The heavier sibling of Diagnostics: OFF by default; turn it on only while investigating, then off again. Ships its own capture service + intake/read API in this folder, so deleting the folder strips render recording from a build.",
+  "note": null,
+  "simple": true,
+  "placeholder": false,
+  "default_enabled": false,
+  "app_function": true,
+  "tools": [],
+  "order": 3
+}

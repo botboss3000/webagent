@@ -16,6 +16,14 @@ Behaviour (see temp/claude-code-engine-spec.md + plan):
     fence). Required; the agent refuses with a clear message until it is set.
   • Conversation continuity: the Claude session id is stored in the WebAgent
     session's metadata and resumed each turn, so the thread remembers itself.
+  • Resumable in the real CLI: `claude` already writes each headless run's full
+    transcript to ~/.claude/projects/<cwd>/<id>.jsonl (so it's resumable by exact
+    id), but it does NOT add the prompt to ~/.claude/history.jsonl — the index the
+    interactive `claude --resume` PICKER lists sessions from. So after each turn we
+    append one faithful entry to that index (see _record_cli_resume_history), making
+    a headless WebAgent session show up in the picker with a sensible name and be
+    resumable by hand. Append-only on the index; the transcript files `claude` owns
+    are never touched. Disable with WEBAGENT_CLAUDE_CLI_HISTORY=0.
   • /compact (one-shot): folds this chat with Context Control, drops the stored
     Claude id, and seeds the NEXT turn's brand-new `claude` session with a compact
     recap — resetting Claude's own runaway context. See compact_restart().
@@ -349,8 +357,10 @@ def _spawn_reader(cmd: List[str], cwd: str, env: Dict[str, str],
         except FileNotFoundError:
             loop.call_soon_threadsafe(
                 q.put_nowait,
-                ("fail", "Claude Code isn't available on this machine "
-                         "(the `claude` command was not found on PATH)."))
+                ("fail", "Claude not accessible on this device — the `claude` "
+                         "command isn't installed (or not on PATH) on the machine "
+                         "running this turn. Install Claude Code there, or set this "
+                         "agent's target device to one that has it."))
             return
         except Exception as e:
             loop.call_soon_threadsafe(q.put_nowait, ("fail", f"Could not launch claude: {e}"))
@@ -378,6 +388,47 @@ def _spawn_reader(cmd: List[str], cwd: str, env: Dict[str, str],
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
     return t
+
+
+# ── CLI resume-history index ─────────────────────────────────────────────────
+# `claude -p` writes a full, resumable transcript per run, but it does NOT record
+# the prompt in ~/.claude/history.jsonl — the index the interactive `claude
+# --resume` PICKER lists sessions from. So a headless WebAgent session is
+# resumable by exact id yet never appears in the menu. We append one entry per
+# turn in the CLI's own schema (display / pastedContents / project / sessionId /
+# timestamp), so the session shows up in the picker named after its first prompt
+# and sorted by recency. Best-effort — any failure is swallowed so it can never
+# break a chat turn. Honours CLAUDE_CONFIG_DIR (the same relocation the CLI
+# respects); disable entirely with WEBAGENT_CLAUDE_CLI_HISTORY=0. Append-only on
+# the index — the transcript files the CLI owns are never modified.
+def _claude_config_dir() -> str:
+    return (os.environ.get("CLAUDE_CONFIG_DIR")
+            or os.path.join(os.path.expanduser("~"), ".claude"))
+
+
+def _record_cli_resume_history(folder: str, claude_id: str, display: str) -> None:
+    """Append one entry to Claude's resume-history index so this headless session
+    surfaces in the interactive `claude --resume` picker. No-op on failure."""
+    if str(os.environ.get("WEBAGENT_CLAUDE_CLI_HISTORY", "1")).strip().lower() in (
+            "0", "false", "no", "off"):
+        return
+    if not (folder and claude_id):
+        return
+    try:
+        path = os.path.join(_claude_config_dir(), "history.jsonl")
+        entry = {
+            "display": (display or "(attachment)")[:2000],
+            "pastedContents": {},
+            "timestamp": int(time.time() * 1000),
+            "project": folder,
+            "sessionId": claude_id,
+        }
+        # Write the whole line in one append so a concurrent interactive `claude`
+        # appending to the same index can't interleave with ours.
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.debug("claude_code: resume-history append failed: %s", e)
 
 
 # ── /compact "compact & restart" (one-shot, user-driven) ─────────────────────
@@ -561,6 +612,10 @@ async def stream(
     # 2. Resolve config + message.
     cfg = _read_cfg(agent_rec)
     text = _coerce_text(user_message).strip()
+    # Clean user prompt captured up-front (before the attachment suffix / reseed
+    # recap wrappers mutate `text` below) — used as the display label when we index
+    # this session in Claude's CLI resume-history in the finally.
+    user_display = text
 
     # 2b. Materialize any pasted images / attached files to local paths and tell
     #     `claude` where to read them. Images that the default loop would have
@@ -630,8 +685,10 @@ async def stream(
     claude_bin = shutil.which("claude")
     if not claude_bin:
         yield {"type": "error", "level": "agent",
-               "message": "Claude Code isn't available on this machine "
-                          "(the `claude` command was not found on PATH)."}
+               "message": "Claude not accessible on this device — the `claude` "
+                          "command isn't installed (or not on PATH) on the machine "
+                          "running this turn. Install Claude Code there, or set this "
+                          "agent's target device to one that has it."}
         return
 
     # The prompt is fed on STDIN (see _spawn_reader), never as an argv.
@@ -864,7 +921,8 @@ async def stream(
                     try:
                         await db.insert_interaction(
                             user_id, session_id, role="tool", content=result_text,
-                            parent_id=asst_id, tool_call_id=tid or None, channel=channel,
+                            parent_id=asst_id, tool_call_id=tid or None,
+                            tool_name=name, channel=channel,
                             metadata=json.dumps({"success": not is_err, "duration_ms": 0,
                                                  "input_params": args,
                                                  "error_message": "tool error" if is_err else None}),
@@ -955,6 +1013,12 @@ async def stream(
                 await db.set_session_claude_id(session_id, store_id, folder)
             except Exception as _se:
                 logger.debug("claude_code session-id store failed: %s", _se)
+        # Index this turn in the CLI's resume-history so the session shows up in the
+        # `claude --resume` picker. Gated on captured_id: only when `claude` actually
+        # ran and emitted a session id (⇒ a transcript exists to resume) — never for
+        # a failed launch, whose minted id has no transcript behind it.
+        if captured_id:
+            _record_cli_resume_history(folder, captured_id, user_display)
         # Consume a one-shot reseed only once the fresh session actually produced an
         # id — so a failed restart retries the recap next turn instead of losing it.
         if reseed_ctx and store_id:

@@ -44,8 +44,15 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # Secrets-store key the long-lived token lives under (single Claude login per
-# install — every Local Claude Code agent shares it).
+# install — every Local Claude Code agent shares it). Because the secrets backend
+# is the app's shared vault, this login is visible to EVERY device that shares the
+# database — sign in once, all devices see it.
 _SECRET_KEY = "claude_code_oauth_token"
+# Companion marker recording HOW the saved token was obtained:
+#   "setup-token" = the durable, long-lived in-app sign-in token (never overwritten)
+#   "cli-harvest" = a copy of this device's own standalone CLI login (shorter-lived,
+#                   so it is kept refreshed from that device while its login is valid)
+_SECRET_SRC_KEY = "claude_code_oauth_token_src"
 
 # Abandoned sign-ins (URL fetched, code never submitted) are reaped after this.
 _LOGIN_TTL = 300.0
@@ -258,9 +265,14 @@ async def submit_code(login_id: str, code: str) -> dict:
     low = final_txt.lower()
     if any(k in low for k in ("success", "logged in", "you can now", "saved", "complete")):
         # Claude reported success but didn't print a token we could capture; it
-        # stored its own credential — the agent will inherit it. Still good.
+        # stored its own credential locally. Copy that local login up into the
+        # SHARED vault so this sign-in still reaches the user's other devices.
+        shared = await _harvest_cli_token_to_vault()
         return {"ok": True,
-                "message": "Signed in to Claude.",
+                "message": "Signed in to Claude." + (
+                    " This login is now shared with all your devices."
+                    if shared else
+                    " (Saved on this device — sign in on your other devices too.)"),
                 "note": "no_token_captured"}
     return {"ok": False, "error": "Claude didn't accept that code.",
             "detail": final_txt.strip()[-500:]}
@@ -273,9 +285,24 @@ async def cancel_login(login_id: str) -> dict:
 
 # ── Token storage + status ───────────────────────────────────────────────────
 
-async def _store_token(token: str) -> None:
+async def _store_token(token: str, source: str = "setup-token") -> None:
     from app.secrets import get_secrets
-    await get_secrets().set(_SECRET_KEY, token)
+    s = get_secrets()
+    await s.set(_SECRET_KEY, token)
+    # Record where the token came from so auth_status knows whether it may refresh
+    # it (a harvested CLI token) or must leave it alone (a durable in-app token).
+    try:
+        await s.set(_SECRET_SRC_KEY, source)
+    except Exception:
+        pass
+
+
+async def _stored_token_source() -> str:
+    try:
+        from app.secrets import get_secrets
+        return (await get_secrets().get(_SECRET_SRC_KEY)) or ""
+    except Exception:
+        return ""
 
 
 async def get_stored_oauth_token() -> Optional[str]:
@@ -288,11 +315,36 @@ async def get_stored_oauth_token() -> Optional[str]:
         return None
 
 
+async def _harvest_cli_token_to_vault(source: str = "cli-harvest") -> bool:
+    """Copy THIS device's own standalone Claude login (from ~/.claude/.credentials.json)
+    into the SHARED vault so every other device that shares the database sees the same
+    sign-in. Best-effort; returns True if a token was stored.
+
+    NOTE: the CLI's own OAuth token is shorter-lived than the in-app "Sign in to
+    Claude" (setup-token) token — this only BRIDGES an existing terminal/desktop
+    login across devices; the durable cross-device login still comes from the
+    in-app button. Callers gate WHEN to call this; the store itself is
+    unconditional so it can also refresh a previously-harvested token."""
+    try:
+        tok = await asyncio.to_thread(_cli_access_token)
+        if not tok:
+            return False
+        await _store_token(tok, source)
+        return True
+    except Exception:
+        return False
+
+
 async def sign_out() -> dict:
     """Forget the in-app token (does not touch claude's own keychain login)."""
     try:
         from app.secrets import get_secrets
-        await get_secrets().delete(_SECRET_KEY)
+        s = get_secrets()
+        await s.delete(_SECRET_KEY)
+        try:
+            await s.delete(_SECRET_SRC_KEY)
+        except Exception:
+            pass
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True}
@@ -445,6 +497,21 @@ async def auth_status() -> dict:
     as the Working folder (and the engine falls back to when none is set)."""
     saved = bool(await get_stored_oauth_token())
     cli = await asyncio.to_thread(_cli_login_state)
+    # Keep the SHARED vault in step with this device's own Claude login, so a sign-in
+    # done on ONE device is visible (and usable) on every device that shares the DB:
+    #   • nothing saved yet, but this box is logged in → copy it up (share it)
+    #   • the saved token came from that copy-up path   → refresh it while this box's
+    #     login is valid (a harvested CLI token is shorter-lived than the in-app one)
+    # A durable in-app "Sign in to Claude" token (source "setup-token") is left alone.
+    if cli.get("valid"):
+        try:
+            if not saved:
+                if await _harvest_cli_token_to_vault():
+                    saved = True
+            elif (await _stored_token_source()) == "cli-harvest":
+                await _harvest_cli_token_to_vault()
+        except Exception:
+            pass
     try:
         from app.util.paths import project_root
         default_folder = project_root()

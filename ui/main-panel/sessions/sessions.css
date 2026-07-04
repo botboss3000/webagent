@@ -17,6 +17,19 @@
   overflow: hidden;
   background: transparent;
   position: relative;
+  /* Single source of truth for the page's side inset — the one edge margin from
+     the panel edge to content. Feeds BOTH the toolbar and the scrollable table
+     area so they share the exact same margin and can never drift apart (same
+     approach as the agents page's --agents-content-inset and App Settings'
+     --ac-content-inset). Narrowed to 10px on mobile via the @media override
+     directly below. */
+  --sessions-content-inset: 20px;
+}
+/* Mobile / narrow screens: halve the side inset (20px → 10px) so content gets
+   back ~20px of width on small viewports. One override drives every side margin
+   on the page. 800px matches the app-wide mobile breakpoint. */
+@media (max-width: 800px) {
+  #tab-sessions { --sessions-content-inset: 10px; }
 }
 
 /* ── Toolbar ── */
@@ -24,7 +37,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 20px 12px;
+  padding: 14px var(--sessions-content-inset) 12px;
   flex-shrink: 0;
 }
 #sessions-toolbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -93,7 +106,7 @@ body.light-mode .sessions-back-btn { color: var(--fg-2); }
   overflow-x: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb, var(--bg-tint)) transparent;
-  padding: 0 16px 16px;
+  padding: 0 var(--sessions-content-inset) 16px;
 }
 #sessions-table-wrap::-webkit-scrollbar { width: 5px; height: 5px; }
 #sessions-table-wrap::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, var(--bg-tint)); border-radius: 3px; }
@@ -429,6 +442,21 @@ body.light-mode .sessions-back-btn { color: var(--fg-2); }
   border-radius: 50%;
   animation: lucide-spin 0.7s linear infinite;
   vertical-align: middle;
+}
+
+/* ── Skeleton rows (first-load placeholder) ──
+   Phantom shimmer rows shown while the first fetch is in flight, so the table
+   has its column shape immediately instead of a lone spinner. `.sk-shimmer`
+   (the animated fill) is shared in ui/shared/css/app3.css. */
+#sessions-table tbody tr.sessions-skeleton-row {
+  cursor: default;
+  pointer-events: none;
+}
+.sess-sk {
+  display: block;
+  height: 11px;
+  border-radius: 6px;
+  max-width: 140px;
 }
 
 /* ── Loading state ── */

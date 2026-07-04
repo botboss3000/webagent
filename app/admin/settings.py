@@ -1210,6 +1210,33 @@ class MetadataSetting(BaseModel):
 class AppSettings(BaseModel):
     extend_llm_to_agents: bool = True
     access_mode: str = "admin_approval"  # admin_approval | public_registered
+    # ── Multi-tenant data (per-user bring-your-own-database) ──
+    # OFF (default): single-tenant — every user shares the one admin-configured
+    # database, exactly as before (self-hosters and existing installs are
+    # unaffected). ON: each user's INTERACTION data (chats, memories, their own
+    # LLM keys/vault) is routed to that user's OWN database, while the central
+    # admin database keeps the shared parts (accounts, the agent catalog,
+    # billing). Read on the DB hot path via get_multi_tenant_enabled() (cached).
+    # See app/db/router.py (TenantRouterBackend) and app/db/tenant.py.
+    multi_tenant: bool = False
+    # ── Memory embeddings (app/agent/embed.py) ──
+    # Which embedder powers memory save + search, chosen APP-WIDE — never
+    # per-agent: every stored vector shares one column of one width, and a search
+    # only works if the query was embedded by the SAME model as the stored
+    # memories, so all agents must embed identically.
+    #   embedding_source — "local" (DEFAULT; in-process FastEmbed model, no
+    #                      per-call network hop and no embedding API cost) or
+    #                      "cloud" (same provider as the chat model).
+    #   embedding_model  — the LOCAL model id when source=local (blank → engine
+    #                      default bge-small-en-v1.5, 384-dim). Ignored for cloud.
+    #   embedding_dim    — the active vector width; recorded by the reindex so the
+    #                      search path + pgvector column agree. Changing source or
+    #                      model requires POST /admin/settings/embedding/reindex to
+    #                      re-embed existing memories at the new width — until then
+    #                      old-width vectors are ignored and search is keyword-only.
+    embedding_source: str = "local"
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_dim: int = 384
     # ── Startup: welcome landing page (ui/splash/splash-page) ──
     # Master on/off for the welcome landing page, app-wide. When True, app/main.py
     # serves the crawlable landing page at the front door (/) to new visitors and
@@ -1622,6 +1649,29 @@ def get_access_mode() -> str:
     return normalize_access_mode(_load_app_settings().get("access_mode"))
 
 
+# Multi-tenant is read on the DB hot path (every get_db()), so a raw file read
+# per call would be wasteful. Cache it for a short window; a flip via the App
+# Settings toggle takes effect within the TTL without a restart.
+_MT_CACHE: dict = {"val": None, "at": 0.0}
+_MT_TTL_SECONDS = 3.0
+
+
+def get_multi_tenant_enabled() -> bool:
+    """True when per-user bring-your-own-database routing is switched on (App
+    Settings → Multi-tenant data). Sync + cached (see _MT_TTL_SECONDS) because
+    it gates get_db() on the hot path. Defaults False (single-tenant)."""
+    import time as _t
+    now = _t.monotonic()
+    if _MT_CACHE["val"] is not None and (now - _MT_CACHE["at"]) < _MT_TTL_SECONDS:
+        return _MT_CACHE["val"]
+    try:
+        val = bool(_load_app_settings().get("multi_tenant", False))
+    except Exception:  # noqa: BLE001
+        val = False
+    _MT_CACHE.update(val=val, at=now)
+    return val
+
+
 def get_global_system_prompt() -> str:
     """Read the app-global system prompt (the platform baseline injected at the
     top of every agent's prompt). Sync — called from build_system_prompt each
@@ -1780,6 +1830,39 @@ async def get_multi_providers(
 
     return {
         "providers": config.get("multi_providers", []),
+    }
+
+
+@router.get("/provider-bundle")
+async def get_provider_bundle(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+):
+    """Combined read: the default-model provider config AND the saved-model roster
+    in ONE response, resolved from a SINGLE vault+DB read.
+
+    The Models table front-end reads this instead of calling GET /provider and
+    GET /multi-providers one after the other — each of those repeats the same
+    per-user vault decryption + DB round-trip via ``_resolve_user_config``, so on
+    a remote database the sequential pair was the dominant load cost. Serving both
+    slices from one resolve halves that. API keys are returned as plaintext, same
+    as GET /provider.
+    """
+    user_id = _resolve_user_id(authorization or "", token or "")
+
+    # ONE resolve (own config → admin fallback → provider.json), keys rehydrated.
+    config = await _resolve_user_config(user_id)
+
+    if "providers" not in config:
+        config["providers"] = {}
+    if not config.get("base_url"):
+        prov = config.get("provider", "")
+        if prov in PROVIDER_PRESETS:
+            config["base_url"] = PROVIDER_PRESETS[prov]["base_url"]
+
+    return {
+        "provider": ProviderConfig(**config),
+        "roster": config.get("multi_providers", []),
     }
 
 
@@ -2588,3 +2671,97 @@ async def set_app_settings(request: Request):
     # validated settings on top.
     _save_app_settings({**existing, **settings.model_dump()})
     return settings
+
+
+@router.get("/embedding")
+async def get_embedding_settings():
+    """Current memory-embedding source/model/width + whether the in-process
+    (local) engine is importable. Read by the admin model-table Advanced panel to
+    render the source picker and warn if 'local' is selected without its
+    dependency installed. Open (like GET /app) — it exposes no secrets."""
+    from app.agent.embed import (
+        embed_source, embed_model_name, embed_dim,
+        local_embeddings_available, local_models,
+    )
+    ok, reason = local_embeddings_available()
+    return {
+        "source": embed_source(),
+        "model": embed_model_name(),
+        "dim": embed_dim(),
+        "local_available": ok,
+        "local_reason": reason,
+        "local_models": [{"id": k, "dim": v} for k, v in local_models().items()],
+    }
+
+
+@router.post("/embedding/reindex")
+async def reindex_embeddings(request: Request):
+    """Guided embedding-model switch: optionally set a new source/model, then
+    re-embed every stored memory (and RAG doc) chunk so the new model's vectors
+    replace the old ones. Admin-only and destructive to existing vectors, so the
+    caller is gated exactly like POST /app.
+
+    Body (all optional): {embedding_source: "local"|"cloud", embedding_model: str}.
+    When source=local we verify the engine is importable BEFORE touching any
+    vectors — otherwise a mis-click would wipe embeddings and leave search on the
+    keyword-only fallback with no way to rebuild until the dependency is installed.
+    Runs inline; fine for the (small, curated) memory store."""
+    from app.db import get_db
+    caller_id = _resolve_user_id(
+        request.headers.get("Authorization", "") or "",
+        request.query_params.get("token", "") or "",
+    )
+    db = get_db()
+    if not await db.is_user_admin(caller_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    source = body.get("embedding_source")
+    model = body.get("embedding_model")
+
+    # Apply the config change FIRST (so embed_dim() reflects the new choice), but
+    # never wipe vectors for a local engine that can't actually run.
+    if source is not None:
+        source = "local" if str(source).strip().lower() == "local" else "cloud"
+        if source == "local":
+            from app.agent.embed import local_embeddings_available
+            ok, reason = local_embeddings_available()
+            if not ok:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Local embeddings unavailable: {reason}. "
+                           f"Install with: uv sync --extra embeddings-local",
+                )
+        existing = _load_app_settings()
+        patch = {"embedding_source": source}
+        if model is not None:
+            patch["embedding_model"] = str(model or "")
+        merged = AppSettings(**{**existing, **patch})
+        _save_app_settings({**existing, **merged.model_dump()})
+
+    # Record the now-active width so the search path + column agree on it.
+    from app.agent.embed import embed_dim, embed_model_name, embed_source
+    active_dim = embed_dim()
+    existing = _load_app_settings()
+    existing["embedding_dim"] = active_dim
+    _save_app_settings(existing)
+
+    if not hasattr(db, "reindex_embeddings"):
+        raise HTTPException(
+            status_code=400,
+            detail="This storage backend does not support embedding reindex.",
+        )
+    result = await db.reindex_embeddings()
+    return {
+        "ok": True,
+        "source": embed_source(),
+        "model": embed_model_name(),
+        "dim": active_dim,
+        "result": result,
+    }

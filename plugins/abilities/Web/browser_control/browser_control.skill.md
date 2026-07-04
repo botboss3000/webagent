@@ -24,6 +24,16 @@ For a plain one-shot API call or fetching a URL's raw response, prefer
 - **`web_session_status` / `web_session_fetch` / `web_session_graphql`** — the
   **cookie-replay** tools: lightweight HTTP/GraphQL calls that act **AS the
   logged-in user** on sites with no public API (e.g. Facebook Messenger). See below.
+- **`browser_popup`** — **show the USER a page** in a small floating browser window
+  on their screen (`mode="open"`, `url=…`), and close it (`mode="close"`). Use it
+  when you want the human to *look at / interact with* a site — "have a look at
+  this", "check this booking", "does this look right?" — not when you just need to
+  read the page yourself (that's `browser_action`). It renders through the same
+  in-app proxy as the Browser page, so framing-blocked sites still show. The user
+  can close it themselves; you can also close it. Needs a live chat session on
+  screen (skips on background / event-triggered runs). For a real **login** the user
+  must complete, prefer `browser_backend(mode="local")` (their real Chrome) — a
+  protected login won't complete inside the popup.
 
 ## Acting as the user with cookie-replay (`web_session_*`)
 

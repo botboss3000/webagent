@@ -177,6 +177,9 @@
 <link rel="stylesheet" href="./ui/main-panel/agents/agent-loop/loop-visual.css">
 <link rel="stylesheet" href="./ui/tutorials/tutorial.css">
 <link rel="stylesheet" href="./ui/chat-widget/chat-widget.css">
+<!-- Floating agent-openable browser window (agent's browser_popup tool).
+     Paired with ui/browser-popup/js/browser-popup.js. -->
+<link rel="stylesheet" href="./ui/browser-popup/browser-popup.css">
 <!-- Design system tokens + visual overrides (loaded last to take effect) -->
 <link rel="stylesheet" href="./ui/shared/css/design-system.css">
 <!-- Warm the boot module chain in parallel with HTML parsing + the partial
@@ -303,6 +306,15 @@
     function reveal() {
       if (done) return;
       done = true;
+      // The curtain is lifting → the app shell + active tab are mounted and the
+      // critical boot fetches are already queued. Broadcast so non-critical,
+      // decorative boot work (billing pill, recorder probe, tutorial state) can
+      // fire NOW — queued strictly AFTER the critical calls so it loses the race
+      // for the browser's ~6 HTTP/1.1 sockets instead of competing with the
+      // session/message/roster loads that gate first paint. main.js listens for
+      // this; the `revealed` flag covers the race where it attaches too late.
+      if (window.__boot) window.__boot.revealed = true;
+      try { window.dispatchEvent(new Event('webagent-app-ready')); } catch (_) {}
       if (!curtain) return;
       curtain.classList.add('is-revealed');
       var t = setTimeout(remove, 700);
@@ -312,6 +324,7 @@
     }
     window.__boot = {
       _splashPending: false,
+      revealed:       false,
       splashWillShow: function () { this._splashPending = true; },
       splashReady:    function () { reveal(); },
       appReady:       function () { if (!this._splashPending) reveal(); },
@@ -344,6 +357,232 @@
 <genui class="stargaze-genui" id="stargaze-bg"></genui>
 <div class="stargaze-overlay"></div>
 <div id="cursor-glow"></div>
+<script>
+  // ── Boot API request coalescer ──────────────────────────────────────────
+  // WHY: the app boots by firing ~30 API GETs from ~15 independent modules that
+  // don't coordinate, so several fetch the SAME endpoint near-simultaneously —
+  // measured on a cold load: /user/profile x3, /agents x3, /auth/ui-config x3,
+  // plus six more endpoints x2 (~12 of ~32 boot requests are pure duplicates).
+  // The app is served over HTTP/1.1, where a browser opens only ~6 sockets per
+  // origin, so each redundant GET burns a scarce socket and starves the calls
+  // that actually gate first paint (sessions, messages, roster) — stretching
+  // cold load to 12-17s. This shim collapses duplicate same-origin /api/ GETs:
+  //   • IN-FLIGHT COALESCE (always on): a 2nd identical GET issued while the
+  //     first is still pending shares that one response. A Response body can be
+  //     read only once, so every caller (incl. the first) gets its own .clone();
+  //     the master is never consumed. Identical to N separate GETs — same URL +
+  //     idempotent method => same bytes.
+  //   • SHORT TTL REPLAY (boot window only): a GET repeated within ~2s of a
+  //     completed OK one replays the cached response, catching dupes that don't
+  //     quite overlap. Auto-disabled ~12s after load, so steady-state fetches
+  //     and background polling are never served stale.
+  // SAFETY: only touches same-origin GET requests to /api/ with NO body and NO
+  // AbortSignal (so one caller aborting can't cancel another's). Everything else
+  // — POST/PUT, cross-origin, Request-object form, signalled, non-OK responses
+  // for the TTL cache — passes straight to the real fetch. Wrapped in try/catch
+  // that falls back to native fetch, so it can never break a request. Installed
+  // here (classic + inline, before the first boot fetch and before any ES
+  // module) so it wraps every module's fetch. KEEP after the error-capture
+  // script; it must run before checkSetup() below.
+  (function () {
+    try {
+      var _native = window.fetch ? window.fetch.bind(window) : null;
+      if (!_native || window.__bootFetchCoalesced) return;
+      window.__bootFetchCoalesced = true;
+
+      var TTL_MS = 2000;          // replay a just-fetched GET within this window
+      // How long the boot fast-paths (TTL replay + /boot primed cache) stay
+      // active. Wide enough to still be serving the /boot snapshot when DEFERRED
+      // boot work runs — the tutorial/hints module reconciles ui-config + profile
+      // only after the curtain lifts, which on a slow remote-DB boot lands well
+      // past 12s; without this those two re-fetch over a starved socket (~10s
+      // each). The snapshot is boot-time config, so serving it for this long is
+      // safe (a genuinely changed value is picked up on the next reload).
+      var BOOT_WINDOW_MS = 20000;
+      var inflight = new Map();   // key -> Promise<Response master>
+      var cache = new Map();      // key -> { resp: Response master, at: ms }
+      var _now = function () { return (window.performance && performance.now) ? performance.now() : 0; };
+
+      // ── Combined-boot priming ────────────────────────────────────────────
+      // One early GET /api/v1/boot returns the read-only page-boot payloads in a
+      // single round-trip (server aggregator: app/api/boot.py). We write each
+      // sub-payload into `primed`, keyed by the URL the module would otherwise
+      // fetch, so the ~12 scattered boot GETs are answered from memory instead of
+      // queueing behind the browser's 6-socket HTTP/1.1 cap. A module fetch that
+      // races AHEAD of /boot (its key is in `expected`) waits for /boot instead of
+      // hitting the network; anything not primed falls through to a real fetch, so
+      // this only ever speeds boot up, never changes what loads.
+      var primed = new Map();     // normKey -> Response master (whole boot window)
+      var expected = new Set();   // normKeys /boot is expected to prime
+      var bootInflight = null;    // Promise for the in-flight GET /api/v1/boot
+
+      // Canonical cache key: pathname + query, params sorted so caller ordering
+      // never matters, with the caller-identity params (?token=, ?user_id=)
+      // DROPPED. A page boot carries a single user's identity, so those are
+      // constant — and different modules disagree on whether to include ?user_id=
+      // for the same endpoint (e.g. /files/check-access is fetched both with and
+      // without it). Dropping them makes every caller of one endpoint share a key.
+      // The auth header is likewise ignored (same single-identity reason).
+      function normKey(u) {
+        try {
+          var a = document.createElement('a');
+          a.href = u;
+          var parts = a.search ? a.search.slice(1).split('&') : [];
+          var kept = [];
+          for (var i = 0; i < parts.length; i++) {
+            if (!parts[i]) continue;
+            var pk = parts[i].split('=')[0];
+            if (pk === 'token' || pk === 'user_id') continue;
+            kept.push(parts[i]);
+          }
+          kept.sort();
+          return a.pathname + (kept.length ? '?' + kept.join('&') : '');
+        } catch (_) { return u; }
+      }
+      function _jsonResp(body) {
+        return new Response(JSON.stringify(body),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      // section name -> the exact URL the corresponding module fetches. MUST
+      // match the module's URL construction (see the boot fetches across ui/*),
+      // because normKey(theseUrls) is how a later module fetch finds its payload.
+      function _bootUrlMap(uid, defaultAgentId) {
+        var m = {
+          access_mode:        '/api/v1/auth/access-mode',
+          ui_config:          '/api/v1/auth/ui-config',
+          app_prompts:        '/api/v1/app-prompts',
+          ui_messages:        '/api/v1/app-prompts/ui-messages',
+          suggestions_config: '/api/v1/chat/suggestions/config',
+          abilities_catalog:  '/api/v1/abilities/catalog',
+          pages_catalog:      '/api/v1/pages/catalog',
+          check_access:       '/api/v1/files/check-access'
+        };
+        if (uid) {
+          var u = encodeURIComponent(uid);
+          m.profile  = '/api/v1/user/profile?user_id=' + u;
+          m.agents   = '/api/v1/agents?user_id=' + u;
+          m.sessions = '/api/v1/db/sessions?db=local.db&user_id=' + u + '&limit=50';
+          if (defaultAgentId) {
+            m.agent_abilities = '/api/v1/agents/' + encodeURIComponent(defaultAgentId)
+              + '/abilities?user_id=' + u;
+          }
+        }
+        return m;
+      }
+
+      window.fetch = function (input, init) {
+        try {
+          init = init || {};
+          var method = (init.method || 'GET').toUpperCase();
+          // Only plain string-URL GETs with no body and no abort signal qualify.
+          if (method !== 'GET' || typeof input !== 'string' ||
+              init.body != null || init.signal) {
+            return _native(input, init);
+          }
+          if (input.indexOf('/api/') === -1) return _native(input, init);
+          // Cross-origin absolute URLs pass through untouched.
+          if (/^https?:\/\//i.test(input) && input.indexOf(location.origin) !== 0) {
+            return _native(input, init);
+          }
+          // The Authorization header (if any) is part of the identity — never
+          // merge callers carrying different tokens.
+          var authHdr = '';
+          try {
+            var h = init.headers;
+            if (h) {
+              if (typeof h.get === 'function') authHdr = h.get('Authorization') || '';
+              else authHdr = h.Authorization || h.authorization || '';
+            }
+          } catch (_) {}
+          var key = input + '\n' + authHdr;
+          var now = _now();
+          var bootPhase = now < BOOT_WINDOW_MS;
+
+          // 0) Combined-boot cache: serve from the /boot aggregate if present, or
+          // — for a key /boot will prime that raced ahead — wait for /boot rather
+          // than opening a redundant socket. Falls through to a real fetch if the
+          // section is missing (a primed miss is never an error).
+          if (bootPhase) {
+            var nk = normKey(input);
+            var pe = primed.get(nk);
+            if (pe) return Promise.resolve(pe.clone());
+            if (bootInflight && expected.has(nk)) {
+              return bootInflight.then(function () {
+                var e2 = primed.get(nk);
+                return e2 ? e2.clone() : _native(input, init);
+              }, function () { return _native(input, init); });
+            }
+          }
+
+          // 1) TTL replay (boot window, OK responses only).
+          if (bootPhase) {
+            var c = cache.get(key);
+            if (c && (now - c.at) < TTL_MS) return Promise.resolve(c.resp.clone());
+          }
+          // 2) In-flight coalesce.
+          var p = inflight.get(key);
+          if (p) return p.then(function (m) { return m.clone(); });
+
+          // 3) Real fetch — become the shared master.
+          p = _native(input, init).then(function (resp) {
+            if (bootPhase && resp && resp.ok) {
+              try { cache.set(key, { resp: resp, at: _now() }); } catch (_) {}
+            }
+            return resp;
+          });
+          inflight.set(key, p);
+          p.then(function () { inflight.delete(key); }, function () { inflight.delete(key); });
+          return p.then(function (m) { return m.clone(); });
+        } catch (_) {
+          return _native(input, init);
+        }
+      };
+
+      // ── Fire the combined-boot request ONCE, as early as possible ─────────
+      // Runs before any ES module loads, so `expected` is populated (and /boot is
+      // in flight) before the module boot fetches fire — those matching an
+      // expected key then wait for /boot instead of racing to the network. Skips
+      // the first-run /setup flow (nothing to prime there). Uses the native fetch
+      // directly so it is never intercepted by the wrapper above.
+      try {
+        if (location.pathname.toLowerCase().indexOf('/setup') !== 0) {
+          var _uid = '', _tok = '', _sid = '';
+          try { _uid = localStorage.getItem('auth_user_id') || ''; } catch (_) {}
+          try { _tok = localStorage.getItem('auth_token') || ''; } catch (_) {}
+          // The session the UI will open — lets /boot prime the abilities of THAT
+          // session's bound agent (the chained ~10s tail), not a guessed default.
+          try { _sid = localStorage.getItem('terminalSessionId') || ''; } catch (_) {}
+          // Pre-register every key we can compute now (all but agent_abilities,
+          // whose id arrives in the /boot response) so early module fetches gate
+          // on the in-flight /boot instead of opening their own socket.
+          var _pre = _bootUrlMap(_uid, null);
+          for (var _k in _pre) {
+            if (_pre.hasOwnProperty(_k)) { try { expected.add(normKey(_pre[_k])); } catch (_) {} }
+          }
+          var _bi = { cache: 'no-store' };
+          if (_tok) _bi.headers = { 'Authorization': 'Bearer ' + _tok };
+          var _bootUrl = '/api/v1/boot' + (_sid ? '?session_id=' + encodeURIComponent(_sid) : '');
+          bootInflight = _native(_bootUrl, _bi)
+            .then(function (r) { return (r && r.ok) ? r.json() : null; })
+            .then(function (data) {
+              if (data && data.sections) {
+                var urls = _bootUrlMap(_uid, data.default_agent_id);
+                var secs = data.sections;
+                for (var name in secs) {
+                  if (!secs.hasOwnProperty(name)) continue;
+                  var url = urls[name];
+                  if (!url) continue;
+                  try { primed.set(normKey(url), _jsonResp(secs[name])); } catch (_) {}
+                }
+              }
+              return data;
+            })
+            .catch(function () { return null; });
+        }
+      } catch (_) { /* boot priming is optional — never block on it */ }
+    } catch (_) { /* leave native fetch untouched on any failure */ }
+  })();
+</script>
 <script>
   // Apply saved theme + chat panel width before paint to avoid flash on startup.
   (function () {

@@ -123,7 +123,11 @@ function _tipBadge(tip) {
   return b;
 }
 
-function _buildField(f, value, kind, isSet) {
+// `showTip` — when true, the field's `tip` is spelled out as a visible help
+// line under the input (the "how to get this" instructions), instead of hiding
+// behind the hover ⓘ badge. dns.js turns this on only while the provider isn't
+// connected yet, so setup reads as step-by-step and collapses once it's done.
+function _buildField(f, value, kind, isSet, showTip) {
   const wrap = document.createElement('div');
   if (f.type === 'textarea' || f.full) wrap.style.gridColumn = '1 / -1';
 
@@ -131,8 +135,11 @@ function _buildField(f, value, kind, isSet) {
     const lab = document.createElement('label');
     lab.className = 'ac-label';
     lab.textContent = f.label + (f.required ? ' *' : '');
-    const tip = _tipBadge(f.tip);
-    if (tip) lab.appendChild(tip);
+    // Keep the hover badge only when we're NOT showing the tip inline.
+    if (!showTip) {
+      const tip = _tipBadge(f.tip);
+      if (tip) lab.appendChild(tip);
+    }
     wrap.appendChild(lab);
     if (f.link && f.link.url) wrap.appendChild(_fieldLink(f.link));
   }
@@ -183,12 +190,23 @@ function _buildField(f, value, kind, isSet) {
     inp.dataset.kind = kind;
     if (f.type !== 'checkbox') wrap.appendChild(inp);
   }
+
+  // Inline "how to get this" instructions, shown while setting the provider up.
+  if (showTip) {
+    const tipText = typeof f.tip === 'string' ? f.tip : (f.tip && f.tip.text) || '';
+    if (tipText) {
+      const help = document.createElement('div');
+      help.className = 'ac-field-help';
+      help.textContent = tipText;
+      wrap.appendChild(help);
+    }
+  }
   return wrap;
 }
 
 function _gather(kind) {
   const out = {};
-  document.querySelectorAll(`#ac-dns-card [data-kind="${kind}"]`).forEach(el => {
+  document.querySelectorAll(`#ac-dns-main-row [data-kind="${kind}"]`).forEach(el => {
     const key = el.dataset.key;
     if (!key) return;
     out[key] = el.dataset.type === 'checkbox' ? !!el.checked : el.value;
@@ -274,26 +292,57 @@ function _renderProvider() {
   const credHost = _qs('ac-dns-creds');
   if (!p || !cfgHost || !credHost) return;
 
+  // The three states that drive the whole card's shape:
+  //   • manual    — keyless "Other / manual"; no credentials, point form always on.
+  //   • connected — an API provider whose key is saved (`configured`).
+  //   • setup     — an API provider not connected yet → show instructions, hide
+  //                 the point form so the card is one clear step at a time.
+  const manual = !!p.manual;
+  const connected = !!p.configured;
+  const setup = !manual && !connected;
+
   if (summary) summary.textContent = p.available ? (p.summary || '') : (p.unavailable_reason || 'Unavailable here.');
   if (reqs) {
     reqs.innerHTML = '';
-    (p.requires || []).forEach(r => {
+    // Prerequisites are guidance for getting set up — hide them once connected.
+    (setup || manual ? (p.requires || []) : []).forEach(r => {
       const li = document.createElement('li'); li.textContent = r; reqs.appendChild(li);
     });
-    reqs.style.display = (p.requires || []).length ? '' : 'none';
+    reqs.style.display = reqs.children.length ? '' : 'none';
+  }
+
+  // Lead-in shown only during setup: how to proceed, plus the no-API fallback.
+  const guideNote = _qs('ac-dns-guide-note');
+  if (guideNote) {
+    if (setup) {
+      guideNote.textContent = `Follow the steps under each field to get your ${p.display_name} details, then Connect. `
+        + `No API access? Pick “Other / manual” above to set the DNS record yourself.`;
+      guideNote.hidden = false;
+    } else {
+      guideNote.hidden = true;
+    }
   }
 
   // Connect block: hidden for the keyless manual provider.
   const connectBlock = _qs('ac-dns-connect-block');
-  if (connectBlock) connectBlock.style.display = p.manual ? 'none' : '';
+  if (connectBlock) connectBlock.style.display = manual ? 'none' : '';
 
   cfgHost.innerHTML = '';
   credHost.innerHTML = '';
-  (p.config_fields || []).forEach(f => cfgHost.appendChild(_buildField(f, (p.config || {})[f.key], 'cfg')));
+  // During setup, spell out each field's "how to get this" tip inline.
+  (p.config_fields || []).forEach(f => cfgHost.appendChild(_buildField(f, (p.config || {})[f.key], 'cfg', false, setup)));
   (p.credential_fields || []).forEach(f => {
     const isSet = !!(p.credentials_set || {})[f.key];
-    credHost.appendChild(_buildField(f, '', 'cred', isSet));
+    credHost.appendChild(_buildField(f, '', 'cred', isSet, setup));
   });
+
+  // The point-a-domain form (STEP 2) only exists once we CAN point: an API
+  // provider that's connected, or the keyless manual provider. Otherwise show a
+  // short locked hint in its place. This is the "hide it until connected" rule.
+  const pointBlock = _qs('ac-dns-point-block');
+  const lockedHint = _qs('ac-dns-locked-hint');
+  if (pointBlock) pointBlock.style.display = setup ? 'none' : '';
+  if (lockedHint) lockedHint.hidden = !setup;
 
   // Disconnect button appears once a key is stored.
   const disc = _qs('ac-dns-disconnect');
@@ -495,7 +544,9 @@ async function _verify() {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 export function initDns() {
-  const card = _qs('ac-dns-card');
+  // The standalone #ac-dns-card wrapper was removed when this row moved inside
+  // the New-deployment group; guard on the row id that survives the move.
+  const card = _qs('ac-dns-main-row');
   if (!card) return;
 
   _qs('ac-dns-provider')?.addEventListener('change', _onProviderChange);

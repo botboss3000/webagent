@@ -31,17 +31,18 @@
 
         <!-- MOBILE sub-header — a genuine SECOND row of tabs, sibling to (and
              directly beneath) #app-config-tabs-wrap, styled to match it. On a
-             mobile-width viewport the Agent Settings tab shows its section
-             headings here as a swipeable strip of underline tabs; tapping one
-             jumps the scroll. Populated by the mobile carousel in
+             mobile-width viewport a carousel-enabled tab (Data Settings, App
+             Settings, Agent Settings) shows its section headings here as a
+             swipeable strip of underline tabs; tapping one jumps the scroll.
+             Populated by the mobile carousel in
              ui/admin-tools/app-config/sticky-nav.js (`_buildCarousel` inserts a
-             `.ac-mnav` here). It lives OUTSIDE the content scroller on purpose so
-             it spans the full panel width and isn't clipped by the scroller's
-             rounded top corners — a real sub-header, not a strip inside the
-             content box. Empty + hidden on desktop and on tabs without a carousel;
-             revealed only on mobile while Agent Settings is active via the
-             `:has(#ac-section-agent-settings.active)` rule on #app-config-subnav
-             in app3.css. -->
+             `.ac-mnav[data-section]` here per section). It lives OUTSIDE the content
+             scroller on purpose so it spans the full panel width and isn't clipped
+             by the scroller's rounded top corners — a real sub-header, not a strip
+             inside the content box. Empty + hidden on desktop and on tabs without a
+             carousel; on mobile the host is revealed and only the ACTIVE section's
+             strip is shown via the `:has(#ac-section-<id>.active)` rules on
+             #app-config-subnav in app3.css. -->
         <div id="app-config-subnav"></div>
 
         <!-- Non-scrolling wrapper that is the query CONTAINER sizing the App

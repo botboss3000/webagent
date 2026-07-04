@@ -39,6 +39,7 @@ import { randomUUID } from './uuid.js';
 import { initClipboard } from './clipboard.js';
 import { loadUiMessages } from './app-prompts.js';
 import { initAppControlPoint } from './app-control-point.js';
+import { initBrowserPopup } from '../../browser-popup/js/browser-popup.js';
 import { mountSignInForm } from './page-access-gate.js';
 
 bindDom();
@@ -512,19 +513,48 @@ _bootReady.then(async () => {
   //    Gen UI tab isn't showing.
   //  • initBilling / initAccount — cheap, no tab-gated heavy work.
   _safeInit('initGenui',   initGenui);
-  _safeInit('initBilling',     initBilling);
   _safeInit('initAccount',     initAccount);
   _safeInit('initSessions',    initSessions);
   _safeInit('initChatResize',  initChatResize);
   // Right-click anywhere → point at a UI element and send it to chat (the
   // user-facing half of the App Control ability). Self-gates on the ability.
   _safeInit('initAppControlPoint', initAppControlPoint);
-  _safeInit('initRecorder',    initRecorder);
+  // Floating agent-openable browser window (agent's browser_popup tool). Just
+  // registers window.__browserPopup for the shared WS handler; no UI until used.
+  _safeInit('initBrowserPopup', initBrowserPopup);
   _safeInit('initDebugConsole', initDebugConsole);
   _safeInit('initTutorial',    initTutorial);
-  // Defer startTutorial() so it doesn't block the critical path — it fetches
-  // tutorial state from the server but isn't needed for first paint.
-  setTimeout(() => { try { startTutorial(); } catch (_) {} }, 0);
+
+  // ── Deferred, non-critical boot work ────────────────────────────────────
+  // These touch the network but aren't needed for first paint or first
+  // interaction, so they're pushed PAST the boot burst to free the browser's
+  // ~6 HTTP/1.1 sockets for the calls that DO gate the first render (session
+  // roster, message history, agent roster). requestIdleCallback runs them in
+  // the first idle gap after paint; setTimeout is the fallback for engines
+  // without it. Each still self-registers its own timers/handlers when it runs.
+  //   • initBilling   — header credit pill + its single balance GET (real
+  //     polling only starts later via startBilling when a billing view opens).
+  //   • initRecorder  — render-recorder config probe (decorative; then polls).
+  //   • startTutorial — tutorial-state fetch (was already setTimeout-deferred).
+  const _deferNonCriticalBoot = () => {
+    _safeInit('initBilling',  initBilling);
+    _safeInit('initRecorder', initRecorder);
+    try { startTutorial(); } catch (_) {}
+  };
+  // Run it in the first idle gap AFTER the boot curtain lifts (webagent-app-ready,
+  // fired from reveal() in index.html) — not on the first idle gap outright, which
+  // lands mid-burst. If the curtain already lifted before this listener attaches,
+  // run immediately. requestIdleCallback yields to any still-in-flight critical
+  // work; setTimeout is the fallback for engines without it.
+  const _runDeferred = () => {
+    if (window.requestIdleCallback) requestIdleCallback(_deferNonCriticalBoot, { timeout: 2000 });
+    else setTimeout(_deferNonCriticalBoot, 200);
+  };
+  if (window.__boot && window.__boot.revealed) {
+    _runDeferred();
+  } else {
+    window.addEventListener('webagent-app-ready', _runDeferred, { once: true });
+  }
 
   // Boot complete: the app shell + active tab + chat panel are mounted, so the
   // page is now in its intended view. Lift the black boot curtain — unless a

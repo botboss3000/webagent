@@ -51,8 +51,13 @@ async def record_background_usage(
             cost_usd, cost_source = 0.0, "unknown"
 
         if db is None:
-            from app.db import get_db
-            db = get_db()
+            # usage_events is the CENTRAL billing plane — write it to the control
+            # DB so background-usage rows land in the same place as chat usage and
+            # the admin dashboard can see them, even when interaction data is
+            # scattered across per-user databases (multi-tenant). No-op in
+            # single-tenant mode (get_control_db() is the one DB).
+            from app.db import get_control_db
+            db = get_control_db()
 
         row_id = str(_uuid.uuid4())
         a_id = agent_id or SYSTEM_OWNER

@@ -11,21 +11,9 @@
   "locked_on": true,
   "protected": true,
   "context_strategy": true,
-  "tools": ["compact_context", "recall_compacted", "search_this_session"],
-  "tool_metadata": {
-    "compact_context": {
-      "stages": ["execute_tools"],
-      "destructive": false
-    },
-    "recall_compacted": {
-      "stages": ["execute_tools"],
-      "destructive": false
-    },
-    "search_this_session": {
-      "stages": ["execute_tools"],
-      "destructive": false
-    }
-  },
+  "app_function": true,
+  "_tools_note": "The three agent-facing tools (compact_context, recall_compacted, search_this_session) are DISPLAYED under Core ▸ Base — they are always-on for every agent. Context Control itself is a background APP FUNCTION (the automatic compaction train), so its descriptor gates no tools here; its build_tools() still creates them at runtime because this ability is locked_on. See base.json + app/abilities ui_catalog().",
+  "tools": [],
   "skill_mode": "selectable",
   "skill_summary": "Your own context window: the fill gauge, the automatic background 'compaction train' (oldest turns fold into frozen summary parts; newest stay verbatim), and three tools — compact_context to deliberately fold older turns yourself at a phase checkpoint, recall_compacted to read the ORIGINAL turns behind any summary part verbatim, and search_this_session to keyword-find where a detail lives across the whole conversation. Load this whenever the user asks what you can do about your context/memory filling up, whether you can compact or summarize, or before a long multi-phase task — and, crucially, whenever you suspect a detail you need has been compacted into a summary: don't guess, recall it. NOTE: you CAN compact on demand; do not tell the user compaction is automatic-only.",
   "config": {

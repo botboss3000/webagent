@@ -15,13 +15,25 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import socket
+import time
 import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
 _DEVICE_ID: Optional[str] = None
 _DEVICE_LABEL: Optional[str] = None
+
+# Claude-readiness probe, cached with a short TTL. A Claude-Code agent only runs on
+# a device that has the `claude` CLI installed; the picker shows this per device so
+# a target that can't run it is flagged BEFORE you send. Re-probed at most once a
+# minute so a device that gains or loses `claude` reflects it within ~a minute
+# without a restart (the user's "maybe it got deleted" case), yet a heartbeat every
+# 15s doesn't scan PATH on every tick.
+_CLAUDE_READY: Optional[bool] = None
+_CLAUDE_READY_AT: float = 0.0
+_CLAUDE_READY_TTL: float = 60.0
 
 
 def _id_file() -> Path:
@@ -109,13 +121,36 @@ def _repo_info() -> Dict[str, str]:
     return _REPO
 
 
+def claude_ready() -> bool:
+    """True if the `claude` CLI is installed on THIS machine (resolvable on PATH).
+    Resolved the SAME way the engine launches it (shutil.which), so if this says
+    ready the run will find the binary too. Cached with a short TTL — see the
+    module constants above."""
+    global _CLAUDE_READY, _CLAUDE_READY_AT
+    now = time.monotonic()
+    if _CLAUDE_READY is None or (now - _CLAUDE_READY_AT) >= _CLAUDE_READY_TTL:
+        try:
+            _CLAUDE_READY = bool(shutil.which("claude"))
+        except Exception:
+            _CLAUDE_READY = False
+        _CLAUDE_READY_AT = now
+    return _CLAUDE_READY
+
+
 def capabilities() -> Dict[str, object]:
     """What this device is / where it runs. Kept small; enrich as the feature
-    grows (e.g. has_browser, has_terminal, on_battery)."""
+    grows (e.g. has_browser, has_terminal, on_battery).
+
+    ``claude`` = this device can run Claude-Code agents (the `claude` CLI is
+    installed). The target-device picker reads it to flag a device that can't run
+    a Claude agent, and it lets other devices see THIS one's readiness over the
+    shared presence row (the login itself is shared via the vault, so readiness is
+    purely 'is the binary here')."""
     try:
         sysname = platform.system()
     except Exception:
         sysname = ""
     info = _repo_info()
     return {"platform": sysname, "hostname": device_label(),
-            "repo": info["repo"], "branch": info["branch"]}
+            "repo": info["repo"], "branch": info["branch"],
+            "claude": claude_ready()}

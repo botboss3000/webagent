@@ -299,27 +299,62 @@ def tool_hidden_by_ability(
     return name not in set(active_tool_names or ())
 
 
-def render_ability_index(entries: List[Dict]) -> str:
+def render_ability_index(
+    entries: List[Dict],
+    starred: Optional[Iterable[str]] = None,
+    order: Optional[List[str]] = None,
+) -> str:
     """Build the ``# [ABILITIES]`` block listing discoverable abilities whose
     tools + how-to skill are withheld until ``load_ability``.
 
     ``entries`` is a list of ``{id, name, desc}`` dicts. Returns "" when empty.
+
+    ``starred`` / ``order`` make the menu **message-aware** (the semantic router
+    ranks the abilities against what the user just asked):
+    - ``order`` — ability ids most-relevant-first; entries are listed in this
+      order (any not in it follow, alphabetically). Absent ⇒ plain alphabetical,
+      exactly as before.
+    - ``starred`` — ids to flag with ★ under a "likely relevant right now" note,
+      so the agent's eye lands on the ability this message probably needs. Absent
+      ⇒ no stars.
+    Both are optional and additive: with neither, this renders the original
+    alphabetical menu, so nothing changes when routing is off/unavailable.
     """
     rows = [e for e in entries if e.get("id")]
     if not rows:
         return ""
-    lines: List[str] = [
-        "# [ABILITIES]",
+    star_set = set(starred or ())
+
+    lead = (
         "These abilities are available but their tools and how-to skill are "
         "withheld to keep your context lean. Call `load_ability(\"<id>\")` the "
         "moment a task needs one — it returns the ability's skill plus its tools "
         "and keeps them active for the rest of this conversation. Don't guess an "
-        "ability's tools before loading it.",
-    ]
-    for e in sorted(rows, key=lambda r: (r.get("name") or r["id"]).lower()):
+        "ability's tools before loading it."
+    )
+    if star_set:
+        lead += (
+            " Entries marked ★ look most relevant to the current request — load "
+            "one of those first if it fits."
+        )
+    lines: List[str] = ["# [ABILITIES]", lead]
+
+    if order:
+        rank_of = {aid: i for i, aid in enumerate(order)}
+        ordered = sorted(
+            rows,
+            key=lambda r: (rank_of.get(r["id"], len(order)),
+                           (r.get("name") or r["id"]).lower()),
+        )
+    else:
+        ordered = sorted(rows, key=lambda r: (r.get("name") or r["id"]).lower())
+
+    for e in ordered:
         nm = e.get("name") or e["id"]
         desc = (e.get("desc") or "").strip().split("\n")[0]
-        lines.append(f"- `{e['id']}` — {nm}: {desc}" if desc else f"- `{e['id']}` — {nm}")
+        mark = "★ " if e["id"] in star_set else ""
+        base = f"- {mark}`{e['id']}` — {nm}"
+        lines.append(f"{base}: {desc}" if desc else base)
     return "\n".join(lines).strip()
 
 

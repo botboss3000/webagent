@@ -96,6 +96,19 @@ export function _renderList() {
 
   const activeId = _activeId();
   grid.classList.toggle('carousel', !!activeId);
+
+  // Preserve scroll position across the wholesale rebuild below. #agents-grid is
+  // the vertical scroller in carousel mode (its own scrollTop zeroes when its
+  // innerHTML is cleared), and .agents-squares is REBUILT as a brand-new node each
+  // render (so its scrollTop in grid mode / scrollLeft in carousel mode start at
+  // 0). Capture both from the outgoing nodes now and restore onto the fresh ones
+  // after — otherwise a background WS refresh or opening a tile snaps the page to
+  // the top / the tile row back to the left.
+  const _prevGridTop = grid.scrollTop;
+  const _oldSquares = grid.querySelector('.agents-squares');
+  const _prevSqTop = _oldSquares ? _oldSquares.scrollTop : 0;
+  const _prevSqLeft = _oldSquares ? _oldSquares.scrollLeft : 0;
+
   grid.innerHTML = '';
 
   // Squares strip
@@ -151,6 +164,14 @@ export function _renderList() {
   if (activeAgent) {
     region.classList.add('open');
     _renderAgentCard(region, activeAgent);
+  }
+
+  // Restore the pre-rebuild scroll offsets onto the freshly-created nodes (see the
+  // capture near the top of _renderList). `squares` is the new .agents-squares.
+  if (_prevGridTop) grid.scrollTop = _prevGridTop;
+  if (squares) {
+    if (_prevSqTop) squares.scrollTop = _prevSqTop;
+    if (_prevSqLeft) squares.scrollLeft = _prevSqLeft;
   }
 
   _wireSquaresCarousel(wrap);

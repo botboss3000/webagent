@@ -437,6 +437,87 @@ def connect_standalone(conninfo: str, autocommit: bool = True) -> "PgPortableCon
     return PgPortableConnection(conn=conn)
 
 
+# ── Pooled autocommit connections for the DB-viewer / chat-panel endpoints ────
+# `connect_standalone` opens a BRAND-NEW psycopg connection every call (~343ms TLS
+# handshake to a remote Supabase pooler). The chat-panel read endpoints that stay
+# on the remote authority (the live-reconcile tail, the related/family lookup) are
+# POLLED, so that per-call handshake is pure waste. This keeps a small AUTOCOMMIT
+# pool (separate from the transactional backend pool) so those calls reuse warm
+# connections. Autocommit preserves the per-statement isolation the viewer relies
+# on. Any pool failure falls back to a fresh standalone connection, so this can
+# only ever make things faster, never break a request.
+_VIEWER_POOL = None
+_VIEWER_POOL_CONNINFO: Optional[str] = None
+import threading as _threading  # noqa: E402
+_VIEWER_POOL_LOCK = _threading.Lock()
+
+
+def _viewer_pool(conninfo: str):
+    """Lazily build (or rebuild on a conninfo change) the shared autocommit pool."""
+    global _VIEWER_POOL, _VIEWER_POOL_CONNINFO
+    if _VIEWER_POOL is not None and _VIEWER_POOL_CONNINFO == conninfo:
+        return _VIEWER_POOL
+    with _VIEWER_POOL_LOCK:
+        if _VIEWER_POOL is not None and _VIEWER_POOL_CONNINFO == conninfo:
+            return _VIEWER_POOL
+        # A DB switch changed the conninfo → discard the stale pool.
+        if _VIEWER_POOL is not None:
+            try:
+                _VIEWER_POOL.close()
+            except Exception:
+                pass
+            _VIEWER_POOL = None
+        from psycopg_pool import ConnectionPool
+        def _configure(c):
+            try:
+                from pgvector.psycopg import register_vector
+                register_vector(c)
+            except Exception:
+                pass
+        try:
+            _min = max(1, int(os.environ.get("WEBAGENT_PG_VIEWER_POOL_MIN") or 1))
+        except ValueError:
+            _min = 1
+        try:
+            _max = max(_min, int(os.environ.get("WEBAGENT_PG_VIEWER_POOL_MAX") or 4))
+        except ValueError:
+            _max = max(_min, 4)
+        _VIEWER_POOL = ConnectionPool(
+            conninfo, min_size=_min, max_size=_max, open=True,
+            configure=_configure,
+            # autocommit = per-statement isolation (the viewer's contract);
+            # prepare_threshold=None keeps it compatible with the Supabase
+            # transaction pooler (6543), same as the backend pool.
+            kwargs={"autocommit": True, "prepare_threshold": None},
+        )
+        _VIEWER_POOL_CONNINFO = conninfo
+        return _VIEWER_POOL
+
+
+def connect_viewer_pooled(conninfo: str) -> "PgPortableConnection":
+    """Borrow a warm autocommit connection from the shared viewer pool (returned to
+    the pool on ``.close()``). Falls back to a fresh standalone connection if the
+    pool can't be built or is exhausted — so it never breaks a request."""
+    try:
+        return PgPortableConnection(_viewer_pool(conninfo))
+    except Exception as e:
+        logger.debug("viewer pool unavailable (%s); using standalone connection", e)
+        return connect_standalone(conninfo)
+
+
+def close_viewer_pool() -> None:
+    """Close the shared viewer pool (app shutdown / DB switch). Best-effort."""
+    global _VIEWER_POOL, _VIEWER_POOL_CONNINFO
+    with _VIEWER_POOL_LOCK:
+        if _VIEWER_POOL is not None:
+            try:
+                _VIEWER_POOL.close()
+            except Exception:
+                pass
+        _VIEWER_POOL = None
+        _VIEWER_POOL_CONNINFO = None
+
+
 def _split_statements(script: str) -> List[str]:
     """Naive ';' split honoring single-quote string literals."""
     out: List[str] = []

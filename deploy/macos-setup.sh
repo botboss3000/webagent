@@ -60,6 +60,16 @@ if [ -n "$WA_ADMIN_PW" ]; then
   echo "Admin account will be created on first boot from the password you set."
 fi
 
+# Optional pre-loaded configuration bundle (from the Deploy panel's "Include this
+# app's configuration" toggle). The one-line command passes it as WA_BOOTSTRAP_CODE;
+# we write it to bootstrap.json, which the app applies on first boot
+# (app/admin/bootstrap_bundle.apply_boot_file) — decrypting it with the
+# BOOTSTRAP_ADMIN_PASSWORD written just above — then renames the file. Absent → skipped.
+if [ -n "$WA_BOOTSTRAP_CODE" ]; then
+  printf '%s\n' "$WA_BOOTSTRAP_CODE" > "$REPO_DIR/bootstrap.json"
+  echo "Pre-loaded configuration will be applied on first boot."
+fi
+
 # Make sure python3 is available (Command Line Tools or Homebrew provide it). ---
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is needed."

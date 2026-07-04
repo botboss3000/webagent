@@ -135,7 +135,9 @@
   justify-content: center;
   background: transparent;
   z-index: 5;
-  padding: 10px 20px 6px;
+  /* Matches the Gen UI footer padding (genui-toolbar.css #genui-footer) so both
+     footers stand off the panel floor by the same amount. */
+  padding: 8px 16px 10px;
   pointer-events: none;
   flex: 0 0 auto;
 }
@@ -162,10 +164,12 @@
   background: transparent;
 }
 
-/* Base action button — flat, transparent, hover halo. */
+/* Base action button — flat, transparent, hover halo. Sized to the Gen UI
+   footer's 28px control buttons (genui-toolbar.css) so both footers stand at the
+   same height. */
 .browser-btn {
-  height: 34px;
-  min-width: 34px;
+  height: 28px;
+  min-width: 28px;
   padding: 0 8px;
   border: none;
   border-radius: 10px;
@@ -189,7 +193,7 @@
 
 /* Round icon-only nav buttons (back / forward / reload). */
 .browser-nav-icon {
-  width: 34px;
+  width: 28px;
   padding: 0;
   border-radius: 50%;
 }
@@ -262,7 +266,7 @@
 .browser-session-trigger[aria-expanded="true"] .browser-session-trigger-chev { transform: rotate(180deg); }
 
 /* New-session "+" button. */
-.browser-new-session { width: 34px; padding: 0; border-radius: 50%; }
+.browser-new-session { width: 28px; padding: 0; border-radius: 50%; }
 
 /* ── Point-and-ask toggle ──
    Icon button that arms "click a spot to ask the agent about it". Accent-filled
@@ -368,9 +372,10 @@
 
 /* ── Unified pill wrapper ──
    CHAT-PILL-SYNC: the pill look/behaviour come from .chat-pill* (app1.css) +
-   the floating-glass skin (index.css). Only the wrapper width lives here — we
-   deliberately do NOT override the pill's height/padding/buttons (doing so is
-   what previously clipped the send button and pushed the text off the edge).
+   the floating-glass skin (index.css). The wrapper width lives here; the compact
+   height/button overrides that match the Gen UI footer live just below (input
+   min-height + button box shrunk TOGETHER, the way genui-toolbar.css does it, so
+   the send glyph never clips — the trap the old cramped browser-pill fork hit).
    Now that this pill is BOTH the address bar and the chat box it is the PRIMARY
    input, so it grows to fill the row to the right of the compact nav (capped so
    it never gets absurdly wide). When the toolbar stacks it relaxes to full width
@@ -381,15 +386,43 @@
   max-width: 760px;
 }
 
+/* ── Compact pill geometry (mirrors the Gen UI footer) ──
+   The pill opts into the shared 1-line pill (.chat-pill-1line, app1.css), whose
+   default rest height (~46px) is TALLER than the 28px controls beside it — that
+   extra height is what made this footer read as larger than the Gen UI footer.
+   These overrides trim the input + shrink the attach / mic / send buttons TOGETHER
+   (so the glyphs never clip) to the exact values genui-toolbar.css uses, so both
+   footers rest at the same height. */
+.browser-prompt-row.chat-pill-1line { padding: 2px 6px; }
+
 /* Single-line address bar: the unified pill never grows past ONE row. The
    textarea carries wrap="off", so a long URL scrolls horizontally instead of
    wrapping onto a second line; the height is pinned to one line. Scoped to this
    pill only — the chat-panel composer still grows multi-line. */
 .browser-prompt-row .chat-pill-input {
+  min-height: 26px;
+  padding: 4px 8px;
+  line-height: 18px;
+  font-size: 13px;
   white-space: nowrap;
   overflow-x: auto;
   overflow-y: hidden;
-  max-height: 38px;   /* one line: 20px line-height + 9px×2 padding (chat-pill-1line) */
+  max-height: 26px;   /* one line: 18px line-height + 4px×2 padding */
+}
+
+/* attach (+) · mic · send share the compact 28px box so the slim pill geometry
+   holds and the send glyph never clips (matches the Gen UI footer buttons). */
+.browser-prompt-row .chat-pill-attach,
+.browser-prompt-row .chat-pill-voice,
+.browser-prompt-row .chat-pill-send {
+  width: 28px;
+  height: 28px;
+}
+.browser-prompt-row .chat-pill-attach svg,
+.browser-prompt-row .chat-pill-voice svg,
+.browser-prompt-row .chat-pill-send svg {
+  width: 18px !important;
+  height: 18px !important;
 }
 
 /* URL mode: the action icon is a globe and Enter/Send navigates the page rather

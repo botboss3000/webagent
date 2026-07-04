@@ -28,9 +28,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from app.auth.identity import assert_caller_is
 from app.connectors import CONNECTOR_REGISTRY, get_connector
 from app.db import get_db
 
@@ -136,7 +137,8 @@ def _validate_type(t: str):
 # ── Type catalog ──────────────────────────────────────────────────────────────
 
 @router.get("/data-sources/types")
-async def list_data_source_types():
+async def list_data_source_types(request: Request):
+    await assert_caller_is(request, None)
     out = []
     for type_name, cls in CONNECTOR_REGISTRY.items():
         out.append({
@@ -150,14 +152,16 @@ async def list_data_source_types():
 # ── Data source CRUD ──────────────────────────────────────────────────────────
 
 @router.get("/data-sources")
-async def list_data_sources(user_id: str = Query(...)):
+async def list_data_sources(request: Request, user_id: str = Query(...)):
+    user_id = await assert_caller_is(request, user_id)
     db = get_db()
     rows = await db.data_source_list(user_id)
     return {"data_sources": rows}
 
 
 @router.post("/data-sources")
-async def create_data_source(req: CreateDataSourceRequest):
+async def create_data_source(request: Request, req: CreateDataSourceRequest):
+    await assert_caller_is(request, req.user_id)
     _validate_type(req.type)
     db = get_db()
     row = await db.data_source_create(
@@ -172,13 +176,15 @@ async def create_data_source(req: CreateDataSourceRequest):
 
 
 @router.get("/data-sources/{ds_id}")
-async def get_data_source(ds_id: str, user_id: str = Query(...)):
+async def get_data_source(ds_id: str, request: Request, user_id: str = Query(...)):
+    user_id = await assert_caller_is(request, user_id)
     ds = await _require_data_source(ds_id, user_id)
     return {"data_source": ds}
 
 
 @router.put("/data-sources/{ds_id}")
-async def update_data_source(ds_id: str, req: UpdateDataSourceRequest):
+async def update_data_source(ds_id: str, request: Request, req: UpdateDataSourceRequest):
+    await assert_caller_is(request, req.user_id)
     await _require_data_source(ds_id, req.user_id)
     db = get_db()
     fields = {k: v for k, v in req.dict().items() if k != "user_id" and v is not None}
@@ -187,7 +193,8 @@ async def update_data_source(ds_id: str, req: UpdateDataSourceRequest):
 
 
 @router.delete("/data-sources/{ds_id}")
-async def delete_data_source(ds_id: str, user_id: str = Query(...)):
+async def delete_data_source(ds_id: str, request: Request, user_id: str = Query(...)):
+    user_id = await assert_caller_is(request, user_id)
     db = get_db()
     ok = await db.data_source_delete(ds_id, user_id)
     if not ok:
@@ -198,7 +205,8 @@ async def delete_data_source(ds_id: str, user_id: str = Query(...)):
 # ── Test / introspect / ingest ────────────────────────────────────────────────
 
 @router.post("/data-sources/{ds_id}/test")
-async def test_data_source(ds_id: str, user_id: str = Query(...)):
+async def test_data_source(ds_id: str, request: Request, user_id: str = Query(...)):
+    user_id = await assert_caller_is(request, user_id)
     ds = await _require_data_source(ds_id, user_id)
     connector = get_connector(ds["type"])
     auth = await _auth_lookup(ds.get("auth_element_id"))
@@ -219,7 +227,8 @@ async def test_data_source(ds_id: str, user_id: str = Query(...)):
 
 
 @router.post("/data-sources/{ds_id}/introspect")
-async def introspect_data_source(ds_id: str, user_id: str = Query(...)):
+async def introspect_data_source(ds_id: str, request: Request, user_id: str = Query(...)):
+    user_id = await assert_caller_is(request, user_id)
     ds = await _require_data_source(ds_id, user_id)
     connector = get_connector(ds["type"])
     auth = await _auth_lookup(ds.get("auth_element_id"))
@@ -243,7 +252,8 @@ async def introspect_data_source(ds_id: str, user_id: str = Query(...)):
 
 
 @router.post("/data-sources/{ds_id}/ingest")
-async def ingest_data_source(ds_id: str, user_id: str = Query(...)):
+async def ingest_data_source(ds_id: str, request: Request, user_id: str = Query(...)):
+    user_id = await assert_caller_is(request, user_id)
     ds = await _require_data_source(ds_id, user_id)
     if ds["type"] != "doc_store":
         raise HTTPException(400, "ingest only supported for doc_store sources")
@@ -267,14 +277,16 @@ async def ingest_data_source(ds_id: str, user_id: str = Query(...)):
 # ── Agent attachments ─────────────────────────────────────────────────────────
 
 @router.get("/agents/{agent_id}/data-sources")
-async def list_agent_attachments(agent_id: str, user_id: str = Query(...)):
+async def list_agent_attachments(agent_id: str, request: Request, user_id: str = Query(...)):
+    user_id = await assert_caller_is(request, user_id)
     db = get_db()
     rows = await db.agent_data_source_list(agent_id, enabled_only=False)
     return {"attachments": rows}
 
 
 @router.post("/agents/{agent_id}/data-sources")
-async def attach_data_source(agent_id: str, req: AttachRequest):
+async def attach_data_source(agent_id: str, request: Request, req: AttachRequest):
+    await assert_caller_is(request, req.user_id)
     db = get_db()
     # Sanity: the source must exist (caller owns it or has access).
     ds = await db.data_source_get(req.data_source_id, req.user_id)
@@ -290,7 +302,8 @@ async def attach_data_source(agent_id: str, req: AttachRequest):
 
 
 @router.put("/agents/{agent_id}/data-sources/{ds_id}")
-async def update_attachment(agent_id: str, ds_id: str, req: UpdateAttachmentRequest):
+async def update_attachment(agent_id: str, request: Request, ds_id: str, req: UpdateAttachmentRequest):
+    await assert_caller_is(request, req.user_id)
     db = get_db()
     fields = {k: v for k, v in req.dict().items() if k != "user_id" and v is not None}
     row = await db.agent_data_source_update(agent_id, ds_id, **fields)
@@ -300,7 +313,8 @@ async def update_attachment(agent_id: str, ds_id: str, req: UpdateAttachmentRequ
 
 
 @router.delete("/agents/{agent_id}/data-sources/{ds_id}")
-async def detach_data_source(agent_id: str, ds_id: str, user_id: str = Query(...)):
+async def detach_data_source(agent_id: str, request: Request, ds_id: str, user_id: str = Query(...)):
+    user_id = await assert_caller_is(request, user_id)
     db = get_db()
     ok = await db.agent_data_source_detach(agent_id, ds_id)
     if not ok:

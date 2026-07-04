@@ -84,6 +84,7 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     # ── Memory ──
     "memory":                        {"stages": ["memory_search", "memory_save", "execute_tools"], "destructive": False, "agent_types": []},
     "session_search":                {"stages": ["load_context", "execute_tools"],               "destructive": False, "agent_types": []},
+    "similar_sessions":              {"stages": ["load_context", "execute_tools"],               "destructive": False, "agent_types": []},
     # ── Self-prompt (Core ▸ Base — an agent reading/improving its OWN prompt) ──
     "read_own_prompt":               {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
     "edit_own_prompt":               {"stages": ["execute_tools"],                               "destructive": True,  "agent_types": []},
@@ -701,6 +702,7 @@ class ToolLoader:
         from app.tools.core_tools import (
             memory as _core_memory,
             session_search as _core_session_search,
+            similar_sessions as _core_similar_sessions,
             get_time as _core_get_time,
             get_date as _core_get_date,
             calculate as _core_calculate,
@@ -1069,6 +1071,27 @@ class ToolLoader:
                 "properties": {
                     "query": {"type": "string", "description": "Keyword to search for in past conversations"},
                     "limit": {"type": "integer", "description": "Max results (default 10)", "default": 10},
+                },
+                "required": ["query"],
+            },
+        )
+
+        # similar_sessions — semantic sibling of session_search: ranks whole past
+        # CONVERSATIONS by topic (meaning), not keywords. Excludes the current
+        # session so it never returns "this chat".
+        async def _similar_sessions_wrapper(query: str, limit: int = 8):
+            return await _core_similar_sessions(
+                query=query, limit=limit, user_id=user_id,
+                exclude_session_id=session_id or "")
+
+        tools["similar_sessions"] = ToolInfo(
+            name="similar_sessions",
+            handler=_similar_sessions_wrapper,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Topic to find similar past conversations for (e.g. 'setting up the deploy pipeline')"},
+                    "limit": {"type": "integer", "description": "Max results (default 8)", "default": 8},
                 },
                 "required": ["query"],
             },

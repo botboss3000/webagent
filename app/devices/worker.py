@@ -60,9 +60,41 @@ def _heartbeat_every() -> float:
     except Exception:
         pass
     return HEARTBEAT_EVERY
+
+
+def _self_endpoint() -> str:
+    """This instance's own reachable base URL, recorded in each heartbeat so the
+    Instances page can (a) SHOW where a device lives and (b) MATCH a cloud VM to
+    its registry-device twin by public IP — collapsing the two into one tile.
+
+    Reuses the app-wide base-URL resolver (configured WEBHOOK_BASE_URL / last-seen
+    request host), which by the time the worker is heartbeating has been populated
+    by real traffic. Returns '' when only the bare localhost:8000 fallback is
+    available, so we never stamp a wrong port onto the presence row."""
+    try:
+        from app.admin.integrations import _get_base_url
+        url = (_get_base_url() or "").strip().rstrip("/")
+        if url and url != "http://localhost:8000":
+            return url
+    except Exception:
+        pass
+    return ""
+
+
 MAX_JOB_AGE_SECONDS = 86400   # staleness cap: a job that has waited longer than
                               # this (e.g. a 'wait' target that stayed offline for
                               # a day) is skipped rather than fired absurdly late
+
+
+def _payload_of(job: dict) -> dict:
+    """The job's routing payload as a dict (it's stored as a JSON string)."""
+    payload = job.get("payload")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload or "{}")
+        except Exception:
+            payload = {}
+    return payload or {}
 
 
 class DeviceWorker:
@@ -129,10 +161,23 @@ class DeviceWorker:
         now = time.monotonic()
         if self._last_heartbeat == 0.0 or (now - self._last_heartbeat) >= _heartbeat_every():
             try:
+                endpoint = _self_endpoint()
+                caps = identity.capabilities()
+                if endpoint:
+                    caps["endpoint"] = endpoint    # also carried in caps for the pre-heartbeat self row
+                # Publish this device's Remote Access tunnel state so other devices'
+                # Instances page can show its tunnel URL / running state and offer a
+                # remote Start. Best-effort + purely synchronous (no network).
+                try:
+                    from app.remote_access.manager import tunnel_snapshot
+                    caps["tunnel"] = tunnel_snapshot()
+                except Exception:
+                    pass
                 await db_offload(lambda: db.device_heartbeat(
                     identity.device_id(),
                     label=identity.device_label(),
-                    capabilities=identity.capabilities(),
+                    capabilities=caps,
+                    endpoint=endpoint or None,
                 ))
                 self._last_heartbeat = now
             except Exception as e:
@@ -180,6 +225,19 @@ class DeviceWorker:
                         error=f"stale: waited {int(age)}s (> {MAX_JOB_AGE_SECONDS}s); not run")
                     logger.info("Device job %s skipped (stale: %ds old)", job_id, int(age))
                     return
+            # ACTION jobs (fleet control, e.g. start a tunnel) carry a payload
+            # discriminator and run a small local handler with NO agent — branch
+            # BEFORE the agent-loop path, which requires an agent and would error.
+            payload = _payload_of(job)
+            action = (payload.get("action") or "").strip() if isinstance(payload, dict) else ""
+            if action:
+                from app.devices.actions import run_device_action
+                result = await run_device_action(action, job=job, db=db, payload=payload)
+                await db.finish_device_job(
+                    job_id, status="done", result_excerpt=(result or "")[:2000])
+                logger.info("Device job %s ran action '%s' on %s",
+                            job_id, action, identity.device_id())
+                return
             session_id, reply = await self._execute(db, job)
             await db.finish_device_job(
                 job_id, status="done", result_excerpt=reply or "", session_id=session_id)
@@ -203,14 +261,22 @@ class DeviceWorker:
         agent_id = job.get("agent_id")
         prompt_text = job.get("prompt") or ""
 
+        # Multi-tenant: this runs in a background task with no request context, so
+        # the data-plane router doesn't yet know whose data this is. Pin it to the
+        # job OWNER and re-resolve db, so the session + interactions written below
+        # (pre-loop) land in the owner's own database rather than the central one.
+        # No-op in single-tenant mode (get_db() returns the same backend).
+        try:
+            from app.auth.identity import set_verified_caller_uid
+            from app.db import get_db as _get_db
+            if owner_user_id:
+                set_verified_caller_uid(owner_user_id)
+                db = _get_db()
+        except Exception:  # noqa: BLE001
+            pass
+
         # Job payload carries optional routing hints from the sender.
-        payload = job.get("payload")
-        if isinstance(payload, str):
-            try:
-                payload = json.loads(payload or "{}")
-            except Exception:
-                payload = {}
-        payload = payload or {}
+        payload = _payload_of(job)
         # A chat hand-off names the sender's existing session so the reply lands
         # back in that same conversation; an automation/broadcast job has none.
         run_in_session = (payload.get("run_in_session") or "").strip() or None
@@ -334,6 +400,46 @@ class DeviceWorker:
                                session_id, e)
                 history = None
 
+        # Remote Control LIVE continuity: the buffered/device path (unlike the live
+        # chat path's RunBuffer) never stamps `session_seq` on the rows it writes, so
+        # they stay NULL and are INVISIBLE to a VIEWER device's live-reconcile poll
+        # (`/session-tail` filters `session_seq IS NOT NULL AND > cursor`). Stamp a
+        # monotonic seq on each persisted row here so a handed-off turn surfaces on
+        # the watching device without a manual reload — the executor is the single
+        # writer, so its ordering is authoritative. Only for chat hand-offs
+        # (run_in_session): a broadcast/automation session has no live viewer, and
+        # the live chat path already stamps its own.
+        _seq = {"next": None}
+
+        async def _stamp_seq(rid) -> None:
+            if _seq["next"] is None:
+                try:
+                    _seq["next"] = await db.next_session_seq(session_id)
+                except Exception:
+                    _seq["next"] = 1
+            ss = _seq["next"]
+            _seq["next"] = ss + 1
+            try:
+                await db.stamp_interaction_seq(rid, ss)
+            except Exception:
+                pass
+
+        rc_callback = None
+        if run_in_session:
+            # Stamp the handed-off user turn first (it was pulled in by resync with a
+            # NULL seq) so it sorts before the reply on the viewer's poll.
+            _uid_turn = payload.get("user_interaction_id")
+            if _uid_turn:
+                await _stamp_seq(_uid_turn)
+
+            async def rc_callback(event):  # noqa: F811 — assigned, not redefined
+                try:
+                    if (event.get("type") == "db" and event.get("id")
+                            and event.get("role") in ("assistant", "tool", "user")):
+                        await _stamp_seq(event.get("id"))
+                except Exception:
+                    pass
+
         reply = await run_agent_loop_buffered(
             user_id=owner_user_id,
             session_id=session_id,
@@ -349,6 +455,7 @@ class DeviceWorker:
             max_turns=agent.get("max_turn_count", 0),
             execution_mode=execution_mode,
             attachment_docs=attachment_docs or None,
+            event_callback=rc_callback,
         )
         return session_id, reply or ""
 

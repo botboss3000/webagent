@@ -433,6 +433,13 @@ export function connectAgent() {
           if (typeof event.chat_width === 'number' && typeof window.__setChatPanelWidth === 'function') {
             try { window.__setChatPanelWidth(event.chat_width); } catch (_) { /* ignore */ }
           }
+        } else if (event.action === 'browser_popup') {
+          // Agent opened/closed a floating in-app browser window for the user
+          // (browser_control's browser_popup tool). Handler registered by
+          // ui/browser-popup/js/browser-popup.js at boot.
+          if (typeof window.__browserPopup === 'function') {
+            try { window.__browserPopup(event); } catch (_) { /* ignore */ }
+          }
         }
         break;
       }
@@ -477,6 +484,19 @@ export function connectAgent() {
       case 'attachment':
         // Image/file attachment reference from the server (both user and agent).
         handleAttachmentEvent(event);
+        break;
+
+      case 'session_deleted':
+        // A session was PERMANENTLY deleted elsewhere (another tab, or another
+        // device via the hybrid tombstone sync) and its transcript is gone. Tell
+        // the chat panel so, if this is the open session, it drops the transcript
+        // and shows "Session not found" instead of a stale/empty view. The handler
+        // itself decides whether it targets the open session and refreshes the
+        // sidebar. Ignore on replay (a reconnect shouldn't re-fire an old delete).
+        if (event.replayed) break;
+        if (typeof app.onSessionDeleted === 'function') {
+          try { app.onSessionDeleted(event); } catch (_) { /* ignore */ }
+        }
         break;
 
       // All other event types (tool_call, tool_result, pipeline, db) are handled by app._loopHandler etc.

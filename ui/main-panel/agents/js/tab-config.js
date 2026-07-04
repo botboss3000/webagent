@@ -262,10 +262,20 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
         // (e.g. app-default models silently dropped). Mirrors the admin Agent
         // Settings panel, which fetches the same endpoints with the token.
         const headers = { ...authHeaders() };
-        const [prov, multi] = await Promise.all([
-          fetch('/admin/settings/provider', { headers }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
-          fetch('/admin/settings/multi-providers', { headers }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
-        ]);
+        // ONE combined read (single server-side vault+DB resolve); fall back to the
+        // legacy parallel pair if the bundle endpoint isn't available yet.
+        let prov = {}, multi = {};
+        try {
+          const rb = await fetch('/admin/settings/provider-bundle', { headers });
+          if (rb.ok) { const b = await rb.json(); prov = b.provider || {}; multi = { providers: b.roster || [] }; }
+          else throw new Error('no-bundle');
+        } catch (_) {
+          const [p, m] = await Promise.all([
+            fetch('/admin/settings/provider', { headers }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+            fetch('/admin/settings/multi-providers', { headers }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+          ]);
+          prov = p || {}; multi = m || {};
+        }
         let rows = Array.isArray(multi.providers) ? multi.providers.filter(x => x.model) : [];
         if (!rows.length && prov.model) {
           rows = [{ provider: prov.provider, base_url: prov.base_url, model: prov.model, enabled: true,
@@ -521,18 +531,24 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
   }
 
   // ── Target device (Remote Control default) ────────────────────────────────
-  // Which device in the shared fleet runs this agent's chats by default. A fresh
-  // session pre-selects it in the chat Remote Control pill; if that device is
-  // offline the chat falls back to "this device", and the user can still pick a
-  // different device per session. Stored in metadata.default_target_device (an
-  // instance-id; '' = this device) and read by chat-ui.js on session open. The
-  // device list comes from window.DevicePicker (shared with the chat pill), loaded
-  // async — we paint "This device" (+ the saved value) first, then fill the fleet.
+  // Which device in the shared fleet runs this agent's chats by default.
+  //   • "None" (the DEFAULT, stored as blank '') = no pin — each chat runs on the
+  //     device that's messaging the agent (it roams to wherever you are).
+  //   • "This device" pins the current machine's own concrete fleet id, so the
+  //     choice reads as *this* device from any other one in the fleet (not a relative
+  //     '' that every device saw as itself), and dispatches back here from elsewhere.
+  //   • any other fleet device pins that device by its concrete id.
+  // A fresh session pre-selects a pinned device in the chat Remote Control pill; if
+  // it's offline the chat falls back to the messaging device, and the user can still
+  // pick a different device per session. A legacy blank '' is treated as "None".
+  // Read by chat-ui.js on session open. The device list comes from
+  // window.DevicePicker (shared with the chat pill), loaded async — we paint "None"
+  // (+ the saved value) first, then fill the fleet.
   if (isEditable && !isMock) {
     const g = _group(body, 'monitor-smartphone', 'Target device');
     const list = _cfgList(g);
     const { ctrl, descEl } = _cfgRow(list, 'Default device',
-      'New chats run here by default. If it’s offline they fall back to this device; you can still pick another per chat.');
+      'By default a chat runs on whichever device is messaging the agent. Pick a device to always run there.');
     const sel = document.createElement('select');
     sel.className = 'ac-input ac-input-sm ac-config-sel'; sel.dataset.field = 'default_target_device';
     const cur = (typeof agent.default_target_device === 'string') ? agent.default_target_device : '';
@@ -541,17 +557,30 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
 
     // Rebuild the option list from the live fleet. Keeps a saved-but-offline device
     // as an option so the admin still sees their choice. `null` devices = pre-load
-    // paint (This device + saved value only).
+    // paint (None + saved value only).
     const _rebuild = (devices) => {
-      const others = (Array.isArray(devices) ? devices : []).filter(d => d && !d.is_self);
+      const all = Array.isArray(devices) ? devices : [];
+      const selfDev = all.find(d => d && d.is_self);
+      const selfId = (selfDev && selfDev.instance_id)
+        || ((window.DevicePicker && window.DevicePicker.selfId && window.DevicePicker.selfId()) || '');
+      const others = all.filter(d => d && !d.is_self);
       const val = confirmed;
+      const isNone = !val;                         // blank/absent = roam to messenger
+      const isSelf = !!selfId && val === selfId;   // pinned to THIS machine
       sel.innerHTML = '';
       const mk = (value, text, selected) => {
         const o = document.createElement('option'); o.value = value; o.textContent = text;
         if (selected) o.selected = true; sel.appendChild(o);
       };
-      mk('', 'This device', !val);
-      const seen = new Set(['']);
+      // Default: no pin — the agent runs on whichever device is messaging it.
+      mk('', 'None — runs on the messaging device', isNone);
+      // "This device" pins the current machine's real fleet id; only offered once the
+      // fleet has loaded (before that selfId is unknown). Name shown in parens.
+      if (selfId) {
+        const selfName = selfDev ? String(selfDev.label || '').trim() : '';
+        mk(selfId, selfName ? ('This device (' + selfName + ')') : 'This device', isSelf);
+      }
+      const seen = new Set(['', selfId]);
       others.forEach(d => {
         mk(d.instance_id, (d.label || d.instance_id) + (d.online ? '' : ' (offline)'), d.instance_id === val);
         seen.add(d.instance_id);
@@ -561,9 +590,9 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
         mk(val, (lbl && lbl !== val ? lbl : val) + ' (offline)', true);
       }
       if (descEl) {
-        descEl.textContent = (!others.length && !val)
-          ? 'No other devices in your fleet yet — chats run on this device.'
-          : 'New chats run here by default. If it’s offline they fall back to this device; you can still pick another per chat.';
+        descEl.textContent = isNone
+          ? 'No pinned device — each chat runs on whichever device is messaging the agent. Pick a device to always run there.'
+          : 'New chats run on the chosen device. If it’s offline they fall back to the messaging device; you can still pick another per chat.';
       }
     };
     _rebuild(null);

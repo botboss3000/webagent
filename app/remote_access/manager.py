@@ -62,7 +62,11 @@ class RemoteAccessManager:
             logger.info("Remote Access: pushed address to signpost (%s)", url)
 
     # ── lifecycle ──
-    async def start_method(self, method: str) -> dict:
+    async def start_method(self, method: str, opts_override: Optional[dict] = None) -> dict:
+        """Start a method. ``opts_override`` merges over the saved per-method
+        options for THIS run only (nothing is persisted), so a caller can force
+        e.g. a Cloudflare *quick* tunnel without clobbering the admin's saved
+        named-tunnel settings."""
         async with self._lock:
             self._stop_tunnel()
             self._last_pushed_url = ""
@@ -71,6 +75,8 @@ class RemoteAccessManager:
 
             if method in _MANAGED:
                 opts = dict(cfg.get(method, {}))
+                if opts_override:
+                    opts.update(opts_override)
                 self._tunnel = tunnels.ManagedTunnel(method, netinfo.get_port(), opts)
                 if not self._tunnel.start():
                     err = self._tunnel.error or "failed to start"
@@ -147,6 +153,62 @@ class RemoteAccessManager:
             "error": self._tunnel.error if self._tunnel else "",
             "output": self._tunnel.recent_output() if self._tunnel else "",
         }
+
+
+def tunnel_snapshot() -> dict:
+    """A small, SYNCHRONOUS, event-loop-safe view of THIS device's Remote Access
+    tunnel — stamped into the presence heartbeat (app/devices) so OTHER devices'
+    Instances page can show whether a tunnel is set up / running here and its
+    public address, and offer a remote Start.
+
+    Never touches the network (no await, no subprocess): reads the live tunnel
+    subprocess state + the saved config only. Best-effort — returns a
+    'nothing configured' shape on any error. Fields:
+      • provider     — 'cloudflare' | 'ngrok' | ''  (a *managed* method, else '')
+      • method       — the raw active_method (may be same_network/manual/…)
+      • configured   — a managed tunnel this device could actually start now
+                       (helper binary present + runnable config)
+      • running      — a managed tunnel is live right now
+      • public_url   — the live address, or a named tunnel's fixed hostname even
+                       when off, or '' (quick tunnels only have one while running)
+    """
+    try:
+        cfg = store.load_config()
+    except Exception:
+        cfg = {}
+    method = (cfg.get("active_method") or "same_network").strip()
+    provider = method if method in _MANAGED else ""
+
+    mgr = get_manager()
+    tun = mgr._tunnel
+    running = bool(tun and tun.is_alive())
+    public_url = (tun.public_url if tun else "") or ""
+
+    configured = False
+    try:
+        if method == "cloudflare":
+            opts = cfg.get("cloudflare", {}) or {}
+            avail = tunnels.cloudflared_available(opts.get("bin_path", ""))
+            runnable = bool(opts.get("quick") or opts.get("tunnel") or opts.get("hostname"))
+            configured = bool(avail and runnable)
+            # A NAMED tunnel has a fixed hostname we can show even while it's off.
+            if not public_url:
+                host = (opts.get("hostname") or "").strip()
+                if host:
+                    public_url = host if host.startswith("http") else f"https://{host}"
+        elif method == "ngrok":
+            opts = cfg.get("ngrok", {}) or {}
+            configured = bool(tunnels.ngrok_available(opts.get("bin_path", "")))
+    except Exception:
+        configured = False
+
+    return {
+        "provider": provider,
+        "method": method,
+        "configured": configured,
+        "running": running,
+        "public_url": public_url,
+    }
 
 
 _manager: Optional[RemoteAccessManager] = None

@@ -45,23 +45,33 @@ async def list_devices_endpoint(
     devices = await list_devices(online_within_seconds=online_within_seconds)
     out = []
     for d in devices:
+        iid = d.get("instance_id")
+        # The admin's Instances-page rename (custom_label, shared in the DB) wins over
+        # the self-reported hostname, so every picker surface shows the chosen name.
+        custom = (d.get("custom_label") or "").strip()
         out.append({
-            "instance_id": d.get("instance_id"),
-            "label": d.get("label") or d.get("instance_id"),
+            "instance_id": iid,
+            "label": custom or d.get("label") or iid,
+            "custom_label": custom,
             "online": bool(d.get("online")),
             "last_seen": d.get("last_seen"),
-            "is_self": d.get("instance_id") == me,
+            "is_self": iid == me,
             "capabilities": _parse_caps(d.get("capabilities")),
         })
     # Surface THIS device even before its first heartbeat lands, so the picker is
-    # never empty on a fresh boot (the worker heartbeats a few seconds in).
+    # never empty on a fresh boot (the worker heartbeats a few seconds in). No
+    # custom_label yet — a device must check in once before it can be renamed.
     if not any(x["is_self"] for x in out):
-        out.insert(0, {
+        out.append({
             "instance_id": me,
             "label": identity.device_label(),
+            "custom_label": "",
             "online": True,
             "last_seen": None,
             "is_self": True,
             "capabilities": identity.capabilities(),
         })
+    # Order every picker surface consistently: THIS device first, then the rest
+    # alphabetical by display name (case-insensitive).
+    out.sort(key=lambda x: (0 if x["is_self"] else 1, (x.get("label") or "").lower()))
     return {"devices": out, "self": me}

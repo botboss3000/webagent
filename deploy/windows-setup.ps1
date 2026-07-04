@@ -49,6 +49,17 @@ if ($env:WA_ADMIN_PW) {
   Set-Content -Path $envFile -Value $keep -Encoding ascii
 }
 
+# Optional pre-loaded configuration bundle (from the Deploy panel's "Include this
+# app's configuration" toggle). The one-line command passes it as WA_BOOTSTRAP_CODE;
+# write it to bootstrap.json, which the app applies on first boot
+# (app/admin/bootstrap_bundle.apply_boot_file) - decrypting it with the
+# BOOTSTRAP_ADMIN_PASSWORD written just above - then renames the file. Absent -> skipped.
+if ($env:WA_BOOTSTRAP_CODE) {
+  $bootFile = Join-Path $RepoDir 'bootstrap.json'
+  Set-Content -Path $bootFile -Value $env:WA_BOOTSTRAP_CODE -Encoding ascii
+  Write-Host "Pre-loaded configuration will be applied on first boot."
+}
+
 # -- 1. Ensure uv -----------------------------------------------------------
 function Test-Cmd($name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 

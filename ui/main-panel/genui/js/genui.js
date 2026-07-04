@@ -176,6 +176,9 @@ async function _deletePage(slug) {
 
 export function startGenui() {
   genuiActive = true;
+  // Show the spinner immediately so the viewport isn't blank while the gate
+  // check + page-list fetch (a multi-step chain) are in flight.
+  showLoading();
   // Confirm the local-only gate before rendering any agent-authored genui.
   _fetchGenuiGate().then(() => loadPages());
 }
@@ -198,6 +201,9 @@ async function loadPages() {
   const userId = app.currentUserId;
   if (!userId) { showPlaceholder(); return; }
 
+  // Keep the spinner up while the page list loads (also covers session
+  // switches, which re-enter here without going through startGenui).
+  showLoading();
   try {
     const res  = await fetch(apiPath(`/api/v1/genui?user_id=${encodeURIComponent(userId)}`), { headers: authHeaders() });
     const data = await res.json();
@@ -1193,15 +1199,15 @@ async function submitNewPage() {
 // local mode (fail-closed). `url` is the page's `.url` (or a render_visual
 // `.path`); both point at /api/v1/genui/{user}/{slug}/html.
 async function showGenui(url, title) {
-  const host        = document.getElementById('genui-host');
-  const placeholder = document.getElementById('genui-placeholder');
-  const loading     = document.getElementById('genui-loading');
+  const host = document.getElementById('genui-host');
 
   if (_genuiFirstClass === false) { _showGenuiDisabledNotice(); return; }
 
-  if (placeholder) placeholder.style.display = 'none';
-  if (loading)     loading.style.display     = 'none';
   if (!host || !url) { showPlaceholder(); return; }
+  // Show the spinner while the page HTML is fetched — otherwise the viewport
+  // goes blank between hiding the placeholder and mountGenui() painting the
+  // page. mountGenui() flips the stage to 'page' once the content is mounted.
+  showLoading();
 
   try {
     const bust = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();

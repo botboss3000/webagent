@@ -333,7 +333,9 @@ class SSHVMProvider(BaseDeployProvider):
         visibility = str(config.get("visibility") or "public").strip().lower()
         git_token = (creds.get("github_token") or "").strip()
         admin_password = (creds.get("admin_password") or "").strip()
-        clone_url = resolve_clone(repo, visibility, git_token)["clone_url"]
+        _clone = resolve_clone(repo, visibility, git_token)
+        clone_url = _clone["clone_url"]        # may embed the token (private repo)
+        origin_url = _clone["clean_url"]       # clean address the box's origin resets to
 
         if not host:
             yield done({"ok": False, "message": "No server address set."})
@@ -376,8 +378,13 @@ class SSHVMProvider(BaseDeployProvider):
 
             # ── Upload the shared install recipe and launch it detached ──
             yield ev("Uploading the install script…", phase="upload")
-            script = build_install_script(repo_url=clone_url, branch=branch, domain=domain, port=8080,
-                                          admin_password=admin_password)
+            script = build_install_script(repo_url=clone_url, origin_url=origin_url, branch=branch,
+                                          domain=domain, port=8080,
+                                          admin_password=admin_password,
+                                          # Optional pre-loaded config bundle — the manager
+                                          # gathered + encrypted it into config["_bootstrap_code"]
+                                          # (the "Include this app's configuration" toggle); blank when off.
+                                          bootstrap_code=config.get("_bootstrap_code", ""))
             remote_script = f"/tmp/webagent-bootstrap-{int(time.time())}-{_secrets.token_hex(3)}.sh"
             await asyncio.to_thread(self._put, client, remote_script, script)
 

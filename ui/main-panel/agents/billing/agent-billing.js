@@ -25,14 +25,20 @@ export async function renderAgentMonetization(container, agentId) {
     style: { fontSize: '12px', color: 'var(--fg-3)', marginBottom: '12px', lineHeight: '1.5' },
   }, 'Configure how this agent charges its users. The agent keeps everything it earns.'));
 
-  const loading = _el('div', { style: { color: 'var(--fg-3)' } }, 'Loading…');
+  const loading = _el('div', {});
+  loading.innerHTML = _billingSkeletonHtml();
   container.appendChild(loading);
 
   let cfg, processors = [];
   try {
-    cfg = await _api(`/api/v1/billing/config?${_qs({ user_id: _userId(), agent_id: agentId || '' })}`);
-    processors = await _loadProcessors();
+    // Parallel — config + processor list are independent (was a sequential waterfall).
+    [cfg, processors] = await Promise.all([
+      _api(`/api/v1/billing/config?${_qs({ user_id: _userId(), agent_id: agentId || '' })}`),
+      _loadProcessors(),
+    ]);
   } catch (e) {
+    loading.innerHTML = '';
+    loading.style.color = 'var(--fg-3)';
     loading.textContent = `Failed to load billing config: ${e.message}`;
     return;
   }
@@ -155,6 +161,29 @@ export async function renderAgentMonetization(container, agentId) {
     },
   }, 'Save');
   container.appendChild(saveBtn);
+}
+
+// Loading skeleton — mirrors the strategy select, payment chips, rate-card grid,
+// trial panel and subscription bar so the tab has shape while billing config loads.
+// Shape helpers .sk-line/.sk-block + .sk-shimmer fill live in app3.css.
+function _billingSkeletonHtml() {
+  const lbl  = (w) => `<div class="sk-shimmer sk-line" style="width:${w};height:12px;margin-bottom:6px;"></div>`;
+  const bar  = (h) => `<div class="sk-shimmer sk-block" style="width:100%;height:${h};"></div>`;
+  const chip = (w) => `<div class="sk-shimmer sk-block" style="width:${w};height:30px;border-radius:6px;"></div>`;
+  return `
+    <div style="margin-bottom:14px;">${lbl('130px')}${bar('38px')}</div>
+    <div style="margin-bottom:14px;">${lbl('220px')}
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">${chip('88px')}${chip('108px')}${chip('76px')}</div>
+    </div>
+    <div style="margin-bottom:14px;">${lbl('70px')}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:10px;background:var(--bg-2);border-radius:8px;">
+        ${bar('88px')}${bar('88px')}
+      </div>
+    </div>
+    <div style="margin-bottom:14px;padding:10px;background:var(--bg-2);border-radius:8px;">${lbl('80px')}
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">${bar('44px')}${bar('44px')}${bar('44px')}</div>
+    </div>
+    <div style="margin-bottom:14px;">${lbl('200px')}${bar('38px')}</div>`;
 }
 
 async function _renderAgentExemptions(agentId) {

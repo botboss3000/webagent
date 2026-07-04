@@ -511,6 +511,12 @@ assume the viewer is an admin.) Design around these rules — they shape everyth
 - **External libraries via CDN** are allowed when they earn their place (pin a
   version). Prefer hand-rolled HTML/CSS/SVG for normal UI — it's lighter and matches
   better.
+- **Embedding an external *site* (an `<iframe>`) is a different thing — and most sites
+  block it.** The genui won't strip the iframe, but the target site's own headers decide
+  whether it may be framed, and big ones (Google Maps' normal URL, Facebook, X, most SaaS)
+  **refuse** — the frame comes back blank with no error. Use the site's official *embed*
+  URL, or pull the raw data and render the visual yourself. Full rules → *Embedding an
+  external site* below.
 
 ---
 
@@ -1194,6 +1200,63 @@ classes), so match geometry, colours, radii, and the float-over-content layout.
 - Use believable placeholder data when none is given, and make it obvious it's a
   template ("sample data"). If the genui should show *live* data, wire it to the
   right endpoint or clearly mark where data plugs in.
+
+## Embedding an external site (maps, calendars, widgets) — most sites will BLOCK a raw iframe
+
+You'll often want to drop a live third-party thing into a genui — a Google Map, a
+YouTube video, a calendar, a stock chart, someone's dashboard. The genui **does not
+strip `<iframe>`s**, so it *looks* like you can just `<iframe src="https://…">` any URL.
+**You can't**, and this is the trap: **the destination site decides whether it allows
+being framed**, not you. Big properties (Google Search & **Google Maps' normal URL**,
+Facebook, X/Twitter, most banks, many SaaS apps) send an **`X-Frame-Options` /
+`frame-ancestors` CSP** header that tells the browser to **refuse** the embed — so the
+frame renders **blank/greyed-out with no usable content**. Worse, this failure is
+**silent**: it usually throws **no console error** the `screenshot_genui` check can catch,
+so a naive iframe ships as an empty grey box and *looks* like the genui "worked."
+
+**So never ship a raw-URL iframe of a site you haven't confirmed allows framing.**
+Reach for these instead, in order of preference:
+
+1. **Use the site's OFFICIAL EMBED URL, not its normal page URL.** Many services publish
+   a separate *embed* product built specifically to be framed — that one is allowed where
+   the main URL is blocked. This is the fix for maps and most "live widget" asks:
+   - **Google Maps** → the plain `google.com/maps/…` URL is **blocked**; the **Maps Embed**
+     is **allowed**. Use the *"Share → Embed a map"* iframe link (no key, basic
+     place/directions/search map), or the **Maps Embed API** `https://www.google.com/maps/embed/v1/…`
+     (needs a Google Maps key — request it with `request_credential`, bound to
+     `https://www.google.com`, and never hardcode it). **OpenStreetMap** also has a
+     ready `.../export/embed.html?bbox=…&marker=…` iframe and needs **no key** — a great
+     keyless default for a simple map.
+   - **YouTube/Vimeo** → `youtube.com/embed/<id>` / `player.vimeo.com/video/<id>` (allowed),
+     not the `watch?v=` page (blocked). **Google Calendar** → its *Embed* `.../embed?src=…`.
+     **Spotify** → `open.spotify.com/embed/…`. As a rule: check the site's own **"Embed"
+     / "Share → Embed"** option and use *that* URL.
+2. **Better still for anything data-shaped: get the RAW DATA and render it yourself.**
+   The most robust and most on-brand path — and often less work than fighting an embed —
+   is to pull the underlying data and **draw the visual from scratch** with themed
+   HTML/CSS/SVG (see *Data & dashboards* and the charts guidance). Pull it via
+   `request_credential` + `api.callWithKey` (a weather/finance/maps API), or ask the agent
+   through `api.chat`/`api.action` to fetch it with its own tools and re-render. A
+   hand-rolled SVG chart, a coordinate-plotted marker on a static map image, a stat grid —
+   these **inherit the app palette, flip for light/dark, never come back blank**, and match
+   the product. Prefer this over an iframe whenever the goal is *information*, not a live
+   interactive copy of someone else's page.
+3. **Only fall back to a raw-URL iframe once you've CONFIRMED the target allows framing**
+   (its docs say so, or it's your own/again an explicit-embed host). When you do embed:
+   give the frame a sensible `min-height`, size it to the host (`width:100%`, never
+   `100vw`), add a **graceful placeholder/fallback** ("map failed to load — open in a new
+   tab" with a real link) since you can't detect a blocked frame reliably, and set
+   `loading="lazy"` plus a minimal `allow="…"` (e.g. `fullscreen`) only for features the
+   embed genuinely needs. Remember an iframe is a **separate document** — the app's design
+   tokens do **not** reach inside it, so it won't theme with the genui; that's another
+   reason to prefer self-rendered graphics for anything you want to look native.
+
+**Verify the frame actually filled.** After rendering any embed, `screenshot_genui` and
+**look at the frame region** — a blocked embed shows as an empty/grey rectangle even with
+zero console errors, so eyeball it (the blank-panel check applies here too). If it came
+back empty, the site refused the frame: switch to its embed URL (path 1) or render the
+data yourself (path 2) — **do not ship the empty box** or tell the user it's "showing the
+map" when it's blank.
 
 ---
 

@@ -1,0 +1,14 @@
+{
+  "display_name": "Task Grouping",
+  "kind": "ability",
+  "icon": "list-tree",
+  "color": "#7aa2f7",
+  "description": "AI-assisted grouping of a chat's turns into tasks. When off, grouping falls back to the fast keyword rule with no model calls. Takes effect immediately.",
+  "simple": true,
+  "app_function": true,
+  "default_enabled": true,
+  "status": "stable",
+  "order": 1,
+  "tools": [],
+  "_note": "App function (background service), not an agent ability. Its runtime lives in app/admin/tasks.py, which gates the LLM tie-breaker on ability_app_enabled('task_grouping'). Descriptor-only by design — no <id>.py."
+}
