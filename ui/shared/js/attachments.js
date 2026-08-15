@@ -13,6 +13,10 @@ import { apiPath } from './config.js';
 import { icon } from './icons.js';
 import { putAttachment, getObjectUrl, deleteAttachment as idbDelete } from './attachments-idb.js';
 import * as mediaCache from './media-cache.js';
+import {
+  RecordedAudioDictationController,
+  VoiceDictationController,
+} from './voice-dictation.js';
 
 // Active server-side attachment backend. Synced opportunistically by the
 // Chat Attachments card's bootstrap fetch (see ui/shared/js/data-management.js).
@@ -20,6 +24,13 @@ import * as mediaCache from './media-cache.js';
 // works even before the user opens App Configuration → Data Management.
 let _backendCache = null;
 let _backendFetched = false;
+
+function _appendIconText(parent, iconName, text, size = '12px') {
+  const iconWrapper = document.createElement('span');
+  iconWrapper.innerHTML = icon(iconName, { size });
+  parent.appendChild(iconWrapper);
+  parent.appendChild(document.createTextNode(` ${String(text ?? '')}`));
+}
 
 async function _resolveBackend() {
   if (_backendCache) return _backendCache;
@@ -79,16 +90,27 @@ export function initAttachments() {
     }
   });
 
-  // Voice dictation: browser Web Speech API transcribes the user's voice
-  // straight into the chat-input textarea. Falls back to .no-voice when the
-  // browser doesn't expose SpeechRecognition at all (Firefox desktop, some
-  // mobile browsers). See startSpeechDictation() below for details.
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (voiceBtn && SR) {
+  // Voice dictation uses Web Speech where available and the recorder/server
+  // fallback everywhere else. Where NO voice path can work (insecure context,
+  // or no SpeechRecognition AND no MediaRecorder), hide the mic so the
+  // composer degrades to send-only instead of showing a button that only
+  // errors on click.
+  if (voiceBtn) {
     voiceBtn.addEventListener('click', () => startSpeechDictation(voiceBtn));
-  } else if (voiceBtn) {
-    const row = document.getElementById('chat-input-row');
-    if (row) row.classList.add('no-voice');
+    const pill = document.getElementById('chat-input-row');
+    if (pill) {
+      if (!isVoiceInputSupported()) {
+        pill.classList.add('no-voice');
+      } else {
+        // Async refinement: if the admin disabled LLM dictation AND this
+        // browser has no native SpeechRecognition, startSpeechDictation would
+        // error on click — hide the mic in that case too.
+        _loadVoicePolicy().then(policy => {
+          const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+          if (policy.llm_enabled === false && !SR) pill.classList.add('no-voice');
+        });
+      }
+    }
   }
 
   // Main chat pill: paste + drop scoped to the chat field (composer pill).
@@ -101,9 +123,6 @@ export function initAttachments() {
   // Expose attachment_ids to chat send flow
   app.getPendingAttachmentIds = () => pendingAttachments.map(a => a.attachment_id);
   app.clearPendingAttachments = clearPendingAttachments;
-
-  // Override send flow to include attachment_ids
-  patchSendMessage();
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────
@@ -152,138 +171,63 @@ export async function uploadAndPreview(file, opts = {}) {
   const targetPending = opts.pending || pendingAttachments;
   const onChange = opts.onChange;
   if (!previewBar) return;
+
+  // Create local blob URL for instant preview — no server upload until send.
+  const objectUrl = URL.createObjectURL(file);
+
+  const entry = {
+    _file: file,
+    _objectUrl: objectUrl,
+    url: objectUrl,
+    original_name: file.name,
+    mime_type: file.type || 'application/octet-stream',
+    size_bytes: file.size,
+    storage_provider: 'local',
+  };
+
   const chip = document.createElement('span');
-  chip.className = 'chat-attachment-pill uploading';
-  chip.innerHTML = `${icon('upload', { size: '12px' })} ${file.name}`;
+  chip.className = 'chat-attachment-pill clickable';
+  chip.title = 'Click to expand';
+  chip.innerHTML = '';
+  // Click the chip body (but not the ✕) to expand it in the viewer.
+  chip.addEventListener('click', (e) => {
+    if (e.target.closest('.chat-attachment-remove')) return;
+    openAttachmentViewer(entry);
+  });
+
+  // Thumbnail for images
+  if (entry.mime_type.startsWith('image/')) {
+    const img = document.createElement('img');
+    img.src = objectUrl;
+    img.alt = entry.original_name;
+    img.className = 'chat-attachment-thumb';
+    chip.appendChild(img);
+  } else if (entry.mime_type.startsWith('audio/')) {
+    _appendIconText(chip, 'mic', entry.original_name);
+  } else {
+    _appendIconText(chip, 'paperclip', entry.original_name);
+  }
+
+  // Remove button — revokes local URL, no server call needed.
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'chat-attachment-remove';
+  removeBtn.innerHTML = icon('x', { size: '11px' });
+  removeBtn.title = 'Remove attachment';
+  removeBtn.addEventListener('click', () => {
+    chip.remove();
+    URL.revokeObjectURL(objectUrl);
+    const idx = targetPending.indexOf(entry);
+    if (idx >= 0) targetPending.splice(idx, 1);
+    if (targetPending.length === 0) previewBar.style.display = 'none';
+    if (onChange) onChange(targetPending);
+  });
+  chip.appendChild(removeBtn);
+
   previewBar.appendChild(chip);
   previewBar.style.display = 'flex';
 
-  // Make sure the upload can be attributed to a user + session before sending
-  // it. Otherwise the server rejects it and (previously) the only feedback was
-  // a garbled chip that vanished after a few seconds — i.e. paste "did nothing".
-  if (!(await _ensureSessionForUpload())) {
-    chip.className = 'chat-attachment-pill error';
-    chip.textContent = app.currentUserId
-      ? `${file.name}: chat isn't ready yet — try again in a moment`
-      : `${file.name}: start a chat before attaching files`;
-    // Persistent (no auto-remove) with a dismiss button, so the message is
-    // actually readable rather than flashing past.
-    const dismiss = document.createElement('button');
-    dismiss.className = 'chat-attachment-remove';
-    dismiss.innerHTML = icon('x', { size: '11px' });
-    dismiss.title = 'Dismiss';
-    dismiss.addEventListener('click', () => {
-      chip.remove();
-      if (previewBar.children.length === 0) previewBar.style.display = 'none';
-    });
-    chip.appendChild(dismiss);
-    return;
-  }
-
-  try {
-    const backend = await _resolveBackend();
-    let data;
-    if (backend === 'browser') {
-      // Metadata-only POST; bytes stay in the user's IndexedDB.
-      const fd = new FormData();
-      fd.append('user_id', app.currentUserId);
-      fd.append('session_id', app.currentSessionId);
-      fd.append('original_name', file.name);
-      fd.append('mime_type', file.type || 'application/octet-stream');
-      fd.append('size_bytes', String(file.size));
-      const r1 = await fetch(apiPath('/api/v1/upload'), { method: 'POST', body: fd });
-      if (!r1.ok) {
-        const err = await r1.json().catch(() => ({ detail: r1.statusText }));
-        throw new Error(_serverErrText(err.detail, 'Upload (metadata) failed'));
-      }
-      data = await r1.json();
-      // Stash the bytes locally under the assigned attachment_id.
-      await putAttachment({
-        id: data.attachment_id,
-        blob: file,
-        mime_type: data.mime_type,
-        name: data.original_name,
-        size: data.size_bytes,
-      });
-      // Mint a local object URL so the preview chip + chat bubble can render.
-      data.url = await getObjectUrl(data.attachment_id) || '';
-    } else {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('user_id', app.currentUserId);
-      formData.append('session_id', app.currentSessionId);
-
-      const res = await fetch(apiPath('/api/v1/upload'), {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(_serverErrText(err.detail, 'Upload failed'));
-      }
-
-      data = await res.json();
-    }
-
-    // Seed the RAM cache with the exact bytes just uploaded, so previews and
-    // chat-history renders this session are instant with no refetch (server
-    // backends) — for browser-stored files the bytes already live in IndexedDB.
-    if (data.attachment_id && data.storage_provider !== 'browser'
-        && (data.mime_type || '').match(/^(image|audio)\//)) {
-      try { mediaCache.put(data.attachment_id, file); } catch {}
-    }
-
-    // Replace chip with success preview
-    chip.className = 'chat-attachment-pill clickable';
-    chip.title = 'Click to expand';
-    chip.innerHTML = '';
-    // Click the chip body (but not the ✕) to expand it in the viewer.
-    chip.addEventListener('click', (e) => {
-      if (e.target.closest('.chat-attachment-remove')) return;
-      openAttachmentViewer(data);
-    });
-
-    // Thumbnail for images
-    if (data.mime_type.startsWith('image/')) {
-      const img = document.createElement('img');
-      img.src = data.url;
-      img.alt = data.original_name;
-      img.className = 'chat-attachment-thumb';
-      chip.appendChild(img);
-    } else if (data.mime_type.startsWith('audio/')) {
-      chip.innerHTML = `${icon('mic', { size: '12px' })} ${data.original_name}`;
-    } else {
-      chip.innerHTML = `${icon('paperclip', { size: '12px' })} ${data.original_name}`;
-    }
-
-    // Remove button
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'chat-attachment-remove';
-    removeBtn.innerHTML = icon('x', { size: '11px' });
-    removeBtn.title = 'Remove attachment';
-    removeBtn.addEventListener('click', () => {
-      chip.remove();
-      const idx = targetPending.findIndex(a => a.attachment_id === data.attachment_id);
-      if (idx >= 0) targetPending.splice(idx, 1);
-      if (targetPending.length === 0) previewBar.style.display = 'none';
-      if (onChange) onChange(targetPending);
-      // If the bytes lived in IndexedDB, evict them along with the row.
-      if (data.storage_provider === 'browser') {
-        idbDelete(data.attachment_id).catch(() => {});
-        fetch(apiPath('/api/v1/upload/' + data.attachment_id), { method: 'DELETE' }).catch(() => {});
-      }
-    });
-    chip.appendChild(removeBtn);
-
-    // Store
-    targetPending.push(data);
-    if (onChange) onChange(targetPending);
-  } catch (err) {
-    chip.className = 'chat-attachment-pill error';
-    chip.textContent = `${file.name}: ${err.message}`;
-    setTimeout(() => { chip.remove(); if (targetPending.length === 0) previewBar.style.display = 'none'; }, 6000);
-  }
+  targetPending.push(entry);
+  if (onChange) onChange(targetPending);
 }
 
 // ── Shared paste + drag/drop wiring for any chat pill ──────────────────────
@@ -426,6 +370,10 @@ export function wireChatPillUploads(rowEl, inputEl, opts = {}) {
 }
 
 function clearPendingAttachments() {
+  // Revoke blob URLs before clearing.
+  for (const entry of pendingAttachments) {
+    if (entry._objectUrl) URL.revokeObjectURL(entry._objectUrl);
+  }
   pendingAttachments.length = 0;
   const previewBar = document.getElementById('chat-preview-bar');
   if (previewBar) {
@@ -435,135 +383,217 @@ function clearPendingAttachments() {
 }
 
 // ── Voice Dictation (Web Speech API) ───────────────────────────────────────
-// The mic button drives the browser's built-in speech-to-text. We keep a
-// single recognition instance per page; toggling the mic starts or stops it.
-// Interim results stream into the textarea in real time so the user sees
-// what's being transcribed; final results are committed on phrase boundaries.
-
-let recognition = null;        // SpeechRecognition instance (kept across toggles)
-let isDictating = false;
-let dictationBaseText = '';    // textarea value when dictation started — final results append to this
-let dictationInputEl = null;   // active textarea for the in-progress session
-let dictationLastIndex = 0;    // last resultIndex we processed — guards against re-processing old results when continuous mode auto-restarts
-
-function _ensureRecognition() {
-  if (recognition) return recognition;
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return null;
-  recognition = new SR();
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.lang = (navigator.language || 'en-US');
-  return recognition;
+// A fresh recognizer is used for every session. Each result event replaces the
+// in-progress transcript from the recognizer's full authoritative result list,
+// including revisions at indexes that were previously interim.
+function _renderDictationButton(btn, state) {
+  if (!btn) return;
+  const recording = state === 'recording';
+  const busy = state === 'starting' || state === 'stopping' || state === 'transcribing';
+  const active = recording || busy;
+  btn.innerHTML = icon(recording ? 'circle-stop' : active ? 'loader-circle' : 'mic', { size: '18px' });
+  btn.title = recording
+    ? 'Stop dictation'
+    : state === 'starting'
+      ? 'Starting microphone…'
+      : state === 'stopping'
+        ? 'Finishing recording…'
+        : state === 'transcribing'
+          ? 'Transcribing…'
+          : 'Voice dictation';
+  btn.classList.toggle('recording', recording);
+  btn.classList.toggle('transcribing', busy);
+  btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  btn.setAttribute('aria-label', btn.title);
+  btn.disabled = busy;
+  btn.closest('.chat-pill')?.classList.toggle('dictating', active);
 }
 
-function _fireInput(el) {
-  // Programmatic value changes don't dispatch 'input' on their own — fire it
-  // so chat.js sees the new content (has-text toggle, send-button enable,
-  // draft save, _autoResizePill via the delegated listener in chat.js).
-  if (!el) return;
-  el.dispatchEvent(new Event('input', { bubbles: true }));
-}
-
-function _stopDictation(btn) {
-  if (!isDictating) return;
-  try { recognition && recognition.stop(); } catch (_) { /* already stopped */ }
-  isDictating = false;
-  if (btn) {
-    btn.innerHTML = icon('mic', { size: '18px' });
-    btn.title = 'Voice dictation';
-    btn.classList.remove('recording');
+function _dictationError(error) {
+  if (error === 'unsupported') {
+    alert('Voice dictation is not supported in this browser.');
+  } else if (error === 'not-allowed' || error === 'service-not-allowed') {
+    alert('Microphone access denied. Allow it in the browser settings to use voice dictation.');
+  } else if (error === 'audio-capture') {
+    alert('No microphone was found. Connect a microphone and try again.');
+  } else if (error === 'network') {
+    alert('Speech recognition is temporarily unavailable. Check your connection and try again.');
+  } else if (error === 'start-failed' || error === 'recording-failed') {
+    alert('Voice dictation could not start. Check microphone permissions and try again.');
+  } else if (error === 'empty-recording') {
+    alert('No audio was captured. Please try again.');
+  } else if (error === 'transcription-failed') {
+    alert('The recording could not be transcribed. Check your configured AI provider and try again.');
+  } else if (error === 'insecure-context') {
+    alert('Microphone recording requires HTTPS or localhost. Open WebAgent over a secure address and try again.');
+  } else if (error === 'llm-disabled') {
+    alert('LLM voice dictation is disabled by the administrator, and this browser has no built-in speech recognition.');
   }
-  dictationInputEl = null;
-  dictationLastIndex = 0;
+  // no-speech and aborted are normal endings and do not need an alert.
+}
+
+const dictationController = new VoiceDictationController({
+  createRecognition: () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    return SR ? new SR() : null;
+  },
+  language: () => navigator.language || 'en-US',
+  renderButton: _renderDictationButton,
+  onError: _dictationError,
+});
+
+function _createAudioRecorder(stream) {
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/ogg;codecs=opus',
+    'audio/mp4',
+    'audio/webm',
+  ];
+  const mimeType = candidates.find(type => MediaRecorder.isTypeSupported?.(type));
+  return mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+}
+
+const recordedDictationController = new RecordedAudioDictationController({
+  getStream: () => navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+    },
+  }),
+  createRecorder: _createAudioRecorder,
+  transcribe: async (blob) => {
+    const form = new FormData();
+    const subtype = (blob.type.split('/')[1] || 'webm').split(';')[0];
+    form.append('file', blob, `dictation.${subtype}`);
+    form.append('user_id', app.currentUserId || 'admin');
+    const language = (navigator.language || '').split('-')[0];
+    if (language) form.append('language', language);
+
+    const response = await fetch(apiPath('/api/v1/transcribe'), {
+      method: 'POST',
+      body: form,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(_serverErrText(body.detail, 'Transcription failed'));
+    }
+    const body = await response.json();
+    return body.text || '';
+  },
+  renderButton: _renderDictationButton,
+  onError: _dictationError,
+});
+
+let _voicePolicy = null;
+let _voicePolicyLoadedAt = 0;
+
+async function _loadVoicePolicy() {
+  if (window.__waVoiceDictationPolicy) {
+    _voicePolicy = window.__waVoiceDictationPolicy;
+    return _voicePolicy;
+  }
+  if (_voicePolicy && Date.now() - _voicePolicyLoadedAt < 15_000) return _voicePolicy;
+  try {
+    const response = await fetch(apiPath('/api/v1/auth/ui-config'));
+    if (response.ok) {
+      const data = await response.json();
+      _voicePolicy = {
+        llm_enabled: data.voice_dictation_llm_enabled !== false,
+        mode: data.voice_dictation_mode === 'llm_only' ? 'llm_only' : 'browser_then_llm',
+      };
+      _voicePolicyLoadedAt = Date.now();
+    }
+  } catch {}
+  return _voicePolicy || { llm_enabled: true, mode: 'browser_then_llm' };
+}
+
+// Whether ANY voice input path can work in this browser/context. Mirrors the
+// runtime matrix in startSpeechDictation: native SpeechRecognition, or the
+// MediaRecorder + getUserMedia recorder fallback that transcribes via the
+// server LLM. Both require a secure context (HTTPS or localhost).
+export function isVoiceInputSupported() {
+  if (!window.isSecureContext) return false;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const canRecord = !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+  return !!(SR || canRecord);
 }
 
 // `inputEl` is optional — secondary pills (e.g. the ability-table search/chat
 // pill) pass their own textarea so dictation lands in THAT pill, not the main
 // composer. Defaults to the main chat input when omitted.
-export function startSpeechDictation(btn, inputEl) {
+export async function startSpeechDictation(btn, inputEl) {
   const input = inputEl || document.getElementById('chat-input');
   if (!input) return;
+  const policy = await _loadVoicePolicy();
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const canRecord = !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+  const useLlm = policy.llm_enabled && (
+    policy.mode === 'llm_only' || !SR
+  );
 
-  // Second tap = stop.
-  if (isDictating) { _stopDictation(btn); return; }
-
-  const rec = _ensureRecognition();
-  if (!rec) {
-    alert('Voice dictation is not supported in this browser. Try Chrome, Edge, or Safari.');
-    return;
-  }
-
-  dictationInputEl = input;
-  // Snapshot the textarea so the user can keep typed text and we only append
-  // newly-dictated phrases. Pad with a space if the prior content didn't end
-  // in one, so "hello" + dictated "world" doesn't smash into "helloworld".
-  dictationBaseText = input.value;
-  if (dictationBaseText && !/\s$/.test(dictationBaseText)) dictationBaseText += ' ';
-  dictationLastIndex = 0;
-
-  rec.onresult = (event) => {
-    if (!dictationInputEl) return;
-    let finalText = '';
-    let interimText = '';
-    // Start from where we left off last time — this prevents re-processing
-    // old final results when continuous mode auto-restarts the recognizer.
-    const startIdx = Math.max(event.resultIndex, dictationLastIndex);
-    for (let i = startIdx; i < event.results.length; i++) {
-      const r = event.results[i];
-      if (r.isFinal) finalText += r[0].transcript;
-      else           interimText += r[0].transcript;
-    }
-    dictationLastIndex = event.results.length;
-    if (finalText) {
-      // Commit final phrase into the base so subsequent interim results don't
-      // overwrite it. Trim leading whitespace the API sometimes prepends.
-      dictationBaseText += finalText.replace(/^\s+/, '');
-      if (!/\s$/.test(dictationBaseText)) dictationBaseText += ' ';
-    }
-    dictationInputEl.value = dictationBaseText + interimText;
-    _fireInput(dictationInputEl);
-  };
-  rec.onerror = (e) => {
-    // 'no-speech', 'aborted', 'audio-capture' — fall through to stop UI.
-    if (e && e.error === 'not-allowed') {
-      alert('Microphone access denied. Allow it in the browser settings to use voice dictation.');
-    }
-    _stopDictation(btn);
-  };
-  rec.onend = () => { _stopDictation(btn); };
-
-  try {
-    rec.start();
-    isDictating = true;
-    btn.innerHTML = icon('circle-stop', { size: '18px' });
-    btn.title = 'Stop dictation';
-    btn.classList.add('recording');
-    input.focus();
-  } catch (err) {
-    // InvalidStateError — the previous session is still finalizing. Surface
-    // it and reset so the next tap works.
-    isDictating = false;
-    btn.classList.remove('recording');
+  if (!useLlm && SR) {
+    dictationController.toggle(btn, input);
+  } else if (useLlm && canRecord) {
+    await recordedDictationController.toggle(btn, input);
+  } else if (!policy.llm_enabled) {
+    _dictationError('llm-disabled');
+  } else if (!window.isSecureContext) {
+    _dictationError('insecure-context');
+  } else {
+    _dictationError('unsupported');
   }
 }
 
-// ── Patch the send flow to include attachment_ids ──────────────────────────
+// ── Upload-on-send helpers ─────────────────────────────────────────────────
 
-function patchSendMessage() {
-  // Hook into the existing sendMessage flow by overriding the WS message
-  const originalSend = app.agentWs?.send;
-  if (!originalSend) {
-    // agent WS not yet connected — we'll intercept when sendMessage fires
-    // Add a listener via MutationObserver or just patch the global send
-    return;
+// Upload a single file to the server (normal multipart path).
+// Returns the server response { attachment_id, url, original_name, … }.
+async function _uploadFileToServer(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('user_id', app.currentUserId);
+  formData.append('session_id', app.currentSessionId);
+  const res = await fetch(apiPath('/api/v1/upload'), { method: 'POST', body: formData });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(_serverErrText(err.detail, 'Upload failed'));
   }
+  return await res.json();
 }
 
-// Called by chat.js before sending — add attachment_ids to the JSON
-export function addAttachmentsToMessage(msgObj) {
+// Upload all locally-pending files to the server and return their server
+// attachment_ids. Replaces each pending entry with the server response
+// so callers can reference .url / .attachment_id after.
+export async function uploadPendingAttachments(pending) {
+  const ids = [];
+  for (const entry of pending) {
+    if (entry._file) {
+      try {
+        const data = await _uploadFileToServer(entry._file);
+        Object.assign(entry, data);
+        if (data.attachment_id) ids.push(data.attachment_id);
+      } catch (err) {
+        console.warn('Failed to upload attachment:', err);
+      } finally {
+        if (entry._objectUrl) {
+          URL.revokeObjectURL(entry._objectUrl);
+          entry._objectUrl = null;
+        }
+      }
+    } else if (entry.attachment_id) {
+      // Already has a server id (legacy or already-uploaded entry).
+      ids.push(entry.attachment_id);
+    }
+  }
+  return ids;
+}
+
+// Called by chat.js before sending — upload pending files, then add
+// attachment_ids to the message payload.
+export async function addAttachmentsToMessage(msgObj) {
   if (pendingAttachments.length > 0) {
-    msgObj.attachment_ids = pendingAttachments.map(a => a.attachment_id);
+    msgObj.attachment_ids = await uploadPendingAttachments(pendingAttachments);
   }
   return msgObj;
 }
@@ -690,7 +720,13 @@ export function openAttachmentViewer(att) {
 }
 
 function _renderViewerBody(body, att, mime, name) {
-  const fail = (msg) => { body.innerHTML = `<div class="attachment-viewer-missing">${msg}</div>`; };
+  const fail = (msg) => {
+    body.replaceChildren();
+    const missing = document.createElement('div');
+    missing.className = 'attachment-viewer-missing';
+    missing.textContent = msg;
+    body.appendChild(missing);
+  };
   const withUrl = (cb) => _resolveAttachmentUrl(att)
     .then(url => { if (!url) return fail(`Couldn't load "${name}".`); body.innerHTML = ''; cb(url); })
     .catch(() => fail(`Couldn't load "${name}".`));
@@ -732,7 +768,16 @@ function _renderViewerBody(body, att, mime, name) {
         if (isMd && window.marked) {
           const div = document.createElement('div');
           div.className = 'attachment-viewer-text attachment-viewer-md';
-          try { div.innerHTML = window.marked.parse(text); } catch { div.textContent = text; }
+          try {
+            const rendered = window.marked.parse(text);
+            if (window.DOMPurify) {
+              div.innerHTML = window.DOMPurify.sanitize(rendered, { FORBID_ATTR: ['style'] });
+            } else {
+              div.textContent = text;
+            }
+          } catch {
+            div.textContent = text;
+          }
           body.appendChild(div);
         } else {
           const pre = document.createElement('pre');
@@ -746,9 +791,9 @@ function _renderViewerBody(body, att, mime, name) {
   // Anything else: offer to open in a new tab.
   return withUrl(url => {
     const a = document.createElement('a');
-    a.href = url; a.target = '_blank'; a.rel = 'noopener';
+    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
     a.className = 'attachment-viewer-download';
-    a.innerHTML = `${icon('external-link', { size: '16px' })} Open "${name}" in a new tab`;
+    _appendIconText(a, 'external-link', `Open "${name}" in a new tab`, '16px');
     body.appendChild(a);
   });
 }
@@ -774,7 +819,7 @@ export function renderAttachmentElement(att) {
     wrapper.className = 'chat-audio-wrapper';
     const label = document.createElement('div');
     label.className = 'chat-attachment-label';
-    label.innerHTML = `${icon('mic', { size: '12px' })} ${att.original_name || 'Voice recording'}`;
+    _appendIconText(label, 'mic', att.original_name || 'Voice recording');
     wrapper.appendChild(label);
     const audio = document.createElement('audio');
     audio.controls = true;
@@ -799,10 +844,10 @@ export function renderAttachmentElement(att) {
   // keep the resolved URL on href too, so middle-click / "open in new tab"
   // still works as a fallback.
   const link = document.createElement('a');
-  link.innerHTML = `${icon('paperclip', { size: '12px' })} ${att.original_name || 'Attachment'}`;
+  _appendIconText(link, 'paperclip', att.original_name || 'Attachment');
   link.className = 'chat-attachment-link clickable';
   link.target = '_blank';
-  link.rel = 'noopener';
+  link.rel = 'noopener noreferrer';
   link.title = 'Click to expand';
   link.addEventListener('click', (e) => { e.preventDefault(); openAttachmentViewer(att); });
   _setSrcAsync(link, 'href', att);
@@ -840,10 +885,16 @@ export function forwardChatPillControls(attachBtn, voiceBtn) {
     });
   }
   if (voiceBtn) {
-    voiceBtn.addEventListener('click', () => {
-      const mainVoice = document.getElementById('chat-voice-btn');
-      if (mainVoice) mainVoice.click();
-    });
+    if (!isVoiceInputSupported()) {
+      // Never forward to a hidden mic — hide the secondary button too.
+      voiceBtn.hidden = true;
+      voiceBtn.style.setProperty('display', 'none', 'important');
+    } else {
+      voiceBtn.addEventListener('click', () => {
+        const mainVoice = document.getElementById('chat-voice-btn');
+        if (mainVoice) mainVoice.click();
+      });
+    }
   }
 }
 

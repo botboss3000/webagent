@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.db import get_db
+from app.db import get_app_db
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +71,9 @@ async def get_identity(channel: str, external_id: str) -> Optional[ChannelIdenti
     Returns None if this external_id has never been seen.
     """
     try:
-        db = get_db()
+        db = get_app_db()
         raw = db.get_raw_client()
-        # Try local mode first (SQLite), fall back to Supabase
+        # Try local mode first (SQLite)
         try:
             resp = (
                 raw.table("channel_identities")
@@ -199,7 +199,7 @@ async def get_or_create_identity(channel: str, external_id: str) -> ChannelIdent
 async def _upsert_identity(identity: ChannelIdentity) -> None:
     """Insert or update a channel identity in the database."""
     try:
-        db = get_db()
+        db = get_app_db()
         raw = db.get_raw_client()
         row = {
             "channel": identity.channel,
@@ -231,12 +231,12 @@ async def migrate_anonymous_to_user(anon_user_id: str, target_user_id: str) -> i
     at the target user, re-parents sessions and interactions, then returns
     the number of interactions moved.
     """
-    db = get_db()
+    db = get_app_db()
     raw = db.get_raw_client()
     moved = 0
     try:
         # Local backends (SQLite or Postgres) expose a connection factory via the
-        # raw-client proxy; Supabase falls through to the query-builder branch.
+        # raw-client proxy; remote backends use the query-builder branch.
         factory = getattr(raw, '_conn_factory', None)
         if factory:
             conn = factory()
@@ -274,7 +274,7 @@ async def find_user_by_display_name(display_name: str) -> str | None:
     channel_identities.  Returns the user_id if found, else None.
     """
     try:
-        db = get_db()
+        db = get_app_db()
         raw = db.get_raw_client()
         resp = (
             raw.table("channel_identities")

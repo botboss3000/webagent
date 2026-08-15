@@ -81,7 +81,7 @@ def _register_builtin() -> None:
             {"key": "project_id", "label": "GCP project ID", "type": "text", "required": True},
             {"key": "location", "label": "Region (e.g. us-central1)", "type": "text", "required": True},
             {"key": "service_account_json", "label": "Service account JSON", "type": "textarea", "required": True, "secret": True},
-            {"key": "fire_base_url", "label": "Public base URL for webhook (overrides WEBHOOK_BASE_URL)", "type": "text", "required": False},
+            {"key": "fire_base_url", "label": "Public base URL for webhook", "type": "text", "required": False},
             {"key": "job_prefix", "label": "Job name prefix", "type": "text", "required": False, "placeholder": "webagent-"},
         ],
         cls=GoogleCloudScheduler,

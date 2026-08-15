@@ -25,13 +25,6 @@ _DOTENV_PATH = _APP_DIR.parent / ".env"
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=_DOTENV_PATH)
 
-# Apply saved provider config (model, API key) from data/config/provider.json
-# so environment vars are set before any imports that need them. Imported from
-# app.provider_boot (NOT app.admin.settings) so the boot path doesn't hard-depend
-# on the admin package — removing app/admin/ must not break the core LLM.
-from app.provider_boot import apply_provider_config
-apply_provider_config()
-
 # Consume a one-shot Danger-Zone reset marker BEFORE the DB / stores open, so the
 # selected data groups (database / vault / attachments / genui / logs) can be
 # wiped while nothing holds them. A missing marker is a no-op; any error is
@@ -45,6 +38,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
+from app.security import (
+    CORS_ALLOW_HEADERS,
+    CORS_ALLOW_METHODS,
+    RequestSecurityMiddleware,
+    WebSecurityPolicy,
+)
 
 class NoCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
@@ -136,6 +135,7 @@ from app.api.agent import router as agent_router
 from app.api.browser_stream import router as browser_stream_router
 from app.api.connector_ws import router as connector_ws_router
 from app.api.uploads import router as uploads_router
+from app.api.transcription import router as transcription_router
 from app.api.db_viewer import router as db_viewer_router
 from app.api.tenant_db import router as tenant_db_router
 from app.api.diagnostics import router as diagnostics_router
@@ -209,8 +209,12 @@ from app.api.github import router as github_router
 
 # ── Local Claude Code engine sign-in (in-app `claude setup-token`) ──
 from app.api.claude_auth import router as claude_auth_router
+from app.api.codex_auth import router as codex_auth_router
 # ── Local Claude Code engine skills (Skills tab on the Claude agent card) ──
 from app.api.claude_skills import router as claude_skills_router
+# ── Alternate-engine REST API (live model catalog from the local CLI) — lives
+#    in the plugin; only the mount is here (mirrors the billing plugin seam). ──
+from plugins.engines.api import router as engines_router
 
 # ── Feedback (relayed to GitHub issues) ──
 from app.api.feedback import router as feedback_router
@@ -238,6 +242,8 @@ from app.api.genui import router as genui_router
 from app.api.devices import router as devices_router
 from app.api.wiki import router as wiki_router
 from app.api.ability_delete import router as ability_delete_router
+from app.api.browser_storage import router as browser_router
+from app.api.storage_routing import router as storage_routing_router
 
 # Configure logging
 # Level precedence: data/config/debug-config.json (the consolidated debug knobs)
@@ -365,13 +371,15 @@ async def pwa_manifest():
     )
 
 
-# CORS middleware (adjust origins as needed)
+# Browser API origins are a boot-time deployment policy.  Same-origin requests
+# need no CORS grant; cross-origin browser callers must be listed exactly.
+_web_security_policy = WebSecurityPolicy.from_env()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "null"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=list(_web_security_policy.allowed_origins),
+    allow_credentials=_web_security_policy.allow_credentials,
+    allow_methods=list(CORS_ALLOW_METHODS),
+    allow_headers=list(CORS_ALLOW_HEADERS),
 )
 app.add_middleware(NoCacheMiddleware)
 # Gzip static /ui text assets (JS/CSS/HTML/JSON/SVG) — the big uncompressed
@@ -386,6 +394,9 @@ app.add_middleware(StaticGzipMiddleware)
 # reaches the endpoint. See app/auth/identity.py.
 from app.auth.identity import CallerIdentityMiddleware
 app.add_middleware(CallerIdentityMiddleware)
+# Registered last so this pure-ASGI boundary runs before identity decoding,
+# route authentication, WebSocket acceptance, or browser/session allocation.
+app.add_middleware(RequestSecurityMiddleware, policy=_web_security_policy)
 
 
 @app.middleware("http")
@@ -401,7 +412,7 @@ async def _capture_public_base_url(request, call_next):
         from app.admin import integrations as _integ
         derived = str(request.base_url).rstrip("/")
         forwarded_proto = request.headers.get("x-forwarded-proto", "")
-        if forwarded_proto and derived.startswith("http://"):
+        if forwarded_proto and derived.startswith("http://") and _integ._is_trusted_proxy(request):
             derived = "https://" + derived[len("http://"):]
         if derived:
             is_local = derived.startswith("http://localhost") or derived.startswith("http://127.")
@@ -420,15 +431,16 @@ async def _capture_public_base_url(request, call_next):
 async def _canonical_host_redirect(request, call_next):
     """301-redirect requests that arrive on a non-canonical host.
 
-    When the deployment sets WEBHOOK_BASE_URL (or webhook_base_url.txt) to its
-    public URL — e.g. `https://www.example.com` — any request reaching the app
-    on a different host (apex `example.com`, a preview URL, etc.) is sent a
-    301 to the same path on the canonical host. This keeps OAuth `redirect_uri`
-    values aligned with what's registered at the provider regardless of which
-    DNS name the user typed in.
+    When the deployment has a detected public URL, any request reaching the app
+    on a different host (apex, preview URL, etc.) is sent a 301 to the same
+    path on that host. This keeps OAuth ``redirect_uri`` values aligned with
+    what's registered at the provider regardless of which DNS name the user
+    typed in.
 
-    No-op when no canonical URL is configured; localhost requests are exempt
-    so local development is never redirected to production."""
+    No-op when no canonical URL is detected; localhost requests are exempt
+    so local development is never redirected. Hosts listed in
+    webhook_base_url_exclude.json are also exempt — the admin can un-redirect
+    individual hostnames from the Instances page."""
     # Decide whether to redirect *without* invoking the downstream app, so a
     # failure in the redirect logic can never swallow (and retry) call_next.
     # Calling call_next twice on one request deadlocks: the ASGI receive stream
@@ -441,13 +453,29 @@ async def _canonical_host_redirect(request, call_next):
         if canonical:
             host = (request.headers.get("x-forwarded-host") or request.url.netloc or "").split(",")[0].strip()
             if host and not host.startswith("localhost") and not host.startswith("127."):
-                scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
-                actual = f"{scheme}://{host}".rstrip("/")
-                if actual.lower() != canonical.rstrip("/").lower():
-                    target = canonical.rstrip("/") + request.url.path
-                    if request.url.query:
-                        target += "?" + request.url.query
-                    redirect_target = target
+                # Check per-host exclusions
+                excluded: bool = False
+                try:
+                    import json
+                    from pathlib import Path as _P
+                    _ef = _P(__file__).resolve().parent.parent / "webhook_base_url_exclude.json"
+                    if _ef.exists():
+                        _excl = json.loads(_ef.read_text() or "[]")
+                        if isinstance(_excl, list) and host.lower() in [str(x).lower() for x in _excl]:
+                            excluded = True
+                except Exception:
+                    pass
+                if not excluded:
+                    scheme = request.url.scheme or "http"
+                    xfp = request.headers.get("x-forwarded-proto", "")
+                    if xfp and _integ._is_trusted_proxy(request):
+                        scheme = xfp.split(",")[0].strip()
+                    actual = f"{scheme}://{host}".rstrip("/")
+                    if actual.lower() != canonical.rstrip("/").lower():
+                        target = canonical.rstrip("/") + request.url.path
+                        if request.url.query:
+                            target += "?" + request.url.query
+                        redirect_target = target
     except Exception:
         redirect_target = None
     if redirect_target:
@@ -476,6 +504,7 @@ app.include_router(agent_router)
 app.include_router(browser_stream_router)
 app.include_router(connector_ws_router)
 app.include_router(uploads_router)
+app.include_router(transcription_router)
 app.include_router(db_viewer_router)
 app.include_router(tenant_db_router)
 app.include_router(diagnostics_router)
@@ -560,8 +589,11 @@ app.include_router(github_router)
 
 # Register Local Claude Code sign-in router
 app.include_router(claude_auth_router)
+app.include_router(codex_auth_router)
 # Register Local Claude Code skills router (Skills tab on the Claude agent card)
 app.include_router(claude_skills_router)
+# Register alternate-engine API (live CLI model catalog for footer + Config tab)
+app.include_router(engines_router)
 
 # Register optimizer admin router
 if optimizer_router is not None:
@@ -579,6 +611,12 @@ app.include_router(devices_router)
 
 # Register ability deletion API
 app.include_router(ability_delete_router)
+
+# Register the browser-authority storage router (IndexedDB-backed sessions)
+app.include_router(browser_router)
+
+# Register storage routing admin config (Browser / Server / Postgres routing table)
+app.include_router(storage_routing_router)
 
 # Register the company-wide Wiki router
 app.include_router(wiki_router)
@@ -600,6 +638,21 @@ try:
 except Exception as _e:
     logger.warning("Page backend discovery failed: %s", _e)
 
+# ── P2P Mirror — instance-to-instance data sync ──
+try:
+    from app.p2p.server import router as p2p_router
+    app.include_router(p2p_router)
+except Exception as _p2p_err:
+    logger.warning("P2P mirror router not mounted: %s", _p2p_err)
+
+# ── P2P Admin API — invite generation, peer management ──
+try:
+    from app.api.admin_p2p import router as admin_p2p_router
+    app.include_router(admin_p2p_router)
+    logger.info("P2P admin API mounted")
+except Exception as _p2p_admin_err:
+    logger.warning("P2P admin API not mounted: %s", _p2p_admin_err)
+
 # ── Drop-in ability routers ──
 # An ability folder (plugins/abilities/<group>/<id>/) may ship its own FastAPI
 # ``router`` — a browser-intake / admin-read API that comes and goes with the
@@ -619,22 +672,23 @@ except Exception as _e:
     logger.warning("Ability backend discovery failed: %s", _e)
 
 # ── Restart endpoint ──
-# POST /api/v1/restart shuts down the server process.
-# Works with WebAgent.bat which loops uvicorn in a :restart cycle.
+# POST /api/v1/restart uses the supervisor-cooperative relauncher.  This lets
+# WebAgent.bat's restart loop win when it launched the server, while still
+# relaunching a standalone ``run.py`` process when no supervisor is present.
 restart_router = APIRouter(prefix="/api/v1")
 
 @restart_router.post("/restart")
 async def restart_server():
-    """Shut down the server. WebAgent.bat will restart it automatically."""
-    import threading
-    logger.warning("Restart requested via /api/v1/restart — shutting down...")
-    # Give the response time to be sent before the process exits
-    def _die():
-        import time
-        time.sleep(0.5)
-        os._exit(0)
-    threading.Thread(target=_die, daemon=True).start()
-    return {"status": "restarting", "message": "Server is shutting down. WebAgent.bat will restart it."}
+    """Restart without stranding a server that was not batch-supervised."""
+    from app.relauncher import trigger_restart
+
+    result = trigger_restart()
+    if result.get("auto_restart"):
+        logger.warning("Restart requested via /api/v1/restart — relaunching...")
+    else:
+        logger.error("Restart requested via /api/v1/restart, but unavailable: %s",
+                     result.get("reason"))
+    return result
 
 app.include_router(restart_router)
 
@@ -731,8 +785,8 @@ _SPLASH_DIR = _APP_DIR.parent / "ui" / "splash" / "splash-page"
 def _seo_origin(request: Request) -> str:
     """Absolute origin (scheme+host, no trailing slash) for Open Graph / canonical
     urls and sitemap entries. Reuses the integrations base-url resolver so it
-    honours WEBHOOK_BASE_URL / webhook_base_url.txt and is https-correct behind a
-    TLS-terminating proxy, falling back to the request-derived host."""
+    is https-correct behind a TLS-terminating proxy, falling back to the
+    request-derived host."""
     try:
         from app.admin.integrations import _get_base_url
         return _get_base_url(request).rstrip("/")
@@ -926,7 +980,14 @@ def _is_crawler(request: Request) -> bool:
     return bool(_CRAWLER_UA.search(request.headers.get("user-agent", "")))
 
 
-def _render_app_shell(request: Request, agent_id=None, agent_name=None) -> HTMLResponse:
+def _render_app_shell(
+    request: Request,
+    agent_id=None,
+    agent_name=None,
+    *,
+    chat_portal: bool = False,
+    chat_portal_config=None,
+) -> HTMLResponse:
     """Serve index.html with the SEO / social-preview <head> built server-side.
 
     The static index.html ships only a bare <title>; this injects the full
@@ -963,8 +1024,42 @@ def _render_app_shell(request: Request, agent_id=None, agent_name=None) -> HTMLR
         # Brand identity (Organisation + WebSite) for the indexable app home. A
         # public agent link is noindex, so it skips this.
         meta += _home_jsonld(origin)
+    if chat_portal:
+        meta += (
+            '<base href="/">\n'
+            '<script>document.documentElement.classList.add("chat-portal"); '
+            'window.__CHAT_PORTAL__ = true; '
+            f'window.__CHAT_PORTAL_CONFIG__ = {json.dumps(chat_portal_config or {}).replace("<", "\\u003c")};</script>\n'
+            '<link rel="stylesheet" href="/ui/embed/chat-panel-portal.css?v=2">\n'
+        )
+        html = html.replace(
+            "</body>",
+            '<script type="module" src="/ui/embed/chat-panel-portal.js?v=1"></script>\n</body>',
+            1,
+        )
     html = html.replace("<title>WebAgent</title>", f"<title>{_esc(title, quote=True)}</title>", 1)
     html = html.replace("</head>", meta + "</head>", 1)
+    # ── Safety lock: inject the lock state + blocking script ──
+    # The server knows the lock state at render time, so we inline it
+    # directly rather than making a second fetch. This runs synchronously
+    # before any other JS, blocking render until the admin decides.
+    # Gated by the master switch (safety_lock_enabled) AND the persistent
+    # lock flag (safety_lock_active) AND the in-memory session unlock.
+    try:
+        from app.admin.settings import get_safety_lock_enabled, get_safety_lock_active
+        _safety_show = (
+            get_safety_lock_enabled()
+            and get_safety_lock_active()
+            and not _safety_session_unlocked
+        )
+    except Exception:
+        _safety_show = False
+    if chat_portal:
+        _safety_show = False
+    _safety_script = '<script>window.__SAFETY_LOCK=' + json.dumps(_safety_show) + ';</script>\n'
+    if _safety_show and not chat_portal:
+        _safety_script += '<script src="/ui/shared/js/safety-splash.js"></script>\n'
+    html = html.replace("</head>", _safety_script + "</head>", 1)
     return HTMLResponse(content=html)
 
 
@@ -995,7 +1090,7 @@ def _render_landing_page(request: Request):
         "<!DOCTYPE html>\n"
         '<html lang="en">\n<head>\n'
         '<meta charset="UTF-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">\n'
         f"<title>{et}</title>\n"
         + head
         + '<meta name="theme-color" content="#0d0d1a">\n'
@@ -1050,6 +1145,13 @@ async def shutdown():
             await tg.delete_webhook_url()
     except Exception:
         pass
+    # ── Safety lock: set the flag so next startup shows the confirmation splash ──
+    try:
+        from app.admin.settings import set_safety_lock_active
+        set_safety_lock_active()
+        logger.info("Safety lock set — next startup will require admin confirmation")
+    except Exception as _sl_err:
+        logger.warning("Failed to set safety lock on shutdown: %s", _sl_err)
     # Stop all singleton background services (scheduler, event runtime, ability
     # pollers, watchdog, Remote Access) and release the leader lease for a clean
     # handoff. The leader runs them only in the elected worker; stop() is a no-op
@@ -1065,6 +1167,12 @@ async def shutdown():
         await stop_device_worker()
     except Exception:
         pass
+    # Stop the per-instance P2P mirror worker.
+    try:
+        from app.p2p.worker import stop_worker as stop_p2p_worker
+        await stop_p2p_worker()
+    except Exception:
+        pass
     # Stop the hybrid sync engine and let it flush any final pending pushes.
     try:
         _engine = getattr(app.state, "hybrid_sync_engine", None)
@@ -1078,6 +1186,44 @@ async def shutdown():
         close_viewer_pool()
     except Exception:
         pass
+
+
+# ── In-memory session unlock for the safety lock ──
+# Set when admin confirms "Start Services" via the confirm endpoint.
+# Lost on restart, so every restart shows the splash again.
+_safety_session_unlocked = False
+
+
+# ── Safety lock confirmation endpoint ──
+@app.post("/api/v1/admin/safety-lock/confirm")
+async def safety_lock_confirm(request: Request):
+    """Admin confirms or declines to start services after a shutdown restart.
+    Body: { "start_services": true } → unlock this session + run recovery
+          { "start_services": false } → do nothing (lock stays)
+    """
+    global _safety_session_unlocked
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    start_services = body.get("start_services", False) is True
+
+    # Admin-only check
+    from app.auth.identity import request_user_id
+    from app.db import get_db
+    caller_id = request_user_id(request)
+    if not caller_id or not await get_db().is_user_admin(caller_id):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if start_services:
+        _safety_session_unlocked = True
+        logger.info("Safety-lock: admin confirmed start — session unlocked")
+        return {"ok": True, "services_started": True, "reload": True}
+    else:
+        logger.info("Safety-lock: admin kept services shut down — no recovery triggered")
+        return {"ok": True, "services_started": False}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1407,13 +1553,98 @@ _AGENT_UUID_RE = _re.compile(
     _re.IGNORECASE,
 )
 
+_EMBED_DIR = _APP_DIR.parent / "ui" / "embed"
+
+
+@app.get("/embed.js", include_in_schema=False)
+async def embed_loader_js():
+    """Serve the website-embed loader script.
+
+    The one asset a customer references from their own site
+    (`<script src=".../embed.js" data-agent="…">`). It injects a floating
+    launcher + an iframe pointing back at /embed/<agent_id>. Kept at this short
+    top-level path (not /ui/embed/embed.js) so the copy-paste snippet is tidy.
+    Registered BEFORE the /{agent_id} catch-all so "embed.js" isn't swallowed by
+    it."""
+    f = _EMBED_DIR / "embed.js"
+    if not f.is_file():
+        return HTMLResponse("// embed loader missing", status_code=404,
+                            media_type="application/javascript")
+    return FileResponse(
+        str(f),
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=300",
+                 "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.get("/embed/{agent_id}", response_class=HTMLResponse, include_in_schema=False)
+async def embed_chat_page(agent_id: str, request: Request):
+    """Serve the real chat panel in widget-portal mode for an agent.
+
+    The customer's iframe boots the same panel DOM and modules as the app, with
+    the surrounding application shell hidden. It is guarded per-agent by a
+    Content-Security-Policy `frame-ancestors`
+    directive built from the owner's allowed-domains list, so an owner who locks
+    the widget to their domain can't have it re-hosted elsewhere. When no domains
+    are configured the default is open (`*`) — embed anywhere — matching the
+    product promise. The public display config is injected for widget-only
+    title, icon, accent, and launcher details."""
+    if not _AGENT_UUID_RE.match(agent_id):
+        return HTMLResponse("<p>Not found</p>", status_code=404)
+    from app.db import get_db as _get_db
+    from app.api.embed_config import (
+        read_embed_config, public_embed_config, embed_frame_ancestors,
+    )
+    from html import escape as _esc
+    db = _get_db()
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        return HTMLResponse("<p>Agent not found</p>", status_code=404)
+
+    raw_cfg = read_embed_config(agent)
+    pub_cfg = public_embed_config(agent)
+    anon_ok = (agent.get("user_mode") or "anonymous") == "anonymous"
+    embeddable = bool(pub_cfg.get("enabled")) and anon_ok
+
+    # Per-agent framing policy. frame-ancestors is the modern, allowlist-capable
+    # replacement for X-Frame-Options — so we set ONLY it (X-Frame-Options can't
+    # express a multi-domain allowlist and would just conflict).
+    csp = f"frame-ancestors {embed_frame_ancestors(raw_cfg)}"
+    if not embeddable:
+        reason = (
+            "This chat widget has not been enabled by its owner."
+            if not pub_cfg.get("enabled")
+            else "This agent is not open to anonymous visitors."
+        )
+        return HTMLResponse(
+            content=f"<p>{_esc(reason)}</p>",
+            headers={"Content-Security-Policy": csp},
+        )
+
+    # Render the real application chat panel as a portal. This keeps transcript,
+    # streaming, tools/updates, and composer behavior on the exact panel codepath.
+    response = _render_app_shell(
+        request,
+        agent_id=agent_id,
+        agent_name=agent.get("name") or "Agent",
+        chat_portal=True,
+        chat_portal_config=pub_cfg,
+    )
+    response.headers["Content-Security-Policy"] = csp
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+
 @app.get("/{agent_id}", response_class=HTMLResponse, include_in_schema=False)
 async def public_agent_chat(agent_id: str, request: Request):
     """Serve the main UI with a specific agent pre-selected (public access).
 
     Renders through `_render_app_shell` so the shared link also gets a per-agent
     title + Open Graph / Twitter preview (in addition to the __agentId /
-    __agentName bootstrap the app reads)."""
+    __agentName bootstrap the app reads). Only accessible when the agent's
+    `public_link` flag is enabled."""
     if not _AGENT_UUID_RE.match(agent_id):
         return HTMLResponse("<p>Not found</p>", status_code=404)
     from app.db import get_db as _get_db
@@ -1421,6 +1652,17 @@ async def public_agent_chat(agent_id: str, request: Request):
     agent = await db.get_agent_by_id(agent_id)
     if not agent:
         return HTMLResponse("<p>Agent not found</p>", status_code=404)
+    # Check the public-link flag — gate the public route. Falls back to the
+    # legacy is_embeddable key so previously-enabled agents keep working.
+    meta = agent.get("metadata") or {}
+    if isinstance(meta, str):
+        import json as _json
+        try:
+            meta = _json.loads(meta)
+        except Exception:
+            meta = {}
+    if not meta.get("public_link", meta.get("is_embeddable")):
+        return HTMLResponse("<p>Not found</p>", status_code=404)
     return _render_app_shell(request, agent_id=agent_id, agent_name=agent.get("name", "Agent"))
 
 @app.get("/test", response_class=HTMLResponse)
@@ -1430,26 +1672,43 @@ async def test_interface():
     return HTMLResponse(content=test_html.read_text(encoding="utf-8"))
 
 
+class _SafetyLockGate(Exception):
+    """Raised during startup to skip background services when the safety lock
+    is active. Caught by the leader-startup handler below. The server stays
+    up to serve the UI and the safety splash modal."""
+
+
 # ── Start-up: register Telegram webhook ──
 @app.on_event("startup")
 async def startup():
     """Register communication webhooks or start polling on server start."""
+    # ── Safety lock: set the persistent flag on EVERY boot ──
+    # This ensures the lock is always active, even after a crash where the
+    # shutdown handler never ran (e.g. taskkill /F). The in-memory session
+    # unlock (set by the confirm endpoint) allows normal boot on the same
+    # process without clearing the disk flag.
+    try:
+        from app.admin.settings import set_safety_lock_active
+        set_safety_lock_active()
+    except Exception:
+        pass
     # ── Full-DB encryption reconcile (MUST be first) ──
     # Before ANY store opens its SQLite files, bring each database file into line
     # with the configured at-rest encryption state (encrypt newly-enabled files,
     # decrypt newly-disabled ones) — backup-first, atomic, no plaintext residue.
-    # No-op (and instant) when nothing is enabled, which is the default. Runs here
-    # so the diagnostics recorder + every backend below open already-correct files.
+    # Always runs: it's near-zero cost on plaintext files (reads 16 bytes per DB)
+    # and catches the case where encryption was toggled OFF but the file is still
+    # encrypted on disk from a previous run. Runs here so the diagnostics recorder
+    # + every backend below open already-correct files.
     try:
         from app.db import db_crypto
-        if db_crypto.any_enabled():
-            _enc_actions = db_crypto.reconcile()
-            _changed = [a for a in _enc_actions if a.get("action") in ("encrypted", "decrypted")]
-            if _changed:
-                logger.info("Full-DB encryption reconcile: %s", _changed)
-            _failed = [a for a in _enc_actions if not a.get("ok")]
-            if _failed:
-                logger.warning("Full-DB encryption reconcile had failures: %s", _failed)
+        _enc_actions = db_crypto.reconcile()
+        _changed = [a for a in _enc_actions if a.get("action") in ("encrypted", "decrypted")]
+        if _changed:
+            logger.info("Full-DB encryption reconcile: %s", _changed)
+        _failed = [a for a in _enc_actions if not a.get("ok")]
+        if _failed:
+            logger.warning("Full-DB encryption reconcile had failures: %s", _failed)
     except Exception as _enc_err:
         logger.warning("Full-DB encryption reconcile failed: %s", _enc_err)
 
@@ -1501,7 +1760,7 @@ async def startup():
 
     # Seed agent templates from JSON (manifest-gated short-circuit makes this
     # cheap when unchanged). LocalBackend self-seeds in __init__, so this call
-    # is mainly the trigger for SupabaseBackend; for Local it's still a
+    # is mainly the trigger for the remote backend; for Local it's still a
     # belt-and-braces no-op when the hash matches.
     try:
         from app.db import get_db as _get_db_seed
@@ -1519,6 +1778,8 @@ async def startup():
     except Exception as _seed_err:
         logger.warning("Agent template seed at startup failed: %s", _seed_err)
 
+    # Migrate per-agent authority stores: create/refresh an agent_data/<id>.db
+    # for every active agent. Idempotent — safe to run on every boot.
     # Account store: one-time import of the legacy app/auth/users.json into the
     # central user_accounts DB table (kept as a .bak backup), then create the
     # admin from BOOTSTRAP_ADMIN_PASSWORD if set and none exists. Runs here (not
@@ -1538,6 +1799,16 @@ async def startup():
             logger.info("Account store: ensured bootstrap admin has is_admin=1 in the active control DB")
     except Exception as _acct_err:
         logger.warning("Account store migration/bootstrap at startup failed: %s", _acct_err)
+
+    # Converge the JWT signing secret onto ONE value shared via the vault, so a
+    # fresh deploy / redeploy stops inventing its own key and silently 401-ing
+    # every login pass a browser already holds. Runs AFTER apply_boot_file set
+    # the vault provider above, so get_secrets() points at the shared vault.
+    try:
+        from app.auth import jwt as _auth_jwt
+        await _auth_jwt.ensure_shared_jwt_secret()
+    except Exception as _jwt_err:
+        logger.warning("JWT secret vault reconcile at startup failed: %s", _jwt_err)
 
     # First-boot: enable all admin Agent Tools so the app ships ready to "do
     # everything". Runs once (marker-guarded) so later admin disables persist.
@@ -1589,11 +1860,8 @@ async def startup():
         from app.communications.manager import get_plugin_manager
         pm = get_plugin_manager()
 
-        # Priority: WEBHOOK_BASE_URL env var > registry value
-        base_url = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
-        if not base_url:
-            registry = getattr(pm, "_registry", {})
-            base_url = registry.get("webhook_base_url", "").rstrip("/")
+        # Detected URL from communications registry
+        base_url = registry.get("webhook_base_url", "").rstrip("/")
 
         _local_hints = ("localhost", "127.0.0.1", "0.0.0.0")
         is_public = bool(base_url) and not any(h in base_url for h in _local_hints)
@@ -1620,12 +1888,27 @@ async def startup():
     except Exception as _bf_err:
         logger.warning("admin_users backfill failed: %s", _bf_err)
 
+    # ── Shared default agent (app-level single row, admin-owned) ──────────────
+    # When shared_default_agent_enabled is on, ensure ONE shared agent row exists
+    # (id="shared_default") owned by the app admin. Every user sees this agent in
+    # their roster instead of getting a private clone. Idempotent — skips if the
+    # row already exists.
+    try:
+        from app.admin.settings import shared_default_agent_enabled as _sd_on
+        if _sd_on():
+            from app.api.agents import provision_default_agent as _ensure_shared_default
+            from app.db import get_db as _get_db_shared_default
+            _sd_agent = await _ensure_shared_default(_get_db_shared_default(), "admin")
+            logger.info("Shared default agent ready: %s", _sd_agent.get("id"))
+    except Exception as _sd_err:
+        logger.warning("Shared default agent seed failed: %s", _sd_err)
+
     # ── App Functions gate — admin on/off for the wired-in background services ──
     # Each singleton below (sync engine, scheduler, event runtime, watchdog,
     # boot-orphan-resume, remote access, device worker) has a matching drop-in
     # descriptor under plugins/abilities/System/ carrying "app_function": true, so
     # it appears as a toggle in App Settings ▸ App Functions. Its start site is
-    # gated on ``ability_app_enabled(<id>)`` — the same app-level toggle store
+    # gated on ``app_function_enabled(<id>)`` — the same app-level toggle store
     # (data/config/agent-abilities.json). Failing ON: if the catalog/config can't
     # be read the service still starts (a default-on service is never silently
     # suppressed). The toggle takes effect on the next restart (these all wire up
@@ -1633,7 +1916,7 @@ async def startup():
     def _appfn_on(_ability_id: str) -> bool:
         try:
             from app import abilities as _abilities_gate
-            return _abilities_gate.ability_app_enabled(_ability_id)
+            return _abilities_gate.app_function_enabled(_ability_id)
         except Exception:
             return True
 
@@ -1695,6 +1978,19 @@ async def startup():
     # in its plugin file (plugins/abilities/<id>.py); the "ability-background"
     # leader service below discovers and runs it. See CLAUDE.md "Core vs. plugins".
     try:
+        # ── Safety lock gate ──
+        # Gate on ALL three: master switch enabled, persistent lock active,
+        # and no in-memory session unlock. The session unlock is set by the
+        # confirm endpoint and lost on restart.
+        from app.admin.settings import get_safety_lock_enabled, get_safety_lock_active
+        if get_safety_lock_enabled() and get_safety_lock_active() and not _safety_session_unlocked:
+            logger.info(
+                "Safety lock active — background services (scheduler, events, "
+                "orphan-resume, watchdog, remote-access) are SUPPRESSED. "
+                "Admin must confirm via the safety splash modal."
+            )
+            raise _SafetyLockGate()
+
         from app.coordination.leader import get_leader
         _leader = get_leader()
 
@@ -1771,6 +2067,25 @@ async def startup():
         else:
             logger.info("Run watchdog disabled via App Functions (watchdog) — not registered")
 
+        # Session Namer recovery sweep — the watchdog-analog for the auto-titler:
+        # periodically re-triggers naming for sessions still stuck on a fallback
+        # "New: …" title (their original turn-hook attempt failed or never ran).
+        # Bounded and cooldown-aware (see session_titler.py); runs only while the
+        # Session Namer app function itself is enabled.
+        async def _start_session_namer_sweep():
+            from plugins.app_functions.session_titler.session_titler import start_sweep
+            await start_sweep()
+
+        async def _stop_session_namer_sweep():
+            from plugins.app_functions.session_titler.session_titler import stop_sweep
+            await stop_sweep()
+
+        if _appfn_on("session_titler"):
+            _leader.register("session-namer-sweep",
+                             _start_session_namer_sweep, _stop_session_namer_sweep)
+        else:
+            logger.info("Session Namer sweep disabled via App Functions (session_titler) — not registered")
+
         async def _start_remote():
             from app.remote_access import start_remote_access
             await start_remote_access()
@@ -1785,6 +2100,8 @@ async def startup():
             logger.info("Remote access disabled via App Functions (remote_access) — not registered")
 
         await _leader.start()
+    except _SafetyLockGate:
+        pass  # Safety lock active — intentional
     except Exception as _leader_err:
         logger.warning("Failed to start background leader: %s", _leader_err)
 
@@ -1804,19 +2121,29 @@ async def startup():
     except Exception as _dev_err:
         logger.warning("Failed to start device worker: %s", _dev_err)
 
+    # ── P2P Mirror worker — runs on every instance ──
+    try:
+        if _appfn_on("p2p"):
+            from app.p2p.worker import start_worker as start_p2p_worker
+            await start_p2p_worker()
+        else:
+            logger.info("P2P mirror worker disabled via App Functions (p2p) — skipping")
+    except Exception as _p2p_err:
+        logger.warning("Failed to start P2P worker: %s", _p2p_err)
+
     # ── Seed LLM config from env vars into auth_elements (cloud-first deploy) ──
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
     if api_key:
         try:
-            from app.db import get_db
-            db = get_db()
+            from app.db import get_db as _get_db_llm_seed
+            db = _get_db_llm_seed()
             existing = await db.auth_element_get("admin", "llm", "default")
             if existing and existing.get("secret_ref"):
                 logger.info("LLM config already in auth_elements, skipping seed")
             else:
                 config = {
-                    "provider": os.environ.get("LLM_PROVIDER", "openrouter"),
-                    "base_url": os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
+                    "provider": os.environ.get("LLM_PROVIDER", ""),
+                    "base_url": os.environ.get("LLM_BASE_URL", ""),
                     "model": os.environ.get("LLM_MODEL", ""),
                     "providers": {},
                 }
@@ -1830,7 +2157,7 @@ async def startup():
         except Exception as e:
             logger.warning("Failed to seed LLM config: %s", e)
 
-    # ── Scrub any plaintext LLM key (old provider.json / config-blob copies) into
+    # ── Scrub any plaintext LLM key (old config-blob copies) into
     #    the encrypted vault. Idempotent; no-op once nothing plaintext remains. ──
     try:
         from app.admin.settings import migrate_llm_secrets

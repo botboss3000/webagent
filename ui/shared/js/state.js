@@ -73,6 +73,10 @@ export const app = {
   // Used to ask the server to replay only events newer than what we've seen
   // when the WS reconnects (refresh, session switch back, network blip).
   lastSessionSeq: {},          // { [sessionId]: int }
+  // Highest durable interaction row consumed by the DB-tail reconciler.
+  // This must stay separate from lastSessionSeq: the latter advances for every
+  // stream/pipeline event, while only a subset of those events become rows.
+  lastInteractionSeq: {},      // { [sessionId]: int }
 };
 
 // `currentAgentId` is reactive: whenever the active agent changes (agent
@@ -89,6 +93,9 @@ Object.defineProperty(app, 'currentAgentId', {
     if (next === _currentAgentId) return;
     _currentAgentId = next;
     try { app.refreshModelContext?.(); } catch (e) { /* ignore */ }
+    // Rebuild header/footer for per-agent chat_ui — catches every code path
+    // that sets currentAgentId (dropdown, sessions page, agents page, etc.)
+    try { app._reapplyChatControls?.(); } catch (e) { /* ignore */ }
   },
 });
 

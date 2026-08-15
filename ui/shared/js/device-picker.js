@@ -3,7 +3,7 @@
  * One source of truth for (a) fetching the list of WebAgent instances ("devices")
  * that share this database and (b) rendering the little floating menu used to pick
  * one. Reused by THREE surfaces so they stay consistent:
- *   • the chat composer target pill            (ui/chat-side-panel/js/chat-ui.js)
+ *   • the chat composer target pill            (ui/chat/js/chat-ui.js)
  *   • the automations "Run on" column          (ui/main-panel/automations/js/automations.js)
  *   • the sessions device badge (label lookup)  (ui/main-panel/sessions/js/sessions-page.js)
  *

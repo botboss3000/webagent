@@ -1,0 +1,31 @@
+{
+  "id": "sessions",
+  "label": "Sessions",
+  "icon": "message-square",
+  "data_sources": [
+    { "row_type": "session", "endpoint": "/api/v1/db/session-stats?status=active" }
+  ],
+  "gutter": { "width": 6, "default_open": true, "auto_collapse_at": 800 },
+  "columns": [
+    { "id": "caret",      "width": 22,  "sticky": true,  "sticky_offset": 0,  "for": ["session"] },
+    { "id": "check",      "width": 32,  "sticky": true,  "sticky_offset": 22, "for": ["session"] },
+    { "id": "pin",        "width": 32,  "sticky": true,  "sticky_offset": 54, "for": ["session"] },
+    { "id": "agent",      "width": 140, "sort_key": "agent_name",               "for": ["session"] },
+    { "id": "title",      "width": 220, "sort_key": "title",                    "for": ["session"] },
+    { "id": "status",     "width": 100, "sort_key": "run_status",               "for": ["session"] },
+    { "id": "links",      "width": 70,                                          "for": ["session"] },
+    { "id": "msgs",       "width": 70,  "sort_key": "message_count",       "align": "right", "for": ["session"] },
+    { "id": "tokens_in",  "width": 70,  "sort_key": "total_input_tokens",  "align": "right", "for": ["session"] },
+    { "id": "tokens_out", "width": 70,  "sort_key": "total_output_tokens", "align": "right", "for": ["session"] },
+    { "id": "cost",       "width": 70,  "sort_key": "total_cost",          "align": "right", "for": ["session"] },
+    { "id": "duration",   "width": 80,  "sort_key": "total_duration_ms",   "align": "right", "for": ["session"] },
+    { "id": "updated",    "width": 120, "sort_key": "last_active",         "align": "right", "for": ["session"] }
+  ],
+  "responsive": {
+    "breakpoints": [
+      { "max_width": 600,  "hide": ["tokens_in", "tokens_out", "cost", "duration"] },
+      { "max_width": 900,  "hide": ["tokens_in", "tokens_out", "cost", "duration"] },
+      { "max_width": 1100, "hide": ["duration"] }
+    ]
+  }
+}

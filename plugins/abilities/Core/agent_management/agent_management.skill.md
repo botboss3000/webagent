@@ -23,6 +23,40 @@ you create or edit any agent, and **run the build interview first** (below).
 
 ---
 
+## 0. Session triage — instant summary + classification FIRST
+
+When the user asks to **look at / review / clean up their sessions** — or any time you
+are handed a session list — the FIRST operation is to produce, for **every** open
+session:
+
+1. **Instant summary (1–2 sentences).** What the session was about and its end state —
+   read from the tail of the conversation, not the title alone.
+2. **Classification.** Mark each session with exactly one state:
+   - **Conversation over?** — the last message is a completed agent summary and there is
+     no pending user question, no half-finished run, and no open action item. If it is
+     not over, state what is still outstanding.
+   - **Needs validation** — work is done but unverified: the agent ended mid-flight,
+     ended on an error, or handed the user a to-do that hasn't been confirmed done.
+     Do NOT bin these.
+   - **Final audit then bin** — the agent reports done (possibly self-verified), but the
+     user has not audited the result. Run a quick audit (diff / state check), present it,
+     then recycle on approval.
+   - **Audited & ready to bin** — the user already confirmed/accepted the result, or the
+     work was verified end-to-end and signed off. Recycle now.
+
+**Triage procedure:** `list_user_sessions` → pull the last-message tail of each session
+(`peek_chars`) → classify → present the summary + classification table and the
+recommended action **before** recycling anything. Recycle only after the user approves —
+unless the user has already asked you to clean up autonomously (Auto mode).
+
+**Verify against the DB when the list looks inconsistent.** Concurrent forks,
+automations, or an earlier cleanup run may already have recycled sessions, so the active
+list can change between calls. If the count shifts or sessions vanish, check
+`data/user_data/admin/admin.db` → `sessions.status` for the authoritative active set
+before classifying — never classify or bin from a stale snapshot.
+
+---
+
 ## 1. The build interview — DO THIS IN PLAN MODE FIRST
 
 When the user asks to **create or substantially change** an agent, do **not** start
@@ -39,7 +73,7 @@ tools can tell you.
 - **Purpose & success criteria.** What is this agent *for*, and what does "excellent at
   its job" concretely mean? Get the measurable version ("posts get answered within an
   hour", "the dashboard always shows live listings"), not just a title.
-- **Which abilities it needs, and why.** The agent is built bare, so abilities are
+- **Which abilities it needs, and why.** Capabilities are profile-driven and
   **opt-in**: decide the smallest set that covers what the user asked for, and put the
   **exact list in the plan with a one-line reason for each** ("browser_control — to log in
   and act on the site as you"). The user confirms that list, so nothing the user wanted is
@@ -55,6 +89,14 @@ tools can tell you.
   - **web_access** — web search / fetch for facts and prices that aren't on one site.
   - Plus the rest as needed: ui_admin, codebase_admin, image_generation, automation,
     create_tools, diagnostics, agent_management.
+- **Choose its cache-friendly capability profile.** Every managed agent uses the
+  smallest nested profile that covers its job: `simple`, `standard`, or
+  `advanced`. Simple is a prefix of Standard; Standard is a prefix of Advanced.
+  Put unusual abilities in `ability_extensions` instead of inventing a bespoke
+  order. `create_agent` provisions the profile and keeps specialized schemas
+  discoverable so agents share the same small first-call tool schema. The
+  user's default WebAgent is Advanced. State the profile and every extension in
+  the plan.
 - **Persistence & memory — decide what it must remember, and DON'T cripple it.** If the
   agent's job includes *tracking* anything across runs — student/customer records, notes,
   progress, attendance, a history, uploaded documents — it needs durable storage, and you
@@ -97,6 +139,12 @@ tools can tell you.
   crucially — **will it run in Auto?** An agent meant to run unattended needs tools at
   `auto` (not `ask`) for its happy path, the risky ones at `ask`/`deny`, and sane
   `max_turn_count` / `max_wall_seconds` so it can't run forever.
+- **Chat UI chrome — does the agent need its own look?** Every agent can carry a
+  per-agent `chat_ui` override (deep-merged over `data/config/chat_ui.json`). Ask whether
+  this agent should have customised messages, chat pill layout, header rows, fade zones,
+  widget launcher, or mobile overrides. If yes, plan which keys to override — see
+  section 5 below for the full schema. Read `data/config/chat_ui.json` to build the
+  override dict, then pass it to `update_agent` as `chat_ui`.
 
 **Step C — present the plan and wait.** Summarise in plain language: name + starting point
 (a named template, or "from scratch / no template"),
@@ -211,26 +259,17 @@ the dashboard skill, or the orchestration skill.
    Either way: `create_agent(name, template_id, description)`. (There is no silent default —
    make the choice deliberately.)
 
-2. **The new agent starts BARE — add abilities deliberately, never prune.** Whichever start
-   you picked, `create_agent` makes a **blank genui with NO abilities enabled** (only the
-   always-on core tools), the same way an orchestration clone starts with only the abilities
-   you hand it. You then
-   **add** each ability you need — one `set_agent_ability(agent_id, '<ability>', true)` call
-   per ability, and only the ones you **named and justified in the plan** (step C). This is
-   the single biggest correctness/safety property: a purpose-built agent should *never* carry
-   `codebase_admin`, `terminal_control`, `git_control`, `create_tools`, `app_control`,
-   `diagnostics`, `image_generation`, or `automation` unless a real requirement called for it
-   — and because nothing is inherited, it can't. Call `get_agent(agent_id)` right after
-   creating to confirm it came up empty, then add exactly the abilities from step 3. (Never
-   add `codebase_admin` just to get file reads when all you wanted was app-styling reads —
-   that's what `ui_admin, read_only=true` is for.)
+2. **Provision the smallest capability profile.** Pass `capability_profile` to
+   `create_agent`: `simple`, `standard`, or `advanced`. Pass only explicitly
+   justified unusual capabilities in `ability_extensions`. Profiles are nested
+   and provisioned in canonical order; do not recreate them with a sequence of
+   `set_agent_ability` calls. Call `get_agent` afterward to verify the resulting
+   profile and capabilities. Use `set_agent_ability` only for a later deliberate
+   adjustment or for read-only/permission tightening.
 
-3. **Enable abilities** (each with appropriate tightening):
-   - `set_agent_ability(agent_id, 'visualizer', true)` — its dashboard.
-   - `set_agent_ability(agent_id, 'agent_orchestration', true)` — to spawn research/search
-     sub-agents.
-   - `set_agent_ability(agent_id, 'browser_control', true)` — drive Chromium + `vault_login`.
-   - `set_agent_ability(agent_id, 'web_access', true)` — web search/fetch.
+3. **Tighten or extend only where the profile needs it.** Do not re-enable abilities
+   already supplied by the chosen profile. Use `set_agent_ability` for an explicitly
+   justified extension, a later adjustment, or permission tightening:
    - **If the dashboard styling is app or hybrid:**
      `set_agent_ability(agent_id, 'ui_admin', true, read_only=true)` so it can read the
      app's UI code to match it (never write).
@@ -319,7 +358,96 @@ the dashboard skill, or the orchestration skill.
 
 ---
 
-## 5. Credentials & the vault — the agent NEVER holds secrets
+## 5. Per-agent Chat UI — customising the agent's chrome
+
+Every agent can carry its own `chat_ui` override in `metadata.chat_ui` — a partial dict
+deep-merged over the app-wide `data/config/chat_ui.json` at render time. This lets you
+give each agent a completely customised chat panel: its own header layout, message
+strings, composer pill controls, fade, and even the embed widget's launcher + accent.
+
+### What can be overridden
+
+The stored `metadata.chat_ui` dict contains ONLY the keys this agent customises (not a
+clone of the whole file). At render time the frontend starts from the full `chat_ui.json`
+and deep-merges the agent's override on top. Any key *not* in the override keeps the
+app-wide default.
+
+The structure follows `data/config/chat_ui.json`:
+
+```
+chat_common:
+  messages:           { welcome_bubble, new_session_bubble, switched_agent_bubble,
+                        pill_placeholder, pill_locked_placeholder, session_deleted_notice,
+                        title, subtitle, greeting }
+  content_max_width:  "1000px"
+  chat_pill:
+    max_width, layout, textarea (min_height, font_size, max_height),
+    stats: { visible: [...] },
+    buttons: { voice: {...}, send: {...} },
+    attach: { enabled, element_size, container_size }
+  above_pill:         { enabled, left: [...], right: [...] }
+  below_pill:         { enabled, rows: [...] }
+  fade:               { top: px, bottom: px }
+  chat_header:
+    enabled, rows: [{ left, center, right }]
+chat_desktop:         (surface overrides, same shape as chat_common)
+chat_mobile:          (surface overrides, same shape as chat_common)
+chat_widget:
+  messages: {...}
+  chat_header: {...}
+  fade: {...}
+  launcher:           { position, accent, icon, corner_buttons: {...} }
+```
+
+### How to set per-agent chat_ui
+
+Save through the `update_agent` endpoint's `chat_ui` field (which deep-merges with the
+existing override so each save only touches the keys you send):
+
+```
+PUT /api/v1/agents/{agent_id}
+{
+  "user_id": "...",
+  "chat_ui": {
+    "chat_common": {
+      "messages": {
+        "welcome_bubble": "Welcome to my custom agent!",
+        "pill_placeholder": "Ask me anything..."
+      },
+      "chat_pill": {
+        "stats": { "visible": ["token-bar"] }
+      }
+    },
+    "chat_widget": {
+      "launcher": { "accent": "#ec4899" }
+    }
+  }
+}
+```
+
+**The agent manager should build this override from `data/config/chat_ui.json`**:
+1. Read the full file (`read_source path="data/config/chat_ui.json"`) to understand the schema.
+2. Copy only the sections the user's agent needs to change.
+3. Provide the partial dict to `update_agent` as `chat_ui`.
+
+### What to customise per agent type
+
+- **Customer-facing / embedded agents** — override `chat_widget.launcher.accent` to match
+  the brand colour, `chat_widget.launcher.position` for placement, `chat_common.messages`
+  for branded welcome text and placeholder copy.
+- **Internal tool agents** — strip the composer pill down (e.g. hide token stats, voice,
+  or attach) so the panel is leaner for the tool's purpose.
+- **Dashboard agents** — adjust `fade` heights so the genui dashboard has more visible
+  real estate without the scroller mask eating into the content.
+- **Mobile-first agents** — override `chat_mobile` specifics (header carousel order,
+  different fade heights, more compact pill).
+
+Always show the user what you plan to customise before saving — the `chat_ui` is
+presentation-only, but it's their product's face.
+
+---
+
+## 6. Credentials & the vault — the agent NEVER holds secrets
 
 Design every login-capable agent so it **never sees** an email or password. The flow:
 
@@ -368,8 +496,9 @@ title/HTML, a status message, or anywhere the agent can read it.
 1. **Plan mode:** `list_agent_templates()` + `get_agent` on similar agents — research first.
 2. **Interview:** purpose & success criteria → abilities (visualizer / orchestration /
    browser_control / web_access) → **dashboard styling** (own / app / hybrid → ui_admin
-   read-only if app/hybrid) → model → skills to write → credentials/login → guardrails &
-   Auto.
+   read-only if app/hybrid) → **chat UI chrome** (custom messages / pill / header / widget?
+   read chat_ui.json → partial dict for `update_agent`) → model → skills to write →
+   credentials/login → guardrails & Auto.
 3. **Present the plan, wait for approval.**
 4. **On approval:** `set_execution_mode("auto")`.
 5. `create_agent(name, template_id, description)` — choose a `template_id` from
@@ -380,6 +509,270 @@ title/HTML, a status message, or anywhere the agent can read it.
 7. `manage_agent_skills` (selectable): dashboard skill, orchestration skill, domain skill.
 8. `edit_agent_prompt` (`system` + `agent`): role, navigate→read→act loop, never expose
    secrets, use `vault_login`, always `render_visual`.
-9. `set_agent_tool` to gate risky tools (`ask`/`deny`) and move heavy ones to `discover`.
-10. `update_agent`: model/temperature, guardrail limits, trigger — tuned so it runs in Auto.
-11. **Summarise** what you built and how the user logs it in.
+9. If the agent needs custom chat chrome, `update_agent` with `chat_ui` — a partial dict
+   built from `data/config/chat_ui.json` covering only the keys to override (messages,
+   chat_pill, chat_header, fade, chat_widget). See section 5.
+10. `set_agent_tool` to gate risky tools (`ask`/`deny`) and move heavy ones to `discover`.
+11. `update_agent`: model/temperature, guardrail limits, trigger — tuned so it runs in Auto.
+12. **Summarise** what you built and how the user logs it in.
+
+---
+
+## 6. Session project-management — plan, name, track, and close sessions like a project lead
+
+You are a **project lead** for the user's sessions. You don't just triage — you
+plan work into named sessions, dispatch them, track their status through a shared
+naming convention, give digest-level updates, and close them out when they're
+done. The user should never have to hunt through a flat list of sessions — they
+ask you "how's everything looking?" and you give them the dashboard in prose.
+
+### 6a. Naming convention — encode status in the title
+
+Every session you create or rename follows this format so status is visible at a
+glance, even from the sidebar:
+
+```
+[STATUS] Project/Area — What this session is about
+```
+
+The five status prefixes, and when to apply them:
+
+| Prefix | Meaning | When to use |
+|---|---|---|
+| `🔴 NEEDS YOU` | The agent asked the user a question and is blocked waiting for an answer | Last message is from the agent and ends with a question, a choice, "let me know…", "shall I…?", "which option?", or any request for user input. |
+| `🟡 IN PROGRESS` | Work is happening or the agent is mid-task with nothing pending from the user | Last message is from the agent with an intermediate result, a status update, or tool output — not a question. Agent is still running or expects to continue. |
+| `🔵 REVIEW` | The agent delivered a finished result and the user should validate it | Last message is from the agent, substantive, reads as a final answer or deliverable, and does NOT end with a question or request for input. The ball is in the user's court to confirm or reject. |
+| `✅ DONE` | The user confirmed the result is satisfactory — ready to close/recycle | The user explicitly said "thanks", "looks good", "approved", or equivalent, or you have recycled it after the user approved cleanup. |
+| `⏸️ BLOCKED` | Cannot proceed — needs something external (a login, a file, a decision from someone else) | The agent hit a wall it can't climb: a 2FA gate, a missing credential, an external dependency. Not waiting on *this* user — waiting on the world. |
+
+When you **change a session's status**, call `manage_user_session(action="rename", …)`
+to update the prefix. The old title is visible in the rewrite history — the sidebar
+always shows the current state.
+
+When you **create** a session, always start it with the right prefix from the plan.
+Most new sessions begin as `🟡 IN PROGRESS` or `🔵 REVIEW` (if you're handing them a
+finished research summary to read).
+
+### 6b. The planning loop — from laundry list to named board
+
+When the user gives you a list of things they want done:
+
+1. **Read the list carefully.** Group items by topic, urgency, or which agent
+   should handle them. Don't create a session per bullet — create a session per
+   **workstream** (a coherent chunk of work one agent can own).
+
+2. **Present the proposed board** — one line per planned session:
+   - Proposed title (with status prefix)
+   - Which agent it binds to, and why that agent
+   - One sentence on what the session will cover
+
+   Example:
+   > - `🟡 IN PROGRESS | Backend — Fix auth token refresh` → Local Claude Code (it needs filesystem access to the auth module)
+   > - `🟡 IN PROGRESS | Research — Compare vector DB options` → Webagent (web search + comparison)
+
+   Include a count: *"That's 4 sessions across 3 agents. Ready to create?"*
+
+3. **Wait for approval.** Never create sessions without the user confirming the
+   plan. They may want to merge, split, or reassign.
+
+4. **On approval, create them all.** Call `create_user_session(name, agent_id)`
+   for each — all in parallel (they're independent). Summarize what was created,
+   with session ids, so the user can open any of them directly.
+
+5. **If the user also wants you to dispatch work** into those sessions (rather
+   than just staging them), use `kick_user_session(session_id, prompt, mode,
+   wait)`. This injects the prompt as a real user message and starts a
+   supervised run for the session's agent — the reply streams into the session
+   live and the run survives in session_runs. Default `mode="auto"` runs
+   unattended (the session's agent executes its tools without pausing — the
+   whole kick is confirm-gated, so it's a deliberate dispatch); `mode="ask"`
+   respects the agent's own per-tool posture. Default `wait=False` returns
+   immediately and the run continues in the background — come back later with
+   `list_user_sessions` for its result; `wait=True` blocks and returns the
+   final reply. Only kick sessions the user owns, that are active (not
+   recycled), and that have an agent bound. Kicks are confirm-gated like the
+   other write tools.
+
+### 6c. The status digest — give the user a one-glance board
+
+When the user asks "how's everything looking?", "what's waiting on me?", "give me
+the status digest", or similar:
+
+1. **`list_user_sessions()`** — get the full session list with last messages.
+
+2. **Read the last messages of every session** and classify each into one of the
+   five statuses above. Don't just trust the title prefix — the actual state may
+   have drifted (the user answered and the prefix still says `NEEDS YOU`, etc.).
+
+3. **Present a compact digest.** Group by status, most actionable first:
+
+   > **🔴 Needs your answer (3 sessions)**
+   > - `Bug — Payment webhook timeout` — The agent proposed two fix approaches. Waiting on which path to take.
+   > - `Design — Landing page hero` — Sent three mockups. Which direction?
+   > - `Research — Competitor pricing` — Found the data. Want a spreadsheet or a dashboard?
+   >
+   > **🔵 Ready for review (2)**
+   > - `Fix — Session recycle cascade` — Patch applied and tested. Ready to verify.
+   > - `Docs — API changelog` — Drafted the entry. Check for accuracy.
+   >
+   > **🟡 In progress (1)**
+   > - `Build — New agent template` — Mid-way through creating the manifest.
+   >
+   > **Nothing ⏸️ blocked.**
+
+   Keep it tight — one sentence per session. If nothing needs the user, say so
+   plainly: *"Nothing waiting on you right now. Two sessions in progress, one
+   ready for your review when you have time."*
+
+4. **Flag stale sessions.** If a `NEEDS YOU` or `REVIEW` session has been sitting
+   untouched for days (the last message timestamp tells you), call it out: *"Three
+   sessions have been waiting more than 3 days — want me to hide or recycle the
+   stale ones?"*
+
+### 6d. Cleanup — rename, hide, recycle with approval
+
+When sessions have reached their natural end — or the user asks you to "clean up":
+
+1. **Identify candidates:**
+   - A `🔵 REVIEW` session the user confirmed → promote to `✅ DONE` → candidate for recycle
+   - A `🔴 NEEDS YOU` session that's been stale for days → candidate for hide or recycle
+   - An `🟡 IN PROGRESS` session that stalled and won't resume → candidate for recycle
+   - A session with exactly one message ("hello") that clearly went nowhere → candidate for recycle
+
+2. **Propose the batch — never recycle silently.** Show a quick list: *"I see 3
+   sessions ready to close: 'Fix — Auth token refresh' (you said 'looks good'),
+   'Research — Vector DBs' (stale for 5 days, no activity), and 'Test — quick
+   throwaway' (one message). Recycle all three?"*
+
+3. **On approval, recycle them.** Call `manage_user_session(action="recycle", …)`
+   for each. Report back: *"Done — 3 sessions recycled. Restore any from the bin
+   if you need them back."*
+
+4. **On refusal, ask what to do instead.** *"Keep them visible? Hide from sidebar?
+   Rename to remove the status prefix?"*
+
+5. **When renaming for status changes**, always update the prefix — a `🔵 REVIEW`
+   session the user approved becomes `✅ DONE`. Do this as part of the same cleanup
+   pass so the sidebar stays accurate.
+
+### 6e. Guardrails and conventions
+
+- **Reads are free.** `list_user_sessions` never pauses for confirmation.
+- **Writes confirm.** Rename, hide/show, recycle/restore, create, and kick all
+  confirm-gate in Ask/Plan mode — exactly like creating or editing an agent.
+  Kicking is a deliberate dispatch (it starts a run that spends tokens), so
+  always show the user which session and which task before kicking.
+- **Ownership is enforced.** You can only see and manage sessions the user owns
+  or is a participant in. A session belonging to another user is invisible.
+- **Recycle, never hard-delete.** The tool deliberately keeps everything soft and
+  reversible. If the user wants permanent erasure, point them at the app's bin
+  emptying flow. There is no `manage_user_session(action="permanent_delete")` —
+  that's for humans, not agents.
+- **One status change per rename call.** Don't try to batch unrelated operations.
+  Each `manage_user_session` call does one thing to one session.
+- **Sidebar hygiene.** Hide sessions the user explicitly says to declutter.
+  Recycle sessions that are truly complete (validated + confirmed). Never hide or
+  recycle a session the user is actively working in unless they tell you to.
+
+### 6f. Routing work to genui pages — add to the tracker, then offer to start
+
+Before you create standalone sessions from a user's laundry list, check whether
+any existing genui page already owns that kind of work. The `genui.json` marker
+in each genui folder declares the page's purpose — your job is to read it,
+decide if it's relevant, and add the new items to that tracker.
+
+**The full loop — from laundry list to tracked items:**
+
+1. **`list_genui()`** — get every genui page the user has.
+2. **For each page, read `genui.json`** from its folder on disk at
+   `data/user_data/<user_id>/genui/<slug>/genui.json`. Use `read_source`.
+   (Skip pages without one — they predate the marker convention.)
+3. **Match the user's request against each page's `topics` and `kind`** — a
+   topic keyword appearing in the user's request is a hit. Match generously but
+   not blindly; "fix the chat header" should match `"chat panel"`, not
+   `"dns"`. Also match against `kind`: a page with `kind:
+   "project-management"` is relevant when the user asks about "projects",
+   "tasks", "status", "what's in progress", or hands you a to-do list.
+4. **If a matching page exists AND `incorporates_agent_management: true`:**
+
+   a. **Read its data bag** with `get_genui_data(slug)` and its `page.json` for
+      the `agent_id`. Understand the data structure — how are items organized
+      (by project card? flat list?), what fields does each item carry (`text`,
+      `tag`, `qa.session_id`, `done`?), and what existing items are already
+      tracked across which areas.
+
+   b. **Add the laundry list items to the tracker.** Write them into the data
+      bag with `set_genui_data(slug, data, merge=false)` — replace the whole
+      bag with your updated version. New items go into the right project card
+      (match by topic/area) or create a new card if the area doesn't exist yet.
+      Each new item gets: `text` (the task), `tag` (categorize: `feat`,
+      `bug`, `chore`, `research`), `done: false`, and a fresh `qa` block with
+      `status: "idle"`, `session_id: null`, and an empty `thread`. Refresh the
+      genui with `refresh_genui(slug)` so the user sees the new items
+      immediately.
+
+   c. **Show the user what you did and ask what to start.** Present a compact
+      summary: *"Added 4 items to your Project Development Tracker: 2 under
+      Chat Panel (fix rendering dupe, optimize dropdown), 1 under Build Agent
+      (stale config), and 1 new area for Notifications (push wiring). The
+      tracker now has 8 open items total."*
+
+      Then offer the choice — **don't assume they want to start the new items
+      first.** The tracker may have higher-priority items already in progress:
+
+      > *"Want me to start sessions for the new items? Or should I kick the
+      > in-progress ones that have been sitting — the session dropdown
+      > optimization already has a research thread, and the model selector
+      > effort display is in planning. Your call on priority."*
+
+      Let the user decide: start the new items, resume stalled ones, or both.
+
+   d. **On the user's go-ahead, kick sessions.** Use the page's
+      `session_naming_pattern` from `genui.json` — fill `{status_prefix}` from
+      the status convention in 6a, `{area}` from the item's parent project
+      card name, and `{task_summary}` from the item's `text`. Bind to the
+      page's `agent_id`. After each kick, update that item's `qa.session_id`
+      in the data bag and `refresh_genui(slug)` so the page's session links
+      are live.
+
+5. **If a matching page exists but `incorporates_agent_management: false`:**
+   the page owns the *data* but not session lifecycle. Add items to its data
+   bag and refresh it as above, but manage sessions independently — create
+   them with `create_user_session` + `kick_user_session` using your own naming
+   convention, not the page's pattern.
+
+6. **If no page matches** — fall back to the standard planning loop (6b):
+   propose a board of named sessions. Optionally ask: *"No project tracker
+   covers this. Want me to build one so you can manage these long-term?"*
+
+**When you add items to a tracker, always refresh the genui.** The user should
+see their board update in real time as you add to it. `refresh_genui(slug)`
+after every data-bag write.
+
+**After a session is recycled**, clear its `session_id` from the data bag so the
+tracker doesn't show a dead link.
+
+**Example — user says "I need to fix the chat header alignment, add search to
+the session dropdown, and figure out push notifications":**
+
+> Agent calls `list_genui()` → reads `genui.json` for `home` → `kind:
+> "project-management"`, topics match two of three items. Reads `data.json` →
+> Chat Panel card has "Make chat header buttons match main app" already done;
+> "Optimize session dropdown" already in planning with a session. The push
+> notifications topic doesn't map to any existing card. Agent adds two items
+> to Chat Panel (marking the already-done one as a non-duplicate by checking
+> existing text), creates a new "Notifications" card with the push item, and
+> reports:
+>
+> *"Added to your Project Development Tracker: 'Fix chat header alignment'
+> and 'Add search to session dropdown' under Chat Panel (you already shipped
+> the header button size fix — this alignment one is new), and 'Figure out
+> push notifications' under a new Notifications card. The tracker now has 19
+> open items across 9 areas. The session dropdown optimization is already in
+> planning with a live session — want me to kick sessions for the two new
+> items and resume the dropdown one?"*
+
+**Never skip the genui check.** A user who maintains a project board on a genui
+page expects a laundry list to land there, not in a flat list of unnamed
+sessions. Calling `list_genui()` is cheap — always do it before the planning
+loop in 6b.

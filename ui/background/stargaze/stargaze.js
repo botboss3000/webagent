@@ -34,6 +34,21 @@
   var pointerX = 0.5, pointerY = 0.5, targetX = 0.5, targetY = 0.5;
   var scrollY = 0, lastT = 0, lastPX = 0, lastPY = 0;
   var running = false, rafId = 0;
+  // Decorative full-screen canvas work must never compete with chat rendering.
+  // 20fps is visually smooth for slow stars while cutting gradient/raster work
+  // by roughly two thirds versus an unrestricted display-rate RAF loop.
+  var FRAME_DELAY_MS = 50;
+
+  function scheduleFrame() {
+    if (!running) return;
+    if (document.hidden) {
+      rafId = setTimeout(function () { frame(performance.now()); }, 500);
+      return;
+    }
+    rafId = setTimeout(function () {
+      if (running) rafId = requestAnimationFrame(frame);
+    }, FRAME_DELAY_MS);
+  }
 
   function isLight() { return document.body && document.body.classList.contains('light-mode'); }
 
@@ -223,6 +238,9 @@
 
   function frame(t) {
     if (!running) return;
+    // A hidden tab needs no canvas paints. Keep only a cheap wake-up so the
+    // animation resumes without a separate visibility listener.
+    if (document.hidden) { scheduleFrame(); return; }
     t = t || performance.now();
     var dtMs = lastT ? Math.min(50, t - lastT) : 16;
     lastT = t;
@@ -235,8 +253,7 @@
     drawConstellation();
     drawShootingStars(t);
     drawDust(dtMs);
-    if (document.hidden) rafId = setTimeout(function () { frame(performance.now()); }, 80);
-    else rafId = requestAnimationFrame(frame);
+    scheduleFrame();
   }
 
   // —— Listeners (tracked so stop() can remove them) ——

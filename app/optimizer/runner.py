@@ -16,12 +16,17 @@ _recently_seen: Dict[str, float] = {}
 _RECENT_WINDOW_SEC = 60
 
 
+def _optimizer_conn():
+    from app.db.local import DB_DIR
+    return sqlite3.connect(os.path.join(DB_DIR, "optimizer.db"))
+
+
 async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", feedback="", skill_name="", force=False):
     """
     Lightweight entry point for /optimize and live mode.
 
     1. Dedup + mode check.
-    2. Create optimizer session (opt_role='planner' → chat.py routes to opt_planner agent).
+    2. Create optimizer session (opt_role='optimizer' → chat.py routes to optimizer agent).
     3. Run prefilter on target session.
     4. Insert prefilter stats + user feedback as init interactions.
     5. Return session_id for the user to open.
@@ -65,17 +70,20 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     # ── Create optimizer temp DB (under data/db/, with the other runtime DBs) ──
     from app.db.local import DB_DIR as _db_dir
     os.makedirs(_db_dir, exist_ok=True)
-    temp_db_name = f"optimizer_{uuid.uuid4().hex[:16]}.db"
+    temp_db_name = "optimizer.db"
     temp_db_path = os.path.join(_db_dir, temp_db_name)
     # Initialize temp DB schema (creates all tables via LocalBackend.__init__)
     from app.db.local import LocalBackend as _OptBackend
     _OptBackend(db_path=temp_db_path)
+
+    # Look up original session title
+    _orig_title = _lookup_session_title(user_id, session_id)
     # Insert session row into temp DB so chat.py can find it
     _opt_conn = sqlite3.connect(temp_db_path)
     _opt_conn.execute(
         "INSERT OR IGNORE INTO sessions (id, user_id, title, metadata, created_at, updated_at) "
         "VALUES (?, ?, ?, '{}', ?, ?)",
-        (opt_sid, user_id, f"Optimizer \u2014 {session_id[:12]}", now, now)
+        (opt_sid, user_id, f"Opt: {_orig_title}", now, now)
     )
     _opt_conn.commit()
     _opt_conn.close()
@@ -86,7 +94,7 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
 
     # ── Create optimizer session in local.db ──
     _ensure_session(user_id, opt_sid, session_id)
-    _store_optimizer_metadata(user_id, opt_sid, session_id, temp_db_path=temp_db_path)  # sets opt_role='planner'
+    _store_optimizer_metadata(user_id, opt_sid, session_id, temp_db_path=temp_db_path)  # sets opt_role='optimizer'
 
     # ── Prefilter target session ──
     pf = await prefilter(user_id, session_id)
@@ -95,15 +103,15 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
 
     if feedback:
         _insert_opt_msg(user_id, opt_sid, "user", "optimizer:user_feedback",
-                        f"User feedback: {feedback}",
+                        f"User feedback about target session ({session_id[:12]}...): {feedback}",
                         temp_db_path=temp_db_path,
                         from_id=user_id)
 
-    # ── Auto-kickstart: trigger the Planner to analyze immediately ──
-    # Sends a user message to the optimizer session — chat.py routes it to
-    # the opt_planner agent (via resolve_agent/session binding), which
-    # auto-starts its analysis per its system prompt rules.
-    asyncio.create_task(_kickstart_planner(user_id, opt_sid, feedback=feedback))
+    # ── Kickstart: welcome the user to the interactive Optimizer session ──
+    # Sends a welcome message as a user message so the optimizer agent sees
+    # it naturally when the user opens the session. The optimizer now waits
+    # for the user's direction rather than auto-running a pipeline.
+    asyncio.create_task(_kickstart_optimizer(user_id, opt_sid, feedback=feedback, welcome=True))
 
     # ── Log and return ──
     _log_start(run_id, cfg, opt_sid)
@@ -112,22 +120,50 @@ async def run_optimizer_async(user_id, session_id, channel="ui", criteria="", fe
     return opt_sid
 
 
+def mark_optimizer_run_terminal(
+    session_id: str,
+    status: str,
+    error: str = "",
+) -> None:
+    """Close a failed/interrupted interactive optimizer run in control storage."""
+    if not session_id.startswith("optimizer-") or status == "complete":
+        return
+    terminal = "interrupted" if status == "interrupted" else "error"
+    conn = _optimizer_conn()
+    try:
+        conn.execute(
+            "UPDATE optimizer_runs SET status=?, completed_at=?, "
+            "errors=CASE WHEN ? != '' THEN ? ELSE errors END "
+            "WHERE session_id=? AND status='running'",
+            (
+                terminal,
+                datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                error or "",
+                error or "",
+                session_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def _inject_session_context(user_id: str, session_id: str, temp_db_path: str, opt_sid: str) -> None:
-    """Inject target session interactions + WebAgent base-prompt context into the
-    optimizer temp DB. Limits to last 50 interactions so long sessions don't
-    bloat the prompt."""
+    """Inject target session interactions + WebAgent base-prompt context + diagnostics
+    + tool usage stats into the optimizer temp DB. Limits to last 50 interactions so
+    long sessions don't bloat the prompt."""
     import json
     from app.db.local import DB_DIR
 
     ctx_data = []
+    # ── Target session identity (IDs so the optimizer knows exactly which session it owns) ──
+    ctx_data.append("## Target Session")
+    ctx_data.append(f"- **Session ID**: `{session_id}`")
+
     # ── Target session transcript (read from the real runtime local.db) ──
     try:
-        # Route through db_crypto so the read works whether local.db is plaintext
-        # or SQLCipher-encrypted at rest. db_crypto sets the matching row factory
-        # (do NOT reassign row_factory here — stdlib Row rejects a cipher cursor).
-        from app.db import db_crypto
-        local = db_crypto.connect(os.path.join(DB_DIR, "local.db"), "local")
-        # Get last 50 target session interactions
+        from app.db import get_user_db
+        local = get_user_db(user_id)._get_conn()
         ics = local.execute(
             "SELECT role, content, tool_name FROM interactions WHERE session_id=? ORDER BY created_at DESC LIMIT 50",
             (session_id,)
@@ -150,15 +186,14 @@ async def _inject_session_context(user_id: str, session_id: str, temp_db_path: s
         logging.warning("Failed to inject session interactions: %s", e)
 
     # ── WebAgent context = the agent's resolved BASE PROMPTS ──
-    # Same starting point the orchestrator ability uses for its spawns: the
-    # agent's base prompt slots via db.resolve_prompts (the legacy agents.*_prompt
-    # columns were dropped in migration 021). Own try so a miss never blocks the
-    # transcript injection above.
     try:
         from app.optimizer.prefilter import resolve_session_agent_id
         from app.db import get_db
         agent_id = await resolve_session_agent_id(user_id, session_id)
         if agent_id:
+            # Embellish the target session block with the agent ID now that we have it
+            ctx_data.append(f"- **Agent ID**: `{agent_id}`")
+
             slot_titles = {
                 "agent": "Agent Identity", "user": "User",
                 "skills": "Core Skills", "tasks": "Common Tasks", "misc": "Misc",
@@ -168,19 +203,89 @@ async def _inject_session_context(user_id: str, session_id: str, temp_db_path: s
                 title = slot_titles.get(s.get("slot_name"))
                 content = s.get("content") or ""
                 if title and content.strip():
-                    # Inject the FULL current column (up to a generous cap), not a
-                    # 500-char teaser. The Planner must see the complete existing
-                    # content so it can PRESERVE and EXTEND it — a truncated view
-                    # led the model to replace a whole column with only its addition,
-                    # wiping the agent's identity.
                     ctx_sections.append(f"### {title} ({s['slot_name']})")
                     ctx_sections.append(content[:3000])
             if ctx_sections:
                 ctx_data.append("")
                 ctx_data.append("## WebAgent Context")
                 ctx_data.extend(ctx_sections)
+            
+            # ── Inject target agent's abilities and tools ──
+            try:
+                agent = await get_db().get_agent_by_id(agent_id)
+                if agent:
+                    ctx_data.append("")
+                    ctx_data.append("## Target Agent Config")
+                    ctx_data.append(f"- **Name**: {agent.get('name', 'unknown')}")
+                    ctx_data.append(f"- **Model**: {agent.get('model', 'default')}")
+                    ctx_data.append(f"- **Temperature**: {agent.get('temperature', 'default')}")
+                    ctx_data.append(f"- **Max turn count**: {agent.get('max_turn_count', 'default')}")
+                    # Abilities
+                    abilities = agent.get('abilities', []) or []
+                    if abilities:
+                        ctx_data.append(f"- **Abilities**: {', '.join(abilities)}")
+                    else:
+                        ctx_data.append("- **Abilities**: (none)")
+                    # Tool permissions (from agent_connections or tool_overrides)
+                    try:
+                        tool_rows = get_db()._get_conn().execute(
+                            "SELECT tool_name, permission FROM agent_tool_overrides WHERE agent_id=?",
+                            (agent_id,)
+                        ).fetchall()
+                        if tool_rows:
+                            overrides = []
+                            for tr in tool_rows:
+                                overrides.append(f"{tr['tool_name']}={tr['permission']}")
+                            ctx_data.append(f"- **Tool overrides**: {', '.join(overrides)}")
+                    except Exception:
+                        pass
+            except Exception as e:
+                logging.debug("Failed to inject agent config: %s", e)
+
     except Exception as e:
         logging.warning("Failed to inject agent base-prompt context: %s", e)
+
+    # ── Inject recent diagnostics (errors/warnings from flight recorder) ──
+    try:
+        from app.db import get_user_db
+        raw = getattr(get_user_db(user_id), '_get_conn', None)
+        if raw:
+            diag_conn = raw()
+            try:
+                diag_rows = diag_conn.execute(
+                    "SELECT level, message, created_at FROM diagnostics "
+                    "WHERE level IN ('error','warning') AND user_id=? "
+                    "ORDER BY created_at DESC LIMIT 20",
+                    (user_id,)
+                ).fetchall()
+            finally:
+                diag_conn.close()
+            if diag_rows:
+                ctx_data.append("")
+                ctx_data.append("## Recent Diagnostics (Errors & Warnings)")
+                for dr in diag_rows:
+                    ctx_data.append(f"[{dr['level']}] {dr['message'][:200]} (at {dr['created_at']})")
+    except Exception as e:
+        logging.debug("Failed to inject diagnostics: %s", e)
+
+    # ── Inject tool usage stats from the target session ──
+    try:
+        from app.db import get_user_db
+        local = get_user_db(user_id)._get_conn()
+        tool_stats = local.execute(
+            "SELECT tool_name, COUNT(*) as count FROM interactions "
+            "WHERE session_id=? AND role='tool' AND tool_name IS NOT NULL "
+            "GROUP BY tool_name ORDER BY count DESC",
+            (session_id,)
+        ).fetchall()
+        local.close()
+        if tool_stats:
+            ctx_data.append("")
+            ctx_data.append("## Tool Usage in Target Session")
+            for ts in tool_stats:
+                ctx_data.append(f"- **{ts['tool_name']}**: called {ts['count']} times")
+    except Exception as e:
+        logging.debug("Failed to inject tool stats: %s", e)
 
     if ctx_data:
         content = "\n".join(ctx_data)
@@ -198,18 +303,33 @@ async def _inject_session_context(user_id: str, session_id: str, temp_db_path: s
             logging.warning("Failed to write context injection: %s", e)
 
 
-async def _kickstart_planner(user_id: str, opt_sid: str, feedback: str = "") -> None:
-    """Auto-trigger the Planner by sending a user message to the optimizer session.
-    chat.py routes messages to the opt_planner agent via resolve_agent()."""
+async def _kickstart_optimizer(user_id: str, opt_sid: str, feedback: str = "", welcome: bool = False) -> None:
+    """Welcome the user to the interactive Optimizer session (or auto-trigger for legacy mode).
+    chat.py routes messages to the optimizer agent via resolve_agent()."""
     import asyncio, httpx, os, logging as _log
     try:
         port = os.environ.get('PORT', '8080')
-        _log.warning(f"Kickstarting Planner for session {opt_sid}")
+        _log.warning(f"Kickstarting Optimizer for session {opt_sid} (welcome={welcome})")
 
-        # Build message: include user feedback if provided
-        msg = "Please analyze the main session and propose improvements."
-        if feedback:
-            msg += f" The user's feedback: {feedback}"
+        if welcome:
+            msg = (
+                "👋 **Optimizer ready.** I've loaded the target session context.\n\n"
+                "What would you like me to do?\n"
+                "• **Monitor** this session for issues\n"
+                "• **Find bugs** in the codebase or logs\n"
+                "• **Optimize** the agent's prompts\n"
+                "• **Audit** tool usage and permissions\n"
+                "• **Analyze** what happened and suggest improvements\n"
+                "• Check the **database** for error patterns\n"
+                "• **Compare** the target agent's approach with a reference\n"
+                "• Or anything else — just tell me what you need!"
+            )
+            if feedback:
+                msg += f"\n\nI also see your note: _{feedback}_"
+        else:
+            msg = "Please analyze the main session and propose improvements."
+            if feedback:
+                msg += f" The user's feedback: {feedback}"
 
         # Mint a short-lived JWT so this loopback POST passes the chat endpoint's
         # caller-identity check (assert_caller_is). Without it the request carries
@@ -228,7 +348,7 @@ async def _kickstart_planner(user_id: str, opt_sid: str, feedback: str = "") -> 
 
         # The kickstart fires from the tail of the target turn, so the very first
         # Planner request races the turn-finalization + optimizer-setup writes and
-        # the one-time materialization of the opt_planner agent — a transient
+        # the one-time materialization of the optimizer agent — a transient
         # SQLite "database is locked" that surfaces as a 500. Settle briefly, then
         # retry on 5xx / connection errors with backoff. The first message is
         # idempotent ("analyze…") and the 500 happens at agent-resolve time, before
@@ -240,7 +360,8 @@ async def _kickstart_planner(user_id: str, opt_sid: str, feedback: str = "") -> 
                 try:
                     resp = await client.post(
                         f"http://127.0.0.1:{port}/api/v1/chat",
-                        json={"message": msg, "user_id": user_id, "session_id": opt_sid},
+                        json={"message": msg, "user_id": user_id, "session_id": opt_sid,
+                               "execution_mode": "auto"},
                         headers=headers,
                     )
                     if resp.status_code < 500 or attempt >= len(delays):
@@ -278,8 +399,8 @@ def _count_user_turns(user_id, session_id) -> int:
     one turn). Used to enforce the 'run every N turns' cadence. Best-effort:
     any DB error returns 0 so the caller simply skips this cycle."""
     try:
-        from app.db import get_db
-        raw = getattr(get_db(), '_get_conn', None)
+        from app.db import get_user_db
+        raw = getattr(get_user_db(user_id), '_get_conn', None)
         if not raw:
             return 0
         c = raw()
@@ -297,14 +418,15 @@ def _count_user_turns(user_id, session_id) -> int:
 
 def _store_optimizer_metadata(uid, sid, target_sid, temp_db_path=None):
     """Store the original target session + temp_db_path in optimizer session metadata."""
-    from app.db import get_db
-    db = get_db()
+    from app.db import get_user_db
+    db = get_user_db(uid)
     raw = getattr(db, '_get_conn', None)
     if raw:
         meta = json.dumps({
-            "opt_role": "planner",
+            "opt_role": "optimizer",
             "target_session": target_sid,
             "temp_db_path": temp_db_path,
+            "execution_mode": "auto",
         })
 
         def _do():
@@ -320,17 +442,18 @@ def _store_optimizer_metadata(uid, sid, target_sid, temp_db_path=None):
 
 
 def _ensure_session(uid, sid, orig):
-    from app.db import get_db
-    db = get_db()
+    from app.db import get_user_db
+    db = get_user_db(uid)
     raw = getattr(db, '_get_conn', None)
     if raw:
         def _do():
             _now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            _title = _lookup_session_title(uid, orig)
             c = raw()
             c.execute(
                 "INSERT OR IGNORE INTO sessions (id,user_id,title,created_at,updated_at) "
                 "VALUES (?,?,?,?,?)",
-                (sid, uid, f"Optimizer \u2014 {orig[:12]}", _now, _now),
+                (sid, uid, f"Opt: {_title}", _now, _now),
             )
             c.commit()
             c.close()
@@ -356,8 +479,8 @@ def _insert_opt_msg(uid, sid, role, source, content, *, from_id=None, to_id=None
         _retry_db_write(_do_temp)
         return
 
-    from app.db import get_db
-    db = get_db()
+    from app.db import get_user_db
+    db = get_user_db(uid)
     raw = getattr(db, '_get_conn', None)
     if raw:
         def _do():
@@ -383,11 +506,7 @@ def _log_complete(rid, st, cfg, sid, **kw):
 
 def _log_run(rid, status, config, sid, skills_analyzed=0, proposals_generated=0, proposals_deployed=0, summary="", errors=None):
     try:
-        from app.db import get_db
-        db = get_db()
-        raw = getattr(db, '_get_conn', None)
-        if not raw:
-            return
+        raw = _optimizer_conn
         now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         completed = now if status in ("success", "failed") else None
         errs = json.dumps(errors) if errors else None
@@ -422,3 +541,19 @@ def _log_run(rid, status, config, sid, skills_analyzed=0, proposals_generated=0,
         _retry_db_write(_do)
     except Exception as e:
         logger.warning("_log_run: %s", e)
+
+
+def _lookup_session_title(user_id: str, session_id: str) -> str:
+    """Get the title of a target session, falling back to the session id on error."""
+    try:
+        from app.db import get_user_db
+        local = get_user_db(user_id)._get_conn()
+        row = local.execute(
+            "SELECT title FROM sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        local.close()
+        if row and row[0]:
+            return str(row[0])
+    except Exception as e:
+        logger.debug("Failed to lookup session title: %s", e)
+    return session_id[:12]

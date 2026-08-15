@@ -23,8 +23,8 @@ and **revert when the hard part is done.**
 
 You don't need to memorise model ids. **`list_models()`** returns the menu of models
 you can switch onto, each badged with what it can do — **sees images**, **makes
-images**, **premium** (high-effort) tier — plus which model is **running now**, which
-is the **default**, and the **effort levels** you can set. It's read-only and changes
+images**, **premium** tier — plus which model is **running now**, which is the
+**default**, and the **effort levels** you can set. It's read-only and changes
 nothing.
 
 Use it to switch by **capability, not by name**:
@@ -46,10 +46,15 @@ false), it isn't configured — tell the user plainly rather than guessing or pr
   you want a vision/image-output model for image work). It must be an **enabled,
   tool-capable** model; if it isn't, the tool tells you which you can switch to —
   relay that, don't guess.
-- **`use_premium_model()`** upgrades onto the configured **premium** tier (the
-  rows an admin ticked *Eff* in App Config → Models) for a genuinely hard task. No-op
-  if you're already on one. If none is configured, the tool says so — relay that an
-  admin can mark one; don't pretend you switched.
+- **`use_premium_model()`** upgrades onto the configured **premium** model — the
+  row an admin assigned the *Premium* role to in App Config → Models (stored
+  per-model in the user's DB llm config and resolved through the same role-slot
+  mechanism the chat footer picker uses, with the legacy `high_effort_targets`
+  resolver as a fallback). A premium-role model qualifies even when it is NOT
+  enabled as an everyday brain (the "premium-only" pattern) — that is the normal
+  way a dedicated premium model is set up. No-op if you're already on one. If
+  none is configured, the tool says so — relay that an admin can assign the
+  Premium role to a capable model; don't pretend you switched.
 
 ### 2. How hard it thinks — `set_effort`
 
@@ -104,3 +109,46 @@ do the work over the following turns, then `reset_to_default()`.
 - Light/mechanical work → **`set_effort('low')`** (or `'minimal'`) for speed.
 - Hard part done / back to small talk → **`reset_to_default()`**.
 - Already strong / none configured → the tool tells you; don't force it.
+
+---
+
+## Planning Mode — Model Strategy
+
+When the user sets execution mode to `'plan'`, follow this model-switching protocol:
+
+### Phase 0 — Load the tools
+First, load the Model Switcher tools you'll need: `load_tool("list_models")`, `load_tool("use_premium_model")`, `load_tool("set_effort")`, `load_tool("reset_to_default")`, `load_tool("set_model")`. These are all load-on-demand. Get them ready before you start planning.
+
+### Phase 1 — Draft the plan (standard model)
+- Start on your **default model** at **default effort**.
+- Do the initial planning work — gather information, analyze requirements, outline options.
+- Keep the cheap model for this phase; don't burn premium resources on early exploration.
+
+### Phase 2 — Assess if premium is warranted
+Once you have a solid draft, judge the task's complexity:
+
+**Use premium for the final plan if the task involves:**
+- Complex multi-step architecture or system design
+- Tricky debugging with many interdependent variables
+- High-stakes code changes (production, security, data integrity)
+- Ambiguous requirements needing careful trade-off analysis
+- Large-scale orchestration (multiple agents, complex automation)
+
+**Stick with standard model if:**
+- The task is straightforward (simple edits, routine queries, known patterns)
+- The requirements are clear and the solution path is obvious
+- It's a small, contained change
+
+### Phase 3 — Polish with the right model
+- If premium is warranted → propose it: *"This plan is complex enough to warrant the premium model for the final pass — ready to switch?"* → on approval, call `use_premium_model()` and optionally `set_effort('high')`, then finalize the plan.
+- If standard is fine → stay on standard, optionally dial `set_effort('medium')` for a bit more polish without the cost.
+
+### Phase 4 — Deliver the plan with a model recommendation
+When presenting the final plan, include a **one-line recommendation** at the end:
+
+> **Model recommendation:** This task is [simple / moderately complex / complex]. I recommend [standard / premium] model for execution.
+
+This gives the user a clear signal before they approve moving forward.
+
+### Phase 5 — Revert
+After the plan is delivered, call `reset_to_default()` if you upgraded, so the chat doesn't burn expensive resources during follow-up discussion.

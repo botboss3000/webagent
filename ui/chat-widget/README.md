@@ -25,11 +25,11 @@ without disturbing the main chat side-panel. Consumers:
   **One handler per session** (last registration wins); each widget owns its
   own session so this never collides in practice.
 - Streams text into mini bubbles (markdown on finalize via the shared
-  `_fillAgentBubble` from `ui/chat-side-panel/js/chat-bubble.js`); tool calls
+  `_fillAgentBubble` from `ui/chat/js/chat-bubble.js`); tool calls
   render as a collapsible group using the shared `buildToolRow` from
   `ui/shared/js/chat-activity.js`.
 - **Reliable updates — WS is smooth, the DB is durable.** Exactly like the main
-  panel (`ui/chat-side-panel/js/chat-reconcile.js`), the WebSocket only delivers
+  panel (`ui/chat/js/chat-reconcile.js`), the WebSocket only delivers
   when the browser socket and the running agent share one server process. When
   they don't (dev port-stacking, prod multi-worker) or the socket goes briefly
   silent, each widget polls `GET /api/v1/db/session-tail` — **gated on WS
@@ -84,3 +84,105 @@ Instance methods: `open()`, `close()`, `send(text)`, `interrupt()`,
 
 Build your task message → `createChatWidget({ title, ensureAgent, initialMessage, onDone })`
 → `.open()`. That's it — no session juggling, no touching `app.currentSessionId`.
+
+---
+
+# Chat launcher (`js/chat-launcher.js`)
+
+The **shared launcher component**: a floating (or inline) icon button that opens
+a chat widget, with up to four configurable corner buttons on hover. It's the
+engine behind the global WebAgent launcher (`js/webagent-launcher.js` is now a
+thin wrapper that delegates here) and the way any page gets its OWN chat
+launcher with a distinct icon, linked agent, corner buttons, and widget options.
+
+## Factory API
+
+```js
+import { createChatLauncher } from './chat-launcher.js';
+
+const launcher = createChatLauncher({
+  mountEl: document.body,       // where the button is appended
+  position: 'fixed',            // 'fixed' floating FAB | 'inline' in-page
+  icon: 'bot',                  // 'bot' (animated) | Lucide name | raw SVG/HTML
+  iconSize: 27,
+  ariaLabel: 'Open WebAgent chat',
+  label: '', showLabel: false,  // optional text label chip beside the icon
+  agentId: null,                // direct agent id, OR
+  ensureAgent: null,            // async () => agentId (caller does ability setup), OR
+  resolveAgent: null,           // async () => agent record {id, name, icon}
+  cornerButtons: {...},         // same shape as chat_ui.json launcher.corner_buttons;
+                                //   null → default set, false → none
+  cornerButtonsProvider: null,  // async () => corner config (fetched lazily, like the
+                                //   old ui-config profile read)
+  cornerActions: {},            // custom corner types: { myType: (btn, ctx) => void }
+  widget: {...},                // any createChatWidget options (session contract,
+                                //   transformMessage, onDone…)
+  draggable: true,              // default true for 'fixed'
+  storageKey: null,             // localStorage key for the saved position
+  hoverDelayMs: 200,
+  iconMagnet: true,             // pointer-attracted icon (fixed launchers)
+  elementPickup: false,         // wire the element-pickup corner action + app hooks
+  onOpen: null, onClose: null,
+});
+launcher.open();  launcher.close();  launcher.destroy();  launcher.setConfig({...});
+```
+
+Built-in corner action types: `sessions`, `new_session`, `close_all`,
+`open_all`, `element_pickup` (the last only does anything when
+`elementPickup: true`). Custom types override built-ins per-launcher.
+
+## `<chat-launcher>` custom element
+
+The factory also registers a `chat-launcher` element (in the MAIN document —
+the widget layer lives on `<body>`, so don't put it inside a Gen UI shadow).
+Attributes: `icon`, `agent` (agent id), `label`, `position`, `draggable`,
+`aria-label`, `storage-key`; or `src` = inline JSON **or** a URL to a JSON
+config file; or an inline `<script type="application/json">` child. The element
+exposes `.launcher` and fires `chat-launcher-ready` once mounted.
+
+## Per-page configuration
+
+Two drop-in ways to give a page its own launcher with NO per-page code:
+
+**1. Gen UI pages — `widget.json` in the page folder.** Drop
+`data/user_data/<uid>/genui/<slug>/widget.json` (or PATCH
+`/api/v1/genui/{slug}/widget` — the design agent can do this via the API). The
+file holds the same `createChatLauncher` options. It's served to the Gen UI tab
+baked into the page as `window.__GENUI_WIDGET`; `genui.js` mounts the launcher
+in the main document when the page opens and destroys it on page switch. Agent
+resolution: `agent_id` in the file → the page's owning `agent_id` → the default
+WebAgent. The page's existing `session_config` is applied to the launcher's
+widget automatically (same session targeting as the page's chat buttons).
+
+```json
+// data/user_data/<uid>/genui/<slug>/widget.json
+{
+  "icon": "sparkles",
+  "position": "fixed",
+  "ariaLabel": "Ask about this page",
+  "agent_id": "optional-agent-id",
+  "cornerButtons": {
+    "enabled": true, "hover_delay_ms": 200,
+    "top_left":     { "enabled": true, "type": "sessions",    "icon": "list",       "tooltip": "Show sessions" },
+    "top_right":    { "enabled": true, "type": "new_session", "icon": "plus",       "tooltip": "New session" },
+    "bottom_left":  { "enabled": false, "type": "element_pickup", "icon": "crosshair", "tooltip": "Element pickup" },
+    "bottom_right": { "enabled": true, "type": "open_all",    "icon": "maximize-2", "tooltip": "Open all minimized" }
+  },
+  "widget": { "title": "Ask the agent", "iconName": "bot" }
+}
+```
+
+PATCH `/api/v1/genui/{slug}/widget` with `{"widget": {…}}` to set it, or `{}` to
+remove the page's launcher. GET `/api/v1/genui/{slug}/widget` to read it.
+
+**2. Catalog pages — a `widget` block in the page's `page.json`.** Any
+main-panel / admin-tools page descriptor may carry the same options:
+
+```json
+{ "id": "agents", "label": "Agents", "icon": "bot",
+  "widget": { "icon": "bot", "position": "fixed", "cornerButtons": { "enabled": false } } }
+```
+
+The shell (`ui/shared/js/tabs.js`) mounts the launcher on tab activate and
+destroys it on deactivate, so each page gets its own — no per-page code.
+

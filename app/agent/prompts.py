@@ -5,6 +5,7 @@ Prompt construction with dynamic tool descriptions from database.
 import asyncio
 import base64
 import logging
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 from app.db.offload import db_offload
@@ -29,6 +30,22 @@ CONTEXT_SECTION_TYPES = [
 ]
 
 
+@dataclass
+class SystemPromptParts:
+    """Prompt layers ordered from most reusable to most turn-specific."""
+
+    shared_core: str = ""
+    agent_context: str = ""
+    turn_context: str = ""
+
+    def render(self) -> str:
+        return "\n\n".join(
+            part.strip()
+            for part in (self.shared_core, self.agent_context, self.turn_context)
+            if part and part.strip()
+        ).strip()
+
+
 def _row_content(doc: Dict) -> str:
     return (doc.get("content") or "").strip()
 
@@ -39,6 +56,23 @@ async def build_system_prompt(
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
 ) -> str:
+    """Backward-compatible flattened prompt builder."""
+    return (
+        await build_system_prompt_parts(
+            docs,
+            brain_context=brain_context,
+            user_id=user_id,
+            agent_id=agent_id,
+        )
+    ).render()
+
+
+async def build_system_prompt_parts(
+    docs: List[Dict],
+    brain_context: Optional[str] = None,
+    user_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> SystemPromptParts:
     """Assemble the final system prompt from resolved slot docs + brain context.
 
     `docs` is the resolved slot list returned by `_docs_for_caller()` —
@@ -50,7 +84,9 @@ async def build_system_prompt(
     agent (with inject_schema_in_prompt = 1) get summarized into a
     `# [DATA SOURCES]` section.
     """
-    sections: List[str] = []
+    shared_sections: List[str] = []
+    agent_sections: List[str] = []
+    turn_sections: List[str] = []
 
     # App-global baseline — admin-only CRITICAL instructions prepended verbatim
     # ahead of every agent's own slots (fleet agents and spawned clones alike).
@@ -59,7 +95,7 @@ async def build_system_prompt(
         from app.admin.settings import get_global_system_prompt
         _baseline = get_global_system_prompt()
         if _baseline:
-            sections.append(_baseline)
+            shared_sections.append(_baseline)
     except Exception:  # noqa: BLE001 — baseline is best-effort, never fatal
         pass
 
@@ -71,7 +107,7 @@ async def build_system_prompt(
             continue
         content = _row_content(doc)
         if content:
-            sections.append(content)
+            agent_sections.append(content)
             doc_sections += 1
 
     fr = get_prompt_fragments()
@@ -83,21 +119,28 @@ async def build_system_prompt(
     if not has_any_content and not user_id:
         fallback = format_tool_subheadings_markdown(fr.get("fallback_tools") or "")
         if fallback:
-            sections.append(fallback)
+            agent_sections.append(fallback)
 
     if agent_id:
         ds_block = await format_data_sources_for_prompt(agent_id)
         if ds_block:
-            sections.append(ds_block)
+            agent_sections.append(ds_block)
 
     if brain_context:
-        sections.append("# [BRAIN CONTEXT]")
+        turn_sections.append("# [BRAIN CONTEXT]")
         intro = (fr.get("brain_context_intro") or "").strip()
         if intro:
-            sections.append(intro + "\n")
-        sections.append(brain_context)
+            turn_sections.append(intro + "\n")
+        turn_sections.append(brain_context)
 
-    return "\n\n".join(s for s in sections if s.strip()).strip()
+    def _join(sections: List[str]) -> str:
+        return "\n\n".join(s for s in sections if s and s.strip()).strip()
+
+    return SystemPromptParts(
+        shared_core=_join(shared_sections),
+        agent_context=_join(agent_sections),
+        turn_context=_join(turn_sections),
+    )
 
 
 async def append_skills_section(
@@ -361,6 +404,7 @@ async def describe_image_attachment(
     user_text_hint: str = "",
     system_prompt: Optional[str] = None,
     instruction: Optional[str] = None,
+    error_sink: Optional[List[str]] = None,
 ) -> Optional[str]:
     """Call a configured vision model ONCE to describe a single image attachment.
 
@@ -372,14 +416,23 @@ async def describe_image_attachment(
     ``system_prompt`` / ``instruction`` let the attachment type-router supply a
     context-tailored prompt (from the ability's companion JSON) so the description
     is shaped to what the conversation needs; both fall back to a generic default.
+
+    ``error_sink``: optional list; on failure the real error string is appended
+    (e.g. the provider's "no remaining credits" 400) so callers can surface WHY
+    the description failed instead of only seeing None.
     """
     url = await _attachment_to_image_data_url(att)
     if not url:
+        if error_sink is not None:
+            error_sink.append("describe_image_attachment: image attachment could not be read")
         return None
     base_url = describer_cfg.get("base_url", "")
     api_key = describer_cfg.get("api_key", "")
     model = describer_cfg.get("model", "")
     if not (base_url and api_key and model):
+        if error_sink is not None:
+            error_sink.append(
+                "describe_image_attachment: incomplete describer config (missing base_url/api_key/model)")
         return None
 
     try:
@@ -421,6 +474,8 @@ async def describe_image_attachment(
             return text or None
     except Exception as e:
         logger.warning("describe_image_attachment failed for %s: %s", att.get("id"), e)
+        if error_sink is not None:
+            error_sink.append(str(e))
     return None
 
 

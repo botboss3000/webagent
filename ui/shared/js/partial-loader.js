@@ -16,13 +16,20 @@
 // makes its partial load with no edit here. The chat side-panel is the one fixed
 // (non-page) partial. Pages without an `html` (e.g. the iframe-only Terminal)
 // contribute no partial; their content mount is built by __buildHeader.
-const CHAT_PARTIAL = { url: './ui/chat-side-panel/chat-side-panel.html', mount: '#chat-panel' };
+const CHAT_PARTIAL = { url: './ui/chat/chat-side-panel.html', mount: '#chat-panel' };
 
 function topLevelFromCatalog(mainPages) {
   const list = [];
   for (const p of (mainPages || [])) {
     if (p.html && p.mount && p.dir) {
       list.push({ url: `./ui/${p.dir}/${p.html}`, mount: p.mount });
+    }
+    // A main page may ALSO ship extra <template data-slot> partials (its page.json
+    // `partials` list, e.g. Instances' App Config sections). These are injected
+    // with the same slot-appending used for admin sub-page partials, after the
+    // page's own html has been mounted (see injectSlotsFromHtml in phase 1).
+    for (const extra of (p.partials || [])) {
+      if (extra) list.push({ url: `./ui/${p.dir}/${extra}`, slot: true });
     }
   }
   list.push(CHAT_PARTIAL);
@@ -169,9 +176,20 @@ export const partialsReady = (async () => {
 
   const TOP_LEVEL = topLevelFromCatalog(catalog.main);
 
-  // Phase 1: load top-level pages in parallel.
+  // Phase 1: load top-level pages in parallel. A page's own partial replaces the
+  // inner HTML of its mount; any extra <template data-slot> partials (page.json
+  // `partials`, flagged `slot: true` by topLevelFromCatalog) are appended into
+  // their slot targets — the same slot-injection admin sub-pages use — so a main
+  // page can ship multi-section markup (e.g. Instances' App Config) with no edit
+  // to index.html. Order is preserved: html first, then its slot partials.
   const topHtml = await Promise.all(TOP_LEVEL.map(p => fetchHtml(p.url)));
-  TOP_LEVEL.forEach((p, i) => injectIntoMount(topHtml[i], p.mount));
+  TOP_LEVEL.forEach((p, i) => {
+    if (p.slot) {
+      injectSlotsFromHtml(topHtml[i], p.url);
+    } else {
+      injectIntoMount(topHtml[i], p.mount);
+    }
+  });
 
   // Phase 2: load admin sub-pages in parallel (slots now exist) — every admin
   // view partial is discovered from the catalog (ADMIN_SUB_PAGES is empty).

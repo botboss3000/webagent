@@ -89,7 +89,7 @@ other tool call (search before the reply, save after):
   parent role == user, memory by `tool_name ∈ {memory_search, memory_save}` +
   `metadata.brain` — and keeps its body even in light mode (`_slim` exemption); the
   chat builds a call entry straight from the row (`_buildSynthCall` /
-  `_isSynthToolRow` in `ui/chat-side-panel/js/session-load.js`) — no lazy
+  `_isSynthToolRow` in `ui/chat/js/session-load.js`) — no lazy
   `/session-turn-detail` fetch.
 - **Live:** these calls fire outside a reply bubble's normal tool accounting —
   vision/`memory_search` during ingestion (before `turn_start`), `memory_save`

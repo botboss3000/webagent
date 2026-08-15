@@ -1,9 +1,9 @@
 """
-Per-user "connect your own database" API (multi-tenant / bring-your-own-database).
+Per-user "connect your own database" API (User BYOD / bring-your-own-database).
 
 Lets a signed-in user point WebAgent at THEIR OWN Postgres, so their interaction
 data (chats, memories, agents, secrets) lives in a database they own instead of
-the shared central one. Only meaningful when App Settings → Multi-tenant data is
+the shared central one. Only meaningful when App Settings → User BYOD is
 ON; when it's off these endpoints still work but routing ignores the record.
 
 Endpoints (all scoped to the verified caller — a user only ever manages their own
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/api/v1/tenant-db", tags=["tenant-db"])
 
 # Personal databases must be a Postgres-family endpoint (the per-user backend is
 # built by build_postgres_backend). Mirrors the _PG_PROVIDERS set in app/db.
-_ALLOWED_PROVIDERS = ("postgres", "neon", "gcp_cloud_sql", "aws_rds", "azure_postgres", "supabase")
+_ALLOWED_PROVIDERS = ("postgres", "neon", "gcp_cloud_sql", "aws_rds", "azure_postgres")
 
 
 class TenantDBBody(BaseModel):
@@ -80,13 +80,13 @@ async def get_tenant_db(request: Request):
     """Status of the caller's personal database: whether multi-tenant is on,
     whether they've configured one, and the current connection state."""
     uid = _caller_uid(request)
-    from app.admin.settings import get_multi_tenant_enabled
+    from app.admin.settings import get_user_byod_enabled
     from app.db.tenant_registry import get_tenant_record
     from app.db.tenant import tenant_health
 
     rec = get_tenant_record(uid) or {}
     return {
-        "multi_tenant_enabled": get_multi_tenant_enabled(),
+        "user_byod_enabled": get_user_byod_enabled(),
         "configured": bool(rec),
         # Non-secret connection details only (never the password).
         "connection": {

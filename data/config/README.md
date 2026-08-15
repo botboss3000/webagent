@@ -22,6 +22,7 @@ seeds), resolved via `app/util/paths.py`.
 | File | Source section | Configures |
 |------|---------------|------------|
 | `app-settings.json` | App Settings | Global feature flags (extend LLM to agents, stream buffer, watchdog, feedback, turnstile, run limits, global system prompt) |
+| `chat_ui.json` | (no UI — edit file) | App-wide chat-panel messages plus desktop, mobile, and widget layout/presentation defaults. Per-agent overrides remain in agent metadata. |
 | `debug-config.json` | (no UI — edit file) | **Single override file for every debugging knob.** Every knob defaults to `null` = "leave it to the normal source" (env var, App Settings UI, or built-in default); set a value to **force** it. Owned by `app/admin/debug_config.py`. Groups: `logging`, `run_limits`, `recorders`. |
 | `provider.json` | Agent Settings > Models | Per-user LLM provider configs (provider, base_url, api_key, model, parallel providers, capabilities). The only file that may hold plaintext keys — migrate to the vault for production. |
 | `model_catalog.json` | Agent Settings > Models | Saved model catalog with per-model capabilities, token pricing |
@@ -40,10 +41,14 @@ seeds), resolved via `app/util/paths.py`.
 > moved to the vault + drop-in plugin system; the scheduler uses
 > `scheduler_config.json`.
 
-> **Moved out of `data/`.** `app-prompts.json` (the system/UI prompt catalog,
+> **Moved out of `data/`.** `app-prompts.json` (the system prompt catalog,
 > served via `GET /api/v1/app-prompts[/{section}]`) now lives at
 > `app/defaults/app-prompts.json` so it always ships. Its per-section meaning is
 > unchanged; see `app/api/features.py` and `app/util/paths.py`.
+
+> **Chat UI copy moved to `chat_ui.json`.** Welcome/system bubbles, composer
+> placeholders, and widget presentation defaults now live with the chat layout
+> they describe rather than in the system-prompt catalog.
 
 ## Naming convention
 - Each file maps 1:1 to a section/tab in the Admin Configuration UI

@@ -102,11 +102,11 @@
   "ignoreExports": [
     { "file": "ui/admin-tools/app-config/utils.js", "exports": ["*"] },
     {
-      "file": "ui/chat-side-panel/js/chat-bubble.js",
+      "file": "ui/chat/js/chat-bubble.js",
       "exports": ["*"]
     },
     {
-      "file": "ui/chat-side-panel/js/session-list.js",
+      "file": "ui/chat/js/session-list.js",
       "exports": ["*"]
     },
     {

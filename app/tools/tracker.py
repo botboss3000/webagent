@@ -12,7 +12,7 @@ Two ways tool executions reach that table:
      outside the visualizer event stream and want a metric row.
 
 This module used to point at a non-existent ``tool_executions`` table via the
-Supabase raw client and crashed on import; it now delegates to the log store and
+the raw client and crashed on import; it now delegates to the log store and
 never raises.
 """
 

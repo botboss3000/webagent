@@ -118,7 +118,6 @@ function initFiles() {
   // catalog has loaded, in case this ran before the boot fetch resolved.
   if (window.__applyAdminPanelOrder) window.__applyAdminPanelOrder();
   initSidebarViewSwitcher();
-  initSettingsToggle();
   injectPanelCollapseButtons();
   initSidebarMaximize();
 }
@@ -323,24 +322,51 @@ function _adminCatalogPage(id) {
     return list.find((p) => p.id === id) || null;
   } catch (_) { return null; }
 }
-const _dynAdminMods = {};      // view id → Promise<module> (cached after import)
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  DYN-IMPORT-CACHE — evict on failure, never cache a rejection.         ║
+// ║  A failed dynamic import (network hiccup, mid-save edit, 404) must     ║
+// ║  NOT poison the module cache for the rest of the session — the next    ║
+// ║  activation MUST retry with a fresh import.  This applies to BOTH      ║
+// ║  _dynAdminMods here and _dynMods in tabs.js (same contract).           ║
+// ║  DO NOT simplify back to `try { … } catch { Promise.reject(e) }` —    ║
+// ║  that caches the rejection forever, leaving the page white-boxed       ║
+// ║  (toolbar visible, no data) with no recovery short of a full reload.   ║
+// ║  The `.catch()` in callers only logs — it does not retry the import.   ║
+// ║  (grep `DYN-IMPORT-CACHE` to find both sites).                          ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+const _dynAdminMods = {};      // view id → Promise<module> (evicted on failure)
+const _dynAdminPending = {};   // view id → true while startView promise is in-flight
 let _activeDynAdminView = null;
 function _dynAdminModule(id, entry) {
   if (!_dynAdminMods[id]) {
-    try { _dynAdminMods[id] = import(new URL(entry, document.baseURI).href); }
-    catch (e) { _dynAdminMods[id] = Promise.reject(e); }
+    // DYN-IMPORT-CACHE: evict the rejection so the next activation retries.
+    _dynAdminMods[id] = Promise.resolve()
+      .then(() => import(new URL(entry, document.baseURI).href))
+      .catch((e) => { delete _dynAdminMods[id]; throw e; });
   }
   return _dynAdminMods[id];
 }
 function _startDynAdminView(id) {
+  // Guard: if startView for this id is already in-flight, skip — avoid
+  // double-starting the same view (e.g. initSidebarViewSwitcher then
+  // startAdminTools racing on the same stored view).
+  if (_dynAdminPending[id]) return;
   const p = _adminCatalogPage(id);
   if (p && p.entry && p.start) {
+    _dynAdminPending[id] = true;
     _dynAdminModule(id, p.entry)
       .then((m) => { const fn = m && m[p.start]; if (typeof fn === 'function') fn(); })
-      .catch((e) => console.error('admin view start ' + id + ' failed', e));
+      .catch((e) => {
+        // Include the actual error message so debugConsole's JSON.stringify
+        // doesn't reduce Error objects to the useless "{}".
+        const detail = (e && e.message) ? e.message : String(e);
+        console.error('admin view start ' + id + ' failed: ' + detail, e);
+      })
+      .finally(() => { _dynAdminPending[id] = false; });
   }
 }
 function _stopDynAdminView(id) {
+  _dynAdminPending[id] = false;
   const p = _adminCatalogPage(id);
   if (p && p.entry && p.stop && _dynAdminMods[id]) {
     _dynAdminMods[id]
@@ -431,35 +457,10 @@ function applySidebarView(view) {
 // sidebar to themselves without importing the frame. Mirrors app.setSidebarState.
 window.__applySidebarView = applySidebarView;
 
-// ── Settings view (App Config) DOM relocation ────────────────────
-//
-// The Settings strip icon is a plain `.files-strip-view` with
-// data-view="settings"; dispatch happens through applySidebarView. The
-// only setup-time work needed is moving #app-config-container into
-// #files-settings-main so the App Config UI lives where the view shows.
-// Lifecycle (startAppConfig / stopAppConfig) is driven by
-// applySidebarView too.
-
-function initSettingsToggle() {
-  const container = document.getElementById('app-config-container');
-  const host = document.getElementById('files-settings-main');
-  if (container && host && container.parentElement !== host) {
-    host.appendChild(container);
-    container.removeAttribute('hidden');
-  }
-}
-
 // Relocate detached markup (App Config and the Database viewer) into the
 // Admin Tools layout. The originals are parked at the bottom of #stage
 // in index.html so this module owns their final mount point. Idempotent.
 export function relocateAdminToolsContainers() {
-  // App Config — Settings view host
-  const acHost = document.getElementById('files-settings-main');
-  const acContainer = document.getElementById('app-config-container');
-  if (acHost && acContainer && acContainer.parentElement !== acHost) {
-    acHost.appendChild(acContainer);
-    acContainer.removeAttribute('hidden');
-  }
   // Database viewer — sidebar host receives #db-sidebar; the main host
   // receives #db-toolbar then #db-table-view. The empty #db-panel and
   // #db-viewer wrappers are dropped once their children have been moved.

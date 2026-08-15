@@ -323,7 +323,7 @@ def _page_shell(*, title: str, head_html: str, body_html: str) -> str:
         "<!DOCTYPE html>\n"
         '<html lang="en">\n<head>\n'
         '<meta charset="UTF-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">\n'
         f"<title>{_esc(title)}</title>\n"
         + head_html
         + '<meta name="theme-color" content="#0d0d1a">\n'

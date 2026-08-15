@@ -20,9 +20,9 @@ render — no blank states, no errors, no "I'll fix it next turn."
 
 ---
 
-## The visual quality bar — three hard rules (read FIRST, they're where genui go wrong)
+## The visual quality bar — four hard rules (read FIRST, they're where genui go wrong)
 
-A genui that works but looks generic has failed the brief. Three mistakes account
+A genui that works but looks generic has failed the brief. Four mistakes account
 for almost every "it works but looks bolted-on" genui. These are **rules, not
 suggestions** — copy the recipes below verbatim rather than eyeballing your own.
 
@@ -110,6 +110,20 @@ If you need an icon that isn't in the set, hand-roll one in the same style
 (`viewBox 0 0 24`, `fill:none`, `stroke:currentColor`, `stroke-width:1.6`, round
 caps) — never substitute an emoji.
 
+**Common emoji traps that violate this rule (real mistakes from past builds):**
+- ❌ `🐶` `🐱` as type badges on cards → use a line-SVG dog/cat icon instead
+- ❌ `⭐` for star ratings → use Lucide star SVG (filled or outlined)
+- ❌ `🎉` `✅` in toast notifications → keep toast text-only, no emoji prefix
+- ❌ `➕` `✏️` `🗑️` on action buttons → use line-SVG plus/edit/trash icons
+- ❌ `🏆` `🥇` on leaderboard ranks → use a line-SVG trophy with colored rank badges
+- ❌ `🔄` for refresh/loading → use a line-SVG refresh/rotate icon
+- ❌ `📷` `🎥` for camera/video buttons → use line-SVG camera/video icons
+- ❌ `💡` as helper/hint indicator → use a line-SVG lightbulb or info icon
+
+If you find yourself typing an emoji in the HTML or JS for anything other than
+literal user-authored content (like a chat message the user typed), **stop and
+write a line-SVG icon instead**.
+
 ### 3. Give cards real depth — apply the app's layered shadow tokens
 
 Borders alone read flat. The app's shadows are **layered and theme-aware** — already
@@ -131,18 +145,61 @@ flip correctly in light mode for free because they're global tokens:
 .card.active{ box-shadow:var(--shadow-glow), var(--shadow-rest); }  /* focused/open card */
 ```
 
-> **Restraint & rhythm.** Beyond the three rules: keep a real **type scale** (don't
+### 4. All data content comes from the data bag, never hardcoded in the HTML
+
+Every genui has a **data bag** (`data.json`) that ships alongside the page HTML.
+The server bakes it into the page as `window.__GENUI_DATA` — you read it with
+`api.getData()` in your mount function (**never hardcode your records into the
+markup**). This is what makes data updates fast:
+- **Structure changes** (layout, CSS, new panels) → `edit_genui` / re-render the page
+- **Data changes** (add a pet, update a rating, change a student roster) → `set_genui_data()` — no page rewrite needed
+
+```js
+// ✅ RIGHT — data comes from the bag, HTML renders it
+function mount(root, api) {
+  const data = api.getData();               // { pets: [...], ratings: {} }
+  const pets = data.pets || [];
+  renderPetCards(pets);                      // build DOM from data
+}
+```
+
+```js
+// ❌ WRONG — records hardcoded in markup (every change needs a page rewrite)
+// Don't paste a list of pets, students, or lessons into the HTML.
+```
+
+**For interactive genui that let the user change data** (star ratings, add/remove
+items, live filters), use the **client-side write-back pattern**: manage state
+locally in JS, re-render instantly on user action, then push changes to the server
+via `api.chat('SAVE_DATA:' + JSON.stringify(data))`. The genui's agent context
+handles persisting it with `set_genui_data`. (Full code example in *Client-side
+write-back pattern* below.)
+
+This applies to **any data the user can see or change**: pet rosters, student lists,
+lesson schedules, pricing tables, inventory, user profiles, etc. If it's content
+that could be edited, it belongs in the data bag — not the HTML.
+
+> **Self-check:** read through the page HTML you just wrote. Do you see any arrays
+> of records, any `<div>`s with inline names and values that look like data? If yes,
+> those belong in `set_genui_data` and `api.getData()` instead.
+
+> **Restraint & rhythm.** Beyond the four rules: keep a real **type scale** (don't
 > set everything to 13px — e.g. 12 label / 14 body / 16 title / 22–28 hero, with
 > weight contrast), consistent spacing (an 8px rhythm: 8 / 12 / 16 / 20 / 24), and
 > motion you'd call elegant, not busy. One icon family, one accent, generous
 > breathing room. The goal is "shipped with the product," and the product is calm.
 
-**Before you render, self-check these five:** (a) I defined **no** colour palette of
+**Before you render, self-check these seven:** (a) I defined **no** colour palette of
 my own — every colour/border/shadow/font is `var(--app-token)` that inherits the
 global theme (so a re-skin and the light/dark flip both reach me for free); (b) zero
 emoji used as icons — all chrome is line-SVG; (c) every card carries
 `box-shadow:var(--shadow-rest)`; (d) more than one font size, with clear hierarchy;
-(e) it would look *finished* the instant it loads, in both themes.
+(e) it would look *finished* the instant it loads, in both themes; (f) **my script
+uses `mount(root, api)` / `WebagentGenui.register` — zero `document.getElementById`
+calls targeting my own elements** (that would crash in the shadow root — see *Making
+a genui interactive*); (g) **all data content comes from `api.getData()`, not
+hardcoded into the markup** (see *Data lives in a separate file*); (h) **no
+hardcoded records or inline data arrays in the HTML** (see *Rule 4*).
 
 ---
 
@@ -263,6 +320,7 @@ restructure (or as the fallback when an edit won't match — see that section).
 | `delete_genui(slug)` | Remove a genui (`home` is protected). |
 | `check_credential(ability)` | Is an ability connected for this user (vault), and what fields a login/connect form should collect. Returns `configured` + the field schema — **never** any secret value. Use it to render "Connected ✓" vs a login form. |
 | `request_credential(name, service_url, attach)` | Ask the user for a **new** secret (an API key/token) the dashboard needs. Pops a secure entry card in chat → saves **straight to the vault**; returns only a `key_id` (never the value). The dashboard then calls the service with `api.callWithKey(key_id, …)`. See **Logins & secrets → pattern 3**. |
+| `present_chat_component(type, title, placement, data)` | Add a safe, declarative component to the current chat. Use `placement:"inline"` for one-shot contextual UI, `"sticky"` for a persistent session panel, or `"hover"` for compact secondary UI. Never use it to collect a password, API key, or other secret — use `request_credential` instead. |
 | `list_vault_keys()` | The user's vault keys (`key_id`, `name`, `service`, `filled`) — **no** secret values. Reuse an existing key instead of re-asking; confirm `filled` before relying on one. |
 | `screenshot_genui(slug, theme, click)` | **Look at what you built.** Renders the saved genui headlessly (exactly how the app mounts it) and returns a real screenshot **plus signals** (width-fill %, console errors, blank-render hint) **plus a vision `review`**. `theme` = `"dark"` / `"light"` / `"both"`. **`click`** (optional) = CSS selector(s) clicked inside the genui *before* the shot, so you capture an **opened** state — a profile panel, popover, expanded day, switched tab — and can **verify an interaction actually works**. The shot is posted into the chat (the **user sees it**). Use it to verify every build (see below). |
 | `get_genui_logs(slug, level, limit)` | **Read the page's OWN console output** — the `console.log`/`warn`/`error` and uncaught script errors the genui produced while running, captured per-page (kept beside the genui, **not** the global app log). `level` (optional) filters to `'error'`/`'warn'`/etc; `limit` caps how many recent entries. The log **auto-clears on every re-render**, so it reflects the version now running. **Two sources fill it:** `screenshot_genui`'s headless render writes its console output here (tagged `source:'headless'`) — so it's populated **immediately after a build, no live session needed** — and a **live** user session in the Gen UI tab adds more (incl. errors from the user's own clicks). Use `get_genui_logs` to pull the full log (all levels, with stacks); `screenshot_genui` also reports its errors inline in the same call. |
@@ -522,6 +580,8 @@ assume the viewer is an admin.) Design around these rules — they shape everyth
 
 ## Making a genui interactive — the mount handshake + `api` toolbox
 
+> **🚨 BUILD THIS RIGHT FROM THE START — do NOT write a genui without the handshake and then fix it.** The single most common real failure (and costliest time sink) happens when an agent writes a genui using `document.getElementById` / `document.querySelector`, gets "Cannot set properties of null" on screenshot, and has to rewrite the entire script inside `mount`/`register`. **Always start with `mount(root, api)` or `WebagentGenui.register` — never start with `document.*`.** Write your first line as `function mount(root, api) { const $ = (sel) => root.querySelector(sel);` and build everything from there. The `root` argument is your shadow root — the only way to reach your elements.
+>
 > **This applies to EVERY genui that runs any script — not just "interactive" ones.**
 > The single most common real failure (seen on plain static dashboards too): the agent
 > skips the handshake on a "simple" page and reaches for `document.getElementById` /
@@ -649,6 +709,85 @@ WebagentGenui.register(function (root, api) {
 - **Use stable, descriptive keys** (`students`, `lessons`, `recordings`) and keep
   the same shape across renders, so updating data never requires touching the page.
 
+### Split your page into files — the small-file convention
+
+A genui page can grow big (markup + CSS + JS + content in one document). Keep it
+tidy by splitting the folder the way the production-readiness dashboard does:
+
+| File | Holds | Update with |
+|------|-------|-------------|
+| `index.html` | Markup only — semantic skeleton, empty containers, chrome text | `edit_genui` / re-render |
+| `styles.css` | ALL styling (design-system tokens only) | `write_source` |
+| `app.js` | ALL logic (mount, render, events, write-back) | `write_source` |
+| `data.json` | ALL content — records the page renders | `set_genui_data` |
+| `page.json` | Descriptor (title, agent_context, order) — optional | created for you |
+
+The serve route auto-inlines `styles.css` into `<head>` and `app.js` before
+`</body>`, so the browser still receives **one document** (first-class shadow-root
+rendering has no per-file fetch) while you edit small, focused files. Genui
+without them serve exactly as stored — single-file pages stay valid. Rules:
+
+- **Never split the data out of `data.json`.** CSS/JS can be files; content can't —
+  keep records in the data bag so updates never touch code.
+- **`index.html` stays tiny.** Empty containers + ids; `app.js` fills them from
+  `api.getData()`. If you find yourself writing markup for records, move it to JS
+  render functions (or data.json).
+- **Keep the split even for small pages.** The convention is the point: a tidy
+  folder (`index.html` + `styles.css` + `app.js` + `data.json`) is the standard a
+  future session can rely on, and `write_source` on one file is a smaller change
+  than rewriting a 40K document.
+- **Write the files with `write_source`** (`data/user_data/<user>/genui/<slug>/…`)
+  or ask the agent to; `edit_genui` edits only `index.html`. After any file
+  change, verify with `screenshot_genui` — the screenshot hits the served page
+  with the inlined assets.
+
+### The genui.json marker — declare what this page is for so other abilities can discover it
+
+Every genui folder gets a **`genui.json`** marker alongside `page.json`. It
+declares the page's purpose, topics, and its relationship with agent
+capabilities like session management. This is how a page becomes **discoverable**
+— an agent with the Agent Management ability checks `genui.json` to route the
+user's request to the right visual workspace instead of creating flat sessions.
+
+Create it with `write_source` when you build a new page. Fields:
+
+```json
+{
+  "kind": "project-management",
+  "topics": ["project tracking", "development tasks", "bug tracking"],
+  "description": "Tracks development tasks with linked chat sessions per task.",
+  "incorporates_agent_management": false,
+  "session_workflow": "none",
+  "session_naming_pattern": ""
+}
+```
+
+| Field | Values | When to set |
+|---|---|---|
+| `kind` | Snake-case classification: `project-management`, `credential-manager`, `dns-manager`, `dashboard`, `data-viewer`, `tool`, `notes`, `other` | Always. Pick the one that best describes the page's primary job. |
+| `topics` | Array of lowercase keywords the user might say: `"chat panel"`, `"session dropdown"`, `"model selector"`, `"notifications"` | Always. List the concrete topics, areas, and nouns this page covers. |
+| `description` | One sentence explaining the page's purpose — what someone who's never seen it would understand | Always. |
+| `incorporates_agent_management` | `true` if this page **owns** session lifecycles (the page tracks tasks with linked sessions and expects the agent to create/kick/recycle sessions through it); `false` if the page manages its own data independently of sessions | Set `true` when the page's data has per-item `session_id` fields and the page's `agent_context` includes session-management instructions. |
+| `session_workflow` | `"tasks_as_sessions"` (each tracked item → its own session), `"single_session"` (one shared session for this page), `"none"` | Set when `incorporates_agent_management` is true. |
+| `session_naming_pattern` | Template for naming sessions created for this page, e.g. `"{status_prefix} | {area} — {task_summary}"` | Set when `incorporates_agent_management` is true. `{status_prefix}` is filled from the Agent Management status convention (`🔴 NEEDS YOU`, etc.); `{area}` and `{task_summary}` come from the page's tracked item. |
+
+**Rules:**
+
+- **Create genui.json when you build a new page.** `render_visual` auto-creates
+  the genui folder and `page.json` for new slugs, but does **not** create
+  `genui.json` — you must write it yourself with `write_source` right after the
+  first render. An existing page is less useful if other abilities can't find it.
+- **Keep topics honest.** Don't stuff every keyword you can think of — list only
+  what a user would actually say about this page's content. Irrelevant matches
+  hurt routing.
+- **`incorporates_agent_management: true` is a contract.** It means this page's
+  `agent_context` teaches its agent to handle session lifecycle. If you set it
+  without those instructions, the routing agent will hand off work the page's
+  agent can't complete. When in doubt, leave it `false`.
+- **Update genui.json when the page's purpose changes.** A page that starts as
+  `kind: "notes"` and grows into a task tracker should get its marker updated
+  to `kind: "project-management"` with appropriate topics and session fields.
+
 ### Updating data (agent tools)
 
 To change a genui's content, use the **data tools — not** `render_visual` /
@@ -663,6 +802,52 @@ To change a genui's content, use the **data tools — not** `render_visual` /
 A data-only change (add a student, move a lesson) is a `set_genui_data` call; the
 page markup is never rewritten, and the change shows on the next load/refresh.
 Reserve `render_visual`/`edit_genui` for changing the layout or behaviour itself.
+
+### Client-side write-back pattern (interactive genui)
+
+When a genui lets the user modify data interactively (rating stars, adding items,
+filtering), the page should manage the state locally and push changes back to the
+server asynchronously via the genui's agent. This avoids rewriting the whole page
+for every click:
+
+```js
+function mount(root, api) {
+  // 1. Load initial data from the data bag
+  const data = api.getData();               // { items: [...], ratings: {} }
+  let items = data.items || [];
+  let ratings = data.ratings || {};
+
+  // 2. Render from local state
+  function render() { /* build DOM from items and ratings */ }
+
+  // 3. On user action: update local state, re-render, then persist
+  function addItem(name) {
+    items.push({ id: Date.now(), name });
+    render();
+    // Tell the agent to persist — agent's context must handle SAVE_DATA:
+    api.chat('SAVE_DATA:' + JSON.stringify({ items, ratings }));
+  }
+
+  // Debounce rapid changes (e.g. star clicks)
+  let saveTimer;
+  function save() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => api.chat('SAVE_DATA:' + JSON.stringify({ items, ratings })), 500);
+  }
+
+  render();
+}
+```
+
+The genui's agent context should include instructions like:
+
+> *When you receive a message starting with "SAVE_DATA:", parse the JSON after
+> the prefix and call `set_genui_data('SLUG', parsed)` to persist it. Reply
+> briefly "ok". Do not modify the genui HTML for these messages — the page is
+> fully interactive and manages its own rendering.*
+
+This keeps the page snappy (no round-trip for every rating click) while data
+persists to the server automatically.
 
 ### Logins & secrets — link the genui to the vault
 
@@ -1127,7 +1312,7 @@ cursor-follow spotlight. (Recipe in `home.html` `.card`.)
 If a genui needs **any** chat or conversational element, replicate the app's chat
 designs — do **not** invent a new chat style. Two references:
 
-- **`ui/chat-side-panel/`** — the full primary chat: a header, a scrolling message
+- **`ui/chat/`** — the full primary chat: a header, a scrolling message
   list that fills the panel, and a **floating input pill overlaid on its bottom
   edge** (content scrolls *behind* the translucent pill, never stops short above it).
 - **`ui/chat-widget/`** — a compact floating task chat (mini bubbles, smaller pill).
@@ -1516,6 +1701,271 @@ never need it.
 | Want… | Open |
 |-------|------|
 | The first-class contract end to end (:host tokens, register(root, api), glass cards, transparent bg, root-scoped JS) | `app/genui_store/home.html` |
-| Chat bubbles + the floating input pill layout | `ui/chat-side-panel/chat-side-panel.html`, `ui/chat-side-panel/` |
+| Chat bubbles + the floating input pill layout | `ui/chat/chat-side-panel.html`, `ui/chat/` |
 | Compact floating chat (mini bubbles/pill) | `ui/chat-widget/` |
 | Canonical token values (to keep in sync) | `ui/shared/css/design-system.css` |
+
+## GenUI Chat API — floating chat button + toolbar pill
+
+Every genui page ships with two chat entry points. Both are **data-bag configurable**
+so you can change the target agent, title, icon, and injected prompt by editing the
+page's `chatConfig` JSON — no JS touch needed. They operate **independently**:
+different agents, different prompts, different titles.
+
+### `chatConfig` data-bag shape (all keys optional, lives in the genui's data bag)
+
+```json
+"chatConfig": {
+  "button": {
+    "agentId": "default",
+    "title": "Help Chat",
+    "iconName": "bot",
+    "prompt": "You are a helpful assistant for this page. Answer concisely.",
+    "enabled": true
+  },
+  "toolbar": {
+    "agentId": "default",
+    "title": "Page assistant",
+    "iconName": "sparkle",
+    "prompt": "You are the page's assistant. Explain the data and help the user navigate.",
+    "enabled": true
+  }
+}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `agentId` | `"default"` = use the page's owning agent (the one that created the genui). Any UUID = use that specific agent. |
+| `title` | Widget header title shown to the user. |
+| `iconName` | Lucide icon name for the widget header. |
+| `prompt` | Injected BEFORE the first user message only (via `transformMessage`). Fires once per widget session. Gives the agent context about the page. Use a system-style instruction (2–4 sentences), not a greeting. |
+| `enabled` | `false` = entry point is disabled. Button returns `null`; toolbar pill doesn't open a widget. |
+
+### 1. Floating chat button — `api.createChatButton(opts)`
+
+Available to every genui page via the `api` object. Returns a DOM element (a round
+48px floating button, bottom-right, themed) or `null` if disabled. Append it anywhere
+in the genui:
+
+```js
+const btn = api.createChatButton({ title: 'Help', iconName: 'bot' });
+if (btn) root.appendChild(btn);
+```
+
+**Resolution order:** caller `opts` → `chatConfig.button` in data bag → page defaults
+(current page title, `agent_id` from the genui manifest, `'sparkle'` icon).
+
+**Returns `null`** when `chatConfig.button.enabled === false`.
+
+**Auto-hides** while the widget is open and reappears on close. Its CSS lives in
+`_GENUI_BASE_STYLE` (class `.genui-chat-btn`) — inherits theme tokens automatically,
+no palette needed. The button uses `createChatWidget` for live streaming, Continue/Stop,
+and the mini reply pill.
+
+### 2. Toolbar chat pill — reads `chatConfig.toolbar`
+
+The pill at the bottom of the Gen UI tab (every genui page gets this for free).
+Reads `chatConfig.toolbar` from the data bag. Resolution: `cfg.agentId`/`cfg.title`/
+`cfg.iconName`/`cfg.prompt` → falls back to page owner + title + `'sparkle'`.
+
+**Unlike the button**, every message sent through the toolbar pill is wrapped with the
+genui handoff tag (`buildTaggedPrompt`) so the agent always knows which page the user
+is viewing. The button sends plain messages (no tagging) — better for a focused,
+page-scoped conversation.
+
+### 3. Prompt injection
+
+Both entry points use `transformMessage` to prepend `prompt` before the first user
+message only. The separation line is `\n\n---\n\n`. Format:
+
+```
+{chatConfig.button.prompt}
+
+---
+
+{user's first message}
+```
+
+### 4. Common patterns
+
+**Same agent, different personality:**
+```json
+"chatConfig": {
+  "button": { "agentId": "default", "prompt": "You are a reviewer. Audit the data critically." },
+  "toolbar": { "agentId": "default", "prompt": "You are a friendly guide. Explain things clearly." }
+}
+```
+
+**Different agents per entry point:**
+```json
+"chatConfig": {
+  "button": { "agentId": "abc-123", "prompt": "You are the billing assistant." },
+  "toolbar": { "agentId": "def-456", "prompt": "You are the technical support agent." }
+}
+```
+
+**Disable the button, keep toolbar:**
+```json
+"chatConfig": {
+  "button": { "enabled": false },
+  "toolbar": { "enabled": true, "prompt": "..." }
+}
+```
+
+### 5. Wiring a header icon to the button
+
+A genui can use `api.createChatButton()` behind a custom icon in its own markup
+rather than showing the default round button. Create the button, hide its DOM,
+append it for lifecycle management, and programmatically click it from your icon:
+
+```js
+if (myIcon && api.createChatButton) {
+  const chatBtn = api.createChatButton();
+  if (!chatBtn) {
+    myIcon.style.display = 'none';   // disabled
+  } else {
+    chatBtn.style.display = 'none';   // hide the API's round button
+    (root.host || root).appendChild(chatBtn);
+    let open = false;
+    myIcon.addEventListener('click', (e) => {
+      e.stopPropagation(); e.preventDefault();
+      chatBtn.click();
+      open = !open;
+      myIcon.classList.toggle('off', open);
+    });
+    // Sync state when the user closes the widget via its own X button
+    const mo = new MutationObserver(() => {
+      const anyOpen = !!document.querySelector('.chat-widget:not([hidden])');
+      if (!anyOpen) { open = false; myIcon.classList.remove('off'); }
+      else if (!open) { open = true; myIcon.classList.add('off'); }
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+  }
+}
+```
+
+### 6. Updating chat config — edit the data bag, never the JS
+
+When building a genui page, set `chatConfig` directly in the data bag alongside the
+page's other content:
+
+```python
+# Seed the data bag when creating the page
+data = {
+  "chatConfig": {
+    "button": { "agentId": "default", "prompt": "You are the dashboard assistant.", "enabled": True },
+    "toolbar": { "agentId": "default", "prompt": "You are the dashboard triage agent.", "enabled": True }
+  },
+  # ...page content
+}
+set_genui_data(slug, data)
+```
+
+To change later: read → edit → merge:
+
+```python
+data = get_genui_data(slug)
+data['chatConfig']['button']['agentId'] = 'new-uuid'
+data['chatConfig']['toolbar']['prompt'] = 'New personality...'
+set_genui_data(slug, data, merge=True)
+```
+
+Never patch `genui.js` or `genui-toolbar.js`. Everything routes through the data bag.
+
+### File map
+
+| File | What |
+|------|------|
+| `ui/main-panel/genui/js/genui.js` | `createChatButton()` implementation, `_GENUI_BASE_STYLE` CSS, `readGenuiData` bridge to the toolbar |
+| `ui/main-panel/genui/js/genui-toolbar.js` | `_openChat()` — toolbar pill, reads `chatConfig.toolbar` from the data bag |
+| `ui/chat-widget/js/chat-widget.js` | `createChatWidget()` factory — `transformMessage`, `ensureAgent`, `onClose` |
+
+### 7. Header chat pill — compact one-shot task input
+
+Genui pages can include a compact inline chat pill directly in their header
+(or anywhere in the markup). It is a small rounded input + send button styled
+like the toolbar pill. Unlike the floating chat button or toolbar pill, this is
+a **headless one-shot**: the user types a task, hits Enter or the send button,
+and the message routes to the agent via `api.chat()`. The agent processes the
+task and re-renders the genui — the pill does not open a chat widget.
+
+**Markup** (copy this into the genui's body, styling from `_GENUI_BASE_STYLE`
+or the page's own CSS):
+
+```html
+<div class="h-pill" id="hPill">
+  <input type="text" id="hPillInput" placeholder="Quick task…" autocomplete="off">
+  <button class="h-pill-send" id="hPillSend" title="Send task" disabled>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+  </button>
+</div>
+```
+
+**CSS** (theme-aware, no palette — add to the genui's `<style>`):
+
+```css
+.h-pill { display: flex; align-items: center; gap: 0; background: var(--bg-elev,#191927);
+  border: var(--border-width,1px) solid var(--border,rgba(255,255,255,.1));
+  border-radius: 999px; padding: 0 0 0 14px; transition: border-color .2s; height: 38px; }
+.h-pill:focus-within { border-color: var(--accent,#6c8cff); }
+.h-pill input { border:0; background:transparent; color: var(--fg-1,#e6e6e6);
+  font-size: 12.5px; font-family: inherit; outline: none; width: 180px; padding: 0; }
+.h-pill input::placeholder { color: var(--fg-3,#8a8a8a); }
+.h-pill .h-pill-send { width: 32px; height: 32px; border-radius: 50%; border: 0;
+  background: transparent; color: var(--accent,#6c8cff); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; margin: 0 4px;
+  transition: background .15s; flex-shrink: 0; }
+.h-pill .h-pill-send:hover { background: var(--accent-soft,rgba(108,140,255,.14)); }
+.h-pill .h-pill-send:disabled { color: var(--fg-4,#707070); cursor: default; }
+.h-pill .h-pill-send:disabled:hover { background: transparent; }
+.h-pill .h-pill-send svg { width: 16px; height: 16px; }
+.h-pill-sending { opacity: .6; pointer-events: none; }
+```
+
+**Wiring** (inside `WebagentGenui.register`):
+
+```js
+const hPill = root.getElementById('hPill');
+const hPillInput = root.getElementById('hPillInput');
+const hPillSend = root.getElementById('hPillSend');
+if (hPill && hPillInput && hPillSend) {
+  const updateSend = () => { hPillSend.disabled = !hPillInput.value.trim(); };
+  hPillInput.addEventListener('input', updateSend);
+  hPillInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!hPillSend.disabled) hPillSend.click();
+    }
+  });
+  let _sending = false;
+  hPillSend.addEventListener('click', () => {
+    const msg = hPillInput.value.trim();
+    if (!msg || _sending) return;
+    _sending = true;
+    hPill.classList.add('h-pill-sending');
+    hPillInput.disabled = true;
+    hPillSend.disabled = true;
+    hPillInput.value = '';
+    hPillInput.placeholder = 'Working…';
+    // The genui re-renders on completion so state resets automatically
+    api.chat(msg);
+  });
+}
+```
+
+**Configuration** (`chatConfig.pill` in the data bag):
+
+```json
+"chatConfig": {
+  "pill": {
+    "agentId": "default",
+    "prompt": "You are the task agent. Execute one-shot tasks immediately. Be direct.",
+    "enabled": true
+  }
+}
+```
+
+The pill routes through `api.chat()` which goes through the genui action bridge
+→ the agent. There is no separate widget — the session is tracked normally in
+the DB. The `pill.prompt` can be injected by wrapping the message (similar to the
+button/toolbar prompt injection) if the genui JS implements `transformMessage`.

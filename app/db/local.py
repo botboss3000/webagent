@@ -1,16 +1,16 @@
 """
 Local SQLite storage backend for WebAgent.
 
-Completely independent from Supabase. Uses a local SQLite database file.
-Auto-creates tables on first use matching the Supabase schema.
+Completely self-contained. Uses a local SQLite database file.
+Auto-creates tables on first use matching the canonical schema.
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
 import re
-import shutil
 import sqlite3
 import struct
 import threading
@@ -45,41 +45,25 @@ logger = logging.getLogger(__name__)
 # logic only. The DB *code* stays in app/db/; the DB *files* live in data/db/.
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_DIR = os.path.join(_PROJECT_ROOT, "data", "db")
-DEFAULT_DB_PATH = os.path.join(DB_DIR, "local.db")
+DEFAULT_DB_PATH = os.path.join(DB_DIR, "app.db")
 
-# Legacy location (app/db/) — runtime DBs used to live next to the DB code. On
-# first run of the new layout we relocate any existing files to data/db/ so an
-# upgraded install (dev or the production VM) keeps its data instead of silently
-# starting fresh.
-_LEGACY_DB_DIR = os.path.dirname(os.path.abspath(__file__))
-_RUNTIME_DB_FILES = [
-    "local.db", "local.db-wal", "local.db-shm", "local.db-journal", "local.db.preprompt-bak",
-    "vault.db", "vault.db-wal", "vault.db-shm", "vault.db-journal",
-    "logs.db", "logs.db-wal", "logs.db-shm", "logs.db-journal",
-    "recordings.db", "recordings.db-wal", "recordings.db-shm", "recordings.db-journal",
-    "instance_id.txt",
-]
+# Contextvar that carries the current user_id through the call stack so
+# _get_conn() knows which per-user database to attach.  Set by the ASGI
+# middleware or by background-task scaffolding; defaults to "admin" so
+# boot-time / background code gets the bootstrap user's database.
+_current_db_user_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_current_db_user_id", default="admin"
+)
 
 
-def _relocate_legacy_db_files() -> None:
-    """One-time move of runtime DB files from the legacy app/db/ dir to data/db/.
-    Idempotent and safe: only moves a file when the destination doesn't already
-    exist; never raises. Tied to the default location only (custom/test paths
-    never trigger it)."""
-    try:
-        if os.path.abspath(_LEGACY_DB_DIR) == os.path.abspath(DB_DIR):
-            return
-        os.makedirs(DB_DIR, exist_ok=True)
-        for name in _RUNTIME_DB_FILES:
-            old = os.path.join(_LEGACY_DB_DIR, name)
-            new = os.path.join(DB_DIR, name)
-            if os.path.exists(old) and not os.path.exists(new):
-                try:
-                    shutil.move(old, new)
-                except Exception as e:
-                    logger.debug("relocate %s failed: %s", name, e)
-    except Exception:
-        pass
+def set_db_user_context(user_id: str) -> None:
+    """Set the user_id for the current async context (request / background task)."""
+    _current_db_user_id.set(user_id)
+
+
+def get_db_user_context() -> str:
+    """Return the current user_id, defaulting to 'admin'."""
+    return _current_db_user_id.get()
 
 
 def _now_iso() -> str:
@@ -103,7 +87,8 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
-async def _emit_agent_run_status(user_id, agent_id, session_id, status: str) -> None:
+async def _emit_agent_run_status(user_id, agent_id, session_id, status: str,
+                               turn_id: Optional[str] = None) -> None:
     """Broadcast an agent's run start/stop to the user's live WebSockets so the
     Agents grid status dot updates without a refresh. Fire-and-forget: lazily
     imports the API broadcaster (avoids a db→api import cycle) and never raises —
@@ -112,10 +97,13 @@ async def _emit_agent_run_status(user_id, agent_id, session_id, status: str) -> 
         return
     try:
         from app.api.chat import notify_user
-        await notify_user(user_id, {
+        payload: Dict[str, Any] = {
             "type": "agent_status", "status": status,
             "agent_id": agent_id, "session_id": session_id,
-        })
+        }
+        if turn_id:
+            payload["turn_id"] = turn_id
+        await notify_user(user_id, payload)
     except Exception:
         pass
 
@@ -177,10 +165,18 @@ def cascade_delete_clones(conn, root_session_ids) -> int:
                 # delete on the agent actually being a clone — checked up front so
                 # it's robust across drivers whose DELETE rowcount is unreliable.
                 was_clone = False
+                clone_parent = None
                 try:
                     srow = conn.execute(
-                        "SELECT status FROM agents WHERE id = ?", (spawn_aid,)).fetchone()
+                        "SELECT status, metadata FROM agents WHERE id = ?", (spawn_aid,)).fetchone()
                     was_clone = bool(srow) and (srow[0] == "clone")
+                    if srow and was_clone:
+                        try:
+                            _m = json.loads(srow[1] or "{}")
+                            if isinstance(_m, dict):
+                                clone_parent = _m.get("clone_of")
+                        except Exception:  # noqa: BLE001
+                            pass
                 except Exception:  # noqa: BLE001
                     was_clone = False
                 if was_clone:
@@ -192,9 +188,17 @@ def cascade_delete_clones(conn, root_session_ids) -> int:
                     except Exception:  # noqa: BLE001
                         pass
                     conn.execute("DELETE FROM agent_prompts WHERE agent_id = ?", (spawn_aid,))
-                    for tbl in ("agent_connections", "agent_abilities"):
+                    for tbl in ("agent_connections", "agent_abilities", "agent_soft_abilities"):
                         try:
                             conn.execute(f"DELETE FROM {tbl} WHERE agent_id = ?", (spawn_aid,))
+                        except Exception:  # noqa: BLE001
+                            pass
+                    # Reap the clone's nested subagent home (data/agent_data/<parent>/subagents/<id>/)
+                    # so ephemeral clones leave no orphaned directories behind.
+                    if clone_parent:
+                        try:
+                            from app.agent_workspace import purge_subagent_home
+                            purge_subagent_home(clone_parent, spawn_aid)
                         except Exception:  # noqa: BLE001
                             pass
         try:
@@ -211,11 +215,11 @@ def resolve_child_sessions(conn, base_session_ids) -> list:
     Mirrors the family grouping the Sessions page + chat session list draw:
 
       • spawned helper sessions — ``agent_spawns.orchestrator_session_id`` == base,
-        walked recursively (a spawn may itself orchestrate sub-spawns);
-      • optimizer **Planner** sessions — id LIKE ``optimizer-%`` whose
-        ``metadata.target_session`` is one of the base ids;
-      • optimizer **Closer** sessions — id LIKE ``closer-%`` whose
-        ``metadata.source_optimizer_session`` is one of those Planners.
+        walked recursively (a spawn may itself orchestrate sub-spawns).
+
+    Optimizer Planner/Closer sessions are TOP-LEVEL sessions of their own (not
+    children of the base session they ran on), so they are deliberately NOT
+    included here.
 
     Best-effort + decoupled: any absent table/column is skipped. Returns a
     de-duplicated list that EXCLUDES the base ids themselves. Does not mutate or
@@ -246,34 +250,8 @@ def resolve_child_sessions(conn, base_session_ids) -> list:
                 children.add(csid)
                 queue.append(csid)
 
-    # 2) Optimizer Planners (metadata.target_session → base) and 3) their Closers.
-    planners: set = set()
-    try:
-        for r in conn.execute(
-            "SELECT id, metadata FROM sessions WHERE id LIKE 'optimizer-%'"
-        ).fetchall():
-            try:
-                meta = json.loads(r[1] or "{}")
-            except (ValueError, TypeError):
-                meta = {}
-            if isinstance(meta, dict) and meta.get("target_session") in bases:
-                planners.add(r[0])
-                children.add(r[0])
-    except Exception:  # noqa: BLE001
-        pass
-    if planners:
-        try:
-            for r in conn.execute(
-                "SELECT id, metadata FROM sessions WHERE id LIKE 'closer-%'"
-            ).fetchall():
-                try:
-                    meta = json.loads(r[1] or "{}")
-                except (ValueError, TypeError):
-                    meta = {}
-                if isinstance(meta, dict) and meta.get("source_optimizer_session") in planners:
-                    children.add(r[0])
-        except Exception:  # noqa: BLE001
-            pass
+    # 2) No optimizer membership — Planner/Closer sessions are top-level rows
+    #    of their own, so nothing further is appended here.
 
     for b in bases:
         children.discard(b)
@@ -377,6 +355,22 @@ CREATE TABLE IF NOT EXISTS interactions (
 
 CREATE INDEX IF NOT EXISTS idx_interactions_session ON interactions(session_id);
 CREATE INDEX IF NOT EXISTS idx_interactions_created ON interactions(created_at);
+CREATE INDEX IF NOT EXISTS idx_interactions_session_created ON interactions(session_id, created_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_interactions_session_seq_unique ON interactions(session_id, session_seq);
+
+-- O(1) transcript validation after the first read following a mutation.
+-- Triggers only mark/revision the manifest; the canonical hash is rebuilt once
+-- on demand by app.db.session_manifest and then reused across processes.
+CREATE TABLE IF NOT EXISTS session_manifests (
+    session_id TEXT PRIMARY KEY,
+    authority_revision INTEGER NOT NULL DEFAULT 0,
+    content_hash TEXT NOT NULL DEFAULT '',
+    interaction_count INTEGER NOT NULL DEFAULT 0,
+    max_session_seq INTEGER NOT NULL DEFAULT 0,
+    dirty INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- Per-session run state — the durable record of an in-flight (or recently
 -- finished) agent turn. One row per session (upserted). Lets a cold device
@@ -479,6 +473,32 @@ CREATE TABLE IF NOT EXISTS device_jobs (
 CREATE INDEX IF NOT EXISTS idx_device_jobs_claim ON device_jobs(status, target_instance);
 CREATE INDEX IF NOT EXISTS idx_device_jobs_created ON device_jobs(created_at);
 CREATE INDEX IF NOT EXISTS idx_device_presence_seen ON device_presence(last_seen);
+
+-- ── Instance metadata (shared identity store) ────────────────────────────────
+-- Persistent facts about any instance — cloud VMs, fleet devices, local checkouts,
+-- Cloud Run services, manual servers. One row per instance, keyed by ``ref`` (the
+-- same format the Instances UI already uses everywhere: "provider|zone|name" for
+-- cloud VMs, the device UUID for fleet devices, "local:host:port" for checkouts).
+-- ``metadata`` is a JSON bag for everything optional or kind-specific (domains,
+-- repo, custom_icon, tunnel, …) — adding a new field never needs a migration.
+-- SEPARATE from ``device_presence`` (heartbeat/liveness) and ``device_jobs``
+-- (dispatch queue) — those have fundamentally different access patterns.
+CREATE TABLE IF NOT EXISTS instances (
+    ref TEXT PRIMARY KEY,                        -- "google_vm|us-central1-a|webagent-abc" or device UUID
+    kind TEXT NOT NULL,                          -- "cloud_vm" | "local_device" | "cloud_run" | "manual_server"
+    display_name TEXT,                           -- admin-chosen or auto-discovered
+    provider TEXT,                               -- "google_vm" | "ssh_vm" | "google_cloud_run" | ""
+    status TEXT,                                 -- "RUNNING" | "TERMINATED" | "" (liveness is device_presence)
+    ip TEXT,
+    endpoint TEXT,                               -- reachable URL
+    platform TEXT,                               -- "linux" | "macos" | "windows" | "cloud" | ""
+    zone TEXT,                                   -- GCE zone (null for non-cloud)
+    machine_type TEXT,                           -- "e2-small" etc.
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    metadata TEXT NOT NULL DEFAULT '{}'           -- JSON bag: {domains, repo, custom_icon, tunnel, ...}
+);
+CREATE INDEX IF NOT EXISTS idx_instances_kind ON instances(kind);
 
 -- Diagnostic flight-recorder (see app/agent/diagnostics.py). A rolling,
 -- auto-pruned log of server warnings/errors, agent-loop pipeline problems and
@@ -734,6 +754,52 @@ CREATE TABLE IF NOT EXISTS agent_abilities (
 
 CREATE INDEX IF NOT EXISTS idx_agent_ability_agent ON agent_abilities(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_ability_id    ON agent_abilities(ability_id);
+
+-- ============================================================
+-- Soft Abilities: per-agent declarative skills/workflows
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS agent_soft_abilities (
+    id                TEXT PRIMARY KEY,
+    agent_id          TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    slug              TEXT NOT NULL,
+    display_name      TEXT NOT NULL,
+    description       TEXT NOT NULL DEFAULT '',
+    icon              TEXT NOT NULL DEFAULT 'sparkles',
+    enabled           INTEGER NOT NULL DEFAULT 1,
+    skill_summary     TEXT NOT NULL DEFAULT '',
+    skill_body        TEXT NOT NULL DEFAULT '',
+    workflow          TEXT NOT NULL DEFAULT '{}',
+    allowed_tools     TEXT NOT NULL DEFAULT '[]',
+    credential_schema TEXT NOT NULL DEFAULT '[]',
+    policy            TEXT NOT NULL DEFAULT '{}',
+    status            TEXT NOT NULL DEFAULT 'draft'
+                      CHECK(status IN ('draft','ready','disabled','error')),
+    version           INTEGER NOT NULL DEFAULT 1,
+    created_by        TEXT NOT NULL,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(agent_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_soft_abilities_agent
+    ON agent_soft_abilities(agent_id);
+
+CREATE TABLE IF NOT EXISTS soft_ability_runs (
+    id              TEXT PRIMARY KEY,
+    ability_id      TEXT NOT NULL REFERENCES agent_soft_abilities(id) ON DELETE CASCADE,
+    agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL,
+    session_id      TEXT NOT NULL DEFAULT '',
+    ability_version INTEGER NOT NULL,
+    status          TEXT NOT NULL,
+    tools           TEXT NOT NULL DEFAULT '[]',
+    elapsed_ms      INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_soft_ability_runs_ability
+    ON soft_ability_runs(ability_id, created_at);
 
 -- ============================================================
 -- Agent Automations: scheduled background prompts per-agent.
@@ -1093,10 +1159,14 @@ CREATE INDEX IF NOT EXISTS idx_feedback_user ON skill_feedback(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_type ON skill_feedback(feedback_type);
 
 CREATE TABLE IF NOT EXISTS session_interrupts (
-    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    session_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
     interrupt_requested INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id, user_id)
+        REFERENCES sessions(id, user_id) ON DELETE CASCADE
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_id_user ON sessions(id, user_id);
 
 -- ============================================================
 -- Attachment storage
@@ -1342,14 +1412,22 @@ CREATE INDEX IF NOT EXISTS idx_tenant_key_meta_active
 -- ============================================================
 
 -- Per-agent pricing config, keyed by scope 'agent:<id>'.
+-- strategy may hold a comma-separated combination (e.g. 'trial,credits'); the
+-- API validates it via parse_strategy_selection (no DB-level CHECK so combined
+-- values are storable).
 CREATE TABLE IF NOT EXISTS billing_configs (
     scope                      TEXT    PRIMARY KEY,
-    strategy                   TEXT    NOT NULL DEFAULT 'free'
-        CHECK (strategy IN ('free','credits','per_message','per_token','subscription','trial')),
+    strategy                   TEXT    NOT NULL DEFAULT 'free',
     allowed_strategies         TEXT    NOT NULL DEFAULT '[]',
     allowed_processors         TEXT    NOT NULL DEFAULT '[]',
     rate_card_default_llm      TEXT    NOT NULL DEFAULT '{}',
     rate_card_byo_llm          TEXT    NOT NULL DEFAULT '{}',
+    -- Cost-based pricing overrides. NULL = inherit the platform default
+    -- (platform_billing_config is the source of truth; the agent row only
+    -- overrides when a value is explicitly set).
+    cost_multiplier            REAL,
+    min_charge_cents           INTEGER,
+    flat_image_cost_usd        REAL,
     trial_config               TEXT    NOT NULL DEFAULT '{}',
     subscription_price_cents   INTEGER NOT NULL DEFAULT 0,
     currency                   TEXT    NOT NULL DEFAULT 'usd',
@@ -1384,6 +1462,12 @@ CREATE TABLE IF NOT EXISTS usage_events (
     -- providers report it). cost_source records which estimate we used.
     cost_usd                    REAL NOT NULL DEFAULT 0,
     cost_source                 TEXT,
+    -- Provider-native usage detail. These make cached-input pricing auditable
+    -- and let the UI show the exact prompt size of the latest completed call.
+    cached_input_tokens         INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens          INTEGER NOT NULL DEFAULT 0,
+    uncached_input_tokens       INTEGER,
+    reasoning_tokens            INTEGER NOT NULL DEFAULT 0,
     -- Direct session attribution (chat rows), so totals don't depend on a join
     -- through interaction_id. NULL for background rows that belong to no chat.
     session_id                  TEXT,
@@ -1453,13 +1537,18 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_agent ON subscriptions(agent_id);
 
--- One trial allotment per (user, agent). Counters decrement on use.
+-- One trial allotment per (user, agent). The trial is a credit grant:
+-- credit_cents = original allotment, remaining_cents burns down with the same
+-- cost × multiplier charges as purchased credits. Legacy columns kept for rows
+-- created before the credit-grant cutover (the engine ignores them).
 CREATE TABLE IF NOT EXISTS trials (
     id                  TEXT PRIMARY KEY,
     user_id             TEXT NOT NULL,
     agent_id            TEXT NOT NULL,
     started_at          TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at          TEXT,
+    credit_cents        INTEGER,
+    remaining_cents     INTEGER,
     messages_remaining  INTEGER,
     tokens_remaining    INTEGER,
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1523,6 +1612,15 @@ CREATE TABLE IF NOT EXISTS genui (
     -- an agent renders into it; the footer falls back to the default WebAgent.
     agent_id      TEXT,
     html          TEXT,
+    -- session_config: JSON object describing how this genui's actions/chat
+    -- target agent sessions. REQUIRED at create time. Shape:
+    --   { "target_name": "Code Index — initial scan",   // mandatory session title
+    --     "mode": "new_reuse" | "new_each" | "existing", // mandatory
+    --     "session_id": "uuid" }                        // required iff mode==existing
+    -- new_reuse (default): first dispatch creates a session titled target_name and
+    --   reuses it for follow-ups; new_each: every action starts a fresh session;
+    --   existing: the page always dispatches into the given session id.
+    session_config TEXT NOT NULL DEFAULT '{}',
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(user_id, slug)
@@ -1558,11 +1656,54 @@ def _slot_apply(base: str, override: Optional[str], lock: bool, merge_mode: str)
     return override
 
 
-# Dedicated "vault" DB schema — credentials kept OUT of the user-data DB so a
-# user-data reset never wipes them. Created in the ATTACHed `vault` schema (see
-# LocalBackend._get_conn + _init_db). The table mirrors the legacy main-DB
-# definition; unqualified `auth_elements` resolves here once the main copy is
-# dropped. Postgres keeps auth_elements as a normal table (tables.py).
+# ── Three-vault secrets architecture ───────────────────────────────────────────
+# Secrets are split by ownership into three dedicated database files, each
+# attached under its own schema so unqualified ``auth_elements`` fall-through
+# never happens — every query targets the correct vault explicitly.
+#
+#   vault_app   → app_secrets.db   (App infra: deploy keys, LLM fallback, OAuth
+#                                   app creds, DNS keys, encryption master keys)
+#   vault_agent → agent_secrets.db (Per-agent: OAuth tokens, ability creds, BYO
+#                                   client secrets, per-user LLM overrides)
+#   vault_user  → user_secrets.db  (Per-user: genui vault keys, browser cookies,
+#                                   user-scoped ability creds)
+#
+# All three use the SAME table schema — a mirror of the legacy ``auth_elements``.
+# Postgres keeps them as three normal tables in the main database (tables.py).
+#
+# The dispatch function ``_vault_for(user_id, service, label)`` decides which
+# vault a call targets; the auth_element_* methods route transparently. Legacy
+# ``vault.db`` rows are migrated to the correct vaults on startup.
+
+# Current schema version of the auth_elements table. Bump this when the DDL
+# changes (add/remove/rename columns) so P2P sync can detect incompatibility.
+AUTH_ELEMENTS_SCHEMA_VERSION = 1
+
+_AUTH_ELEMENTS_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.auth_elements (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    service         TEXT NOT NULL,
+    label           TEXT NOT NULL DEFAULT 'default',
+    config          TEXT NOT NULL DEFAULT '{{}}',
+    secret_ref      TEXT NOT NULL DEFAULT '',
+    is_active       INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    _version        INTEGER NOT NULL DEFAULT 1,
+    _schema_version INTEGER NOT NULL DEFAULT 1
+);
+CREATE UNIQUE INDEX IF NOT EXISTS {schema}.idx_auth_elements_user_service_label
+    ON auth_elements(user_id, service, label);
+"""
+
+_VAULT_SCHEMAS = {
+    "vault_app":   _AUTH_ELEMENTS_DDL.format(schema="vault_app"),
+    "vault_agent": _AUTH_ELEMENTS_DDL.format(schema="vault_agent"),
+    "vault_user":  _AUTH_ELEMENTS_DDL.format(schema="vault_user"),
+}
+
+# Legacy — kept for one-shot migration; removed after all rows are relocated.
 VAULT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS vault.auth_elements (
     id              TEXT PRIMARY KEY,
@@ -1573,20 +1714,96 @@ CREATE TABLE IF NOT EXISTS vault.auth_elements (
     secret_ref      TEXT NOT NULL DEFAULT '',
     is_active       INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    _version        INTEGER NOT NULL DEFAULT 1,
+    _schema_version INTEGER NOT NULL DEFAULT 1
 );
 CREATE UNIQUE INDEX IF NOT EXISTS vault.idx_auth_elements_user_service_label
     ON auth_elements(user_id, service, label);
 """
 
 
+def _vault_for(user_id: str, service: str, label: str = "") -> str:
+    """Route an auth_elements call to the correct vault schema.
+
+    Rules (ordered — first match wins):
+      1. Master encryption keys → vault_app  (user_id="_vault", service="_secrets_vault")
+      2. Admin infra services → vault_app    (deploy, DNS, OAuth app creds, channels, global LLM)
+      3. User-scoped services → vault_user   (genui_vault, browser_session)
+      4. Everything else → vault_agent       (OAuth tokens, ability creds, per-user LLM, BYO secrets)
+
+    "Agent owns it when in doubt" is rule 4.
+    """
+    # Rule 1 — encryption root of trust
+    if user_id == "_vault" and service == "_secrets_vault":
+        return "vault_app"
+
+    # Rule 2 — admin-scoped infrastructure
+    if user_id == "admin":
+        infra_prefixes = (
+            "deploy_cred:", "deploy_connect:", "dns_cred:",
+            "deploy_github_token", "production_mirror",
+        )
+        if service.startswith(infra_prefixes):
+            return "vault_app"
+        if service.endswith("_oauth_config"):
+            return "vault_app"
+        if service.startswith("social_login:"):
+            return "vault_app"
+        if service.startswith("channel_"):
+            return "vault_app"
+        if service.startswith("oauth_ability_"):
+            return "vault_app"
+        if service == "tool_defaults":
+            return "vault_app"
+        # Global LLM fallback — admin's "llm" row is the shared default
+        if service == "llm":
+            return "vault_app"
+        # Admin-scoped ability creds — label is "default" for admin scope
+        if service.startswith("ability_cred:") and label == "default":
+            return "vault_app"
+        # image_gen legacy fallback
+        if service == "image_gen":
+            return "vault_app"
+
+    # Rule 3 — user-scoped (per-user vault keys, browser sessions)
+    if service in ("genui_vault", "browser_session"):
+        return "vault_user"
+
+    # Rule 3a — ability creds with user scope (label="default", non-admin user)
+    if service.startswith("ability_cred:") and label == "default" and user_id != "admin":
+        return "vault_user"
+
+    # Rule 4 — default: agent owns it
+    return "vault_agent"
+
+
 def _vault_path_for(db_path: str) -> str:
-    """Sibling vault-DB path for a given main DB path. The default ``local.db``
-    pairs with ``vault.db``; any other DB file pairs with ``<name>.vault.db`` so
-    test / reference instances get their own isolated vault."""
+    """Return the legacy vault path used only for one-shot secret relocation."""
     d, base = os.path.split(db_path)
     stem = base[:-3] if base.endswith(".db") else base
-    name = "vault.db" if stem == "local" else f"{stem}.vault.db"
+    name = "vault.db" if stem in {"local", "app"} else f"{stem}.vault.db"
+    return os.path.join(d or ".", name)
+
+
+def _app_vault_path(db_path: str = DEFAULT_DB_PATH) -> str:
+    d, base = os.path.split(db_path)
+    stem = base[:-3] if base.endswith(".db") else base
+    name = "app_secrets.db" if stem in {"local", "app"} else f"{stem}.app_secrets.db"
+    return os.path.join(d or ".", name)
+
+
+def _agent_vault_path(db_path: str = DEFAULT_DB_PATH) -> str:
+    d, base = os.path.split(db_path)
+    stem = base[:-3] if base.endswith(".db") else base
+    name = "agent_secrets.db" if stem in {"local", "app"} else f"{stem}.agent_secrets.db"
+    return os.path.join(d or ".", name)
+
+
+def _user_vault_path(db_path: str = DEFAULT_DB_PATH) -> str:
+    d, base = os.path.split(db_path)
+    stem = base[:-3] if base.endswith(".db") else base
+    name = "user_secrets.db" if stem in {"local", "app"} else f"{stem}.user_secrets.db"
     return os.path.join(d or ".", name)
 
 
@@ -1643,30 +1860,190 @@ class _DbWriteLock:
         return False
 
 
+def _cleanup_legacy_vault_file(path: str) -> None:
+    """Remove the legacy vault.db file and any WAL/journal sidecars."""
+    for _sfx in ("", "-wal", "-shm", "-journal"):
+        _sp = path + _sfx
+        if os.path.exists(_sp):
+            try:
+                os.remove(_sp)
+            except Exception:
+                pass
+
+
+# ── One-shot vault migration: legacy vault.db → three new vaults ─────────────
+# Runs inside _init_db on the first boot after the three-vault split is deployed.
+# Idempotent — once completed the legacy vault.db file is deleted and the
+# function becomes a no-op on subsequent boots.
+def _migrate_vault_to_three(
+    conn: sqlite3.Connection,
+    legacy_path: str,
+    app_path: str,
+    agent_path: str,
+    user_path: str,
+) -> None:
+    """Relocate every row from legacy vault.db into the correct new vault.
+    After verifying all rows are present in the new vaults, deletes the
+    legacy vault.db file. Safe to re-run — a missing legacy file is a no-op."""
+    if not os.path.exists(legacy_path):
+        return
+
+    # Ensure legacy vault is attached (it may have been attached in _get_conn)
+    try:
+        conn.execute("SELECT 1 FROM vault.auth_elements LIMIT 0")
+    except Exception:
+        # Legacy vault exists on disk but wasn't attached — attach it now
+        try:
+            conn.execute("ATTACH DATABASE ? AS vault", (legacy_path,))
+        except Exception:
+            pass
+
+    # Check if the auth_elements table still exists in the attached vault.
+    # A previous migration may have dropped it but left the empty file.
+    try:
+        src_n = conn.execute("SELECT COUNT(*) FROM vault.auth_elements").fetchone()[0]
+    except Exception:
+        # Table already gone — clean up the empty file and return
+        _cleanup_legacy_vault_file(legacy_path)
+        return
+    if src_n == 0:
+        # Empty vault — clean up the file
+        _cleanup_legacy_vault_file(legacy_path)
+        return
+
+    rows = conn.execute("SELECT * FROM vault.auth_elements").fetchall()
+    migrated = 0
+    for row in rows:
+        uid = row["user_id"]
+        svc = row["service"]
+        lbl = row["label"] or "default"
+        target = _vault_for(uid, svc, lbl)
+
+        # INSERT OR IGNORE — skip rows that somehow already exist in the target
+        conn.execute(
+            f"INSERT OR IGNORE INTO {target}.auth_elements "
+            "(id, user_id, service, label, config, secret_ref, is_active, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (row["id"], uid, svc, lbl,
+             row["config"] or "{}", row["secret_ref"] or "",
+             row["is_active"] or 1, row["created_at"] or "", row["updated_at"] or ""),
+        )
+        migrated += 1
+
+    conn.commit()
+
+    # Verify — count rows in all three targets
+    target_n = 0
+    for target in ("vault_app", "vault_agent", "vault_user"):
+        try:
+            n = conn.execute(f"SELECT COUNT(*) FROM {target}.auth_elements").fetchone()[0]
+            target_n += n
+        except Exception:
+            pass
+
+    if target_n >= src_n:
+        # All rows accounted for — drop the legacy table and delete the file
+        try:
+            conn.execute("DROP TABLE IF EXISTS vault.auth_elements")
+            conn.commit()
+            try:
+                conn.execute("DETACH DATABASE vault")
+            except Exception:
+                pass
+            _cleanup_legacy_vault_file(legacy_path)
+            logger.info(
+                "Three-vault migration complete: %d rows relocated from %s → "
+                "app_secrets.db / agent_secrets.db / user_secrets.db",
+                src_n, legacy_path,
+            )
+        except Exception as e:
+            logger.warning("Legacy vault cleanup failed (non-fatal): %s", e)
+    else:
+        logger.warning(
+            "Three-vault migration incomplete (%d of %d rows relocated) — "
+            "keeping legacy vault.db",
+            target_n, src_n,
+        )
+
+
+def _migrate_auth_elements_schema_version(conn):
+    """Add _version and _schema_version columns to all auth_elements tables if missing.
+
+    Idempotent — checks each column per schema before ALTER. Called during _init_db
+    right after the three-vault split migration, and safe to call on any version.
+    """
+    for schema in ("vault_app", "vault_agent", "vault_user", "vault"):
+        try:
+            cols = {r[1] for r in conn.execute(f"PRAGMA {schema}.table_info(auth_elements)").fetchall()}
+        except Exception:
+            continue
+        if "_version" not in cols:
+            conn.execute(f"ALTER TABLE {schema}.auth_elements ADD COLUMN _version INTEGER NOT NULL DEFAULT 1")
+        if "_schema_version" not in cols:
+            conn.execute(f"ALTER TABLE {schema}.auth_elements ADD COLUMN _schema_version INTEGER NOT NULL DEFAULT 1")
+    conn.commit()
+
+
 class LocalBackend(StorageBackend):
     """SQLite implementation of StorageBackend."""
 
-    def __init__(self, db_path: Optional[str] = None, seed: bool = True):
+    def __init__(self, db_path: Optional[str] = None, seed: bool = True, plane: Optional[str] = None):
         self._db_path = db_path or DEFAULT_DB_PATH
-        # On the default install, relocate any legacy app/db/ runtime DBs into
-        # data/db/ before opening anything (one-time, safe). Then make sure the
-        # target directory exists so sqlite3.connect can create the file.
-        if self._db_path == DEFAULT_DB_PATH:
-            _relocate_legacy_db_files()
+        self._schema_plane = plane or ("app" if db_path is None else None)
+        self._canonical_app_plane = False
+        self._canonical_authority_plane = False
+        if self._schema_plane == "app":
+            try:
+                from app.db.storage_layout import APP_DB_PATH
+                self._canonical_app_plane = os.path.abspath(self._db_path) == os.path.abspath(str(APP_DB_PATH))
+            except Exception:
+                pass
+        if self._schema_plane in {"app", "user", "agent"}:
+            try:
+                from app.db.storage_layout import APP_DB_PATH, PROJECT_ROOT
+                target = os.path.abspath(self._db_path)
+                roots = [
+                    os.path.abspath(str(PROJECT_ROOT / "data" / "user_data")),
+                    os.path.abspath(str(PROJECT_ROOT / "data" / "agent_data")),
+                ]
+                self._canonical_authority_plane = (
+                    target == os.path.abspath(str(APP_DB_PATH))
+                    or any(os.path.commonpath((target, root)) == root for root in roots)
+                )
+            except (Exception, ValueError):
+                pass
         try:
             os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
         except Exception:
             pass
-        # Credentials (auth_elements) live in this sibling vault DB, attached on
-        # every connection — separate physical file from the user-data DB.
-        self._vault_path = _vault_path_for(self._db_path)
-        # Full-DB-encryption ids: only the canonical install files (the default
-        # local.db + vault.db) participate in the at-rest encryption config. A
+        # Three-vault secrets architecture — credentials split by ownership.
+        # Legacy vault.db still attached for one-shot migration on first boot.
+        vault_base = DEFAULT_DB_PATH if self._canonical_authority_plane else self._db_path
+        self._vault_path = _vault_path_for(vault_base)
+        self._app_vault_path = _app_vault_path(vault_base)
+        self._agent_vault_path = _agent_vault_path(vault_base)
+        self._user_vault_path = _user_vault_path(vault_base)
+        # Full-DB-encryption ids: only the canonical app + vault files
+        # participate in the at-rest encryption config. A
         # custom/test db_path stays plaintext regardless of the global setting.
-        if self._db_path == DEFAULT_DB_PATH:
-            self._enc_main_id, self._enc_vault_id = "local", "vault"
+        if self._canonical_app_plane:
+            self._enc_main_id = "app"
+            self._enc_vault_id = "vault"
+            self._enc_app_vault_id = "app_secrets"
+            self._enc_agent_vault_id = "agent_secrets"
+            self._enc_user_vault_id = "user_secrets"
+        elif self._db_path == DEFAULT_DB_PATH:
+            self._enc_main_id = "app"
+            self._enc_vault_id = "vault"  # legacy — still used during migration
+            self._enc_app_vault_id = "app_secrets"
+            self._enc_agent_vault_id = "agent_secrets"
+            self._enc_user_vault_id = "user_secrets"
         else:
-            self._enc_main_id, self._enc_vault_id = "_local_custom", "_vault_custom"
+            self._enc_main_id = "_local_custom"
+            self._enc_vault_id = "_vault_custom"
+            self._enc_app_vault_id = "_app_secrets_custom"
+            self._enc_agent_vault_id = "_agent_secrets_custom"
+            self._enc_user_vault_id = "_user_secrets_custom"
         self._write_lock = _DbWriteLock()
         # Subclasses (PostgresBackend) flip these. seed=False builds a schema-only
         # reference instance (used to introspect the canonical column set).
@@ -1716,17 +2093,27 @@ class LocalBackend(StorageBackend):
         # IMMEDIATE acquires the RESERVED (write) lock up front, so concurrent
         # writers queue on busy_timeout instead of failing. Pure SELECTs never
         # issue BEGIN, so reads are unaffected.
-        # Routed through db_crypto so the file (and the attached vault) are opened
-        # with the right driver + per-file key when full-DB encryption is enabled.
-        # With encryption OFF this is byte-for-byte equivalent to the previous
-        # sqlite3.connect + ATTACH (plain stdlib driver, no key). The vault is
-        # attached here (with its own key if encrypted); unqualified
-        # `auth_elements` queries still resolve to it transparently.
+        # Routed through db_crypto so every file is opened with the right driver +
+        # per-file key when full-DB encryption is enabled. With encryption OFF this
+        # is byte-for-byte equivalent to plain sqlite3.connect + ATTACH.
+        # Three vaults: app (infra keys), agent (OAuth tokens + per-agent creds),
+        # user (personal vault keys). Legacy "vault" still attached when it exists
+        # so the one-shot migration can relocate its rows into the new vaults.
         from app.db import db_crypto
+        attaches: list = []
+        # Legacy vault — attached only if it still exists (dropped after migration)
+        if os.path.exists(self._vault_path):
+            attaches.append(("vault", self._vault_path, self._enc_vault_id))
+        attaches.append(("vault_app", self._app_vault_path, self._enc_app_vault_id))
+        attaches.append(("vault_agent", self._agent_vault_path, self._enc_agent_vault_id))
+        attaches.append(("vault_user", self._user_vault_path, self._enc_user_vault_id))
+        if self._schema_plane == "agent":
+            from app.db.storage_layout import APP_DB_PATH
+            attaches.append(("_app", str(APP_DB_PATH), "app"))
         conn = db_crypto.connect(
             self._db_path, self._enc_main_id,
             isolation_level="IMMEDIATE",
-            attaches=[("vault", self._vault_path, self._enc_vault_id)],
+            attaches=attaches,
         )
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -1736,34 +2123,218 @@ class LocalBackend(StorageBackend):
         conn.execute("PRAGMA cache_size=-16000")
         conn.execute("PRAGMA mmap_size=268435456")
         conn.execute("PRAGMA wal_autocheckpoint=2000")
-        # Mirror the per-DB tuning pragmas on the attached vault (non-fatal).
+        # Mirror the per-DB tuning pragmas on every attached vault (non-fatal).
+        for _vname, _vpath in [("vault_app", self._app_vault_path),
+                                ("vault_agent", self._agent_vault_path),
+                                ("vault_user", self._user_vault_path)]:
+            try:
+                conn.execute(f"PRAGMA {_vname}.journal_mode=WAL")
+                conn.execute(f"PRAGMA {_vname}.synchronous=NORMAL")
+            except Exception as e:
+                logger.debug("vault pragma failed (%s): %s", _vpath, e)
+        # Legacy vault — still apply pragmas while it exists (non-fatal).
         try:
             conn.execute("PRAGMA vault.journal_mode=WAL")
             conn.execute("PRAGMA vault.synchronous=NORMAL")
-        except Exception as e:
-            logger.debug("vault pragma failed (%s): %s", self._vault_path, e)
+        except Exception:
+            pass
+
         return conn
 
+    def _migrate_session_interrupt_ownership(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Make interrupt rows ownership-scoped and remove proven placeholders.
+
+        A previous fallback created ``sessions.user_id=''`` rows when an
+        interrupt referenced a missing client-side session. Only the exact
+        empty shape with no child data is deleted automatically; anything with
+        content is retained and reported for operator review.
+        """
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='session_interrupts'"
+        ).fetchone()
+        if not table:
+            return
+
+        # Guard: if the sessions table lacks the metadata column (pre-migration
+        # schema), skip this pass — the column-adding migration runs later in
+        # _init_db and this migration will catch up on next startup.
+        sess_cols = {
+            col[1]
+            for col in conn.execute(
+                "PRAGMA table_info(sessions)"
+            ).fetchall()
+        }
+        if "metadata" not in sess_cols:
+            return
+
+        child_tables: List[str] = []
+        for table_row in conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall():
+            table_name = table_row[0]
+            if table_name in {"sessions", "session_interrupts"}:
+                continue
+            escaped = table_name.replace('"', '""')
+            try:
+                columns = {
+                    col[1]
+                    for col in conn.execute(
+                        f'PRAGMA table_info("{escaped}")'
+                    ).fetchall()
+                }
+            except sqlite3.DatabaseError:
+                continue
+            if "session_id" in columns:
+                child_tables.append(table_name)
+
+        ambiguous: List[str] = []
+        placeholders = conn.execute(
+            "SELECT s.id, s.title, s.metadata, s.agent_id, s.participants, "
+            "s.sort_order, s.status, i.session_id AS interrupt_evidence "
+            "FROM sessions AS s "
+            "LEFT JOIN session_interrupts AS i ON i.session_id = s.id "
+            "WHERE s.user_id = ''"
+        ).fetchall()
+        for row in placeholders:
+            session_id = row["id"]
+            empty_shape = (
+                row["title"] is None
+                and row["metadata"] is None
+                and row["agent_id"] is None
+                and (row["participants"] in (None, "", "[]"))
+                and row["sort_order"] is None
+                and (row["status"] in (None, "active"))
+            )
+            has_child_data = False
+            for child_table in child_tables:
+                escaped = child_table.replace('"', '""')
+                if conn.execute(
+                    f'SELECT 1 FROM "{escaped}" WHERE session_id = ? LIMIT 1',
+                    (session_id,),
+                ).fetchone():
+                    has_child_data = True
+                    break
+            if (
+                row["interrupt_evidence"] is not None
+                and empty_shape
+                and not has_child_data
+            ):
+                conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            else:
+                ambiguous.append(session_id)
+
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(session_interrupts)"
+            ).fetchall()
+        }
+        foreign_keys = conn.execute(
+            "PRAGMA foreign_key_list(session_interrupts)"
+        ).fetchall()
+        has_owned_fk = (
+            "user_id" in columns
+            and any(
+                row[3] == "user_id" and row[4] == "user_id"
+                for row in foreign_keys
+            )
+        )
+        if not has_owned_fk:
+            legacy_rows = conn.execute(
+                "SELECT i.session_id, i.interrupt_requested, i.created_at, "
+                "s.user_id FROM session_interrupts AS i "
+                "JOIN sessions AS s ON s.id = i.session_id "
+                "WHERE s.user_id <> ''"
+            ).fetchall()
+            conn.execute("DROP TABLE session_interrupts")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_id_user "
+                "ON sessions(id, user_id)"
+            )
+            conn.execute(
+                """CREATE TABLE session_interrupts (
+                    session_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    interrupt_requested INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (session_id, user_id)
+                        REFERENCES sessions(id, user_id) ON DELETE CASCADE
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_interrupts_user "
+                "ON session_interrupts(user_id)"
+            )
+            conn.executemany(
+                "INSERT INTO session_interrupts "
+                "(session_id, user_id, interrupt_requested, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        row["session_id"],
+                        row["user_id"],
+                        row["interrupt_requested"],
+                        row["created_at"],
+                    )
+                    for row in legacy_rows
+                ],
+            )
+        else:
+            conn.execute(
+                "DELETE FROM session_interrupts "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM sessions "
+                "WHERE sessions.id = session_interrupts.session_id "
+                "AND sessions.user_id = session_interrupts.user_id)"
+            )
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_interrupts_user "
+            "ON session_interrupts(user_id)"
+        )
+        conn.commit()
+        if ambiguous:
+            logger.warning(
+                "Retained %d empty-owner session(s) with non-placeholder "
+                "shape or child data for operator review: %s",
+                len(ambiguous),
+                ", ".join(session_id[:12] for session_id in ambiguous[:20]),
+            )
+
     def _init_db(self) -> None:
+        if self._schema_plane:
+            from app.db.schema import ensure_sqlite_plane_columns, render_plane
+
+            conn = self._get_conn()
+            try:
+                conn.executescript(render_plane(self._schema_plane, "sqlite"))
+                ensure_sqlite_plane_columns(conn, self._schema_plane)
+                conn.commit()
+            finally:
+                conn.close()
+            return
         """Create tables if they don't exist."""
         conn = self._get_conn()
         try:
-            # ── Vault: keep credentials OUT of the user-data DB ──
-            # auth_elements (per-user service creds / OAuth tokens / secret refs)
-            # lives in the attached `vault` DB, never this main user-data file, so
-            # a user-data reset never wipes credentials. Create it in the vault,
-            # then migrate-and-drop any legacy copy from the main DB (older
-            # installs). After this, unqualified `auth_elements` everywhere
-            # resolves to the vault. Runs first so all downstream migrations that
-            # touch auth_elements (e.g. migration 024) hit the vault copy.
+            # ── Three-vault secrets: create schemas in all three vaults ──
+            # Each vault file gets its own auth_elements table. Legacy vault.db
+            # rows are migrated into the correct target vault on first boot.
+            # Legacy main-db auth_elements (older installs) are relocated first.
             try:
-                conn.executescript(VAULT_SCHEMA)
+                # 1. Create all three new vault schemas
+                for _schema_ddl in _VAULT_SCHEMAS.values():
+                    conn.executescript(_schema_ddl)
+
+                # 2. Legacy main-db → vault.db (older installs)
                 if conn.execute("SELECT 1 FROM main.sqlite_master WHERE type='table' "
                                 "AND name='auth_elements'").fetchone():
+                    # Ensure legacy vault schema exists for the copy target
+                    conn.executescript(VAULT_SCHEMA)
                     src_n = conn.execute("SELECT COUNT(*) FROM main.auth_elements").fetchone()[0]
-                    # Explicit columns + COALESCE on the NOT-NULL-with-default
-                    # columns so a legacy row with NULLs can't be silently dropped
-                    # by INSERT OR IGNORE.
                     conn.execute(
                         "INSERT OR IGNORE INTO vault.auth_elements "
                         "(id, user_id, service, label, config, secret_ref, is_active, created_at, updated_at) "
@@ -1772,21 +2343,29 @@ class LocalBackend(StorageBackend):
                         "COALESCE(created_at, datetime('now')), COALESCE(updated_at, datetime('now')) "
                         "FROM main.auth_elements"
                     )
-                    # Only drop the source once EVERY row is confirmed in the vault
-                    # (a partial copy leaves main.auth_elements in place — safe
-                    # fallback; the app keeps using it and the migration retries).
                     unmigrated = conn.execute(
                         "SELECT COUNT(*) FROM main.auth_elements "
                         "WHERE id NOT IN (SELECT id FROM vault.auth_elements)"
                     ).fetchone()[0]
                     if unmigrated == 0:
                         conn.execute("DROP TABLE main.auth_elements")
-                        logger.info("Relocated %d auth_elements row(s) into the dedicated vault DB (%s)",
+                        logger.info("Relocated %d auth_elements row(s) into legacy vault.db (%s)",
                                     src_n, self._vault_path)
                     else:
                         logger.warning("Vault migration incomplete (%d of %d rows not copied) — "
                                        "leaving auth_elements in the main DB for now", unmigrated, src_n)
+
+                # 3. Legacy vault.db → three new vaults (one-shot)
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                "AND name='auth_elements' AND sql LIKE '%vault.%'").fetchone() \
+                   or os.path.exists(self._vault_path):
+                    _migrate_vault_to_three(conn, self._vault_path,
+                                           self._app_vault_path, self._agent_vault_path,
+                                           self._user_vault_path)
                 conn.commit()
+
+                # 4. Migrate: add _version and _schema_version columns (Phase 0 schema versioning)
+                _migrate_auth_elements_schema_version(conn)
             except Exception as e:
                 logger.warning("Vault init/migration failed: %s", e)
 
@@ -1805,6 +2384,7 @@ class LocalBackend(StorageBackend):
 
             conn.executescript(SCHEMA_SQL)
             conn.commit()
+            self._migrate_session_interrupt_ownership(conn)
 
             # ── Migration: add channel column to interactions ──
             cursor = conn.execute("PRAGMA table_info(interactions)")
@@ -1858,6 +2438,10 @@ class LocalBackend(StorageBackend):
                 "ON interactions(session_id, session_seq)"
             )
             conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_interactions_session_created "
+                "ON interactions(session_id, created_at)"
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_interactions_turn "
                 "ON interactions(turn_id)"
             )
@@ -1865,11 +2449,34 @@ class LocalBackend(StorageBackend):
             if added:
                 logger.info("Added interactions.session_seq / turn_id / turn_seq columns + indexes")
 
+            # ── Migration: upgrade idx_interactions_session_seq to UNIQUE ──
+            # The in-memory RunBuffer can drift ahead of the durable manifest,
+            # causing next_session_seq to re-issue already-used numbers after a
+            # restart.  A UNIQUE index catches any future collision at the DB
+            # level.  If existing duplicates already exist (from the very bug
+            # this prevents), we log them and skip; the application-layer fix
+            # (MAX of manifest + data) is already in place from the same commit.
+            try:
+                conn.execute(
+                    "DROP INDEX IF EXISTS idx_interactions_session_seq")
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "idx_interactions_session_seq_unique "
+                    "ON interactions(session_id, session_seq)")
+                conn.commit()
+            except Exception as _uniq_err:
+                logger.warning(
+                    "Could not create UNIQUE index on interactions(session_id, session_seq): %s. "
+                    "Existing duplicate session_seq rows may be present; the application-layer "
+                    "allocator fix will prevent future duplicates. Run a manual dedup to "
+                    "restore the constraint.",
+                    _uniq_err)
+
             # ── Migration: add status column to interactions (streaming persistence) ──
             # Existing rows are all finished, so they default to 'complete'.
             # New assistant rows are written 'streaming' then flipped to
             # 'complete' / 'interrupted' / 'error' by the loop. See migration
-            # 023_run_persistence.sql for the Supabase equivalent.
+            # 023_run_persistence.sql for the Postgres equivalent.
             cursor = conn.execute("PRAGMA table_info(interactions)")
             cols_status = {row[1] for row in cursor.fetchall()}
             if "status" not in cols_status:
@@ -1963,6 +2570,27 @@ class LocalBackend(StorageBackend):
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_device_presence_seen ON device_presence(last_seen)"
             )
+            # ── Migration: instance_meta (shared identity store) ──
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS instances (
+                    ref TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    display_name TEXT,
+                    provider TEXT,
+                    status TEXT,
+                    ip TEXT,
+                    endpoint TEXT,
+                    platform TEXT,
+                    zone TEXT,
+                    machine_type TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    metadata TEXT NOT NULL DEFAULT '{}'
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_instances_kind ON instances(kind)"
+            )
             # ── Migration: admin display overrides on device_presence ──
             # custom_label / custom_icon let an admin rename a device and pick its
             # icon from the Instances page; both live in the shared DB (so every
@@ -2016,6 +2644,10 @@ class LocalBackend(StorageBackend):
             _ue_adds = [
                 ("cost_usd", "ALTER TABLE usage_events ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0"),
                 ("cost_source", "ALTER TABLE usage_events ADD COLUMN cost_source TEXT"),
+                ("cached_input_tokens", "ALTER TABLE usage_events ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0"),
+                ("cache_write_tokens", "ALTER TABLE usage_events ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0"),
+                ("uncached_input_tokens", "ALTER TABLE usage_events ADD COLUMN uncached_input_tokens INTEGER"),
+                ("reasoning_tokens", "ALTER TABLE usage_events ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0"),
                 ("session_id", "ALTER TABLE usage_events ADD COLUMN session_id TEXT"),
                 ("source", "ALTER TABLE usage_events ADD COLUMN source TEXT NOT NULL DEFAULT 'chat'"),
             ]
@@ -2033,6 +2665,89 @@ class LocalBackend(StorageBackend):
                 "ON usage_events(session_id)"
             )
             conn.commit()
+
+            # ── Migration: trial credit-grant columns ──
+            # Trials went from message/token counters to a credit allotment
+            # (credit_cents / remaining_cents). Guarded ADD COLUMN; legacy rows
+            # keep NULL remaining_cents which the engine treats as exhausted
+            # (clean cutover — admin can delete/reset a trial row to re-grant).
+            cursor = conn.execute("PRAGMA table_info(trials)")
+            _tr_cols = {row[1] for row in cursor.fetchall()}
+            _tr_added = []
+            for _col, _sql in (
+                ("credit_cents", "ALTER TABLE trials ADD COLUMN credit_cents INTEGER"),
+                ("remaining_cents", "ALTER TABLE trials ADD COLUMN remaining_cents INTEGER"),
+            ):
+                if _col not in _tr_cols:
+                    conn.execute(_sql)
+                    _tr_added.append(_col)
+            conn.commit()
+            if _tr_added:
+                logger.info("Added trials credit-grant columns: %s", ", ".join(_tr_added))
+
+            # ── Migration: cost-based pricing + combined strategies ──
+            # billing_configs gains three nullable cost-pricing columns
+            # (NULL = inherit the platform default) and loses the old
+            # single-strategy CHECK (so 'trial,credits' is storable; the API
+            # validates strategies). SQLite can't drop a CHECK or NOT NULL via
+            # ALTER, so: add missing columns nullable, then rebuild once when
+            # either the CHECK is present OR an earlier migration added the
+            # columns as NOT NULL.
+            cursor = conn.execute("PRAGMA table_info(billing_configs)")
+            _bc_cols = {row[1]: (row[3] or 0, row[2] or "") for row in cursor.fetchall()}
+            for _col, _sql in (
+                ("cost_multiplier", "ALTER TABLE billing_configs ADD COLUMN cost_multiplier REAL"),
+                ("min_charge_cents", "ALTER TABLE billing_configs ADD COLUMN min_charge_cents INTEGER"),
+                ("flat_image_cost_usd", "ALTER TABLE billing_configs ADD COLUMN flat_image_cost_usd REAL"),
+            ):
+                if _col not in _bc_cols:
+                    conn.execute(_sql)
+                    _bc_cols[_col] = (0, "")
+            conn.commit()
+
+            _bc_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='billing_configs'"
+            ).fetchone()
+            _needs_rebuild = bool(_bc_sql and _bc_sql[0] and "CHECK (strategy IN" in _bc_sql[0])
+            if not _needs_rebuild:
+                for _col in ("cost_multiplier", "min_charge_cents", "flat_image_cost_usd"):
+                    if _bc_cols.get(_col, (0,))[0]:
+                        _needs_rebuild = True
+                        break
+            if _needs_rebuild:
+                try:
+                    conn.executescript("""
+                        CREATE TABLE billing_configs_new (
+                            scope                      TEXT    PRIMARY KEY,
+                            strategy                   TEXT    NOT NULL DEFAULT 'free',
+                            allowed_strategies         TEXT    NOT NULL DEFAULT '[]',
+                            allowed_processors         TEXT    NOT NULL DEFAULT '[]',
+                            rate_card_default_llm      TEXT    NOT NULL DEFAULT '{}',
+                            rate_card_byo_llm          TEXT    NOT NULL DEFAULT '{}',
+                            cost_multiplier            REAL,
+                            min_charge_cents           INTEGER,
+                            flat_image_cost_usd        REAL,
+                            trial_config               TEXT    NOT NULL DEFAULT '{}',
+                            subscription_price_cents   INTEGER NOT NULL DEFAULT 0,
+                            currency                   TEXT    NOT NULL DEFAULT 'usd',
+                            created_at                 TEXT    NOT NULL DEFAULT (datetime('now')),
+                            updated_at                 TEXT    NOT NULL DEFAULT (datetime('now')),
+                            updated_by                 TEXT
+                        );
+                        INSERT INTO billing_configs_new SELECT
+                            scope, strategy, allowed_strategies, allowed_processors,
+                            rate_card_default_llm, rate_card_byo_llm,
+                            cost_multiplier, min_charge_cents, flat_image_cost_usd,
+                            trial_config, subscription_price_cents, currency,
+                            created_at, updated_at, updated_by
+                        FROM billing_configs;
+                        DROP TABLE billing_configs;
+                        ALTER TABLE billing_configs_new RENAME TO billing_configs;
+                    """)
+                    conn.commit()
+                    logger.info("Rebuilt billing_configs (nullable cost columns, no strategy CHECK)")
+                except Exception as _e:
+                    logger.debug("billing_configs rebuild skipped: %s", _e)
             if _ue_added:
                 logger.info("Added usage_events cost columns: %s", ", ".join(_ue_added))
 
@@ -2188,6 +2903,30 @@ class LocalBackend(StorageBackend):
                 conn.execute("ALTER TABLE genui ADD COLUMN agent_id TEXT")
                 conn.commit()
                 logger.info("Added genui.agent_id column")
+
+            # ── Migration: add session_config column to genui (session targeting) ──
+            # Stores the REQUIRED session contract for a genui's actions/chat:
+            # target session title + new-session mode (+ explicit session id when
+            # mode == "existing"). See the genui CREATE TABLE for the shape.
+            # Existing rows get '{}' → legacy pages keep current behavior.
+            cursor = conn.execute("PRAGMA table_info(genui)")
+            _cv_cols3 = {row[1] for row in cursor.fetchall()}
+            if _cv_cols3 and "session_config" not in _cv_cols3:
+                conn.execute("ALTER TABLE genui ADD COLUMN session_config TEXT NOT NULL DEFAULT '{}'")
+                conn.commit()
+                logger.info("Added genui.session_config column")
+
+            # ── Migration: add widget column to genui (per-genui launcher config) ──
+            # Holds the page's launcher/widget configuration (widget.json: which
+            # agent the page's chat launcher opens, icon, corner buttons, widget
+            # options) as a JSON object, kept separate from html/data so the agent
+            # edits config without rewriting the page. Guarded so re-runs no-op.
+            cursor = conn.execute("PRAGMA table_info(genui)")
+            _cv_cols4 = {row[1] for row in cursor.fetchall()}
+            if _cv_cols4 and "widget" not in _cv_cols4:
+                conn.execute("ALTER TABLE genui ADD COLUMN widget TEXT")
+                conn.commit()
+                logger.info("Added genui.widget column")
 
             # ── Migration: add fire_token / external_job_id / external_provider to agent_automations ──
             try:
@@ -2997,7 +3736,7 @@ class LocalBackend(StorageBackend):
                 logger.info("Added user_profiles.appearance column")
 
             # ── Migration 028: add storage_provider to attachments ──
-            # Records which backend (local / browser / supabase / s3 / gcs) was
+            # Records which backend (local / browser / s3 / gcs) was
             # active when each file was uploaded, so retrieval works after the
             # admin switches the active backend.
             cursor = conn.execute("PRAGMA table_info(attachments)")
@@ -3060,6 +3799,93 @@ class LocalBackend(StorageBackend):
                 conn.commit()
                 logger.info("Added sessions.read_at column")
 
+            # ── Migration 031b: backfill agent_templates.metadata.source ──
+            # Existing pre-migration rows lack the `source` marker in metadata
+            # needed by the Config tab to know whether to show "Export to file".
+            try:
+                _src_gate = conn.execute(
+                    "SELECT value FROM app_meta WHERE key = 'backfilled_template_source'"
+                ).fetchone()
+                if not _src_gate:
+                    _tpl_rows = conn.execute(
+                        "SELECT id, metadata FROM agent_templates"
+                    ).fetchall()
+                    _src_count = 0
+                    for _r in _tpl_rows:
+                        try:
+                            _m = json.loads(_r["metadata"]) if _r["metadata"] else {}
+                        except (json.JSONDecodeError, TypeError):
+                            _m = {}
+                        if not isinstance(_m, dict):
+                            _m = {}
+                        if _m.get("source"):
+                            continue
+                        _m["source"] = "json_seed"
+                        conn.execute(
+                            "UPDATE agent_templates SET metadata = ?, updated_at = ? WHERE id = ?",
+                            (json.dumps(_m), _now_iso(), _r["id"]),
+                        )
+                        _src_count += 1
+                    if _src_count:
+                        conn.commit()
+                        logger.info("Backfilled metadata.source on %d agent_templates row(s)", _src_count)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO app_meta (key, value, updated_at) VALUES (?, '1', ?)",
+                        ("backfilled_template_source", _now_iso()),
+                    )
+                    conn.commit()
+            except Exception as _src_e:
+                logger.warning("Migration 031b (template source backfill) skipped: %s", _src_e)
+
+            # ── Migration 031c: backfill agents.template_id ──
+            # Agents created before this column existed (or before create_agent_for_user
+            # included it) have NULL template_id. Backfill from the agents that clearly
+            # came from the default template: is_user_default=1 or name='WebAgent'.
+            try:
+                _tid_gate = conn.execute(
+                    "SELECT value FROM app_meta WHERE key = 'backfilled_agent_template_id'"
+                ).fetchone()
+                if not _tid_gate:
+                    _tid_count = conn.execute(
+                        "UPDATE agents SET template_id = 'default', updated_at = ? "
+                        "WHERE (template_id IS NULL OR template_id = '') "
+                        "AND (is_user_default = 1 OR name = 'WebAgent')",
+                        (_now_iso(),),
+                    ).rowcount
+                    if _tid_count:
+                        conn.commit()
+                        logger.info("Backfilled template_id='default' on %d agent(s)", _tid_count)
+                    # Also stamp template_origin on these agents' metadata
+                    _tid_rows = conn.execute(
+                        "SELECT id, metadata FROM agents WHERE template_id = 'default'"
+                    ).fetchall()
+                    _to_count = 0
+                    for _r in _tid_rows:
+                        try:
+                            _m = json.loads(_r["metadata"]) if _r["metadata"] else {}
+                        except (json.JSONDecodeError, TypeError):
+                            _m = {}
+                        if not isinstance(_m, dict):
+                            _m = {}
+                        if _m.get("template_origin"):
+                            continue
+                        _m["template_origin"] = "default"
+                        conn.execute(
+                            "UPDATE agents SET metadata = ?, updated_at = ? WHERE id = ?",
+                            (json.dumps(_m), _now_iso(), _r["id"]),
+                        )
+                        _to_count += 1
+                    if _to_count:
+                        conn.commit()
+                        logger.info("Backfilled template_origin on %d agent(s)", _to_count)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO app_meta (key, value, updated_at) VALUES (?, '1', ?)",
+                        ("backfilled_agent_template_id", _now_iso()),
+                    )
+                    conn.commit()
+            except Exception as _tid_e:
+                logger.warning("Migration 031c (agent template_id backfill) skipped: %s", _tid_e)
+
             # ── Seed: agent templates from data/agents/*.json (full schema) ──
             if getattr(self, "_seed_on_init", True):
                 self._seed_agent_templates_from_json_files(conn)
@@ -3071,7 +3897,9 @@ class LocalBackend(StorageBackend):
             # explicit choice), so the in-place default agent benefits without a
             # re-create. New agents get the flag at creation. Idempotent + guarded.
             try:
-                from app.tools.tool_modes import AGENT_DISCOVERY_DEFAULT_KEY
+                from app.agent.cache_profiles import (
+                    DEFAULT_WEBAGENT_PROFILE, with_cache_profile,
+                )
                 _def_rows = conn.execute(
                     "SELECT id, metadata FROM agents WHERE is_user_default = 1"
                 ).fetchall()
@@ -3082,22 +3910,30 @@ class LocalBackend(StorageBackend):
                         _m = json.loads(_r["metadata"]) if _r["metadata"] else {}
                     except (json.JSONDecodeError, TypeError):
                         _m = {}
-                    if not isinstance(_m, dict) or _m.get(AGENT_DISCOVERY_DEFAULT_KEY):
+                    if not isinstance(_m, dict):
+                        _m = {}
+                    _updated_meta = with_cache_profile(
+                        _m, DEFAULT_WEBAGENT_PROFILE,
+                    )
+                    if _updated_meta == _m:
                         continue
-                    _m[AGENT_DISCOVERY_DEFAULT_KEY] = "discoverable"
                     conn.execute(
                         "UPDATE agents SET metadata = ?, updated_at = ? WHERE id = ?",
-                        (json.dumps(_m), _bf_now, _r["id"]),
+                        (json.dumps(_updated_meta), _bf_now, _r["id"]),
                     )
                     _bf_count += 1
                 if _bf_count:
                     conn.commit()
-                    logger.info("Backfilled discovery_default=discoverable on %d default agent(s)", _bf_count)
+                    logger.info(
+                        "Backfilled advanced cache profile on %d default agent(s)",
+                        _bf_count,
+                    )
             except Exception as _bfe:
                 logger.warning("discovery_default backfill skipped: %s", _bfe)
 
         except Exception as e:
-            logger.error("Error initializing local database: %s", e)
+            import traceback as _tb
+            logger.error("Error initializing local database: %s\nTRACEBACK:\n%s", e, ''.join(_tb.format_exc()))
             raise
         finally:
             conn.close()
@@ -3106,8 +3942,8 @@ class LocalBackend(StorageBackend):
 
     def get_raw_client(self) -> Any:
         """
-        Return a proxy object compatible with supabase.Client's table() method.
-        This allows code that uses the Supabase query builder directly
+        Return a proxy object implementing the raw query-builder interface.
+        This allows code that uses the .table().select().eq().execute() idiom
         (ToolLoader, ToolExecutionTracker, etc.) to work with minimal changes.
         """
         return _LocalTableProxy(self._get_conn)
@@ -3257,8 +4093,51 @@ class LocalBackend(StorageBackend):
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT id, session_id, parent_id, role, content, tool_name, tool_call_id, channel, metadata, output, from_id, to_id, source, created_at FROM interactions WHERE session_id = ? ORDER BY created_at ASC",
+                """SELECT id, session_id, parent_id, role, content, tool_name,
+                          tool_call_id, channel, metadata, output, from_id, to_id,
+                          source, session_seq, turn_id, turn_seq, created_at
+                     FROM interactions
+                    WHERE session_id = ?
+                      AND (status IS NULL OR status != 'deleted')
+                 ORDER BY created_at ASC, rowid ASC""",
                 (session_id,),
+            ).fetchall()
+            return [InteractionRecord(**dict(r)) for r in rows]
+        finally:
+            conn.close()
+
+    async def count_interactions(self, user_id: str, session_id: str) -> int:
+        await self.assert_session_owned(user_id, session_id)
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                """SELECT COUNT(*) AS n
+                     FROM interactions
+                    WHERE session_id = ?
+                      AND (status IS NULL OR status != 'deleted')""",
+                (session_id,),
+            ).fetchone()
+            return int(row["n"] if row else 0)
+        finally:
+            conn.close()
+
+    async def fetch_interactions_from_offset(
+        self, user_id: str, session_id: str, offset: int
+    ) -> List[InteractionRecord]:
+        """Materialize only the uncompacted suffix of a large transcript."""
+        await self.assert_session_owned(user_id, session_id)
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT id, session_id, parent_id, role, content, tool_name,
+                          tool_call_id, channel, metadata, output, from_id, to_id,
+                          source, session_seq, turn_id, turn_seq, created_at
+                     FROM interactions
+                    WHERE session_id = ?
+                      AND (status IS NULL OR status != 'deleted')
+                 ORDER BY created_at ASC, rowid ASC
+                    LIMIT -1 OFFSET ?""",
+                (session_id, max(0, int(offset or 0))),
             ).fetchall()
             return [InteractionRecord(**dict(r)) for r in rows]
         finally:
@@ -3391,18 +4270,78 @@ class LocalBackend(StorageBackend):
 
         Returns 1 if the session has no prior rows. Caller assigns
         FIRST, FIRST+1, ..., FIRST+count-1 to its rows.
+
+        Always takes the MAX of the manifest counter AND the actual interaction
+        data.  The manifest can drift behind the data when an in-memory
+        RunBuffer allocates sequences across turns without persisting its
+        high-water mark — a server restart (or buffer sweep) would re-read the
+        stale manifest, re-issue already-used numbers, and produce duplicate
+        session_seq values that cause duplicated messages in the UI.
         """
         if count < 1:
             count = 1
         async with self._write_lock:
             conn = self._get_conn()
             try:
+                # Read the manifest counter (may be stale)
+                row = conn.execute(
+                    "SELECT max_session_seq FROM session_manifests WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                manifest_val = row[0] if row and row[0] is not None else 0
+
+                # Always also scan the actual data — the manifest can only drift
+                # behind, never ahead.  The covering index
+                # idx_interactions_session_seq makes this a cheap index seek.
                 row = conn.execute(
                     "SELECT COALESCE(MAX(session_seq), 0) FROM interactions WHERE session_id = ?",
                     (session_id,),
                 ).fetchone()
-                current = (row[0] if row and row[0] is not None else 0)
-                return int(current) + 1
+                data_val = row[0] if row else 0
+
+                current = max(manifest_val, data_val)
+                reserved = current + count
+
+                # Reserve the range by upserting the manifest
+                conn.execute(
+                    "INSERT INTO session_manifests "
+                    "(session_id, authority_revision, content_hash, interaction_count, "
+                    " max_session_seq, dirty, updated_at) "
+                    "VALUES (?, 1, '', 0, ?, 1, datetime('now')) "
+                    "ON CONFLICT(session_id) DO UPDATE SET "
+                    "max_session_seq = MAX(session_manifests.max_session_seq, ?), "
+                    "dirty = 1, updated_at = datetime('now')",
+                    (session_id, reserved, reserved),
+                )
+                conn.commit()
+                return current + 1
+            finally:
+                conn.close()
+
+    async def persist_session_manifest_seq(self, session_id: str, high_water: int) -> None:
+        """Persist the in-memory RunBuffer counter into the durable manifest.
+
+        Called at turn-end so the manifest never drifts behind the actual data.
+        Without this, a server restart (or buffer sweep) can cause
+        ``next_session_seq`` to re-issue already-used numbers that produce
+        duplicated messages in the UI.
+        """
+        if high_water < 1:
+            return
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "INSERT INTO session_manifests "
+                    "(session_id, authority_revision, content_hash, interaction_count, "
+                    " max_session_seq, dirty, updated_at) "
+                    "VALUES (?, 1, '', 0, ?, 1, datetime('now')) "
+                    "ON CONFLICT(session_id) DO UPDATE SET "
+                    "max_session_seq = MAX(session_manifests.max_session_seq, ?), "
+                    "dirty = 1, updated_at = datetime('now')",
+                    (session_id, high_water, high_water),
+                )
+                conn.commit()
             finally:
                 conn.close()
 
@@ -3914,6 +4853,21 @@ class LocalBackend(StorageBackend):
             tpl_id = tpl["id"]
             tpl_version = int(tpl.get("version") or 1)
 
+            # Stamp origin marker so Config tab knows this template came from a JSON file.
+            _tpl_meta = tpl.get("metadata", "{}")
+            if isinstance(_tpl_meta, str):
+                try:
+                    _tpl_meta_obj = json.loads(_tpl_meta)
+                except (json.JSONDecodeError, TypeError):
+                    _tpl_meta_obj = {}
+            elif isinstance(_tpl_meta, dict):
+                _tpl_meta_obj = dict(_tpl_meta)
+            else:
+                _tpl_meta_obj = {}
+            if not _tpl_meta_obj.get("source"):
+                _tpl_meta_obj["source"] = "json_seed"
+            tpl["metadata"] = json.dumps(_tpl_meta_obj)
+
             # 1. agent_templates row — config only, always upsert
             conn.execute(
                 """INSERT INTO agent_templates
@@ -4406,7 +5360,11 @@ class LocalBackend(StorageBackend):
     ) -> Optional[dict]:
         """Insert or update the caller's override row for a slot.
 
-        Refuses (returns None) if the slot is admin-locked or undefined.
+        Refuses (returns None) if the slot is not defined in the agent's
+        admin-base rows. Locked slots are still writable — the lock guards
+        runtime prompt assembly (via _slot_apply), not saving. This allows
+        the Config tab's push-to-template button to promote overrides on
+        locked slots into the template.
         """
         if not user_id:
             raise ValueError("user_id required for override write")
@@ -4420,8 +5378,6 @@ class LocalBackend(StorageBackend):
                     (agent_id, slot_name),
                 ).fetchone()
                 if not base:
-                    return None
-                if int(base["lock"] or 0) == 1:
                     return None
                 existing = conn.execute(
                     """SELECT id FROM agent_prompts
@@ -4543,15 +5499,44 @@ class LocalBackend(StorageBackend):
         compiled_truth: str = "",
         timeline: str = "",
         frontmatter: Optional[dict] = None,
+        origin: str = "distilled",
+        source_session_id: Optional[str] = None,
+        source_interaction_id: Optional[str] = None,
     ) -> dict:
         async with self._write_lock:
             conn = self._get_conn()
             try:
                 now = _now_iso()
                 existing = conn.execute(
-                    "SELECT id FROM memories WHERE user_id = ? AND slug = ?",
+                    "SELECT id, origin, provenance FROM memories WHERE user_id = ? AND slug = ?",
                     (user_id, slug),
                 ).fetchone()
+
+                provenance = []
+                if existing:
+                    try:
+                        provenance = json.loads(existing["provenance"] or "[]")
+                    except (TypeError, json.JSONDecodeError):
+                        provenance = []
+                if not isinstance(provenance, list):
+                    provenance = []
+                if source_session_id:
+                    source = {
+                        "session_id": source_session_id,
+                        "interaction_id": source_interaction_id or "",
+                        "supported_at": now,
+                    }
+                    provenance = [
+                        item for item in provenance
+                        if not (isinstance(item, dict)
+                                and item.get("session_id") == source_session_id
+                                and (item.get("interaction_id") or "") == (source_interaction_id or ""))
+                    ]
+                    provenance.append(source)
+
+                resolved_origin = str(origin or "distilled")
+                if existing and str(existing["origin"] or "") == "deliberate":
+                    resolved_origin = "deliberate"
 
                 data = {
                     "user_id": user_id,
@@ -4561,6 +5546,8 @@ class LocalBackend(StorageBackend):
                     "compiled_truth": compiled_truth,
                     "timeline": timeline,
                     "frontmatter": json.dumps(frontmatter or {}),
+                    "origin": resolved_origin,
+                    "provenance": json.dumps(provenance, separators=(",", ":")),
                     "updated_at": now,
                 }
 
@@ -4873,7 +5860,7 @@ class LocalBackend(StorageBackend):
         which then failed with "database is locked" and left sessions on their
         fallback name). Do all the network work up front with NO lock held, then
         take the write lock only for the quick DELETE+INSERT burst and release it
-        immediately. See plugins/abilities/Core/session_titler."""
+        immediately. See plugins/app_functions/session_titler."""
         chunks = self._chunk_text(text, max_chars=500)
 
         # ── Phase 1: embed every chunk (slow network, NO write lock held) ──
@@ -5244,6 +6231,18 @@ class LocalBackend(StorageBackend):
             conn.close()
 
     async def get_agent_by_id(self, agent_id: str) -> Optional[dict]:
+        try:
+            from app.db.storage_layout import is_layout_active
+            if is_layout_active() and self._schema_plane != "agent":
+                from app.db.agent_store import get_agent_store
+                authority = await get_agent_store(agent_id).get_authority()
+                if authority:
+                    if "agent_id" in authority:
+                        authority["id"] = authority.pop("agent_id")
+                    authority.pop("synced_at", None)
+                    return authority
+        except Exception as exc:
+            logger.debug("Agent authority read-through failed for %s: %s", agent_id, exc)
         conn = self._get_conn()
         try:
             row = conn.execute(
@@ -5287,6 +6286,129 @@ class LocalBackend(StorageBackend):
             updated_by=updated_by,
         )
         return normalize_skills(skills)
+
+    # ── Session-owned working-tree paths (sessions.metadata) ──
+
+    @staticmethod
+    def _session_change_paths_from_meta(meta_raw) -> List[str]:
+        try:
+            meta = json.loads(meta_raw) if meta_raw else {}
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(meta, dict):
+            return []
+        paths = meta.get("session_change_paths") or []
+        if not isinstance(paths, list):
+            return []
+        return sorted({
+            p.replace("\\", "/").strip().lstrip("/")
+            for p in paths
+            if isinstance(p, str) and p.strip()
+        })
+
+    async def get_session_change_claims(self, session_id: str) -> List[str]:
+        if not session_id:
+            return []
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            return self._session_change_paths_from_meta(row["metadata"]) if row else []
+        finally:
+            conn.close()
+
+    async def get_session_change_owners(
+        self, paths: List[str]
+    ) -> Dict[str, List[str]]:
+        wanted = {
+            p.replace("\\", "/").strip().lstrip("/")
+            for p in paths if isinstance(p, str) and p.strip()
+        }
+        owners: Dict[str, List[str]] = {path: [] for path in wanted}
+        if not wanted:
+            return owners
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, metadata FROM sessions WHERE status = 'active'"
+            ).fetchall()
+            for row in rows:
+                for path in self._session_change_paths_from_meta(row["metadata"]):
+                    if path in wanted:
+                        owners[path].append(row["id"])
+            return owners
+        finally:
+            conn.close()
+
+    async def update_session_change_claims(
+        self,
+        session_id: str,
+        *,
+        claimed: List[str] | None = None,
+        reset: List[str] | None = None,
+        cleared: List[str] | None = None,
+        released: List[str] | None = None,
+    ) -> List[str]:
+        """Atomically reset stale owners, clear clean paths, and add new claims."""
+        claimed_set = {
+            p.replace("\\", "/").strip().lstrip("/")
+            for p in (claimed or []) if isinstance(p, str) and p.strip()
+        }
+        reset_set = {
+            p.replace("\\", "/").strip().lstrip("/")
+            for p in (reset or []) if isinstance(p, str) and p.strip()
+        }
+        cleared_set = {
+            p.replace("\\", "/").strip().lstrip("/")
+            for p in (cleared or []) if isinstance(p, str) and p.strip()
+        }
+        released_set = {
+            p.replace("\\", "/").strip().lstrip("/")
+            for p in (released or []) if isinstance(p, str) and p.strip()
+        }
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT id, metadata FROM sessions WHERE status = 'active'"
+                ).fetchall()
+                current: List[str] = []
+                now = _now_iso()
+                for row in rows:
+                    try:
+                        meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                        if not isinstance(meta, dict):
+                            meta = {}
+                    except (json.JSONDecodeError, TypeError):
+                        meta = {}
+                    paths = set(self._session_change_paths_from_meta(row["metadata"]))
+                    before = set(paths)
+                    paths -= cleared_set
+                    if row["id"] != session_id:
+                        paths -= reset_set
+                    else:
+                        paths -= released_set
+                        paths |= claimed_set
+                    if paths != before:
+                        meta["session_change_paths"] = sorted(paths)
+                        conn.execute(
+                            "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                            (json.dumps(meta), now, row["id"]),
+                        )
+                    if row["id"] == session_id:
+                        current = sorted(paths)
+                conn.commit()
+                return current
+            finally:
+                conn.close()
+
+    async def clear_session_change_claims(
+        self, session_id: str, paths: List[str]
+    ) -> List[str]:
+        return await self.update_session_change_claims(
+            session_id, released=paths
+        )
 
     # ── On-demand skills: per-session active list (lives in sessions.metadata) ──
     # "active_skills" = the names of selectable skills the agent has loaded this
@@ -5527,6 +6649,45 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
+    # ── Local Codex engine: per-session Codex thread id ─────────────────────
+    # Kept alongside the Claude mapping above: `codex exec resume <id>` lets a
+    # WebAgent chat keep one Codex conversation across headless turns.
+    async def get_session_codex_id(self, session_id: str) -> Optional[str]:
+        if not session_id:
+            return None
+        conn = self._get_conn()
+        try:
+            row = conn.execute("SELECT metadata FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            try:
+                meta = json.loads(row["metadata"]) if row and row["metadata"] else {}
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+            value = meta.get("codex_thread_id") if isinstance(meta, dict) else None
+            return value if isinstance(value, str) and value else None
+        finally:
+            conn.close()
+
+    async def set_session_codex_id(self, session_id: str, thread_id: str) -> None:
+        if not session_id or not thread_id:
+            return
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute("SELECT metadata FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                if not row:
+                    return
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict): meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                meta["codex_thread_id"] = thread_id
+                conn.execute("UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                             (json.dumps(meta), _now_iso(), session_id))
+                conn.commit()
+            finally:
+                conn.close()
+
     # ── Local Claude Code engine: one-shot "compact & restart" (/compact) ──
     # A Claude Code agent's memory lives inside the `claude` CLI's own session,
     # resumed each turn — it only ever grows. The /compact command arms a one-shot
@@ -5607,6 +6768,93 @@ class LocalBackend(StorageBackend):
                     meta = {}
                 if "claude_reseed_context" in meta:
                     meta.pop("claude_reseed_context", None)
+                    conn.execute(
+                        "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(meta), _now_iso(), session_id),
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+
+    # ── Codex engine: one-shot "compact & restart" (/compact) ──────────────────
+    # Mirror of the Claude reseed above for the Codex CLI: /compact folds this
+    # chat into a recap, we stash it in the session metadata AND drop the stored
+    # codex thread id, so the engine's next turn starts a BRAND-NEW Codex thread
+    # seeded with the recap instead of resuming the old (only-ever-growing) one.
+    # Consumed (cleared) by the engine on that next turn once the fresh thread
+    # has actually produced an id — a failed restart retries the recap.
+
+    async def set_session_codex_reseed(self, session_id: str, seed: str) -> None:
+        """Arm a one-shot compact-and-restart: store the recap, forget the old thread."""
+        if not session_id:
+            return
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                meta["codex_reseed_context"] = seed or ""
+                # Forget the old Codex thread so the next turn does NOT resume it.
+                meta.pop("codex_thread_id", None)
+                conn.execute(
+                    "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), session_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def get_session_codex_reseed(self, session_id: str) -> Optional[str]:
+        """Return the pending compact-and-restart recap for this session, or None."""
+        if not session_id:
+            return None
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row:
+                return None
+            try:
+                meta = json.loads(row["metadata"]) if row["metadata"] else {}
+            except (json.JSONDecodeError, TypeError):
+                return None
+            if not isinstance(meta, dict):
+                return None
+            seed = meta.get("codex_reseed_context")
+            return seed if isinstance(seed, str) and seed else None
+        finally:
+            conn.close()
+
+    async def clear_session_codex_reseed(self, session_id: str) -> None:
+        """Drop a consumed recap once the fresh Codex thread has been seeded."""
+        if not session_id:
+            return
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                if "codex_reseed_context" in meta:
+                    meta.pop("codex_reseed_context", None)
                     conn.execute(
                         "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
                         (json.dumps(meta), _now_iso(), session_id),
@@ -5733,6 +6981,63 @@ class LocalBackend(StorageBackend):
             finally:
                 conn.close()
 
+    # ── Session lifecycle: status check + cleanup for recycle/delete safety ──
+
+    async def get_session_status(self, session_id: str) -> Optional[str]:
+        """Return the session's status field (e.g. 'active', 'recycled') or None if not found."""
+        if not session_id:
+            return None
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            return row["status"] if row else None
+        finally:
+            conn.close()
+
+    async def clear_session_active_state(self, session_id: str) -> None:
+        """Clear all active state (tools, skills, abilities) for a session.
+        Called when a session is recycled to prevent any further loop activation."""
+        if not session_id:
+            return
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                # Clear all active state fields that could trigger the loop
+                meta.pop("active_tools", None)
+                meta.pop("active_skills", None)
+                meta.pop("active_abilities", None)
+                meta.pop("suppressed_abilities", None)
+                meta.pop("execution_mode", None)
+                conn.execute(
+                    "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), session_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def is_session_dead(self, session_id: str) -> bool:
+        """True if the session is permanently deleted (no row exists) or recycled.
+        Used as a safety check before running any loop or automation."""
+        if not session_id:
+            return True
+        status = await self.get_session_status(session_id)
+        # Dead if: no row found (hard-deleted), or status is 'recycled' (soft-deleted)
+        return status is None or status == "recycled"
+
     # ── Per-session model override (lives in sessions.metadata["llm_config"]) ──
     # Lets a single chat run on a model different from the agent's default — the
     # footer model picker writes here so each session remembers its own model.
@@ -5835,12 +7140,27 @@ class LocalBackend(StorageBackend):
                 conn.close()
 
     async def set_session_llm_override(
-        self, session_id: str, model: Optional[str]
+        self, session_id: str, selection: Optional[dict] = None
     ) -> Optional[dict]:
-        """Set (or clear) the session's model override. A non-empty model stores
-        ``{use_default: False, model}``; an empty/None model clears the override
-        so the session falls back to the agent/app default. Returns the new cfg
-        (or None when cleared)."""
+        """Set (or clear) the session's model override.
+
+        ``selection`` is one of:
+          - ``None`` → clear the override entirely (fall back to agent/app default);
+          - a slot-selection dict ``{"type": "role", "role": "standard"}`` or
+            ``{"type": "custom", "position": 2}`` (the chat footer model picker);
+          - a concrete model ``{"type": "model", "model": "<model id>"}`` or a bare
+            model-id STRING (the Model Switcher ability's set_model /
+            use_premium_model contract) — stored as ``{use_default: False,
+            model: <id>}``, the concrete-model form the runtime resolver
+            (``_session_llm_override`` in app/admin/settings.py) already supports.
+
+        Stores the override in the session's metadata. Returns the new cfg (or
+        None when cleared). A bare string that is empty/blank falls through to
+        the clear path.
+
+        If the session row does not exist yet, it is created on the fly so the
+        footer model picker works before the first message is sent — model
+        selections are per-session and must never bleed into agent metadata."""
         if not session_id:
             return None
         async with self._write_lock:
@@ -5850,25 +7170,65 @@ class LocalBackend(StorageBackend):
                     "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
                 ).fetchone()
                 if not row:
-                    return None
-                try:
-                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
-                    if not isinstance(meta, dict):
-                        meta = {}
-                except (json.JSONDecodeError, TypeError):
+                    # Session row does not exist yet — create a minimal row so the
+                    # model override can be stored per-session immediately (the
+                    # footer picker may be used before the first message is sent).
+                    conn.execute(
+                        """INSERT INTO sessions (id, user_id, metadata, status, created_at, updated_at)
+                           VALUES (?, '', '{}', 'active', ?, ?)""",
+                        (session_id, _now_iso(), _now_iso()),
+                    )
+                    conn.commit()
                     meta = {}
-                # Preserve any per-model reasoning-effort map across a model change
-                # so each model keeps its own remembered effort (the footer picker
-                # stores an effort per row). Clearing the model keeps the effort map
-                # alone — the default model can still carry an effort — and only when
-                # BOTH are empty is the override removed entirely.
+                else:
+                    try:
+                        meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                        if not isinstance(meta, dict):
+                            meta = {}
+                    except (json.JSONDecodeError, TypeError):
+                        meta = {}
+                # Preserve any per-slot reasoning-effort map across a model change
+                # so each slot keeps its own remembered effort (the footer picker
+                # stores an effort per row).
                 prev = meta.get("llm_config") if isinstance(meta.get("llm_config"), dict) else {}
                 effort_map = prev.get("model_effort") if isinstance(prev.get("model_effort"), dict) else {}
-                if model:
-                    cfg = {"use_default": False, "model": model}
-                    if effort_map:
-                        cfg["model_effort"] = effort_map
-                    meta["llm_config"] = cfg
+                if isinstance(selection, str):
+                    # Bare model-id string — the Model Switcher ability's contract.
+                    model_id = selection.strip()
+                    if model_id:
+                        cfg = {"use_default": False, "model": model_id}
+                        if effort_map:
+                            cfg["model_effort"] = effort_map
+                        meta["llm_config"] = cfg
+                    else:
+                        # Empty/blank string → clear, same as None.
+                        cfg = None
+                        meta.pop("llm_config", None)
+                elif selection:
+                    sel_type = selection.get("type", "")
+                    if sel_type == "model":
+                        # Explicit dict form of the concrete-model override.
+                        model_id = (selection.get("model") or "").strip()
+                        cfg = {"use_default": False, "model": model_id}
+                        if effort_map:
+                            cfg["model_effort"] = effort_map
+                        # Stash-restore: carry a prior USER footer-picker slot
+                        # selection so the agent's temporary upgrade can be reset
+                        # back to it (the Model Switcher ability passes
+                        # ``_prior_slot``). Inert to the runtime resolver.
+                        prior_slot = selection.get("_prior_slot")
+                        if isinstance(prior_slot, dict) and prior_slot.get("selection_type"):
+                            cfg["_prior_slot"] = prior_slot
+                        meta["llm_config"] = cfg
+                    else:
+                        cfg = {"use_default": False, "selection_type": sel_type}
+                        if sel_type == "role":
+                            cfg["role"] = selection.get("role", "")
+                        elif sel_type == "custom":
+                            cfg["custom_position"] = selection.get("position", 0)
+                        if effort_map:
+                            cfg["model_effort"] = effort_map
+                        meta["llm_config"] = cfg
                 elif effort_map:
                     cfg = {"model_effort": effort_map}
                     meta["llm_config"] = cfg
@@ -5885,17 +7245,16 @@ class LocalBackend(StorageBackend):
                 conn.close()
 
     async def set_session_model_effort(
-        self, session_id: str, model_id: str, effort: Optional[str]
+        self, session_id: str, slot_ref: str, effort: Optional[str]
     ) -> Optional[dict]:
-        """Set (or clear) the per-model reasoning-effort level for THIS session.
+        """Set (or clear) the per-SLOT reasoning-effort level for THIS session.
 
-        Stores a ``{model_id: level}`` map under ``metadata['llm_config']
-        ['model_effort']`` so each model the chat can run on remembers its own
-        effort level (the footer picker shows an effort selector per model row,
-        and the Model Switcher ability writes here too). A falsy/``"default"``
-        level removes that model's entry. Leaves the picked model untouched.
+        Stores a ``{slot_ref: level}`` map under ``metadata['llm_config']
+        ['model_effort']`` so each slot (e.g. 'role:standard', 'custom:2') remembers
+        its own effort level. A falsy/``"default"`` level removes that entry.
+        Leaves the picked slot untouched.
         Returns the new llm_config dict (or None when the override is now empty)."""
-        if not session_id or not model_id:
+        if not session_id or not slot_ref:
             return None
         level = (effort or "").strip().lower()
         async with self._write_lock:
@@ -5915,9 +7274,9 @@ class LocalBackend(StorageBackend):
                 cfg = meta.get("llm_config") if isinstance(meta.get("llm_config"), dict) else {}
                 effort_map = dict(cfg.get("model_effort") or {}) if isinstance(cfg.get("model_effort"), dict) else {}
                 if level and level != "default":
-                    effort_map[model_id] = level
+                    effort_map[slot_ref] = level
                 else:
-                    effort_map.pop(model_id, None)
+                    effort_map.pop(slot_ref, None)
                 if effort_map:
                     cfg = dict(cfg)
                     cfg["model_effort"] = effort_map
@@ -5925,7 +7284,7 @@ class LocalBackend(StorageBackend):
                     cfg = dict(cfg)
                     cfg.pop("model_effort", None)
                 # Drop the override entirely if nothing meaningful is left.
-                if not cfg.get("model") and not cfg.get("model_effort"):
+                if not cfg.get("model") and not cfg.get("selection_type") and not cfg.get("model_effort"):
                     meta.pop("llm_config", None)
                     cfg = None
                 else:
@@ -5964,6 +7323,91 @@ class LocalBackend(StorageBackend):
                 if "llm_config" not in meta:
                     return
                 meta.pop("llm_config", None)
+                conn.execute(
+                    "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), session_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def clear_session_agent_model_override(self, session_id: str) -> None:
+        """New-user-message reset for the Model Switcher ability.
+
+        Strips ONLY the AGENT-driven parts of the session's model override:
+          - a concrete-model pick (``{use_default: False, model: <id>}``) — the
+            form the Model Switcher's set_model / use_premium_model writes;
+          - reasoning-effort entries keyed by a BARE MODEL ID — written by
+            set_effort (whether or not a model switch also happened).
+
+        The user's own footer-picker slot selection (``selection_type`` + role /
+        custom_position) and its per-slot effort keys (``role:*`` / ``custom:*``)
+        survive — a model the USER chose persists across messages, while the
+        agent's temporary upgrade (or effort raise) never leaks into the user's
+        next turn. No-op when there is nothing agent-driven to clear."""
+        if not session_id:
+            return
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                cfg = meta.get("llm_config")
+                if not isinstance(cfg, dict):
+                    return
+                # Copy, then strip the agent-driven keys only.
+                new_cfg = dict(cfg)
+                if "model" in new_cfg:
+                    new_cfg.pop("model", None)
+                # Restore the user's stashed footer-picker slot selection, if the
+                # agent's upgrade stashed one (see set_model / use_premium_model
+                # in the Model Switcher ability — SISTER-SYNC stash-restore).
+                prior_slot = new_cfg.pop("_prior_slot", None)
+                if (not new_cfg.get("selection_type")
+                        and isinstance(prior_slot, dict)
+                        and prior_slot.get("selection_type")):
+                    new_cfg["selection_type"] = prior_slot["selection_type"]
+                    if prior_slot.get("role"):
+                        new_cfg["role"] = prior_slot["role"]
+                    elif "role" in new_cfg:
+                        new_cfg.pop("role", None)
+                    if prior_slot.get("custom_position") is not None:
+                        new_cfg["custom_position"] = prior_slot["custom_position"]
+                    elif "custom_position" in new_cfg:
+                        new_cfg.pop("custom_position", None)
+                    new_cfg["use_default"] = False
+                effort_map = new_cfg.get("model_effort")
+                if isinstance(effort_map, dict):
+                    kept = {k: v for k, v in effort_map.items()
+                            if k.startswith("role:") or k.startswith("custom:")}
+                    if kept:
+                        new_cfg["model_effort"] = kept
+                    else:
+                        new_cfg.pop("model_effort", None)
+                # A concrete override's use_default:False marker is meaningless
+                # once its model is gone — and must not keep the override active.
+                if not new_cfg.get("selection_type"):
+                    new_cfg.pop("use_default", None)
+                # Nothing meaningful left → clear the override entirely.
+                if not new_cfg.get("selection_type") and not new_cfg.get("model_effort"):
+                    new_cfg = None
+                if new_cfg is None:
+                    if "llm_config" not in meta:
+                        return
+                    meta.pop("llm_config", None)
+                elif new_cfg == cfg:
+                    return  # nothing agent-driven to clear
+                else:
+                    meta["llm_config"] = new_cfg
                 conn.execute(
                     "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
                     (json.dumps(meta), _now_iso(), session_id),
@@ -6490,7 +7934,9 @@ class LocalBackend(StorageBackend):
             docs = [d for d in docs if d["context_type"] in context_types]
         return docs
 
-    async def create_agent_for_user(self, user_id: str) -> dict:
+    async def create_agent_for_user(
+        self, user_id: str, *, agent_id: Optional[str] = None
+    ) -> dict:
         conn = self._get_conn()
         try:
             # Templates are seeded at boot (manifest-gated) + on admin re-seed.
@@ -6509,12 +7955,19 @@ class LocalBackend(StorageBackend):
 
             tpl_data = dict(tpl)
             now = _now_iso()
-            agent_id = _uuid()
+            agent_id = agent_id or _uuid()
             # Default WebAgent ships with DISCOVERABLE tools/abilities: its whole
             # tool surface is withheld behind the `# [ABILITIES]` menu and pulled
             # in on demand via load_ability, instead of shipping every tool schema
             # each turn. See tool_modes.AGENT_DISCOVERY_DEFAULT_KEY.
-            _meta_json = self._with_discovery_default(tpl_data["metadata"], "discoverable")
+            from app.agent.cache_profiles import (
+                DEFAULT_WEBAGENT_PROFILE, with_cache_profile,
+            )
+            _meta_obj = with_cache_profile(
+                tpl_data["metadata"], DEFAULT_WEBAGENT_PROFILE,
+            )
+            _meta_obj["template_origin"] = "default"
+            _meta_json = json.dumps(_meta_obj)
             _allowed_tools, _safety_policy = self._tool_perm_columns(_meta_json)
             conn.execute(
                 """INSERT INTO agents
@@ -6523,10 +7976,11 @@ class LocalBackend(StorageBackend):
                     max_identical_tool_calls, max_stall_strikes,
                     model, provider,
                     temperature, max_tokens, status, metadata,
+                    template_id,
                     trigger_type, trigger_key, loop_logic,
                     allowed_tools, safety_policy,
                     is_user_default, admin_users, assigned_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
                 (agent_id, tpl_data.get("name", "genui"),
                  tpl_data["max_turn_count"],
                  tpl_data.get("max_wall_seconds"),
@@ -6537,6 +7991,7 @@ class LocalBackend(StorageBackend):
                  tpl_data["temperature"],
                  tpl_data["max_tokens"],
                  _meta_json,
+                 "default",
                  tpl_data.get("trigger_type", "user_input"),
                  tpl_data.get("trigger_key"),
                  tpl_data.get("loop_logic", "[]"),
@@ -6545,6 +8000,7 @@ class LocalBackend(StorageBackend):
                  now, now, now),
             )
             self._clone_template_slots(conn, source_id="default", target_id=agent_id, now=now)
+            self._seed_pre_enabled_connections(conn, agent_id, _meta_json, now)
             conn.commit()
 
             # Set as user's default agent in user_profiles
@@ -6579,7 +8035,7 @@ class LocalBackend(StorageBackend):
                 row = conn.execute(
                     "SELECT turn_count FROM agents WHERE id = ?", (agent_id,)
                 ).fetchone()
-                current = row["turn_count"] if row else 0
+                current = (row["turn_count"] if row else None) or 0
                 new_count = current + 1
                 # NOTE: do NOT touch ``updated_at`` here — turn_count is an
                 # activity counter, not a config edit. Bumping updated_at every
@@ -6587,7 +8043,7 @@ class LocalBackend(StorageBackend):
                 # IS updated_at) on every message, so load_tools would re-run its
                 # dozens of round-trips each time. Real config edits (tool/ability
                 # modes, connections, data sources) still bump updated_at. Matches
-                # the Supabase backend, which only updates turn_count.
+                # the Postgres backend, which only updates turn_count.
                 conn.execute(
                     "UPDATE agents SET turn_count = ? WHERE id = ?",
                     (new_count, agent_id),
@@ -6894,8 +8350,17 @@ class LocalBackend(StorageBackend):
                 session_id[:8], existing_id[:8],
             )
 
-        # No binding or agent gone — resolve and bind
-        agent = await self.resolve_agent(user_id, template_id)
+        # No binding or agent gone — resolve and bind. The default template is
+        # special: it is the one app-level singleton, never materialized into a
+        # new per-user row by this generic template path.
+        resolved_template = template_id or "default"
+        if resolved_template == "default":
+            from app.api.agents import provision_default_agent
+            agent = await provision_default_agent(self, user_id)
+            if agent is None:
+                return None
+        else:
+            agent = await self.resolve_agent(user_id, resolved_template)
 
         # If virtual (template/filesystem), materialize as real agents row
         if agent.get("status") in ("template", "filesystem"):
@@ -6917,7 +8382,7 @@ class LocalBackend(StorageBackend):
                         allowed_tools, safety_policy,
                         is_admin_agent, admin_users, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (agent_id, template_id,
+                    (agent_id, resolved_template,
                      agent.get("name", ""),
                      agent.get("max_turn_count", 0),
                      agent.get("max_wall_seconds"),
@@ -6937,7 +8402,7 @@ class LocalBackend(StorageBackend):
                 # Clone admin-base slots from the source template into the new agent row.
                 self._clone_template_slots(
                     conn,
-                    source_id=template_id or "default",
+                    source_id=resolved_template,
                     target_id=agent_id,
                     now=now,
                 )
@@ -6976,15 +8441,29 @@ class LocalBackend(StorageBackend):
         async with self._write_lock:
             conn = self._get_conn()
             try:
+                owner = conn.execute(
+                    "SELECT user_id FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+                if not owner or not owner["user_id"]:
+                    raise LookupError(
+                        f"Cannot interrupt missing or unowned session {session_id}"
+                    )
+                now = _now_iso()
                 conn.execute(
-                    """INSERT INTO session_interrupts (session_id, interrupt_requested, created_at) 
-                       VALUES (?, 1, ?) 
-                       ON CONFLICT(session_id) DO UPDATE SET interrupt_requested = 1, created_at = ?""",
-                    (session_id, _now_iso(), _now_iso())
+                    """INSERT INTO session_interrupts
+                           (session_id, user_id, interrupt_requested, created_at)
+                       VALUES (?, ?, 1, ?)
+                       ON CONFLICT(session_id) DO UPDATE SET
+                           user_id = excluded.user_id,
+                           interrupt_requested = 1,
+                           created_at = excluded.created_at""",
+                    (session_id, owner["user_id"], now),
                 )
                 conn.commit()
-            except Exception as e:
-                logger.warning("Interrupt skipped — no session row for %s: %s", session_id[:12], e)
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 conn.close()
 
@@ -7481,7 +8960,7 @@ class LocalBackend(StorageBackend):
         # status dot lights up live. All run paths (web chat, supervised runner,
         # watchdog) funnel through run_state_begin/finish, so this single pair of
         # chokepoints covers every way a run can start or stop.
-        await _emit_agent_run_status(user_id, agent_id, session_id, "running")
+        await _emit_agent_run_status(user_id, agent_id, session_id, "running", turn_id=turn_id)
 
     async def run_state_set_assistant(self, session_id: str, assistant_interaction_id: str) -> None:
         """Record which assistant interaction row is the in-progress answer."""
@@ -7554,7 +9033,10 @@ class LocalBackend(StorageBackend):
                 conn.execute(
                     """UPDATE session_runs SET
                          status=?,
-                         error=?,
+                         error=CASE
+                           WHEN ?='complete' THEN NULL
+                           ELSE COALESCE(?, error)
+                         END,
                          stop_cause=CASE
                            WHEN stop_cause IN ('user_stop','replaced','needs_manual_resume')
                              THEN stop_cause
@@ -7565,7 +9047,7 @@ class LocalBackend(StorageBackend):
                          current_op=NULL,
                          updated_at=?
                        WHERE session_id=?""",
-                    (status, error, stop_cause, _iso_now(), session_id),
+                    (status, status, error, stop_cause, _iso_now(), session_id),
                 )
                 conn.commit()
             finally:
@@ -7622,7 +9104,7 @@ class LocalBackend(StorageBackend):
     # ── Self-healing / auto-resume helpers ────────────────────────────────
     # Resumable causes: an involuntary stop we should re-ignite. user_stop /
     # replaced / failed / needs_manual_resume / complete are NEVER in this set.
-    _RESUMABLE_CAUSES = ("server_restart", "zombie", "frozen", "crash")
+    _RESUMABLE_CAUSES = ("server_restart", "zombie", "frozen", "crash", "empty_response")
 
     async def run_state_session_tool_names(self, session_id: str) -> List[str]:
         """Distinct tool names invoked anywhere in this session. Used by the
@@ -7706,9 +9188,6 @@ class LocalBackend(StorageBackend):
                      WHERE status NOT IN ('running','complete')
                        AND stop_cause IN ({placeholders})
                        AND (next_resume_at IS NULL OR next_resume_at <= ?)
-                       AND COALESCE(origin,'') NOT IN ('sandbox','optimizer')
-                       AND session_id NOT LIKE 'test-%'
-                       AND session_id NOT LIKE 'trial-%'
                      ORDER BY started_at ASC""",
                 (*self._RESUMABLE_CAUSES, now),
             ).fetchall()
@@ -7817,10 +9296,33 @@ class LocalBackend(StorageBackend):
         conn = self._get_conn()
         try:
             row = conn.execute(
-                "SELECT interrupt_requested FROM session_interrupts WHERE session_id = ?",
+                "SELECT interrupt_requested, created_at "
+                "FROM session_interrupts WHERE session_id = ?",
                 (session_id,)
             ).fetchone()
-            return bool(row and row["interrupt_requested"])
+            if not row:
+                return False
+            try:
+                created_at = datetime.fromisoformat(
+                    str(row["created_at"]).replace("Z", "+00:00")
+                )
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) - created_at > timedelta(hours=24):
+                    conn.execute(
+                        "DELETE FROM session_interrupts WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    conn.commit()
+                    return False
+            except (TypeError, ValueError):
+                conn.execute(
+                    "DELETE FROM session_interrupts WHERE session_id = ?",
+                    (session_id,),
+                )
+                conn.commit()
+                return False
+            return bool(row["interrupt_requested"])
         except Exception as e:
             logger.error("Error checking interrupt for %s: %s", session_id, e)
             return False
@@ -8017,11 +9519,18 @@ class LocalBackend(StorageBackend):
         round-trip (~150ms). Because they have different (service, label) keys the
         per-method turn cache can't share them; pulling the whole set in a single
         query collapses those N reads to one. Turn-invariant: credentials are not
-        rewritten mid-chat-turn (writes happen in separate admin requests)."""
+        rewritten mid-chat-turn (writes happen in separate admin requests).
+
+        With the three-vault split, queries all three vaults via UNION ALL."""
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT * FROM auth_elements WHERE user_id = ?", (user_id,)
+                "SELECT * FROM vault_app.auth_elements WHERE user_id = ? "
+                "UNION ALL "
+                "SELECT * FROM vault_agent.auth_elements WHERE user_id = ? "
+                "UNION ALL "
+                "SELECT * FROM vault_user.auth_elements WHERE user_id = ?",
+                (user_id, user_id, user_id),
             ).fetchall()
             return {(r["service"], r["label"]): dict(r) for r in rows}
         finally:
@@ -8037,10 +9546,11 @@ class LocalBackend(StorageBackend):
         if turn_scope_active():
             allrows = await self._auth_elements_for_user(user_id)
             return allrows.get((service, label))
+        schema = _vault_for(user_id, service, label)
         conn = self._get_conn()
         try:
             row = conn.execute(
-                "SELECT * FROM auth_elements WHERE user_id = ? AND service = ? AND label = ?",
+                f"SELECT * FROM {schema}.auth_elements WHERE user_id = ? AND service = ? AND label = ?",
                 (user_id, service, label),
             ).fetchone()
             return dict(row) if row else None
@@ -8056,25 +9566,28 @@ class LocalBackend(StorageBackend):
         label: str = "default",
     ) -> dict:
         import uuid
+        schema = _vault_for(user_id, service, label)
         conn = self._get_conn()
         try:
             existing = conn.execute(
-                "SELECT id FROM auth_elements WHERE user_id = ? AND service = ? AND label = ?",
+                f"SELECT id, _version FROM {schema}.auth_elements WHERE user_id = ? AND service = ? AND label = ?",
                 (user_id, service, label),
             ).fetchone()
             now = _now_iso()
             config_json = __import__('json').dumps(config)
             if existing:
+                new_version = (existing["_version"] or 0) + 1
                 conn.execute(
-                    "UPDATE auth_elements SET config = ?, secret_ref = ?, updated_at = ? WHERE id = ?",
-                    (config_json, secret_ref, now, existing[0]),
+                    f"UPDATE {schema}.auth_elements SET config = ?, secret_ref = ?, updated_at = ?, _version = ? WHERE id = ?",
+                    (config_json, secret_ref, now, new_version, existing["id"]),
                 )
-                row_id = existing[0]
+                row_id = existing["id"]
             else:
+                new_version = 1
                 row_id = str(uuid.uuid4())
                 conn.execute(
-                    "INSERT INTO auth_elements (id, user_id, service, label, config, secret_ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (row_id, user_id, service, label, config_json, secret_ref, now, now),
+                    f"INSERT INTO {schema}.auth_elements (id, user_id, service, label, config, secret_ref, created_at, updated_at, _version, _schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (row_id, user_id, service, label, config_json, secret_ref, now, now, new_version, AUTH_ELEMENTS_SCHEMA_VERSION),
                 )
             conn.commit()
             # If this write happens inside a chat turn (e.g. a tool refreshing an
@@ -8089,6 +9602,8 @@ class LocalBackend(StorageBackend):
                 "config": config_json,
                 "secret_ref": secret_ref,
                 "is_active": 1,
+                "_version": new_version,
+                "_schema_version": AUTH_ELEMENTS_SCHEMA_VERSION,
             }
         finally:
             conn.close()
@@ -8102,13 +9617,16 @@ class LocalBackend(StorageBackend):
         given email/account in its config JSON. Used by inbound event sources
         (Gmail Pub/Sub, Graph notifications) to map provider events back to
         a WebAgent user. Matches any per-agent OAuth label (``oauth:<agent_id>``)
-        for the user. None if no match."""
+        for the user. None if no match.
+
+        All OAuth tokens live in vault_agent."""
         if not email_or_account:
             return None
         conn = self._get_conn()
         try:
             rows = conn.execute(
-                "SELECT user_id, config FROM auth_elements WHERE service = ? AND label LIKE 'oauth:%'",
+                "SELECT user_id, config FROM vault_agent.auth_elements "
+                "WHERE service = ? AND label LIKE 'oauth:%'",
                 (service,),
             ).fetchall()
             target = email_or_account.strip().lower()
@@ -8130,17 +9648,33 @@ class LocalBackend(StorageBackend):
     async def auth_element_list(
         self, user_id: str, service: Optional[str] = None
     ) -> List[dict]:
+        """List auth_elements for a user, optionally filtered by service.
+
+        When ``service`` is given we query only the vault that owns that service
+        type. When ``service`` is None (a full dump used by admin config pages
+        and agent setup) we UNION across all three vaults, since a single user
+        may have rows in vault_app, vault_agent, and vault_user.
+        """
         conn = self._get_conn()
         try:
             if service:
+                # Targeted query — hit the single vault that owns this service
+                schema = _vault_for(user_id, service, "")
                 rows = conn.execute(
-                    "SELECT * FROM auth_elements WHERE user_id = ? AND service = ? ORDER BY created_at",
+                    f"SELECT * FROM {schema}.auth_elements "
+                    "WHERE user_id = ? AND service = ? ORDER BY created_at",
                     (user_id, service),
                 ).fetchall()
             else:
+                # Full dump — UNION across all three vaults
                 rows = conn.execute(
-                    "SELECT * FROM auth_elements WHERE user_id = ? ORDER BY service, label",
-                    (user_id,),
+                    "SELECT * FROM vault_app.auth_elements WHERE user_id = ? "
+                    "UNION ALL "
+                    "SELECT * FROM vault_agent.auth_elements WHERE user_id = ? "
+                    "UNION ALL "
+                    "SELECT * FROM vault_user.auth_elements WHERE user_id = ? "
+                    "ORDER BY service, label",
+                    (user_id, user_id, user_id),
                 ).fetchall()
             return [dict(r) for r in rows]
         finally:
@@ -8149,10 +9683,11 @@ class LocalBackend(StorageBackend):
     async def auth_element_delete(
         self, user_id: str, service: str, label: str = "default"
     ) -> bool:
+        schema = _vault_for(user_id, service, label)
         conn = self._get_conn()
         try:
             cur = conn.execute(
-                "DELETE FROM auth_elements WHERE user_id = ? AND service = ? AND label = ?",
+                f"DELETE FROM {schema}.auth_elements WHERE user_id = ? AND service = ? AND label = ?",
                 (user_id, service, label),
             )
             conn.commit()
@@ -8431,17 +9966,38 @@ class LocalBackend(StorageBackend):
                 conn.close()
 
     async def delete_user_account(self, user_id: str) -> bool:
-        """Delete an account by user_id. Returns True if a row was removed."""
+        """Delete the central account and profile rows after data-plane erasure."""
         async with self._write_lock:
             conn = self._get_conn()
             try:
                 cur = conn.execute(
                     "DELETE FROM user_accounts WHERE user_id = ?", (user_id,)
                 )
+                conn.execute(
+                    "DELETE FROM user_profiles WHERE user_id = ?", (user_id,)
+                )
                 conn.commit()
                 return cur.rowcount > 0
             finally:
                 conn.close()
+
+    async def erase_user_owned_data(self, user_id: str) -> dict:
+        """Erase data-plane rows while leaving the central login row intact."""
+        conn = self._get_conn()
+        try:
+            from app.db.user_lifecycle import erase_user_data
+            return await erase_user_data(conn, user_id, include_account=False)
+        finally:
+            conn.close()
+
+    async def export_user_data(self, user_id: str) -> dict:
+        """Export user-owned server data from the active SQLite/Postgres store."""
+        conn = self._get_conn()
+        try:
+            from app.db.user_lifecycle import export_user_data
+            return await export_user_data(conn, user_id)
+        finally:
+            conn.close()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Multi-agent: template listing and custom agent CRUD
@@ -8555,6 +10111,15 @@ class LocalBackend(StorageBackend):
                 ).fetchall()
 
                 now = _now_iso()
+                # Stamp origin marker so the template knows it was admin-saved.
+                _sv_meta = agent.get("metadata") or "{}"
+                try:
+                    _sv_meta_obj = json.loads(_sv_meta) if isinstance(_sv_meta, str) else dict(_sv_meta or {})
+                except (json.JSONDecodeError, TypeError):
+                    _sv_meta_obj = {}
+                _sv_meta_obj["source"] = "admin_saved"
+                _sv_meta_json = json.dumps(_sv_meta_obj)
+
                 conn.execute(
                     """INSERT INTO agent_templates
                        (id, name, description, icon, max_turn_count, max_wall_seconds,
@@ -8579,7 +10144,7 @@ class LocalBackend(StorageBackend):
                         agent.get("provider"),
                         agent.get("temperature") if agent.get("temperature") is not None else 0.0,
                         agent.get("max_tokens") or 8000,
-                        agent.get("metadata") or "{}",
+                        _sv_meta_json,
                         1,  # can_be_default
                         0,  # is_system (user-created)
                         0,  # is_pipeline
@@ -8594,7 +10159,7 @@ class LocalBackend(StorageBackend):
                 )
 
                 slot_count = 0
-                for r in slot_rows:
+                for r in _resolved_slots:
                     conn.execute(
                         """INSERT INTO agent_prompt_templates
                            (id, template_id, slot_name, order_index, lock,
@@ -8624,6 +10189,209 @@ class LocalBackend(StorageBackend):
                 return result
             finally:
                 conn.close()
+
+    async def upsert_agent_to_template(
+        self,
+        agent_id: str,
+        updated_by: str = "admin",
+    ) -> dict:
+        """Push a custom agent's current config + prompt slots back into its
+        template row (determined by ``agents.template_id``).
+
+        Upserts into ``agent_templates`` and ``agent_prompt_templates`` with
+        ``source='admin'`` so future JSON re-seeds won't overwrite them.
+        Bumps the template version so manifest-aware re-seeds detect the change.
+
+        Returns the updated template row dict, or raises ValueError if the
+        agent has no template_id or neither the agent nor template exist.
+        """
+        conn = self._get_conn()
+        try:
+            agent_row = conn.execute(
+                "SELECT * FROM agents WHERE id = ?", (agent_id,)
+            ).fetchone()
+            if not agent_row:
+                raise ValueError(f"Agent {agent_id} not found")
+            agent = dict(agent_row)
+
+            template_id = agent.get("template_id")
+            if not template_id:
+                raise ValueError(f"Agent {agent_id} has no template_id — cannot push")
+
+            # Read the current template to bump its version
+            tpl_row = conn.execute(
+                "SELECT * FROM agent_templates WHERE id = ?", (template_id,)
+            ).fetchone()
+            if not tpl_row:
+                raise ValueError(f"Template {template_id} not found for agent {agent_id}")
+
+            # Bump the prompt-slot version so manifest-aware re-seeds pick up the change.
+            _max_ver = conn.execute(
+                "SELECT MAX(version) FROM agent_prompt_templates WHERE template_id = ?",
+                (template_id,),
+            ).fetchone()[0]
+            _new_version = (_max_ver or 0) + 1
+
+            # Read the agent's admin-base prompt slots, then overlay the
+            # owner's per-user overrides so the template push picks up
+            # edits made through the Prompts tab — even for locked slots.
+            # This makes the Config tab's "Push to DB template" the
+            # canonical promotion step: users edit via overrides, push
+            # promotes those overrides into the template.
+            slot_rows = conn.execute(
+                """SELECT slot_name, order_index, lock, merge_mode, content
+                   FROM agent_prompts
+                   WHERE agent_id = ? AND user_id IS NULL
+                   ORDER BY order_index ASC""",
+                (agent_id,),
+            ).fetchall()
+
+            _owner_id = agent.get("owner_user_id")
+            _overrides: Dict[str, str] = {}
+            if _owner_id:
+                _ov_rows = conn.execute(
+                    """SELECT slot_name, content FROM agent_prompts
+                       WHERE agent_id = ? AND user_id = ?""",
+                    (agent_id, _owner_id),
+                ).fetchall()
+                _overrides = {r["slot_name"]: r["content"] for r in _ov_rows}
+
+            # Resolve each slot: merge base + owner override. We bypass the
+            # normal lock guard (_slot_apply ignores overrides on locked slots)
+            # because the push button is the explicit "promote to template"
+            # action — the user's override always wins here.
+            _resolved_slots = []
+            for r in slot_rows:
+                _base = r["content"] or ""
+                _ov = _overrides.get(r["slot_name"])
+                _mode = r["merge_mode"] if r["merge_mode"] in ("replace", "append") else "replace"
+                if _ov is None:
+                    _content = _base
+                elif _mode == "append" and _base.strip():
+                    _content = _base.rstrip() + "\n\n" + _ov.lstrip()
+                else:
+                    _content = _ov
+                _resolved_slots.append({
+                    "slot_name": r["slot_name"],
+                    "order_index": r["order_index"],
+                    "lock": r["lock"],
+                    "merge_mode": _mode,
+                    "content": _content,
+                })
+
+            now = _now_iso()
+
+            # Merge agent's metadata into the template metadata, preserving
+            # the template's origin source marker and any admin-only keys.
+            _tpl_meta_raw = tpl_row["metadata"] or "{}"
+            _ag_meta_raw = agent.get("metadata") or "{}"
+            try:
+                _tpl_meta = json.loads(_tpl_meta_raw) if isinstance(_tpl_meta_raw, str) else dict(_tpl_meta_raw or {})
+            except (json.JSONDecodeError, TypeError):
+                _tpl_meta = {}
+            try:
+                _ag_meta = json.loads(_ag_meta_raw) if isinstance(_ag_meta_raw, str) else dict(_ag_meta_raw or {})
+            except (json.JSONDecodeError, TypeError):
+                _ag_meta = {}
+            # Pull over everything except internal runtime keys
+            _skip_keys = {"template_origin", "owner_user_id", "user_id",
+                          "cache_family", "cache_profile_version",
+                          "prompt_layout_version", "discovery_default"}
+            for k, v in _ag_meta.items():
+                if k not in _skip_keys:
+                    _tpl_meta[k] = v
+            _tpl_meta["source"] = "admin_saved"
+            _tpl_meta_json = json.dumps(_tpl_meta)
+
+            # Bump the prompt-slot version so manifest-aware re-seeds detect the change.
+            _max_ver = conn.execute(
+                "SELECT MAX(version) FROM agent_prompt_templates WHERE template_id = ?",
+                (template_id,),
+            ).fetchone()[0]
+            _new_version = (_max_ver or 0) + 1
+
+            conn.execute(
+                """UPDATE agent_templates SET
+                   name = ?, description = ?, icon = ?,
+                   max_turn_count = ?, max_wall_seconds = ?,
+                   max_identical_tool_calls = ?, max_stall_strikes = ?,
+                   model = ?, provider = ?,
+                   temperature = ?, max_tokens = ?,
+                   metadata = ?,
+                   trigger_type = ?, trigger_key = ?, loop_logic = ?,
+                   updated_at = ?
+                   WHERE id = ?""",
+                (
+                    agent.get("name", ""),
+                    agent.get("description", ""),
+                    agent.get("icon", ""),
+                    agent.get("max_turn_count") if agent.get("max_turn_count") is not None else 0,
+                    agent.get("max_wall_seconds"),
+                    agent.get("max_identical_tool_calls", 0),
+                    agent.get("max_stall_strikes", 0),
+                    agent.get("model"),
+                    agent.get("provider"),
+                    agent.get("temperature") if agent.get("temperature") is not None else 0.0,
+                    agent.get("max_tokens") or 8000,
+                    _tpl_meta_json,
+                    agent.get("trigger_type") or "user_input",
+                    agent.get("trigger_key"),
+                    agent.get("loop_logic") or "[]",
+                    now,
+                    template_id,
+                ),
+            )
+
+            # Per-slot upsert in agent_prompt_templates (source='admin')
+            slot_count = 0
+            from app.context.md_seeder import compute_agent_manifest_hash
+            for r in slot_rows:
+                existing = conn.execute(
+                    "SELECT id FROM agent_prompt_templates WHERE template_id = ? AND slot_name = ?",
+                    (template_id, r["slot_name"]),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        """UPDATE agent_prompt_templates
+                           SET order_index = ?, lock = ?, merge_mode = ?,
+                               content = ?, version = ?, source = 'admin',
+                               updated_at = ?, updated_by = ?
+                           WHERE id = ?""",
+                        (int(r["order_index"] or 0), int(r["lock"] or 0),
+                         r["merge_mode"] or "replace", r["content"] or "",
+                         _new_version, now, updated_by,
+                         existing["id"]),
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO agent_prompt_templates
+                           (id, template_id, slot_name, order_index, lock,
+                            merge_mode, content, version, source,
+                            updated_at, updated_by)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'admin', ?, ?)""",
+                        (_uuid(), template_id, r["slot_name"],
+                         int(r["order_index"] or 0), int(r["lock"] or 0),
+                         r["merge_mode"] or "replace", r["content"] or "",
+                         _new_version, now, updated_by),
+                    )
+                slot_count += 1
+
+            # Invalidate the stored manifest hash so next boot re-seeds detect the change
+            conn.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value, updated_at) VALUES ('last_agent_manifest_hash', '', ?)",
+                (now,),
+            )
+
+            conn.commit()
+
+            updated = conn.execute(
+                "SELECT * FROM agent_templates WHERE id = ?", (template_id,)
+            ).fetchone()
+            result = dict(updated) if updated else {}
+            result["slot_count"] = slot_count
+            return result
+        finally:
+            conn.close()
 
     async def list_agents_for_user(self, user_id: str, include_admin: bool = False,
                                    view: str = "active") -> List[dict]:
@@ -8745,24 +10513,6 @@ class LocalBackend(StorageBackend):
                 entry["is_user_default"] = 0
                 result.append(entry)
 
-        # Pipeline agents (the optimizer Planner/Closer, etc.) get materialized as
-        # real `agents` rows so a session can bind to them, but they are internal
-        # machinery — never part of the user-facing roster. The Agents page and the
-        # chat "+" agent picker both list custom rows, so build the set of pipeline
-        # template ids here and skip any custom row that was cloned from one.
-        pipeline_tpl_ids: set = set()
-        try:
-            pconn = self._get_conn()
-            try:
-                for prow in pconn.execute(
-                    "SELECT id FROM agent_templates WHERE is_pipeline = 1"
-                ).fetchall():
-                    pipeline_tpl_ids.add(prow["id"])
-            finally:
-                pconn.close()
-        except Exception:
-            pipeline_tpl_ids = set()
-
         # 2. User's agents — both assigned (user_id) and custom-created (owner_user_id)
         seen_ids: set = set()
         conn = self._get_conn()
@@ -8786,8 +10536,6 @@ class LocalBackend(StorageBackend):
                     continue
                 seen_ids.add(entry["id"])
                 entry["source"] = "custom"
-                if entry.get("template_id") in pipeline_tpl_ids:
-                    continue
                 if not _in_view(entry):
                     continue
                 result.append(entry)
@@ -8803,7 +10551,8 @@ class LocalBackend(StorageBackend):
             # at rest (full-DB SQLCipher) — opening them raw here would just fail
             # and get skipped, so exclude them up front. Per-session vault sidecars
             # (``*.vault.db``) are likewise not agent DBs.
-            _NON_AGENT_DBS = {"vault.db", "logs.db", "recordings.db", "wiki.db"}
+            _NON_AGENT_DBS = {"vault.db", "app_secrets.db", "agent_secrets.db", "user_secrets.db",
+                               "logs.db", "recordings.db", "wiki.db"}
             try:
                 sibling_paths = [
                     os.path.join(db_dir, f)
@@ -8920,6 +10669,9 @@ class LocalBackend(StorageBackend):
     async def create_custom_agent(
         self, user_id: str, name: str, description: str = "", template_id: str = "default",
         seed_abilities: bool = True,
+        capability_profile: Optional[str] = None,
+        capability_extensions: Optional[List[str]] = None,
+        agent_id: Optional[str] = None,
     ) -> dict:
         """
         Create a new custom agent for a user, cloned from the specified template.
@@ -8932,13 +10684,9 @@ class LocalBackend(StorageBackend):
             agent runs on the app-global baseline identity and whatever the caller
             adds afterwards. Stored template_id is "".
 
-        ``seed_abilities`` (default True) copies the template's pre-enabled
-        abilities onto the new agent. Pass ``False`` to create a BARE agent with
-        NO abilities — the caller then adds only the abilities it deliberately
-        chose (mirrors the orchestration clone path, which takes an explicit
-        ability list). The Agent Manager uses the bare path so every ability on a
-        purpose-built agent is intentional rather than inherited-then-pruned.
-        (A blank agent is bare of abilities regardless of this flag.)
+        ``capability_profile`` provisions the exact nested Simple, Standard, or
+        Advanced ability sequence (plus explicit extensions). Without an explicit
+        profile, ``seed_abilities`` preserves the legacy template-cloning behavior.
         """
         import uuid as _uuid_mod
         # ── No-template ("blank slate") path ─────────────────────────────────
@@ -8951,7 +10699,7 @@ class LocalBackend(StorageBackend):
         # the agent CHOOSES a starting point or chooses to start from scratch,
         # rather than always being silently seeded from "default". The stored
         # template_id is left "" so nothing downstream treats it as a real
-        # template (it just won't match opt_planner/opt_closer etc.).
+        # template (it just won't match optimizer etc.).
         _NO_TEMPLATE = {"", "none", "blank", "scratch", "no_template", "no-template"}
         blank = template_id is None or str(template_id).strip().lower() in _NO_TEMPLATE
         if blank:
@@ -8984,15 +10732,32 @@ class LocalBackend(StorageBackend):
                         template_id = entry.get("id", "default")
                         break
 
-        agent_id = str(_uuid_mod.uuid4())
+        agent_id = agent_id or str(_uuid_mod.uuid4())
         now = _now_iso()
         # New agents get a large finite turn ceiling (not 0). At runtime 0 means
         # "unlimited", but seeding a bounded value keeps the agent safe even on an
         # older build that mis-reads 0; the wall-clock cap is the real backstop.
         # Coerce a missing / 0 / non-positive template value up to the default.
         _tpl_mtc = tpl.get("max_turn_count")
-        _new_max_turns = _tpl_mtc if (isinstance(_tpl_mtc, int) and _tpl_mtc > 0) else 9999
-        _allowed_tools, _safety_policy = self._tool_perm_columns(tpl.get("metadata", "{}"))
+        _new_max_turns = _tpl_mtc if (isinstance(_tpl_mtc, int) and _tpl_mtc > 0) else 12
+        from app.agent.cache_profiles import (
+            DEFAULT_PROFILE, profile_abilities, with_cache_profile,
+        )
+        _profile = capability_profile or (
+            "advanced" if template_id == "default" and seed_abilities else DEFAULT_PROFILE
+        )
+        _profile_meta = with_cache_profile(
+            tpl.get("metadata", "{}"), _profile, capability_extensions,
+        )
+        if capability_profile and not seed_abilities:
+            _profile_meta["pre_enabled_connections"] = profile_abilities(
+                _profile, capability_extensions,
+            )
+        # Stamp which template this agent was created from, so the Config tab
+        # can show the "Push to template" button.
+        if not blank and template_id:
+            _profile_meta["template_origin"] = template_id
+        _allowed_tools, _safety_policy = self._tool_perm_columns(_profile_meta)
         conn = self._get_conn()
         try:
             conn.execute(
@@ -9023,10 +10788,7 @@ class LocalBackend(StorageBackend):
                     # their tools/abilities are pulled in on demand (load_ability)
                     # rather than shipping every schema each turn. Mirrors the
                     # default WebAgent agent (create_agent_for_user).
-                    self._with_discovery_default(
-                        {**json.loads(tpl.get("metadata", "{}")), "owner_user_id": user_id},
-                        "discoverable",
-                    ),
+                    json.dumps({**_profile_meta, "owner_user_id": user_id}),
                     template_id,
                     _allowed_tools,
                     tpl.get("trigger_type", "user_input"),
@@ -9044,14 +10806,17 @@ class LocalBackend(StorageBackend):
                 self._clone_template_slots(conn, source_id=template_id, target_id=agent_id, now=now)
 
             # ── Seed pre-enabled connections ──
-            # Skipped entirely for a bare agent (seed_abilities=False): the caller
-            # adds only the abilities it deliberately selected.
+            # An explicit profile is authoritative. Legacy callers without one
+            # retain the prior template-seeding behavior.
             now = now or _now_iso()
-            self._seed_pre_enabled_connections(
-                conn, agent_id,
-                tpl.get("metadata", "{}") if seed_abilities else "{}",
-                now,
-            )
+            if capability_profile:
+                self._seed_pre_enabled_connections(
+                    conn, agent_id, _profile_meta, now,
+                )
+            elif seed_abilities:
+                self._seed_pre_enabled_connections(
+                    conn, agent_id, tpl.get("metadata", "{}"), now,
+                )
 
             conn.commit()
             row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
@@ -9067,6 +10832,7 @@ class LocalBackend(StorageBackend):
         description: str = "", abilities: Optional[List[str]] = None,
         allowed_tools: Optional[List[str]] = None,
         destructive_ask: Optional[List[str]] = None,
+        agent_id: Optional[str] = None,
     ) -> dict:
         """Create an ephemeral CLONE agent for an orchestrator's spawn.
 
@@ -9122,7 +10888,7 @@ class LocalBackend(StorageBackend):
             except Exception as e:
                 logger.error("Clone ceiling enforcement failed for master %s: %s",
                              master_agent_id, e)
-        agent_id = str(_uuid_mod.uuid4())
+        agent_id = agent_id or str(_uuid_mod.uuid4())
         now = _now_iso()
         safety_policy = json.dumps({"destructive_tools": sorted(set(destructive_ask))}) \
             if destructive_ask else "{}"
@@ -9147,7 +10913,7 @@ class LocalBackend(StorageBackend):
                    VALUES (?,?,?, 'clone', ?,?,?,?,?,?,?,?,?,?,0,?,'[]','user_input',NULL,'[]',?,0,?,?,?)""",
                 (
                     agent_id, name or "Clone", description,
-                    9999, master.get("max_wall_seconds"),
+                    12, master.get("max_wall_seconds"),
                     master.get("max_identical_tool_calls", 0),
                     master.get("max_stall_strikes", 0),
                     master.get("model", ""), master.get("provider", ""),
@@ -9175,6 +10941,7 @@ class LocalBackend(StorageBackend):
 
         result = dict(row) if row else {"id": agent_id}
         result["source"] = "clone"
+        # Subagent store: nested under the master's home, not top-level.
         return result
 
     async def delete_clone_agent(self, agent_id: str, *, session_ids: Optional[List[str]] = None) -> bool:
@@ -9199,18 +10966,39 @@ class LocalBackend(StorageBackend):
                         except Exception:  # noqa: BLE001
                             pass
                     conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+                # Capture the clone's parent BEFORE deleting the row, so the
+                # nested subagent home can be purged afterwards.
+                clone_parent = None
+                try:
+                    _mrow = conn.execute(
+                        "SELECT metadata FROM agents WHERE id = ? AND status IN ('clone', 'clone_trashed')",
+                        (agent_id,),
+                    ).fetchone()
+                    if _mrow:
+                        _mmeta = json.loads(_mrow["metadata"] or "{}")
+                        if isinstance(_mmeta, dict):
+                            clone_parent = _mmeta.get("clone_of")
+                except Exception:  # noqa: BLE001
+                    pass
                 cur = conn.execute(
                     "DELETE FROM agents WHERE id = ? AND status IN ('clone', 'clone_trashed')",
                     (agent_id,))
                 removed = bool(cur.rowcount and cur.rowcount > 0)
                 if removed:
                     conn.execute("DELETE FROM agent_prompts WHERE agent_id = ?", (agent_id,))
-                    for tbl in ("agent_connections", "agent_abilities"):
+                    for tbl in ("agent_connections", "agent_abilities", "agent_soft_abilities"):
                         try:
                             conn.execute(f"DELETE FROM {tbl} WHERE agent_id = ?", (agent_id,))
                         except Exception:  # noqa: BLE001
                             pass
                 conn.commit()
+                # Reap the clone's nested subagent home (data/agent_data/<parent>/subagents/<id>/).
+                if removed and clone_parent:
+                    try:
+                        from app.agent_workspace import purge_subagent_home
+                        purge_subagent_home(clone_parent, agent_id)
+                    except Exception:  # noqa: BLE001
+                        pass
                 return removed
             finally:
                 conn.close()
@@ -9347,14 +11135,32 @@ class LocalBackend(StorageBackend):
                 # Automation surface too: leaving agent_automations behind means
                 # the scheduler keeps claiming rows for an agent that no longer
                 # exists; runs/subscriptions go with them.
-                for tbl in ("agent_connections", "agent_abilities",
+                for tbl in ("agent_connections", "agent_abilities", "agent_soft_abilities",
                             "agent_automations", "agent_event_subscriptions",
                             "automation_runs"):
                     try:
                         conn.execute(f"DELETE FROM {tbl} WHERE agent_id = ?", (agent_id,))
                     except Exception:
                         pass
+                # ── Vault cleanup: OAuth tokens + ability creds for this agent ──
+                # OAuth tokens are stored as (user_id, provider, "oauth:<agent_id>")
+                # in vault_agent. Ability creds use label="agent:<agent_id>".
+                # BYO client secrets use service="byo_cred:<provider>".
+                try:
+                    conn.execute(
+                        "DELETE FROM vault_agent.auth_elements "
+                        "WHERE label = ? OR label = ?",
+                        (f"oauth:{agent_id}", f"agent:{agent_id}"),
+                    )
+                except Exception:
+                    pass
             conn.commit()
+            # ── Purge the per-agent authority store ──
+            try:
+                from app.agent_workspace import purge_agent_home
+                purge_agent_home(agent_id)
+            except Exception:
+                pass
             return cursor.rowcount > 0
         finally:
             conn.close()
@@ -9486,6 +11292,13 @@ class LocalBackend(StorageBackend):
     @turn_cached
     async def get_agent_connections(self, agent_id: str) -> List[dict]:
         """Return all agent_connections rows for an agent."""
+        try:
+            from app.db.storage_layout import is_layout_active
+            if is_layout_active() and self._schema_plane != "agent":
+                from app.db.agent_store import get_agent_store
+                return await get_agent_store(agent_id).list_connections()
+        except Exception as exc:
+            logger.debug("Agent connection read-through failed for %s: %s", agent_id, exc)
         conn = self._get_conn()
         try:
             rows = conn.execute(
@@ -9527,9 +11340,10 @@ class LocalBackend(StorageBackend):
                     "SELECT * FROM agent_connections WHERE agent_id = ? AND connection_type = ?",
                     (agent_id, connection_type),
                 ).fetchone()
-                return dict(row) if row else {}
+                result = dict(row) if row else {}
             finally:
                 conn.close()
+        return result
 
     async def get_all_connections_by_type(self, connection_type: str) -> List[dict]:
         """Return all enabled connections of a given type across all agents."""
@@ -9545,14 +11359,128 @@ class LocalBackend(StorageBackend):
 
     # ---- Agent Abilities (per-agent OAuth capability rows) ----
 
+    # ---- Soft Abilities (per-agent declarative skills/workflows) ----
+
+    async def get_agent_soft_abilities(self, agent_id: str, enabled_only: bool = False) -> List[dict]:
+        conn = None
+        try:
+            from app.db.storage_layout import is_layout_active
+            if is_layout_active() and self._schema_plane != "agent":
+                from app.db.agent_store import get_agent_store
+                rows = await get_agent_store(agent_id).list_soft_abilities(enabled_only=enabled_only)
+            else:
+                conn = self._get_conn()
+                sql = "SELECT * FROM agent_soft_abilities WHERE agent_id = ?"
+                params = [agent_id]
+                if enabled_only:
+                    sql += " AND enabled = 1 AND status = 'ready'"
+                sql += " ORDER BY LOWER(display_name)"
+                rows = conn.execute(sql, params).fetchall()
+            out = []
+            for row in rows:
+                item = dict(row)
+                item["enabled"] = bool(item.get("enabled"))
+                for key, fallback in (("workflow", {}), ("allowed_tools", []),
+                                      ("credential_schema", []), ("policy", {})):
+                    try:
+                        item[key] = json.loads(item.get(key) or json.dumps(fallback))
+                    except Exception:
+                        item[key] = fallback
+                out.append(item)
+            return out
+        finally:
+            if conn is not None:
+                conn.close()
+
+    async def upsert_agent_soft_ability(self, ability: dict) -> dict:
+        now = _now_iso()
+        ability_id = ability.get("id") or _uuid()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT INTO agent_soft_abilities
+                       (id, agent_id, slug, display_name, description, icon, enabled,
+                        skill_summary, skill_body, workflow, allowed_tools,
+                        credential_schema, policy, status, version, created_by,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(id) DO UPDATE SET
+                         slug=excluded.slug, display_name=excluded.display_name,
+                         description=excluded.description, icon=excluded.icon,
+                         enabled=excluded.enabled, skill_summary=excluded.skill_summary,
+                         skill_body=excluded.skill_body, workflow=excluded.workflow,
+                         allowed_tools=excluded.allowed_tools,
+                         credential_schema=excluded.credential_schema,
+                         policy=excluded.policy, status=excluded.status,
+                         version=agent_soft_abilities.version + 1,
+                         updated_at=excluded.updated_at""",
+                    (ability_id, ability["agent_id"], ability["slug"], ability["display_name"],
+                     ability.get("description", ""), ability.get("icon", "sparkles"),
+                     1 if ability.get("enabled", True) else 0,
+                     ability.get("skill_summary", ""), ability.get("skill_body", ""),
+                     json.dumps(ability.get("workflow") or {}),
+                     json.dumps(ability.get("allowed_tools") or []),
+                     json.dumps(ability.get("credential_schema") or []),
+                     json.dumps(ability.get("policy") or {}), ability.get("status", "draft"),
+                     1, ability["created_by"], now, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        rows = await self.get_agent_soft_abilities(ability["agent_id"])
+        return next((r for r in rows if r["id"] == ability_id), {})
+
+    async def delete_agent_soft_ability(self, agent_id: str, ability_id: str) -> bool:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM agent_soft_abilities WHERE id = ? AND agent_id = ?",
+                    (ability_id, agent_id),
+                )
+                conn.commit()
+                deleted = cur.rowcount > 0
+            finally:
+                conn.close()
+        return deleted
+
+    async def record_soft_ability_run(self, ability_id: str, agent_id: str,
+                                      user_id: str, session_id: str,
+                                      ability_version: int, status: str,
+                                      tools: List[str], elapsed_ms: int) -> dict:
+        run_id = _uuid()
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT INTO soft_ability_runs
+                       (id, ability_id, agent_id, user_id, session_id,
+                        ability_version, status, tools, elapsed_ms, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (run_id, ability_id, agent_id, user_id, session_id or "",
+                     int(ability_version or 1), status, json.dumps(tools or []),
+                     int(elapsed_ms or 0), _now_iso()),
+                )
+                conn.commit()
+                return {"id": run_id, "status": status}
+            finally:
+                conn.close()
+
     async def get_agent_abilities(self, agent_id: str) -> List[dict]:
         """Return all agent_abilities rows for an agent. Empty list when none exist."""
-        conn = self._get_conn()
+        conn = None
         try:
-            rows = conn.execute(
-                "SELECT * FROM agent_abilities WHERE agent_id = ? ORDER BY ability_id",
-                (agent_id,),
-            ).fetchall()
+            from app.db.storage_layout import is_layout_active
+            if is_layout_active() and self._schema_plane != "agent":
+                from app.db.agent_store import get_agent_store
+                rows = await get_agent_store(agent_id).list_abilities()
+            else:
+                conn = self._get_conn()
+                rows = conn.execute(
+                    "SELECT * FROM agent_abilities WHERE agent_id = ? ORDER BY ability_id",
+                    (agent_id,),
+                ).fetchall()
             out = []
             for r in rows:
                 d = dict(r)
@@ -9560,7 +11488,8 @@ class LocalBackend(StorageBackend):
                 out.append(d)
             return out
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     async def upsert_agent_ability(
         self,
@@ -9838,13 +11767,14 @@ class LocalBackend(StorageBackend):
         agent_context: str = "",
         html: Optional[str] = None,
         agent_id: str = "",
+        session_config: Optional[str] = None,
     ) -> dict:
         async with self._write_lock:
             conn = self._get_conn()
             try:
                 now = _now_iso()
                 existing = conn.execute(
-                    "SELECT id, html, agent_id FROM genui WHERE user_id = ? AND slug = ?",
+                    "SELECT id, html, agent_id, session_config FROM genui WHERE user_id = ? AND slug = ?",
                     (user_id, slug),
                 ).fetchone()
                 if existing:
@@ -9852,18 +11782,21 @@ class LocalBackend(StorageBackend):
                     # just rendered manages it); otherwise keep the existing owner so
                     # a metadata-only update never clears it.
                     new_agent = agent_id or (existing["agent_id"] if "agent_id" in existing.keys() else None) or None
+                    # session_config: a supplied value wins; otherwise preserve the
+                    # existing config (metadata-only updates must not wipe it).
+                    new_cfg = session_config if session_config is not None else (existing["session_config"] if "session_config" in existing.keys() else None) or '{}'
                     # html=None means "leave body alone" (hybrid metadata update)
                     if html is None:
                         conn.execute(
                             "UPDATE genui SET title = ?, agent_context = ?, "
-                            "agent_id = ?, updated_at = ? WHERE id = ?",
-                            (title, agent_context, new_agent, now, existing["id"]),
+                            "agent_id = ?, session_config = ?, updated_at = ? WHERE id = ?",
+                            (title, agent_context, new_agent, new_cfg, now, existing["id"]),
                         )
                     else:
                         conn.execute(
                             "UPDATE genui SET title = ?, agent_context = ?, "
-                            "agent_id = ?, html = ?, updated_at = ? WHERE id = ?",
-                            (title, agent_context, new_agent, html, now, existing["id"]),
+                            "agent_id = ?, session_config = ?, html = ?, updated_at = ? WHERE id = ?",
+                            (title, agent_context, new_agent, new_cfg, html, now, existing["id"]),
                         )
                     conn.commit()
                     return dict(conn.execute(
@@ -9872,8 +11805,8 @@ class LocalBackend(StorageBackend):
                 row_id = _uuid()
                 conn.execute(
                     "INSERT INTO genui (id, user_id, slug, title, agent_context, "
-                    "agent_id, html, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (row_id, user_id, slug, title, agent_context, agent_id or None, html, now, now),
+                    "agent_id, session_config, html, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (row_id, user_id, slug, title, agent_context, agent_id or None, session_config or '{}', html, now, now),
                 )
                 conn.commit()
                 return dict(conn.execute(
@@ -9917,6 +11850,34 @@ class LocalBackend(StorageBackend):
                     "UPDATE genui SET data = ?, updated_at = ? "
                     "WHERE user_id = ? AND slug = ?",
                     (data_json, _now_iso(), user_id, slug),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    async def genui_get_widget(self, user_id: str, slug: str) -> Optional[str]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT widget FROM genui WHERE user_id = ? AND slug = ?",
+                (user_id, slug),
+            ).fetchone()
+            return (row["widget"] if row else None)
+        except Exception:
+            # Tolerate a DB created before the `widget` column existed.
+            return None
+        finally:
+            conn.close()
+
+    async def genui_set_widget(self, user_id: str, slug: str, widget_json: str) -> bool:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE genui SET widget = ?, updated_at = ? "
+                    "WHERE user_id = ? AND slug = ?",
+                    (widget_json, _now_iso(), user_id, slug),
                 )
                 conn.commit()
                 return cur.rowcount > 0
@@ -10094,9 +12055,10 @@ class LocalBackend(StorageBackend):
                     "SELECT * FROM agent_data_sources WHERE agent_id = ? AND data_source_id = ?",
                     (agent_id, data_source_id),
                 ).fetchone()
-                return dict(row) if row else {}
+                result = dict(row) if row else {}
             finally:
                 conn.close()
+        return result
 
     async def agent_data_source_update(
         self,
@@ -10130,9 +12092,10 @@ class LocalBackend(StorageBackend):
                     "SELECT * FROM agent_data_sources WHERE agent_id = ? AND data_source_id = ?",
                     (agent_id, data_source_id),
                 ).fetchone()
-                return dict(row) if row else None
+                result = dict(row) if row else None
             finally:
                 conn.close()
+        return result
 
     async def agent_data_source_detach(self, agent_id: str, data_source_id: str) -> bool:
         async with self._write_lock:
@@ -10144,9 +12107,10 @@ class LocalBackend(StorageBackend):
                 )
                 conn.execute("UPDATE agents SET updated_at = ? WHERE id = ?", (_now_iso(), agent_id))
                 conn.commit()
-                return cur.rowcount > 0
+                detached = cur.rowcount > 0
             finally:
                 conn.close()
+        return detached
 
     # ────────────────────────────────────────────────────────────────────
     # doc_chunks: ingestion + hybrid search (FTS5 + vector RRF)
@@ -11358,8 +13322,9 @@ class LocalBackend(StorageBackend):
 
 class _LocalTableProxy:
     """
-    Emulates supabase.Client.table() so that code using the Supabase query builder
-    (ToolLoader, ToolExecutionTracker, admin/review, registry) can work with SQLite.
+    Emulates the backend's raw query-builder interface (``.table().select().eq().execute()``)
+    so that ToolLoader, ToolExecutionTracker, admin/review, and registry work across
+    every backend (SQLite, Postgres) without provider-specific code.
 
     Usage: proxy.table("tools").select("*").eq("status", "active").execute()
     """
@@ -11377,9 +13342,9 @@ class _LocalTableProxy:
 
 class _LocalQueryBuilder:
     """
-    Minimal query builder that mimics the supabase query chain:
+    Minimal query builder implementing the canonical query chain:
         .select(columns).eq(field, value).in_(field, values).order(...).limit(n).execute()
-    Returns objects with .data (list of dicts) matching supabase's response shape.
+    Returns objects with .data (list of dicts), matching the expected response shape.
     """
 
     def __init__(self, conn_factory, table_name: str):
@@ -11471,7 +13436,7 @@ class _LocalQueryBuilder:
                 sql = f"UPDATE {self._table_name} SET {', '.join(set_parts)}{where_clause}"
                 conn.execute(sql, set_params + where_params)
                 conn.commit()
-                # Return a result with the updated data (mimics supabase behavior)
+                # Return a result with the updated data (mimics the query-builder API)
                 return _LocalQueryResult([self._update_data])
 
             # ---- DELETE ----

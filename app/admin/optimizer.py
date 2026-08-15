@@ -155,14 +155,14 @@ def _find_closer_session(conn, planner_sid: str):
 
 
 def _derive_stage(status: str, has_closer: bool, deployed: int, optimized_tokens) -> str:
-    """planner → worker → closer → deployed, overlaid on the run status."""
+    """optimizer → worker → closer → deployed, overlaid on the run status."""
     if deployed and deployed > 0:
         return "deployed"
     if has_closer:
         return "closer"
     if optimized_tokens:
         return "worker"
-    return "planner"
+    return "optimizer"
 
 
 def _parse_ts_ms(ts: str):
@@ -207,7 +207,7 @@ def _enrich_run(conn, r: dict) -> dict:
 
     closer = _find_closer_session(conn, planner_sid)
 
-    # Real spend on this run's agent conversations (planner + closer).
+    # Real spend on this run's agent conversations (optimizer + closer).
     p_tok, p_cost = _usage_for_session(conn, planner_sid)
     c_tok, c_cost = _usage_for_session(conn, closer["session_id"]) if closer else (0, 0.0)
     run_cost = round(p_cost + c_cost, 6)
@@ -293,7 +293,7 @@ async def get_optimizer_runs(limit: int = Query(50, ge=1, le=200)):
 async def get_optimizer_run_detail(run_id: str):
     """One run plus its per-stage breakdown (for the expandable row).
 
-    Planner and Closer are real, openable chat sessions. Worker trials are
+    The Optimizer is a real, openable chat session. Worker trials are
     ephemeral (their temp DBs are deleted), so that stage is a measured summary.
     """
     try:
@@ -313,39 +313,31 @@ async def get_optimizer_run_detail(run_id: str):
             run = _enrich_run(conn, dict(row))
 
             stages = []
-            # ── Planner ──
+            # ── Optimizer ──
             p_tok, p_cost = _usage_for_session(conn, run["planner_session_id"])
             stages.append({
-                "key": "planner", "label": "Planner",
+                "key": "optimizer", "label": "Optimizer",
                 "session_id": run["planner_session_id"],
                 "openable": True,
                 "tokens": p_tok, "cost": round(p_cost, 6),
-                "detail": "Analysed the session and proposed changes",
+                "detail": "Analysed the session, proposed changes, ran trials, judged results, and deployed",
             })
             # ── Worker trials (measured summary, not openable) ──
-            stages.append({
-                "key": "worker", "label": "Worker trials",
-                "session_id": None, "openable": False,
-                "tokens": run.get("tokens"),
-                "trials_count": run.get("trials_count") or 0,
-                "duration_ms": run.get("duration_trial_ms"),
-                "detail": f"{run.get('trials_count') or 0} simulated trial(s)",
-            })
-            # ── Closer ──
-            if run["closer_session_id"]:
-                c_tok, c_cost = _usage_for_session(conn, run["closer_session_id"])
+            if run.get("trials_count") or run.get("tokens"):
                 stages.append({
-                    "key": "closer", "label": "Closer",
+                    "key": "worker", "label": "Worker trials",
+                    "session_id": None, "openable": False,
+                    "tokens": run.get("tokens"),
+                    "trials_count": run.get("trials_count") or 0,
+                    "duration_ms": run.get("duration_trial_ms"),
+                    "detail": f"{run.get('trials_count') or 0} simulated trial(s)",
+                })
+            if run["closer_session_id"]:
+                stages.append({
+                    "key": "deploy", "label": "Deployed",
                     "session_id": run["closer_session_id"],
                     "openable": True,
-                    "tokens": c_tok, "cost": round(c_cost, 6),
-                    "detail": "Judged the trial and deployed on a pass",
-                })
-            else:
-                stages.append({
-                    "key": "closer", "label": "Closer",
-                    "session_id": None, "openable": False,
-                    "detail": "Not reached yet — no hand-off",
+                    "detail": "Changes deployed",
                 })
 
             return {"run": run, "stages": stages}
@@ -362,7 +354,7 @@ async def trigger_optimizer_run(
     session_id: str = Query("manual"),
     feedback: str = Query(""),
 ):
-    """Start an interactive optimizer session. Creates chat session with Planner agent."""
+    """Start an interactive optimizer session. Creates chat session with Optimizer agent."""
     try:
         from app.admin.settings import load_provider_for_user
         import uuid, json, sqlite3
@@ -377,9 +369,9 @@ async def trigger_optimizer_run(
         raw = getattr(db, '_get_conn', None)
         conn = raw()
         
-        # Ensure session exists with planner role
+        # Ensure session exists with optimizer role
         conn.execute("INSERT OR IGNORE INTO sessions (id,user_id,title,metadata,created_at,updated_at) VALUES (?,?,?,?,datetime('now'),datetime('now'))",
-                     (opt_sid, user_id, f"Optimizer - {opt_sid[:12]}", '{"opt_role": "planner"}'))
+                     (opt_sid, user_id, f"Optimizer - {opt_sid[:12]}", '{"opt_role": "optimizer"}'))
         
         # Get prefilter data (session stats) and inject as first message
         from app.optimizer.prefilter import prefilter
@@ -398,7 +390,7 @@ async def trigger_optimizer_run(
         turns = pf.get("turns", 1)
         tokens = pf.get("tokens", 100)
         
-        # Build enriched init message so Planner has everything without discovery tools
+        # Build enriched init message so Optimizer has everything without discovery tools
         parts = []
         parts.append(f"Session stats: {turns} assistant turns, ~{tokens} tokens.")
         parts.append(f"User feedback: {feedback or '(none)'}")
@@ -432,8 +424,8 @@ async def trigger_optimizer_run(
         conn.commit()
         conn.close()
 
-        # Fire-and-forget: auto-trigger the Planner to respond
-        async def _auto_trigger_planner():
+        # Fire-and-forget: auto-trigger the Optimizer to respond
+        async def _auto_trigger_optimizer():
             try:
                 import httpx
                 async with httpx.AsyncClient(timeout=60.0) as hclient:
@@ -446,8 +438,8 @@ async def trigger_optimizer_run(
                         },
                     )
             except Exception as trigger_e:
-                logger.warning("Auto-trigger Planner first response failed (non-fatal): %s", trigger_e)
-        asyncio.create_task(_auto_trigger_planner())
+                logger.warning("Auto-trigger Optimizer first response failed (non-fatal): %s", trigger_e)
+        asyncio.create_task(_auto_trigger_optimizer())
 
         return {"status": "session_created", "optimizer_session_id": opt_sid}
     except Exception as e:

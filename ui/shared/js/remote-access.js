@@ -25,6 +25,7 @@ import { apiPath } from './config.js';
 import { isAdmin } from './left-login.js';
 import { _refreshLucideIcons, _esc } from './dom-utils.js';
 import { copyText } from './clipboard.js';
+import { showQrPopup, closeQrPopup } from './qr-popup.js';
 
 let _status = null;
 
@@ -224,26 +225,7 @@ function _renderSameNetwork(sn) {
   _refreshLucideIcons(host);
 }
 
-let _qrPopup = null;       // the floating panel element, or null
-let _qrPopupAnchor = null; // the QR button it was opened from
-function _closeQrPopup() {
-  if (!_qrPopup) return;
-  document.removeEventListener('keydown', _qrPopup._onKey, true);
-  document.removeEventListener('mousedown', _qrPopup._onDocClick, true);
-  window.removeEventListener('resize', _qrPopup._onReflow, true);
-  window.removeEventListener('scroll', _qrPopup._onReflow, true);
-  _qrPopup.remove();
-  _qrPopup = null;
-  _qrPopupAnchor = null;
-}
-
-/** Click the QR button: open the popover, or close it if it's already open for
- *  this same button (so the button toggles). */
-function _toggleQrPopup(url, svg, anchor) {
-  if (_qrPopup && _qrPopupAnchor === anchor) { _closeQrPopup(); return; }
-  _showQrPopup(url, svg, anchor);
-}
-
+// ── QR popup (shared: ui/shared/js/qr-popup.js) ──────────────────────────
 // The Same-network QR codes arrive pre-rendered per URL from the status endpoint.
 // The "Reach it from anywhere" address, by contrast, is dynamic (a live tunnel
 // URL that only exists once started), so it has no baked-in SVG — we fetch its
@@ -259,77 +241,20 @@ async function _fetchQrSvg(text) {
   return _qrCache[text];
 }
 
-/** QR toggle for the dynamic remote address: fetch the SVG (once) then show the
- *  same popover the Same-network rows use. */
+/** Shared toggle: reuse the shared module — close if this anchor already open. */
+let _lastQrAnchor = null;
+function _toggleQrPopup(url, svg, anchor) {
+  if (_lastQrAnchor === anchor) { closeQrPopup(); _lastQrAnchor = null; return; }
+  _lastQrAnchor = anchor;
+  showQrPopup({ url, svg, anchor });
+}
+
 async function _toggleRemoteQr(url, anchor) {
-  if (_qrPopup && _qrPopupAnchor === anchor) { _closeQrPopup(); return; }
+  if (_lastQrAnchor === anchor) { closeQrPopup(); _lastQrAnchor = null; return; }
   const svg = await _fetchQrSvg(url);
-  _showQrPopup(url, svg, anchor);
-}
-
-/** A small popover (like a clickable hover-card) anchored to the QR button,
- *  showing one address's QR on a dark-on-white plate so it scans in either
- *  theme. Click anywhere outside or press Escape to dismiss. */
-function _showQrPopup(url, svg, anchor) {
-  _closeQrPopup();
   if (!svg) { _setStatus('QR unavailable on this server (qrcode package missing)', 'err'); return; }
-
-  const panel = document.createElement('div');
-  panel.className = 'ac-ra-qr-pop';
-
-  const plate = document.createElement('div');
-  plate.className = 'ac-ra-qr-plate';
-  plate.innerHTML = svg;
-  // The QR scales to fill the plate width; the plate stretches to the panel,
-  // which is sized by the (single-line) URL — so the QR is at least as wide as
-  // the address. The square viewBox keeps it square at height:auto.
-  const el = plate.querySelector('svg');
-  if (el) { el.style.width = '100%'; el.style.height = 'auto'; el.style.display = 'block'; }
-  panel.appendChild(plate);
-
-  const label = document.createElement('div');
-  label.className = 'ac-ra-qr-pop-url';
-  label.textContent = url;
-  panel.appendChild(label);
-
-  document.body.appendChild(panel);
-  _qrPopup = panel;
-  _qrPopupAnchor = anchor;
-
-  const place = () => _placeQrPopup(panel, anchor);
-  place();
-
-  // Dismiss on outside click, Escape, or any scroll/resize that would unmoor it.
-  const onDocClick = ev => {
-    if (panel.contains(ev.target) || anchor.contains(ev.target)) return;
-    _closeQrPopup();
-  };
-  const onKey = ev => { if (ev.key === 'Escape') _closeQrPopup(); };
-  const onReflow = () => { if (_qrPopup) place(); };
-  document.addEventListener('mousedown', onDocClick, true);
-  document.addEventListener('keydown', onKey, true);
-  window.addEventListener('resize', onReflow, true);
-  window.addEventListener('scroll', onReflow, true);
-  panel._onDocClick = onDocClick;
-  panel._onKey = onKey;
-  panel._onReflow = onReflow;
-}
-
-/** Position the popover just below its anchor button, right-aligned to it, and
- *  clamped inside the viewport (flips above the button if it would overflow). */
-function _placeQrPopup(panel, anchor) {
-  const a = anchor.getBoundingClientRect();
-  const pw = panel.offsetWidth, ph = panel.offsetHeight;
-  const gap = 6, margin = 8;
-  let left = a.right - pw;                       // right edges aligned
-  let top = a.bottom + gap;                      // below the button
-  if (top + ph + margin > window.innerHeight) {  // no room below → flip above
-    top = a.top - ph - gap;
-  }
-  left = Math.max(margin, Math.min(left, window.innerWidth - pw - margin));
-  top = Math.max(margin, top);
-  panel.style.left = Math.round(left) + 'px';
-  panel.style.top = Math.round(top) + 'px';
+  _lastQrAnchor = anchor;
+  showQrPopup({ url, svg, anchor });
 }
 
 async function _load() {

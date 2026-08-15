@@ -4,7 +4,7 @@
  * Agent Management panel.
  *
  * This file is now a thin re-export index that delegates to the modular
- * structure in ui/agents/js/ (following the same pattern as ui/admin-tools/app-config/).
+ * structure in ui/agents/js/ (following the same pattern as ui/admin-tools/instances/app-config/).
  *
  * The modules are:
  *   index.js    — Re-exports the public API

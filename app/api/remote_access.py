@@ -81,7 +81,7 @@ async def go(key: str):
         safe_url = html.escape(url, quote=True)
         safe_label = html.escape(label) if label else "your PC"
         page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta http-equiv="refresh" content="1;url={safe_url}">
 <title>Connecting…</title><style>{_PAGE_CSS}</style>
 <script>setTimeout(function(){{location.href={safe_url!r};}},250);</script></head>
@@ -92,7 +92,7 @@ async def go(key: str):
         return HTMLResponse(page)
 
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Not connected</title><style>{_PAGE_CSS}</style></head>
 <body><div class="card"><h1>PC not reachable yet</h1>
 <p>This bookmark is valid, but the PC hasn't reported an address. Open WebAgent

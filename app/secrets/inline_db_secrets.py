@@ -30,8 +30,11 @@ class InlineDBSecrets(SecretsBackend):
 
     def _get_db(self):
         # Imported lazily to avoid circular import (db -> secrets -> db).
-        from app.db import get_db
-        return get_db()
+        # The inline vault is installation-global.  An ambient get_db() may be
+        # task-locally overridden to a user's data plane during an agent turn;
+        # key hierarchy reads must never follow that override.
+        from app.db import get_app_db
+        return get_app_db()
 
     async def get(self, key: str) -> Optional[str]:
         row = await self._get_db().auth_element_get(

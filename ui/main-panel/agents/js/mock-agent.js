@@ -38,9 +38,9 @@ function _resetMockIcon() { _mockIconName = null; }
 // ── Cross-render create state ──────────────────────────────────────────────────
 // Held in module scope so a card re-render (type switch, tab switch) keeps the
 // in-progress form. Reset only after a successful create (_resetMockCreateState).
-let _createType = 'webagent';                    // 'webagent' | 'claude' | 'terminal'
+let _createType = 'webagent';                    // 'webagent' | 'claude' | 'codex' | 'terminal'
 let _draftName  = '';                            // the typed agent name
-let _engineDraft = { claude: {}, terminal: {} }; // per-engine draft settings
+let _engineDraft = { claude: {}, codex: {}, terminal: {} }; // per-engine draft settings
 
 export function _mockCreateType() { return _createType; }
 export function _setMockCreateType(t) { _createType = t; }
@@ -50,7 +50,7 @@ export function _mockEngineDraft() { return _engineDraft; }
 function _resetMockCreateState() {
   _createType = 'webagent';
   _draftName = '';
-  _engineDraft = { claude: {}, terminal: {} };
+  _engineDraft = { claude: {}, codex: {}, terminal: {} };
 }
 
 // ── Header name field + accept wiring ───────────────────────────────────────────

@@ -137,15 +137,13 @@ class BaseRemoteScheduler(SchedulerBackend):
 
 def _build_fire_url(automation_id: str, token: str) -> str:
     """Build the public webhook URL the remote service should hit."""
-    import os
-    base = (os.environ.get("WEBHOOK_BASE_URL") or "").rstrip("/")
-    if not base:
-        # Fall back to communications registry value.
-        try:
-            from app.communications.manager import get_plugin_manager
-            base = (getattr(get_plugin_manager(), "_registry", {}) or {}).get("webhook_base_url", "").rstrip("/")
-        except Exception:
-            base = ""
+    base = ""
+    # Use the communications registry value (auto-detected from request traffic).
+    try:
+        from app.communications.manager import get_plugin_manager
+        base = (getattr(get_plugin_manager(), "_registry", {}) or {}).get("webhook_base_url", "").rstrip("/")
+    except Exception:
+        base = ""
     if not base:
         base = "http://localhost:8080"
     return f"{base}/api/v1/automations/fire/{automation_id}?token={token}"

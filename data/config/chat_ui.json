@@ -1,0 +1,866 @@
+{
+  "version": 3,
+  "description": "Chat presentation defaults. chat_common is the shared base; each chat_* surface overrides only the values it needs.",
+  "chat_common": {
+    "description": "Shared configuration for every chat surface. Surface profiles inherit this object at runtime, including its messages.",
+    "content_max_width": "1000px",
+    "chat_header": {
+      "description": "Header layout and controls. Row arrays replace entirely on surface override. Each row has left/center/right zones; 'right' is pushed via margin-left:auto.",
+      "enabled": true,
+      "max_width": "750px",
+      "rows": [
+        {
+          "left": [],
+          "center": [
+            "icon",
+            "title",
+            "status",
+            "dot"
+          ],
+          "right": [
+            "close"
+          ]
+        }
+      ],
+      "controls": {
+        "icon": {
+          "container_size": "28px"
+        },
+        "title": {
+          "container_size": "28px"
+        },
+        "status": {
+          "container_size": "28px"
+        },
+        "dot": {
+          "container_size": "28px"
+        },
+        "close": {
+          "container_size": "28px"
+        }
+      }
+    },
+    "active_footer": {
+      "description": "Full-featured footer shown when the textarea is focused or has content.",
+      "margin_bottom": "0px",
+      "chat_pill": {
+        "description": "Shared two-row composer. Row 1: full-width textarea. Row 2: left=attach, center=carousel(stats), right=stop/continue/send.",
+        "pill_width": "500px",
+        "pill_radius": "41px",
+        "rows": [
+          {
+            "center": {
+              "controls": [
+                "textarea"
+              ]
+            }
+          },
+          {
+            "left": {
+              "controls": [
+                "attach"
+              ],
+              "align": "bottom",
+              "padding": "4px 2px 20px 20px"
+            },
+            "center": {
+              "carousel": [
+                "stats"
+              ],
+              "align": "bottom",
+              "padding": "0 0 28px 0"
+            },
+            "right": {
+              "controls": [
+                "stop",
+                "continue",
+                "mic_send"
+              ],
+              "align": "bottom",
+              "padding": "4px 20px 20px 0"
+            }
+          }
+        ],
+        "controls": {
+          "textarea": {
+            "min_height": "88px",
+            "font_size": "16px",
+            "max_height": "180px",
+            "padding": "28px 20px 13px 20px"
+          },
+          "stats": {
+            "visible": [
+              "token-bar",
+              "ctx",
+              "cost"
+            ]
+          },
+          "attach": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          },
+          "stop": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          },
+          "continue": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          },
+          "send": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          },
+          "mic": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          },
+          "mic_send": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          }
+        }
+      },
+      "above_pill": {
+        "enabled": true,
+        "description": "Rows above the chat pill. Five-row plan: row 0 = activity; rows 1-4 are reserved slots (empty rows render nothing \u00e2\u20ac\u201d drop controls into a row to activate it).",
+        "rows": [
+          {
+            "left": [],
+            "center": [
+              "activity"
+            ],
+            "right": [
+              "scroll_bottom"
+            ]
+          },
+          {
+            "left": [],
+            "center": [
+              "local_changes"
+            ],
+            "right": []
+          },
+          {
+            "left": [],
+            "center": [],
+            "right": []
+          },
+          {
+            "left": [],
+            "center": [],
+            "right": []
+          },
+          {
+            "left": [],
+            "center": [],
+            "right": []
+          }
+        ],
+        "controls": {
+          "local_changes": {
+            "enabled": true,
+            "width": "200px",
+            "max_lines": 3
+          }
+        }
+      },
+      "below_pill": {
+        "enabled": true,
+        "rows": [
+          {
+            "right": [
+              "abilities",
+              "target",
+              "thinking",
+              "mode",
+              "model_changer",
+              "storage_mode",
+              "wake_lock"
+            ]
+          }
+        ],
+        "controls": {
+          "abilities": {
+            "container_size": "28px"
+          },
+          "target": {
+            "container_size": "28px"
+          },
+          "mode": {
+            "container_size": "28px",
+            "square": false
+          },
+          "thinking": {
+            "container_size": "28px",
+            "square": false
+          },
+          "model_changer": {
+            "container_size": "28px",
+            "square": false
+          },
+          "storage_mode": {
+            "container_size": "28px",
+            "square": false
+          },
+          "wake_lock": {
+            "container_size": "28px"
+          }
+        }
+      }
+    },
+    "idle_footer": {
+      "description": "Simplified footer shown when the textarea is empty and unfocused. Single row (left/center/right), same width as active footer, no stats, chips, or below.",
+      "margin_bottom": "24px",
+      "chat_pill": {
+        "pill_width": "500px",
+        "pill_radius": "41px",
+        "rows": [
+          {
+            "left": {
+              "controls": [
+                "attach"
+              ],
+              "align": "center",
+              "padding": "20px 0 20px 20px"
+            },
+            "center": {
+              "controls": [
+                "textarea"
+              ],
+              "align": "center",
+              "padding": "0"
+            },
+            "right": {
+              "controls": [
+                "stop",
+                "continue",
+                "mic_send"
+              ],
+              "align": "center",
+              "padding": "20px 20px 20px 0"
+            }
+          }
+        ],
+        "controls": {
+          "textarea": {
+            "min_height": "62px",
+            "font_size": "16px",
+            "max_height": "62px",
+            "padding": "20px 8px 20px 8px"
+          },
+          "stop": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          },
+          "continue": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          },
+          "mic_send": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          },
+          "mic": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          },
+          "send": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          },
+          "attach": {
+            "enabled": true,
+            "element_size": "36px",
+            "container_size": "42px"
+          }
+        }
+      },
+      "above_pill": {
+        "enabled": true,
+        "description": "Rows above the chat pill. Five-row plan: row 0 = activity; rows 1-4 are reserved slots (empty rows render nothing \u00e2\u20ac\u201d drop controls into a row to activate it).",
+        "rows": [
+          {
+            "left": [],
+            "center": [
+              "activity"
+            ],
+            "right": [
+              "scroll_bottom"
+            ]
+          },
+          {
+            "left": [],
+            "center": [
+              "local_changes"
+            ],
+            "right": []
+          },
+          {
+            "left": [],
+            "center": [],
+            "right": []
+          },
+          {
+            "left": [],
+            "center": [],
+            "right": []
+          },
+          {
+            "left": [],
+            "center": [],
+            "right": []
+          }
+        ],
+        "controls": {
+          "local_changes": {
+            "enabled": true,
+            "compact": true
+          }
+        }
+      },
+      "below_pill": {
+        "enabled": false
+      }
+    },
+    "fade": {
+      "description": "Vertical fade mask on the message scroller. top/bottom are pixel heights that fade to transparent at the edges. Set to 0 to disable on that edge.",
+      "top": 100,
+      "bottom": 160
+    },
+    "pill_fade": {
+      "description": "Vertical fade mask on the pill textarea when content overflows. top/bottom are pixel heights for each fade band. bottom_offset shifts the bottom band closer to the edge (same thickness).",
+      "top": 8,
+      "bottom": 10,
+      "bottom_offset": 0
+    },
+    "show_mid_turn_messages": true,
+    "show_tool_calls": true,
+    "classify_main_messages": true,
+    "messages": {
+      "description": "Default user-facing copy. A surface's messages object may replace any individual string.",
+      "welcome_bubble": "Welcome to WebAgent",
+      "new_session_bubble": "New session. Start typing below.",
+      "switched_agent_bubble": "Switched agent. New session started.",
+      "pill_placeholder": "Chat with the agent",
+      "pill_locked_placeholder": "Sign in to chat \u00e2\u20ac\u201d this app does not allow anonymous use.",
+      "session_deleted_notice": "Session not found \u00e2\u20ac\u201d it was deleted.",
+      "title": "Chat with us",
+      "subtitle": "",
+      "greeting": "Hi! How can I help you today?"
+    }
+  },
+  "chat_desktop": {
+    "description": "Desktop side-panel overrides. Leave values absent to use chat_common.",
+    "messages": {},
+    "chat_header": {
+      "rows": [
+        {
+          "left": [],
+          "center": [
+            "agent_name"
+          ],
+          "right": [
+            "changes"
+          ]
+        },
+        {
+          "left": [
+            "session_prev",
+            "session_next"
+          ],
+          "center": [
+            "session_dropdown"
+          ],
+          "right": [
+            "new_session"
+          ]
+        },
+        {
+          "left": [],
+          "center": [
+            "sub_agent_tabs"
+          ],
+          "right": []
+        }
+      ],
+      "controls": {
+        "changes": {
+          "element_size": "20px",
+          "container_size": "32px"
+        },
+        "new_session": {
+          "element_size": "20px",
+          "container_size": "32px"
+        },
+        "session_prev": {
+          "element_size": "20px",
+          "container_size": "32px"
+        },
+        "session_next": {
+          "element_size": "20px",
+          "container_size": "32px"
+        },
+        "sub_agent_tabs": {
+          "enabled": true,
+          "square": false
+        },
+        "agent_name": {
+          "min_width": "80px",
+          "max_width": "200px"
+        },
+        "session_dropdown": {
+          "min_width": "150px"
+        }
+      }
+    },
+    "debug": {
+      "description": "Development-only visual diagnostics for this surface.",
+      "borders": false
+    },
+    "fade": {
+      "top": 150,
+      "bottom": 200
+    },
+    "pill_fade": {
+      "top": 0,
+      "bottom": 0
+    }
+  },
+  "chat_mobile": {
+    "description": "Mobile side-panel overrides. Leave values absent to use chat_common.",
+    "content_max_width": "100%",
+    "messages": {},
+    "chat_header": {
+      "max_width": "100%",
+      "rows": [
+        {
+          "left": [
+            "new_session"
+          ],
+          "center": [
+            "session_dropdown"
+          ],
+          "right": []
+        },
+        {
+          "left": [],
+          "center": [
+            "sub_agent_tabs"
+          ],
+          "right": []
+        }
+      ],
+      "controls": {
+        "changes": {
+          "element_size": "20px",
+          "container_size": "32px"
+        },
+        "new_session": {
+          "element_size": "20px",
+          "container_size": "32px"
+        },
+        "sub_agent_tabs": {
+          "enabled": true,
+          "square": false
+        },
+        "session_dropdown": {
+          "min_width": "0"
+        }
+      }
+    },
+    "fade": {
+      "top": 100,
+      "bottom": 120
+    },
+    "pill_fade": {
+      "top": 8,
+      "bottom": 10,
+      "bottom_offset": 0
+    }
+  },
+  "chat_widget": {
+    "description": "Floating and embeddable widget overrides. This profile shares chat_common unless an override is listed here.",
+    "messages": {
+      "description": "Widget-specific copy overrides, including the anonymous composer prompt.",
+      "pill_placeholder": "Type your message\u00e2\u20ac\u00a6"
+    },
+    "chat_header": {
+      "rows": [
+        {
+          "left": [],
+          "center": [
+            "icon",
+            "title",
+            "status",
+            "dot"
+          ],
+          "right": [
+            "minimize",
+            "close"
+          ]
+        }
+      ],
+      "controls": {
+        "icon": {
+          "container_size": "28px"
+        },
+        "title": {
+          "container_size": "28px"
+        },
+        "status": {
+          "container_size": "28px"
+        },
+        "dot": {
+          "container_size": "28px"
+        },
+        "minimize": {
+          "container_size": "28px"
+        },
+        "close": {
+          "container_size": "28px"
+        }
+      }
+    },
+    "fade": {
+      "top": 48,
+      "bottom": 80
+    },
+    "pill_fade": {
+      "top": 6,
+      "bottom": 8,
+      "bottom_offset": 0
+    },
+    "launcher": {
+      "description": "Appearance and placement of the website embed launcher.",
+      "position": "right",
+      "accent": "#4f46e5",
+      "icon": "bot",
+      "corner_buttons": {
+        "description": "Hover-activated corner buttons on the launcher. Each button can be individually enabled/disabled and retooled.",
+        "enabled": true,
+        "hover_delay_ms": 200,
+        "top_left": {
+          "enabled": true,
+          "type": "sessions",
+          "icon": "list",
+          "tooltip": "Show sessions"
+        },
+        "top_right": {
+          "enabled": true,
+          "type": "new_session",
+          "icon": "plus",
+          "tooltip": "New session"
+        },
+        "bottom_left": {
+          "enabled": true,
+          "type": "element_pickup",
+          "icon": "crosshair",
+          "tooltip": "Toggle element pickup \u00e2\u20ac\u201d agent sees what the dot points at"
+        },
+        "bottom_right": {
+          "enabled": true,
+          "type": "open_all",
+          "icon": "maximize-2",
+          "tooltip": "Open all minimized"
+        }
+      }
+    }
+  },
+  "controls_library": {
+    "description": "Reference catalog of every available chat control. NOT consumed by UI code \u00e2\u20ac\u201d exists solely so users can see what controls exist and what each is for.",
+    "controls": {
+      "agent_name": {
+        "display_name": "Agent Name",
+        "description": "Current agent name with agent-switcher dropdown",
+        "targets": [
+          "header",
+          "footer"
+        ],
+        "icon": "bot"
+      },
+      "session_dropdown": {
+        "display_name": "Session Dropdown",
+        "description": "Session selector with chevron, label, and dropdown menu",
+        "targets": [
+          "header",
+          "footer"
+        ],
+        "icon": "list"
+      },
+      "new_session": {
+        "display_name": "New Session",
+        "description": "Create a new chat session",
+        "targets": [
+          "header",
+          "footer"
+        ],
+        "icon": "plus"
+      },
+      "session_prev": {
+        "display_name": "Previous Session",
+        "description": "Navigate to the previous pinned session",
+        "targets": [
+          "header",
+          "footer"
+        ],
+        "icon": "arrow-big-left"
+      },
+      "session_next": {
+        "display_name": "Next Session",
+        "description": "Navigate to the next pinned session",
+        "targets": [
+          "header",
+          "footer"
+        ],
+        "icon": "arrow-big-right"
+      },
+      "changes": {
+        "display_name": "Session Changes",
+        "description": "Toggle the file changes panel for the current session",
+        "targets": [
+          "header",
+          "footer"
+        ],
+        "icon": "files"
+      },
+      "local_changes": {
+        "display_name": "Local Changes",
+        "description": "Working-tree summary in the row above the pill: changed file paths with added/removed line counts, plus a commit button (top right) that commits exactly those files with a note",
+        "targets": [
+          "above_pill"
+        ],
+        "icon": "files"
+      },
+      "refresh": {
+        "display_name": "Refresh Transcript",
+        "description": "Refresh the chat transcript",
+        "targets": [
+          "header",
+          "footer"
+        ],
+        "icon": "refresh-cw"
+      },
+      "delete_session": {
+        "display_name": "Delete Session",
+        "description": "Delete the current session",
+        "targets": [
+          "header",
+          "footer"
+        ],
+        "icon": "trash-2"
+      },
+      "sub_agent_tabs": {
+        "display_name": "Sub-Agent Tabs",
+        "description": "Tab bar for switching between sub-agents in a session",
+        "targets": [
+          "header"
+        ],
+        "icon": "layers"
+      },
+      "top_nav": {
+        "display_name": "Top Nav",
+        "description": "Jump-to-top and jump-to-last-user buttons",
+        "targets": [
+          "header"
+        ],
+        "icon": "chevrons-up"
+      },
+      "abilities": {
+        "display_name": "Abilities",
+        "description": "Toggle abilities on/off for the current chat",
+        "targets": [
+          "header",
+          "footer",
+          "below_pill"
+        ],
+        "icon": "blocks"
+      },
+      "target": {
+        "display_name": "Target Device",
+        "description": "Choose which device runs the next message",
+        "targets": [
+          "header",
+          "footer",
+          "below_pill"
+        ],
+        "icon": "monitor"
+      },
+      "mode": {
+        "display_name": "Execution Mode",
+        "description": "Toggle execution mode: Ask \u00e2\u2020\u2019 Plan \u00e2\u2020\u2019 Auto",
+        "targets": [
+          "header",
+          "footer",
+          "below_pill"
+        ],
+        "icon": "toggle-left"
+      },
+      "model_changer": {
+        "display_name": "Model Changer",
+        "description": "Cycle through available models with chevron buttons",
+        "targets": [
+          "below_pill"
+        ],
+        "icon": "cpu"
+      },
+      "storage_mode": {
+        "display_name": "Storage Mode",
+        "description": "Toggle between browser-backed (IndexedDB) and server-backed storage",
+        "targets": [
+          "below_pill"
+        ],
+        "icon": "database"
+      },
+      "textarea": {
+        "display_name": "Message Input",
+        "description": "Multi-line message input that fills its pill zone",
+        "targets": [
+          "pill"
+        ],
+        "icon": "text-cursor-input"
+      },
+      "stats": {
+        "display_name": "Usage Stats",
+        "description": "Token, context-window, and cost information",
+        "targets": [
+          "pill"
+        ],
+        "icon": "chart-no-axes-column"
+      },
+      "mic": {
+        "display_name": "Microphone Button",
+        "description": "Always-visible voice input button",
+        "targets": [
+          "pill"
+        ],
+        "icon": "mic"
+      },
+      "send": {
+        "display_name": "Send Button",
+        "description": "Send the current message",
+        "targets": [
+          "pill"
+        ],
+        "icon": "send"
+      },
+      "mic_send": {
+        "display_name": "Microphone / Send Button",
+        "description": "Switching control: microphone while empty, send when the input has text",
+        "targets": [
+          "pill"
+        ],
+        "icon": "mic"
+      },
+      "voice": {
+        "display_name": "Voice Input (Legacy)",
+        "description": "Legacy alias for mic; retained for version 2 configurations",
+        "targets": [
+          "pill"
+        ],
+        "icon": "mic"
+      },
+      "attach": {
+        "display_name": "Attach Files",
+        "description": "Attach files to the current message",
+        "targets": [
+          "pill"
+        ],
+        "icon": "plus"
+      },
+      "stop": {
+        "display_name": "Stop Button",
+        "description": "Stop the current generation",
+        "targets": [
+          "pill",
+          "above_pill"
+        ],
+        "icon": "square"
+      },
+      "continue": {
+        "display_name": "Continue Button",
+        "description": "Send 'continue' to resume the agent",
+        "targets": [
+          "pill",
+          "above_pill"
+        ],
+        "icon": "play"
+      },
+      "activity": {
+        "display_name": "Activity Indicator",
+        "description": "Tool-call activity chip with expandable panel",
+        "targets": [
+          "above_pill"
+        ],
+        "icon": "activity"
+      },
+      "scroll_bottom": {
+        "display_name": "Scroll to Latest",
+        "description": "Show a jump-to-latest affordance when the transcript is scrolled up",
+        "targets": [
+          "above_pill"
+        ],
+        "icon": "chevrons-down"
+      },
+      "icon": {
+        "display_name": "Agent Icon",
+        "description": "Agent avatar/icon (widget/embed use)",
+        "targets": [
+          "header"
+        ],
+        "icon": "bot"
+      },
+      "title": {
+        "display_name": "Chat Title",
+        "description": "Chat title text (widget/embed use)",
+        "targets": [
+          "header"
+        ],
+        "icon": "type"
+      },
+      "status": {
+        "display_name": "Status Indicator",
+        "description": "Connection/agent status (widget/embed use)",
+        "targets": [
+          "header"
+        ],
+        "icon": "circle"
+      },
+      "dot": {
+        "display_name": "Status Dot",
+        "description": "Small status indicator dot (widget/embed use)",
+        "targets": [
+          "header"
+        ],
+        "icon": "circle"
+      },
+      "close": {
+        "display_name": "Close Button",
+        "description": "Close the chat panel (widget/embed use)",
+        "targets": [
+          "header"
+        ],
+        "icon": "x"
+      },
+      "minimize": {
+        "display_name": "Minimize Button",
+        "description": "Minimize the chat widget",
+        "targets": [
+          "header"
+        ],
+        "icon": "minus"
+      }
+    }
+  }
+}

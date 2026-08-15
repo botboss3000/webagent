@@ -69,6 +69,17 @@ let _refreshPromise = null; // single-flight recall
 let _cooldownUntil = 0;
 let _started = false;       // startTokenAutoRefresh() idempotency
 
+// A token can be rejected by the server (401) while its own `exp` is still in
+// the future — the classic case is a signing-key change after a redeploy: the
+// browser's pass looks valid to the client (decodes, unexpired) but fails the
+// server's signature check, so it is unrecoverable without a fresh login. We
+// cannot tell that from a one-off transient 401, so we require a short CASCADE
+// of refresh-failed 401s before concluding the session is dead — enough that a
+// genuine bad-signature boot (which fires many authed calls at once) trips it,
+// while a single blip never signs anyone out spuriously.
+let _unrecoverable401s = 0;
+const _MAX_UNRECOVERABLE_401S = 3;
+
 // ── JWT helpers ──────────────────────────────────────────────────────────
 
 /** Read the `exp` claim (epoch ms) from a JWT without verifying it. */
@@ -336,7 +347,13 @@ async function _patchedFetch(input, init) {
     // captures the intent and is a valid Response constructor status.
     return new Response(null, { status: 503, statusText: "Server Unreachable" });
   }
-  if (resp.status !== 401) return resp;
+  if (resp.status !== 401) {
+    // A refreshable authed call that did NOT 401 means our credentials work —
+    // clear any accumulated unrecoverable-401 streak so an earlier blip can't
+    // add up to a false sign-out later.
+    if (_unrecoverable401s && _isRefreshableApiCall(input)) _unrecoverable401s = 0;
+    return resp;
+  }
   // Guard: never retry a request we already retried (belt-and-suspenders —
   // the retry below goes through native fetch and won't re-enter here).
   if (init && init.__webagentAuthRetried) return resp;
@@ -344,12 +361,21 @@ async function _patchedFetch(input, init) {
 
   const token = await _refreshToken();
   if (!token) {
-    // Couldn't refresh. If this is a signed-in member holding a provably-dead
-    // token, the session is unrecoverable — announce it so the app signs out
-    // cleanly rather than letting every authed call keep 401ing silently.
-    if (_tokenDefinitelyExpired(getActive())) _announceAuthExpired(getActive());
+    // Couldn't refresh. The session is unrecoverable when the token is provably
+    // expired OR the server keeps rejecting a still-"unexpired" token — a
+    // bad-signature cascade after a redeploy changed the signing key (the token
+    // decodes and looks valid to us, but fails the server's check). Either way,
+    // announce a clean sign-out rather than letting every authed call 401 behind
+    // a UI that still looks logged in. The streak threshold keeps a lone
+    // transient 401 from ever tripping it.
+    _unrecoverable401s += 1;
+    if (_tokenDefinitelyExpired(getActive()) || _unrecoverable401s >= _MAX_UNRECOVERABLE_401S) {
+      _announceAuthExpired(getActive());
+    }
     return resp; // surface the original 401
   }
+  // Refresh recovered a fresh token — the session is alive again.
+  _unrecoverable401s = 0;
 
   const retryInput = (typeof input === 'string')
     ? _applyTokenToUrl(input, token)

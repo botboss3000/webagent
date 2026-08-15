@@ -52,7 +52,6 @@ import { apiPath } from '../../../shared/js/config.js';
 // collide with the utils version; the legacy inline-tick path is no longer used here.
 import { _wrapNumberStepper, _markSaving as _ovMarkSaving, _flashSaveCheck as _ovFlashCheck } from '../../../shared/js/dom-utils.js';
 import { mount as mountDataSources } from '../../../shared/js/data-sources.js';
-import { chatMsg } from '../../../shared/js/app-prompts.js';
 
 // ── Shared layout helpers (App-Settings standard config-page layout) ──────────
 
@@ -158,22 +157,94 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
     _renderSuggestionModeControl(body);
   }
 
-  // ── Identity (Name + Description) ─────────────────────────────────────────
-  // Genuine free-text fields → stay fields (not rows). For the mock create card the
-  // NAME lives in the card header (the contenteditable create field), so this tab
-  // only shows Description — read on create via [data-field="desc"] (view.js
-  // `_acceptWebAgentCreate`); it does not persist while the mock is open.
-  if (isEditable) {
-    const g = _group(body, 'user', 'Identity');
-    if (!isMock) _cfgField(g, {
-      label: 'Name', field: 'name', value: agent.name || '', placeholder: 'Name this agent…',
-      onSave: (val) => _putAgentField(agent, { name: val.trim() }, null, { silent: true }),
-    });
-    _cfgField(g, {
-      label: 'Description', field: 'desc', multiline: true, rows: 2,
-      value: agent.description || '', placeholder: 'Add a description…',
-      onSave: isMock ? null : (val) => _putAgentField(agent, { description: val }, null, { silent: true }),
-    });
+  // ── Template badge (custom agent cloned from a template) ──────────────────
+  // Shows which template this agent was created from, with separate buttons to
+  // push changes back to the DB template row and to the JSON seed file.
+  if (isEditable && !isMock && agent.template_id) {
+    const g = _group(body, 'layout-template', 'Template');
+    const list = _cfgList(g);
+
+    // Badge row
+    const badgeRow = document.createElement('div');
+    badgeRow.className = 'ac-ability-row';
+    badgeRow.style.cssText = 'align-items:center;gap:8px;padding:8px 12px;background:rgba(var(--brand-rgb,99,102,241),0.06);border-radius:6px;margin-bottom:8px;';
+    const badgeLabel = document.createElement('span');
+    badgeLabel.className = 'ac-ability-name';
+    badgeLabel.textContent = '🧬 ' + (agent.template_origin || agent.template_id);
+    const badgeTag = document.createElement('span');
+    badgeTag.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:4px;background:var(--accent);color:#fff;margin-left:8px;';
+    badgeTag.textContent = 'Template-based';
+    badgeLabel.appendChild(badgeTag);
+    // Small pill showing whether the template has a JSON file
+    const srcPill = document.createElement('span');
+    srcPill.style.cssText = 'font-size:10px;padding:1px 6px;border-radius:3px;background:var(--muted,#e5e7eb);color:var(--muted-fg,#6b7280);margin-left:6px;';
+    srcPill.textContent = agent.template_has_json ? '📄 JSON seed' : '🗄️ DB only';
+    badgeLabel.appendChild(srcPill);
+    badgeRow.appendChild(badgeLabel);
+    list.appendChild(badgeRow);
+
+    // Only admins can push
+    if (_userIsAdmin) {
+      // Button 1: Push to DB template (always available)
+      const { ctrl } = _cfgRow(list, 'Push to database template',
+        'Overwrite the "' + (agent.template_origin || agent.template_id) + '" template row with this agent\'s current config + prompts.');
+      const btn = document.createElement('button');
+      btn.className = 'ac-btn ac-btn-sm';
+      btn.textContent = 'Push to DB template';
+      btn.addEventListener('click', async () => {
+        if (!confirm('Push this agent\'s config to the "' + (agent.template_origin || agent.template_id) + '" template?\n\nThis updates the DB row immediately.')) return;
+        btn.disabled = true; btn.textContent = 'Pushing…';
+        try {
+          const res = await fetch(`/api/v1/agents/${agent.id}/push-to-template`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ user_id: app.currentUserId }),
+          });
+          if (res.ok) { btn.textContent = '✓ Pushed'; btn.style.background = 'var(--success,#22c55e)'; }
+          else {
+            const err = await res.json().catch(() => ({}));
+            btn.textContent = '⚠ Failed'; alert('Push failed: ' + (err.detail || 'Unknown error'));
+            btn.disabled = false;
+            setTimeout(() => { btn.textContent = 'Push to DB template'; btn.style.background = ''; }, 2000);
+          }
+        } catch (e) {
+          btn.textContent = '⚠ Error'; alert('Push error: ' + e.message);
+          btn.disabled = false;
+          setTimeout(() => { btn.textContent = 'Push to DB template'; btn.style.background = ''; }, 2000);
+        }
+      });
+      ctrl.appendChild(btn);
+
+      // Button 2: Push to JSON file (only if template has a seed file)
+      if (agent.template_has_json) {
+        const { ctrl: expCtrl } = _cfgRow(list, 'Push to JSON seed file',
+          'Write the template back to app/defaults/agents/' + (agent.template_origin || agent.template_id) + '.json (git-tracked).');
+        const expBtn = document.createElement('button');
+        expBtn.className = 'ac-btn ac-btn-sm';
+        expBtn.textContent = 'Push to JSON file';
+        expBtn.addEventListener('click', async () => {
+          if (!confirm('Export "' + (agent.template_origin || agent.template_id) + '" to app/defaults/agents/?')) return;
+          expBtn.disabled = true; expBtn.textContent = 'Exporting…';
+          try {
+            const res = await fetch(`/admin/db/templates/${agent.template_id}/export-to-file`, {
+              method: 'POST', headers: { ...authHeaders() },
+            });
+            if (res.ok) { expBtn.textContent = '✓ Exported'; expBtn.style.background = 'var(--success,#22c55e)'; }
+            else {
+              const err = await res.json().catch(() => ({}));
+              expBtn.textContent = '⚠ Failed'; alert('Export failed: ' + (err.detail || 'Unknown error'));
+              expBtn.disabled = false;
+              setTimeout(() => { expBtn.textContent = 'Push to JSON file'; expBtn.style.background = ''; }, 2000);
+            }
+          } catch (e) {
+            expBtn.textContent = '⚠ Error'; alert('Export error: ' + e.message);
+            expBtn.disabled = false;
+            setTimeout(() => { expBtn.textContent = 'Push to JSON file'; expBtn.style.background = ''; }, 2000);
+          }
+        });
+        expCtrl.appendChild(expBtn);
+      }
+    }
   }
 
   // Local Claude Code agents never reach this tab — they get their own distinct,
@@ -216,21 +287,16 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
   // Models (ui/shared/js/model-table.js); keep the two mirrored. The table shows
   // the admin's app-default model(s) as read-only "Inherited" rows (when "Extend
   // default LLM to agents" is on) PLUS this agent's own models (editable, stored
-  // in agent.llm_config.multi_providers). When extend is off, none are shown — the
-  // agent must add its own. The "Default" radio picks which model the agent runs
-  // by default; the chat user can switch it per conversation (resolved server-side
-  // in app/admin/settings.py).
+  // in agent.llm_config.multi_providers). Inherited rows are pure references:
+  // taking a role with an own model just sinks them in the sort — no per-agent
+  // override copy is ever created. When extend is off, none are shown — the
+  // agent must add its own. The chat user can switch the model per conversation
+  // (resolved server-side in app/admin/settings.py).
   if (isEditable && !isMock && agent.engine !== 'claude_code' && agent.engine !== 'terminal_chat') {
     const llmCfg = agent.llm_config || { use_default: true };
 
-    const g = _group(body, 'cpu', 'Model');
-    const hint = document.createElement('div');
-    hint.className = 'ac-hint';
-    hint.textContent = _extendLlmToAgents
-      ? 'Runs on the app default model(s) shown below (managed by an admin), plus any you add here.'
-      : 'This agent uses only its own model(s) — add at least one below.';
-    g.appendChild(hint);
-
+    const g = document.createElement('div');
+    body.appendChild(g);
     const host = document.createElement('div');
     host.style.marginTop = '8px';
     g.appendChild(host);
@@ -285,33 +351,12 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
         // The app's chosen default brain (top-level provider model), used to
         // pre-select the Default radio for an agent that inherits it.
         _appDefaultModel = (prov && prov.model) || '';
-        // Layer this agent's per-model opt-outs over the app-wide ceiling. The
-        // admin's checked boxes are the MAXIMUM each model may be used for; the
-        // agent may use any subset of that. For each inherited model we compute:
-        //   • _ceiling — which capability boxes the admin enabled (gated by what
-        //     the model can actually do). These are the only editable columns here.
-        //   • the effective checkbox state = ceiling AND (this agent's stored choice
-        //     if any, else ON) — so an untouched agent inherits everything (opt-out
-        //     default), matching today's behaviour, and a narrowed agent shows fewer.
-        const ovr = (agentCfg.inherited_overrides && typeof agentCfg.inherited_overrides === 'object') ? agentCfg.inherited_overrides : {};
+        // Inherited app-default models shown as read-only — admin settings
+        // pass through verbatim.
         return rows.map(r => {
-          const textCap = r.text_capable !== false, inCap = !!r.image_capable, outCap = !!r.image_out_capable;
-          const ceiling = {
-            text:     textCap && (r.enabled !== false),
-            image_in: inCap   && !!r.use_for_image,
-            image_out: outCap && !!r.use_for_image_out,
-            effort:   textCap && !!r.high_effort_capable,
-          };
           const key = `${r.provider || ''}|${r.base_url || ''}|${r.model || ''}`;
-          const o = ovr[key];
-          const pick = (ceilOn, flag) => ceilOn && (o ? !!o[flag] : true);
           return {
             ...r,
-            enabled:            pick(ceiling.text, 'enabled'),
-            use_for_image:      pick(ceiling.image_in, 'use_for_image'),
-            use_for_image_out:  pick(ceiling.image_out, 'use_for_image_out'),
-            high_effort_capable: pick(ceiling.effort, 'high_effort_capable'),
-            _ceiling: ceiling,
             _ovrKey: key,
           };
         });
@@ -353,6 +398,11 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
         // llm_config, not multi_providers — synthesize a one-row roster from it
         // so the existing model shows as an editable row.
         let roster = agentCfg.multi_providers || [];
+        // Handle legacy format where multi_providers was stored as { providers: [...] }
+        // instead of a plain array (pre-existing bug in saveRoster).
+        if (!Array.isArray(roster) && roster && Array.isArray(roster.providers)) {
+          roster = roster.providers;
+        }
         if (!roster.length && agentCfg.model) {
           roster = [{
             provider: agentCfg.provider || 'custom', base_url: agentCfg.base_url || '',
@@ -379,48 +429,64 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
       },
       saveSingle: async (s) => {
         Object.assign(agentCfg, {
-          use_default: false, provider: s.provider, base_url: s.base_url, api_key: s.api_key, model: s.model,
+          use_default: false,
+          provider: s.provider, base_url: s.base_url, api_key: s.api_key, model: s.model,
           text_capable: s.text_capable, image_capable: s.image_capable, image_out_capable: s.image_out_capable,
-          providerConfigs: s.providers,
         });
-        await persistLlm();
-      },
-      // Persist this agent's opt-in/out for ONE inherited app-default model. Stored
-      // as a map keyed by provider|base_url|model under llm_config.inherited_overrides;
-      // each entry is the agent's chosen capability subset. Absent key = inherit
-      // everything (opt-out default). The backend clamps each flag to the live admin
-      // ceiling, so a stored choice can never exceed what the app allows. A model with
-      // every flag off is dropped from this agent's runtime model list entirely.
-      saveInheritedOverride: async (p) => {
-        const map = (agentCfg.inherited_overrides && typeof agentCfg.inherited_overrides === 'object')
-          ? { ...agentCfg.inherited_overrides } : {};
-        const key = p._ovrKey || `${p.provider || ''}|${p.base_url || ''}|${p.model || ''}`;
-        map[key] = {
-          enabled: p.enabled !== false,
-          use_for_image: !!p.use_for_image,
-          use_for_image_out: !!p.use_for_image_out,
-          high_effort_capable: !!p.high_effort_capable,
-        };
-        agentCfg.inherited_overrides = map;
-        agentCfg.use_default = false;
-        await persistLlm();
+        return persistLlm();
       },
       saveRoster: async ({ providers }) => {
-        agentCfg.use_default = false;
-        agentCfg.multi_providers = providers.map(p => ({
-          provider: p.provider === '_custom' ? 'custom' : p.provider,
-          base_url: p.base_url, api_key: p.api_key, model: p.model,
-          enabled: p.enabled,
-          text_capable: p.text_capable !== false, image_capable: !!p.image_capable, use_for_image: !!p.use_for_image,
-          image_out_capable: !!p.image_out_capable, use_for_image_out: !!p.use_for_image_out,
-          high_effort_capable: !!p.high_effort_capable,
-        }));
-        await persistLlm();
+        const oldProviders = agentCfg.multi_providers || [];
+        agentCfg.multi_providers = providers;
+        // A non-empty roster is an explicit per-agent override (its own models,
+        // or role overrides materialized from inherited rows). Flip use_default
+        // off so the backend honours it — an agent that was pure-inherit (no
+        // roster, use_default: true) would otherwise silently ignore the first
+        // override row it saves. An EMPTY roster keeps the previous use_default
+        // (the stale-pin guard below already resets to inherit when a pinned
+        // model is removed).
+        if (providers.length && agentCfg.use_default !== false) {
+          agentCfg.use_default = false;
+        }
+        // The Standard role (enabled + text_capable) IS the default brain model.
+        // Mirror the admin panel (set_multi_providers in app/admin/settings.py):
+        // when this roster save designates a Standard model, promote it to the
+        // top-level provider/model slots so new sessions start with it. The
+        // Standard row may be a materialized override copy (blank api_key) —
+        // the backend union keeps the inherited credential. If no model holds
+        // Standard, leave the existing default in place (same as the admin).
+        // Runs BEFORE the stale-pin guard so a freshly promoted standard is not
+        // mistaken for a stale pin.
+        const standard = providers.find(p => p.enabled && p.text_capable !== false);
+        if (standard) {
+          if (standard.provider) agentCfg.provider = standard.provider;
+          if (standard.base_url) agentCfg.base_url = standard.base_url;
+          if (standard.api_key) agentCfg.api_key = standard.api_key;
+          if (standard.model) agentCfg.model = standard.model;
+        }
+        // If the agent's pinned default model was in the agent's OWN roster
+        // but was just removed, clear the stale pin so the agent falls back
+        // to the app default instead of running on a removed model. Only
+        // fires when the removed model was actually the agent's own (not
+        // inherited) — inherited pins are left alone.
+        if (agentCfg.model && agentCfg.use_default === false) {
+          const wasInOwn = Array.isArray(oldProviders) && oldProviders.some(p => p.model === agentCfg.model);
+          const stillInOwn = providers.some(p => p.model === agentCfg.model);
+          if (wasInOwn && !stillInOwn) {
+            agentCfg.model = '';
+            agentCfg.provider = '';
+            agentCfg.base_url = '';
+            agentCfg.api_key = '';
+            agentCfg.use_default = true;
+          }
+        }
+        return persistLlm();
       },
-      // Provider presets — try the server first, fall back to hardcoded list
-      // mirroring PROVIDER_PRESETS in app/admin/settings.py so the dropdown
-      // always shows every known provider.
-      loadPresets: async () => {
+      saveDefaultModel: async (modelId) => {
+        agentCfg.model = modelId || '';
+        return persistLlm();
+      },
+      fetchProviderCatalog: async () => {
         try {
           const r = await fetch(apiPath('/admin/settings/providers'));
           if (r.ok) { const d = await r.json(); if (d && Object.keys(d).length) return d; }
@@ -491,7 +557,7 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
   // ── Chat mode (default execution mode for new sessions) ────────────────────
   // New chat sessions with this agent START in this mode (Ask / Plan / Auto).
   // Stored in metadata.default_execution_mode; the chat pill seeds a fresh
-  // session from it (ui/chat-side-panel/js/chat-ui.js _applyExecutionMode). Once
+  // session from it (ui/chat/js/chat-ui.js _applyExecutionMode). Once
   // a session has its own saved mode it keeps it. Shown for everyone (disabled on
   // read-only templates); the Claude Code engine has its own permission model so
   // it's hidden there. Terminal Chat has no LLM config either.
@@ -527,6 +593,60 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
       });
     } else if (isEditable) {
       sel.addEventListener('change', () => { if (descEl) descEl.textContent = MODE_HINT[sel.value] || ''; });
+    }
+  }
+
+  // ── Chat Display ──────────────────────────────────────────────────────────
+  // Per-agent toggles for what the chat stream shows: intermediate mid-turn
+  // messages and tool-call accordions.  Stored in metadata.chat_ui (deep-merged
+  // server-side).  Default for both is true (visible).
+  {
+    const g = _group(body, 'eye', 'Chat Display');
+    const list = _cfgList(g);
+    const cu = agent.chat_ui || {};
+
+    // show_mid_turn_messages toggle
+    {
+      const cur = cu.show_mid_turn_messages !== false;  // default true
+      const { ctrl } = _cfgRow(list, 'Show mid-turn messages',
+        'When ON the agent\'s intermediate reasoning steps appear in chat as they happen. Turn OFF to only see the final response.');
+      const wrap = document.createElement('label'); wrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'conn-toggle';
+      cb.checked = cur;
+      const track = document.createElement('span'); track.className = 'conn-toggle-track';
+      wrap.appendChild(cb); wrap.appendChild(track); ctrl.appendChild(wrap);
+      if (isEditable && !isMock) {
+        cb.addEventListener('change', async () => {
+          cb.disabled = true;
+          const ok = await _saveCfg(agent, { chat_ui: { show_mid_turn_messages: cb.checked } }, ctrl);
+          cb.disabled = false;
+          if (!ok) cb.checked = !cb.checked;
+        });
+      } else if (!isEditable) {
+        cb.disabled = true;
+      }
+    }
+
+    // show_tool_calls toggle
+    {
+      const cur = cu.show_tool_calls !== false;  // default true
+      const { ctrl } = _cfgRow(list, 'Show tool calls',
+        'When ON, tool calls are shown in a collapsible panel under each agent message. Turn OFF to hide the technical detail.');
+      const wrap = document.createElement('label'); wrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'conn-toggle';
+      cb.checked = cur;
+      const track = document.createElement('span'); track.className = 'conn-toggle-track';
+      wrap.appendChild(cb); wrap.appendChild(track); ctrl.appendChild(wrap);
+      if (isEditable && !isMock) {
+        cb.addEventListener('change', async () => {
+          cb.disabled = true;
+          const ok = await _saveCfg(agent, { chat_ui: { show_tool_calls: cb.checked } }, ctrl);
+          cb.disabled = false;
+          if (!ok) cb.checked = !cb.checked;
+        });
+      } else if (!isEditable) {
+        cb.disabled = true;
+      }
     }
   }
 
@@ -574,71 +694,45 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
       };
       // Default: no pin — the agent runs on whichever device is messaging it.
       mk('', 'None — runs on the messaging device', isNone);
-      // "This device" pins the current machine's real fleet id; only offered once the
-      // fleet has loaded (before that selfId is unknown). Name shown in parens.
+      // "This device" pins the current machine's concrete fleet id.
       if (selfId) {
         const selfName = selfDev ? String(selfDev.label || '').trim() : '';
-        mk(selfId, selfName ? ('This device (' + selfName + ')') : 'This device', isSelf);
+        const base = selfName ? ('This device (' + selfName + ')') : 'This device';
+        mk(selfId, base, isSelf);
       }
-      const seen = new Set(['', selfId]);
+      // Other fleet devices.
       others.forEach(d => {
-        mk(d.instance_id, (d.label || d.instance_id) + (d.online ? '' : ' (offline)'), d.instance_id === val);
-        seen.add(d.instance_id);
+        const id = (d && d.instance_id) || '';
+        if (!id) return;
+        mk(id, (d.label || id) + (d.online ? '' : ' (offline)'), val === id);
       });
-      if (val && !seen.has(val)) {
-        const lbl = (window.DevicePicker && window.DevicePicker.labelFor) ? window.DevicePicker.labelFor(val) : val;
-        mk(val, (lbl && lbl !== val ? lbl : val) + ' (offline)', true);
-      }
-      if (descEl) {
-        descEl.textContent = isNone
-          ? 'No pinned device — each chat runs on whichever device is messaging the agent. Pick a device to always run there.'
-          : 'New chats run on the chosen device. If it’s offline they fall back to the messaging device; you can still pick another per chat.';
+      // If the saved value isn't in the fleet (offline / removed), keep it as a
+      // disabled option so the admin still sees their choice.
+      if (val && !isNone && !isSelf && !others.some(d => (d && d.instance_id) === val)) {
+        const o = document.createElement('option'); o.value = val; o.textContent = val + ' (offline)';
+        o.selected = true; o.disabled = true; sel.appendChild(o);
       }
     };
+
+    // Paint "None" + saved value immediately; the fleet fills in async.
     _rebuild(null);
-    try {
-      if (window.DevicePicker && window.DevicePicker.load) {
-        window.DevicePicker.load().then(_rebuild).catch(() => {});
-      }
-    } catch (_) { /* fleet list is best-effort; the saved value still shows */ }
 
-    sel.addEventListener('change', async () => {
-      const selected = sel.value;
-      if (selected === confirmed) return;
-      sel.disabled = true;
-      const ok = await _saveCfg(agent, { default_target_device: selected }, ctrl);
-      sel.disabled = false;
-      if (ok) { confirmed = selected; }
-      else { sel.value = confirmed; }
-    });
-  }
+    // Listen for the fleet list (shared DevicePicker, loaded by the chat pill).
+    if (window.DevicePicker && window.DevicePicker.load) {
+      window.DevicePicker.load().then(_rebuild).catch(() => {});
+    }
 
-  // ── Chat Messages (per-agent UI copy) ─────────────────────────────────────
-  // Genuine free-text fields → stay fields. Each field's placeholder shows the
-  // current app-wide default (from app/defaults/app-prompts.json); leaving a field
-  // blank uses that default. Stored in metadata.chat_ui via the agent PUT;
-  // consumed in chat by ui/shared/js/app-prompts.js (agentChatMsg).
-  if (isEditable && !isMock) {
-    const g = _group(body, 'message-square', 'Chat Messages');
-    const intro = document.createElement('div'); intro.className = 'ac-hint';
-    intro.textContent = 'Customize this agent’s chat greeting and message-box hints. Leave a field blank to use the app-wide default shown as its placeholder.';
-    g.appendChild(intro);
-
-    const cu = (agent.chat_ui && typeof agent.chat_ui === 'object') ? agent.chat_ui : {};
-    const CHAT_MSG_FIELDS = [
-      ['welcome_bubble',         'Welcome message',          true,  2],
-      ['new_session_bubble',     'New-session message',      false, 1],
-      ['switched_agent_bubble',  'Switched-to message',      false, 1],
-      ['pill_placeholder',       'Message-box hint',         false, 1],
-      ['pill_locked_placeholder','Locked message-box hint',  false, 1],
-    ];
-    CHAT_MSG_FIELDS.forEach(([key, label, multiline, rows]) => {
-      _cfgField(g, {
-        label, field: 'chatui_' + key, value: cu[key] || '',
-        multiline, rows, placeholder: chatMsg(key),
-        onSave: (val) => _putAgentField(agent, { chat_ui: { [key]: val } }, null, { silent: true }),
+    if (!isMock) {
+      sel.addEventListener('change', async () => {
+        const selected = sel.value;
+        if (selected === confirmed) return;
+        sel.disabled = true;
+        const ok = await _saveCfg(agent, { default_target_device: selected }, ctrl);
+        sel.disabled = false;
+        if (ok) { confirmed = selected; }
+        else { sel.value = confirmed; }
       });
-    });
+    }
   }
 
   // ── Limits ────────────────────────────────────────────────────────────────
@@ -674,6 +768,25 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
         inputEl.addEventListener('input', saveLimit); inputEl.addEventListener('blur', () => saveLimit.flush());
       }
     });
+
+    // Resume tail messages — stored in metadata, 0 = use app default (32).
+    if (isEditable) {
+      const { ctrl } = _cfgRow(list, 'Resume Tail Messages', 'How many recent messages to replay when a session resumes. 0 = app default (32).');
+      const inputEl = document.createElement('input'); inputEl.type = 'number';
+      inputEl.className = 'ac-input ac-input-sm ac-config-num';
+      inputEl.min = 0; inputEl.max = 999; inputEl.step = 1;
+      inputEl.value = (agent.resume_tail_messages != null && agent.resume_tail_messages > 0) ? agent.resume_tail_messages : '';
+      inputEl.placeholder = '0 (default 32)';
+      ctrl.appendChild(_wrapNumberStepper(inputEl));
+      if (!isMock) {
+        const saveResume = _debounced(() => {
+          const raw = inputEl.value;
+          const val = (raw === '' || parseInt(raw, 10) === 0) ? null : (parseInt(raw, 10) || 0);
+          _saveCfg(agent, { resume_tail_messages: val }, ctrl);
+        });
+        inputEl.addEventListener('input', saveResume); inputEl.addEventListener('blur', () => saveResume.flush());
+      }
+    }
 
     // Max concurrent tools — safety_policy.max_concurrent_tools (0/blank = off).
     // (Relocated from the old Tools tab; the two per-agent confirmation toggles
@@ -757,83 +870,96 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
       if (!isEditable) sel.disabled = true;
       ctrl.appendChild(sel);
       if (isEditable && !isMock) {
-        let umConfirmed = umMode;
+        let confirmed = umMode;
         sel.addEventListener('change', async () => {
           const selected = sel.value;
           if (descEl) descEl.textContent = umHint(selected);
-          if (selected === umConfirmed) return;
+          if (selected === confirmed) return;
           sel.disabled = true;
           const ok = await _saveCfg(agent, { user_mode: selected }, ctrl);
           sel.disabled = false;
-          if (ok) { umConfirmed = selected; }
-          else { sel.value = umConfirmed; if (descEl) descEl.textContent = umHint(umConfirmed); }
+          if (ok) { confirmed = selected; }
+          else { sel.value = confirmed; if (descEl) descEl.textContent = umHint(confirmed); }
         });
-      } else if (isEditable) {
-        sel.addEventListener('change', () => { if (descEl) descEl.textContent = umHint(sel.value); });
       }
     }
 
-    // Trigger + Trigger Key
-    if (isEditable) {
+    // Public link — full-app shared chat page at /{agent_id}
+    if (isEditable && !isMock) {
+      const { ctrl } = _cfgRow(list, 'Public link', 'Allow a public shared link (/agent-id) where visitors chat with this agent without signing up.');
+      const wrap = document.createElement('label'); wrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'conn-toggle';
+      cb.checked = !!agent.public_link; cb.dataset.field = 'public_link';
+      const track = document.createElement('span'); track.className = 'conn-toggle-track';
+      wrap.appendChild(cb); wrap.appendChild(track); ctrl.appendChild(wrap);
+      cb.addEventListener('change', async () => {
+        cb.disabled = true;
+        const ok = await _saveCfg(agent, { public_link: cb.checked }, ctrl);
+        cb.disabled = false;
+        if (!ok) cb.checked = !cb.checked;
+      });
+    }
+
+    // Trigger + Trigger Key (editable only)
+    if (isEditable && !isMock) {
       const trig = _cfgRow(list, 'Trigger', 'What starts a run for this agent.');
-      const triggerSel = document.createElement('select');
-      triggerSel.className = 'ac-input ac-input-sm ac-config-sel'; triggerSel.dataset.field = 'trigger_type';
-      for (const [val, text] of [['user_input','User Input'],['slash_command','Slash Command'],['tool_call','Tool Call'],['schedule','Schedule'],['webhook','Webhook'],['background','Background']]) {
-        const opt = document.createElement('option'); opt.value = val; opt.textContent = text;
-        if ((agent.trigger_type || 'user_input') === val) opt.selected = true;
-        triggerSel.appendChild(opt);
-      }
-      trig.ctrl.appendChild(triggerSel);
+      const trigSel = document.createElement('select');
+      trigSel.className = 'ac-input ac-input-sm ac-config-sel'; trigSel.dataset.field = 'trigger';
+      [['chat', 'Chat'], ['webhook', 'Webhook'], ['schedule', 'Schedule'], ['event', 'Event']].forEach(([v, t]) => {
+        const o = document.createElement('option'); o.value = v; o.textContent = t;
+        if (v === (agent.trigger || 'chat')) o.selected = true; trigSel.appendChild(o);
+      });
+      trig.ctrl.appendChild(trigSel);
 
       const keyRowObj = _cfgRow(list, 'Trigger Key', 'Identifier that fires this trigger.');
-      keyRowObj.row.style.display = (agent.trigger_type && agent.trigger_type !== 'user_input') ? '' : 'none';
       const keyInput = document.createElement('input'); keyInput.type = 'text';
-      keyInput.className = 'ac-input ac-input-sm ac-config-key';
-      keyInput.dataset.field = 'trigger_key'; keyInput.value = agent.trigger_key || '';
-      keyInput.placeholder = _triggerKeyPlaceholder(agent.trigger_type || 'user_input');
+      keyInput.className = 'ac-input ac-input-sm'; keyInput.dataset.field = 'trigger_key';
+      keyInput.value = agent.trigger_key || ''; keyInput.placeholder = _triggerKeyPlaceholder(agent);
       keyRowObj.ctrl.appendChild(keyInput);
 
-      triggerSel.addEventListener('change', () => {
-        keyRowObj.row.style.display = triggerSel.value !== 'user_input' ? '' : 'none';
-        keyInput.placeholder = _triggerKeyPlaceholder(triggerSel.value);
-        if (!isMock) _saveCfg(agent, { trigger_type: triggerSel.value }, trig.ctrl);
+      let confirmedTrig = agent.trigger || 'chat';
+      let confirmedKey = agent.trigger_key || '';
+      trigSel.addEventListener('change', async () => {
+        const selected = trigSel.value;
+        if (selected === confirmedTrig) return;
+        trigSel.disabled = true;
+        const ok = await _saveCfg(agent, { trigger: selected }, trig.ctrl);
+        trigSel.disabled = false;
+        if (ok) { confirmedTrig = selected; }
+        else { trigSel.value = confirmedTrig; }
       });
-      if (!isMock) {
-        const saveKey = _debounced(() => _saveCfg(agent, { trigger_key: keyInput.value.trim() || null }, keyRowObj.ctrl));
-        keyInput.addEventListener('input', saveKey); keyInput.addEventListener('blur', () => saveKey.flush());
-      }
+      const saveKey = _debounced(async () => {
+        const val = keyInput.value;
+        if (val === confirmedKey) return;
+        const ok = await _saveCfg(agent, { trigger_key: val || null }, keyRowObj.ctrl);
+        if (ok) confirmedKey = val;
+      });
+      keyInput.addEventListener('input', saveKey);
+      keyInput.addEventListener('blur', () => saveKey.flush());
     }
   }
 
-  // ── Data (External Data Sources — expandable configurator row) ──────────────
+  // ── Website Embed (chat widget for external sites) ──────────────────────────
+  if (isEditable && !isMock && agent.engine !== 'claude_code' && agent.engine !== 'terminal_chat') {
+    _renderWebsiteEmbed(body, agent);
+  }
+
+  // ── Data (External Data Sources) ────────────────────────────────────────────
   if (isEditable && !isMock && agent.engine !== 'claude_code' && agent.engine !== 'terminal_chat') {
     const g = _group(body, 'database', 'Data');
     const list = _cfgList(g);
-    const rowWrap = document.createElement('div'); rowWrap.className = 'ac-row';
-    const head = document.createElement('div'); head.className = 'ac-ability-row';
+    const row = document.createElement('div'); row.className = 'ac-ability-row';
     const label = document.createElement('span'); label.className = 'ac-ability-label';
-    label.innerHTML = `<span class="ac-ability-name">External Data Sources</span>`
-      + `<span class="ac-ability-desc">Attach databases, document folders, or domain-restricted web search as agent tools.</span>`;
-    const status = document.createElement('span'); status.className = 'ac-ability-status'; status.textContent = 'None';
-    const chev = document.createElement('span'); chev.className = 'ac-row-chevron';
-    chev.innerHTML = icon('chevron-right', { size: 16 });
-    head.appendChild(label); head.appendChild(status); head.appendChild(chev);
-    const dsBody = document.createElement('div'); dsBody.className = 'ac-ability-body';
-    rowWrap.appendChild(head); rowWrap.appendChild(dsBody);
-    head.addEventListener('click', () => rowWrap.classList.toggle('expanded'));
-    list.appendChild(rowWrap);
-    try {
-      mountDataSources(dsBody, agent, app.currentUserId, {
-        bare: true,
-        onCount: (n) => { status.textContent = n ? `${n} attached` : 'None'; status.classList.toggle('tone-ok', !!n); },
-      });
-    } catch (e) {
-      dsBody.innerHTML = `<div class="ac-hint">Error mounting data sources: ${_esc(e.message)}</div>`;
-    }
+    label.innerHTML = '<span class="ac-ability-name">External Data Sources</span>'
+      + '<span class="ac-ability-desc">Connect databases, APIs, and file stores the agent can query.</span>';
+    const ctrl = document.createElement('span'); ctrl.className = 'ac-config-control';
+    row.appendChild(label); row.appendChild(ctrl);
+    list.appendChild(row);
+    mountDataSources(ctrl, { agentId: agent.id, authHeaders });
   }
 
-  // ── Template options (Discoverable — admin-only, for templates) ─────────────
-  if (!isEditable && _userIsAdmin && agent.source === 'template') {
+  // ── Template options (discoverable toggle) ──────────────────────────────────
+  if (agent.source === 'template') {
     const g = _group(body, 'settings-2', 'Template options');
     const list = _cfgList(g);
     const { ctrl } = _cfgRow(list, 'Discoverable', 'Show this template in the "New Agent" creation dropdown.');
@@ -842,146 +968,196 @@ export function _renderConfigTab(body, agent, panelEl, _renderList) {
     cb.checked = !!agent.discoverable; cb.dataset.field = 'discoverable';
     const track = document.createElement('span'); track.className = 'conn-toggle-track';
     wrap.appendChild(cb); wrap.appendChild(track); ctrl.appendChild(wrap);
-    cb.addEventListener('change', async () => {
-      const target = cb.checked; cb.disabled = true;
-      _ovMarkSaving(ctrl);
-      let ok = false, errMsg = '';
-      try {
-        const res = await fetch(`/api/v1/agent-templates/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: app.currentUserId, template_id: agent.id, discoverable: target }) });
-        const data = await res.json();
-        if (res.ok) { agent.discoverable = data.template?.discoverable; const idx = _agents.findIndex(a => a.id === agent.id); if (idx !== -1) _agents[idx].discoverable = agent.discoverable; ok = true; }
-        else errMsg = data.detail || 'Save failed';
-      } catch (e) { errMsg = e.message; }
-      cb.disabled = false;
-      _ovFlashCheck(ctrl, ok, ok ? '' : errMsg);
-      if (!ok) cb.checked = !target;
-    });
+    if (!isMock) {
+      cb.addEventListener('change', async () => {
+        cb.disabled = true;
+        const ok = await _saveCfg(agent, { discoverable: cb.checked }, ctrl);
+        cb.disabled = false;
+        if (!ok) cb.checked = !cb.checked;
+      });
+    }
+
+    // Export to JSON file (templates with json_seed source, admin only)
+    if (_userIsAdmin && agent.template_source === 'json_seed') {
+      const { ctrl: expCtrl } = _cfgRow(list, 'Push to JSON seed file',
+        'Write the current template back to app/defaults/agents/' + (agent.id || agent.template_id) + '.json (git-tracked).');
+      const expBtn = document.createElement('button');
+      expBtn.className = 'ac-btn ac-btn-sm';
+      expBtn.textContent = 'Push to JSON file';
+      expBtn.addEventListener('click', async () => {
+        if (!confirm('Export "' + (agent.id || agent.template_id) + '" to app/defaults/agents/?')) return;
+        expBtn.disabled = true;
+        expBtn.textContent = 'Exporting…';
+        try {
+          const res = await fetch(`/admin/db/templates/${agent.id}/export-to-file`, {
+            method: 'POST',
+            headers: { ...authHeaders() },
+          });
+          if (res.ok) {
+            expBtn.textContent = '✓ Exported';
+            expBtn.style.background = 'var(--success,#22c55e)';
+          } else {
+            const err = await res.json().catch(() => ({}));
+            expBtn.textContent = '⚠ Failed';
+            alert('Export failed: ' + (err.detail || 'Unknown error'));
+            expBtn.disabled = false;
+            setTimeout(() => { expBtn.textContent = 'Export to file'; expBtn.style.background = ''; }, 2000);
+          }
+        } catch (e) {
+          expBtn.textContent = '⚠ Error';
+          alert('Export error: ' + e.message);
+          expBtn.disabled = false;
+          setTimeout(() => { expBtn.textContent = 'Export to file'; expBtn.style.background = ''; }, 2000);
+        }
+      });
+      expCtrl.appendChild(expBtn);
+    }
   }
 
-  // ── Save as Template (admin) ──────────────────────────────────────────────
-  if (isEditable && !isMock && _userIsAdmin) {
-    const content = panelEl.querySelector('.agent-detail-content');
-    const bar = document.createElement('div'); bar.className = 'agents-save-bar';
-    const msg = document.createElement('span'); msg.className = 'agents-save-msg';
-    const tplBtn = _btn('Save as Template', 'agents-btn');
-    tplBtn.title = 'Save this agent\'s config and prompts as a reusable template (admin only).';
-    tplBtn.addEventListener('click', () => _openSaveAsTemplateModal(agent, bar));
-    bar.appendChild(tplBtn); bar.appendChild(msg);
-    if (content) content.appendChild(bar);
+  // ── Suggested replies (user-impersonator only) ──────────────────────────────
+  function _renderSuggestionModeControl(body) {
+    const g = _group(body, 'sparkles', 'Suggested replies');
+    const intro = document.createElement('div'); intro.className = 'ac-hint';
+    intro.textContent = 'When the user-impersonator agent responds, it can suggest reply chips the real user might tap.';
+    g.appendChild(intro);
+    const list = _cfgList(g);
+
+    const modeRow = _cfgRow(list, 'When to suggest', 'Choose when the suggestion chips appear.');
+    const modeSel = document.createElement('select');
+    modeSel.className = 'ac-input ac-input-sm ac-config-sel';
+    [['off', 'Off'], ['always', 'Always'], ['after_response', 'After each response']].forEach(([v, t]) => {
+      const o = document.createElement('option'); o.value = v; o.textContent = t;
+      if (v === (agent.suggestion_mode || 'off')) o.selected = true; modeSel.appendChild(o);
+    });
+    modeRow.ctrl.appendChild(modeSel);
+
+    const countRow = _cfgRow(list, 'How many suggestions', 'Number of chips to show.');
+    const countInput = document.createElement('input'); countInput.type = 'number';
+    countInput.className = 'ac-input ac-input-sm ac-config-num';
+    countInput.min = 1; countInput.max = 8; countInput.step = 1;
+    countInput.value = agent.suggestion_count || 3;
+    countRow.ctrl.appendChild(_wrapNumberStepper(countInput));
+
+    if (!isMock) {
+      let confirmedMode = agent.suggestion_mode || 'off';
+      let confirmedCount = agent.suggestion_count || 3;
+      modeSel.addEventListener('change', async () => {
+        const selected = modeSel.value;
+        if (selected === confirmedMode) return;
+        modeSel.disabled = true;
+        const ok = await _saveCfg(agent, { suggestion_mode: selected }, modeRow.ctrl);
+        modeSel.disabled = false;
+        if (ok) { confirmedMode = selected; }
+        else { modeSel.value = confirmedMode; }
+      });
+      const saveCount = _debounced(async () => {
+        const val = parseInt(countInput.value, 10) || 3;
+        if (val === confirmedCount) return;
+        const ok = await _saveCfg(agent, { suggestion_count: val }, countRow.ctrl);
+        if (ok) confirmedCount = val;
+      });
+      countInput.addEventListener('input', saveCount);
+      countInput.addEventListener('blur', () => saveCount.flush());
+    }
   }
 }
 
-// ── Claude Code engine card — MOVED ─────────────────────────────────────────────
-// Local Claude Code agents now render their own distinct, tab-less card instead of
-// a section of this Config tab — they never reach _renderConfigTab. The settings
-// renderer is `renderClaudeSettings` in ui/main-panel/agents/js/claude-agent.js,
-// diverted from `_renderAgentCard` in ui/main-panel/agents/js/view.js.
+// ── Website Embed section ───────────────────────────────────────────────────────
+function _renderWebsiteEmbed(body, agent) {
+  const g = _group(body, 'globe', 'Website Embed');
+  const emb = (agent.embed && typeof agent.embed === 'object') ? agent.embed : {};
 
-// ── Suggestion mode control (user-impersonator) ─────────────────────────────────
-
-function _renderSuggestionModeControl(body) {
-  const g = _group(body, 'sparkles', 'Suggested replies');
-  const hint = document.createElement('div'); hint.className = 'ac-hint';
-  hint.textContent = 'Grey suggestion chips above the chat box, written in your voice.';
-  g.appendChild(hint);
+  const intro = document.createElement('div'); intro.className = 'ac-hint';
+  intro.innerHTML = 'Embed this agent as a chat widget on any website. Visitors chat without signing up — '
+    + 'this requires <strong>User&nbsp;Mode&nbsp;=&nbsp;Anonymous</strong> (set it under Access&nbsp;&amp;&nbsp;triggering). '
+    + 'The widget\'s appearance (accent, messages, launcher style) is set in the agent\'s chat UI config.';
+  g.appendChild(intro);
 
   const list = _cfgList(g);
 
-  const modeRow = _cfgRow(list, 'When to suggest', 'Choose when the suggestion chips appear.');
-  const modeSel = document.createElement('select'); modeSel.className = 'ac-input ac-config-sel';
-  [['on', 'On — after each reply'], ['scheduler', 'On + refresh while idle'], ['off', 'Off']].forEach(([v, t]) => {
-    const o = document.createElement('option'); o.value = v; o.textContent = t; modeSel.appendChild(o);
-  });
-  modeRow.ctrl.appendChild(modeSel);
-
-  const countRow = _cfgRow(list, 'How many suggestions', 'Number of chips to show.');
-  const countSel = document.createElement('select'); countSel.className = 'ac-input ac-config-sel';
-  [1, 2, 3, 4, 5].forEach(n => { const o = document.createElement('option'); o.value = String(n); o.textContent = String(n); countSel.appendChild(o); });
-  countRow.ctrl.appendChild(countSel);
-
-  fetch('/api/v1/chat/suggestions/config').then(r => r.ok ? r.json() : null).then(cfg => {
-    if (!cfg) return;
-    if (cfg.mode) modeSel.value = cfg.mode;
-    if (cfg.count) countSel.value = String(cfg.count);
-  }).catch(() => {});
-
-  async function _save(ctrl) {
-    _ovMarkSaving(ctrl);
-    let ok = false;
-    try {
-      const res = await fetch('/api/v1/chat/suggestions/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: modeSel.value, count: parseInt(countSel.value, 10) }) });
-      ok = res.ok;
-    } catch (_) { ok = false; }
-    _ovFlashCheck(ctrl, ok, ok ? '' : 'Save failed');
+  // Enable toggle
+  const anonWarn = document.createElement('div');
+  anonWarn.className = 'ac-hint';
+  anonWarn.style.color = 'var(--warn, #d97706)';
+  const refreshAnonWarn = () => {
+    const on = !!(agent.embed && agent.embed.enabled);
+    const anon = (agent.user_mode || 'anonymous') === 'anonymous';
+    anonWarn.hidden = !(on && !anon);
+    anonWarn.textContent = 'The widget is enabled but User Mode isn\'t Anonymous, so visitors will be turned away. '
+      + 'Set User Mode to Anonymous above.';
+  };
+  {
+    const { ctrl } = _cfgRow(list, 'Enable widget', 'Turn the embeddable website widget on for this agent.');
+    const wrap = document.createElement('label'); wrap.className = 'conn-toggle-wrap ac-ability-toggle-wrap';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'conn-toggle';
+    cb.checked = !!emb.enabled;
+    const track = document.createElement('span'); track.className = 'conn-toggle-track';
+    wrap.appendChild(cb); wrap.appendChild(track); ctrl.appendChild(wrap);
+    cb.addEventListener('change', async () => {
+      cb.disabled = true;
+      const ok = await _saveCfg(agent, { embed: { enabled: cb.checked } }, ctrl);
+      cb.disabled = false;
+      if (!ok) cb.checked = !cb.checked;
+      refreshAnonWarn();
+      refreshSnippet();
+    });
   }
-  modeSel.addEventListener('change', () => _save(modeRow.ctrl));
-  countSel.addEventListener('change', () => _save(countRow.ctrl));
-}
+  g.appendChild(anonWarn);
 
-// ── Save-as-template modal ────────────────────────────────────────────────────
+  // Launcher position
+  {
+    const { ctrl } = _cfgRow(list, 'Launcher position', 'Which corner the chat bubble sits in.');
+    const sel = document.createElement('select'); sel.className = 'ac-input ac-input-sm ac-config-sel';
+    [['right', 'Bottom right'], ['left', 'Bottom left']].forEach(([v, t]) => {
+      const o = document.createElement('option'); o.value = v; o.textContent = t;
+      if ((emb.launcher_position || 'right') === v) o.selected = true; sel.appendChild(o);
+    });
+    ctrl.appendChild(sel);
+    sel.addEventListener('change', () => _saveCfg(agent, { embed: { launcher_position: sel.value } }, ctrl));
+  }
 
-function _openSaveAsTemplateModal(agent, hostBar) {
-  const existing = document.getElementById('agents-save-as-template-modal');
-  if (existing) existing.remove();
-
-  const backdrop = document.createElement('div');
-  backdrop.id = 'agents-save-as-template-modal';
-  backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9000;display:flex;align-items:center;justify-content:center;';
-
-  const defaultSlug = (agent.name || agent.id || 'template').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'template';
-
-  const panel = document.createElement('div');
-  panel.style.cssText = 'background:var(--bg-elev);color:var(--fg-1);border:1px solid var(--border);border-radius:8px;padding:18px 20px;width:420px;max-width:92vw;box-shadow:0 8px 24px rgba(var(--shadow-rgb),0.4);';
-  panel.innerHTML = `
-    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">Save as Template</div>
-    <div style="font-size:12px;color:var(--fg-3);margin-bottom:14px;">Snapshots this agent's config and admin-base prompts into a reusable template.</div>
-    <label style="display:block;font-size:12px;color:var(--fg-2);margin-bottom:2px;">Template ID (slug)</label>
-    <input id="sat-tpl-id" type="text" class="agents-input" style="width:100%;margin-bottom:10px;" value="${_esc(defaultSlug)}" placeholder="my_template">
-    <label style="display:block;font-size:12px;color:var(--fg-2);margin-bottom:2px;">Name</label>
-    <input id="sat-tpl-name" type="text" class="agents-input" style="width:100%;margin-bottom:10px;" value="${_esc(agent.name || '')}" placeholder="Display name">
-    <label style="display:block;font-size:12px;color:var(--fg-2);margin-bottom:2px;">Description</label>
-    <textarea id="sat-tpl-desc" class="agents-textarea" rows="2" style="width:100%;margin-bottom:10px;" placeholder="Short description">${_esc(agent.description || '')}</textarea>
-    <label style="display:block;font-size:12px;color:var(--fg-2);margin-bottom:2px;">Icon (emoji, optional)</label>
-    <input id="sat-tpl-icon" type="text" class="agents-input" style="width:100px;margin-bottom:12px;" value="${_esc(agent.icon || '')}" placeholder="🤖" maxlength="4">
-    <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg-2);margin-bottom:6px;cursor:pointer;">
-      <input id="sat-tpl-discoverable" type="checkbox"> Discoverable in the "New Agent" menu
-    </label>
-    <div id="sat-tpl-msg" style="font-size:12px;color:var(--danger);min-height:16px;margin-top:8px;"></div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
-      <button id="sat-tpl-cancel" class="agents-btn">Cancel</button>
-      <button id="sat-tpl-save" class="agents-btn primary">Save Template</button>
-    </div>`;
-  backdrop.appendChild(panel);
-  document.body.appendChild(backdrop);
-
-  const slugIn = panel.querySelector('#sat-tpl-id');
-  const nameIn = panel.querySelector('#sat-tpl-name');
-  const descIn = panel.querySelector('#sat-tpl-desc');
-  const iconIn = panel.querySelector('#sat-tpl-icon');
-  const discCb = panel.querySelector('#sat-tpl-discoverable');
-  const msgEl  = panel.querySelector('#sat-tpl-msg');
-  const saveBtn = panel.querySelector('#sat-tpl-save');
-  const cancelBtn = panel.querySelector('#sat-tpl-cancel');
-
-  function _close() { backdrop.remove(); }
-  cancelBtn.addEventListener('click', _close);
-  backdrop.addEventListener('click', e => { if (e.target === backdrop) _close(); });
-
-  saveBtn.addEventListener('click', async () => {
-    msgEl.textContent = ''; msgEl.style.color = 'var(--danger)';
-    const slug = (slugIn.value || '').trim().toLowerCase();
-    const name = (nameIn.value || '').trim();
-    if (!slug || !/^[a-z0-9][a-z0-9_-]{1,63}$/.test(slug)) { msgEl.textContent = 'Template ID must be 2-64 chars: lowercase letters, digits, "_" or "-".'; return; }
-    if (!name) { msgEl.textContent = 'Template name is required.'; return; }
-    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
-    try {
-      const res = await fetch(`/api/v1/agents/${encodeURIComponent(agent.id)}/save-as-template`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: app.currentUserId, template_id: slug, name, description: (descIn.value || '').trim(), icon: (iconIn.value || '').trim(), discoverable: !!discCb.checked, access_level: 'all' }) });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { msgEl.textContent = data.detail || `Save failed (HTTP ${res.status}).`; saveBtn.disabled = false; saveBtn.textContent = 'Save Template'; return; }
-      msgEl.style.color = 'var(--success)'; msgEl.textContent = '✓ Template saved.';
-      if (hostBar) { const sm = hostBar.querySelector('.agents-save-msg'); if (sm) { sm.textContent = `✓ Saved as template "${slug}"`; sm.className = 'agents-save-msg'; } }
-      setTimeout(() => { _close(); _loadAgents().then(agents => { if (_renderList) _renderList(agents); }).catch(() => {}); }, 700);
-    } catch (e) { msgEl.textContent = `Error: ${e.message}`; saveBtn.disabled = false; saveBtn.textContent = 'Save Template'; }
+  // Allowed domains
+  _cfgField(g, {
+    label: 'Allowed domains',
+    field: 'embed_allowed_domains',
+    value: Array.isArray(emb.allowed_domains) ? emb.allowed_domains.join(', ') : '',
+    multiline: true, rows: 2,
+    placeholder: 'example.com, app.example.com  (blank = allow any site)',
+    hint: 'Restrict which sites may embed this widget. Leave blank to allow embedding anywhere.',
+    onSave: (val) => _putAgentField(agent, { embed: { allowed_domains: val } }, null, { silent: true }),
   });
-  slugIn.focus(); slugIn.select();
+
+  // Snippet + preview
+  const snipWrap = document.createElement('div'); snipWrap.className = 'ac-cfg-field';
+  const snipLbl = document.createElement('label'); snipLbl.className = 'ac-label'; snipLbl.textContent = 'Embed snippet';
+  snipWrap.appendChild(snipLbl);
+  const snip = document.createElement('textarea');
+  snip.className = 'ac-input'; snip.rows = 2; snip.readOnly = true;
+  snip.style.fontFamily = 'var(--font-mono, monospace)'; snip.style.fontSize = '12.5px';
+  snipWrap.appendChild(snip);
+  const snipHint = document.createElement('div'); snipHint.className = 'ac-hint';
+  snipHint.textContent = 'Paste this before </body> on your site.';
+  snipWrap.appendChild(snipHint);
+  const actions = document.createElement('div'); actions.style.display = 'flex'; actions.style.gap = '8px'; actions.style.marginTop = '8px';
+  const copyBtn = _btn('Copy snippet', 'agents-btn'); actions.appendChild(copyBtn);
+  const previewBtn = _btn('Preview widget', 'agents-btn'); actions.appendChild(previewBtn);
+  snipWrap.appendChild(actions);
+  g.appendChild(snipWrap);
+
+  copyBtn.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(snip.value); copyBtn.textContent = 'Copied ✓'; setTimeout(() => copyBtn.textContent = 'Copy snippet', 1500); }
+    catch (_) { snip.select(); document.execCommand && document.execCommand('copy'); }
+  });
+  previewBtn.addEventListener('click', () => window.open(`/embed/${agent.id}`, '_blank', 'noopener'));
+
+  function refreshSnippet() {
+    fetch(`/api/v1/agents/${agent.id}/embed`).then(r => r.ok ? r.json() : null).then(info => {
+      if (!info) return;
+      snip.value = info.snippet || '';
+      const off = !info.embeddable;
+      snipWrap.style.opacity = off ? '0.55' : '1';
+    }).catch(() => {});
+  }
+  refreshAnonWarn();
+  refreshSnippet();
 }

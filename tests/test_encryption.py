@@ -95,13 +95,18 @@ class _Base(unittest.TestCase):
         _enc_reset()
         _vkm_reset()
 
-        # Patch app.db.get_db to return a fresh LocalBackend pointed at the tmp file.
+        # Patch both ambient and explicit control-plane accessors to return a
+        # fresh LocalBackend pointed at the tmp file.  Key metadata deliberately
+        # uses get_app_db so a task-local/user-plane get_db override cannot mint
+        # and overwrite a duplicate DEK version.
         from app.db import local as _local_mod
         self._local_backend = _local_mod.LocalBackend(db_path=self.db_path)
 
         from app import db as _db_mod
         self._orig_get_db = _db_mod.get_db
+        self._orig_get_app_db = _db_mod.get_app_db
         _db_mod.get_db = lambda: self._local_backend  # type: ignore
+        _db_mod.get_app_db = lambda: self._local_backend  # type: ignore
 
     def tearDown(self) -> None:
         # Restore patched functions.
@@ -109,6 +114,7 @@ class _Base(unittest.TestCase):
         _secrets_mod.get_secrets = self._orig_get_secrets  # type: ignore
         from app import db as _db_mod
         _db_mod.get_db = self._orig_get_db  # type: ignore
+        _db_mod.get_app_db = self._orig_get_app_db  # type: ignore
 
         # Drop singletons so subsequent tests start clean.
         from app.encryption import reset_for_tests as _enc_reset
@@ -277,6 +283,23 @@ class DecoratorTests(_Base):
         raw_a = _async(self._local_backend.auth_element_get("alice", "google", "oauth"))
         raw_b = _async(self._local_backend.auth_element_get("bob",   "google", "oauth"))
         self.assertNotEqual(raw_a["secret_ref"], raw_b["secret_ref"])
+
+    def test_failed_decryption_is_marked_without_exposing_ciphertext(self):
+        from unittest.mock import AsyncMock
+
+        from app.db.interface import EncryptedStorageBackend
+
+        _async(self._local_backend.auth_element_set(
+            "alice", "llm", {}, "enc:v1:fernet:unreadable", "default",
+        ))
+        enc = AsyncMock()
+        enc.decrypt.return_value = "enc:v1:fernet:unreadable"
+        wrapped = EncryptedStorageBackend(self._local_backend, enc)
+
+        row = _async(wrapped.auth_element_get("alice", "llm", "default"))
+
+        self.assertEqual(row["secret_ref"], "")
+        self.assertEqual(row["_secret_error"], "decrypt_failed")
 
     def test_vault_sentinel_bypasses_encryption(self):
         from app.db.interface import EncryptedStorageBackend, _VAULT_SENTINEL_USER, _VAULT_SENTINEL_SERVICE

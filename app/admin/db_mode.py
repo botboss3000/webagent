@@ -1,22 +1,17 @@
 """
-Admin endpoints for database mode switching + agent template lifecycle.
+Admin endpoints for database status + agent template lifecycle.
 
-- Cloud/Local toggle: /admin/db/mode
-- Stats:              /admin/db/mode (GET, returns table row counts)
-- Templates panel:    /admin/db/templates (GET, POST seed, POST seed-force)
+- Stats:           /admin/db/mode (GET, returns table row counts)
+- Templates panel: /admin/db/templates (GET, POST seed, POST seed-force)
 """
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from app.db import get_mode, set_db_mode, get_db_stats, get_db
+from app.db import get_mode, get_db_stats, get_db
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/db", tags=["admin-db"])
-
-
-class SetModeRequest(BaseModel):
-    mode: str  # "cloud" or "local"
 
 
 class ModeStatusResponse(BaseModel):
@@ -30,7 +25,7 @@ class ModeStatusResponse(BaseModel):
 async def get_current_mode():
     """
     Get the current database mode and storage statistics.
-    
+
     Returns:
         ModeStatusResponse with mode, backend type, table row counts
     """
@@ -39,30 +34,6 @@ async def get_current_mode():
         return ModeStatusResponse(**stats)
     except Exception as e:
         logger.error(f"Error getting db mode status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/mode")
-async def set_mode(request: SetModeRequest):
-    """
-    Switch the database mode.
-
-    Body:
-        {"mode": "local"} or {"mode": "cloud"}
-
-    The switch takes effect immediately. The next request will use the new backend.
-    """
-    try:
-        set_db_mode(request.mode)
-        stats = await get_db_stats()
-        return {
-            "message": f"Switched to {request.mode} mode",
-            "status": stats,
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error switching db mode: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -193,3 +164,120 @@ async def seed_templates_force():
     except Exception as e:
         logger.error("Error force-seeding agent templates: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/templates/{template_id}/export-to-file")
+async def export_template_to_file(template_id: str):
+    """
+    Export a single agent template row + its prompt slots to a JSON seed file
+    in the bundled seed directory (app/defaults/agents/<template_id>.json).
+
+    Admin-only. The file is git-tracked and synced with the repository.
+    Returns the file path and a preview of the exported data.
+    """
+    import json as _json
+    import os
+    from app.util.paths import DEFAULTS_DIR
+
+    db = get_db()
+    raw = db.get_raw_client()
+
+    # Read the template config row
+    try:
+        tpl_res = raw.table("agent_templates").select("*").eq("id", template_id).limit(1).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read template: {e}")
+
+    if not tpl_res.data:
+        raise HTTPException(status_code=404, detail=f"Template '{template_id}' not found.")
+    tpl = tpl_res.data[0]
+
+    # Read prompt slots
+    try:
+        slot_res = raw.table("agent_prompt_templates").select(
+            "slot_name, order_index, lock, merge_mode, content, version"
+        ).eq("template_id", template_id).order("order_index").execute()
+    except Exception:
+        slot_res = type("obj", (object,), {"data": []})()
+
+    slots = slot_res.data or []
+
+    # Build the JSON structure matching scan_agent_json_files schema.
+    # Metadata: parse and strip runtime-only keys.
+    _meta_raw = tpl.get("metadata") or "{}"
+    try:
+        meta_obj = _json.loads(_meta_raw) if isinstance(_meta_raw, str) else dict(_meta_raw or {})
+    except (_json.JSONDecodeError, TypeError):
+        meta_obj = {}
+    # Strip the source marker we added — it's not part of the canonical seed schema.
+    meta_obj.pop("source", None)
+
+    # Map slot rows to flat prompt keys
+    slot_map = {s["slot_name"]: s for s in slots}
+    _prompt_keys = {
+        "system": "system_prompt",
+        "agent": "agent_prompt",
+        "user": "user_prompt",
+        "skills": "skills_prompt",
+        "tasks": "tasks_prompt",
+        "misc": "misc_prompt",
+        "automation": "automation_prompt",
+        "bootstrap_tools": "bootstrap_tools",
+    }
+
+    out = {
+        "id": tpl["id"],
+        "version": max((int(s.get("version") or 0) for s in slots), default=1),
+        "name": tpl.get("name") or tpl["id"],
+        "description": tpl.get("description") or "",
+        "icon": tpl.get("icon") or "",
+        "can_be_default": bool(tpl.get("can_be_default", True)),
+        "is_system": bool(tpl.get("is_system", False)),
+        "is_pipeline": bool(tpl.get("is_pipeline", False)),
+        "is_admin_agent": bool(tpl.get("is_admin_agent", False)),
+        "access_level": tpl.get("access_level") or "all",
+        "discoverable": bool(tpl.get("discoverable", False)),
+        "system_prompt": (slot_map.get("system", {}) or {}).get("content", "") if isinstance(slot_map.get("system"), dict) else "",
+        "max_turn_count": tpl.get("max_turn_count") or 0,
+        "max_wall_seconds": tpl.get("max_wall_seconds"),
+        "max_identical_tool_calls": tpl.get("max_identical_tool_calls", 0),
+        "max_stall_strikes": tpl.get("max_stall_strikes", 0),
+        "model": tpl.get("model"),
+        "provider": tpl.get("provider"),
+        "temperature": tpl.get("temperature") or 0.0,
+        "max_tokens": tpl.get("max_tokens") or 8000,
+        "trigger_type": tpl.get("trigger_type") or "user_input",
+        "trigger_key": tpl.get("trigger_key"),
+        "loop_logic": _json.loads(tpl.get("loop_logic") or "[]"),
+        "tool_modes": meta_obj.get("tool_modes") or {},
+        "tool_permissions": meta_obj.get("tool_permissions") or {},
+        "metadata": meta_obj,
+    }
+
+    # Add flat prompt keys for slots that have them
+    for pkey, json_key in _prompt_keys.items():
+        if pkey in slot_map:
+            out[json_key] = slot_map[pkey].get("content", "")
+
+    # Pre-enable connections
+    pre_enabled = meta_obj.get("pre_enabled_connections")
+    if pre_enabled:
+        out["pre_enabled_connections"] = pre_enabled
+        out["abilities"] = pre_enabled
+
+    # Write to the bundled seed directory
+    agents_dir = os.path.join(str(DEFAULTS_DIR), "agents")
+    os.makedirs(agents_dir, exist_ok=True)
+    fpath = os.path.join(agents_dir, f"{template_id}.json")
+
+    with open(fpath, "w", encoding="utf-8") as f:
+        _json.dump(out, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    return {
+        "path": os.path.relpath(fpath),
+        "template_id": template_id,
+        "version": out["version"],
+        "size_bytes": os.path.getsize(fpath),
+        "preview": dict(list(out.items())[:6]) | {"slot_count": len(slots)},
+    }

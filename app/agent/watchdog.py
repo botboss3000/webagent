@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,9 @@ class RunWatchdog:
         self._runtime_resumes: int = 0
         self._frozen_detected: int = 0
         self._zombie_detected: int = 0
+        # Per-session progress tracking for no-progress freeze detection.
+        # Maps session_id → (latest_session_seq, first_seen_at).
+        self._progress_snapshot: Dict[str, Tuple[int, datetime]] = {}
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -155,9 +158,6 @@ class RunWatchdog:
             if not sid:
                 continue
             origin = row.get("origin") or "web"
-            # Never touch throwaway / excluded runs (resume_one guards too).
-            if origin in runner._EXCLUDED_ORIGINS or sid.startswith(runner._THROWAWAY_PREFIXES):
-                continue
 
             is_live = rm.is_running(sid)
             hb = _parse_iso(row.get("heartbeat_at")) or _parse_iso(row.get("updated_at"))
@@ -187,6 +187,42 @@ class RunWatchdog:
                     except Exception as e:  # noqa: BLE001
                         logger.warning("Watchdog cancel failed for %s: %s", sid[:12], e)
                     await self._try_resume(runner, sid, "frozen")
+                # ── NO-PROGRESS: live heartbeat but no new interactions
+                # (alternate-engine subprocess hung silently — healthy heartbeat,
+                #  zero events). Tracks latest_session_seq across ticks; if it
+                #  hasn't budged beyond the threshold, cancel + resume as frozen.
+                npt = cfg.get("no_progress_threshold_seconds", 900)
+                if npt > 0:
+                    seq = row.get("latest_session_seq")
+                    if seq is not None:
+                        prev = self._progress_snapshot.get(sid)
+                        if prev is not None and prev[0] == seq:
+                            age = (now - prev[1]).total_seconds()
+                            if age > npt:
+                                self._frozen_detected += 1
+                                logger.warning(
+                                    "Watchdog: run %s NO-PROGRESS (seq %s, %.0fs) — cancel + resume",
+                                    sid[:12], seq, age)
+                                self._record_recovery(
+                                    "warning", "frozen",
+                                    f"run frozen (no-progress) — live heartbeat but seq {seq} "
+                                    f"unchanged for {age:.0f}s; cancel + resume",
+                                    sid, row,
+                                    detail={"no_progress_age_seconds": round(age, 1),
+                                            "no_progress_threshold_seconds": npt,
+                                            "latest_session_seq": seq})
+                                try:
+                                    await db.run_state_set_cause(sid, "frozen")
+                                except Exception:
+                                    pass
+                                try:
+                                    await rm.cancel(sid)
+                                except Exception as e:
+                                    logger.warning("Watchdog cancel failed for %s: %s", sid[:12], e)
+                                await self._try_resume(runner, sid, "frozen")
+                                continue
+                        else:
+                            self._progress_snapshot[sid] = (seq, now)
                 continue
 
             # Not live in this process. A fresh lease means another worker just
@@ -235,8 +271,6 @@ class RunWatchdog:
             if not sid:
                 continue
             origin = row.get("origin") or "web"
-            if origin in runner._EXCLUDED_ORIGINS or sid.startswith(runner._THROWAWAY_PREFIXES):
-                continue
             if rm.is_running(sid):
                 continue  # already alive (sweep 1, boot, or another worker)
             lease = _parse_iso(row.get("lease_expires_at"))

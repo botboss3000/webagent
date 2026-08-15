@@ -103,7 +103,7 @@ cat > "$STATUS_DIR/index.html" <<'STATUSEOF'
 <!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta http-equiv="refresh" content="15">
 <title>WebAgent — installing…</title>
 <style>
@@ -194,7 +194,7 @@ on_error() {
 <!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>WebAgent — install problem</title>
 <style>
   :root { color-scheme: dark; }
@@ -217,6 +217,47 @@ FAILEOF
   exit $rc
 }
 trap 'on_error $LINENO' ERR
+
+# ── Host firewall: allow HTTP/HTTPS (and keep SSH reachable) ──
+# The cloud targets open 80/443 at the network layer (GCE firewall rule on the
+# instance tag); this covers the host side so an existing-server (SSH) install
+# with ufw enabled also serves the web. Idempotent and self-healing: it re-asserts
+# the rules on every boot, and a failure here must NEVER block the install (ufw
+# may be absent on minimal images). The SSH port is read from sshd itself so
+# enabling ufw can never lock the admin out of a box with SSH on a custom port.
+next_step "Allowing HTTP/HTTPS traffic"
+if command -v ufw >/dev/null 2>&1; then
+  SSH_PORT="$(sshd -T 2>/dev/null | awk '/^port[ \t]/{print $2; exit}')"
+  SSH_PORT="${SSH_PORT:-22}"
+  ufw allow "${SSH_PORT}/tcp" >/dev/null 2>&1 || true
+  ufw allow 80/tcp >/dev/null 2>&1 || true
+  ufw allow 443/tcp >/dev/null 2>&1 || true
+  ufw --force enable >/dev/null 2>&1 || true
+  echo "Host firewall: allowed SSH (${SSH_PORT}/tcp), HTTP (80), HTTPS (443)."
+else
+  echo "ufw not present — skipping host firewall (cloud firewall still applies)."
+fi
+
+# ── Detect subsequent boots: if the app is already installed, skip the fresh
+# install and just ensure the systemd unit is current and the service is running.
+# Without this guard, every VM restart would rm -rf the app directory, re-clone,
+# and overwrite .env — destroying any saved data, uploads, or config changes.
+ALREADY_INSTALLED=0
+if [ -f "$APP_DIR/.venv/bin/python" ] && [ -f /etc/systemd/system/webagent.service ]; then
+  echo "WebAgent is already installed — pulling latest code."
+  ALREADY_INSTALLED=1
+fi
+
+if [ "$ALREADY_INSTALLED" = "1" ]; then
+  # ── Update in-place: pull latest commit, reinstall deps if changed ──
+  next_step "Pulling latest code" "${ORIGIN_URL:-$BRANCH} @ $BRANCH"
+  git -C "$APP_DIR" fetch origin "$BRANCH"
+  git -C "$APP_DIR" reset --hard "origin/$BRANCH"
+  # Re-install dependencies in case requirements changed (best-effort; server
+  # still starts even if this step fails — what matters is the code is fresh).
+  next_step "Updating Python dependencies"
+  sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt" 2>&1 || true
+else
 
 # ── App user + code ──
 # Show the CLEAN address (never $REPO_URL, which for a private repo carries the
@@ -311,6 +352,8 @@ chown "$APP_USER":"$APP_USER" "$APP_DIR/.env"
 # ('BOOTEOF') so the code is written byte-for-byte. The whole block is substituted
 # from Python — it is empty when nothing was embedded.
 __BOOTSTRAP_WRITE__
+
+fi  # end of ALREADY_INSTALLED — fresh install or in-place update
 
 # ── systemd service ──
 next_step "Installing system service"

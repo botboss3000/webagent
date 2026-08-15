@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>WebAgent — Login</title>
-<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="icon" href="./ui/favicon.svg" type="image/svg+xml">
 <!-- Theme: load the single-source palette + the admin's live overrides so this
      standalone gate follows the app theme (dark/light) like every other page.
      Served at /login.html, so reference shared assets absolutely. -->
@@ -22,48 +22,73 @@ body {
   height: 100vh;
   height: 100dvh;
 }
-.login-box {
+/* ── Login page ── */
+.login-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+}
+/* Glowing bot logo (matches the app boot curtain) */
+.boot-gate-loader {
+  position: relative; width: 72px; height: 72px;
+  display: flex; align-items: center; justify-content: center;
+}
+.boot-gate-ring {
+  position: absolute; inset: 0; border-radius: 50%;
+  border: 3px solid rgba(var(--brand-rgb), 0.16);
+  border-top-color: var(--accent);
+  animation: bootGateSpin 0.9s linear infinite;
+}
+.boot-gate-mark {
+  width: 30px; height: 30px; color: var(--accent);
+  animation: bootGatePulse 1.8s ease-in-out infinite;
+}
+@keyframes bootGateSpin { to { transform: rotate(360deg); } }
+@keyframes bootGatePulse {
+  0%, 100% { opacity: 0.5; transform: scale(0.92); }
+  50%      { opacity: 1;   transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-gate-ring, .boot-gate-mark { animation: none; }
+}
+/* Login card */
+.login-card {
   background: var(--bg-elev);
   border: var(--border-width) solid var(--border);
-  border-radius: 12px;
-  padding: 36px 32px;
-  width: 360px;
-  box-shadow: 0 8px 32px rgba(var(--shadow-rgb),0.5);
+  border-radius: 14px;
+  padding: 28px 24px;
+  width: 340px;
+  max-width: 90vw;
+  box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.5);
 }
-.login-box h1 {
-  font-size: 22px;
+.login-card h1 {
+  font-size: 18px;
   font-weight: 600;
   margin-bottom: 4px;
-  color: var(--brand);
+  color: var(--fg-1);
 }
-.login-box p.sub {
+.login-card .sub {
   font-size: 13px;
   color: var(--fg-3);
-  margin-bottom: 8px;
-}
-.login-box p.hint {
-  font-size: 12px;
-  color: var(--fg-4);
-  margin-bottom: 24px;
-  line-height: 1.4;
+  margin-bottom: 20px;
 }
 .form-group {
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 .form-group label {
   display: block;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--fg-2);
-  margin-bottom: 6px;
+  margin-bottom: 5px;
 }
-.form-group input[type="text"],
-.form-group input[type="password"] {
+.form-group input {
   width: 100%;
   padding: 10px 12px;
   background: var(--bg-0);
   border: var(--border-width) solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--fg-1);
   font-size: 14px;
   font-family: inherit;
@@ -79,36 +104,26 @@ body {
 .remember-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 7px;
+  margin-bottom: 14px;
   font-size: 13px;
   color: var(--fg-2);
 }
-.remember-row input[type="checkbox"] {
-  accent-color: var(--brand);
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-}
-.remember-row label {
-  cursor: pointer;
-}
+.remember-row input { accent-color: var(--brand); width: 15px; height: 15px; cursor: pointer; }
+.remember-row label { cursor: pointer; }
 .btn-login {
   width: 100%;
   padding: 11px;
   background: var(--brand);
   border: none;
-  border-radius: 6px;
-  color: var(--bg-0);            /* page-bg used as contrast ink on the brand fill */
+  border-radius: 8px;
+  color: var(--bg-0);
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;
   transition: background 0.2s;
-  margin-top: 4px;
 }
-.btn-login:hover {
-  background: var(--brand-strong);
-}
+.btn-login:hover { background: var(--brand-strong); }
 .btn-login:disabled {
   background: var(--bg-tint);
   color: var(--fg-3);
@@ -116,58 +131,52 @@ body {
 }
 .error-msg {
   color: var(--danger);
-  font-size: 13px;
-  margin-top: 12px;
+  font-size: 12px;
+  margin-top: 10px;
   display: none;
 }
 .loading {
   display: none;
   color: var(--fg-3);
   font-size: 13px;
-  margin-top: 12px;
+  margin-top: 10px;
   text-align: center;
-}
-.skip-link {
-  display: block;
-  text-align: center;
-  margin-top: 18px;
-  font-size: 13px;
-}
-.skip-link a {
-  color: var(--fg-3);
-  text-decoration: none;
-}
-.skip-link a:hover {
-  color: var(--fg-2);
 }
 </style>
 </head>
 <body>
-<div class="login-box">
-  <h1>🔐 WebAgent</h1>
-  <p class="sub">DB Viewer Login</p>
-  <p class="hint">Sign in to access your database.</p>
+<div class="login-page">
+  <div class="boot-gate-loader">
+    <span class="boot-gate-ring"></span>
+    <svg class="boot-gate-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 8V4H8"/>
+      <rect width="16" height="12" x="4" y="8" rx="2"/>
+      <path d="M2 14h2"/><path d="M20 14h2"/>
+      <path d="M15 13v2"/><path d="M9 13v2"/>
+    </svg>
+  </div>
 
-  <form id="login-form" autocomplete="off">
-    <div class="form-group">
-      <label for="username">Username</label>
-      <input type="text" id="username" placeholder="admin" autocomplete="username" value="admin">
-    </div>
-    <div class="form-group">
-      <label for="password">Password</label>
-      <input type="password" id="password" placeholder="••••••" autocomplete="current-password" value="admin">
-    </div>
-    <div class="remember-row">
-      <input type="checkbox" id="remember-me" checked>
-      <label for="remember-me">Remember me</label>
-    </div>
-    <button type="submit" class="btn-login" id="login-btn">Sign In</button>
-    <div class="error-msg" id="error-msg">Invalid username or password</div>
-    <div class="loading" id="loading">Signing in…</div>
-  </form>
+  <div class="login-card">
+    <h1>Sign in</h1>
+    <p class="sub">Enter your credentials to access the app.</p>
 
-  <div class="skip-link">
-    <a href="/">Skip — use chat anonymously</a>
+    <form id="login-form" autocomplete="off">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="text" id="email" placeholder="admin or your@email.com" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" placeholder="••••••" autocomplete="current-password">
+      </div>
+      <div class="remember-row">
+        <input type="checkbox" id="remember-me" checked>
+        <label for="remember-me">Remember me</label>
+      </div>
+      <button type="submit" class="btn-login" id="login-btn">Sign In</button>
+      <div class="error-msg" id="error-msg">Invalid email or password</div>
+      <div class="loading" id="loading">Signing in…</div>
+    </form>
   </div>
 </div>
 
@@ -188,17 +197,10 @@ body {
   tryAutoLogin();
 })();
 
-// ── Try auto-login via remember token ──
+// ── Try auto-login via remember token, then go home ──
 async function tryAutoLogin() {
   const rememberToken = localStorage.getItem('remember_token');
   if (!rememberToken) return;
-
-  const form = document.getElementById('login-form');
-  const loading = document.getElementById('loading');
-  form.style.display = 'none';
-  loading.style.display = 'block';
-  loading.textContent = 'Auto-login…';
-
   try {
     const res = await fetch('/api/v1/auth/recall', {
       method: 'POST',
@@ -218,15 +220,31 @@ async function tryAutoLogin() {
   } catch (e) {
     localStorage.removeItem('remember_token');
   }
-
-  loading.style.display = 'none';
-  form.style.display = 'block';
 }
 
 // ── Manual login form submit ──
+function loginDeviceId() {
+  const key = 'webagent_device_id';
+  let value = localStorage.getItem(key) || '';
+  if (!value) {
+    try {
+      const encoded = (localStorage.getItem('auth_token') || '').split('.')[1]
+        .replace(/-/g, '+').replace(/_/g, '/');
+      const padded = encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '=');
+      value = String(JSON.parse(atob(padded)).device_id || '');
+    } catch (_) {}
+  }
+  if (!value) {
+    value = globalThis.crypto?.randomUUID?.().replace(/-/g, '')
+      || `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  }
+  localStorage.setItem(key, value);
+  return value;
+}
+
 document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const username = document.getElementById('username').value.trim();
+  const email = document.getElementById('email').value.trim();
   const password = document.getElementById('password').value;
   const rememberMe = document.getElementById('remember-me').checked;
   const btn = document.getElementById('login-btn');
@@ -242,7 +260,12 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     const res = await fetch('/api/v1/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, remember_me: rememberMe }),
+      body: JSON.stringify({
+        email,
+        password,
+        remember_me: rememberMe,
+        device_id: loginDeviceId(),
+      }),
     });
     if (!res.ok) {
       error.style.display = 'block';

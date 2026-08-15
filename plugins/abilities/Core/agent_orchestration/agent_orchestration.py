@@ -83,7 +83,7 @@ _UPDATABLE = {"name", "task", "status", "result_summary", "next_check_at",
 # on the agent_orchestration connection row (config.ability_settings).
 _ORCH_CONFIG_DEFAULTS = {
     "max_concurrent_spawns": 3,
-    "max_spawns_per_agent": 5,
+    "max_spawns_per_agent": 10,
     "max_spawns_per_spawn": 1,
     "max_spawn_depth": 2,
     "auto_stop_on_session_end": True,
@@ -629,7 +629,7 @@ async def _user_brain_models(user_id: str) -> dict:
     """Resolve the user's model roster for per-helper model selection.
 
     Returns {"available": [...enabled tool-capable brain ids...],
-             "high_effort": [...Eff-ticked ids...],
+             "high_effort": [...premium-role ids...],
              "vision": [...image-capable ids...],
              "default": "<the app/agent default id>"}.
 
@@ -925,6 +925,84 @@ async def _create_spawn(*, user_id, orchestrator_session_id, orchestrator_agent_
     return row
 
 
+async def _create_fork(*, user_id, orchestrator_session_id, orchestrator_agent_id,
+                        task, name="") -> dict:
+    """Fork the orchestrator's OWN session as a 'fork_self' spawn.
+
+    Unlike _create_spawn (fresh clone + empty session), a fork REUSES the same
+    agent (no clone record, no prompt rebuild) and forks the existing session via
+    the built-in POST /sessions/{id}/fork endpoint.  The forked session inherits
+    the full conversation prefix — every interaction up to the fork point — so
+    the LLM sees an IDENTICAL prefix for KV-cache hits on the system prompt AND
+    the conversation history.  Only the new task message at the end is novel."""
+    import httpx
+    # ── Enforce same per-agent orchestration limits ──────────────────────
+    parent_depth = await _compute_spawn_depth(orchestrator_session_id)
+    new_depth = parent_depth + 1
+    limit_error = await _enforce_spawn_limits(
+        orchestrator_agent_id, orchestrator_session_id, parent_depth)
+    if limit_error:
+        return {"id": "__blocked__", "error": True,
+                "message": limit_error, "parent_depth": parent_depth,
+                "new_depth": new_depth}
+
+    # ── Find the latest interaction in the orchestrator's session ───────
+    from app.db import get_db
+    db = get_db()
+    try:
+        records = await db.fetch_interactions(user_id, orchestrator_session_id)
+    except Exception:
+        records = []
+    if not records:
+        return {"id": "__blocked__", "error": True,
+                "message": "Cannot fork: orchestrator session has no interactions yet."}
+
+    last_interaction_id = None
+    for r in records:
+        rid = (getattr(r, "id", None) if hasattr(r, "id")
+               else (r.get("id") if isinstance(r, dict) else None))
+        if rid:
+            last_interaction_id = str(rid)
+    if not last_interaction_id:
+        return {"id": "__blocked__", "error": True,
+                "message": "Cannot fork: no valid interaction ID in the orchestrator session."}
+
+    # ── Call the existing session-fork API ──────────────────────────────
+    fork_url = f"http://127.0.0.1:{os.environ.get('PORT', '8080')}/api/v1/db/sessions/{orchestrator_session_id}/fork"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                fork_url,
+                json={"up_to_interaction_id": last_interaction_id, "user_id": user_id},
+                headers=_internal_auth_headers(user_id),
+            )
+            resp.raise_for_status()
+            fork_result = resp.json()
+    except Exception as e:
+        logger.warning("Session fork for fork_self failed: %s", e)
+        return {"id": "__blocked__", "error": True,
+                "message": f"Session fork request failed: {e}"}
+
+    fork_session_id = fork_result.get("session_id") if isinstance(fork_result, dict) else None
+    if not fork_session_id:
+        return {"id": "__blocked__", "error": True,
+                "message": f"Session fork returned no session_id: {fork_result}"}
+
+    fork_name = (name or "").strip() or (task[:40].strip() if task else "Fork helper")
+
+    # ── Create agent_spawns ledger row ──────────────────────────────────
+    # Same agent (not a clone) — the forked session runs as the orchestrator.
+    row = _spawns_create(
+        user_id=user_id, orchestrator_session_id=orchestrator_session_id,
+        orchestrator_agent_id=orchestrator_agent_id,
+        spawn_session_id=fork_session_id,
+        spawn_agent_id=orchestrator_agent_id,
+        name=fork_name, task=task or "", status="pending",
+        depth=new_depth, kind="fork_self",
+    )
+    return row
+
+
 async def _copy_orchestrator_context(db, user_id: str, from_session_id: str,
                                     to_session_id: str) -> int:
     """Copy all interactions from the orchestrator's session into the spawn's
@@ -1168,7 +1246,8 @@ async def _run_spawn_turn(*, user_id, spawn_id, spawn_session_id, message, wait,
     spawn_name = spawn.get("name") or spawn_id
     # A delegation (real saved agent) reads as "Delegation" in re-wake events; a
     # clone helper stays "Spawn". Both are managed with the same helper tools.
-    noun = "Delegation" if spawn.get("kind") == "delegate" else "Spawn"
+    kind = spawn.get("kind")
+    noun = {"delegate": "Delegation", "fork_self": "Fork"}.get(kind, "Spawn")
 
     # Mark queued up-front: it has a live runner (below) but may sit waiting for a
     # run slot under heavy fan-out. 'queued' (not 'running') keeps the orphan
@@ -1553,6 +1632,68 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
                            "failure. Check anytime with list_spawns.")
         return json.dumps(out)
 
+    async def fork_self(task: str, name: str = "", wait: bool = None,
+                         check_back_minutes: float = 0) -> str:
+        """Fork your own session into a sub-agent that continues as YOU.
+
+        Unlike spawn_agent (fresh clone from scratch), this is a TRUE fork: same
+        agent, same prompt slots, same abilities, same conversation prefix —
+        everything inherited from THIS session.  The LLM sees an identical prefix
+        so KV-cache hit rates are near-100%.
+
+        - ``task`` — what the fork should work on (required).
+        - ``name`` — optional label for the fork's session tab.
+        - ``wait=True`` blocks for the reply; ``wait=False`` forks and re-wakes
+          you when it finishes.  Leave unset to use the agent's configured default.
+        - ``check_back_minutes`` — optional follow-up timer.
+
+        Returns the fork_id."""
+        if not (task or "").strip():
+            return _err("Provide a task for the fork.")
+        try:
+            fork = await _create_fork(
+                user_id=user_id, orchestrator_session_id=session_id,
+                orchestrator_agent_id=agent_id or None, task=task or "",
+                name=name or "",
+            )
+        except Exception as e:
+            logger.warning("fork_self create failed: %s", e)
+            return _err(f"Could not create fork: {e}")
+
+        if fork.get("error"):
+            return json.dumps({"status": "error",
+                               "error": fork.get("message", "Limit reached."),
+                               "detail": fork})
+
+        fork_id = fork["id"]
+        if check_back_minutes and float(check_back_minutes) > 0:
+            try:
+                _spawns_update(fork_id,
+                               next_check_at=_iso_minutes_from_now(float(check_back_minutes)),
+                               check_note=f"Scheduled check-in on fork '{fork['name']}'.")
+            except Exception:
+                pass
+
+        first_message = task.strip()
+        if wait is None:
+            cfg = await _load_orch_config(agent_id)
+            wait = cfg.get("default_spawn_mode") == "wait"
+        result = await _run_spawn_turn(user_id=user_id, spawn_id=fork_id,
+                                        spawn_session_id=fork["spawn_session_id"],
+                                        message=first_message, wait=bool(wait))
+        out = {"status": "ok", "fork_id": fork_id, "name": fork["name"],
+               "fork_session_id": fork["spawn_session_id"],
+               "mode": "wait" if wait else "fork",
+               "run_status": result.get("status")}
+        if wait:
+            out["reply"] = result.get("reply", "")
+            if result.get("status") == "error":
+                out["error"] = result.get("error")
+        else:
+            out["note"] = ("Fork forked — it's queued in the run-queue and will run on "
+                           "its own. You'll be re-woken with its result when it finishes.")
+        return json.dumps(out)
+
     async def message_spawn(spawn_id: str, message: str, wait: bool = False) -> str:
         """Send a follow-up message into a spawn's session to continue the
         conversation. wait=True blocks for the reply; wait=False forks."""
@@ -1674,6 +1815,7 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
             stalled, health = _spawn_health(status, since_hb)
             spawns.append({
                 "spawn_id": r.get("id"), "name": r.get("name"), "status": status,
+                "kind": r.get("kind") or "spawn",
                 "health": health, "stalled": stalled,
                 "seconds_since_heartbeat": since_hb,
                 "seconds_in_state": _age_seconds(now_dt, r.get("updated_at")),
@@ -2091,6 +2233,7 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
 
     out = {
         "spawn_agent": spawn_agent,
+        "fork_self": fork_self,
         "message_spawn": message_spawn,
         "read_spawn": read_spawn,
         "quote_spawn": quote_spawn,
@@ -2117,7 +2260,7 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
 # still runs under its own session's tool gating, and a clone starts with NO
 # destructive permissions — so the real side effects were already guarded.
 # (Auto execution mode runs everything without a pause.)
-DESTRUCTIVE: set = {"spawn_agent", "delegate_to_agent", "delegate_task_to_agent",
+DESTRUCTIVE: set = {"spawn_agent", "fork_self", "delegate_to_agent", "delegate_task_to_agent",
                     "run_optimizer"}
 
 TOOL_SCHEMAS = {
@@ -2135,6 +2278,16 @@ TOOL_SCHEMAS = {
             "check_back_minutes": {"type": "number", "description": "Optional: also set a follow-up timer (minutes) to re-check the helper even if still running."},
             "context_inherit": {"type": "boolean", "description": "If True, the spawn gets a copy of your entire conversation history so it knows everything you know at creation time. Context flows one-way only (spawn does not push changes back). Default False."},
             "model": {"type": "string", "description": "Optional: run THIS helper on a specific model instead of inheriting yours — e.g. a vision model for a helper that must SEE an image/screenshot, the high-effort model for hard reasoning, or the cheap default for boilerplate. Must be one of your enabled tool-capable models (see list_abilities → models). Omit to inherit your own model. Escalate only when the helper's task needs it."},
+        },
+        "required": ["task"],
+    },
+    "fork_self": {
+        "type": "object",
+        "properties": {
+            "task": {"type": "string", "description": "What the forked copy of yourself should work on."},
+            "name": {"type": "string", "description": "Optional short label for the fork's session tab."},
+            "wait": {"type": "boolean", "description": "True = block and return the fork's reply now. False = fork and be re-woken when it finishes. Leave unset to use the agent's configured default (see Agent Orchestration settings)."},
+            "check_back_minutes": {"type": "number", "description": "Optional: also set a follow-up timer (minutes) to re-check the fork even if still running."},
         },
         "required": ["task"],
     },

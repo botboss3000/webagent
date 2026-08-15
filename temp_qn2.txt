@@ -1,0 +1,37 @@
+function sendQuickNote(){
+    var t=ta.value.trim();if(!t)return;
+    var tid=STATE.activeId,tn='';
+    if(tid){var tp=STATE.projects.filter(function(p){return p.id===tid})[0];if(tp)tn=tp.name;}
+    var ctx=buildProjectContext();
+    var msg=tplt(CFG.prompts.quickNote||DEF_PROMPTS.quickNote,{project:tn||'general (no card selected)',text:t,projectContext:ctx});
+    // fresh session per note + raw prompt via direct POST (no genui tag/context wrap)
+    directChat(msg,CFG.prompts.quickNote_userMessage||DEF_PROMPTS.quickNote_userMessage);
+    ta.value='';document.getElementById('quickNotePill').classList.remove('has-text');
+    toast('Quick note sent \u2713');
+  }
+  ta.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendQuickNote();}});
+  document.getElementById('qnSend').addEventListener('click',sendQuickNote);
+}
+function buildProjectContext(){
+  var out='',projs=STATE.projects,i,p;
+  for(i=0;i<projs.length;i++){
+    p=projs[i];
+    out+=p.name+' ['+(p.status||'active')+'] — '+(p.open||0)+' open, '+(p.progress||0)+'%';
+    if(p.info&&p.info.trim())out+=' | '+p.info.trim().slice(0,120);
+    out+='\n';
+  }
+  return out;
+}
+function bindComposer(){
+  var composer=document.getElementById('composer');
+  document.getElementById('projNew').addEventListener('click',function(){composer.hidden=false;var n=document.getElementById('projName');if(n)try{n.focus()}catch(_){}});
+  document.getElementById('projCancel').addEventListener('click',function(){composer.hidden=true});
+  document.getElementById('projCreate').addEventListener('click',function(){
+    var name=document.getElementById('projName').value.trim();
+    if(!name){toast(S2.toastNameRequired);return}
+    var status=document.getElementById('projStatus').value,id=slug(name)+'-'+String(Date.now()).slice(-5);
+    STATE.projects.push({id:id,name:name,icon:'folder',status:status,statusLabel:{active:'Active','at-risk':'At Risk','on-track':'On Track',blocked:'Blocked',done:'Done'}[status],progress:0,tasks:3,open:3,metrics:{commits:0,prs:0,daysLeft:0,reviewers:0},chart:[0,0,0,0,0,0,0,0],info:'',items:[{text:'Define scope',done:false,tag:'feat'},{text:'Draft project plan',done:false,tag:'chore'},{text:'Set up team',done:false,tag:'chore'}]});
+    composer.hidden=true;document.getElementById('projName').value='';renderCards();activate(id);
+    toast(tplt(S2.toastProjectAdded,{name:name}));
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!composer.hidden)

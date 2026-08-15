@@ -509,7 +509,7 @@ async def destroy(body: SelectBody):
 # The Deploy card's "Current deployment" list. Backed by app/local_instances.py:
 # this app (the hub) plus any OTHER WebAgent repo folders registered to run as
 # background servers on their own ports (8081, 8082, …). Same registry + engine the
-# Dashboard's instance-switcher header uses; these are the Deploy card's own thin,
+# removed Dashboard instance-switcher header used; these are the Deploy card's own thin,
 # admin-gated wrappers over it (self-contained, so the card doesn't depend on any
 # other page's router). Start/Stop stream NDJSON like Deploy / Tear-down.
 @router.get("/instances")

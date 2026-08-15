@@ -439,7 +439,7 @@ def connect_standalone(conninfo: str, autocommit: bool = True) -> "PgPortableCon
 
 # ── Pooled autocommit connections for the DB-viewer / chat-panel endpoints ────
 # `connect_standalone` opens a BRAND-NEW psycopg connection every call (~343ms TLS
-# handshake to a remote Supabase pooler). The chat-panel read endpoints that stay
+# handshake to a remote pooler). The chat-panel read endpoints that stay
 # on the remote authority (the live-reconcile tail, the related/family lookup) are
 # POLLED, so that per-call handshake is pure waste. This keeps a small AUTOCOMMIT
 # pool (separate from the transactional backend pool) so those calls reuse warm
@@ -486,7 +486,7 @@ def _viewer_pool(conninfo: str):
             conninfo, min_size=_min, max_size=_max, open=True,
             configure=_configure,
             # autocommit = per-statement isolation (the viewer's contract);
-            # prepare_threshold=None keeps it compatible with the Supabase
+            # prepare_threshold=None keeps it compatible with the transaction
             # transaction pooler (6543), same as the backend pool.
             kwargs={"autocommit": True, "prepare_threshold": None},
         )

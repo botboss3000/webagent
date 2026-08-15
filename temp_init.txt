@@ -1,0 +1,65 @@
+=== around STATE ===
+hart||[]).join(', ')||'none',notes:(p.chatNotes||'')+((CFG.cardChat&&CFG.cardChat.detailNote)||''),agentId:agent,text:text};window.__genuiCardAgentId=agent||null;return'['+p.name+'] '+tplt(cfg,map)}
+
+var STATE={projects:BAG.projects||[],q:'',activeId:null,sessions:(BAG.sessions||{})};
+var toastTimer=null,carUpd=null;
+
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function slug(s){return String(s).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')||'project'}
+function toast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.classList.remove('show')},CFG.toast.duration)}
+
+/* ── LOCAL STATE ── */
+var LS_P='pd-active-project',LS_I='pd-active-item';
+function loadActiveProject(){try{return localStorage.getItem(LS_P)||''}catch(e){return''}}
+function saveActiveProject(id){try{id?localStorage.setItem(LS_P,id):localStorage.removeItem(LS_P)}catch(e){}}
+function loadActiveItem(){try{var s=
+
+renderCards @ 52675:
+ength-done;
+}
+function deleteItem(pi,ii){
+  var p=STATE.projects[pi];if(!p||!p.items[ii])return;
+  p.items.splice(ii,1);recalcProject(p);
+  saveBag();renderCards();renderDetail();
+  toast('Item deleted');
+}
+function deleteProject(
+
+renderCards @ 52953:
+var name=p.name;
+  STATE.projects.splice(pi,1);
+  if(STATE.activeId===p.id){STATE.activeId=null;saveActiveProject('');clearActiveItem();}
+  saveBag();renderCards();renderDetail();
+  toast('Project "'+name+'" deleted');
+}
+function 
+
+renderCards @ 62089:
+{var q=STATE.q.toLowerCase();return STATE.projects.filter(function(p){if(q&&p.name.toLowerCase().indexOf(q)===-1)return false;return true})}
+function renderCards(){var list=visible(),grid=document.getElementById('car-track');docum
+
+renderCards @ 64570:
+ojects[+t.dataset.p],item=p.items[+t.dataset.i];if(!p||!item)return;
+    item.done=t.checked;p.open=p.items.filter(function(i){return!i.done}).length;renderCards();renderDetail();
+  });
+  zone.addEventListener('focusout',function(
+
+renderCards @ 75384:
+t plan',done:false,tag:'chore'},{text:'Set up team',done:false,tag:'chore'}]});
+    composer.hidden=true;document.getElementById('projName').value='';renderCards();activate(id);
+    toast(tplt(S2.toastProjectAdded,{name:name}));
+ 
+
+renderCards @ 76347:
+:'Analyzing this item and researching the codebase...',ts:new Date().toISOString()}];
+  saveBag();  // persist QA state so it survives page refresh
+  renderCards();renderDetail();setTimeout(function(){toggleQA(pi,ii)},100);
+  // R
+
+--- DOMContentLoaded[\s\S]{0,300} @ 94136:
+DOMContentLoaded',boot);else boot();
+})();
+</script>
+</body>
+</html>
+

@@ -25,6 +25,7 @@ from app.db.connection_config import (
     PROVIDER_META,
     load_config,
     save_config,
+    is_postgres_provider,
 )
 from app.secrets import (
     get_secrets,
@@ -84,135 +85,6 @@ async def _require_admin(uid: str) -> None:
         raise HTTPException(status_code=403, detail="Admin required")
 
 
-async def _test_supabase(supabase_url: Optional[str], service_key_plain: Optional[str]) -> dict:
-    """Reachability check for the Supabase provider.
-
-    Supabase connects over its REST API (Project URL + service-role key), NOT a
-    raw Postgres TCP connection, so the generic asyncpg test does not apply. We
-    ping the PostgREST root and confirm the service key is accepted.
-    """
-    url = (supabase_url or "").rstrip("/")
-    if not url:
-        return {"ok": False, "error": "Supabase requires a Project URL (e.g. https://xxxx.supabase.co)."}
-    # Key from the form if entered, else the saved service-role key in the vault.
-    key = service_key_plain
-    if not key:
-        try:
-            saved = load_config()
-            ref = saved.supabase_service_key_secret or "supabase_service_key"
-            key = await get_secrets().get(ref)
-        except Exception:
-            key = None
-    if not key:
-        return {"ok": False, "error": "Supabase service-role key not provided and none saved in the vault. Enter the key and retry."}
-    try:
-        import httpx
-    except ImportError:
-        return {"ok": False, "error": "httpx not installed; cannot test Supabase reachability."}
-    rest_root = f"{url}/rest/v1/"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(rest_root, headers={"apikey": key, "Authorization": f"Bearer {key}"})
-    except Exception as e:
-        return {"ok": False, "error": f"Could not reach {rest_root}: {type(e).__name__}: {e}"}
-    if resp.status_code < 400:
-        return {"ok": True, "endpoint": rest_root, "status": resp.status_code,
-                "note": "Supabase REST endpoint reachable and the service key was accepted."}
-    if resp.status_code in (401, 403):
-        return {"ok": False, "status": resp.status_code,
-                "error": "Reached Supabase, but the service-role key was rejected. Check the key."}
-    return {"ok": False, "status": resp.status_code,
-            "error": f"Unexpected response {resp.status_code} from {rest_root}."}
-
-
-def _supabase_project_ref(supabase_url: Optional[str]) -> Optional[str]:
-    """Extract the project ref (the xxxx in https://xxxx.supabase.co) from a URL."""
-    import re
-    raw = (supabase_url or "").strip()
-    if not raw:
-        return None
-    # Tolerate a bare host without scheme.
-    host = raw
-    m = re.match(r"^[a-z]+://([^/]+)", raw, re.I)
-    if m:
-        host = m.group(1)
-    m = re.match(r"^([a-z0-9]+)\.supabase\.(?:co|in|net)$", host, re.I)
-    return m.group(1) if m else None
-
-
-async def _bootstrap_supabase(supabase_url: Optional[str], service_key_plain: Optional[str]) -> dict:
-    """Create the WebAgent tables on a Supabase project.
-
-    Supabase's public API (PostgREST + service-role key) is data-only — it
-    deliberately cannot run DDL (CREATE TABLE). So there is no generic way to
-    create tables with just the Project URL + service key.
-
-    We make a best effort: if the project happens to define an `exec_sql(sql
-    text)` RPC (a common community helper), we run the full DDL through it.
-    Otherwise we return a clear, actionable message telling the admin to paste
-    the schema (the "Show Schema SQL" button) into the Supabase SQL Editor — and
-    we deep-link straight to it. This replaces the old behaviour where Supabase
-    fell through to the raw-Postgres path and failed with an empty
-    "connect failed:" because a Supabase config carries no host/user/password.
-    """
-    url = (supabase_url or "").rstrip("/")
-    if not url:
-        return {"ok": False, "error": "Supabase requires a Project URL (e.g. https://xxxx.supabase.co)."}
-
-    # Resolve the service-role key (form value first, else the saved vault key).
-    key = service_key_plain
-    if not key:
-        try:
-            saved = load_config()
-            ref_key = saved.supabase_service_key_secret or "supabase_service_key"
-            key = await get_secrets().get(ref_key)
-        except Exception:
-            key = None
-    if not key:
-        return {"ok": False, "error": "Supabase service-role key not provided and none saved in the vault. Enter the key and retry."}
-
-    ddl = render_postgres()
-    ref = _supabase_project_ref(url)
-    sql_editor_url = f"https://supabase.com/dashboard/project/{ref}/sql/new" if ref else None
-
-    # 1) Best effort: run the DDL through an exec_sql RPC if the project has one.
-    try:
-        import httpx
-    except ImportError:
-        httpx = None
-    if httpx is not None:
-        rpc_url = f"{url}/rest/v1/rpc/exec_sql"
-        headers = {"apikey": key, "Authorization": f"Bearer {key}",
-                   "Content-Type": "application/json"}
-        for param in ("sql", "query"):
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.post(rpc_url, headers=headers, json={param: ddl})
-                if resp.status_code < 300:
-                    return {"ok": True, "method": "exec_sql RPC",
-                            "note": "Tables created on Supabase via the project's exec_sql() function."}
-                # 404 / PGRST202 = no such function; stop trying params and fall through.
-                if resp.status_code == 404 or "PGRST202" in (resp.text or ""):
-                    break
-            except Exception:
-                break  # network/other error — fall through to guidance
-
-    # 2) No DDL path available — guide the admin to the SQL Editor.
-    steps = (
-        "Supabase can't create tables through its API key — table creation (DDL) "
-        "must be run in Supabase's own SQL Editor. One-time setup:\n"
-        "  1. Click \"Show Schema SQL\" here and copy everything it shows.\n"
-        + (f"  2. Open your SQL Editor: {sql_editor_url}\n" if sql_editor_url
-           else "  2. In your Supabase dashboard, open the SQL Editor (left sidebar) → New query.\n")
-        + "  3. Paste the SQL and click Run. It's safe to re-run (uses CREATE TABLE IF NOT EXISTS).\n"
-        "  4. Come back here and click Activate."
-    )
-    out = {"ok": False, "needs_manual_sql": True, "error": steps}
-    if sql_editor_url:
-        out["sql_editor_url"] = sql_editor_url
-    return out
-
-
 # ── Models ──────────────────────────────────────────────────────────────────
 
 
@@ -227,8 +99,6 @@ class DBConfigBody(BaseModel):
     password_secret_key: Optional[str] = None  # alternative: reuse an existing key
     ssl_mode: str = "require"
     schema_name: str = "public"
-    supabase_url: Optional[str] = None
-    supabase_service_key: Optional[str] = None  # plaintext, stored to vault
     options: Dict[str, Any] = {}
 
 
@@ -276,16 +146,11 @@ class SchemaSQLBody(BaseModel):
     dialect: str = "postgres"
     # idempotent controls the *display/copy* SQL only (this endpoint is never an
     # execution path — the live bootstrap calls render_postgres() directly with
-    # the idempotent default of True). Default here is FALSE on purpose: the
-    # current frontend sends True for non-Supabase providers and False for
-    # Supabase, but an older *cached* frontend may send no flag at all — and if
-    # that defaulted to True, a Supabase admin would keep getting CREATE TABLE
-    # IF NOT EXISTS (whose "IF" trips Supabase's pre-run linter) no matter how
-    # many times the server is fixed. Defaulting to the clean one-time script
-    # makes the Supabase copy correct even against a stale cache; the only
-    # trade-off is a non-Supabase "Show Schema SQL" copy is non-re-runnable when
-    # requested by a cache so old it omits the flag (cosmetic; harmless).
-    idempotent: bool = False
+    # the idempotent default of True). Default here is TRUE: every remaining
+    # provider is plain Postgres that handles CREATE TABLE IF NOT EXISTS, so the
+    # re-runnable variant is always safe. A stale cached frontend that omits the
+    # flag gets the safe, re-runnable copy.
+    idempotent: bool = True
 
 
 # ── Routes: config + status ─────────────────────────────────────────────────
@@ -405,7 +270,6 @@ async def test_db_connection(body: DBConfigBody):
         username=body.username,
         ssl_mode=body.ssl_mode,
         schema=body.schema_name,
-        supabase_url=body.supabase_url,
         options=body.options,
     )
     errs = cfg.validate()
@@ -429,11 +293,6 @@ async def test_db_connection(body: DBConfigBody):
             return {"ok": os.access(d, os.W_OK), "path": path, "writable": os.access(d, os.W_OK)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-
-    if cfg.provider == "supabase":
-        # Supabase is REST (URL + service key), not raw Postgres — test the REST
-        # endpoint, not a TCP connection it doesn't use.
-        return await _test_supabase(body.supabase_url, body.supabase_service_key)
 
     if cfg.dialect == "postgres":
         from app.db.postgres_backend import test_connection as pg_test
@@ -466,7 +325,7 @@ async def bootstrap_schema(body: DBConfigBody):
         host=body.host, port=body.port,
         database=body.database, username=body.username,
         ssl_mode=body.ssl_mode, schema=body.schema_name,
-        supabase_url=body.supabase_url, options=body.options,
+        options=body.options,
     )
     password = body.password
     if not password and body.password_secret_key:
@@ -474,12 +333,6 @@ async def bootstrap_schema(body: DBConfigBody):
         password = cred_store.get_secret(body.password_secret_key)
         if not password:
             password = await get_secrets().get(body.password_secret_key)
-
-    if cfg.provider == "supabase":
-        # Supabase is REST-only (URL + service key) and cannot run DDL over its
-        # API, so it must NOT fall through to the raw-Postgres path below (which
-        # would build a hostless DSN and fail with an empty "connect failed:").
-        return await _bootstrap_supabase(body.supabase_url, body.supabase_service_key)
 
     if cfg.dialect == "postgres":
         from app.db.postgres_backend import bootstrap_schema as pg_bootstrap
@@ -512,7 +365,7 @@ async def save_db_config(body: DBConfigBody):
         host=body.host, port=body.port,
         database=body.database, username=body.username,
         ssl_mode=body.ssl_mode, schema=body.schema_name,
-        supabase_url=body.supabase_url, options=body.options,
+        options=body.options,
     )
     errs = cfg.validate()
     if errs:
@@ -540,11 +393,6 @@ async def save_db_config(body: DBConfigBody):
     elif body.password_secret_key:
         cfg.password_secret_key = body.password_secret_key
 
-    if body.supabase_service_key and cfg.provider == "supabase":
-        cred_store.set_secret("supabase_service_key", body.supabase_service_key)
-        await _vault_set_best_effort("supabase_service_key", body.supabase_service_key)
-        cfg.supabase_service_key_secret = "supabase_service_key"
-
     save_config(cfg)
     return {"ok": True, "saved": cfg.to_dict()}
 
@@ -564,88 +412,13 @@ async def _activate_saved_backend() -> tuple[dict, int]:
     """
     cfg = load_config()
 
-    # Map provider → existing app.db backend mode
+    # SQLite — reset the cached backend so the next get_db() rebuilds it.
     if cfg.provider == "sqlite":
-        from app.db import set_db_mode, get_db_stats
-        set_db_mode("local")
+        from app.db import reset_db_instance, get_db_stats
+        reset_db_instance()
         return {"ok": True, "mode": "local", "stats": await get_db_stats()}, 200
 
-    if cfg.provider == "supabase":
-        # Hydrate env vars from saved config so SupabaseBackend.__init__ can read them.
-        url = cfg.supabase_url or ""
-        if url:
-            os.environ["SUPABASE_URL"] = url
-        key = None
-        key_name = cfg.supabase_service_key_secret or "supabase_service_key"
-        from app.db import cred_store
-        key = cred_store.get_secret(key_name)
-        if not key:
-            # Self-heal older installs whose key only lived in the legacy vault.
-            try:
-                key = await get_secrets().get(key_name)
-            except Exception:
-                key = None
-            if key:
-                cred_store.set_secret(key_name, key)
-        if key:
-            os.environ["SUPABASE_SERVICE_ROLE_KEY"] = key
-            if cfg.supabase_service_key_secret != key_name:
-                cfg.supabase_service_key_secret = key_name
-                save_config(cfg)
-        if not url or not key:
-            return {
-                "ok": False,
-                "error": "Supabase URL or service-role key is missing. Save the config (URL + key) first, then Activate.",
-            }, 400
-
-        from app.db import set_db_mode, get_mode, reset_db_instance, get_db, get_db_stats
-        prev_mode = get_mode()
-
-        def _revert():
-            set_db_mode(prev_mode)
-            reset_db_instance()
-
-        set_db_mode("cloud")
-        reset_db_instance()
-        # get_db() silently falls back to LocalBackend (and flips the mode back to
-        # 'local') when Supabase can't be reached or the client isn't installed.
-        # Detect that so we never report a misleading "cloud" success.
-        try:
-            get_db()
-        except Exception as e:
-            _revert()
-            return {
-                "ok": False,
-                "error": f"Could not initialize the Supabase backend: {e}. The app was NOT switched.",
-            }, 502
-        if get_mode() != "cloud":
-            _revert()
-            return {
-                "ok": False,
-                "error": ("Couldn't connect to Supabase with the saved URL/key (or the Supabase "
-                          "client isn't installed). The app was NOT switched — check the URL and "
-                          "service-role key, then click Test Connection."),
-            }, 502
-        # Connected — but is the schema actually there? A missing table reads back
-        # as count -1 in get_db_stats. Refuse (and revert) so we don't leave the
-        # app pointed at an empty database where every read fails at runtime.
-        stats = await get_db_stats()
-        missing = sorted([t for t, c in (stats.get("tables") or {}).items() if c == -1])
-        if missing:
-            _revert()
-            return {
-                "ok": False,
-                "needs_tables": True,
-                "missing_tables": missing,
-                "error": ("Connected to Supabase, but these tables don't exist yet: "
-                          + ", ".join(missing) + ".\n"
-                          "Create them first: click \"Create Tables (SQL Editor)\", paste the SQL into "
-                          "your Supabase SQL Editor and Run, then Activate again. The app was NOT switched."),
-            }, 409
-        return {"ok": True, "mode": "cloud", "stats": stats}, 200
-
-    # Raw Postgres family (postgres / aws_rds / gcp_cloud_sql / azure_postgres /
-    # neon): all share the live asyncpg backend, routed purely by dialect.
+    # Postgres-family — all share the live asyncpg backend, routed by dialect.
     if cfg.dialect == "postgres":
         # Resolve the password and stash it in the process env. The authoritative
         # source is the database-independent credential store (keyring/file); we
@@ -830,6 +603,57 @@ async def set_genui_store_mode(body: GenuiModeBody):
     return {"ok": True, "mode": body.mode}
 
 
+class GenuiMigrateBody(BaseModel):
+    requesting_user_id: str
+    # When true (single-tenant only), migrate every discoverable user's on-disk
+    # pages; otherwise migrate just the requesting admin's own pages.
+    all_users: bool = False
+    # Replace same-named pages already in the account store (default: keep them).
+    overwrite: bool = False
+
+
+@router.post("/genui/migrate")
+async def migrate_genui_to_account(body: GenuiMigrateBody):
+    """Copy existing on-disk (filesystem) Gen UI pages into the account database
+    store, so they follow the user across devices once storage is set to synced.
+    Non-destructive: the source files are left in place."""
+    await _require_admin(body.requesting_user_id)
+    from app.genui_store.migrate import migrate_all, migrate_user
+
+    if body.all_users:
+        # All-users only makes sense on a single shared account database. In
+        # user-BYOD mode each user owns a separate DB, so a cross-user write
+        # would land in the wrong tenant — refuse and let the caller migrate
+        # per-user (the default) instead.
+        try:
+            from app.admin.settings import get_user_byod_enabled
+            if get_user_byod_enabled():
+                raise HTTPException(
+                    status_code=400,
+                    detail="All-users migration is unavailable in user-BYOD mode; "
+                           "each user's own device migrates their pages.",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        summary = await migrate_all(overwrite=body.overwrite)
+        return {"ok": True, "scope": "all", **summary}
+
+    result = await migrate_user(body.requesting_user_id, overwrite=body.overwrite)
+    return {
+        "ok": True,
+        "scope": "self",
+        "totals": {
+            "users": 1,
+            "copied": len(result["copied"]),
+            "skipped": len(result["skipped"]),
+            "failed": len(result["failed"]),
+        },
+        "results": [result],
+    }
+
+
 # ── Routes: attachment store ───────────────────────────────────────────────
 
 
@@ -849,20 +673,38 @@ async def attachments_status(requesting_user_id: str = Query(...)):
     """Return the active attachment backend + persisted provider configs + counts."""
     await _require_admin(requesting_user_id)
     status = get_attachments_status()
-    # Add per-backend attachment counts so admins can see where existing files live.
+    # Per-backend attachment counts — use a GROUP BY query instead of fetching
+    # every row and counting client-side (which causes significant load with
+    # large attachment tables). Falls back to the generic client if raw SQL
+    # isn't available for this backend.
     counts: Dict[str, int] = {m: 0 for m in status.get("available", [])}
     try:
         from app.db import get_db
         db = get_db()
-        try:
-            raw = db.get_raw_client()
-            res = raw.table("attachments").select("storage_provider").execute()
-            for row in (res.data or []):
-                prov = (row or {}).get("storage_provider") or "local"
-                counts[prov] = counts.get(prov, 0) + 1
-        except Exception:
-            # Backends without a generic raw client / select fall through silently.
-            pass
+        from app.db import is_remote_db
+        if not is_remote_db():
+            # SQLite — raw GROUP BY via the backend's own connection.
+            try:
+                conn = db._get_conn()
+                cursor = conn.execute(
+                    "SELECT COALESCE(storage_provider, 'local') AS prov, COUNT(*) AS cnt "
+                    "FROM attachments GROUP BY storage_provider"
+                )
+                for prov, cnt in cursor.fetchall():
+                    counts[prov] = cnt
+                conn.close()
+            except Exception:
+                pass
+        else:
+            # Remote backend (Postgres) — use the generic client.
+            try:
+                raw = db.get_raw_client()
+                res = raw.table("attachments").select("storage_provider").execute()
+                for row in (res.data or []):
+                    prov = (row or {}).get("storage_provider") or "local"
+                    counts[prov] = counts.get(prov, 0) + 1
+            except Exception:
+                pass
     except Exception:
         pass
     status["counts"] = counts
@@ -942,6 +784,11 @@ async def export_data(requesting_user_id: str = Query(...)):
     Caller saves the response to a file; that file is the migration payload.
     """
     await _require_admin(requesting_user_id)
+    from app.db.browser_policy import require_export_enabled
+    try:
+        require_export_enabled()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     from app.db.migration import iter_export_json
     return StreamingResponse(
         iter_export_json(),

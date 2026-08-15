@@ -22,8 +22,28 @@ import {
   upsertAccount,
   onChange as onAccountsChange,
 } from './accounts.js';
+import { purgeAndAcknowledge, startDevicePurgePolling } from './device-purge.js';
 import { showLeftOverlay } from './left-login.js';
 import { socialIconSvg } from './social-icons.js';
+
+function loginDeviceId() {
+  const key = 'webagent_device_id';
+  let value = localStorage.getItem(key) || '';
+  if (!value) {
+    try {
+      const activeToken = getActive()?.access_token || localStorage.getItem('auth_token') || '';
+      const encoded = activeToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      const padded = encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '=');
+      value = String(JSON.parse(atob(padded)).device_id || '');
+    } catch (_) {}
+  }
+  if (!value) {
+    value = globalThis.crypto?.randomUUID?.().replace(/-/g, '')
+      || `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  }
+  localStorage.setItem(key, value);
+  return value;
+}
 
 // ── Server-reachability guard ──────────────────────────────────────────────
 // Used by setChatHeaderReachable to avoid redundant DOM writes.
@@ -170,7 +190,12 @@ function renderUserDropdown() {
           const res = await fetch('/api/v1/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password, remember_me: rememberMe }),
+            body: JSON.stringify({
+              email,
+              password,
+              remember_me: rememberMe,
+              device_id: loginDeviceId(),
+            }),
           });
           if (!res.ok) {
             errorEl.style.display = 'block';
@@ -322,7 +347,8 @@ function _openSocialLogin(providerId) {
     const y = (window.outerHeight - h) / 2 + (window.screenY || 0);
     feat += `,left=${Math.max(0, Math.round(x))},top=${Math.max(0, Math.round(y))}`;
   } catch (_) {}
-  window.open(`/api/v1/auth/social/${encodeURIComponent(providerId)}/start`,
+  const deviceId = encodeURIComponent(loginDeviceId());
+  window.open(`/api/v1/auth/social/${encodeURIComponent(providerId)}/start?device_id=${deviceId}`,
     'webagent_social_login', feat);
 }
 
@@ -400,6 +426,9 @@ export function setTheme(theme) {
 // ── Init ──────────────────────────────────────────────────────────────────
 
 export function initUserPanel() {
+  // A revoked device can still receive one narrowly-scoped purge directive and
+  // acknowledge that its tenant IndexedDB was physically erased.
+  startDevicePurgePolling();
   // ── Theme system ──
 
   // Load saved theme on init (default 'system' on first load)
@@ -441,12 +470,16 @@ export function initUserPanel() {
 
   function positionUserMenu() {
     if (!trigger || !dropdownMenu) return;
-    const r = trigger.getBoundingClientRect();
+    const mobileNavigation = document.body.classList.contains('mobile-mode');
+    const anchor = mobileNavigation
+      ? (document.getElementById('main-header') || trigger)
+      : trigger;
+    const r = anchor.getBoundingClientRect();
     dropdownMenu.style.marginTop = '0';
     dropdownMenu.style.top = Math.round(r.bottom + 6) + 'px';
     // Clamp horizontally so the menu never spills past the viewport edges.
     const w = dropdownMenu.offsetWidth || 360;
-    let left = r.left;
+    let left = mobileNavigation ? r.left + 4 : r.left;
     const maxLeft = window.innerWidth - w - 8;
     if (left > maxLeft) left = maxLeft;
     if (left < 8) left = 8;
@@ -454,6 +487,9 @@ export function initUserPanel() {
   }
 
   function openUserMenu() {
+    if (document.body.classList.contains('mobile-mode')) {
+      document.dispatchEvent(new CustomEvent('mobile-nav:user-menu-opening'));
+    }
     dropdownMenu.style.display = 'block';
     userDropdown.classList.add('open');
     positionUserMenu();
@@ -471,12 +507,17 @@ export function initUserPanel() {
       else openUserMenu();
     });
 
-    // Close dropdown on outside click.
+    // Close dropdown on outside press/click.
     // Check both the trigger wrapper AND the menu itself — the menu is a portal
     // (sibling of #main-tabs-wrap) so it is no longer a descendant of #user-dropdown.
-    document.addEventListener('click', (e) => {
-      if (!userDropdown.contains(e.target) && !dropdownMenu.contains(e.target)) closeUserMenu();
-    });
+    // Both listeners run in the CAPTURE phase: many app elements (chat message
+    // sections, turn gutters, action buttons) call e.stopPropagation() in their
+    // own bubble-phase click handlers, which would swallow the click before it
+    // reached a bubble-phase document listener and leave the panel stuck open.
+    const _isOutsideUserMenu = (e) =>
+      !userDropdown.contains(e.target) && !dropdownMenu.contains(e.target);
+    document.addEventListener('pointerdown', (e) => { if (_isOutsideUserMenu(e)) closeUserMenu(); }, true);
+    document.addEventListener('click', (e) => { if (_isOutsideUserMenu(e)) closeUserMenu(); }, true);
 
     // Close on Escape
     document.addEventListener('keydown', (e) => {
@@ -530,6 +571,26 @@ export function initUserPanel() {
   if (signoutBtn) {
     signoutBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
+      // Revoke only this token's device before discarding the local credentials.
+      const logoutToken = localStorage.getItem('auth_token') || getActive()?.access_token || '';
+      try {
+        const token = logoutToken;
+        if (token) {
+          await fetch('/api/v1/auth/logout', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        }
+      } catch (logoutError) {
+        console.warn('[UserPanel] Device logout notification failed:', logoutError);
+      }
+      // Browser transcript/config databases are physically tenant-scoped.
+      // Purge the active tenant before credentials change so a later account
+      // can never render the previous user's device-local data.
+      await purgeAndAcknowledge(logoutToken, {
+        reload: false,
+        forgetAccount: false,
+      });
       const active = getActive();
       if (active) {
         removeAccount(active.user_id);

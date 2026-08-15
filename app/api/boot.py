@@ -66,7 +66,7 @@ async def boot(request: Request):
     # style the aggregated handlers themselves use.
     from app.auth.identity import request_user_id
     from app.auth import access_mode as _access_mode, ui_config as _ui_config
-    from app.api.features import get_app_prompts, get_app_prompts_section
+    from app.api.features import get_app_prompts
     from app.api.chat import get_suggestions_config
     from app.api.agents import (
         get_abilities_catalog,
@@ -76,12 +76,16 @@ async def boot(request: Request):
         list_agent_abilities,
     )
     from app.api.files import check_access
-    from app.api.db_viewer import list_sessions
+    from app.api.db_viewer import list_sessions, get_session_messages
 
     try:
         uid = request_user_id(request) or ""
     except Exception:
         uid = ""
+
+    # The session the UI is about to open (client sends it). Used to prime BOTH
+    # that session's first transcript page and its bound agent's abilities.
+    session_id = request.query_params.get("session_id") or ""
 
     sections: dict = {}
 
@@ -97,8 +101,7 @@ async def boot(request: Request):
         _gather("access_mode", _access_mode()),
         _gather("ui_config", _ui_config(request)),
         _gather("app_prompts", get_app_prompts()),
-        _gather("ui_messages", get_app_prompts_section("ui-messages")),
-        _gather("suggestions_config", get_suggestions_config()),
+        _gather("suggestions_config", get_suggestions_config(request)),
         _gather("abilities_catalog", get_abilities_catalog()),
         _gather("pages_catalog", get_pages_catalog()),
     ]
@@ -111,10 +114,24 @@ async def boot(request: Request):
             _gather("agents", list_agents(request, user_id=uid,
                                           include_system=False, view="active")),
             _gather("profile", get_user_profile(request, user_id=uid)),
-            _gather("sessions", asyncio.to_thread(
-                list_sessions, request, user_id=uid, db="local.db",
+            # list_sessions is async.  Running the function itself in a worker
+            # thread merely returns an un-awaited coroutine, which later crashes
+            # this endpoint when the chained section calls .get() on it.
+            _gather("sessions", list_sessions(
+                request, user_id=uid, db="user.db",
                 agent_id=None, limit=50, include_hidden=False)),
         ]
+        # First transcript page of the session the UI will open — the ~7s tail
+        # that was left out of Phase 1. This matches the client's COMMON-CASE
+        # open (newest 40, light=headings-only, no around_id — session-load.js
+        # loadSessionChat when the session was left at the bottom). If the user
+        # had scrolled up (a saved around_id anchor), the client requests a
+        # different key, this primed page simply isn't matched, and it re-fetches.
+        if session_id:
+            tasks.append(_gather("session_messages", asyncio.to_thread(
+                get_session_messages, request, session_id=session_id, limit=40,
+                before_id=None, after_id=None, around_id=None, light=1,
+                db="user.db")))
 
     await asyncio.gather(*tasks)
 
@@ -134,7 +151,6 @@ async def boot(request: Request):
         agents = (sections.get("agents") or {}).get("agents") or []
         agent_ids = {a.get("id") for a in agents}
 
-        session_id = request.query_params.get("session_id") or ""
         if session_id:
             for s in (sections.get("sessions") or {}).get("sessions") or []:
                 if s.get("id") == session_id and s.get("agent_id"):
@@ -145,6 +161,13 @@ async def boot(request: Request):
             cand = profile.get("default_agent_id")
             if cand and cand in agent_ids:
                 default_agent_id = cand
+
+        if not default_agent_id:
+            # When shared default agent is enabled, prefer "shared_default" over
+            # is_user_default / first-agent fallbacks.
+            from app.admin.settings import shared_default_agent_enabled as _sd_boot
+            if _sd_boot() and "shared_default" in agent_ids:
+                default_agent_id = "shared_default"
 
         if not default_agent_id:
             for a in agents:

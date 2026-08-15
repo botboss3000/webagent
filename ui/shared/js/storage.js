@@ -56,6 +56,7 @@ function bindMount(prefix) {
     genuiMode: qs(`${prefix}genui-mode`),
     genuiNotes: qs(`${prefix}genui-notes`),
     genuiSave: qs(`${prefix}genui-save`),
+    genuiMigrate: qs(`${prefix}genui-migrate`),
     genuiOutput: qs(`${prefix}genui-output`),
     encBadge: qs(`${prefix}enc-badge`),
     encVaultWarn: qs(`${prefix}enc-vault-warning`),
@@ -148,11 +149,6 @@ const DB_NOTES = {
     ['Single host — no horizontal scale or multi-instance deploys.', 'One writer at a time (readers stay concurrent in WAL mode) — figure dozens of writes/sec and a handful of simultaneously active users.', 'You own backups, retention, and at-rest disk encryption.'],
     'Typical capacity: comfortable into the tens of GB (281 TB hard ceiling) and ~100K requests/day. Best for: personal use, dev, embedded/edge deployments.'
   ),
-  supabase: notesHtml(
-    ['Managed Postgres with backups, PITR, encryption at rest, generous free tier.', 'Survives app-host death; multi-instance deploys share the same DB.', 'Auth/Storage/Realtime available if you adopt more of the Supabase stack later.'],
-    ['Network latency on every query (cheap from same region).', 'Egress costs if your app runs outside Supabase.', 'Adds an external dependency and credentials to manage.'],
-    'Best for: hosted multi-user deployments where you want batteries-included Postgres.'
-  ),
   postgres: notesHtml(
     ['Connect to any Postgres you own — self-hosted, RDS, Azure, on-prem.', 'Strongest write/concurrency story and full SQL feature set.', 'Extensions, replication, logical decoding all available.'],
     ['You operate it: provisioning, backups, upgrades, monitoring.', 'Needs reachable network and credentials.', 'No managed PITR or HA unless you build it.'],
@@ -194,16 +190,6 @@ function setupGuide(intro, steps) {
 
 const DB_SETUP = {
   sqlite: { html: 'No account or setup needed. The database is a single file kept locally under <code>data/db/</code> — nothing to configure.' },
-  supabase: setupGuide('Free managed Postgres. ~2 minutes to a working URL + key:', [
-    'Go to <b>supabase.com</b> and sign up (GitHub login works).',
-    'Click <b>New project</b>, give it a name, set a strong database password, pick a region near your server, and create it. Wait ~1 min while it provisions.',
-    'Open <b>Project Settings → API</b> (gear icon, bottom-left).',
-    'Copy the <b>Project URL</b> (looks like <code>https://xxxx.supabase.co</code>) into the URL field below.',
-    'Under <b>Project API keys</b>, reveal and copy the <b>service_role</b> key into the Service role key field. (It bypasses row-level security — keep it secret, server-side only.)',
-    'Click <b>Test Connection</b> to confirm the URL + key work.',
-    'Click <b>Auto-Create Tables</b>: Supabase can\'t create tables through its API, so this shows the exact steps + a link to your <b>SQL Editor</b> — click <b>Show Schema SQL</b>, copy it, paste into the SQL Editor and Run (one-time).',
-    'Back here, click <b>Activate</b>.',
-  ]),
   postgres: setupGuide('Connect to any Postgres server you already run (self-hosted, on-prem, a VPS, etc.):', [
     'Make sure the server is reachable from this machine and accepts TCP connections (check <code>listen_addresses</code> and <code>pg_hba.conf</code>).',
     'Create a database and a user with rights on it (e.g. <code>CREATE DATABASE webagent;</code> and a role with full access).',
@@ -517,7 +503,7 @@ function renderSecretsRestart(m, state) {
 // networked database that more than one machine can point at. That's exactly the
 // case where a single-host vault becomes a hazard (see renderVaultRecommendation).
 const REMOTE_DB_PROVIDERS = new Set([
-  'postgres', 'supabase', 'aws_rds', 'gcp_cloud_sql', 'azure_postgres', 'neon',
+  'postgres', 'aws_rds', 'gcp_cloud_sql', 'azure_postgres', 'neon',
 ]);
 // Single-host / in-DB vaults — fine on one machine, but they do NOT travel with a
 // shared remote database. The two cloud vaults (gcp/aws) and env are excluded:
@@ -577,19 +563,19 @@ function renderVaultRecommendation(m) {
 
 const GENUI_NOTES = {
   filesystem: notesHtml(
-    ['Zero setup — genui are <code>.html</code> files in <code>visuals/users/</code>.', 'Inspectable on disk, easy to hand-edit, git-commit, or back up.', 'Fastest serving path (static file read).'],
-    ['Ephemeral on stateless cloud deploys: genui are wiped on container restart unless a persistent volume is mounted.', 'Not queryable — no search across genui by content.'],
-    'Default. Best for local-hosted use, single-server deploys, or anywhere the disk is persistent.'
+    ['<b>On this device only.</b> Pages are files on this machine’s disk — nothing to set up.', 'Inspectable on disk, easy to hand-edit, git-commit, or back up.', 'Fastest serving path (static file read).'],
+    ['<b>Pages do NOT follow you to your other devices</b> — each machine keeps its own separate set.', 'Wiped on container restart in stateless cloud deploys unless a persistent disk is mounted.', 'Not searchable across pages by content.'],
+    'Default. Best when you only ever use this one machine.'
   ),
   database: notesHtml(
-    ['Full HTML stored in the <code>genui</code> table — survives container restarts everywhere.', 'Backed up with the rest of the DB; no separate file backup needed.', 'Queryable: SQL across genui content and metadata.'],
-    ['Loses the "real file on disk" feel — no direct hand-editing from a text editor.', 'Slightly slower serving (DB round-trip per request instead of static file read).'],
-    'Best for: Cloud Run / Fly.io / any stateless cloud deploy, or multi-server setups.'
+    ['<b>In your account — synced to all your devices.</b> A page you build on your laptop is already there on your phone.', 'Survives restarts everywhere; backed up with the rest of your account data; encrypted at rest with the database.', 'Searchable across page content and metadata.'],
+    ['Loses the "real file on disk" feel — no hand-editing from a text editor.', 'Slightly slower serving (a database read per request instead of a static file).'],
+    'Recommended if you use more than one device — this is what makes your pages sync.'
   ),
   hybrid: notesHtml(
-    ['Page catalog (slug, title, agent_context, timestamps) in the DB; HTML body on disk.', 'Page list and search survive restarts; bodies remain hand-editable as files.'],
-    ['Bodies still ephemeral on stateless cloud unless the disk is persistent.', 'Two writes per save (DB metadata + file).'],
-    'Best for: setups that want a portable, queryable catalog plus direct file access to bodies.'
+    ['Page list (title, timestamps, owner) lives in your account and syncs across devices; the HTML body stays on disk.', 'The page catalog and search survive restarts; bodies remain hand-editable as files.'],
+    ['<b>Only the list syncs — the page bodies stay on this device</b>, so other devices see the entry but not the full page unless the disk is shared.', 'Two writes per save (account metadata + file).'],
+    'A middle option: a synced, searchable catalog plus direct file access to bodies. For full cross-device pages, use "In your account".'
   ),
 };
 
@@ -626,53 +612,19 @@ function renderSetupTip(labelEl, map, key) {
 }
 
 // ── Provider field templates ───────────────────────────────────────────────
-
-// Turn a Supabase Project URL (https://<ref>.supabase.co) into the deep link for
-// that project's API-keys settings page. Returns '' if no usable ref is present,
-// so callers can hide the link until the URL field is filled in correctly.
-function supabaseApiKeysUrl(projectUrl) {
-  const raw = (projectUrl || '').trim();
-  if (!raw) return '';
-  let host = raw;
-  try { host = new URL(raw.includes('://') ? raw : `https://${raw}`).hostname; }
-  catch { return ''; }                                  // not a parseable URL yet
-  const m = host.match(/^([a-z0-9]+)\.supabase\.(?:co|in|net)$/i);
-  if (!m) return '';                                     // not a *.supabase.co host
-  return `https://supabase.com/dashboard/project/${m[1]}/settings/api-keys/legacy`;
-}
-
-// Deep-link to the project's SQL Editor (where Supabase table creation actually
-// happens — its API can't run DDL). Same project-ref extraction as above.
-function supabaseSqlEditorUrl(projectUrl) {
-  const raw = (projectUrl || '').trim();
-  if (!raw) return '';
-  let host = raw;
-  try { host = new URL(raw.includes('://') ? raw : `https://${raw}`).hostname; }
-  catch { return ''; }
-  const m = host.match(/^([a-z0-9]+)\.supabase\.(?:co|in|net)$/i);
-  if (!m) return '';
-  return `https://supabase.com/dashboard/project/${m[1]}/sql/new`;
-}
-
 const FIELD_SPECS = {
   // SQLite needs no connection fields — the database always lives at the fixed
   // default location under data/db/. There is deliberately no user-customisable
   // path (the file-path input was removed); an empty spec renders no fields and
   // the backend falls back to DEFAULT_DB_PATH.
   sqlite: [],
-  supabase: [
-    { key: 'supabase_url', label: 'Project URL', type: 'text', placeholder: 'https://xxxx.supabase.co', required: true,
-      tip: 'Supabase dashboard → Project Settings → API → "Project URL". Looks like https://xxxx.supabase.co.',
-      // Make the "Project URL" label itself a link to the Supabase org dashboard,
-      // where the user can pick/create the project this URL belongs to. Static —
-      // always shown (it's org-level, not tied to a specific project ref).
-      labelLink: 'https://supabase.com/dashboard/org/' },
-    { key: 'supabase_service_key', label: 'Service role key', type: 'password', placeholder: 'eyJhbGciOi...',
-      tip: 'Project Settings → API → Project API keys → reveal and copy the "service_role" key (NOT the anon key). It bypasses row-level security, so keep it server-side only.',
-      // Beside this label, show a live "Project API Keys" link that deep-links into
-      // the user's own Supabase dashboard — but only once they've filled the URL
-      // field, since the project ref comes from it. Hidden when URL is blank/invalid.
-      linkFrom: { sourceKey: 'supabase_url', label: 'Project API Keys', build: supabaseApiKeysUrl } },
+  postgres: [
+    { key: 'host', label: 'Host', type: 'text', placeholder: 'localhost or db.example.com', required: true },
+    { key: 'port', label: 'Port', type: 'number', placeholder: '5432', default: 5432 },
+    { key: 'database', label: 'Database', type: 'text', placeholder: 'webagent', required: true },
+    { key: 'username', label: 'Username', type: 'text', placeholder: 'webagent', required: true },
+    { key: 'password', label: 'Password', type: 'password', placeholder: '••••', keep: true },
+    { key: 'ssl_mode', label: 'SSL', type: 'select', options: ['disable', 'require', 'verify-ca', 'verify-full'], default: 'require' },
   ],
   postgres: [
     { key: 'host', label: 'Host', type: 'text', required: true,
@@ -811,18 +763,12 @@ function renderFields(m, provider, existing) {
   }
 }
 
-// Provider-aware button set. Supabase's API cannot run DDL, so its tables are
-// created by pasting the schema into the Supabase SQL Editor. For Supabase we
-// therefore HIDE the one-click "Auto-Create Tables" button and re-purpose
-// "Show Schema SQL" into that copy-and-run action; every other (real Postgres)
-// provider keeps the genuine one-click creator.
+// Every remaining provider is plain Postgres that can run DDL directly,
+// so the one-click "Auto-Create Tables" button is always shown.
 function applyProviderButtons(m, provider) {
   if (!m) return;
-  const isSupabase = provider === 'supabase';
-  if (m.btnBootstrap) m.btnBootstrap.style.display = isSupabase ? 'none' : '';
-  if (m.btnShowSQL) {
-    m.btnShowSQL.textContent = isSupabase ? 'Create Tables (SQL Editor)' : 'Show Schema SQL';
-  }
+  if (m.btnBootstrap) m.btnBootstrap.style.display = '';
+  if (m.btnShowSQL) m.btnShowSQL.textContent = 'Show Schema SQL';
 }
 
 function collectFields(m) {
@@ -841,11 +787,26 @@ function collectFields(m) {
   return o;
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Race fetch() against an AbortController timeout (default 20s). On timeout,
+ *  throws with name 'AbortError' so callers can distinguish timeout from other
+ *  failures. Prevents badges from hanging on "loading…" forever. */
+async function _fetchWithTimeout(url, opts, ms = 20000) {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...(opts || {}), signal: ctrl.signal });
+  } finally {
+    clearTimeout(id);
+  }
+}
+
 // ── API ─────────────────────────────────────────────────────────────────────
 
 async function loadConfig(m) {
   const u = uid();
-  const res = await fetch(apiPath(`/admin/storage/config?requesting_user_id=${encodeURIComponent(u)}`));
+  const res = await _fetchWithTimeout(apiPath(`/admin/storage/config?requesting_user_id=${encodeURIComponent(u)}`));
   if (!res.ok) {
     out(m.output, `Failed to load config (status ${res.status}). Are you signed in as an admin?`, false);
     return null;
@@ -878,7 +839,7 @@ function applyState(m, state) {
     if (m.genuiBadge) m.genuiBadge.textContent = `active: ${pgs.mode || 'filesystem'}`;
   }
   const lock = !!state.env_locked;
-  for (const btn of [m.btnSave, m.btnActivate, m.secretsSave, m.genuiSave, m.encKekGen, m.encKekRotate]) {
+  for (const btn of [m.btnSave, m.btnActivate, m.secretsSave, m.genuiSave, m.genuiMigrate, m.encKekGen, m.encKekRotate]) {
     if (btn) { btn.disabled = lock; btn.style.opacity = lock ? '0.45' : '1'; }
   }
   // The field-encryption toggle is disabled (pointer-events off via the class)
@@ -892,7 +853,7 @@ function applyState(m, state) {
 async function loadEncryption(m) {
   if (!m || !m.encLevelTri) return;
   const u = uid();
-  const res = await fetch(apiPath(`/admin/storage/encryption/config?requesting_user_id=${encodeURIComponent(u)}`));
+  const res = await _fetchWithTimeout(apiPath(`/admin/storage/encryption/config?requesting_user_id=${encodeURIComponent(u)}`));
   if (!res.ok) {
     if (m.encBadge) m.encBadge.textContent = `error ${res.status}`;
     return;
@@ -989,7 +950,7 @@ async function _toggleFieldEnc(m) {
 async function loadTenants(m) {
   if (!m || !m.encTenants) return;
   const u = uid();
-  const res = await fetch(apiPath(`/admin/storage/encryption/tenants?requesting_user_id=${encodeURIComponent(u)}`));
+  const res = await _fetchWithTimeout(apiPath(`/admin/storage/encryption/tenants?requesting_user_id=${encodeURIComponent(u)}`));
   if (!res.ok) return;
   const body = await res.json();
   const tenants = body.tenants || [];
@@ -1027,7 +988,7 @@ async function loadTenants(m) {
 }
 
 async function call(path, opts = {}) {
-  const res = await fetch(apiPath(path), opts);
+  const res = await _fetchWithTimeout(apiPath(path), opts);
   let body = null;
   try { body = await res.json(); } catch {}
   return { ok: res.ok, status: res.status, body };
@@ -1182,7 +1143,7 @@ function _wireMaster(m) {
 async function loadFullDb(m) {
   if (!m || !m.fulldbList) return;
   const u = uid();
-  const res = await fetch(apiPath(`/admin/storage/encryption/full-db/status?requesting_user_id=${encodeURIComponent(u)}`));
+  const res = await _fetchWithTimeout(apiPath(`/admin/storage/encryption/full-db/status?requesting_user_id=${encodeURIComponent(u)}`));
   if (!res.ok) {
     if (m.encBadge) m.encBadge.textContent = `error ${res.status}`;
     return;
@@ -1270,7 +1231,7 @@ async function loadHybrid(m) {
   if (!m || !m.hybridToggle) return;
   let s;
   try {
-    const res = await fetch(apiPath(`/admin/storage/hybrid/status?requesting_user_id=${encodeURIComponent(uid())}`));
+    const res = await _fetchWithTimeout(apiPath(`/admin/storage/hybrid/status?requesting_user_id=${encodeURIComponent(uid())}`));
     if (!res.ok) { if (m.hybridBadge) m.hybridBadge.textContent = `error ${res.status}`; return; }
     s = await res.json();
   } catch (e) { if (m.hybridBadge) m.hybridBadge.textContent = 'error'; return; }
@@ -1412,41 +1373,12 @@ function wire(m) {
   m.btnShowSQL && m.btnShowSQL.addEventListener('click', async () => {
     const provider = m.provider.value;
     const dialect = provider === 'sqlite' ? 'sqlite' : 'postgres';
-    // Supabase's SQL-Editor pre-run linter chokes on `CREATE TABLE IF NOT EXISTS`
-    // (it misreads the table name as "IF") and flags `DROP` as destructive, so we
-    // request the clean one-time-setup variant for Supabase. Every other provider
-    // keeps the re-runnable idempotent DDL.
-    const idempotent = provider !== 'supabase';
     const r = await call('/admin/storage/db/schema-sql', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requesting_user_id: uid(), dialect, idempotent }),
+      body: JSON.stringify({ requesting_user_id: uid(), dialect, idempotent: true }),
     });
     if (r.body && r.body.ddl) {
-      // For Supabase, this button IS the table-creation step (merged with the
-      // old Auto-Create): lead with the copy-into-SQL-Editor instructions + a
-      // deep link, then the DDL to copy. Other providers just see the schema.
-      if (provider === 'supabase') {
-        const url = m.fields && m.fields.querySelector('[data-field-key="supabase_url"]');
-        const editor = supabaseSqlEditorUrl(url ? url.value : '');
-        // Every instruction line is a real SQL comment (-- prefix) so the user
-        // can copy the WHOLE box and Run it safely — Supabase ignores the
-        // comments. (Plain prose here would be executed and error out.)
-        const steps =
-          '-- ===== Create your Supabase tables (one-time) =====\n' +
-          '-- Supabase\'s API can\'t create tables, so run this in the SQL Editor:\n' +
-          '--   1. Copy ALL the SQL below (the comments are safe to include).\n' +
-          (editor
-            ? `--   2. Open your SQL Editor: ${editor}\n`
-            : '--   2. In your Supabase dashboard, open the SQL Editor (New query).\n') +
-          '--   3. Paste it and click Run.\n' +
-          '--      (One-time setup: if you created these tables before, delete\n' +
-          '--       them first — this script does not use CREATE TABLE IF NOT EXISTS.)\n' +
-          '--   4. Come back here and click Activate.\n' +
-          '-- ==================================================\n\n';
-        out(m.output, steps + r.body.ddl, true);
-      } else {
-        out(m.output, r.body.ddl, true);
-      }
+      out(m.output, r.body.ddl, true);
     } else {
       out(m.output, r.body || { error: 'no response' }, false);
     }
@@ -1458,9 +1390,9 @@ function wire(m) {
     const r = await call('/admin/storage/db/bootstrap', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: buildBody(m),
     });
-    // Supabase can't run DDL over its API — the backend returns step-by-step
-    // guidance to paste the schema into the SQL Editor. Show that as plain,
-    // readable text (newlines preserved) instead of a raw JSON dump.
+    // Display plain-text guidance when the backend returns it (newlines preserved).
+    // (Supabase removal: needs_manual_sql is never returned now, but the handler
+    // stays for any future backend that needs multi-step setup instructions.)
     if (r.body && r.body.needs_manual_sql && r.body.error) {
       out(m.output, r.body.error, false);
       return;
@@ -1480,7 +1412,7 @@ function wire(m) {
     if (!confirm('Switch live database backend to this provider? In-flight requests will use the new backend on their next call.')) return;
     // Persist the form's provider + fields FIRST. The /db/activate endpoint reads
     // the SAVED connection config, not this form — so without a save here, changing
-    // the dropdown (e.g. Supabase → SQLite/Postgres) and clicking Activate would
+    // the dropdown and clicking Activate would re-activate the previously-saved
     // re-activate the previously-saved provider and bounce straight back to it.
     out(m.output, 'Saving config...', null);
     const saveRes = await call('/admin/storage/db/config', {
@@ -1496,7 +1428,7 @@ function wire(m) {
       body: JSON.stringify({ requesting_user_id: uid() }),
     });
     const ok = !!(r.body && r.body.ok);
-    // A refused Activate (e.g. Supabase tables missing, or a silent local
+    // A refused Activate (e.g. tables missing, or a silent local
     // fallback) carries a multi-line guidance string — show it as plain text.
     if (!ok && r.body && typeof r.body.error === 'string') {
       out(m.output, r.body.error, false);
@@ -1569,7 +1501,36 @@ function wire(m) {
     if (r.body && r.body.ok && m.genuiBadge) {
       m.genuiBadge.textContent = `active: ${m.genuiMode.value}`;
     }
+    // After switching TO a synced store, offer to carry existing on-disk pages
+    // across so they aren't left behind on this machine.
+    if (r.body && r.body.ok && (m.genuiMode.value === 'database' || m.genuiMode.value === 'hybrid')) {
+      if (confirm('Storage switched. Move the pages already on this device into your account now, so they sync to your other devices?')) {
+        await _migrateGenui(m);
+      }
+    }
   });
+
+  // Copy existing filesystem pages into the account (database) store via the
+  // migrate endpoint. Non-destructive — the on-disk copies are left in place.
+  async function _migrateGenui(m) {
+    out(m.genuiOutput, 'Moving your pages into your account…', null);
+    const r = await call('/admin/storage/genui/migrate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requesting_user_id: uid() }),
+    });
+    const t = (r.body && r.body.totals) || {};
+    if (r.body && r.body.ok) {
+      const parts = [`${t.copied || 0} moved`];
+      if (t.skipped) parts.push(`${t.skipped} already in your account`);
+      if (t.failed) parts.push(`${t.failed} failed`);
+      out(m.genuiOutput, `Done — ${parts.join(', ')}. Your pages now sync across your devices.`,
+        t.failed ? false : true);
+    } else {
+      out(m.genuiOutput, r.body || { error: 'no response' }, false);
+    }
+  }
+
+  m.genuiMigrate && m.genuiMigrate.addEventListener('click', () => _migrateGenui(m));
 
   m.exportBtn && m.exportBtn.addEventListener('click', async () => {
     out(m.migrateOutput, 'Exporting...', null);
@@ -1640,7 +1601,7 @@ async function loadStreamBufferSetting() {
   const sbufBadge = qs('ac-storage-sbuf-badge');
   if (!sbufInput) return;
   try {
-    const r = await fetch(apiPath('/admin/settings/app'));
+    const r = await _fetchWithTimeout(apiPath('/admin/settings/app'));
     if (!r.ok) {
       if (sbufStatus) sbufStatus.textContent = `Load failed: ${r.status}`;
       return;
@@ -1708,7 +1669,7 @@ async function loadTemplatePanel() {
   const hashRow  = qs('ac-tpl-hash-row');
   if (!listEl) return;
   try {
-    const r = await fetch(apiPath('/admin/db/templates'));
+    const r = await _fetchWithTimeout(apiPath('/admin/db/templates'));
     if (!r.ok) {
       listEl.innerHTML = `<div class="ac-hint" style="color:var(--danger);">Failed: HTTP ${r.status}</div>`;
       if (badgeEl) { badgeEl.textContent = 'error'; badgeEl.style.color = 'var(--danger)'; }
@@ -1805,7 +1766,7 @@ async function loadConfigLibraryPanel() {
   const badgeEl = qs('ac-cfg-seed-badge');
   if (!listEl) return;
   try {
-    const r = await fetch(apiPath('/admin/storage/config-library/plan?requesting_user_id=' + encodeURIComponent(uid())));
+    const r = await _fetchWithTimeout(apiPath('/admin/storage/config-library/plan?requesting_user_id=' + encodeURIComponent(uid())));
     if (!r.ok) {
       listEl.innerHTML = `<div class="ac-hint" style="color:var(--danger);">Failed: HTTP ${r.status}</div>`;
       if (badgeEl) { badgeEl.textContent = 'error'; badgeEl.style.color = 'var(--danger)'; }
@@ -1885,7 +1846,9 @@ function wireConfigLibraryPanel() {
 // ── Public entry ────────────────────────────────────────────────────────────
 
 export function initStorageUi() {
+  if (PAGE && PAGE.root) return;  // already initialized successfully
   PAGE = bindMount('ac-storage-');
+  if (!PAGE || !PAGE.root) return; // still not in DOM
   wire(PAGE);
   wireStreamBuffer();
   wireTemplatePanel();
@@ -1919,7 +1882,23 @@ export function initStorageUi() {
 /** Fetch storage config, encryption status, and tenants. Called when the
  *  Storage section becomes visible (from startAdminTools in files.js). */
 export function startStorageUi() {
-  if (window.__refreshStorageSection) {
-    window.__refreshStorageSection();
+  // Lazy bail-out: initStorageUi() runs at boot (main.js) but the Data Settings
+  // section is typically not in the DOM yet, so bindMount returns null and PAGE
+  // stays null. Re-init now — the section IS visible.
+  if (!PAGE || !PAGE.root) {
+    initStorageUi();
   }
+  // Fire storage loads directly — don't rely on __refreshStorageSection which
+  // may have been set by initDataManagement() before initStorageUi had a chance
+  // to run, breaking the chain.
+  if (PAGE && PAGE.root && isAdmin()) {
+    loadConfig(PAGE).then(s => applyState(PAGE, s));
+    loadEncryption(PAGE);
+    loadTenants(PAGE);
+    loadFullDb(PAGE);
+    loadHybrid(PAGE);
+  }
+  loadStreamBufferSetting();
+  loadTemplatePanel();
+  loadConfigLibraryPanel();
 }

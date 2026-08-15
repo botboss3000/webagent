@@ -1,8 +1,8 @@
 """
 Abstract storage backend interface for WebAgent.
 
-Defines the contract that both Supabase and Local backends must implement.
-All methods match the current SupabaseClient API surface.
+Defines the contract that all backend implementations must follow.
+All methods match the current storage API surface.
 
 Also defines `EncryptedStorageBackend` — a decorator that wraps any concrete
 backend and transparently encrypts/decrypts sensitive fields on the way in
@@ -21,7 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 class StorageBackend(ABC):
-    """Abstract base class for database backends (Supabase, SQLite, etc.)."""
+    """Abstract base class for database backends.
+
+    Every backend (SQLite, Postgres) implements this interface so the rest
+    of the app never needs to know which database is active."""
 
     # ---- Sessions ----
 
@@ -90,6 +93,25 @@ class StorageBackend(ABC):
     ) -> List[InteractionRecord]:
         """Load all interactions for a session, ordered by created_at."""
         ...
+
+    async def count_interactions(self, user_id: str, session_id: str) -> int:
+        """Count visible interactions without materializing the transcript.
+
+        Queryable stores should override this. The fallback keeps in-memory and
+        browser-owned backends compatible.
+        """
+        return len(await self.fetch_interactions(user_id, session_id))
+
+    async def fetch_interactions_from_offset(
+        self, user_id: str, session_id: str, offset: int
+    ) -> List[InteractionRecord]:
+        """Load the visible transcript suffix at a canonical row offset.
+
+        Summary segments store this covered offset. Queryable stores override the
+        method so compacted raw prefixes never enter the Python working set.
+        """
+        rows = await self.fetch_interactions(user_id, session_id)
+        return rows[max(0, int(offset or 0)):]
 
     async def fetch_first_user_messages(
         self, user_id: str, session_id: str, limit: int = 3
@@ -188,6 +210,12 @@ class StorageBackend(ABC):
         """
         return 1
 
+    async def persist_session_manifest_seq(self, session_id: str, high_water: int) -> None:
+        """Persist the in-memory counter into the durable manifest.  No-op
+        default — backends that track a manifest should override to prevent
+        sequence-number collisions after a restart."""
+        pass
+
     # ---- Default-template seeding ----
 
     @abstractmethod
@@ -213,6 +241,9 @@ class StorageBackend(ABC):
         compiled_truth: str = "",
         timeline: str = "",
         frontmatter: Optional[dict] = None,
+        origin: str = "distilled",
+        source_session_id: Optional[str] = None,
+        source_interaction_id: Optional[str] = None,
     ) -> dict:
         """Create or update a memory page. Returns the page dict."""
         ...
@@ -304,15 +335,16 @@ class StorageBackend(ABC):
         """Look up a skill's id by name for a user."""
         ...
 
-    # ---- Raw client access (for code that uses the Supabase query builder directly) ----
+    # ---- Raw client access (for code that uses the query-builder idiom directly) ----
 
     @abstractmethod
     def get_raw_client(self) -> Any:
         """
         Return the underlying database client.
-        For Supabase, this is the supabase.Client (used by ToolLoader,
-        ToolExecutionTracker, admin/review, registry for direct table queries).
-        For local mode, this is the aiosqlite connection or a proxy.
+        For Postgres this is the PgPortableConnection; for local mode,
+        this is the aiosqlite connection or a proxy.
+        Callers use the ``.table().select().eq().execute()`` query-builder idiom
+        (ToolLoader, ToolExecutionTracker, admin/review, registry, etc.).
         """
         ...
 
@@ -507,6 +539,22 @@ class StorageBackend(ABC):
         """Get all attachments for a session."""
         ...
 
+    # ── Session lifecycle safety ──
+
+    async def get_session_status(self, session_id: str) -> Optional[str]:
+        """Return the session's status field (e.g. 'active', 'recycled') or None if not found."""
+        ...
+
+    async def clear_session_active_state(self, session_id: str) -> None:
+        """Clear all active state (tools, skills, abilities) for a session.
+        Called when a session is recycled to prevent any further loop activation."""
+        ...
+
+    async def is_session_dead(self, session_id: str) -> bool:
+        """True if the session is permanently deleted or recycled.
+        Used as a safety check before running any loop or automation."""
+        ...
+
     @abstractmethod
     async def delete_attachment(self, attachment_id: str) -> bool:
         """Delete an attachment record by id."""
@@ -524,7 +572,7 @@ class StorageBackend(ABC):
 
     # ---- Streaming-answer persistence + run state ----
     # These are NON-abstract with safe defaults so backends that haven't
-    # implemented durable run tracking (e.g. Supabase) keep working — they
+    # implemented durable run tracking keep working — they
     # simply fall back to the in-memory RunBuffer for live replay, exactly as
     # before. LocalBackend overrides all of them with real implementations.
 
@@ -811,6 +859,8 @@ class StorageBackend(ABC):
     async def create_custom_agent(
         self, user_id: str, name: str, description: str = "",
         template_id: str = "default", seed_abilities: bool = True,
+        capability_profile: Optional[str] = None,
+        capability_extensions: Optional[List[str]] = None,
     ) -> dict:
         """
         Create a new custom agent for a user, cloned from the given template.
@@ -820,6 +870,8 @@ class StorageBackend(ABC):
         / "scratch" value for a true blank-slate agent (no template cloned — it
         runs on the app-global baseline identity). ``seed_abilities`` copies the
         template's pre-enabled abilities; pass False for a bare agent.
+        ``capability_profile`` optionally provisions a deterministic nested
+        Simple/Standard/Advanced ability set plus explicit extensions.
         """
         ...
 
@@ -848,6 +900,20 @@ class StorageBackend(ABC):
         """
         Delete a custom agent. Caller must be in admin_users.
         Returns True if a row was deleted, False if not found or not owned.
+        """
+        ...
+
+    @abstractmethod
+    async def upsert_agent_to_template(
+        self,
+        agent_id: str,
+        updated_by: str = "admin",
+    ) -> dict:
+        """
+        Push a custom agent's current config + prompt slots back into its
+        template row (determined by agents.template_id). Bumps the prompt-slot
+        version. Raises ValueError if the agent has no template_id or the
+        template row doesn't exist.
         """
         ...
 
@@ -915,12 +981,15 @@ class StorageBackend(ABC):
         agent_context: str = "",
         html: Optional[str] = None,
         agent_id: str = "",
+        session_config: Optional[str] = None,
     ) -> dict:
         """Insert or update a genui. Returns the saved row. `html=None` leaves the
         column NULL on insert and untouched on update (so hybrid mode can store
         metadata-only rows without disturbing existing bodies). `agent_id` is the
         owning agent (the one that created/manages this genui); a freshly-supplied
-        value wins, otherwise the existing owner is preserved."""
+        value wins, otherwise the existing owner is preserved. `session_config` is
+        the JSON string describing the genui's session targeting (see the local
+        schema); a supplied value wins, otherwise the existing config is kept."""
         ...
 
     @abstractmethod
@@ -937,6 +1006,18 @@ class StorageBackend(ABC):
     async def genui_set_data(self, user_id: str, slug: str, data_json: str) -> bool:
         """Set a genui's `data` column to data_json (a JSON string). Returns True
         if a row was updated."""
+        ...
+
+    @abstractmethod
+    async def genui_get_widget(self, user_id: str, slug: str) -> Optional[str]:
+        """Return a genui's raw widget config JSON string (the `widget` column —
+        the page's launcher/widget.json), or None."""
+        ...
+
+    @abstractmethod
+    async def genui_set_widget(self, user_id: str, slug: str, widget_json: str) -> bool:
+        """Set a genui's `widget` column to widget_json (a JSON string). Returns
+        True if a row was updated."""
         ...
 
     # ---- Per-Agent External Data Sources ----
@@ -1086,10 +1167,12 @@ class EncryptedStorageBackend:
             return row
         ref = row.get("secret_ref")
         if ref:
+            decrypt_error = False
             try:
                 decrypted = await self._enc.decrypt(user_id, ref)
             except Exception as e:
                 decrypted = None
+                decrypt_error = True
                 logger.warning(
                     "decrypt failed for user=%s service=%s label=%s: %s",
                     user_id, service, label, e,
@@ -1106,7 +1189,12 @@ class EncryptedStorageBackend:
                     user_id, service, label,
                 )
                 decrypted = None
+                decrypt_error = True
             row["secret_ref"] = decrypted or ""
+            if decrypt_error:
+                # Keep the public secret field blank, but let trusted callers
+                # distinguish a broken vault key from a genuinely missing key.
+                row["_secret_error"] = "decrypt_failed"
         return row
 
     async def auth_element_set(

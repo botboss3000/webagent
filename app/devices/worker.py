@@ -32,7 +32,7 @@ HEARTBEAT_EVERY = 15     # seconds between presence heartbeats
 LEASE_SECONDS = 600      # a claimed job's lease before it's reclaimable
 CLAIM_LIMIT = 4          # max jobs claimed per tick
 
-# On a REMOTE shared DB (Postgres/Supabase) every tick is several network round-
+# On a REMOTE shared DB (Postgres) every tick is several network round-
 # trips (reclaim + claim + periodic heartbeat). At the local 2.5s floor that's a
 # constant drain on the slow connection that competes with the chat hot path, so
 # we poll much less often when remote. Local-DB dispatch stays snappy; remote
@@ -67,10 +67,10 @@ def _self_endpoint() -> str:
     Instances page can (a) SHOW where a device lives and (b) MATCH a cloud VM to
     its registry-device twin by public IP — collapsing the two into one tile.
 
-    Reuses the app-wide base-URL resolver (configured WEBHOOK_BASE_URL / last-seen
-    request host), which by the time the worker is heartbeating has been populated
-    by real traffic. Returns '' when only the bare localhost:8000 fallback is
-    available, so we never stamp a wrong port onto the presence row."""
+    Uses the app-wide base-URL resolver (request-derived / last-seen host), which
+    by the time the worker is heartbeating has been populated by real traffic.
+    Returns '' when only the bare localhost:8000 fallback is available, so we
+    never stamp a wrong port onto the presence row."""
     try:
         from app.admin.integrations import _get_base_url
         url = (_get_base_url() or "").strip().rstrip("/")
@@ -165,6 +165,9 @@ class DeviceWorker:
                 caps = identity.capabilities()
                 if endpoint:
                     caps["endpoint"] = endpoint    # also carried in caps for the pre-heartbeat self row
+                    # HTTPS is always auto-detected (no pre-configured URL support).
+                    if endpoint.startswith("https://"):
+                        caps["endpoint_https_auto"] = True
                 # Publish this device's Remote Access tunnel state so other devices'
                 # Instances page can show its tunnel URL / running state and offer a
                 # remote Start. Best-effort + purely synchronous (no network).
@@ -179,6 +182,18 @@ class DeviceWorker:
                     capabilities=caps,
                     endpoint=endpoint or None,
                 ))
+                # Track this URL in the instance's persistent URL list so the
+                # Instances Overview shows every URL the device has ever reported
+                # (IP, domain, etc.) — not just the most recent one.
+                if endpoint:
+                    try:
+                        from app.db.instance_meta import track_endpoint_url
+                        await db_offload(lambda: track_endpoint_url(
+                            identity.device_id(), endpoint,
+                            https_auto=endpoint.startswith("https://")
+                        ))
+                    except Exception:
+                        pass
                 self._last_heartbeat = now
             except Exception as e:
                 logger.debug("device heartbeat failed: %s", e)
@@ -261,7 +276,7 @@ class DeviceWorker:
         agent_id = job.get("agent_id")
         prompt_text = job.get("prompt") or ""
 
-        # Multi-tenant: this runs in a background task with no request context, so
+        # User BYOD: this runs in a background task with no request context, so
         # the data-plane router doesn't yet know whose data this is. Pin it to the
         # job OWNER and re-resolve db, so the session + interactions written below
         # (pre-loop) land in the owner's own database rather than the central one.
@@ -474,6 +489,16 @@ def kick() -> None:
     """Module-level convenience: wake this instance's worker immediately."""
     try:
         get_worker().kick()
+    except Exception:
+        pass
+
+
+def refresh_presence() -> None:
+    """Force the next worker tick to publish a fresh capability snapshot."""
+    try:
+        worker = get_worker()
+        worker._last_heartbeat = 0.0
+        worker.kick()
     except Exception:
         pass
 

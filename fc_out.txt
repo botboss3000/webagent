@@ -1,0 +1,116 @@
+Comparing files UI\CHAT\JS\chat-bubble-actions.js.bak and UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+***** UI\CHAT\JS\chat-bubble-actions.js.bak
+  106:  
+  107:  // Extracts the readable text from a bubble, excluding labels and action buttons.
+  108:  function _getBubbleText(bubble) {
+***** UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+  106:  
+  107:  // Extracts the readable text from a bubble, excluding labels, the action row,
+  108:  // and the turn-gutter footer (timestamp, model tag, buttons).
+  109:  function _getBubbleText(bubble) {
+*****
+
+***** UI\CHAT\JS\chat-bubble-actions.js.bak
+  110:    const clone = bubble.cloneNode(true);
+  111:    clone.querySelectorAll('.label, .bubble-actions, .stop-btn, .persistence-details').forEach(el => el.remove());
+  112:    return clone.textContent.trim();
+***** UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+  111:    const clone = bubble.cloneNode(true);
+  112:    clone.querySelectorAll('.label, .bubble-actions, .stop-btn, .persistence-details, .turn-gutter').forEach(el => el.remove());
+  113:    return clone.textContent.trim();
+*****
+
+***** UI\CHAT\JS\chat-bubble-actions.js.bak
+  292:      + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  293:      + '&db=local.db');
+  294:    try {
+***** UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+  293:      + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  294:      + '&db=user.db');
+  295:    try {
+*****
+
+***** UI\CHAT\JS\chat-bubble-actions.js.bak
+  438:        + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  439:        + '&db=local.db');
+  440:      const resp = await fetch(url, { method: 'POST', headers: { ...authHeaders() } });
+***** UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+  439:        + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  440:        + '&db=user.db');
+  441:      const resp = await fetch(url, { method: 'POST', headers: { ...authHeaders() } });
+*****
+
+***** UI\CHAT\JS\chat-bubble-actions.js.bak
+  468:        + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  469:        + '&db=local.db&permanent=true');
+  470:      const resp = await fetch(url, { method: 'DELETE', headers: { ...authHeaders() } });
+***** UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+  469:        + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  470:        + '&db=user.db&permanent=true');
+  471:      const resp = await fetch(url, { method: 'DELETE', headers: { ...authHeaders() } });
+*****
+
+***** UI\CHAT\JS\chat-bubble-actions.js.bak
+  566:      + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  567:      + '&db=local.db');
+  568:    try {
+***** UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+  567:      + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  568:      + '&db=user.db');
+  569:    try {
+*****
+
+***** UI\CHAT\JS\chat-bubble-actions.js.bak
+  607:      + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  608:      + '&db=local.db&permanent=true');
+  609:    try {
+***** UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+  608:      + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  609:      + '&db=user.db&permanent=true');
+  610:    try {
+*****
+
+***** UI\CHAT\JS\chat-bubble-actions.js.bak
+  746:        + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  747:        + '&db=local.db');
+  748:      try {
+***** UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+  747:        + (uid ? '&user_id=' + encodeURIComponent(uid) : '')
+  748:        + '&db=user.db');
+  749:      try {
+*****
+
+***** UI\CHAT\JS\chat-bubble-actions.js.bak
+  813:    try {
+  814:      const resp = await fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '/fork?db=local.db'), {
+  815:        method: 'POST',
+***** UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+  814:    try {
+  815:      const resp = await fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '/fork?db=user.db'), {
+  816:        method: 'POST',
+*****
+
+***** UI\CHAT\JS\chat-bubble-actions.js.bak
+  879:    if (!sid) return;
+  880:    const url = apiPath(`/api/v1/db/session-turn-detail?db=local.db&session_id=${encodeURIComponent(sid)}&ids=${encodeURIComponen
+  881:  t(msgId)}`);
+  882:    let data;
+***** UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+  880:    if (!sid) return;
+  881:    const url = apiPath(`/api/v1/db/session-turn-detail?db=user.db&session_id=${encodeURIComponent(sid)}&ids=${encodeURIComponent
+  882:  (msgId)}`);
+  883:    let data;
+*****
+
+***** UI\CHAT\JS\chat-bubble-actions.js.bak
+ 1266:  
+ 1267:    if (isUser) {
+***** UI\CHAT\JS\CHAT-BUBBLE-ACTIONS.JS
+ 1267:  
+ 1268:    // Tool-only groups own no response message. Their update rows render their
+ 1269:    // own footers within the disclosure.
+ 1270:    if (isAgent && bubble.classList.contains('tool-only')) return;
+ 1271:  
+ 1272:    if (isUser) {
+*****
+

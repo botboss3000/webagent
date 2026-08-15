@@ -281,13 +281,13 @@ def probe_dependencies(target: str = "",
             "installed" if chromium else "optional — needed for browser/UI tools",
             installable=not chromium, required=False, blocked_by=["venv"]))
 
-    # config — .env + provider.json + db_connection.json
+    # config — .env + db_connection.json
     cfg_ok = _safe(lambda: (tgt / ".env").exists() and (tgt / "db_connection.json").exists()) or False
     deps.append(Dep(
         "config", "Configuration + AI key",
         OK if cfg_ok else MISSING,
-        "config seeded (.env, provider.json, local SQLite)" if cfg_ok
-        else "not seeded yet (.env / provider.json / db config)",
+        "config seeded (.env, local SQLite)" if cfg_ok
+        else "not seeded yet (.env / db config)",
         installable=not cfg_ok, required=True, blocked_by=["repo"]))
 
     # verify — app imports + local DB initialises

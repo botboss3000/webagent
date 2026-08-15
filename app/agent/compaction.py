@@ -116,7 +116,7 @@ def _summary_client(cfg: Dict[str, Any]):
     except ImportError:  # pragma: no cover
         from app.openai_compat import AsyncOpenAI
     return AsyncOpenAI(
-        base_url=cfg.get("base_url") or "https://openrouter.ai/api/v1",
+        base_url=cfg.get("base_url") or "",
         api_key=cfg.get("api_key") or "",
         timeout=60.0,
     )
@@ -153,10 +153,9 @@ async def _resolve_summariser(
         logger.debug("compaction: default-model resolve failed: %s", e)
     model = (model
              or os.environ.get("COMPACT_MODEL") or os.environ.get("LLM_MODEL")
-             or os.environ.get("OPENROUTER_MODEL") or "deepseek/deepseek-v4-flash")
+             or os.environ.get("OPENROUTER_MODEL") or "")
     base_url = (base_url
-                or os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL")
-                or "https://openrouter.ai/api/v1")
+                or os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL"))
     api_key = (api_key
                or os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or "")
     # Fast mode "if the model provider allows it": only attach the reasoning-effort
@@ -329,7 +328,8 @@ async def _merge_segments_text(
 
 
 async def load_segments(
-    db: Any, user_id: str, session_id: str, rows: List[Any]
+    db: Any, user_id: str, session_id: str,
+    rows: Optional[List[Any]] = None, *, total_count: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Return the session's frozen train as a list of car dicts (seq asc).
 
@@ -349,7 +349,9 @@ async def load_segments(
     except Exception:
         legacy = None
     if legacy:
-        cov = max(0, min(int(legacy.get("covered_count") or 0), len(rows)))
+        if total_count is None:
+            total_count = len(rows or [])
+        cov = max(0, min(int(legacy.get("covered_count") or 0), total_count))
         txt = (legacy.get("summary") or "").strip()
         if cov > 0 and txt:
             return [{
@@ -422,22 +424,33 @@ async def maybe_compact(
     seg_source = int(settings.get("segment_source_tokens") or _DEFAULT_SEGMENT_SOURCE_TOKENS)
     max_cars = int(settings.get("max_cars") or _DEFAULT_MAX_CARS)
 
+    # Existing summary cars define an absolute row boundary. Read only the hot
+    # suffix beyond it; the raw summarized prefix may contain millions of tokens
+    # and must not re-enter Python on every automatic-compaction check.
     try:
-        rows = await db.fetch_interactions(user_id, session_id)
+        n = await db.count_interactions(user_id, session_id)
     except Exception as e:
-        logger.warning("compaction: fetch_interactions failed: %s", e)
+        logger.warning("compaction: count_interactions failed: %s", e)
+        return None
+    if n <= 0:
+        return None
+
+    segments = await load_segments(
+        db, user_id, session_id, total_count=n)
+    covered = max((int(s.get("end_index") or 0) for s in segments), default=0)
+    covered = max(0, min(covered, n))
+    try:
+        rows = await db.fetch_interactions_from_offset(
+            user_id, session_id, covered)
+    except Exception as e:
+        logger.warning("compaction: fetch_interactions_from_offset failed: %s", e)
         return None
     if not rows:
         return None
-    n = len(rows)
-
-    segments = await load_segments(db, user_id, session_id, rows)
-    covered = max((int(s.get("end_index") or 0) for s in segments), default=0)
-    covered = max(0, min(covered, n))
 
     # Current effective context = frozen cars + verbatim tail.
     cars_tokens = sum(int(s.get("token_estimate") or 0) for s in segments)
-    tail_tokens = _span_tokens(rows[covered:])
+    tail_tokens = _span_tokens(rows)
     cur_tokens = cars_tokens + tail_tokens
     if not force and cur_tokens <= int(threshold * limit):
         return None  # not full enough (forced calls skip this gate)
@@ -462,12 +475,17 @@ async def maybe_compact(
     _compress_ratio = (_tgt_tok / _src_tok) if _src_tok > 0 else 0.2
     # New high-water cut: the largest verbatim tail that still fits the tail budget,
     # snapped to a user-turn boundary beyond what's already covered.
-    boundaries = [i for i in range(covered + 1, n) if rows[i].role == "user"]
+    # Boundaries remain absolute offsets in persisted segment metadata, while
+    # ``rows`` is a zero-based view of the uncovered suffix.
+    boundaries = [
+        covered + i for i, row in enumerate(rows)
+        if i > 0 and row.role == "user"
+    ]
     if not boundaries:
         return None  # no new user-turn boundary to fold to
     cut: Optional[int] = None
     for idx in reversed(boundaries):  # newest -> oldest
-        if _span_tokens(rows[idx:]) <= tail_budget:
+        if _span_tokens(rows[idx - covered:]) <= tail_budget:
             cut = idx
         else:
             break
@@ -490,10 +508,10 @@ async def maybe_compact(
         for b in inner:
             if b <= acc_start:
                 continue
-            if _span_tokens(rows[acc_start:b]) >= seg_source:
+            if _span_tokens(rows[acc_start - covered:b - covered]) >= seg_source:
                 cend = b
                 break
-        span = rows[acc_start:cend]
+        span = rows[acc_start - covered:cend - covered]
         if not span:
             break
         transcript = _render_transcript(span)
@@ -533,12 +551,16 @@ async def maybe_compact(
         return None
 
     new_covered = max(int(s.get("end_index") or 0) for s in train)
+    cars_after = sum(int(s.get("token_estimate") or 0) for s in train)
+    tail_after = _span_tokens(rows[max(0, new_covered - covered):])
+    tokens_after = cars_after + tail_after
     info = {
         "covered_count": new_covered,
         "segments": len(train),
         "new_cars": len(new_cars),
         "summarised_rows": new_covered - covered,
         "tokens_before": cur_tokens,
+        "tokens_after": tokens_after,
         "limit": limit,
     }
     logger.info(

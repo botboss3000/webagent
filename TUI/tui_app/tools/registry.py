@@ -112,7 +112,7 @@ def _base_specs() -> list[ToolSpec]:
             "required": ["target"],
         }, install.setup_environment, mutating=True, needs_project=False),
         ToolSpec("seed_config", (
-            "Write the install's .env + provider.json (seeding the app's AI key) "
+            "Write the install's .env + db_connection.json (seeding a local DB) "
             "+ db_connection.json (local SQLite). Mutating."), {
             "type": "object",
             "properties": {"target": _STR},
@@ -275,7 +275,7 @@ def _base_specs() -> list[ToolSpec]:
         }, webapp.app_get_auth_keys, needs_project=False),
         ToolSpec("app_set_auth_keys", (
             "Set the app's LLM auth key / provider / base URL / model (writes the DB "
-            "auth_elements row + provider.json). Only the fields you pass change; the "
+            "auth_elements row). Only the fields you pass change; the "
             "key is never echoed. Mutating — confirm with the user first."), {
             "type": "object",
             "properties": {"api_key": {**_STR, "default": ""},

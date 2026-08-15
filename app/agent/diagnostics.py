@@ -172,8 +172,8 @@ class DiagnosticRecorder:
         drop-in descriptor (plugins/abilities/System/diagnostics_recorder). Fails
         ON so a default-on recorder is never silently suppressed by a read error."""
         try:
-            from app.abilities import ability_app_enabled
-            return bool(ability_app_enabled("diagnostics_recorder"))
+            from app.abilities import app_function_enabled
+            return bool(app_function_enabled("diagnostics_recorder"))
         except Exception:
             return True
 

@@ -62,6 +62,9 @@ _CALL_PATTERNS = [
     r"""\beval\s*\(""",
     r"""\bcompile\s*\(""",
     r"""__import__\s*\(""",
+    r"""\bget_db\s*\(""",
+    r"""\bget_raw_client\s*\(""",
+    r"""\b_get_conn\s*\(""",
 ]
 _CALL_RE = re.compile("|".join(_CALL_PATTERNS))
 
@@ -73,8 +76,9 @@ def _check_tool_code_safety(code: str) -> Optional[str]:
     """
     # Check imports
     for match in _IMPORT_RE.finditer(code):
-        mod = match.group(1).split(".")[0]  # top-level module name
-        if mod in BLOCKED_IMPORTS:
+        full_mod = match.group(1)
+        mod = full_mod.split(".")[0]  # top-level module name
+        if mod in BLOCKED_IMPORTS or full_mod == "app.db" or full_mod.startswith("app.db."):
             return (
                 f"Unsafe import rejected: '{match.group(0).strip()}' "
                 f"(module '{mod}' provides filesystem/shell/DB access). "

@@ -56,6 +56,8 @@ import time
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
+from plugins.engines._heartbeat import start_heartbeat
+
 logger = logging.getLogger(__name__)
 
 # The id this engine answers to — matched against an agent's metadata.engine by
@@ -118,11 +120,18 @@ def _read_cfg(agent_rec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "act_freely": bool(cc.get("act_freely", True)),
         "append_persona": bool(cc.get("append_persona", False)),
         "model": str(cc.get("model") or "").strip(),
+        # Reasoning-effort level for the local CLI: claude --effort (low/medium/
+        # high/xhigh/max) or codex model_reasoning_effort (minimal/low/medium/high).
+        # Empty ⇒ the CLI's own default. Picked from the footer model selector.
+        "effort": str(cc.get("effort") or "").strip(),
         # Per-agent "Default chat mode" (Ask/Plan/Auto), shared with normal agents
         # — lives at metadata.default_execution_mode (NOT inside claude_code). Empty
         # ⇒ the admin never opted in, so the legacy act_freely toggle still rules
         # (see _resolve_permission_mode).
         "default_mode": str(meta.get("default_execution_mode") or "").strip().lower(),
+        # MCP bridge — expose WebAgent's tool registry to the local CLI.
+        "mcp_enabled": bool(cc.get("mcp_enabled", False)),
+        "mcp_tool_allowlist": str(cc.get("mcp_tool_allowlist") or "").strip(),
     }
 
 
@@ -443,69 +452,9 @@ def _record_cli_resume_history(folder: str, claude_id: str, display: str) -> Non
 # core /compact handler calls (app/api/chat.py:_handle_compact_command); the reseed
 # branch in stream() below consumes the armed recap.
 
-_RESEED_MSG_CAP = 6000        # max chars kept per recap message
-_RESEED_TOOL_CAP = 1500       # tool results are often huge dumps — trim harder
-_RESEED_TOTAL_CAP = 120_000   # overall recap ceiling (chars)
-
-
-def _flatten_msg_content(content: Any) -> str:
-    """Best-effort plain text from an OpenAI-style message ``content`` — a plain
-    string, or the multimodal list of parts."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        out: List[str] = []
-        for part in content:
-            if isinstance(part, dict):
-                t = part.get("text") or part.get("content")
-                if isinstance(t, str) and t.strip():
-                    out.append(t)
-            elif isinstance(part, str):
-                out.append(part)
-        return "\n".join(out)
-    return ""
-
-
-def _strip_native_recall_hint(text: str) -> str:
-    """Drop the Context-Control recall footer from a rendered summary 'car'. Those
-    hints point at WebAgent native tools (recall_compacted / search_this_session)
-    that the `claude` CLI does NOT have, so they'd only confuse it."""
-    idx = text.find("Nothing here was deleted")
-    return text[:idx].rstrip() if idx != -1 else text
-
-
-def build_reseed_context(messages: List[Dict[str, Any]]) -> str:
-    """Render the compaction-assembled history (summary cars + verbatim tail) into
-    one readable recap block to seed a fresh `claude` session. Size-bounded so a
-    long tail can't blow up the new prompt."""
-    lines: List[str] = []
-    total = 0
-    for m in messages:
-        role = (m.get("role") or "").strip()
-        body = _flatten_msg_content(m.get("content")).strip()
-        if not body:
-            continue
-        if role == "system":
-            chunk = _strip_native_recall_hint(body)
-        elif role == "user":
-            chunk = f"User: {body[:_RESEED_MSG_CAP]}"
-        elif role == "assistant":
-            chunk = f"Assistant: {body[:_RESEED_MSG_CAP]}"
-        elif role == "tool":
-            snippet = body[:_RESEED_TOOL_CAP]
-            if len(body) > _RESEED_TOOL_CAP:
-                snippet += " …[trimmed]"
-            chunk = f"[earlier tool result] {snippet}"
-        else:
-            chunk = body[:_RESEED_MSG_CAP]
-        if not chunk.strip():
-            continue
-        if total + len(chunk) > _RESEED_TOTAL_CAP:
-            lines.append("…[earlier turns trimmed to fit]")
-            break
-        lines.append(chunk)
-        total += len(chunk)
-    return "\n\n".join(lines).strip()
+# The recap builder is shared with the Codex engine (both CLIs keep their own
+# session/thread outside WebAgent) — lives in app/agent/session_history.py.
+from app.agent.session_history import build_reseed_context  # noqa: E402
 
 
 async def compact_restart(
@@ -568,15 +517,16 @@ async def stream(
     interrupt_event: Optional[asyncio.Event] = None,
     attachment_docs: Optional[List[Dict[str, Any]]] = None,
     execution_mode: str = 'ask',
+    persona_prompt: Optional[str] = None,
     **_ignored: Any,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Run one chat turn through the local `claude` CLI, yielding WebAgent chat
     events and persisting the transcript. See module docstring."""
 
     def _meta(role: str, cost: Optional[float] = None, usage: Optional[Dict] = None,
-              model: str = "") -> str:
+              model: str = "", message_phase: str = "pending") -> str:
         m: Dict[str, Any] = {"provider": "claude_code", "model": model, "role": role,
-                             "engine": "claude_code"}
+                             "engine": "claude_code", "message_phase": message_phase}
         if isinstance(usage, dict):
             m["input_tokens"] = usage.get("input_tokens")
             m["output_tokens"] = usage.get("output_tokens")
@@ -592,7 +542,7 @@ async def stream(
             return await db.insert_interaction(
                 user_id, session_id, role="assistant", content=msg,
                 parent_id=parent_interaction_id, channel=channel,
-                metadata=_meta("assistant"),
+                metadata=_meta("assistant", message_phase="main"),
                 output_data=json.dumps({"role": "assistant", "content": msg, "tool_calls": []}),
                 sender_id=agent_id, receiver_id=user_id)
         except Exception:
@@ -711,14 +661,19 @@ async def stream(
         cmd += ["--permission-mode", "default"]
     if cfg["model"]:
         cmd += ["--model", cfg["model"]]
+    if cfg["effort"]:
+        cmd += ["--effort", cfg["effort"]]
     # Persona → a temp FILE (so admin-authored text with quotes can't break the
     # Windows .CMD argv). Removed in the finally below.
     persona_file: Optional[str] = None
     if cfg["append_persona"] and system_prompt and system_prompt.strip():
         try:
+            # Prefer the persona-only prompt (agent-authored slots without platform
+            # boilerplate/tool schemas) when available; fall back to the full prompt.
+            _pers = (persona_prompt or "").strip() or system_prompt
             fd, persona_file = tempfile.mkstemp(prefix="wa_persona_", suffix=".txt", text=True)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(system_prompt)
+                fh.write(_pers)
             cmd += ["--append-system-prompt-file", persona_file]
         except Exception:
             persona_file = None
@@ -727,6 +682,69 @@ async def stream(
             cmd += shlex.split(cfg["extra_flags"], posix=False)
         except ValueError:
             cmd += cfg["extra_flags"].split()
+
+    # ── MCP bridge (exposes WebAgent tools to the local CLI) ───────────────────
+    mcp_proc: Optional[subprocess.Popen] = None
+    mcp_config_file: Optional[str] = None
+    if cfg["mcp_enabled"]:
+        import sys as _sys
+        # Invoke the server as a SCRIPT (not `-m`) so it starts from any cwd the
+        # CLI spawns it in; server.py bootstraps the project root onto sys.path.
+        _mcp_server = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))), "app", "mcp", "server.py")
+        _mcp_args = [
+            _sys.executable, _mcp_server,
+            "--user-id", user_id,
+            "--agent-id", agent_id,
+            "--session-id", session_id,
+            "--mode", _perm_mode,
+        ]
+        if cfg["mcp_tool_allowlist"]:
+            _mcp_args += ["--allowed-tools", cfg["mcp_tool_allowlist"]]
+        # Agent template id so MCP tools/list can gate orchestration tools.
+        if agent_rec and agent_rec.get("template_id"):
+            _mcp_args += ["--agent-template-id", str(agent_rec["template_id"])]
+
+        _mcp_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            mcp_proc = subprocess.Popen(
+                _mcp_args,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace",
+                creationflags=_mcp_flags,
+            )
+        except Exception as _me:
+            logger.warning("claude_code: MCP server failed to start: %s", _me)
+            mcp_proc = None
+
+        if mcp_proc is not None:
+            # Write a temporary .mcp.json Claude Code reads. We use the
+            # mcpServers format; the server speaks over the stdio pipes
+            # we already opened above.
+            try:
+                _mcp_fd, mcp_config_file = tempfile.mkstemp(
+                    prefix="wa_mcp_", suffix=".json")
+                _mcp_cfg = {
+                    "mcpServers": {
+                        "webagent": {
+                            "command": _sys.executable,
+                            "args": _mcp_args,
+                            "env": {},
+                        }
+                    }
+                }
+                with os.fdopen(_mcp_fd, "w", encoding="utf-8") as _fh:
+                    json.dump(_mcp_cfg, _fh, ensure_ascii=False)
+                cmd += ["--mcp-config", mcp_config_file]
+            except Exception as _mce:
+                logger.warning("claude_code: MCP config write failed: %s", _mce)
+                if mcp_config_file:
+                    try: os.unlink(mcp_config_file)
+                    except Exception: pass
+                    mcp_config_file = None
+                # Don't kill the server — it'll exit when stdin closes.
+                mcp_proc = None  # disable MCP for this turn
 
     # Clean child env: drop the Claude-Code nested-session re-entrancy markers so a
     # spawned claude behaves as a top-level session (only matters if WebAgent itself
@@ -765,7 +783,8 @@ async def stream(
         return await db.insert_interaction(
             user_id, session_id, role="assistant", content=content,
             parent_id=parent_interaction_id, channel=channel,
-            metadata=_meta("assistant", final_cost, final_usage, final_model),
+            metadata=_meta("assistant", final_cost, final_usage, final_model,
+                           message_phase="main"),
             output_data=json.dumps({"role": "assistant", "content": content, "tool_calls": []}),
             sender_id=agent_id, receiver_id=user_id,
         )
@@ -785,12 +804,18 @@ async def stream(
         rid = await db.insert_interaction(
             user_id, session_id, role="assistant", content=txt,
             parent_id=parent_interaction_id, channel=channel,
-            metadata=_meta("assistant", model=final_model),
+            metadata=_meta("assistant", model=final_model, message_phase="progress"),
             output_data=json.dumps({"role": "assistant", "content": txt, "tool_calls": []}),
             sender_id=agent_id, receiver_id=user_id,
         )
+        yield {"type": "db", "level": "db", "op": "insert_interaction", "role": "assistant", "id": rid}
         yield {"type": "stream", "level": "agent", "content": txt, "asst_id": rid}
-        yield {"type": "agent_step_end", "level": "agent", "asst_id": rid, "content": txt}
+        yield {"type": "agent_step_end", "level": "agent", "message_phase": "progress",
+               "asst_id": rid, "content": txt}
+
+    # Background heartbeat keeps the liveness watchdog alive during the
+    # long-running child-process wait. See plugins/engines/_heartbeat.py.
+    _hb = start_heartbeat(db, session_id)
 
     try:
         while True:
@@ -825,6 +850,7 @@ async def stream(
                 if not responded:
                     if last_text:
                         asst_id = await _persist_final(last_text)
+                        yield {"type": "db", "level": "db", "op": "insert_interaction", "role": "assistant", "id": asst_id}
                         yield {"type": "response", "level": "agent",
                                "content": last_text, "asst_id": asst_id}
                     else:
@@ -885,18 +911,21 @@ async def stream(
                     asst_id = await db.insert_interaction(
                         user_id, session_id, role="assistant", content=text_part,
                         parent_id=parent_interaction_id, channel=channel,
-                        metadata=_meta("assistant", model=final_model),
+                        metadata=_meta("assistant", model=final_model,
+                                       message_phase="progress"),
                         output_data=outp, sender_id=agent_id, receiver_id=user_id,
                     )
+                    yield {"type": "db", "level": "db", "op": "insert_interaction", "role": "assistant", "id": asst_id}
                     if text_part.strip():
                         yield {"type": "stream", "level": "agent",
                                "content": text_part, "asst_id": asst_id}
                         yield {"type": "agent_step_end", "level": "agent",
+                               "message_phase": "progress",
                                "asst_id": asst_id, "content": text_part}
                     for (tid, name, args) in uses:
                         pending_tools[tid] = (asst_id, name, args)
                         yield {"type": "tool_call", "level": "agent",
-                               "tool": name, "args": args}
+                               "tool": name, "args": args, "tool_call_id": tid}
                 else:
                     # No tools → this is (probably) the final answer. Hold it; the
                     # `result` record provides the authoritative final text. But if a
@@ -935,7 +964,7 @@ async def stream(
                         logger.debug("claude_code tool-row persist failed: %s", _pe)
                     yield {"type": "tool_result", "level": "agent", "tool": name,
                            "result": result_text[:4000], "duration_ms": 0,
-                           "error": is_err}
+                           "error": is_err, "tool_call_id": tid}
                 continue
 
             # ── result: final answer + informational cost ──
@@ -975,6 +1004,7 @@ async def stream(
                         "back. That saves a long-lived login and I'll work again — no "
                         "restart needed.")
                 asst_id = await _persist_final(final_text or "")
+                yield {"type": "db", "level": "db", "op": "insert_interaction", "role": "assistant", "id": asst_id}
                 # Informational cost/usage chip — NOT charged to WebAgent credits.
                 yield {"type": "pipeline", "level": "pipeline", "step": "llm_call_end",
                        "model": final_model,
@@ -993,7 +1023,7 @@ async def stream(
                 if _ctx_tokens:
                     yield {"type": "pipeline", "level": "pipeline",
                            "step": "context_status", "tokens": _ctx_tokens}
-                yield {"type": "response", "level": "agent",
+                yield {"type": "response", "level": "agent", "message_phase": "main",
                        "content": final_text or "", "asst_id": asst_id}
                 responded = True
                 # keep reading until exit so we capture the session id cleanly
@@ -1006,6 +1036,8 @@ async def stream(
                    "message": f"Local Claude Code engine error: {e}"}
         responded = True
     finally:
+        _hb.cancel()
+
         # Persist the Claude conversation id for this chat so the next turn resumes.
         store_id = captured_id or prior_claude_id
         if store_id:
@@ -1029,5 +1061,15 @@ async def stream(
         if persona_file:
             try:
                 os.unlink(persona_file)
+            except Exception:
+                pass
+        if mcp_config_file:
+            try:
+                os.unlink(mcp_config_file)
+            except Exception:
+                pass
+        if mcp_proc is not None and mcp_proc.poll() is None:
+            try:
+                mcp_proc.terminate()
             except Exception:
                 pass

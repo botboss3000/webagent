@@ -36,10 +36,12 @@ Data domains:
   | agents (own only)       | read/write  | list_my_agents, get_agent, create_agent, update_agent |
   | agent_prompts (own)     | read/write  | edit_agent_prompt                       |
   | agent abilities (own)   | read/write  | set_agent_ability                       |
+  | user sessions (own)     | read/write  | list_user_sessions, manage_user_session, create_user_session, kick_user_session |
 
 Gated by the ``agent_management`` ability (a pure behavioural toggle — no
-platform secret). Deliberately carries NO conversation-history (interactions) or
-filesystem access; those stay under the heavier ``codebase_admin`` ability.
+platform secret). Carries only a truncated last-message peek for session
+triage (list_user_sessions) — full transcripts stay under the heavier
+``codebase_admin`` ability. No filesystem access.
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -332,6 +335,12 @@ async def get_agent(agent_id: str, user_id: str = "") -> str:
             "loop_logic": _as_json_list(full.get("loop_logic")),
             "user_mode": full.get("user_mode"),
         }
+        from app.agent.cache_profiles import profile_from_metadata
+        _cache_meta = _as_json_obj(full.get("metadata"))
+        agent["capability_profile"] = profile_from_metadata(_cache_meta)
+        agent["cache_profile_version"] = _cache_meta.get("cache_profile_version", 1)
+        agent["prompt_layout_version"] = _cache_meta.get("prompt_layout_version", 2)
+        agent["capability_extensions"] = _cache_meta.get("capability_extensions") or []
         # Tool overview: counts + only the tools whose settings differ from the
         # default (sent + auto). Use list_agent_tools for the full per-tool list.
         catalog = await _agent_tool_catalog(db, agent_id, user_id) or []
@@ -358,6 +367,8 @@ async def create_agent(
     name: str,
     template_id: str = "",
     description: str = "",
+    capability_profile: str = "simple",
+    ability_extensions: Optional[List[str]] = None,
     user_id: str = "",
 ) -> str:
     """Create a new agent owned by this user. YOU choose how it starts.
@@ -371,17 +382,30 @@ async def create_agent(
         just the app-global baseline identity. You then write its persona with
         edit_agent_prompt. Use this when no template fits.
 
-    EITHER way the agent is created as a BARE genui — **no abilities are
-    enabled**. This is deliberate: you add only the abilities you justified in
-    the plan, one at a time, with `set_agent_ability`, so every capability is
-    intentional (never inherited-then-pruned). Refine prompts/limits afterwards
-    with update_agent / edit_agent_prompt.
+    Choose the smallest nested cache profile that covers the job: ``simple``,
+    ``standard``, or ``advanced``. Add unusual, explicitly justified abilities
+    with ``ability_extensions``. Specialized schemas remain discoverable so
+    differently capable agents share the same small first-call tool schema.
     """
     try:
         from app.db import get_db
         db = get_db()
         if not name or not name.strip():
             return _err("Agent name is required.")
+        from app.agent.cache_profiles import PROFILE_ABILITIES, normalize_profile, profile_abilities
+        _requested_profile = str(capability_profile or "").strip().lower()
+        if _requested_profile not in PROFILE_ABILITIES:
+            return _err("capability_profile must be simple, standard, or advanced.")
+        profile = normalize_profile(_requested_profile)
+        requested_abilities = profile_abilities(profile, ability_extensions)
+        from app.admin.integrations import get_admin_configured_providers
+        configured = set(await get_admin_configured_providers(user_id))
+        unavailable = [a for a in requested_abilities if a not in configured]
+        if unavailable:
+            return _err(
+                "These profile abilities are not configured by the app admin: "
+                + ", ".join(unavailable)
+            )
         agent = await db.create_custom_agent(
             user_id=user_id,
             name=name.strip(),
@@ -389,6 +413,8 @@ async def create_agent(
             # "none" value creates a from-scratch agent (the DB layer normalises
             # the no-template sentinels). No silent fallback to "default".
             template_id=template_id or "",
+            capability_profile=profile,
+            capability_extensions=ability_extensions or [],
             seed_abilities=False,  # bare genui — abilities added deliberately
         )
         slim = {
@@ -396,6 +422,8 @@ async def create_agent(
             "name": agent.get("name"),
             "description": agent.get("description"),
             "template_id": agent.get("template_id"),
+            "capability_profile": profile,
+            "abilities": requested_abilities,
         }
         # Live-sync the owner's open Agents page (see _emit_agent_created).
         await _emit_agent_created(user_id, slim)
@@ -906,9 +934,575 @@ async def manage_agent_skills(
         return _err(str(e))
 
 
+# ── User sessions (read) ──────────────────────────────────────────────────────
+
+async def list_user_sessions(
+    limit: int = 15,
+    agent_id: str = "",
+    include_hidden: bool = False,
+    include_recycled: bool = False,
+    peek_chars: int = 500,
+    user_id: str = "",
+) -> str:
+    """List the user's chat sessions with their latest messages.
+
+    Each session includes its last USER message and last ASSISTANT (agent)
+    message, truncated to ``peek_chars`` — enough to judge whether the session
+    is waiting on the user (a call to action: an open question, a choice, a
+    "let me know what you think") or is complete (a finished answer with
+    nothing pending), and to summarise what the session is about in one
+    sentence. Sort by most recent activity first.
+
+    Hidden sessions and recycled (in-the-bin) sessions are excluded unless you
+    ask for them; ephemeral helper sessions ('spawn-*') are always excluded.
+    Only the user's own sessions (or ones shared with them) are returned.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        limit = max(1, min(int(limit or 15), 50))
+        peek = max(120, min(int(peek_chars or 500), 2000))
+        if not user_id:
+            return _err("Missing caller identity.")
+        conn = db._get_conn()
+        try:
+            # Defensive: older DBs may lack the optional columns.
+            sess_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+            has_hidden = "hidden" in sess_cols
+            has_status = "status" in sess_cols
+
+            where = "(s.user_id = ? OR s.participants LIKE ?)"
+            params: list = [user_id, f'%"id": "{user_id}"%']
+            if agent_id:
+                where += " AND s.agent_id = ?"
+                params.append(agent_id)
+            if has_status and not include_recycled:
+                where += " AND (s.status IS NULL OR s.status != 'recycled')"
+            if has_hidden and not include_hidden:
+                where += " AND (s.hidden IS NULL OR s.hidden = 0)"
+            where += " AND s.id NOT LIKE 'spawn-%'"
+
+            rows = conn.execute(
+                f"""SELECT s.id, s.title, s.user_id, s.participants, s.agent_id,
+                           s.created_at, s.updated_at, a.name AS agent_name
+                    FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id
+                    WHERE {where}
+                    ORDER BY COALESCE(
+                        (SELECT MAX(i.created_at) FROM interactions i
+                         WHERE i.session_id = s.id),
+                        s.updated_at, s.created_at) DESC
+                    LIMIT ?""",
+                params + [limit],
+            ).fetchall()
+
+            # Python-side participant verification (the LIKE above is a pre-filter).
+            owned = []
+            for r in rows:
+                parts = []
+                try:
+                    parts = json.loads(r[3] or "[]") or []
+                except Exception:
+                    parts = []
+                ids = {p.get("id") for p in parts if isinstance(p, dict)}
+                if r[2] == user_id or user_id in ids:
+                    owned.append(r)
+            if not owned:
+                return _ok(count=0, sessions=[])
+            sids = [r[0] for r in owned]
+
+            # Latest few user/assistant messages per session (window function —
+            # works on SQLite >= 3.25 and Postgres; legacy rows fall back to
+            # created_at ordering when session_seq is NULL).
+            last_msgs: dict = {}
+            try:
+                qmarks = ",".join("?" * len(sids))
+                mrows = conn.execute(
+                    f"""SELECT session_id, role, content, created_at FROM (
+                            SELECT session_id, role, content, created_at,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY session_id
+                                       ORDER BY COALESCE(session_seq, 0) DESC,
+                                                created_at DESC) AS rn
+                            FROM interactions
+                            WHERE session_id IN ({qmarks})
+                              AND role IN ('user', 'assistant')
+                        ) WHERE rn <= 6""",
+                    sids,
+                ).fetchall()
+                for m in mrows:
+                    last_msgs.setdefault(m[0], []).append({
+                        "role": m[1],
+                        "content": (m[2] or "")[:peek],
+                        "created_at": m[3],
+                    })
+            except Exception as e:
+                logger.debug("list_user_sessions: last-message fetch failed: %s", e)
+
+            counts: dict = {}
+            try:
+                qmarks = ",".join("?" * len(sids))
+                for c in conn.execute(
+                    f"SELECT session_id, COUNT(*) FROM interactions "
+                    f"WHERE session_id IN ({qmarks}) GROUP BY session_id",
+                    sids,
+                ).fetchall():
+                    counts[c[0]] = int(c[1])
+            except Exception as e:
+                logger.debug("list_user_sessions: message-count fetch failed: %s", e)
+
+            sessions = []
+            for r in owned:
+                msgs = last_msgs.get(r[0], [])
+                last_user = next((m for m in msgs if m["role"] == "user"), None)
+                last_agent = next((m for m in msgs if m["role"] == "assistant"), None)
+                sessions.append({
+                    "id": r[0],
+                    "title": r[1] or r[0][:12],
+                    "agent_id": r[4],
+                    "agent_name": r[7] or "",
+                    "created_at": r[5],
+                    "updated_at": r[6],
+                    "message_count": counts.get(r[0], 0),
+                    "last_message_role": msgs[0]["role"] if msgs else None,
+                    "last_message_at": msgs[0]["created_at"] if msgs else None,
+                    "last_user_message": last_user["content"] if last_user else None,
+                    "last_agent_message": last_agent["content"] if last_agent else None,
+                })
+            return _ok(count=len(sessions), sessions=sessions)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("list_user_sessions failed: %s", e)
+        return _err(str(e))
+
+
+async def _enqueue_session_push(ids: list, op: str = "upsert") -> None:
+    """Best-effort hybrid remote push — the same outbox the REST routes use.
+
+    Local-first writes are instantly visible; this queues the authoritative
+    push to the remote authority so other devices converge. No-op when hybrid
+    is off; a failure only costs convergence latency (the sync sweep catches
+    it), never correctness. Deliberately does NOT import app.api.db_viewer —
+    that router module is heavy and this ability must stay self-contained."""
+    ids = [i for i in (ids or []) if i]
+    if not ids:
+        return
+    try:
+        from app.db.hybrid import hybrid_enabled, HybridBackend
+        if not hybrid_enabled():
+            return
+        from app.db import get_db
+        inst = get_db()
+        hb = inst if isinstance(inst, HybridBackend) else getattr(inst, "_inner", None)
+        if not isinstance(hb, HybridBackend):
+            return
+        from app.db.sync.outbox import Outbox
+        await Outbox(hb.local).enqueue_many([("sessions", i, op) for i in ids])
+    except Exception as e:
+        logger.debug("session remote push skipped: %s", e)
+
+
+# ── User sessions (write) ─────────────────────────────────────────────────────
+
+async def manage_user_session(
+    action: str,
+    session_id: str,
+    name: str = "",
+    user_id: str = "",
+) -> str:
+    """Rename, hide, show, recycle, or restore one of the user's sessions.
+
+    Actions:
+      - rename   — set a new display title (``name``, max 80 chars). Locks the
+        title so the auto-titler stops overwriting it.
+      - hide     — hide the session from the chat sidebar (kept, not deleted).
+      - show     — unhide a hidden session.
+      - recycle  — send the session to the recycling bin (soft delete: the
+        transcript is kept and it can be restored; any active agent loop is
+        stopped).
+      - restore  — bring a recycled session back to active.
+
+    Only the user's own sessions (or ones shared with them) can be managed.
+    Session ids come from ``list_user_sessions``.
+    """
+    valid = {"rename", "hide", "show", "recycle", "restore"}
+    if action not in valid:
+        return _err(f"action must be one of: {', '.join(sorted(valid))}.")
+    if not session_id:
+        return _err("session_id is required.")
+    if action == "rename" and not (name or "").strip():
+        return _err("name is required for rename.")
+    try:
+        from app.db import get_db
+        db = get_db()
+        conn = db._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT user_id, participants, status FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if not row:
+                return _err("Session not found.")
+            parts = []
+            try:
+                parts = json.loads(row[1] or "[]") or []
+            except Exception:
+                parts = []
+            ids = {p.get("id") for p in parts if isinstance(p, dict)}
+            if row[0] != user_id and user_id not in ids:
+                return _err("Not authorized for this session.")
+
+            if action == "rename":
+                title = (name or "").strip()[:80]
+                meta = {}
+                try:
+                    mrow = conn.execute(
+                        "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                    ).fetchone()
+                    meta = json.loads(mrow[0]) if (mrow and mrow[0]) else {}
+                except Exception:
+                    meta = {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                meta["auto_title_locked"] = True
+                conn.execute(
+                    "UPDATE sessions SET title = ?, metadata = ?, updated_at = datetime('now') "
+                    "WHERE id = ?",
+                    (title, json.dumps(meta), session_id),
+                )
+            elif action in ("hide", "show"):
+                try:
+                    cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+                    if "hidden" not in cols:
+                        conn.execute("ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+                except Exception:
+                    pass
+                conn.execute(
+                    "UPDATE sessions SET hidden = ?, updated_at = datetime('now') WHERE id = ?",
+                    (1 if action == "hide" else 0, session_id),
+                )
+            else:  # recycle | restore
+                status = "recycled" if action == "recycle" else "active"
+                cur = conn.execute(
+                    "UPDATE sessions SET status = ?, updated_at = datetime('now') WHERE id = ?",
+                    (status, session_id),
+                )
+                if not cur.rowcount:
+                    return _err(
+                        f"Session is not currently "
+                        f"{'active' if action == 'recycle' else 'recycled'}."
+                    )
+                # Carry the run-family (spawned helpers etc.) with the parent,
+                # exactly like the REST recycle/restore cascade.
+                affected = [session_id]
+                try:
+                    from app.db.local import resolve_child_sessions
+                    for cid in resolve_child_sessions(conn, [session_id]):
+                        conn.execute(
+                            "UPDATE sessions SET status = ?, updated_at = datetime('now') "
+                            "WHERE id = ?",
+                            (status, cid),
+                        )
+                        affected.append(cid)
+                except Exception as e:
+                    logger.debug("manage_user_session: child cascade failed: %s", e)
+                if action == "recycle":
+                    # Stop any live loop + clear active state so it can't resume.
+                    try:
+                        for sid in affected:
+                            try:
+                                await db.set_interrupt(sid)
+                            except Exception:
+                                pass
+                            try:
+                                await db.clear_session_active_state(sid)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        logger.debug("manage_user_session: loop-kill failed: %s", e)
+                conn.commit()
+                await _enqueue_session_push(affected, "upsert")
+                return _ok(session_id=session_id, action=action,
+                           children=len(affected) - 1)
+            conn.commit()
+            await _enqueue_session_push([session_id], "upsert")
+            return _ok(session_id=session_id, action=action)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("manage_user_session failed: %s", e)
+        return _err(str(e))
+
+
+async def create_user_session(
+    name: str,
+    agent_id: str = "",
+    user_id: str = "",
+) -> str:
+    """Create a brand-new chat session with the given title.
+
+    Returns the new ``session_id``. The session starts empty and appears at the
+    top of the user's session list as active. Optionally bind it to one of the
+    user's agents with ``agent_id`` (must be an agent the user owns); otherwise
+    the session is unbound and the user can pick an agent when they open it.
+    """
+    title = (name or "").strip()
+    if not title:
+        return _err("A session name is required.")
+    title = title[:120]
+    try:
+        from app.db import get_db
+        db = get_db()
+        if agent_id:
+            try:
+                agent = await db.get_agent_by_id(agent_id)
+                if not agent:
+                    return _err(f"Agent '{agent_id}' not found.")
+                if not await _owns_agent(db, user_id, agent_id):
+                    return _err(f"Agent '{agent_id}' is not owned by this user.")
+            except Exception as e:
+                logger.debug("create_user_session: agent check failed: %s", e)
+                return _err(f"Agent '{agent_id}' is not usable: {e}")
+        session_id = str(uuid.uuid4())
+        conn = db._get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO sessions (id, user_id, title, agent_id, status, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'active', datetime('now'), datetime('now'))",
+                (session_id, user_id, title, agent_id or None),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        await _enqueue_session_push([session_id], "upsert")
+        return _ok(session_id=session_id, title=title, agent_id=agent_id or "")
+    except Exception as e:
+        logger.error("create_user_session failed: %s", e)
+        return _err(str(e))
+
+
+async def kick_user_session(
+    session_id: str,
+    prompt: str,
+    mode: str = "auto",
+    timeout_seconds: int = 600,
+    wait: bool = False,
+    user_id: str = "",
+) -> str:
+    """Start real work inside an existing session — the "run it for me" tool.
+
+    Injects ``prompt`` into ``session_id`` as a new user message and launches a
+    supervised agent turn for that session's agent, exactly like an automation
+    run: the reply streams into the session live, the run is recorded in
+    session_runs (survives the caller leaving), and the session's transcript
+    keeps the injected prompt so the user sees what was dispatched.
+
+    - ``mode`` — ``"auto"`` (default): the run proceeds unattended and the
+      session's agent executes its tools without pausing for confirmations
+      (the whole call is confirm-gated here, so this is a deliberate dispatch).
+      ``"ask"``: respect the agent's own per-tool posture — the run may pause
+      waiting for confirmations.
+    - ``wait`` — ``False`` (default): kick and return immediately; the run
+      continues supervised in the background and you check on it later with
+      list_user_sessions. ``True``: block until the run finishes and return its
+      final reply (capped by ``timeout_seconds`` + a grace margin).
+
+    Refuses to kick a session the user does not own, a recycled/dead session,
+    or a session with no agent bound (there must be something to run).
+    """
+    prompt = (prompt or "").strip()
+    session_id = (session_id or "").strip()
+    if not session_id:
+        return _err("A session_id is required.")
+    if not prompt:
+        return _err("A kickoff prompt is required — what should the session's agent do?")
+    mode = (mode or "auto").strip().lower()
+    if mode not in ("auto", "ask"):
+        return _err("mode must be 'auto' (run unattended) or 'ask' (respect per-tool confirmations).")
+    timeout_seconds = max(30, min(int(timeout_seconds or 600), 3600))
+    try:
+        from app.db import get_db
+        db = get_db()
+
+        # Ownership + liveness: only the user's own (or shared) active sessions.
+        conn = db._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT id, user_id, participants, agent_id, status FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return _err(f"Session '{session_id}' not found.")
+        parts = []
+        try:
+            parts = json.loads(row[2] or "[]") or []
+        except Exception:
+            parts = []
+        ids = {p.get("id") for p in parts if isinstance(p, dict)}
+        if row[1] != user_id and user_id not in ids:
+            return _err("That session belongs to another user.")
+        if (row[4] or "") == "recycled":
+            return _err("That session is in the recycling bin — restore it before kicking.")
+        try:
+            if hasattr(db, "is_session_dead") and await db.is_session_dead(session_id):
+                return _err("That session is recycled/deleted and cannot be run.")
+        except Exception as _de:
+            logger.debug("kick_user_session: is_session_dead check failed: %s", _de)
+
+        # The session's agent must exist and be runnable.
+        agent_id = row[3] or ""
+        if not agent_id:
+            try:
+                agent_id = await db.get_session_agent_id(session_id) or ""
+            except Exception as _sa:
+                logger.debug("kick_user_session: get_session_agent_id failed: %s", _sa)
+        if not agent_id:
+            return _err("That session has no agent bound — nothing to run. Create sessions with agent_id or bind one.")
+        agent = await db.get_agent_by_id(agent_id)
+        if not agent:
+            return _err(f"Session's agent '{agent_id}' not found.")
+
+        # Build history + system prompt BEFORE inserting the kick message, so the
+        # injected prompt is the turn's new user message (no duplication).
+        history: list = []
+        try:
+            from app.agent.session_history import build_openai_history_from_session
+            history = await build_openai_history_from_session(
+                db, user_id, session_id, agent_id=agent_id)
+        except Exception as e:
+            logger.debug("kick_user_session: history build failed: %s", e)
+        system_prompt = ""
+        try:
+            from app.agent.prompts import build_system_prompt
+            resolved = await db.resolve_prompts(agent_id, user_id=user_id)
+            context_docs = [
+                {"id": s["slot_name"], "context_type": s["slot_name"],
+                 "title": s["slot_name"], "content": s["content"], "tags": []}
+                for s in resolved
+                if (s.get("content") or "").strip() and s.get("slot_name") != "automation"
+            ]
+            system_prompt = await build_system_prompt(
+                context_docs, brain_context=None, user_id=user_id, agent_id=agent_id)
+        except Exception as e:
+            logger.debug("kick_user_session: prompt build failed: %s", e)
+
+        # Live broadcast so an open session updates in real time, like automation.
+        try:
+            from app.api.chat import _emit_to_visualizers as _emit_live
+        except Exception:
+            _emit_live = None
+
+        async def _broadcast(ev: dict) -> None:
+            if not _emit_live:
+                return
+            try:
+                await _emit_live(session_id, ev, user_id=user_id)
+            except Exception:
+                pass
+
+        # Insert the synthetic user message (durable, visible in the transcript).
+        turn_uid = None
+        try:
+            from app.db import get_db as _gdb
+            _u_seq = None
+            try:
+                _u_seq = await db.next_session_seq(session_id, 1)
+            except Exception:
+                _u_seq = None
+            turn_uid = await db.insert_interaction(
+                user_id, session_id, role="user", content=prompt,
+                channel="kick",
+                metadata=json.dumps({"source": "kick", "session_id": session_id}),
+                sender_id=user_id, receiver_id=agent_id, source="kick",
+                session_seq=_u_seq,
+            )
+        except Exception as e:
+            logger.debug("kick_user_session: could not insert kick message: %s", e)
+        if turn_uid:
+            await _broadcast({
+                "type": "user_message", "level": "user",
+                "content": prompt, "id": turn_uid, "source": "kick",
+            })
+
+        raw_allowed = agent.get("allowed_tools", [])
+        if isinstance(raw_allowed, str):
+            try:
+                raw_allowed = json.loads(raw_allowed)
+            except Exception:
+                raw_allowed = []
+
+        from app.agent.loop import run_agent_loop_buffered
+        from app.agent.runner import run_supervised_turn, RunOutcome
+        from app.agent.run_buffer import get_registry as _get_rb_reg
+
+        async def _build(replaced: bool) -> "RunOutcome":
+            # Kicked runs must register a RunBuffer exactly like web-send turns do
+            # (app/api/chat.py start_turn): alternate engines persist their rows
+            # WITHOUT session_seq, and _emit_to_visualizers only backfills the
+            # ordering columns when a buffer stamps the events. Without a buffer
+            # every row of a kicked run stays NULL-session_seq — invisible to the
+            # session list and the live reconcile poll, so the session looks hung.
+            _rb = None
+            try:
+                _rb = await _get_rb_reg().start_turn(
+                    session_id=session_id, user_id=user_id,
+                    turn_id=turn_uid or session_id, db=db)
+            except Exception as _rbe:
+                logger.debug("kick_user_session: run buffer start failed: %s", _rbe)
+            try:
+                reply = await run_agent_loop_buffered(
+                    user_id=user_id, session_id=session_id, user_message=prompt,
+                    system_prompt=system_prompt, agent_id=agent_id, history=history,
+                    channel="kick", timeout_seconds=timeout_seconds, db=db,
+                    agent_template_id=agent.get("template_id"),
+                    allowed_tools=raw_allowed or None,
+                    max_turns=agent.get("max_turn_count", 0),
+                    execution_mode=mode,
+                    event_callback=_broadcast,
+                )
+                return RunOutcome(status="complete", stop_cause="complete", reply=reply)
+            finally:
+                if _rb is not None:
+                    try:
+                        await _get_rb_reg().end_turn(session_id, db=db)
+                    except Exception as _rbe:
+                        logger.debug("kick_user_session: run buffer end failed: %s", _rbe)
+
+        # New dispatched turn → same reset boundary as a fresh user message in
+        # chat: drop any model/effort the session's agent upgraded itself onto,
+        # so this kicked run starts on the agent's default model. (The user's
+        # own footer-picker selection survives.)
+        try:
+            from app.api.chat import _reset_agent_model_switcher as _reset_ms
+            await _reset_ms(db, session_id)
+        except Exception as _ms_err:
+            logger.debug("kick_user_session: model-switcher reset failed: %s", _ms_err)
+
+        outcome = await run_supervised_turn(
+            session_id=session_id, user_id=user_id, agent_id=agent_id,
+            origin="kick", channel="kick", turn_id=turn_uid,
+            relaunch_ctx={"origin": "kick", "session_id": session_id,
+                          "user_id": user_id, "agent_id": agent_id,
+                          "channel": "kick", "timeout_seconds": timeout_seconds},
+            build_turn=_build, await_result=wait, result_timeout=timeout_seconds + 20,
+        )
+        if wait:
+            status = (outcome.status if outcome else "error") or "error"
+            reply = (outcome.reply if outcome and outcome.reply else "") or ""
+            return _ok(session_id=session_id, status=status, reply=reply)
+        return _ok(session_id=session_id, status="running",
+                   reply="", note="Kicked — the run continues in the background. Check list_user_sessions for its result.")
+    except Exception as e:
+        logger.error("kick_user_session failed: %s", e)
+        return _err(str(e))
+
+
 # ── Tool schemas + danger labels ──────────────────────────────────────────────
-# The 10 agent-management tool schemas. The four read tools run free; the six
-# write tools confirm-gate (see _DESTRUCTIVE below). build_tools() copies these
+# The 13 agent-management tool schemas. The read tools run free; the write
+# tools confirm-gate (see _DESTRUCTIVE below). build_tools() copies these
 # into the module-level TOOL_SCHEMAS / DESTRUCTIVE that the loader reads after
 # the call.
 _TOOL_SCHEMAS: Dict[str, dict] = {
@@ -941,6 +1535,17 @@ _TOOL_SCHEMAS: Dict[str, dict] = {
             "name": {"type": "string", "description": "Display name for the new agent."},
             "template_id": {"type": "string", "description": "How the agent starts: a template id from list_agent_templates to clone that template's config + prompts, OR 'none' (or blank) for a from-scratch blank-slate agent with no template. There is no silent default — choose one."},
             "description": {"type": "string", "description": "Short description of the agent."},
+            "capability_profile": {
+                "type": "string",
+                "enum": ["simple", "standard", "advanced"],
+                "default": "simple",
+                "description": "Smallest nested capability profile that covers the job.",
+            },
+            "ability_extensions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Explicitly justified abilities appended after the selected profile.",
+            },
         },
         "required": ["name"],
     },
@@ -1010,11 +1615,51 @@ _TOOL_SCHEMAS: Dict[str, dict] = {
         },
         "required": ["action", "agent_id"],
     },
+    "list_user_sessions": {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "description": "Max sessions to return (1-50, default 15).", "default": 15},
+            "agent_id": {"type": "string", "description": "Optional: only sessions bound to this agent."},
+            "include_hidden": {"type": "boolean", "description": "Include sessions hidden from the sidebar (default False).", "default": False},
+            "include_recycled": {"type": "boolean", "description": "Include sessions in the recycling bin (default False).", "default": False},
+            "peek_chars": {"type": "integer", "description": "How many characters of each last message to include (120-2000, default 500).", "default": 500},
+        },
+        "required": [],
+    },
+    "manage_user_session": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["rename", "hide", "show", "recycle", "restore"], "description": "What to do with the session: rename (new title), hide/show (sidebar visibility), recycle (to the bin, transcript kept), restore (back to active)."},
+            "session_id": {"type": "string", "description": "The session id (from list_user_sessions)."},
+            "name": {"type": "string", "description": "New display title (required for rename; max 80 chars)."},
+        },
+        "required": ["action", "session_id"],
+    },
+    "create_user_session": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Display title for the new session."},
+            "agent_id": {"type": "string", "description": "Optional: bind the session to one of the user's agents (must be owned by the user)."},
+        },
+        "required": ["name"],
+    },
+    "kick_user_session": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "The session id (from list_user_sessions) to start work in."},
+            "prompt": {"type": "string", "description": "The kickoff message — the task you want the session's agent to work on."},
+            "mode": {"type": "string", "enum": ["auto", "ask"], "default": "auto", "description": "auto = run unattended, the session's agent executes its tools freely (default — the whole call is confirm-gated, so this is a deliberate dispatch); ask = respect the agent's own per-tool confirmation posture (the run may pause for confirmations)."},
+            "timeout_seconds": {"type": "integer", "default": 600, "description": "Per-run wall-clock cap in seconds (30-3600)."},
+            "wait": {"type": "boolean", "default": False, "description": "False = kick and return immediately (background supervised run); True = block until the run finishes and return its reply."},
+        },
+        "required": ["session_id", "prompt"],
+    },
 }
 
 # The READ tools (list_agent_templates, list_my_agents, get_agent,
-# list_agent_tools) run free. The WRITE tools reconfigure the user's agents
-# (create/update/retool/re-prompt/re-ability/re-skill) so they confirm-gate in
+# list_agent_tools, list_user_sessions) run free. The WRITE tools reconfigure
+# the user's agents or mutate their sessions (create/update/retool/re-prompt/
+# re-ability/re-skill + session manage/create) so they confirm-gate in
 # Ask/Plan mode. (Agent *deletion* is gated separately behind the
 # allow_agent_deletion config flag, not exposed as its own tool here.)
 _DESTRUCTIVE: set = {
@@ -1024,13 +1669,16 @@ _DESTRUCTIVE: set = {
     "edit_agent_prompt",
     "set_agent_ability",
     "manage_agent_skills",
+    "manage_user_session",
+    "create_user_session",
+    "kick_user_session",
 }
 
 
 # ── Factory: build the 10 handlers, each closing over user_id ─────────────────
 
 def _build_agent_mgmt_tools(user_id: str) -> Dict[str, Any]:
-    """Build the 10 agent-management tool handlers, each closing over ``user_id``.
+    """Build the 14 agent-management tool handlers, each closing over ``user_id``.
 
     The nested wrappers carry no docstring of their own, so each tool's real
     usage doc is copied from the underlying in-process function — this feeds both
@@ -1054,9 +1702,14 @@ def _build_agent_mgmt_tools(user_id: str) -> Dict[str, Any]:
                                       query=query, user_id=user_id)
 
     async def _amt_create_agent_wrapper(name: str, template_id: str = "",
-                                        description: str = ""):
+                                        description: str = "",
+                                        capability_profile: str = "simple",
+                                        ability_extensions: Optional[List[str]] = None):
         return await create_agent(name=name, template_id=template_id,
-                                  description=description, user_id=user_id)
+                                  description=description,
+                                  capability_profile=capability_profile,
+                                  ability_extensions=ability_extensions,
+                                  user_id=user_id)
 
     async def _amt_update_agent_wrapper(agent_id: str, name: Optional[str] = None,
                                         description: Optional[str] = None,
@@ -1116,6 +1769,29 @@ def _build_agent_mgmt_tools(user_id: str) -> Dict[str, Any]:
                                          description=description, body=body, mode=mode,
                                          enabled=enabled, user_id=user_id)
 
+    async def _amt_list_sessions_wrapper(limit: int = 15, agent_id: str = "",
+                                         include_hidden: bool = False,
+                                         include_recycled: bool = False,
+                                         peek_chars: int = 500):
+        return await list_user_sessions(limit=limit, agent_id=agent_id,
+                                        include_hidden=include_hidden,
+                                        include_recycled=include_recycled,
+                                        peek_chars=peek_chars, user_id=user_id)
+
+    async def _amt_manage_session_wrapper(action: str, session_id: str,
+                                          name: str = ""):
+        return await manage_user_session(action=action, session_id=session_id,
+                                         name=name, user_id=user_id)
+
+    async def _amt_create_session_wrapper(name: str, agent_id: str = ""):
+        return await create_user_session(name=name, agent_id=agent_id, user_id=user_id)
+
+    async def _amt_kick_session_wrapper(session_id: str, prompt: str, mode: str = "auto",
+                                        timeout_seconds: int = 600, wait: bool = False):
+        return await kick_user_session(session_id=session_id, prompt=prompt, mode=mode,
+                                       timeout_seconds=timeout_seconds, wait=wait,
+                                       user_id=user_id)
+
     # The nested wrappers carry no docstring of their own, so the model would see
     # an empty/generic description. Copy each tool's real usage doc from the
     # underlying in-process function — this feeds both the tool-call description
@@ -1130,6 +1806,10 @@ def _build_agent_mgmt_tools(user_id: str) -> Dict[str, Any]:
     _amt_edit_prompt_wrapper.__doc__    = edit_agent_prompt.__doc__
     _amt_set_ability_wrapper.__doc__    = set_agent_ability.__doc__
     _amt_manage_skills_wrapper.__doc__  = manage_agent_skills.__doc__
+    _amt_list_sessions_wrapper.__doc__  = list_user_sessions.__doc__
+    _amt_manage_session_wrapper.__doc__ = manage_user_session.__doc__
+    _amt_create_session_wrapper.__doc__ = create_user_session.__doc__
+    _amt_kick_session_wrapper.__doc__  = kick_user_session.__doc__
 
     return {
         "list_agent_templates": _amt_list_templates_wrapper,
@@ -1142,6 +1822,10 @@ def _build_agent_mgmt_tools(user_id: str) -> Dict[str, Any]:
         "edit_agent_prompt": _amt_edit_prompt_wrapper,
         "set_agent_ability": _amt_set_ability_wrapper,
         "manage_agent_skills": _amt_manage_skills_wrapper,
+        "list_user_sessions": _amt_list_sessions_wrapper,
+        "manage_user_session": _amt_manage_session_wrapper,
+        "create_user_session": _amt_create_session_wrapper,
+        "kick_user_session": _amt_kick_session_wrapper,
     }
 
 
@@ -1362,7 +2046,7 @@ def _wrap_with_limits(handler, agent_id: str, session_id: str,
 
 def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
                 agent_template_id: str = "", enabled_providers=None, **_ctx):
-    """Return {tool_name: handler} for the 10 agent-management tools, each
+    """Return {tool_name: handler} for the 14 agent-management tools, each
     wrapped with per-agent limit enforcement (max agents, session counters,
     custom-only restriction)."""
     handlers = _build_agent_mgmt_tools(user_id)

@@ -14,7 +14,7 @@ descriptor anymore:
 ║  descriptor. Drop a folder into a container → the page auto-appears LAST  ║
 ║  in its strip with the icon/name from its descriptor, its role set by the ║
 ║  container. Anything ELSE under ui/ (shared, css, js, icons, tutorials,   ║
-║  chat-side-panel, background, …) is infra, never a page — so no skip-list ║
+║  chat, background, …) is infra, never a page — so no skip-list            ║
 ║  is needed. You do NOT edit index.html, partial-loader.js, tabs.js or     ║
 ║  files.js to add a page — they all render from whatever this manager      ║
 ║  discovers via GET /api/v1/pages/catalog. Admin reorder/rename/icon       ║
@@ -39,6 +39,18 @@ Page descriptor JSON contract (``ui/<container>/<page>/page.json``)
                              //   ties break on label. Default 100.
   "locked": false,          // true = always visible, can't be hidden, sorts first
                              //   (Admin Tools tab; admin "settings" view).
+  "memory": true,           // OPTIONAL — automatic view-state memory. Default
+                             //   true for every catalog page: the shell saves
+                             //   the page's scroll/panel state to localStorage
+                             //   when the user leaves and restores it on return
+                             //   or refresh, with NO page code. Set false to
+                             //   opt out, or {"remember": "fn", "recall": "fn"}
+                             //   to ALSO call those exports in the page's entry
+                             //   module — remember() returns arbitrary state on
+                             //   leave, recall(state) receives it on return —
+                             //   for state that lives in JS (e.g. the open
+                             //   record id) rather than the DOM. See
+                             //   ui/shared/js/page-memory.js.
   "html": "agents.html",     // partial to inject into the page's mount. Optional
                              //   for iframe-only pages.
   "partials": [              // OPTIONAL extra HTML partials, RELATIVE to the page
@@ -99,7 +111,7 @@ _UI_DIR = _REPO_ROOT / "ui"
 # Container folder under ui/ → the page "kind" every folder inside it gets.
 # A page's role is decided PURELY by which container it lives in; there is no
 # `kind` field in the descriptor. Anything under ui/ that is NOT one of these
-# containers (shared, css, js, icons, tutorials, chat-side-panel, background, …)
+# containers (shared, css, js, icons, tutorials, chat, background, …)
 # is infra, never a page — so no skip-list is needed.
 _CONTAINERS = {
     "main-panel": "main",
@@ -176,7 +188,18 @@ def _entry_from_dir(folder: Path, rel_dir: str, kind: str) -> Optional[Dict[str,
         "stop": desc.get("stop"),
         "css": _css_list(desc, folder, pid),
         "router": desc.get("router"),
+        # Extra sub-folder backend modules (see discover_routers) — relative
+        # paths from this page folder, e.g. ["dashboard/server.py"].
+        "routers": [str(r) for r in (desc.get("routers") or []) if r],
         "iframe": desc.get("iframe"),
+        # Automatic view-state memory: false opts out; {"remember": fn,
+        # "recall": fn} adds custom-state hooks (see ui/shared/js/page-memory.js).
+        "memory": desc.get("memory"),
+        # Optional per-page chat launcher config — same shape as createChatLauncher
+        # options in ui/chat-widget/js/chat-launcher.js (icon, agent_id, corner
+        # buttons, widget options…). When present, the shell mounts a launcher
+        # for this page on activate and destroys it on deactivate (tabs.js).
+        "widget": desc.get("widget"),
         # Extra HTML partials this page needs injected at boot, RELATIVE to the
         # page folder. Most pages have none (their single `html` is enough); a
         # multi-section view (admin Settings) lists its section partials here so
@@ -278,6 +301,8 @@ def _merge_kind(kind: str) -> List[Dict[str, Any]]:
             "css": entry.get("css") or [],
             "iframe": entry.get("iframe"),
             "partials": entry.get("partials") or [],
+            "memory": entry.get("memory"),
+            "widget": entry.get("widget"),
         })
 
     # Locked pages first, then by effective order, then label.
@@ -290,7 +315,7 @@ def ui_catalog() -> Dict[str, Any]:
 
     {
       main:  [ {id, label, icon, order, visibility, hidden, locked, dir, html,
-                mount, entry, start, stop, css, iframe, partials}, … ],   # sorted
+                mount, entry, start, stop, css, iframe, partials, memory}, … ],   # sorted
       admin: [ … same shape … ],
       splash:[ … same shape … ],   # drop-in welcome-landing plugin (no tab)
     }
@@ -341,32 +366,62 @@ def discover_routers() -> List[Tuple[str, Any]]:
     its folder and come/go with it — adding or removing a page needs NO edit to
     app/main.py. Failures are isolated per-page (a broken backend skips that one
     page, never the whole app). ``.py`` files under ui/ are never served to the
-    browser (see the static mount guard in app/main.py)."""
+    browser (see the static mount guard in app/main.py).
+
+    A page may ALSO list ``routers`` in its page.json — relative paths to extra
+    backend modules in SUBFOLDERS (e.g. ``"routers": ["dashboard/server.py"]``).
+    Each is imported the same way and returned as ``("<pid>/<sub>", router)`` so
+    main.py mounts it DIRECTLY on the app. This matters for nested routers:
+    ``include_router`` inside a prefixed page router would bake the page's own
+    prefix into the child's paths (FastAPI keeps an included router's paths
+    under the parent prefix), so a sub-feature that owns its own URL space (like
+    the embedded Dashboard's ``/admin/dashboard/*``) must be mounted at app
+    level — not nested under ``/admin/instances``."""
     found: List[Tuple[str, Any]] = []
     for entry in _load().values():
         rel_dir = entry.get("dir")
         if not rel_dir:
             continue
         folder = _UI_DIR / rel_dir
+        pid = entry["id"]
+        kind = entry.get("kind", "main")
+
+        def _load_backend(rel_path: Path, mod_name: str, label: str) -> Optional[Tuple[str, Any]]:
+            if not rel_path.is_file():
+                return None
+            try:
+                spec = importlib.util.spec_from_file_location(mod_name, rel_path)
+                if spec is None or spec.loader is None:
+                    return None
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                router = getattr(module, "router", None)
+                if router is None:
+                    logger.warning("Page backend %s has no `router` export", rel_path)
+                    return None
+                return (label, router)
+            except Exception as e:
+                logger.warning("Failed to load page backend %s: %s", rel_path, e)
+                return None
+
         fname = entry.get("router") or "server.py"
         mod_path = folder / fname
-        if not mod_path.is_file():
-            continue
-        pid = entry["id"]
-        mod_name = f"webagent_page_{entry.get('kind', 'main')}_{pid}".replace("-", "_")
-        try:
-            spec = importlib.util.spec_from_file_location(mod_name, mod_path)
-            if spec is None or spec.loader is None:
-                continue
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            router = getattr(module, "router", None)
-            if router is None:
-                logger.warning("Page backend %s has no `router` export", mod_path)
-                continue
-            found.append((pid, router))
-        except Exception as e:
-            logger.warning("Failed to load page backend %s: %s", mod_path, e)
+        if mod_path.is_file():
+            mod_name = f"webagent_page_{kind}_{pid}".replace("-", "_")
+            loaded = _load_backend(mod_path, mod_name, pid)
+            if loaded:
+                found.append(loaded)
+        # Extra sub-folder backends (page.json ``routers`` list) — mounted at
+        # app level so each keeps its OWN prefix (see docstring above).
+        for sub in (entry.get("routers") or []):
+            sub_path = folder / str(sub)
+            stem = str(sub).replace("\\", "/")
+            if stem.endswith(".py"):
+                stem = stem[:-3]
+            sub_mod = f"webagent_page_{kind}_{pid}_{stem}".replace("-", "_").replace("/", "_")
+            loaded = _load_backend(sub_path, sub_mod, f"{pid}/{stem}")
+            if loaded:
+                found.append(loaded)
     return found
 
 

@@ -12,7 +12,7 @@
  * and the hex/opacity helpers used to build the Light/Dark theme editor. Two
  * panels render that editor and BOTH import from here, so the token list, the
  * presets and the colour maths never drift between them:
- *   • Admin (global theme)  — ui/admin-tools/app-config/app-settings/app-settings.js
+ *   • Admin (global theme)  — ui/admin-tools/instances/app-config/app-settings/app-settings.js
  *   • Per-user (own theme)  — ui/shared/js/appearance-me.js  (the "My appearance"
  *                             editor on the account page, ui/shared/js/account.js)
  *
@@ -54,19 +54,19 @@ export const TOKEN_META = {
 // merges onto, so switching presets always lands on a complete palette.
 export const APP_DEFAULTS = {
   dark: {
-    accent: '#e0a35e', secondary: '#c8915a', success: '#9ece6a', warning: '#e0af68',
-    danger: '#f7768e', surface_bg: '#16100b', surface_panel: '#241a12',
-    surface_tint: '#36281c', text: '#ece0d2', text_muted: '#9a8266',
-    ambient: '#7a5636', border_color: '#3a2c1e',
+    accent: '#ffffff', secondary: '#d9d9d9', success: '#22c55e', warning: '#eab308',
+    danger: '#ef4444', surface_bg: '#000000', surface_panel: '#0d0d0d',
+    surface_tint: '#1a1a1a', text: '#ffffff', text_muted: '#a3a3a3',
+    ambient: '#404040', border_color: '#333333',
     // Bubbles + chat pill are `follow` tokens — NO hard-coded default here. Their
     // swatch is derived live from the Panel colour via followDefault() so the
     // table tracks the active theme instead of a frozen stock colour.
   },
   light: {
-    accent: '#1f8fbf', secondary: '#3b6ea5', success: '#5a8a4a', warning: '#d4873a',
-    danger: '#d44848', surface_bg: '#f5fafd', surface_panel: '#e9f3fa',
-    surface_tint: '#dbeaf5', text: '#163040', text_muted: '#5a7589',
-    ambient: '#9fd6ec', border_color: '#cfe6f2',
+    accent: '#000000', secondary: '#262626', success: '#16a34a', warning: '#ca8a04',
+    danger: '#dc2626', surface_bg: '#ffffff', surface_panel: '#f5f5f5',
+    surface_tint: '#e8e8e8', text: '#000000', text_muted: '#666666',
+    ambient: '#d9d9d9', border_color: '#cccccc',
     // (see dark) — follow tokens derive from the live Panel colour.
   },
 };
@@ -81,16 +81,12 @@ export const FOLLOW_ALPHA = { dark: 82, light: 85 };
 // re-tints the WHOLE UI — not just the accent. Merged onto APP_DEFAULTS, so any
 // key omitted falls back to the default. Bubbles are intentionally NOT listed
 // (they're `follow` tokens — they track whatever surfaces/accent the preset
-// sets). The app DEFAULT is Ocean (light) + Amber (dark); "Mono" carries its OWN
-// explicit neutral greys so the greyscale stays a real, selectable option.
+// sets). The app DEFAULT is the first preset: a strictly achromatic Black & White
+// palette with white-on-black dark mode and black-on-white light mode (renamed "Slate").
 export const PRESETS = [
-  { id: 'default', name: 'Mono',
-    dark:  { accent: '#aeb4cc', secondary: '#9aa0b8', ambient: '#5a5e72', border_color: '#2e2e34',
-             surface_bg: '#0d0d0f', surface_panel: '#1a1a1d', surface_tint: '#28282d',
-             text: '#e2e2e8', text_muted: '#84848e' },
-    light: { accent: '#5b6270', secondary: '#6b7280', ambient: '#c6c9d4', border_color: '#dcdce1',
-             surface_bg: '#fafafb', surface_panel: '#f1f1f3', surface_tint: '#e7e7ea',
-             text: '#26262b', text_muted: '#74747c' } },
+  { id: 'default', name: 'Slate',
+    dark:  { ...APP_DEFAULTS.dark },
+    light: { ...APP_DEFAULTS.light } },
   { id: 'amber', name: 'Amber',
     dark:  { accent: '#e0a35e', secondary: '#c8915a', ambient: '#7a5636', border_color: '#3a2c1e',
              surface_bg: '#16100b', surface_panel: '#241a12', surface_tint: '#36281c',

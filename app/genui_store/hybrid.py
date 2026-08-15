@@ -11,6 +11,7 @@ direct file access. Container restarts will still wipe the bodies unless
 the disk is persistent.
 """
 
+import json
 import os
 import shutil
 from typing import Dict, List, Optional
@@ -22,6 +23,8 @@ from app.genui_store.common import (
     genui_body_path,
     read_genui_data,
     write_genui_data,
+    read_genui_widget,
+    write_genui_widget,
     blank_genui_html,
     default_agent_context,
     home_agent_context,
@@ -31,11 +34,20 @@ from app.genui_store.common import (
 
 
 def _entry(row: Dict, user_id: str) -> Dict:
+    _sc = row.get("session_config") or {}
+    if isinstance(_sc, str):
+        try:
+            _sc = json.loads(_sc) if _sc.strip() else {}
+        except Exception:
+            _sc = {}
+    if not isinstance(_sc, dict):
+        _sc = {}
     return {
         "slug": row["slug"],
         "title": row["title"],
         "agent_context": row.get("agent_context") or "",
         "agent_id": row.get("agent_id") or "",
+        "session_config": _sc,
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "url": genui_url(user_id, row["slug"]),
@@ -96,6 +108,7 @@ class HybridGenuiStore(GenuiStore):
         agent_context: str = "",
         initial_html: str = "",
         agent_id: str = "",
+        session_config: Optional[dict] = None,
     ) -> Dict:
         safe_slug = safe(slug)
         if await get_db().genui_get(user_id, safe_slug):
@@ -107,6 +120,7 @@ class HybridGenuiStore(GenuiStore):
             agent_context=agent_context or default_agent_context(title),
             html=None,
             agent_id=agent_id,
+            session_config=json.dumps(session_config or {}),
         )
         self._write_body(user_id, safe_slug, initial_html or blank_genui_html(title))
         return _entry(row, user_id)
@@ -121,7 +135,8 @@ class HybridGenuiStore(GenuiStore):
             shutil.rmtree(folder, ignore_errors=True)
         return deleted
 
-    async def rename_genui(self, user_id: str, slug: str, new_title: str) -> bool:
+    async def rename_genui(self, user_id: str, slug: str, new_title: str,
+                           session_config: Optional[dict] = None) -> bool:
         safe_slug = safe(slug)
         existing = await get_db().genui_get(user_id, safe_slug)
         if not existing:
@@ -133,6 +148,7 @@ class HybridGenuiStore(GenuiStore):
             title=new_title,
             agent_context=existing.get("agent_context") or "",
             html=None,
+            session_config=json.dumps(session_config) if session_config is not None else None,
         )
         return True
 
@@ -144,6 +160,15 @@ class HybridGenuiStore(GenuiStore):
         safe_slug = safe(slug)
         self._ensure_genui_dir(user_id, safe_slug)
         write_genui_data(user_id, safe_slug, data)
+
+    async def get_genui_widget(self, user_id: str, slug: str) -> Optional[Dict]:
+        # Like data.json, the widget config lives on disk in hybrid mode.
+        return read_genui_widget(user_id, safe(slug))
+
+    async def save_genui_widget(self, user_id: str, slug: str, widget: Dict) -> None:
+        safe_slug = safe(slug)
+        self._ensure_genui_dir(user_id, safe_slug)
+        write_genui_widget(user_id, safe_slug, widget)
 
     async def ensure_home_genui(self, user_id: str, seed_html: str) -> None:
         existing = await get_db().genui_get(user_id, "home")

@@ -68,6 +68,9 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8080 " ^| findstr LISTEN') 
 )
 ping -n 3 127.0.0.1 >nul
 
+:: Enable browser session cache (IndexedDB transcript mirror, server authority)
+set WEBAGENT_ENABLE_BROWSER_SESSION_CACHE=1
+
 :: Run the server
 echo [webAgent] Server running. Press Ctrl+C to stop permanently.
 echo [webAgent] Use the "Restart" button in the terminal page to restart.

@@ -1,0 +1,30 @@
+--- @47333:
+')+((CFG.cardChat&&CFG.cardChat.detailNote)||''),agentId:agent,text:text};window.__genuiCardAgentId=agent||null;return'['+p.name+'] '+tplt(cfg,map)}
+
+var STATE={projects:BAG.projects||[],q:'',activeId:null,sessions:(BAG.sessions||{})};
+var toastTimer=null,carUpd=null;
+
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;
+
+CALL @52382:
+    clearTimeout(btn._revertTimer);
+    if(onConfirm)Promise.resolve().then(function(){onConfirm(btn)});
+  }
+}
+function recalcProject(p){
+  var items=p.items||[],done=0,i;
+  for(i=0;i<items.length;i++)if(items[i].done)done++;
+  p.tasks=items.length;p.ope
+
+CALL @52645:
+ength-done;
+}
+function deleteItem(pi,ii){
+  var p=STATE.projects[pi];if(!p||!p.items[ii])return;
+  p.items.splice(ii,1);recalcProject(p);
+  saveBag();renderCards();renderDetail();
+  toast('Item deleted');
+}
+function deleteProject(pi){
+  var p=STATE.proje
+

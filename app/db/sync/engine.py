@@ -19,6 +19,7 @@ remote to validate end-to-end and is intentionally left off by default.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -54,29 +55,28 @@ class SyncedSpec:
 # addition is data, not new control flow.
 #
 # ``interactions`` is the transcript (Stage 2): written local-first + pushed as a
-# SKELETON — the fat ``input`` column over the split gate is stripped to NULL on
-# the remote (the full copy stays local). It is push-only: the remote has no
+# SKELETON — oversized *tool-result content* is stripped to NULL on the remote
+# (the full copy stays local). User and assistant text stays present for a useful
+# cross-device handoff. It is push-only: the remote has no
 # per-row ``updated_at`` to watermark on, and a second device gets the transcript
 # through the hybrid's warm-on-open mirror instead of the puller.
 #
-# REMOTE-CONTROL CONTINUITY: only ``input`` is fat-stripped, NOT ``output``. The
-# ``output`` column carries each assistant turn's tool_calls (see
-# app/agent/session_history.py `_extract_tool_calls_from_output`) — it is what
-# pairs an assistant's tool calls to their result rows when history is rebuilt on
-# ANOTHER device (Remote Control takeover / session roaming). Stripping it broke
-# takeover on tool-heavy turns: the remote skeleton kept the tool RESULT rows but
-# lost the assistant's tool_calls, so a second device rebuilt an invalid history
-# (a tool result with no preceding call) that the model API rejects. ``input`` is
-# ~99% of the transcript's byte weight and is never read on rebuild, so it stays
-# stripped; ``output`` (small) always rides along on the remote. Pushing ``input``
-# in full also stalls the event loop (megabyte upserts run synchronously on it)
-# and, when a row carries a stray NUL, wedges the queue in a permanent retry.
+# REMOTE-CONTROL CONTINUITY: ``output`` is now slimmed to a SKELETON (tool names
+# + IDs only, flagged ``_remote_placeholder: true``) instead of full fat-strip.
+# The skeleton preserves enough for the remote UI to show "N tool calls" headings,
+# and the takeover history rebuild (session_history.py) detects the flag and
+# skips the tool_calls + orphaned tool result rows gracefully. The full output
+# (args, results, LLM output) stays in the local hot store. Tool results carry
+# nearly all transcript bulk and are not needed to continue a handed-off chat;
+# retaining their tool name/id while replacing a large body with a clear marker
+# preserves both monitoring and history pairing. Pushing them in full also stalls
+# the sync worker and, when a row carries a stray NUL, wedges the queue in a
+# permanent retry.
 from app.db.hybrid import _FAT_THRESHOLD_CHARS  # noqa: E402  (source of the gate)
 
 SYNCED_SPECS: Dict[str, SyncedSpec] = {
     "interactions": SyncedSpec(
-        "interactions", fat_cols=("input",),
-        strip_over=_FAT_THRESHOLD_CHARS, push_only=True),
+        "interactions", push_only=True),
     "sessions": SyncedSpec("sessions"),
     "session_summaries": SyncedSpec("session_summaries"),
     "session_summary_segments": SyncedSpec("session_summary_segments"),
@@ -96,6 +96,12 @@ SYNCED_SPECS: Dict[str, SyncedSpec] = {
     # session_id (no `id` column). Pulled at the fast 1s cadence while a turn is
     # actively pushing, so a running session's badge stays ~1s fresh on the mirror.
     "session_runs": SyncedSpec("session_runs", key="session_id"),
+    # `session_notifications` carries the chat panel's undismissed "Session
+    # complete" toasts across devices. Keyed by session_id; dismissal is a soft
+    # `dismissed` flag (upsert-only puller can't express hard deletes), and old
+    # dismissed rows are pruned locally on read. Remote table must mirror the
+    # local columns (see the schema bootstrap DDL).
+    "session_notifications": SyncedSpec("session_notifications", key="session_id"),
 }
 
 
@@ -287,7 +293,39 @@ class SyncEngine:
     def _delete_row(self, table: str, spec: SyncedSpec, rid: str) -> None:
         """Propagate a local hard-delete to the remote authority (portable
         DELETE … WHERE key = rid). Runs on a worker thread via push_pending."""
-        self._remote.get_raw_client().table(table).delete().eq(spec.key, rid).execute()
+        client = self._remote.get_raw_client()
+        if table == "sessions":
+            # A session owns these records even when optional plugin tables are
+            # present only on some devices. Missing optional tables cannot block
+            # the core remote session erase.
+            for dependent in ("interactions", "session_summaries", "session_summary_segments",
+                              "pipeline_events", "session_runs", "messages", "browser_sessions",
+                              "session_notifications"):
+                try:
+                    client.table(dependent).delete().eq("session_id", rid).execute()
+                except Exception:
+                    pass
+            for column in ("orchestrator_session_id", "spawn_session_id"):
+                try:
+                    client.table("agent_spawns").delete().eq(column, rid).execute()
+                except Exception:
+                    pass
+        client.table(table).delete().eq(spec.key, rid).execute()
+        if table == "sessions":
+            # This retry reached the authority. Publish the tombstone now (not
+            # before), so peers can never hide a session the remote still has.
+            from app.db.sync.tombstones import TOMBSTONE_TABLE, ensure_tombstone_table
+            conn = self._remote._get_conn()
+            try:
+                ensure_tombstone_table(conn)
+                conn.commit()
+            finally:
+                conn.close()
+            from datetime import datetime, timezone
+            client.table(TOMBSTONE_TABLE).upsert({
+                "id": f"sessions:{rid}", "table_name": "sessions", "row_id": rid,
+                "user_id": None, "deleted_at": datetime.now(timezone.utc).isoformat(),
+            }, on_conflict="id").execute()
 
     def _remote_tombstoned(self, table: str, ids: List[str]) -> set:
         """Return the subset of ``ids`` that carry a hard-delete tombstone on the
@@ -305,6 +343,11 @@ class SyncEngine:
 
     def _push_row(self, table: str, spec: SyncedSpec, row: dict) -> None:
         payload = dict(row)
+        # ``input`` was a legacy local-only interactions column.  Some existing
+        # SQLite replicas still carry it, but the shared Postgres schema removed
+        # it; never let an old local row make the remote transcript upsert fail.
+        if table == "interactions":
+            payload.pop("input", None)
         for col in spec.fat_cols:
             val = payload.get(col)
             if val is None:
@@ -322,6 +365,44 @@ class SyncEngine:
         for _col, _v in payload.items():
             if isinstance(_v, str) and "\x00" in _v:
                 payload[_col] = _v.replace("\x00", "")
+        # Tool result bodies are local-heavy data. Keep a small, explicit marker
+        # remotely: a monitoring device can explain the gap and a new owner will
+        # not try to replay a missing tool result as if it were complete context.
+        if table == "interactions" and payload.get("role") == "tool":
+            # Tool execution detail never needs to leave the originating device.
+            # Retain the row's structural fields (tool_name, call id, ordering and
+            # status) but replace every body with one explicit handoff marker.
+            payload["content"] = "[tool call processed on local device; recall unavailable remotely]"
+            payload["output"] = None
+            payload["metadata"] = json.dumps({
+                "remote_placeholder": True,
+                "local_payload": "tool_execution",
+            }, separators=(",", ":"))
+        # ── Slim interactions output to skeleton (tool names + IDs only) ──────────
+        # The `output` column on assistant rows carries full tool arguments, results
+        # and LLM output — potentially megabytes per turn. Push a minimal skeleton
+        # with just tool names + IDs + a `_remote_placeholder` flag so the remote UI
+        # can still show "N tool calls" headings and the takeover history rebuild
+        # can gracefully skip the missing data instead of rebuilding broken tool
+        # pairs. The full output stays in the local hot store.
+        if table == "interactions" and payload.get("role") == "assistant":
+            _output_raw = payload.get("output")
+            if _output_raw and isinstance(_output_raw, str):
+                try:
+                    _out_parsed = json.loads(_output_raw)
+                    _tc_list = _out_parsed.get("tool_calls")
+                    if _tc_list and isinstance(_tc_list, list) and len(_tc_list) > 0:
+                        # Tool arguments are device-local execution detail, even
+                        # when short.  The remote transcript must never receive
+                        # them: it only carries names/ids to preserve UI grouping
+                        # and hand-off history shape.
+                        payload["output"] = json.dumps({
+                            "_remote_placeholder": True,
+                            "local_payload": "tool_calls",
+                            "tool_calls_processed_locally": len(_tc_list),
+                        }, separators=(",", ":"))
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    pass  # leave output as-is if unparseable
         self._remote.get_raw_client().table(table).upsert(payload, on_conflict=spec.key).execute()
 
     # ── Puller: remote → local ───────────────────────────────────────────────
@@ -401,8 +482,11 @@ class SyncEngine:
                 pass
         if table_name == "sessions":
             _try("DELETE FROM interactions WHERE session_id = ?", (row_id,))
-            for t in ("session_summaries", "pipeline_events", "session_runs"):
+            for t in ("session_summaries", "session_summary_segments", "pipeline_events",
+                      "session_runs", "messages", "browser_sessions", "session_notifications"):
                 _try(f"DELETE FROM {t} WHERE session_id = ?", (row_id,))
+            _try("DELETE FROM agent_spawns WHERE orchestrator_session_id = ?", (row_id,))
+            _try("DELETE FROM agent_spawns WHERE spawn_session_id = ?", (row_id,))
             _try("DELETE FROM sessions WHERE id = ?", (row_id,))
             return [row_id]
         elif table_name == "agents":
@@ -417,10 +501,11 @@ class SyncEngine:
                 sids = []
             for sid in sids:
                 _try("DELETE FROM interactions WHERE session_id = ?", (sid,))
-                for t in ("session_summaries", "pipeline_events", "session_runs"):
+                for t in ("session_summaries", "pipeline_events", "session_runs",
+                          "session_notifications"):
                     _try(f"DELETE FROM {t} WHERE session_id = ?", (sid,))
             _try("DELETE FROM sessions WHERE agent_id = ?", (row_id,))
-            for t in ("agent_prompts", "agent_connections", "agent_abilities",
+            for t in ("agent_prompts", "agent_connections", "agent_abilities", "agent_soft_abilities", "soft_ability_runs",
                       "agent_automations", "agent_event_subscriptions"):
                 _try(f"DELETE FROM {t} WHERE agent_id = ?", (row_id,))
             _try("DELETE FROM agents WHERE id = ?", (row_id,))

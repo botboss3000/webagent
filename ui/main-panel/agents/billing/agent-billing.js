@@ -16,7 +16,7 @@
 
 import {
   _el, _api, _qs, _userId, _loadProcessors,
-  _buildRateCard, _labelled, _inputStyle, _selectStyle, STRATEGIES,
+  _buildCostFields, _labelled, _inputStyle, _selectStyle, _cents, STRATEGIES,
 } from '../../../shared/js/billing.js';
 
 export async function renderAgentMonetization(container, agentId) {
@@ -55,7 +55,14 @@ export async function renderAgentMonetization(container, agentId) {
   const stratWrap = _el('div', { style: { marginBottom: '14px' } });
   stratWrap.appendChild(_el('label', { style: { display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '4px' } }, 'Monetization method'));
   const stratSel = _el('select', { style: _selectStyle() });
-  for (const s of STRATEGIES.filter(s => s.value === 'free' || allowedStrategies.includes(s.value))) {
+  const allowTrial = allowedStrategies.includes('trial');
+  const allowCredits = allowedStrategies.includes('credits');
+  const stratOptions = STRATEGIES.filter(s =>
+    s.value === 'free'
+    || (s.value === 'credits' && allowCredits)
+    || (s.value === 'trial' && allowTrial)
+    || (s.value === 'trial,credits' && allowTrial && allowCredits));
+  for (const s of stratOptions) {
     const o = _el('option', { value: s.value }, s.label);
     if ((agent.strategy || 'free') === s.value) o.selected = true;
     stratSel.appendChild(o);
@@ -88,39 +95,36 @@ export async function renderAgentMonetization(container, agentId) {
   procWrap.appendChild(procRow);
   container.appendChild(procWrap);
 
-  // ── Rate card ──
+  // ── Cost-based pricing ──
   const rateWrap = _el('div', { style: { marginBottom: '14px' } });
-  rateWrap.appendChild(_el('label', { style: { display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '4px' } }, 'Rate card'));
+  rateWrap.appendChild(_el('label', { style: { display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '4px' } }, 'Credit pricing'));
+  const costFields = _buildCostFields({
+    cost_multiplier: agent.cost_multiplier ?? effective.cost_multiplier ?? 1.0,
+    min_charge_cents: agent.min_charge_cents ?? effective.min_charge_cents ?? 1,
+    flat_image_cost_usd: agent.flat_image_cost_usd ?? effective.flat_image_cost_usd ?? 0.01,
+  });
   const rateGrid = _el('div', {
     style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px',
               padding: '10px', background: 'var(--bg-2)', borderRadius: '8px' },
   });
-  const defaultCard = _buildRateCard(agent.rate_card_default_llm || {}, 'Default LLM (you pay for tokens)');
-  const byoCard = _buildRateCard(agent.rate_card_byo_llm || {}, 'BYO LLM (agent brings own key)');
-  rateGrid.appendChild(defaultCard.el);
-  rateGrid.appendChild(byoCard.el);
+  rateGrid.appendChild(costFields.el);
   rateWrap.appendChild(rateGrid);
   container.appendChild(rateWrap);
 
-  // ── Trial ──
+  // ── Trial credit grant ──
   const trial = agent.trial_config || {};
   const trialWrap = _el('div', { style: { marginBottom: '14px', padding: '10px', background: 'var(--bg-2)', borderRadius: '8px' } });
-  trialWrap.appendChild(_el('label', { style: { display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' } }, 'Trial period'));
-  const trialGrid = _el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' } });
+  trialWrap.appendChild(_el('label', { style: { display: 'block', fontSize: '12px', fontWeight: '600', marginBottom: '6px' } }, 'New-user trial'));
+  const trialGrid = _el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' } });
   const trialDays = _el('input', { type: 'number', min: '0', value: String(trial.days || 0), style: _inputStyle() });
-  const trialMsgs = _el('input', { type: 'number', min: '0', value: String(trial.messages || 0), style: _inputStyle() });
-  const trialToks = _el('input', { type: 'number', min: '0', value: String(trial.tokens || 0), style: _inputStyle() });
+  const trialCredits = _el('input', { type: 'number', min: '0', step: '0.01',
+                                       value: String(((trial.credit_cents || 0) / 100).toFixed(2)), style: _inputStyle() });
   trialGrid.appendChild(_labelled('Days', trialDays));
-  trialGrid.appendChild(_labelled('Messages', trialMsgs));
-  trialGrid.appendChild(_labelled('Tokens', trialToks));
+  trialGrid.appendChild(_labelled('Credit value ($)', trialCredits));
   trialWrap.appendChild(trialGrid);
+  trialWrap.appendChild(_el('div', { style: { marginTop: '6px', fontSize: '11px', color: 'var(--fg-3)', lineHeight: '1.4' } },
+    'Granted automatically on a user’s first chat. The grant spends exactly like purchased credits (cost × multiplier) and cannot be restarted automatically. 0 days = never expires.'));
   container.appendChild(trialWrap);
-
-  // ── Subscription price ──
-  const subWrap = _el('div', { style: { marginBottom: '14px' } });
-  const subPrice = _el('input', { type: 'number', min: '0', value: String(agent.subscription_price_cents || 0), style: _inputStyle() });
-  subWrap.appendChild(_labelled('Subscription price (¢ / month)', subPrice));
-  container.appendChild(subWrap);
 
   // ── Free-access grants (this agent's own users) ──
   container.appendChild(await _renderAgentExemptions(agentId));
@@ -135,18 +139,18 @@ export async function renderAgentMonetization(container, agentId) {
       saveBtn.textContent = 'Saving…';
       try {
         const allowed_processors = Object.entries(procCheckboxes).filter(([_, c]) => c.checked).map(([n]) => n);
+        const cost = costFields.read();
         const body = {
           user_id: _userId(),
           strategy: stratSel.value,
           allowed_processors,
-          rate_card_default_llm: defaultCard.read(),
-          rate_card_byo_llm: byoCard.read(),
+          cost_multiplier: cost.cost_multiplier,
+          min_charge_cents: cost.min_charge_cents,
+          flat_image_cost_usd: cost.flat_image_cost_usd,
           trial_config: {
             days: parseInt(trialDays.value, 10) || 0,
-            messages: parseInt(trialMsgs.value, 10) || 0,
-            tokens: parseInt(trialToks.value, 10) || 0,
+            credit_cents: _cents(trialCredits.value),
           },
-          subscription_price_cents: parseInt(subPrice.value, 10) || 0,
         };
         await _api(`/api/v1/billing/config/agent/${encodeURIComponent(agentId)}`, {
           method: 'PUT', body: JSON.stringify(body),

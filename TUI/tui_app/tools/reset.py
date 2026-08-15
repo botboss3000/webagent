@@ -8,12 +8,13 @@ logins**, **.env**, and **agent template JSONs**. The database, the default
 migration on next start (provided the agent JSONs were kept).
 
 **Designed to be non-destructive to function.** Credentials now live OUTSIDE the
-user-data DB: the LLM key / provider config in ``provider.json``, local logins in
-``users.json``, and integration OAuth tokens + inline secrets in the dedicated
-``app/db/vault.db`` (kept separate from ``local.db`` exactly so a user-data reset
-doesn't touch them). So the default reset (database + pages only) leaves the app
-fully working — only the user's activity is cleared. The diagnostics/log DBs
-(``logs.db`` / ``recordings.db``) are their own opt-in group, kept by default.
+user-data DB: the LLM config lives in the encrypted vault (auth_elements), local
+logins in ``users.json``, and integration OAuth tokens + inline secrets in the
+dedicated ``app/db/vault.db`` (kept separate from ``local.db`` exactly so a
+user-data reset doesn't touch them). So the default reset (database + pages only)
+leaves the app fully working — only the user's activity is cleared. The
+diagnostics/log DBs (``logs.db`` / ``recordings.db``) are their own opt-in group,
+kept by default.
 
 **Backend-aware (active backend only).** Reset wipes whatever database
 ``app/db_connection.json`` selects:
@@ -88,7 +89,6 @@ _LOGS_FILES = [
 # inline secret values, kept OUT of the user-data DB precisely so a user-data
 # reset does NOT wipe it — it is cleared only with this opt-in secrets group.
 _SECRETS_FILES = [
-    "data/config/provider.json",
     "data/config/app-settings.json",
     "data/config/scheduler_config.json",
     "app/db_mode.json",

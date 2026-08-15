@@ -159,7 +159,9 @@ async def set_plugin_token(name: str, req: WebhookUrlRequest, http_request: Requ
         # Respect X-Forwarded-Proto for TLS-terminating proxies (Cloud Run etc.)
         forwarded_proto = http_request.headers.get("x-forwarded-proto", "")
         if forwarded_proto and server_url.startswith("http://"):
-            server_url = "https://" + server_url[len("http://"):]
+            from app.admin.integrations import _is_trusted_proxy
+            if _is_trusted_proxy(http_request):
+                server_url = "https://" + server_url[len("http://"):]
         registry["webhook_base_url"] = server_url
         logger.info("Auto-detected server URL: %s", server_url)
 
@@ -237,7 +239,9 @@ async def set_plugin_credentials(name: str, req: CredentialsRequest, http_reques
             server_url = f"{scheme}://{host}"
         forwarded_proto = http_request.headers.get("x-forwarded-proto", "")
         if forwarded_proto and server_url.startswith("http://"):
-            server_url = "https://" + server_url[len("http://"):]
+            from app.admin.integrations import _is_trusted_proxy
+            if _is_trusted_proxy(http_request):
+                server_url = "https://" + server_url[len("http://"):]
         registry["webhook_base_url"] = server_url
 
     safe_write_json(reg_path, registry)

@@ -1,0 +1,330 @@
+<!-- FLAT HEADER CONTROL POOL — controls can be placed here with data-header-control
+     for backward compat, OR loaded dynamically from ui/chat/elements/.
+     chat-controls-config.js checks static DOM first, then falls back to the manifest. -->
+<div id="chat-header">
+  <!-- agent_name — name + agent-dropdown-menu; wrapper keeps its flex rules -->
+  <span class="chat-header-name-row" data-header-control="agent_name">
+    <span id="chat-header-agent-name" class="chat-header-agent-name" style="display:none;"></span>
+  </span>
+  <div id="agent-dropdown-menu" class="agent-dropdown-menu" role="menu" hidden></div>
+  <!-- changes — working-tree change drawer toggle -->
+  <button id="chat-changes-toggle" class="chat-changes-toggle" title="Show files changed in this chat session" type="button" hidden data-header-control="changes"><i data-lucide="files" style="width:18px;height:18px;"></i><span id="chat-changes-count" class="chat-changes-count" hidden>0</span></button>
+  <!-- new_session — (+) button -->
+  <button id="session-new-header-btn" class="session-new-header-btn" title="New session" type="button" data-header-control="new_session"><i data-lucide="plus" style="width:18px;height:18px;"></i></button>
+  <!-- session_prev — previous pinned session, standalone -->
+  <button id="session-prev-btn" class="session-nav-btn" title="Previous pinned session" type="button" data-header-control="session_prev"><i data-lucide="arrow-big-left" style="width:22px;height:22px;"></i></button>
+  <!-- session_next — next pinned session, standalone -->
+  <button id="session-next-btn" class="session-nav-btn" title="Next pinned session" type="button" data-header-control="session_next"><i data-lucide="arrow-big-right" style="width:22px;height:22px;"></i></button>
+  <!-- session_dropdown — the trigger IS a session-row (no chevron) matching the menu rows -->
+  <div id="session-dropdown" class="session-dropdown" data-header-control="session_dropdown">
+    <div id="session-dropdown-trigger" class="session-dropdown-trigger" role="button" tabindex="0" title="Show sessions" aria-label="Show sessions">
+      <span class="session-row-agent-icon" id="session-dropdown-icon"><i data-lucide="bot" style="width:14px;height:14px;"></i></span>
+      <span class="session-row-title" id="session-dropdown-label">—</span>
+      <span class="session-row-status" id="session-dropdown-status"></span>
+      <button class="session-row-kebab" id="session-dropdown-kebab" title="More…" data-id=""><i data-lucide="more-vertical" style="width:14px;height:14px;"></i></button>
+      <button class="session-row-delete" id="session-dropdown-delete" title="Delete session" data-id=""><i data-lucide="trash-2" style="width:14px;height:14px;"></i></button>
+    </div>
+    <div id="session-dropdown-menu" class="session-dropdown-menu" hidden></div>
+  </div>
+  <!-- Not a configurable header control — stays in flow, hidden/visible by other JS -->
+  <span id="tui-bridge-indicator" class="tui-bridge-indicator" style="display:none;" title="TUI agent bridge active">&#x1F5A5;&#xFE0F;</span>
+  <!-- top_nav — right-aligned with the content width (header inherits the same max-width constraint) -->
+  <div id="chat-top-nav" aria-label="Jump to top of conversation">
+    <button id="chat-scroll-top-btn" class="chat-nav-fab" title="Jump to the start of the session" aria-label="Jump to the start of the session" type="button">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 11 12 6 17 11"/><polyline points="7 18 12 13 17 18"/></svg>
+    </button>
+    <button id="chat-scroll-lastuser-btn" class="chat-nav-fab" title="Jump up to the previous message you sent" aria-label="Jump up to the previous message you sent" type="button">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 14 12 9 17 14"/></svg>
+    </button>
+      </div>
+  </div>
+
+  <!-- ── Session notification panel ─────────────────────────────────────────
+     A single draggable panel (like the chat widget frame) that shows completed
+     session notifications as rows. Positioned fixed at top-right; drag the
+     header to move. Uses design-system variables for theme fidelity. ──── -->
+  <div id="session-notification-container" hidden></div>
+
+  <style>
+  /* ── Session Notification Panel ──────────────────────────────────────────
+     Single draggable panel with notification rows — reuses chat-widget
+     frame patterns: fixed positioning, drag-to-float on header pointerdown,
+     same border/shadow/header styling.                                    */
+
+  #session-notification-container {
+    position: fixed;
+    top: 110px;
+    right: 16px;
+    z-index: 8600;
+    display: flex;
+  }
+  /* The hidden attribute must win over the ID selector above, otherwise
+     the empty panel shell renders as a visible card before any notification
+     rows are added. */
+  #session-notification-container[hidden] {
+    display: none;
+  }
+  #session-notification-container:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    width: 320px;
+    max-height: min(400px, 55vh);
+    background: var(--bg-elev);
+    border: var(--border-width) solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.35);
+    overflow: hidden;
+    pointer-events: auto;
+  }
+  body.light-mode #session-notification-container {
+    box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.15);
+  }
+  /* Floating state: explicit coords set by JS after drag */
+  #session-notification-container.sn-floating {
+    /* left/top/right/bottom set inline by JS */
+  }
+  body.sn-dragging, body.sn-dragging * { cursor: inherit !important; user-select: none !important; }
+
+  /* ── Header (draggable) ── */
+  .sn-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: var(--border-width) solid var(--border-soft);
+    flex-shrink: 0;
+    user-select: none;
+    cursor: grab;
+    touch-action: none;
+  }
+  body.sn-dragging .sn-header { cursor: grabbing; }
+
+  .sn-head-icon {
+    color: var(--success);
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .sn-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg-1);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sn-count {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fg-3);
+    background: var(--bg-tint);
+    border-radius: 10px;
+    padding: 2px 8px;
+    flex-shrink: 0;
+  }
+
+  .sn-icon-btn {
+    background: none;
+    border: none;
+    color: var(--fg-3);
+    cursor: pointer;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: 0.15s;
+  }
+  .sn-icon-btn:hover {
+    color: var(--fg-1);
+    background: var(--bg-tint);
+  }
+
+  /* ── Body (rows) ── */
+  .sn-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 0;
+  }
+
+  .sn-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--r-md);
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .sn-row:hover {
+    background: var(--bg-tint);
+  }
+
+  .sn-row-icon {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--success-soft);
+    color: var(--success);
+  }
+
+  .sn-row-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .sn-row-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--success);
+    line-height: 1.3;
+  }
+
+  .sn-row-title {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--fg-1);
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sn-row-close {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: var(--r-xs);
+    background: transparent;
+    color: var(--fg-3);
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+    opacity: 0;
+  }
+  .sn-row:hover .sn-row-close { opacity: 1; }
+  .sn-row-close:hover {
+    color: var(--fg-1);
+    background: var(--accent-soft);
+  }
+
+  /* ── Empty state ── */
+  .sn-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 12px;
+    font-size: 12px;
+    color: var(--fg-3);
+  }
+  </style>
+<section id="chat-changes-panel" class="chat-changes-panel" hidden aria-label="Changes in this chat session">
+  <div class="chat-changes-heading"><span>Session changes</span><button id="chat-changes-refresh" type="button" title="Refresh changes"><i data-lucide="refresh-cw" style="width:15px;height:15px;"></i></button></div>
+  <div id="chat-changes-list" class="chat-changes-list"><span class="chat-changes-empty">No changes in this session.</span></div>
+  <input id="chat-changes-message" class="chat-changes-message" type="text" maxlength="2000" placeholder="Commit message (optional)">
+  <div class="chat-changes-actions"><button id="chat-changes-undo" type="button" class="chat-changes-undo" disabled>Undo changes</button><button id="chat-changes-commit" type="button" class="chat-changes-commit" disabled>Commit changes</button></div>
+  <div id="chat-changes-result" class="chat-changes-result" aria-live="polite"></div>
+</section>
+<div id="chat-sub-header" style="display:none;" data-header-control="sub_agent_tabs">
+  <button type="button" class="sub-carousel-chev left" aria-label="Scroll left">&#10094;</button>
+  <div id="chat-sub-scroll-wrap"></div>
+  <button type="button" class="sub-carousel-chev right" aria-label="Scroll right">&#10095;</button>
+</div>
+<div id="chat-messages">
+  <aside id="chat-components-sticky" aria-label="Active chat panels"></aside>
+  <div id="chat-messages-inner">
+    <div id="chat-spinner-top" class="chat-spinner-edge" aria-hidden="true">
+      <span class="chat-spinner-icon"></span>
+      <span class="chat-spinner-label"></span>
+    </div>
+  </div>
+</div>
+<div id="chat-spinner-bottom" class="chat-spinner-edge bottom" aria-hidden="true">
+  <span class="chat-spinner-icon"></span>
+  <span class="chat-spinner-label"></span>
+</div>
+<div id="chat-input-area">
+  <div id="chat-suggest-row" class="chat-suggest-row" aria-label="Suggested replies"></div>
+  <div id="chat-above-pill" class="chat-above-pill">
+    <div id="chat-activity-panel" class="chat-activity-panel" role="region" aria-label="Tool calls this turn" hidden></div>
+    <button type="button" id="chat-activity-bar" class="chat-activity-bar" aria-expanded="false" aria-controls="chat-activity-panel" title="Show tool calls from this turn" data-header-control="activity">
+      <span class="chat-activity-text" aria-live="polite" aria-atomic="true"></span>
+      <span class="chat-activity-chevron" aria-hidden="true">&#x203A;</span>
+    </button>
+  </div>
+  <div id="chat-billing-panel" class="chat-billing-panel" hidden></div>
+  <div id="chat-input-row" class="chat-pill" style="display:none">
+    <div id="chat-preview-bar" style="display:none;"></div>
+    <textarea id="chat-input" class="chat-pill-input" rows="1" placeholder="Chat with the agent" autocomplete="off" autocapitalize="off" autocorrect="on" spellcheck="true"></textarea>
+    <div class="chat-pill-buttons">
+      <button id="chat-voice-btn" class="chat-pill-voice" title="Record voice"><i data-lucide="mic" style="width:22px;height:22px;"></i></button>
+      <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:22px;height:22px;"></i></button>
+    </div>
+    <div id="chat-pill-stats-row" class="chat-pill-stats-row">
+      <div id="chat-pill-stats" class="chat-pill-stats">
+        <button type="button" class="chat-stats-chev left" aria-label="Scroll left">&#10094;</button>
+        <div id="chat-pill-stats-strip" class="chat-pill-stats-strip">
+          <div id="chat-token-bar" class="chat-token-bar">
+            <span class="chat-token-label">in</span>
+            <span id="chat-tokens-in" class="chat-token-value">0</span>
+            <span id="chat-token-spinner" class="chat-token-spinner"></span>
+            <span id="chat-tokens-out" class="chat-token-value">0</span>
+            <span class="chat-token-label">out</span>
+          </div>
+          <div id="chat-model-ctx" class="chat-model-ctx" style="display:none;" title="Active model's context window and max output"></div>
+          <div id="chat-cost" class="chat-cost" style="display:none;" title="Estimated cost of this session so far (tokens used x active model's price)"></div>
+        </div>
+        <button type="button" class="chat-stats-chev right" aria-label="Scroll right">&#10095;</button>
+      </div>
+    </div>
+    <button id="chat-stop-btn" class="chat-pill-stop" title="Stop generation" data-header-control="stop" hidden><i data-lucide="octagon" style="width:18px;height:18px;"></i></button>
+    <button id="chat-continue-btn" class="chat-pill-continue" title="Continue" data-header-control="continue" hidden onclick="console.log('Continue button clicked', this)"><i data-lucide="play" style="width:18px;height:18px;"></i></button>
+    <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or paste / drop onto the chat pill)"><i data-lucide="plus" style="width:22px;height:22px;"></i></button>
+    <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
+    <div id="chat-footer-handle" class="chat-footer-handle" title="Drag to show/hide footer" aria-expanded="false" aria-controls="chat-footer-row">
+      <div class="chat-footer-handle-line"></div>
+    </div>
+    <button id="chat-scroll-bottom-btn" class="chat-scroll-bottom-btn chat-nav-fab" title="Scroll to latest message" aria-label="Scroll to latest message" hidden>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>
+    </button>
+  </div>
+  <div id="chat-footer-row" class="chat-footer-row" hidden>
+    <button id="chat-abilities-btn" class="chat-skills-btn" title="Abilities — click to turn each on/off for this chat" data-header-control="abilities">
+      <i data-lucide="blocks" style="width:16px;height:16px;"></i>
+      <span id="chat-abilities-badge" class="csp-badge">0</span>
+    </button>
+    <button id="chat-target-btn" class="chat-target-btn" type="button" title="Remote Control — choose which device runs your next message" data-header-control="target"><i data-lucide="monitor" style="width:16px;height:16px;"></i><span class="chat-target-label"></span></button>
+    <button id="chat-mode-btn" class="chat-mode-btn" title="Click to toggle execution mode: Ask → Plan → Auto → Ask" data-header-control="mode">Ask</button>
+    <button id="chat-thinking-btn" class="chat-thinking-btn" title="Toggle mid-turn agent messages on/off" data-header-control="thinking"><span class="chat-thinking-label">Thinking</span><span class="chat-thinking-link" title="Edit in chat_ui.json"><i data-lucide="external-link" style="width:11px;height:11px;"></i></span></button>
+    <button id="chat-model-changer" class="chat-model-changer" data-header-control="model_changer" title="Click for model list — ◀ ▶ arrows to cycle" type="button">
+      <svg class="cmc-chev cmc-chev-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      <span class="cmc-name">model</span>
+      <span class="cmc-status"></span>
+      <svg class="cmc-chev cmc-chev-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+    </button>
+    <div id="cmc-toast" class="cmc-toast" style="display:none;"></div>
+    <button id="chat-storage-mode-btn" class="chat-storage-mode-btn" data-header-control="storage_mode" title="Click to toggle storage mode: Browser (local) ↔ Server (remote)" type="button">Server</button>
+  </div>
+</div>

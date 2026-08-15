@@ -108,6 +108,7 @@ async def ask_model(
     max_tokens: int = 900,
     temperature: float = 0.2,
     timeout: float = 60.0,
+    error_sink: Optional[List[str]] = None,
 ) -> Optional[str]:
     """Run one tools-free completion and return the model's text reply.
 
@@ -118,6 +119,9 @@ async def ask_model(
       attachments: optional attachment dicts; any inlinable image among them is
                    passed to the model as an image part (others are ignored — a
                    tools-free worker can't open files).
+      error_sink: optional list; on failure the real error string is appended so
+                  callers can surface WHY the call failed (e.g. "no remaining
+                  credits") instead of only seeing None.
     Returns the reply text, or None when the config is incomplete or the call
     fails. Never raises — callers treat None as "delegation unavailable".
     """
@@ -125,6 +129,8 @@ async def ask_model(
     base_url = (model_cfg or {}).get("base_url", "")
     api_key = (model_cfg or {}).get("api_key", "")
     if not (model and base_url and api_key):
+        if error_sink is not None:
+            error_sink.append("ask_model: incomplete model config (missing model/base_url/api_key)")
         return None
 
     # Inline any image attachments (reusing the shared mime/size/storage guards).
@@ -165,4 +171,6 @@ async def ask_model(
             return (resp.choices[0].message.content or "").strip() or None
     except Exception as e:
         logger.warning("ask_model failed (model=%s): %s", model, e)
+        if error_sink is not None:
+            error_sink.append(str(e))
     return None

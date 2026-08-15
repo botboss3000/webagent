@@ -9,7 +9,6 @@ Available backends:
   - "local"      data/user_data/<uid>/uploads/ on disk (default)
   - "browser"    bytes live in the user's browser IndexedDB; server stores
                  only metadata. Multi-device users won't share files.
-  - "supabase"   Supabase Storage bucket
   - "s3"         AWS S3 (or any S3-compatible endpoint via S3_ENDPOINT_URL)
   - "gcs"        Google Cloud Storage
 
@@ -31,7 +30,7 @@ logger = logging.getLogger(__name__)
 _AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CONFIG_FILE = os.path.join(_AGENT_DIR, "attachments_store_config.json")
 
-AVAILABLE_BACKENDS = ("local", "browser", "supabase", "s3", "gcs")
+AVAILABLE_BACKENDS = ("local", "browser", "s3", "gcs")
 
 _store: Optional[AttachmentStore] = None
 _mode: Optional[str] = None
@@ -150,12 +149,6 @@ def _construct(mode: str) -> AttachmentStore:
     if mode == "browser":
         from app.attachments_store.browser_store import BrowserAttachmentStore
         return BrowserAttachmentStore()
-    if mode == "supabase":
-        from app.attachments_store.supabase_store import SupabaseAttachmentStore
-        return SupabaseAttachmentStore(
-            bucket=cfg.get("bucket"),
-            public=bool(cfg.get("public", True)),
-        )
     if mode == "s3":
         from app.attachments_store.s3_store import S3AttachmentStore
         return S3AttachmentStore(

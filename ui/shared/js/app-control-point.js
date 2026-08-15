@@ -36,8 +36,9 @@
 
 import { app } from './state.js';
 import { apiPath } from './config.js';
-import { icon, claudeMark } from './icons.js';
+import { icon, claudeMark, codexMark } from './icons.js';
 import { ICON_PICKER_ICONS } from './icon-picker.js';
+import { describeTarget, cssPath, styleSummary, htmlSlice, regionOf, activePage } from './element-fingerprint.js';
 import { createChatWidget } from '../../chat-widget/js/chat-widget.js';
 
 // Default message body when the user types nothing into the optional box.
@@ -54,142 +55,42 @@ let _chipEl = null;                 // detected-target chip
 let _ctx = null;                    // { label, descriptor, x, y, page } for the open
 let _cfgPromise = null;             // cached fetch of the handoff config (template + auto_send)
 
-// ── Always available ─────────────────────────────────────────────────────────
+// ── App-wide on/off gate ─────────────────────────────────────────────────────
 // The point-and-share panel is an APP-LEVEL helper, not a per-chat feature, so it
-// is available no matter which agent you're chatting with — deliberately NOT gated
-// on the current chat agent's abilities (window.__currentAgentAbilities). Its
-// message is dropped into the chat box of whatever agent is active (or sent
-// outright when auto_send is on) — see _send. Kept as a
-// one-line function so this is the single, obvious place to re-introduce a gate
-// later if ever wanted.
+// is NOT gated on the current chat agent's abilities (window.__currentAgentAbilities).
+// It IS gated on one app-wide admin switch: App Settings → App Functions → "App
+// control quick message" (app_control_quick_message in app-settings.json), served
+// to every visitor via the public /api/v1/auth/ui-config and read once at boot
+// (see initAppControlPoint). Defaults ON — the panel has always been available, so
+// a missing/unreachable config keeps it on (fail-open). When on, its message drops
+// into the chat box of whatever agent is active (or sends outright when auto_send
+// is on) — see _send.
+let _enabledFlag = true;
+
 function _enabled() {
-  return true;
+  return _enabledFlag;
 }
 
-// ── Current page ──────────────────────────────────────────────────────────────
-// Friendly name of the active main-panel tab, for the grounding message.
-function _activePage() {
-  let val = '';
+// Fetch the app-wide on/off flag once from the public ui-config. Sends the auth
+// token when present so it behaves identically on authenticated pages (mirrors
+// appearance.js). Best-effort: any failure leaves the flag at its ON default.
+function _loadEnabledFlag() {
+  let headers = {};
   try {
-    const active = document.querySelector('.tab-content.active');
-    if (active && active.id && active.id.indexOf('tab-') === 0) val = active.id.slice(4);
+    const t = localStorage.getItem('auth_token');
+    if (t) headers = { Authorization: 'Bearer ' + t };
   } catch (_) { /* ignore */ }
-  if (!val) { try { val = localStorage.getItem('lastActiveTab') || ''; } catch (_) { /* ignore */ } }
-  let label = '';
-  try {
-    const btn = document.querySelector('#main-tabs .main-tab[data-value="' + val + '"]');
-    if (btn) label = (btn.textContent || '').replace(/\s+/g, ' ').trim();
-  } catch (_) { /* ignore */ }
-  const MAP = { browser: 'Browser', genui: 'Gen UI', agents: 'Agents', sessions: 'Sessions', automations: 'Automations', wiki: 'Wiki', account: 'Account', 'admin-tools': 'Admin Tools' };
-  return label || MAP[val] || (val || 'app');
+  fetch(apiPath('/api/v1/auth/ui-config'), { headers })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((cfg) => {
+      if (cfg && typeof cfg.app_control_quick_message === 'boolean') {
+        _enabledFlag = cfg.app_control_quick_message;
+      }
+    })
+    .catch(() => { /* keep the ON default */ });
 }
 
-// ── Describe what was clicked ────────────────────────────────────────────────
-// Walk up to the nearest meaningful element and produce a human label + a short
-// descriptor (its role / kind), so the agent knows exactly what "this" is.
-function _describeTarget(el) {
-  const SEL = 'button, a, [role], input, select, textarea, label, summary, li, ' +
-    'h1, h2, h3, h4, h5, h6, .main-tab, .agent-card, [aria-label], [title], [data-act]';
-  let node = el;
-  let hit = null;
-  for (let i = 0; node && node !== document.body && i < 6; i++) {
-    if (node.nodeType === 1 && node.matches && node.matches(SEL)) { hit = node; break; }
-    node = node.parentElement;
-  }
-  const target = hit || (el && el.nodeType === 1 ? el : null);
-  if (!target) return { label: 'the page', descriptor: 'area', el: null };
-
-  const clean = (s) => (s || '').replace(/\s+/g, ' ').trim().slice(0, 60);
-  const attr = (n) => (target.getAttribute ? target.getAttribute(n) : '') || '';
-  const label =
-    clean(attr('aria-label') || attr('title')) ||
-    (target.tagName === 'IMG' ? clean(attr('alt')) : '') ||
-    clean(attr('placeholder')) ||
-    clean(target.textContent) ||
-    clean(target.id) ||
-    clean(attr('data-act')) ||
-    target.tagName.toLowerCase();
-
-  const tag = target.tagName.toLowerCase();
-  const TAGNAME = { a: 'link', button: 'button', select: 'dropdown', textarea: 'text field', img: 'image', li: 'list item' };
-  let descriptor = attr('role') || TAGNAME[tag] || tag;
-  if (tag === 'input') descriptor = (attr('type') || 'text').toLowerCase() + ' input';
-
-  return { label: label || tag, descriptor, el: target };
-}
-
-// ── Technical fingerprint ────────────────────────────────────────────────────
-// Beyond the human label, capture what the agent needs to locate the exact
-// element in the source and reason about its styling: a short locator path, the
-// computed look (colour / size / font), a slice of the markup, and which region
-// of the app it sits in. This is what lets "this colour is wrong" / "make this
-// bigger" / "add a page here" land on the right thing with no extra typing.
-
-// Short CSS-style locator back to the element. Stops at the first ancestor with
-// an id (ids are unique), keeps 1–2 classes per level, disambiguates repeats
-// with :nth-of-type, and caps at 4 levels so it stays readable.
-function _cssPath(el) {
-  if (!el || el.nodeType !== 1) return '';
-  const parts = [];
-  let node = el;
-  for (let i = 0; node && node.nodeType === 1 && node !== document.body && i < 4; i++) {
-    if (node.id) { parts.unshift('#' + node.id); break; }
-    let seg = node.tagName.toLowerCase();
-    const cls = (typeof node.className === 'string')
-      ? node.className.trim().split(/\s+/).filter(Boolean).slice(0, 2) : [];
-    if (cls.length) seg += '.' + cls.join('.');
-    const parent = node.parentElement;
-    if (parent) {
-      const sameTag = Array.prototype.filter.call(parent.children, (c) => c.tagName === node.tagName);
-      if (sameTag.length > 1) seg += ':nth-of-type(' + (sameTag.indexOf(node) + 1) + ')';
-    }
-    parts.unshift(seg);
-    node = node.parentElement;
-  }
-  return parts.join(' > ');
-}
-
-// Human-readable summary of the element's *actual* rendered style, so a
-// "the colour/size is wrong" report carries the concrete before-values.
-function _styleSummary(el) {
-  try {
-    const cs = getComputedStyle(el);
-    const r = el.getBoundingClientRect();
-    const family = (cs.fontFamily || '').split(',')[0].replace(/["']/g, '').trim();
-    return 'text ' + cs.color +
-      ', background ' + cs.backgroundColor +
-      ', font ' + cs.fontSize + '/' + cs.fontWeight + (family ? ' ' + family : '') +
-      ', box ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px';
-  } catch (_) { return ''; }
-}
-
-// A trimmed slice of the element's own markup (whitespace collapsed, capped).
-function _htmlSlice(el) {
-  try {
-    let h = (el.outerHTML || '').replace(/\s+/g, ' ').trim();
-    if (h.length > 240) h = h.slice(0, 240) + '…';
-    return h;
-  } catch (_) { return ''; }
-}
-
-// Which broad region the click landed in — the cue that makes "add a page here"
-// (header) vs "fix this control" (main / side panel) unambiguous for the agent.
-function _regionOf(el) {
-  try {
-    if (!el || typeof el.closest !== 'function') return 'main area';
-    const MAP = [
-      ['[role="dialog"], .modal, .dialog, .popup-menu', 'dialog / popup'],
-      ['#main-header', 'header / top navigation bar'],
-      ['footer, [role="contentinfo"], .app-footer', 'footer'],
-      ['#chat-panel', 'chat side panel'],
-      ['#main-panel, main, [role="main"], .tab-content', 'main content area'],
-    ];
-    for (let i = 0; i < MAP.length; i++) {
-      if (el.closest(MAP[i][0])) return MAP[i][1];
-    }
-  } catch (_) { /* ignore */ }
-  return 'main area';
-}
+// (element fingerprint helpers moved to shared/element-fingerprint.js)
 
 // Fetch the editable handoff config once (cached): the auto_send flag (whether
 // sending fires the message or just drops the words into the chat box for the user
@@ -216,7 +117,7 @@ function _loadConfig() {
 
 // ── Destination agents ──────────────────────────────────────────────────────
 // The two rows each name the agent the message would land on. App-control lives
-// in shared/ and must not import chat-side-panel internals, so it reads the same
+// in shared/ and must not import chat internals, so it reads the same
 // agent list the chat selector populates (window.__agentsSharedData).
 function _agents() {
   try {
@@ -235,6 +136,7 @@ function _agentIcon(a, size) {
   const name = (a && a.icon) || '';
   const engine = (a && a.engine) || '';
   if (engine === 'claude_code' && (!name || name === 'sparkles')) return claudeMark({ size: px });
+  if (engine === 'codex' && (!name || name === 'code-2')) return codexMark({ size: px });
   if (!name) return icon('bot', { size: px });
   if (ICON_PICKER_ICONS.includes(name)) return icon(name, { size: px });
   return '<span style="font-size:' + n + 'px;line-height:1">' + name.replace(/</g, '&lt;') + '</span>';
@@ -334,18 +236,18 @@ function _buildPanel() {
 
 function _open(x, y, target, viaTouch) {
   _buildPanel();
-  const d = _describeTarget(target);
+  const d = describeTarget(target);
   const el = d.el;
   _ctx = {
     label: d.label,
     descriptor: d.descriptor,
     x: Math.round(x),
     y: Math.round(y),
-    page: _activePage(),
-    region: _regionOf(el),
-    selector: _cssPath(el) || '(unknown)',
-    styles: _styleSummary(el) || '(unavailable)',
-    html: _htmlSlice(el) || '(unavailable)',
+    page: activePage(),
+    region: regionOf(el),
+    selector: cssPath(el) || '(unknown)',
+    styles: styleSummary(el) || '(unavailable)',
+    html: htmlSlice(el) || '(unavailable)',
   };
   if (_chipEl) _chipEl.textContent = '“' + _ctx.label + '” · ' + _ctx.region;
   _populateAgentRows();
@@ -503,13 +405,61 @@ function _sendNew(customText) {
 function _bailTarget(t) {
   if (!t || t.nodeType !== 1 || typeof t.closest !== 'function') return true;
   if (t.closest('input, textarea, select') || t.isContentEditable) return true;
-  if (t.closest('#tab-browser, #files-tree, .files-terminal-pane, .xterm')) return true;
+  if (t.closest('[data-has-long-press], #tab-browser, #files-tree, .files-terminal-pane, .xterm')) return true;
   if (_panel && _panel.contains(t)) return true;
   return false;
 }
 
+// ── Is the press landing on real, selectable text? ──────────────────────────
+// When a long-press (touch) or right-click lands directly on prose the user is
+// trying to read/copy, we defer to the browser: let the word get highlighted and
+// the native long-press / right-click callout menu appear instead of popping our
+// panel. Deliberately narrow — only true when the point resolves to a non-blank
+// character in a user-selectable text node, so buttons, icons, and chrome that
+// merely CONTAIN a label still open the panel as before.
+function _overSelectableText(x, y) {
+  // An existing, non-collapsed selection means the user is already working with
+  // highlighted text — always defer to the native menu.
+  try {
+    const sel = window.getSelection && window.getSelection();
+    if (sel && !sel.isCollapsed && String(sel).trim()) return true;
+  } catch (_) { /* ignore */ }
+
+  // Resolve the exact text node + offset under the pointer.
+  let node = null, offset = -1;
+  try {
+    if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(x, y);
+      if (r) { node = r.startContainer; offset = r.startOffset; }
+    } else if (document.caretPositionFromPoint) {
+      const p = document.caretPositionFromPoint(x, y);
+      if (p) { node = p.offsetNode; offset = p.offset; }
+    }
+  } catch (_) { /* ignore */ }
+
+  if (!node || node.nodeType !== 3) return false;   // not a text node → no text here
+  const data = node.data || '';
+  // Require a non-whitespace character adjacent to the caret so the point is
+  // genuinely ON a word, not snapped to the edge of a whitespace-only run.
+  if (!((data[offset] || '') + (data[offset - 1] || '')).trim()) return false;
+
+  // Respect user-select:none (buttons/icons/chrome that only LOOK like text).
+  const host = node.parentElement;
+  if (host) {
+    try {
+      const cs = getComputedStyle(host);
+      if ((cs.userSelect || cs.webkitUserSelect) === 'none') return false;
+    } catch (_) { /* ignore */ }
+  }
+  return true;
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 export function initAppControlPoint() {
+  // Read the app-wide on/off switch (App Settings → App Functions → "App control
+  // quick message") once at boot. A contextmenu/long-press fires well after this
+  // resolves; until it does the flag stays at its ON default, so nothing is lost.
+  _loadEnabledFlag();
   // CAPTURE phase: run before any element-level contextmenu handler, so nothing
   // can stopPropagation past us and leave the native menu showing. We only
   // preventDefault on the spots we actually handle.
@@ -517,6 +467,9 @@ export function initAppControlPoint() {
     if (!_enabled()) return;                  // ability off → native menu
     const t = e.target;
     if (_bailTarget(t)) return;
+    // Long-press / right-click directly on selectable text → let the browser
+    // highlight it and show its native callout menu instead of our panel.
+    if (_overSelectableText(e.clientX, e.clientY)) return;
     e.preventDefault();
     _open(e.clientX, e.clientY, t, false);
   }, true);

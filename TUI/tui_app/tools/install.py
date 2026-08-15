@@ -193,13 +193,24 @@ async def setup_environment(ctx: ToolContext, target: str, python_exe: str = "",
     return f"[setup] {'; '.join(steps)}. Next: seed_config."
 
 
-def _provider_label(base_url: str) -> str:
-    host = base_url.lower()
-    for key in ("deepinfra", "openrouter", "openai", "groq", "together", "mistral",
-                "fireworks", "deepseek", "perplexity", "ollama"):
-        if key in host:
-            return key
-    return "custom"
+def _ensure_github_token(project_dir: Path) -> None:
+    """Preserve or create a minimal github-token-only provider.json in the target."""
+    dest = project_dir / "data" / "config" / "provider.json"
+    if dest.exists():
+        return  # already exists, don't overwrite
+    # Try to copy a github token from the TUI host's own provider.json
+    import json
+    host_file = Path(__file__).resolve().parent.parent.parent / "data" / "config" / "provider.json"
+    try:
+        if host_file.exists():
+            data = json.loads(host_file.read_text(encoding="utf-8"))
+            tok = data.get("github_token")
+            if tok:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(json.dumps({"github_token": tok}, indent=2), encoding="utf-8")
+                return
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
 
 
 async def seed_config(ctx: ToolContext, target: str) -> str:
@@ -228,20 +239,15 @@ async def seed_config(ctx: ToolContext, target: str) -> str:
         else:
             env_lines.append(line)
     (p / ".env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
-    # 2) provider.json (the store both the app and this manager read).
-    if have_key:
-        entry = {"provider": _provider_label(prov.base_url), "base_url": prov.base_url,
-                 "api_key": prov.api_key, "model": prov.model}
-        (p / "data" / "config").mkdir(parents=True, exist_ok=True)
-        (p / "data" / "config" / "provider.json").write_text(
-            json.dumps({"admin": entry, "__anonymous__": entry}, indent=2), encoding="utf-8")
+    # 2) provider.json — shared GitHub token only (LLM config lives in the DB).
+    _ensure_github_token(p)
     # 3) db_connection.json → explicit local sqlite (no external service needed).
     (p / "db_connection.json").write_text(
         json.dumps({"provider": "sqlite", "database": ""}, indent=2), encoding="utf-8")
     ctx.audit("seed_config", {"target": str(p), "key": have_key}, True, "")
     note = (f"AI key seeded (model {prov.model})" if have_key
             else "no app key available — set LLM_API_KEY in the new .env before running")
-    return f"[seed] .env + provider.json + db_connection.json written (local SQLite DB). {note}. Next: verify_install."
+    return f"[seed] .env + db_connection.json written (local SQLite DB). {note}. Next: verify_install."
 
 
 # ── dependency dashboard (shared with the Setup panel) ───────────────────────

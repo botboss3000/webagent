@@ -19,11 +19,15 @@ GET  /api/v1/agents/{agent_id}/members  — list agent admins + members with sta
 """
 
 import asyncio
+import json as _json
 import logging
-from typing import Any, Dict, List, Optional
+import re
+import time
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from app.auth.identity import assert_caller_is
 from app.db import get_db
@@ -32,22 +36,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["agents"])
 
-# Default WebAgent description — shared by every provisioning path so the
-# auto-provision, the /agents/ensure-default endpoint and the frontend all mint
-# an identical row.
-_WEBAGENT_NAME = "WebAgent"
-_WEBAGENT_DESC = ("Your all-purpose WebAgent — chat, tools, web, browser, code, "
-                  "pages, and source control.")
+SHARED_DEFAULT_AGENT_ID = "shared_default"
 
 # ── Idempotent WebAgent provisioning ────────────────────────────────────────
-# The WebAgent is a per-user SINGLETON. Two things used to mint duplicates: the
-# chat panel's "ensure" and the Agents page's auto-provision could both create
-# one before either committed, and — worse on a shared DB — a device whose local
-# mirror didn't yet hold the user's real WebAgent would decide there was none and
-# create a fresh one, so every device accumulated empty duplicates. The fix is a
-# single race-safe get-or-create that (a) serialises per user in-process and
-# (b) checks the AUTHORITY (find_default_agent routes to remote on the hybrid
-# backend) before creating.
+# The default WebAgent is one app-level singleton, not one singleton per user.
+# Both startup and request-time recovery converge on this fixed authority ID.
 _provision_locks: Dict[str, asyncio.Lock] = {}
 
 
@@ -59,27 +52,42 @@ def _provision_lock(user_id: str) -> asyncio.Lock:
     return lk
 
 
-async def provision_default_agent(db, user_id: str) -> dict:
-    """Return the user's WebAgent, creating it only if the authority has none.
+async def provision_default_agent(db, user_id: str) -> Optional[dict]:
+    """Return the single admin-owned WebAgent shared by every app user.
 
-    Race-safe: serialised per user, and the existence check reads the authority
-    (not the possibly-stale local mirror) so concurrent devices converge on ONE
-    WebAgent instead of each creating its own."""
-    async with _provision_lock(user_id):
+    The App Settings switch controls whether this agent is available at all. It
+    never enables the retired per-user clone path: when the switch is off,
+    callers get ``None`` and a user with no custom agents has an empty roster.
+
+    Creation is lazy as well as startup-seeded so a failed startup seed cannot
+    leave login permanently broken. All users share the same lock and fixed ID.
+    """
+    from app.admin.settings import shared_default_agent_enabled as _sd_on
+    if not _sd_on():
+        return None
+
+    async with _provision_lock(SHARED_DEFAULT_AGENT_ID):
         try:
-            existing = await db.find_default_agent(user_id)
+            shared = await db.get_agent_by_id(SHARED_DEFAULT_AGENT_ID)
         except Exception as e:
-            logger.warning("provision_default_agent: find_default_agent failed (%s); "
-                           "will create", e)
-            existing = None
-        if existing:
-            return existing
-        return await db.create_custom_agent(
-            user_id=user_id,
-            name=_WEBAGENT_NAME,
-            description=_WEBAGENT_DESC,
-            template_id="default",
-        )
+            logger.warning(
+                "Shared default lookup failed (%s); rebuilding the fixed authority",
+                e,
+            )
+            shared = None
+        if shared:
+            return shared
+        try:
+            return await db.create_agent_for_user(
+                "admin", agent_id=SHARED_DEFAULT_AGENT_ID,
+            )
+        except Exception:
+            # The in-process lock cannot serialize separate server processes.
+            # If another instance won the fixed-ID insert, converge on its row.
+            shared = await db.get_agent_by_id(SHARED_DEFAULT_AGENT_ID)
+            if shared:
+                return shared
+            raise
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -89,6 +97,8 @@ class CreateAgentRequest(BaseModel):
     name: str
     description: Optional[str] = ""
     template_id: Optional[str] = "default"
+    capability_profile: Optional[Literal["simple", "standard", "advanced"]] = None
+    capability_extensions: List[str] = Field(default_factory=list)
 
 
 class ReorderAgentsRequest(BaseModel):
@@ -126,23 +136,38 @@ class UpdateAgentRequest(BaseModel):
     user_mode: Optional[str] = None
     # Default chat execution mode for NEW sessions with this agent: 'ask' | 'plan'
     # | 'auto'. Stored in metadata['default_execution_mode']; the chat pill seeds a
-    # fresh session from it (ui/chat-side-panel/js/chat-ui.js). Blank ⇒ 'ask'.
+    # fresh session from it (ui/chat/js/chat-ui.js). Blank ⇒ 'ask'.
     default_execution_mode: Optional[str] = None
     # Default Remote Control target device for NEW sessions with this agent — the
     # instance-id of a device in the shared fleet (stored in
     # metadata['default_target_device']). Blank ⇒ run on "this device" (local).
     # A fresh session pre-selects it in the chat Remote Control pill, falling back
-    # to local when that device is offline (ui/chat-side-panel/js/chat-ui.js).
+    # to local when that device is offline (ui/chat/js/chat-ui.js).
     default_target_device: Optional[str] = None
     # Per-agent LLM override (stored in metadata['llm_config'])
     llm_config: Optional[Dict[str, Any]] = None
-    # Per-agent chat UI copy override — partial dict of _CHAT_UI_KEYS, merged
+    # Whether the agent's public /{agent_id} shared link is enabled.
+    # Stored in metadata['public_link']; the public route checks this flag.
+    public_link: Optional[bool] = None
+    # Per-agent chat UI override — partial dict deep-merged into the app-wide
     # into metadata['chat_ui']. Blank value for a key clears it (use default).
     chat_ui: Optional[Dict[str, Any]] = None
     # Local Claude Code engine config — partial dict (folder/extra_flags/model/
     # act_freely/append_persona), shallow-merged into metadata['claude_code'].
     # Only meaningful on agents whose metadata.engine == "claude_code".
     claude_code: Optional[Dict[str, Any]] = None
+    # Local Codex CLI engine config (folder/model/extra_flags), shallow-merged
+    # into metadata['codex_code'].
+    codex_code: Optional[Dict[str, Any]] = None
+    # Website embed widget config — partial dict (enabled/allowed_domains/accent/
+    # title/subtitle/greeting/placeholder/launcher_position),
+    # normalized + shallow-merged into metadata['embed']. Drives the standalone
+    # /embed/<agent_id> chat page + the /embed.js loader snippet. See
+    # normalize_embed_config below and app/main.py's embed routes.
+    embed: Optional[Dict[str, Any]] = None
+    # Resume tail messages — how many recent messages to replay on resume.
+    # Stored in metadata['resume_tail_messages']; 0 = use the app default (32).
+    resume_tail_messages: Optional[int] = None
     # Prompt slots — admin-only. Full slot set when present; reconciled against existing.
     slots: Optional[List[SlotPayload]] = None
     # Per-slot wipe of all user override rows at save time.
@@ -157,6 +182,22 @@ class UpdateMyPromptsItem(BaseModel):
 class UpdateMyPromptsRequest(BaseModel):
     user_id: str
     slots: List[UpdateMyPromptsItem]
+
+
+class SoftAbilityRequest(BaseModel):
+    user_id: str
+    slug: str
+    display_name: str
+    description: str = ""
+    icon: str = "sparkles"
+    enabled: bool = True
+    skill_summary: str = ""
+    skill_body: str = ""
+    workflow: Dict[str, Any] = Field(default_factory=dict)
+    allowed_tools: List[str] = Field(default_factory=list)
+    credential_schema: List[Dict[str, Any]] = Field(default_factory=list)
+    policy: Dict[str, Any] = Field(default_factory=dict)
+    status: str = "draft"
 
 
 class UpdateTemplateRequest(BaseModel):
@@ -208,45 +249,40 @@ _SYSTEM_UTILITY_IDS = {
 }
 
 
-# The per-agent chat UI copy an agent admin can override. Each falls back to
-# the app-wide default in app/defaults/app-prompts.json ("ui_messages.chat") when
-# left blank. Edited on the agent's Config tab; stored in metadata["chat_ui"];
-# consumed on the frontend by ui/shared/js/app-prompts.js (agentChatMsg).
-_CHAT_UI_KEYS = (
-    "welcome_bubble",
-    "new_session_bubble",
-    "switched_agent_bubble",
-    "pill_placeholder",
-    "pill_locked_placeholder",
-)
-_CHAT_UI_MAX_LEN = 2000
+# Per-agent chat UI config override — stored in metadata["chat_ui"]. Any
+# subset of the full data/config/chat_ui.json structure may be stored here
+# (messages, chat_pill, chat_header, fade, launcher, etc.). At render time the
+# agent's override is deep-merged over the app-wide defaults, so each agent can
+# be completely customised without touching the global file.
+#
+# Consumed on the frontend by ui/shared/js/app-prompts.js (agentChatUi /
+# agentChatMsg) and by the chat panel when rendering per-agent UI chrome.
+
+
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    """Deep-merge two dicts — nested dicts are merged; everything else is replaced.
+    Returns a NEW dict; neither argument is mutated."""
+    out = dict(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
 
 
 def _merge_chat_ui(existing, incoming) -> dict:
-    """Merge an incoming partial chat_ui override into the stored one.
+    """Deep-merge an incoming partial chat_ui override into the stored one.
 
-    Only the known keys are kept; values are coerced to strings capped at
-    _CHAT_UI_MAX_LEN. A blank value clears that key, so the agent falls back to
-    the app-wide default for it. Merging (rather than replacing) lets each
-    Config-tab field save just its own key without clobbering the others.
+    The stored metadata["chat_ui"] is a dict with only the keys this agent
+    customises (the rest come from data/config/chat_ui.json at render time).
+    Merging (rather than replacing) lets each save pass just its own keys
+    without clobbering unrelated overrides. Nested dicts are merged key-by-key
+    so e.g. chat_pill.stats.visible and chat_pill.buttons are independent.
     """
-    out: dict = {}
-    if isinstance(existing, dict):
-        for k in _CHAT_UI_KEYS:
-            v = existing.get(k)
-            if isinstance(v, str) and v.strip():
-                out[k] = v
-    if isinstance(incoming, dict):
-        for k in _CHAT_UI_KEYS:
-            if k not in incoming:
-                continue
-            v = "" if incoming.get(k) is None else str(incoming.get(k))
-            v = v[:_CHAT_UI_MAX_LEN]
-            if v.strip():
-                out[k] = v
-            else:
-                out.pop(k, None)
-    return out
+    base = dict(existing) if isinstance(existing, dict) else {}
+    inc = dict(incoming) if isinstance(incoming, dict) else {}
+    return _deep_merge(base, inc)
 
 
 def _safe_agent(agent: dict) -> dict:
@@ -290,17 +326,24 @@ def _safe_agent(agent: dict) -> dict:
         except Exception:
             meta = {}
     result["llm_config"] = meta.get("llm_config") if isinstance(meta, dict) else {"use_default": True}
-    # Per-agent chat UI copy override (welcome/system bubbles + message-box
-    # hints). Empty dict ⇒ this agent uses the app-wide defaults from
-    # app/defaults/app-prompts.json. See _merge_chat_ui / _CHAT_UI_KEYS.
+    # Per-agent chat UI override (deep-merged over defaults at render time).
+    # Empty dict ⇒ this agent uses the app-wide defaults from chat_ui.json.
+    # See _merge_chat_ui.
     cu = meta.get("chat_ui") if isinstance(meta, dict) else None
     result["chat_ui"] = cu if isinstance(cu, dict) else {}
+    # Website embed widget config (enabled/allowed_domains/accent/greeting …).
+    # Empty dict ⇒ never configured. Drives the Config tab's "Website Embed" card
+    # + the /embed routes. See app/api/embed_config.py.
+    emb = meta.get("embed") if isinstance(meta, dict) else None
+    result["embed"] = emb if isinstance(emb, dict) else {}
     # Alternate runtime engine (e.g. "claude_code") + its per-agent config. Absent
     # ⇒ a normal WebAgent-LLM agent. Drives the Config tab's "Claude Code" card and
     # the loop's engine dispatch (app/agent/loop.py stream_agent_events).
     result["engine"] = meta.get("engine") if isinstance(meta, dict) else None
     cc = meta.get("claude_code") if isinstance(meta, dict) else None
     result["claude_code"] = cc if isinstance(cc, dict) else {}
+    cx = meta.get("codex_code") if isinstance(meta, dict) else None
+    result["codex_code"] = cx if isinstance(cx, dict) else {}
     tc = meta.get("terminal_chat") if isinstance(meta, dict) else None
     result["terminal_chat"] = tc if isinstance(tc, dict) else {}
     # Icon from metadata (the agents table has no icon column; custom agents store
@@ -308,7 +351,7 @@ def _safe_agent(agent: dict) -> dict:
     # frontend falls back to the default 'bot' icon when icon is falsy.
     result["icon"] = (meta.get("icon") or "") if isinstance(meta, dict) else ""
     # Default chat execution mode for NEW sessions ('ask' | 'plan' | 'auto'). Edited
-    # on the Config tab and read by ui/chat-side-panel/js/chat-ui.js when seeding a
+    # on the Config tab and read by ui/chat/js/chat-ui.js when seeding a
     # fresh session. When UNSET, agents cloned from the default WebAgent template
     # start in 'plan' (matches default.json metadata.default_execution_mode), so even
     # pre-existing default agents created before this field honour it; everything
@@ -316,7 +359,9 @@ def _safe_agent(agent: dict) -> dict:
     _dem = meta.get("default_execution_mode") if isinstance(meta, dict) else ""
     if _dem not in ("ask", "plan", "auto"):
         _engine = meta.get("engine") if isinstance(meta, dict) else None
-        if _engine == "claude_code":
+        if _engine == "codex" and _dem == "wkspc":
+            pass  # codex-engine mode (workspace-write) — keep as-is
+        elif _engine == "claude_code":
             # Claude Code agents had only a binary act_freely toggle before this
             # field existed; surface its equivalent (True ⇒ Auto, False ⇒ Ask) so
             # the pill + Config selector match what the engine actually does until
@@ -329,9 +374,25 @@ def _safe_agent(agent: dict) -> dict:
             _dem = ""
     result["default_execution_mode"] = _dem
     # Default Remote Control target device (instance-id) for NEW sessions. Edited on
-    # the Config tab and read by ui/chat-side-panel/js/chat-ui.js to pre-select the
+    # the Config tab and read by ui/chat/js/chat-ui.js to pre-select the
     # chat's target-device pill. Empty ⇒ run locally ("this device").
     result["default_target_device"] = (meta.get("default_target_device") or "") if isinstance(meta, dict) else ""
+    # Public-link flag — gates the public /{agent_id} route. Reads fall back to
+    # the legacy is_embeddable key so previously-enabled agents keep working.
+    result["public_link"] = bool(meta.get("public_link", meta.get("is_embeddable"))) if isinstance(meta, dict) else False
+    # Resume tail messages — how many recent messages to replay on resume.
+    # 0 = use the app default (32). Stored in metadata; edited on the Config tab.
+    rtm = meta.get("resume_tail_messages") if isinstance(meta, dict) else None
+    result["resume_tail_messages"] = int(rtm) if isinstance(rtm, int) else 0
+    # Embed widget config (colors, fonts, title, custom CSS) — read by the embed page
+    ec = meta.get("embed_config") if isinstance(meta, dict) else None
+    result["embed_config"] = ec if isinstance(ec, dict) else {}
+    # Expose template origin from metadata so the Config tab knows
+    # this agent was cloned from a template and can show "push" buttons.
+    result["template_origin"] = (meta.get("template_origin") or "") if isinstance(meta, dict) else ""
+    # For templates (agent_templates rows), expose the source marker
+    # so the frontend knows whether the template came from a JSON file.
+    result["template_source"] = (meta.get("source") or "") if isinstance(meta, dict) else ""
     # Derive a single ``system`` flag the agents page uses to keep utility agents
     # (Suggested Replies / user-impersonator, source-controller, Agent Manager,
     # etc.) off the user's list by default, behind a "Show system agents" toggle.
@@ -460,9 +521,8 @@ async def list_agents(request: Request, user_id: str = Query(...), include_syste
     "Show system agents" toggle. Each entry carries ``source`` ('custom' or
     'template') and a derived ``system`` boolean.
 
-    New users with zero custom agents get the ``default`` template auto-provisioned
-    as their first agent on first list, so the agent square appears immediately on
-    the Agents page (matching the same logic the chat pill uses in sessions.js).
+    When enabled in App Settings, every user also sees the one admin-owned shared
+    WebAgent. No per-user default clone is created.
     """
     db = get_db()
     user_id = await assert_caller_is(request, user_id)
@@ -487,26 +547,56 @@ async def list_agents(request: Request, user_id: str = Query(...), include_syste
             # Built-in utility templates, only when the toggle is on.
             out.append(safe)
 
-    # ── Auto-provision default agent for new users ──────────────────────────
-    # If the user has zero custom agents (no "out" entries from the custom path
-    # above) and we aren't showing system agents, the Agents page would be
-    # completely empty. Clone the default template same as the chat pill does
-    # in sessions.js (ensureWebagentAgent), so the agent square is present from
-    # the very first visit.
-    if not out and not include_system and not bin_view and not clones_view:
+    # ── Enrich custom agents with their template's metadata source ──────────
+    # so the Config tab knows whether the template has a JSON seed file
+    # (showing "Push to file") or is admin-only (showing only "Push to DB").
+    _custom_with_tpl = [a for a in out if a.get("template_id")]
+    if _custom_with_tpl and hasattr(db, "_get_conn"):
         try:
-            # Idempotent get-or-create against the AUTHORITY — never blindly mints a
-            # second WebAgent. Handles the case where the user's real WebAgent
-            # exists on the shared DB but this device's local mirror hasn't pulled
-            # it yet (the empty `out` above), which is what produced the duplicates.
-            new_agent = await provision_default_agent(db, user_id)
-            if new_agent:
-                safe = _safe_agent(new_agent)
-                # Clear the cached shared data so downstream consumers pick it up
-                safe["is_user_default"] = 1
-                out.append(safe)
+            conn = db._get_conn()
+            try:
+                tpl_ids = list({a["template_id"] for a in _custom_with_tpl})
+                placeholders = ",".join("?" for _ in tpl_ids)
+                tpl_rows = conn.execute(
+                    f"SELECT id, metadata FROM agent_templates WHERE id IN ({placeholders})",
+                    tpl_ids,
+                ).fetchall()
+                tpl_source = {}
+                for row in tpl_rows:
+                    try:
+                        m = _json.loads(row["metadata"]) if row["metadata"] else {}
+                    except Exception:
+                        m = {}
+                    tpl_source[row["id"]] = (m.get("source") or "") if isinstance(m, dict) else ""
+                for a in _custom_with_tpl:
+                    a["template_source"] = tpl_source.get(a["template_id"], "")
+                    # Derive: is this template backed by a JSON file?
+                    tsrc = a.get("template_source", "")
+                    a["template_has_json"] = (tsrc == "json_seed")
+            finally:
+                conn.close()
         except Exception as e:
-            logger.warning("Auto-provision default agent for %s failed: %s", user_id, e)
+            logger.debug("Failed to enrich template_source on agents: %s", e)
+
+    # ── Auto-provision default agent for new users ──────────────────────────
+    # When shared_default_agent_enabled is on, inject the single shared agent
+    # (id="shared_default") into every user's roster so they see it from the
+    # first page load — no per-user agent row is ever created.
+    from app.admin.settings import shared_default_agent_enabled as _sd_list
+    if _sd_list():
+        try:
+            shared = await provision_default_agent(db, user_id)
+            if shared:
+                # Avoid duplicating if the shared agent already appeared in out
+                # (e.g. the user is the app admin and it showed up via custom path).
+                if not any(a.get("id") == "shared_default" for a in out):
+                    safe = _safe_agent(shared)
+                    safe["is_user_default"] = 1
+                    out.append(safe)
+        except Exception as e:
+            logger.warning("Shared default agent inject for %s failed: %s", user_id, e)
+    # When disabled, do not resurrect the retired per-user WebAgent provisioning
+    # path. A user with no custom agents intentionally receives an empty roster.
 
     return {"agents": out}
 
@@ -537,11 +627,20 @@ async def create_agent(req: CreateAgentRequest, request: Request):
     req.user_id = await assert_caller_is(request, req.user_id)
     if not req.name or not req.name.strip():
         raise HTTPException(status_code=400, detail="Agent name is required.")
+    # A clone of the default WebAgent inherits its Advanced capability shape.
+    # Blank/custom agents start at Simple unless the caller chooses otherwise.
+    _template_id = req.template_id or "default"
+    _capability_profile = req.capability_profile or (
+        "advanced" if _template_id == "default" else "simple"
+    )
     agent = await db.create_custom_agent(
         user_id=req.user_id,
         name=req.name.strip(),
         description=req.description or "",
-        template_id=req.template_id or "default",
+        template_id=_template_id,
+        seed_abilities=False,
+        capability_profile=_capability_profile,
+        capability_extensions=req.capability_extensions or [],
     )
     # Platform admins' own agents are exempt from payment by default.
     # The admin can delete the exemption later via /billing/exemptions if
@@ -574,6 +673,8 @@ async def ensure_default_agent(req: EnsureDefaultRequest, request: Request):
     db = get_db()
     req.user_id = await assert_caller_is(request, req.user_id)
     agent = await provision_default_agent(db, req.user_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="The shared default WebAgent is disabled.")
     # A freshly-created WebAgent gets the same admin payment exemption POST
     # /agents grants; a reused one already has it (the insert is a no-op).
     try:
@@ -619,6 +720,75 @@ async def _maybe_auto_exempt_agent(db, agent_id: str, granting_user_id: str) -> 
         conn.close()
 
 
+# ── Agent display-fields cache (bulk /agents/display) ──────────────────────
+# Session lists (chat dropdown, Sessions page, launcher widget) hydrate agent
+# name/icon/engine from this lean endpoint so they never depend on full agent
+# records — and never touch the agent plane more than once per agent per TTL,
+# no matter how many consumers ask. The full agent rows are NOT cached here;
+# only the three display fields, so a config edit invalidates cheaply.
+_DISPLAY_CACHE_TTL_S = 60
+_display_cache: Dict[str, Dict[str, Any]] = {}  # agent_id -> {"data": {...}, "ts": float}
+
+
+def _invalidate_agent_display_cache(agent_id: str) -> None:
+    """Drop one agent's display entry so the next bulk read re-fetches it."""
+    _display_cache.pop(agent_id, None)
+
+
+@router.get("/agents/display")
+async def agent_display_bulk(
+    request: Request,
+    user_id: str = Query(...),
+    ids: str = Query(..., description="Comma-separated agent ids to resolve"),
+):
+    """Return ONLY display fields (name/icon/engine) for a batch of agent ids.
+
+    Used by session-list hydration: a session payload always carries agent_id,
+    and the client fills missing display cells from this endpoint. Missing ids
+    are simply absent from the response — never an error. Served from a short
+    in-process TTL cache (one agent-plane read per agent per 60s, shared by
+    every consumer).
+    """
+    await assert_caller_is(request, user_id)
+    # Dedupe while preserving order — a client may list the same id twice.
+    wanted = list(dict.fromkeys(a for a in (x.strip() for x in ids.split(",")) if a))
+    now = time.time()
+    out = []
+    for aid in wanted:
+        entry = _display_cache.get(aid)
+        if entry and now - entry["ts"] < _DISPLAY_CACHE_TTL_S:
+            out.append(entry["data"])
+            continue
+        try:
+            agent = await get_db().get_agent_by_id(aid)
+        except Exception:
+            agent = None
+        if not agent:
+            # Don't cache misses long — a deleted/unknown agent may reappear.
+            _display_cache.pop(aid, None)
+            continue
+        meta = agent.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = _json.loads(meta)
+                if isinstance(meta, str):  # double-encoded guard, like _safe_agent
+                    meta = _json.loads(meta)
+            except Exception:
+                meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        rec = {
+            "agent_id": aid,
+            "name": agent.get("name") or "",
+            "icon": agent.get("icon") or meta.get("icon") or "",
+            "engine": meta.get("engine") or agent.get("engine") or "",
+            "updated_at": agent.get("updated_at") or "",
+        }
+        _display_cache[aid] = {"data": rec, "ts": now}
+        out.append(rec)
+    return {"agents": out}
+
+
 @router.get("/agents/{agent_id}")
 async def get_agent(request: Request, agent_id: str, user_id: str = Query(...)):
     """Get a single custom agent by id (must be owned by user)."""
@@ -628,7 +798,29 @@ async def get_agent(request: Request, agent_id: str, user_id: str = Query(...)):
     agents = await db.list_agents_for_user(user_id)
     for a in agents:
         if a.get("id") == agent_id:
-            return {"agent": _safe_agent(a)}
+            result = _safe_agent(a)
+            # Enrich with the template's metadata source (for "Push to file" button).
+            tid = result.get("template_id")
+            if tid and hasattr(db, "_get_conn"):
+                try:
+                    conn = db._get_conn()
+                    try:
+                        tpl_row = conn.execute(
+                            "SELECT metadata FROM agent_templates WHERE id = ?", (tid,)
+                        ).fetchone()
+                        if tpl_row:
+                            try:
+                                m = _json.loads(tpl_row["metadata"]) if tpl_row["metadata"] else {}
+                            except Exception:
+                                m = {}
+                            tsrc = (m.get("source") or "") if isinstance(m, dict) else ""
+                            result["template_source"] = tsrc
+                            result["template_has_json"] = (tsrc == "json_seed")
+                    finally:
+                        conn.close()
+                except Exception as e:
+                    logger.debug("Failed to enrich template_source on get_agent %s: %s", agent_id, e)
+            return {"agent": result}
     raise HTTPException(status_code=404, detail="Agent not found.")
 
 
@@ -656,15 +848,21 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
     llm_config_in = payload.pop("llm_config", None)
     chat_ui_in = payload.pop("chat_ui", None)
     claude_code_in = payload.pop("claude_code", None)
+    codex_code_in = payload.pop("codex_code", None)
+    embed_in = payload.pop("embed", None)
     terminal_chat_in = payload.pop("terminal_chat", None)
     exec_mode_in = payload.pop("default_execution_mode", None)
     target_device_in = payload.pop("default_target_device", None)
+    public_link_in = payload.pop("public_link", None)
+    resume_tail_in = payload.pop("resume_tail_messages", None)
     # Normalize the default chat mode (accept legacy read/write aliases) and reject
     # anything else so the metadata only ever holds 'ask' | 'plan' | 'auto'.
     if exec_mode_in is not None:
         _m = str(exec_mode_in).strip().lower()
         _m = {"read": "plan", "write": "ask"}.get(_m, _m)
-        if _m not in ("ask", "plan", "auto"):
+        # 'wkspc' is the codex-engine workspace-write mode — offered only on codex
+        # agent cards (native agents never send it).
+        if _m not in ("ask", "plan", "auto", "wkspc"):
             raise HTTPException(status_code=400, detail="Invalid default_execution_mode.")
         exec_mode_in = _m
     updates = {k: v for k, v in payload.items()
@@ -673,10 +871,12 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
     # Merge metadata-backed blobs (llm_config, chat_ui, icon, default chat mode)
     # into the agent's metadata. All are read-modify-write against the current
     # metadata so they don't clobber each other or the rest of the blob.
-    if (llm_config_in is not None or chat_ui_in is not None or claude_code_in is not None
-            or terminal_chat_in is not None
+    if (llm_config_in is not None or chat_ui_in is not None or claude_code_in is not None or codex_code_in is not None
+            or terminal_chat_in is not None or embed_in is not None
             or icon_in is not None or exec_mode_in is not None
-            or target_device_in is not None):
+            or target_device_in is not None
+            or public_link_in is not None
+            or resume_tail_in is not None):
         current = await db.get_agent_by_id(agent_id)
         meta = {}
         if current:
@@ -689,6 +889,23 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
             elif isinstance(meta_raw, dict):
                 meta = dict(meta_raw)
         if llm_config_in is not None:
+            # ── Stale pinned-model guard (server-side) ──
+            # If the agent's pinned default model was in its OWN roster but
+            # was just removed in this save, clear the stale pin so the agent
+            # falls back to the app default instead of running on a removed
+            # model. Inherited-model pins are left alone.
+            pinned = llm_config_in.get("model") if llm_config_in.get("use_default") is False else None
+            if pinned and isinstance(llm_config_in.get("multi_providers"), list):
+                old_cfg = meta.get("llm_config") if isinstance(meta, dict) else {}
+                old_roster = old_cfg.get("multi_providers") if isinstance(old_cfg, dict) else []
+                old_models = {p.get("model") for p in old_roster if isinstance(p, dict) and p.get("model")} if isinstance(old_roster, list) else set()
+                new_models = {p.get("model") for p in llm_config_in.get("multi_providers", []) if isinstance(p, dict) and p.get("model")}
+                if pinned in old_models and pinned not in new_models:
+                    llm_config_in["model"] = ""
+                    llm_config_in["provider"] = ""
+                    llm_config_in["base_url"] = ""
+                    llm_config_in["api_key"] = ""
+                    llm_config_in["use_default"] = True
             meta["llm_config"] = llm_config_in
         if chat_ui_in is not None:
             meta["chat_ui"] = _merge_chat_ui(meta.get("chat_ui"), chat_ui_in)
@@ -698,12 +915,23 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
             _cc = dict(_cc) if isinstance(_cc, dict) else {}
             _cc.update(claude_code_in)
             meta["claude_code"] = _cc
+        if codex_code_in is not None:
+            _cx = meta.get("codex_code")
+            _cx = dict(_cx) if isinstance(_cx, dict) else {}
+            _cx.update(codex_code_in)
+            meta["codex_code"] = _cx
         if terminal_chat_in is not None:
             # Shallow-merge so saving one field (e.g. just the command) keeps the rest.
             _tc = meta.get("terminal_chat")
             _tc = dict(_tc) if isinstance(_tc, dict) else {}
             _tc.update(terminal_chat_in)
             meta["terminal_chat"] = _tc
+        if embed_in is not None:
+            # Website embed widget — normalize + shallow-merge so saving one field
+            # (e.g. just the accent) keeps the rest. See app/api/embed_config.py.
+            from app.api.embed_config import normalize_embed_config
+            _cur_embed = meta.get("embed") if isinstance(meta.get("embed"), dict) else {}
+            meta["embed"] = normalize_embed_config(embed_in, _cur_embed)
         if icon_in is not None:
             # Store icon in metadata — the agents table has no dedicated icon column.
             # An empty/blank string means "clear the icon" (falls back to default).
@@ -715,6 +943,11 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
             # (run locally). Stored raw — the chat pill resolves the label + online
             # state from the live device list.
             meta["default_target_device"] = str(target_device_in).strip()
+        if public_link_in is not None:
+            meta["public_link"] = bool(public_link_in)
+            meta.pop("is_embeddable", None)  # legacy key — replaced by public_link
+        if resume_tail_in is not None:
+            meta["resume_tail_messages"] = int(resume_tail_in)
         updates["metadata"] = meta
 
     updated = await db.update_agent_fields(
@@ -737,6 +970,9 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
     if any(k in updates for k in ("trigger_type", "trigger_key")):
         from app.agent import trigger_index
         trigger_index.build()
+    # Name/icon/engine may have changed — drop the display cache entry so the
+    # next /agents/display read serves the fresh fields.
+    _invalidate_agent_display_cache(agent_id)
     return {"agent": _safe_agent(updated)}
 
 
@@ -776,6 +1012,37 @@ async def save_agent_as_template(agent_id: str, req: SaveAsTemplateRequest):
         status = 409 if "already exists" in msg else 400
         if "not found" in msg:
             status = 404
+        raise HTTPException(status_code=status, detail=msg)
+
+    return {"template": _safe_agent(tpl)}
+
+
+class PushToTemplateRequest(BaseModel):
+    user_id: str
+
+
+@router.post("/agents/{agent_id}/push-to-template")
+async def push_agent_to_template(agent_id: str, req: PushToTemplateRequest, request: Request):
+    """
+    Push a custom agent's current config + prompt slots back into its
+    source template (determined by agents.template_id).
+
+    Admin-only. Upserts the agent row fields and admin-base prompt slots
+    into the matching agent_templates + agent_prompt_templates rows,
+    stamped as source='admin' so future JSON re-seeds won't overwrite them.
+    Returns the updated template row.
+    """
+    db = get_db()
+    await _require_admin(db, req.user_id)
+
+    try:
+        tpl = await db.upsert_agent_to_template(
+            agent_id=agent_id,
+            updated_by=f"admin:{req.user_id}",
+        )
+    except ValueError as e:
+        msg = str(e)
+        status = 404 if "not found" in msg else 400
         raise HTTPException(status_code=status, detail=msg)
 
     return {"template": _safe_agent(tpl)}
@@ -1081,9 +1348,30 @@ async def delete_agent_automation(request: Request, agent_id: str, automation_id
         try:
             conn = db._get_conn()
             if conn:
+                # Capture the clone's parent before the row is deleted so the
+                # nested subagent home can be purged afterwards.
+                clone_parent = None
+                try:
+                    _mrow = conn.execute(
+                        "SELECT metadata FROM agents WHERE id = ? AND status = 'clone'",
+                        (row["runner_agent_id"],),
+                    ).fetchone()
+                    if _mrow:
+                        import json as _json
+                        _mmeta = _json.loads(_mrow["metadata"] or "{}")
+                        if isinstance(_mmeta, dict):
+                            clone_parent = _mmeta.get("clone_of")
+                except Exception:
+                    pass
                 conn.execute("DELETE FROM agents WHERE id = ? AND status = 'clone'", (row["runner_agent_id"],))
                 conn.commit()
                 conn.close()
+                if clone_parent:
+                    try:
+                        from app.agent_workspace import purge_subagent_home
+                        purge_subagent_home(clone_parent, row["runner_agent_id"])
+                    except Exception:
+                        pass
         except Exception as e:
             logger.warning("Failed to clean up clone agent %s: %s", row["runner_agent_id"], e)
 
@@ -1438,6 +1726,8 @@ async def delete_agent(request: Request, agent_id: str, user_id: str = Query(...
             pass
     # Live-sync every open tab/device: a permanent delete drops the card from the
     # bin view; a soft delete moves it out of the main grid into the bin.
+    # Either way, stop serving the deleted/trashed agent's display fields.
+    _invalidate_agent_display_cache(agent_id)
     from app.api.chat import notify_user
     await notify_user(user_id, {
         "type": "agent_deleted" if permanent else "agent_trashed",
@@ -1884,39 +2174,42 @@ async def get_agent_connections(request: Request, agent_id: str, user_id: str = 
     from app.admin.integrations import get_admin_configured_providers
     db = get_db()
     user_id = await assert_caller_is(request, user_id)
-    rows = await db.get_agent_connections(agent_id)
+
+    # These six reads are independent of one another, so issue them together
+    # rather than one-await-after-another. (On the current remote/hybrid backend
+    # the DB layer still services them serially, so the bigger win is that
+    # get_admin_configured_providers — historically ~5s of per-service round-trips
+    # and the dominant cost of this handler — now batches its admin auth lookups
+    # into a single query; see app/admin/integrations.py.) Error semantics are
+    # preserved EXACTLY: the two originally-unguarded reads (connections +
+    # admin-configured providers) still hard-fail the request; the four originally
+    # try/except'd reads still fall back to their defaults on error.
+    #   [0] connections (surfaced as `saved`)          — was unguarded
+    #   [1] ability visibility modes                    — was → {}
+    #   [2] bundled-skill visibility modes              — was → {}
+    #   [3] per-agent DEFAULT visibility (discovery)    — was → None
+    #   [4] per-agent ability ACCESS level              — was → {}
+    #   [5] admin-configured providers                  — was unguarded
+    _r = await asyncio.gather(
+        db.get_agent_connections(agent_id),
+        db.get_agent_ability_modes(agent_id),
+        db.get_agent_skill_modes(agent_id),
+        db.get_agent_discovery_default(agent_id),
+        db.get_agent_ability_access(agent_id),
+        get_admin_configured_providers(user_id),
+        return_exceptions=True,
+    )
+    if isinstance(_r[0], Exception):
+        raise _r[0]
+    if isinstance(_r[5], Exception):
+        raise _r[5]
+    rows = _r[0]
+    _ability_modes = {} if isinstance(_r[1], Exception) else _r[1]
+    _skill_modes = {} if isinstance(_r[2], Exception) else _r[2]
+    _discovery_default = None if isinstance(_r[3], Exception) else _r[3]
+    _ability_access = {} if isinstance(_r[4], Exception) else _r[4]
+    configured_providers = _r[5]
     saved = {r["connection_type"]: r for r in rows}
-
-    # Per-agent ability + skill visibility (visible / discoverable) — surfaced on
-    # each ability connection so the Abilities tab can render its eye toggles.
-    try:
-        _ability_modes = await db.get_agent_ability_modes(agent_id)
-    except Exception:
-        _ability_modes = {}
-    try:
-        _skill_modes = await db.get_agent_skill_modes(agent_id)
-    except Exception:
-        _skill_modes = {}
-    # Per-agent DEFAULT visibility — the fallback applied to an ability with no
-    # explicit per-ability choice, so the Abilities tab shows each ability's TRUE
-    # effective mode (discoverable for a discovery-default agent) rather than a
-    # misleading "visible".
-    try:
-        _discovery_default = await db.get_agent_discovery_default(agent_id)
-    except Exception:
-        _discovery_default = None
-    # Per-agent ability ACCESS level (everyone / registered / admin) — surfaced on
-    # each ability connection so the Abilities tab can render its "Available to"
-    # control. Absent → everyone (no restriction).
-    try:
-        _ability_access = await db.get_agent_ability_access(agent_id)
-    except Exception:
-        _ability_access = {}
-
-    # Only surface integrations the admin has configured (plus the per-agent/
-    # per-user ones that need no admin OAuth setup). Unconfigured providers
-    # are hidden from the agent page entirely so they cannot be toggled on.
-    configured_providers = await get_admin_configured_providers(user_id)
 
     # Fetch auth_elements for all OAuth-backed providers.
     # Maps connection_type → service key stored in auth_elements.
@@ -1944,24 +2237,34 @@ async def get_agent_connections(request: Request, agent_id: str, user_id: str = 
     # signing into Google on Agent A does NOT make Agent B appear connected.
     from app.integrations.oauth_helper import oauth_label
     _label = oauth_label(agent_id)
+    # Pull ALL of this user's auth elements in ONE query, then index by service —
+    # replacing a loop of ~13 per-service remote round-trips (the dominant cost of
+    # this handler on a remote DB). We keep only rows for THIS agent's label, so a
+    # sign-in on Agent A still doesn't make Agent B look connected.
+    _OAUTH_SERVICE_KEYS = set(_OAUTH_PROVIDERS.values())
+    try:
+        _all_elems = await db.auth_element_list(user_id)
+    except Exception:
+        _all_elems = []
     _service_cache: dict[str, dict] = {}
+    for _el in _all_elems:
+        if _el.get("label") != _label:
+            continue
+        sk = _el.get("service")
+        if sk not in _OAUTH_SERVICE_KEYS:
+            continue
+        cfg = _el.get("config", {})
+        if isinstance(cfg, str):
+            try:
+                cfg = _json.loads(cfg)
+            except Exception:
+                cfg = {}
+        _service_cache[sk] = cfg or {}
     provider_auth: dict[str, dict] = {}
     for ct, service_key in _OAUTH_PROVIDERS.items():
-        try:
-            if service_key not in _service_cache:
-                elem = await db.auth_element_get(user_id, service_key, _label)
-                if elem:
-                    cfg = elem.get("config", {})
-                    if isinstance(cfg, str):
-                        cfg = _json.loads(cfg)
-                    _service_cache[service_key] = cfg
-                else:
-                    _service_cache[service_key] = {}
-            cfg = _service_cache[service_key]
-            if cfg:
-                provider_auth[ct] = cfg
-        except Exception:
-            pass
+        cfg = _service_cache.get(service_key) or {}
+        if cfg:
+            provider_auth[ct] = cfg
 
     result = []
     for entry in _CONNECTION_CATALOG:
@@ -2022,6 +2325,111 @@ async def get_agent_connections(request: Request, agent_id: str, user_id: str = 
         result.append(item)
     is_admin = await _is_agent_admin(db, agent_id, user_id)
     return {"connections": result, "user_role": "admin" if is_admin else "member"}
+
+
+_SOFT_SLUG = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
+_SOFT_STATUSES = {"draft", "ready", "disabled", "error"}
+_SOFT_WORKFLOW_ACTIONS = {
+    "tool.call", "credential.ensure", "approval.require", "return",
+}
+
+
+def _validate_soft_ability(body: SoftAbilityRequest) -> List[str]:
+    errors: List[str] = []
+    if not _SOFT_SLUG.fullmatch(body.slug or ""):
+        errors.append("Slug must be 2-64 lowercase letters, numbers, or underscores, starting with a letter.")
+    if not (body.display_name or "").strip():
+        errors.append("Display name is required.")
+    if len(body.skill_body or "") > 50000:
+        errors.append("Skill body is limited to 50,000 characters.")
+    if body.status not in _SOFT_STATUSES:
+        errors.append("Invalid status.")
+    if len(body.allowed_tools) > 100 or any(not isinstance(t, str) or not t.strip() for t in body.allowed_tools):
+        errors.append("Allowed tools must be a list of at most 100 tool names.")
+    if len(set(body.allowed_tools)) != len(body.allowed_tools):
+        errors.append("Allowed tools cannot contain duplicates.")
+    if len(body.credential_schema) > 20:
+        errors.append("Credential schema is limited to 20 entries.")
+    for i, cred in enumerate(body.credential_schema):
+        if not isinstance(cred, dict) or not cred.get("id"):
+            errors.append(f"Credential entry {i + 1} requires an id.")
+            continue
+        if any(key in cred for key in ("value", "secret_value", "password_value", "token_value")):
+            errors.append(f"Credential entry {i + 1} contains a secret value; store only field metadata here.")
+        if cred.get("type") not in (None, "vault", "oauth"):
+            errors.append(f"Credential entry {i + 1} has an unsupported type.")
+    steps = (body.workflow or {}).get("steps", [])
+    if not isinstance(steps, list) or len(steps) > 100:
+        errors.append("Workflow steps must be a list containing at most 100 entries.")
+    else:
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict) or step.get("action") not in _SOFT_WORKFLOW_ACTIONS:
+                errors.append(f"Workflow step {i + 1} has an unsupported action.")
+            elif step.get("action") == "tool.call" and step.get("tool") not in body.allowed_tools:
+                errors.append(f"Workflow step {i + 1} calls a tool not present in allowed_tools.")
+    if body.status == "ready" and not (body.skill_body or "").strip():
+        errors.append("A ready ability must include a skill body.")
+    return errors
+
+
+@router.get("/agents/{agent_id}/soft-abilities")
+async def list_soft_abilities(request: Request, agent_id: str, user_id: str = Query(...)):
+    db = get_db()
+    user_id = await assert_caller_is(request, user_id)
+    if not await _is_agent_admin(db, agent_id, user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can view custom abilities.")
+    return {"abilities": await db.get_agent_soft_abilities(agent_id)}
+
+
+@router.post("/agents/{agent_id}/soft-abilities")
+async def create_soft_ability(agent_id: str, body: SoftAbilityRequest, request: Request):
+    db = get_db()
+    body.user_id = await assert_caller_is(request, body.user_id)
+    if not await _is_agent_admin(db, agent_id, body.user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can create custom abilities.")
+    errors = _validate_soft_ability(body)
+    if errors:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+    try:
+        row = await db.upsert_agent_soft_ability({
+            **body.model_dump(exclude={"user_id"}), "agent_id": agent_id,
+            "created_by": body.user_id,
+        })
+    except Exception as exc:
+        if "UNIQUE" in str(exc).upper():
+            raise HTTPException(status_code=409, detail="That custom ability slug is already in use.")
+        raise
+    return {"ability": row}
+
+
+@router.put("/agents/{agent_id}/soft-abilities/{ability_id}")
+async def update_soft_ability(agent_id: str, ability_id: str, body: SoftAbilityRequest, request: Request):
+    db = get_db()
+    body.user_id = await assert_caller_is(request, body.user_id)
+    if not await _is_agent_admin(db, agent_id, body.user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can edit custom abilities.")
+    existing = next((r for r in await db.get_agent_soft_abilities(agent_id) if r["id"] == ability_id), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Custom ability not found.")
+    errors = _validate_soft_ability(body)
+    if errors:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+    row = await db.upsert_agent_soft_ability({
+        **body.model_dump(exclude={"user_id"}), "id": ability_id,
+        "agent_id": agent_id, "created_by": existing.get("created_by") or body.user_id,
+    })
+    return {"ability": row}
+
+
+@router.delete("/agents/{agent_id}/soft-abilities/{ability_id}")
+async def delete_soft_ability(agent_id: str, ability_id: str, request: Request, user_id: str = Query(...)):
+    db = get_db()
+    user_id = await assert_caller_is(request, user_id)
+    if not await _is_agent_admin(db, agent_id, user_id):
+        raise HTTPException(status_code=403, detail="Only agent admins can delete custom abilities.")
+    if not await db.delete_agent_soft_ability(agent_id, ability_id):
+        raise HTTPException(status_code=404, detail="Custom ability not found.")
+    return {"status": "ok"}
 
 
 @router.put("/agents/{agent_id}/connections/{connection_type}")
@@ -2615,12 +3023,20 @@ async def set_agent_user_mode(agent_id: str, req: _SetUserModeRequest, request: 
 
 
 @router.post("/agents/{agent_id}/anon-session")
-async def create_anon_session(agent_id: str, req: AnonSessionRequest):
+async def create_anon_session(agent_id: str, req: AnonSessionRequest, request: Request):
     """
     Create an anonymous session for a public agent URL visitor.
     No JWT required. Returns a token so the visitor can chat.
     """
     import uuid as _uuid_mod
+    # Abuse guard: this endpoint is unauthenticated and mints usable chat tokens,
+    # so an open flood here is free LLM spend on the owner. Cap per client IP.
+    # (Defence-in-depth; pair with an edge limiter for multi-instance.) See the
+    # security audit's CRITICAL finding + app/api/rate_limit.py.
+    from app.api.rate_limit import enforce, client_ip, anon_session_limits
+    _smax, _swin = anon_session_limits()
+    enforce(f"anon-session:{client_ip(request)}", _smax, _swin,
+            detail="Too many chat sessions started from your network. Please wait a moment.")
     db = get_db()
 
     agent = await db.get_agent_by_id(agent_id)
@@ -2650,6 +3066,56 @@ async def create_anon_session(agent_id: str, req: AnonSessionRequest):
         "user_id": identity.user_id,
         "session_id": identity.user_id,
     }
+
+
+@router.get("/agents/{agent_id}/embed")
+async def get_agent_embed(agent_id: str, request: Request):
+    """Public embed descriptor for a website widget.
+
+    No auth: everything returned is presentation-only (display config + the
+    copy-paste snippet), so both the standalone /embed/<agent_id> page and an
+    owner's config UI read the same source. The domain allowlist is deliberately
+    NOT included — it's enforced server-side via the page's CSP header, never
+    trusted to the client. ``embeddable`` folds the two gates a visitor must
+    pass: the owner turned the widget on AND the agent accepts anonymous chat."""
+    from app.api.embed_config import public_embed_config, build_embed_snippet
+    db = get_db()
+    agent = await db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    cfg = public_embed_config(agent)
+    origin = str(request.base_url).rstrip("/")
+    fwd_proto = request.headers.get("x-forwarded-proto", "")
+    if fwd_proto and origin.startswith("http://"):
+        from app.admin.integrations import _is_trusted_proxy
+        if _is_trusted_proxy(request):
+            origin = "https://" + origin[len("http://"):]
+    anon_ok = (agent.get("user_mode") or "anonymous") == "anonymous"
+    payload = {
+        "agent_id": agent_id,
+        "agent_name": agent.get("name") or "Agent",
+        "agent_icon": cfg.get("agent_icon") or "bot",
+        "enabled": bool(cfg.get("enabled")),
+        "anonymous_chat": anon_ok,
+        "embeddable": bool(cfg.get("enabled")) and anon_ok,
+        "config": cfg,
+        "snippet": build_embed_snippet(origin, agent_id, cfg),
+    }
+    return JSONResponse(
+        content=payload,
+        headers={
+            # Open CORS by design: the embed loader fetches this descriptor from
+            # the CUSTOMER's site (any origin) with no credentials, and everything
+            # here is public presentation data. Granting "*" means a client can
+            # paste the snippet and the widget works with ZERO per-client server
+            # config — no WEBAGENT_ALLOWED_ORIGINS, no restart. The real security
+            # gate (who may FRAME the chat page) stays server-side via the embed
+            # page's CSP frame-ancestors from the agent's allowed_domains; the
+            # allowlist is deliberately stripped from this payload.
+            "Access-Control-Allow-Origin": "*",
+            "Vary": "Origin",
+        },
+    )
 
 
 # ── Per-agent OAuth Abilities (3-tier OAuth system) ──────────────────────

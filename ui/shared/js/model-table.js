@@ -1,14 +1,16 @@
 'use strict';
 
+import { makeRowsReorderable } from './ordering.js';
+
 // COLOR SCHEME → ui/shared/css/design-system.css (single source of truth).
 // Don't write hex/rgb colour literals when styling elements. CSS variables resolve
 // inside inline styles, so use e.g. el.style.background = 'rgba(var(--brand-rgb), 0.12)'.
 
 /**
  * Shared LLM model-table component — the "Models" configurator + saved-models
- * list (Text / In / Out capability columns + token usage) used in TWO places:
+ * list (Standard / Premium / Vision / Image capability columns + token usage) used in TWO places:
  *
- *   • Admin → Agent Settings → Models   (ui/admin-tools/app-config/agent-settings/agent-settings.js)
+ *   • Admin → Agent Settings → Models   (ui/admin-tools/instances/app-config/agent-settings/agent-settings.js)
  *   • Agent card → Config tab → LLM     (ui/main-panel/agents/js/tab-config.js)
  *
  * ╔══════════════════════════════════════════════════════════════════════════╗
@@ -29,18 +31,8 @@
  *     loadConfig()              → { provider, base_url, api_key, model,
  *                                   text_capable, image_capable, image_out_capable,
  *                                   providers:[...] }   (the saved roster)
- *     saveSingle(single)        → persist the DEFAULT model (provider/url/key/model + caps);
- *                                 also fired when a "Default" radio in the saved list is picked
+ *     saveSingle(single)        → persist the initial model configuration (provider/url/key/model + caps)
  *     saveRoster({providers})   → persist the saved-models list
- *     saveInheritedOverride?(p) → (per-agent table only) persist this agent's
- *                                 chosen subset of an INHERITED app-default model.
- *                                 `p` carries the row's current capability flags
- *                                 (enabled / use_for_image / use_for_image_out /
- *                                 high_effort_capable) + `_ovrKey`. Inherited rows
- *                                 carry `_ceiling` ({text,image_in,image_out,effort})
- *                                 = the admin's app-wide allowance; a box the admin
- *                                 left off stays greyed (can't exceed it), a box the
- *                                 admin enabled is unticked to opt this agent out.
  *     loadPresets?()            → { key: {name, base_url} }     (default: /admin/settings/providers)
  *     fetchModels?({provider, api_key, base_url}) → { models:[...], error? }
  *     fetchModelInfo?(model)    → { info }                       (default: /admin/settings/model-info)
@@ -219,13 +211,8 @@ function guardCapToggle(cb, { writeFlag, save, afterChange }) {
     });
 }
 
-let _mtInstanceSeq = 0;
-
 export function mountModelTable(host, opts = {}) {
   const adapter = opts.adapter || {};
-  // Unique radio group name for THIS table instance's "Default" column, so two
-  // mounts on the same page never share a radio group.
-  const defaultRadioName = 'mt-default-' + (++_mtInstanceSeq);
   const fetchFn = opts.fetchFn || ((...a) => window.fetch(...a));
   const apiPath = opts.apiPath || ((p) => p);
   const features = opts.features || {};
@@ -233,6 +220,11 @@ export function mountModelTable(host, opts = {}) {
   // 'user' (default) shows only the current user's usage for each model; 'global'
   // (admin Agent Settings) sums every agent, user, and background task app-wide.
   const usageScope = opts.usageScope || 'user';
+  // Inherited (app-default) rows are pure references: always visible, read-only.
+  // Roles are decided by the app default; an agent's own model can take a role
+  // away from an inherited row (single-assignment) and the inherited row sinks —
+  // but no per-agent override copy is ever created. The admin Agent Settings
+  // panel manages the app defaults themselves.
 
   // ── instance state ──
   const S = {
@@ -245,7 +237,6 @@ export function mountModelTable(host, opts = {}) {
     providers: [],              // the saved roster (each gets a _uid)
     inherited: [],              // read-only app-default rows (per-agent table only)
     uid: 0,
-    defaultUid: null,           // _uid of the row currently picked as the default
   };
   let fetchDebounce = null, autosaveDebounce = null;
   let modelsBusy = 0;   // >0 while the provider's available-model list is loading (drives the + button spinner)
@@ -400,6 +391,42 @@ export function mountModelTable(host, opts = {}) {
   // the agent runs a single default model, switchable per-chat by the user).
   if (typeof opts.advancedExtra === 'function') opts.advancedExtra(advBody);
 
+  // ── Skeleton placeholder — shown while saved-models data loads ────────────
+  // Mimics the saved-models header + 3 phantom rows with sk-shimmer so the user
+  // sees structure (not just the Advanced/+ buttons) during the async fetch.
+  const GRID = '20px minmax(0, 1fr) auto 38px 28px';
+  const skelRoot = document.createElement('div');
+  skelRoot.className = 'ac-model-skeleton';
+  skelRoot.style.display = 'none';
+  // Header
+  const skelHead = document.createElement('div');
+  skelHead.className = 'ac-ability-row ac-saved-head ac-saved-row';
+  skelHead.style.gridTemplateColumns = GRID;
+  skelHead.innerHTML = '<span></span><span class="ac-ability-label"><span class="ac-saved-th">Model</span></span>'
+    + '<span class="ac-saved-flags"></span>'
+    + '<span class="ac-saved-th ac-saved-usage-th">Usage</span>'
+    + '<span class="ac-saved-cap ac-saved-th" style="font-size:10px;font-weight:700;letter-spacing:0.4px;color:var(--fg-3);">More</span>';
+  skelRoot.appendChild(skelHead);
+  // Phantom rows — variable-width shimmer lines for model names, a short line for
+  // the flags, stacked short lines for usage, and a line for the More button.
+  const SKEL_NAMES = ['gpt-4o', 'claude-sonnet-4', 'claude-3-haiku'];
+  for (let i = 0; i < 3; i++) {
+    const row = document.createElement('div');
+    row.className = 'ac-ability-row ac-saved-row';
+    row.style.gridTemplateColumns = GRID;
+    const nmSpan = 50 + Math.round((SKEL_NAMES[i].length / 14) * 40);
+    row.innerHTML = '<span></span>'
+      + `<span class="ac-ability-label"><span class="sk-shimmer sk-line" style="width:${nmSpan}%"></span></span>`
+      + '<span></span>'
+      + '<span class="ac-saved-usage" style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
+      + '<span class="sk-shimmer sk-line" style="width:70%;height:8px"></span>'
+      + '<span class="sk-shimmer sk-line" style="width:55%;height:8px"></span>'
+      + '<span class="sk-shimmer sk-line" style="width:40%;height:8px"></span></span>'
+      + '<span class="ac-saved-cap"><span class="sk-shimmer sk-line" style="width:18px;height:12px"></span></span>';
+    skelRoot.appendChild(row);
+  }
+  table.appendChild(skelRoot);
+
   table.appendChild(advRow);
   root.appendChild(table);
 
@@ -429,9 +456,10 @@ export function mountModelTable(host, opts = {}) {
   function renderDetectedCaps(m) {
     if (!m) { capsEl.innerHTML = ''; return; }
     const caps = [
-      ['Text', m.text_capable !== false],
-      ['Image-in', !!m.image_capable],
-      ['Image-out', !!m.image_out_capable],
+      ['Standard', m.text_capable !== false],
+      ['Vision', !!m.image_capable],
+      ['Image', !!m.image_out_capable],
+      ['Voice', !!m.voice_capable],
     ];
     capsEl.innerHTML = caps.map(([label, on]) => `<span class="ac-cap-badge ${on ? 'on' : 'off'}">${label}</span>`).join('');
   }
@@ -452,10 +480,11 @@ export function mountModelTable(host, opts = {}) {
       const badges = [ctx, price].filter(Boolean).map(t => `<span class="ac-model-badge">${esc(t)}</span>`).join('');
       item.innerHTML = `<div class="ac-model-item-row"><span style="font-weight:500;">${esc(m.id)}</span>`
         + `<span style="color:var(--fg-3);font-size:11px;margin-left:6px;">${esc(m.name || '')}</span></div>`
-        + (badges ? `<div class="ac-model-item-badges">${badges}</div>` : '');
+        + (badges ? `<div class="ac-model-item-badges">${badges}</div>` : '')
+        + `<div class="ac-model-item-caps">${['Standard','Vision','Image','Voice'].filter(c => m[{'Standard':'text_capable','Vision':'image_capable','Image':'image_out_capable','Voice':'voice_capable'}[c]]).map(c => `<span class="ac-cap-badge on" style="font-size:9px;">${c}</span>`).join('')}</div>`;
       item.addEventListener('click', () => {
         S.selectedModel = m.id; modelSearch.value = m.id; modelDd.style.display = 'none';
-        S.selCaps = { text: m.text_capable !== false, image: !!m.image_capable, imageOut: !!m.image_out_capable };
+        S.selCaps = { text: m.text_capable !== false, image: !!m.image_capable, imageOut: !!m.image_out_capable, voice: !!m.voice_capable };
         renderDetectedCaps(m);
         setModelStatus(`Selected: ${m.id}`, true);
         autosaveSingle(modelCheck);
@@ -487,7 +516,7 @@ export function mountModelTable(host, opts = {}) {
       setModelStatus(S.allModels.length ? `${S.allModels.length} models available. Type to filter.` : 'No models available.');
       if (S.selectedModel) {
         const sel = S.allModels.find(m => m.id === S.selectedModel);
-        if (sel) { S.selCaps = { text: sel.text_capable !== false, image: !!sel.image_capable, imageOut: !!sel.image_out_capable }; renderDetectedCaps(sel); }
+        if (sel) { S.selCaps = { text: sel.text_capable !== false, image: !!sel.image_capable, imageOut: !!sel.image_out_capable, voice: !!sel.voice_capable }; renderDetectedCaps(sel); }
       }
     } finally {
       setAddBusy(false);
@@ -513,6 +542,7 @@ export function mountModelTable(host, opts = {}) {
       providers: S.providerConfigs,
       text_capable: S.selCaps.text, image_capable: S.selCaps.image,
       image_out_capable: S.selCaps.imageOut,
+      voice_capable: S.selCaps.voice,
     };
     if (!single.api_key) return;                 // nothing persistable yet
     markSaving(checkEl);
@@ -541,30 +571,6 @@ export function mountModelTable(host, opts = {}) {
     else cb.addEventListener('change', () => onChange(cb.checked, cb));
     cell.appendChild(cb); return cell;
   }
-  // Inherited (app-default) capability cell with a CEILING. The admin's global
-  // checkboxes are the maximum: a capability the admin left OFF stays greyed +
-  // disabled here (this agent can't exceed the app-wide allowance — managed in
-  // Admin → Agent Settings), while a capability the admin turned ON is a live
-  // checkbox the per-agent admin can untick to OPT THIS AGENT OUT of it. Default
-  // (untouched) is ON, so an agent keeps every globally-available capability until
-  // someone narrows it. Unticking every box = this agent won't use the model at all.
-  function capCellInherited(ceilingOn, checked, title, onChange) {
-    const cell = document.createElement('span');
-    cell.className = 'ac-saved-cap';
-    cell.addEventListener('click', e => e.stopPropagation());
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.style.cssText = 'width:15px;height:15px;accent-color:var(--accent);cursor:pointer;';
-    if (!ceilingOn) {
-      cb.disabled = true; cb.checked = false; cb.style.cursor = 'default'; cb.style.opacity = '0.4';
-      cb.title = title + ' (not enabled app-wide — managed in Admin → Agent Settings)';
-    } else {
-      cb.checked = !!checked;
-      cb.title = title + ' (inherited app default — untick to opt this agent out)';
-      cb.addEventListener('change', () => onChange(cb.checked, cb));
-    }
-    cell.appendChild(cb); return cell;
-  }
   function usageLine(title) {
     const line = document.createElement('span'); line.className = 'ac-saved-usage-line'; line.title = title;
     const val = document.createElement('span'); val.className = 'ac-saved-usage-v'; val.textContent = '—';
@@ -579,6 +585,23 @@ export function mountModelTable(host, opts = {}) {
     }
     const c = (u && u.total_cost_cents) || 0;
     return c >= 100 ? `$${(c / 100).toFixed(2)}` : `${c}¢`;
+  }
+  // Build one role toggle row inside the floating popover: label + capability checkbox.
+  // Mirrors the look of the session-dropdown more-menu info rows.
+  // `locked` disables the checkbox; `lockHint` explains WHY it's locked (or, for
+  // an editable inherited row, what editing it does).
+  function _buildRoleToggle(parent, capable, checked, label, tooltip, onChange, locked, lockHint) {
+    const row = document.createElement('div'); row.className = 'ac-saved-role-row';
+    const lbl = document.createElement('span'); lbl.className = 'ac-saved-role-label';
+    lbl.textContent = label;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = capable && checked; cb.title = tooltip;
+    cb.style.cssText = 'width:15px;height:15px;accent-color:var(--accent);cursor:pointer;flex-shrink:0;';
+    if (!capable) { cb.disabled = true; cb.checked = false; cb.style.cursor = 'default'; cb.style.opacity = '0.4'; cb.title = tooltip + ' (not supported by this model)'; }
+    else if (locked) { cb.disabled = true; cb.style.cursor = 'default'; cb.style.opacity = '0.4'; cb.title = tooltip + (lockHint || ' (app default — read-only)'); }
+    else cb.addEventListener('change', () => onChange(cb.checked, cb));
+    row.appendChild(lbl); row.appendChild(cb);
+    parent.appendChild(row);
   }
   const usageCache = {}, metaCache = {};
   // A model can appear as BOTH an inherited (app-wide) row and the agent's own
@@ -595,6 +618,68 @@ export function mountModelTable(host, opts = {}) {
       if (statOut) statOut.textContent = fmtTokens(u.total_output_tokens);
       if (statCost) statCost.textContent = fmtUsageCost(u);
     }
+  }
+
+  // Saved rows are rebuilt when their role-based sort order changes. Keep their
+  // stable _uid positions so those rebuilds can use a FLIP-style transition:
+  // existing rows slide to their new slots while a newly added row fades in.
+  // The advanced action row is included because it moves with the list length.
+  const SAVED_MOTION_MS = 220;
+  function _savedMotionEnabled() {
+    return typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      && typeof advRow.animate === 'function';
+  }
+  function _savedMotionNodes() {
+    return [
+      ...table.querySelectorAll('.ac-saved-injected[data-mt-uid]'),
+      advRow,
+    ];
+  }
+  function _savedMotionKey(node) {
+    return node === advRow ? '__advanced__' : String(node.dataset.mtUid || '');
+  }
+  function _snapshotSavedLayout() {
+    const positions = new Map();
+    _savedMotionNodes().forEach(node => positions.set(_savedMotionKey(node), node.getBoundingClientRect()));
+    return positions;
+  }
+  function _animateSavedLayout(before, enteringUids = []) {
+    if (!_savedMotionEnabled()) return;
+    const entering = new Set(enteringUids.map(String));
+    _savedMotionNodes().forEach(node => {
+      const key = _savedMotionKey(node);
+      if (entering.has(key)) {
+        node.animate(
+          [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'translateY(0)' }],
+          { duration: SAVED_MOTION_MS, easing: 'ease-out' },
+        );
+        return;
+      }
+      const previous = before.get(key);
+      if (!previous) return;
+      const current = node.getBoundingClientRect();
+      const deltaY = previous.top - current.top;
+      if (Math.abs(deltaY) < 0.5) return;
+      node.animate(
+        [{ transform: `translateY(${deltaY}px)` }, { transform: 'translateY(0)' }],
+        { duration: SAVED_MOTION_MS, easing: 'cubic-bezier(.2,.8,.2,1)' },
+      );
+    });
+  }
+  function _fadeSavedRow(node, fadeIn = false) {
+    if (!node || !_savedMotionEnabled()) return Promise.resolve();
+    node.getAnimations().forEach(animation => animation.cancel());
+    const frames = fadeIn
+      ? [{ opacity: 0, transform: 'translateX(-8px)' }, { opacity: 1, transform: 'translateX(0)' }]
+      : [{ opacity: 1, transform: 'translateX(0)' }, { opacity: 0, transform: 'translateX(-8px)' }];
+    const animation = node.animate(frames, {
+      duration: 180,
+      easing: 'ease-out',
+      fill: fadeIn ? 'none' : 'forwards',
+    });
+    return animation.finished.catch(() => {});
   }
   async function loadSavedDetail(p, body, statIn, statOut, statCost, readOnly) {
     await fillUsage(p, statIn, statOut, statCost, readOnly);
@@ -619,6 +704,7 @@ export function mountModelTable(host, opts = {}) {
       + `<span class="ac-cap-badge ${p.text_capable !== false ? 'on' : 'off'}">Text</span>`
       + `<span class="ac-cap-badge ${p.image_capable ? 'on' : 'off'}">Image-in</span>`
       + `<span class="ac-cap-badge ${p.image_out_capable ? 'on' : 'off'}">Image-out</span>`
+      + `<span class="ac-cap-badge ${p.voice_capable ? 'on' : 'off'}">Voice</span>`
       + `<span class="ac-cap-badge ${p.high_effort_capable ? 'on' : 'off'}">Text +</span></div>`;
     const desc = meta.description ? `<div class="ac-model-meta-desc" style="margin-top:8px;">${esc(meta.description)}</div>` : '';
     // Provider now lives here (lifted off the one-line row).
@@ -628,23 +714,35 @@ export function mountModelTable(host, opts = {}) {
       + (chips ? '' : '<div class="ac-hint" style="margin:8px 0 0;">No token or cost data available for this model.</div>');
     if (readOnly) {
       const note = document.createElement('div'); note.className = 'ac-hint'; note.style.margin = '8px 0 0';
-      note.textContent = 'Inherited from the app default — managed in Admin → Agent Settings.';
+      note.textContent = 'Inherited from the app default — managed in Admin → Agent Settings. A role can be taken by one of this agent\'s own models.';
       body.appendChild(note);
       return;
     }
     const delWrap = document.createElement('div'); delWrap.className = 'ac-saved-del-row';
     const delBtn = document.createElement('button'); delBtn.className = 'ac-btn ac-btn-ghost ac-saved-del-btn';
     delBtn.textContent = 'Remove model'; delBtn.style.color = 'var(--danger)';
-    delBtn.addEventListener('click', e => {
+    delBtn.addEventListener('click', async e => {
       e.stopPropagation();
+      delBtn.disabled = true;
+      const removedIndex = S.providers.findIndex(x => x._uid === p._uid);
+      const removed = S.providers[removedIndex];
       S.providers = S.providers.filter(x => x._uid !== p._uid);
-      Promise.resolve(adapter.saveRoster({ providers: S.providers }));
-      // Remove ONLY this row's node — no list rebuild, so scroll stays put.
       const node = table.querySelector(`.ac-saved-injected[data-mt-uid="${p._uid}"]`);
-      if (node) node.remove();
-      // If the list is now empty (no own rows and nothing inherited), drop the header.
-      if (!S.providers.length && !(S.inherited || []).length) {
-        table.querySelectorAll('.ac-saved-head').forEach(n => n.remove());
+      const fade = _fadeSavedRow(node);
+      try {
+        await adapter.saveRoster({ providers: S.providers });
+        await fade;
+        // Rebuild after the faded row leaves so every remaining row animates to
+        // its new position, including role-sorted rows above/below the deletion.
+        renderSaved({ animate: true });
+      } catch (err) {
+        await fade;
+        // Restore the exact roster position and fade the still-present row back
+        // in when persistence fails.
+        if (removed) S.providers.splice(Math.max(0, removedIndex), 0, removed);
+        await _fadeSavedRow(node, true);
+        delBtn.disabled = false;
+        _flashSaveCheck(node, false, (err && err.message) || 'Remove failed');
       }
     });
     delWrap.appendChild(delBtn); body.appendChild(delWrap);
@@ -656,200 +754,228 @@ export function mountModelTable(host, opts = {}) {
     }
   }
 
-  // The normalized provider key for the configurator's current single config —
-  // '_custom' maps to the stored 'custom'. Used to match a roster row against the
-  // top-level default so the right "Default" radio shows checked.
-  function _curProviderKey() { return S.currentProvider === '_custom' ? 'custom' : S.currentProvider; }
-
-  // Which roster row IS the current default? The default is the top-level single
-  // config (S.selectedModel + provider/base_url). Match on model, disambiguating
-  // by provider + base_url when several rows share a model id.
-  function _defaultRowUid(rows) {
-    const cands = rows.filter(r => r.p.model && r.p.model === S.selectedModel);
-    if (!cands.length) return null;
-    if (cands.length === 1) return cands[0].p._uid;
-    const curProv = _curProviderKey(), curUrl = (urlInput.value || '').trim();
-    const exact = cands.find(r => (r.p.provider || 'custom') === curProv && (r.p.base_url || '') === curUrl);
-    return (exact || cands[0]).p._uid;
-  }
-
-  // Whether a row may be picked as the default brain: it must have a model, be
-  // Text-capable, AND have its Text column checked on (p.enabled). An In/Out-only
-  // worker — or a Text model with Text unticked — can't be the default.
-  function _canBeDefault(p) {
-    return !!p.model && p.text_capable !== false && p.enabled !== false;
-  }
-
   // One "Default" radio cell. Any Text-checked model (a brain candidate) is
   // selectable — INCLUDING inherited app-default rows, so a per-agent admin can
   // pick which model this agent runs by default among the Text options (mirroring
   // the admin Models table). Non-Text rows show a GREYED, disabled radio (never an
   // empty slot). Picking a row makes it the agent/app default via the saveSingle
   // path; inherited picks reference the app credentials (see setDefaultRow).
-  function defaultCell(p, checked, readOnly) {
-    const cell = document.createElement('span');
-    cell.className = 'ac-saved-cap';
-    cell.addEventListener('click', e => e.stopPropagation());
-    const rb = document.createElement('input');
-    rb.type = 'radio'; rb.name = defaultRadioName;
-    rb.className = 'ac-saved-def-input';
-    rb.style.cssText = 'width:15px;height:15px;accent-color:var(--accent);cursor:pointer;';
-    const eligible = _canBeDefault(p);
-    rb.checked = !!checked && eligible;
-    if (!eligible) {
-      rb.disabled = true; rb.style.cursor = 'default'; rb.style.opacity = '0.4';
-      rb.title = 'Tick the Text column to make this model selectable as the default';
-    } else {
-      rb.title = 'Use as the default model (the user can switch it per chat)';
-    }
-    // Wire the change handler unconditionally (a disabled radio can't fire it) and
-    // gate the action on live eligibility — so a row whose Text gets ticked AFTER
-    // render (which un-disables this radio via the Text toggle) becomes pickable
-    // too, instead of silently doing nothing. The handler is attached once here;
-    // no re-wiring on toggle, so it can't double-fire.
-    rb.addEventListener('change', () => {
-      if (rb.checked && _canBeDefault(p)) setDefaultRow(p, cell);
-    });
-    cell.appendChild(rb);
-    return cell;
-  }
-
   // Promote a roster row to the default brain: mirror its provider/model/key/caps
   // into the configurator's single-config slots (as reload() does) and persist via
   // saveSingle. No list rebuild — the "Default" radios share one group, so the
   // browser already moved the selection in place; re-rendering here would collapse
   // and re-expand the list and jump the scroll position.
-  async function setDefaultRow(p, slotEl) {
-    const prevDefaultUid = S.defaultUid;
-    // Inherited (app-default) rows reference the APP's credentials — don't copy the
-    // admin's api_key into the agent's own config, or a later key rotation would
-    // strand the agent. We store provider/base_url/model and leave the key blank so
-    // the backend inherits the live app key (_merge_agent_override keeps base's key
-    // when the override doesn't set one).
-    const isInherited = !!p._ceiling;
-    S.selectedModel = p.model || '';
-    S.selCaps = { text: p.text_capable !== false, image: !!p.image_capable, imageOut: !!p.image_out_capable };
-    S.currentProvider = (p.provider && S.presets[p.provider]) ? p.provider : '_custom';
-    provSel.value = S.currentProvider;
-    urlInput.value = p.base_url || '';
-    if (p.api_key && !isInherited) keyInput.value = p.api_key;
-    modelSearch.value = S.selectedModel;
-    renderDetectedCaps({ text_capable: S.selCaps.text, image_capable: S.selCaps.image, image_out_capable: S.selCaps.imageOut });
-    // Saving feedback rides ON TOP of the clicked Default radio (matching the
-    // capability boxes); falls back to the configurator's side tick if no cell.
-    if (slotEl) _markSaving(slotEl); else markSaving(modelCheck);
-    try {
-      await adapter.saveSingle({
-        provider: (p.provider === '_custom' || !p.provider) ? 'custom' : p.provider,
-        base_url: p.base_url || '', api_key: isInherited ? '' : (p.api_key || ''), model: p.model,
-        providers: S.providerConfigs,
-        text_capable: p.text_capable !== false, image_capable: !!p.image_capable, image_out_capable: !!p.image_out_capable,
-      });
-      S.defaultUid = p._uid;
-      if (slotEl) _flashSaveCheck(slotEl, true); else flashCheck(modelCheck, true);
-      onModelChange();
-    } catch (e) {
-      if (slotEl) _flashSaveCheck(slotEl, false, e.message); else flashCheck(modelCheck, false, e.message);
-      // Save failed — the browser already moved the radio, so snap the selection
-      // back to the previously-default row so the column stays truthful.
-      table.querySelectorAll(`input[name="${defaultRadioName}"]`).forEach(rb => { rb.checked = false; });
-      const prevNode = table.querySelector(`.ac-saved-injected[data-mt-uid="${prevDefaultUid}"] .ac-saved-def-input`);
-      if (prevNode) prevNode.checked = true;
-    }
+  // Column template shared by the saved-list header and every row.
+  // The "More" column is a ⋮ button that opens a floating popover with
+  // role toggles and space for future per-model controls (mirroring the chat
+  // header more-menu pattern). Order: Drag · Model · Flags · Usage · More
+  const SAVED_GRID = '20px minmax(0, 1fr) auto 38px 28px';
+
+  // ── Role flag definitions ─────────────────────────────────────────────
+  // Each role gets a small 10×10 square avatar shown in the header when no
+  // model holds it, or on the model's row when assigned. Order controls the
+  // left-to-right display.
+  const ROLE_FLAGS = [
+    { key: 'enabled',              symbol: 'S',     title: 'Standard — primary chat model' },
+    { key: 'high_effort_capable',  symbol: 'P',     title: 'Premium — harder tasks' },
+    { key: 'use_for_image',        symbol: '👁',   title: 'Vision — read images' },
+    { key: 'use_for_image_out',    symbol: '🖼',    title: 'Image — generate images' },
+    { key: 'use_for_system',       symbol: '⚙',    title: 'System — app misc. LLM tasks' },
+    { key: 'use_for_voice',        symbol: '🎤',   title: 'Voice — LLM voice input' },
+  ];
+
+  /** Render a single 10×10 flag box. */
+  function _flagDom(symbol, title) {
+    const box = document.createElement('span');
+    box.className = 'ac-role-flag';
+    box.textContent = symbol;
+    box.title = title;
+    return box;
   }
 
-  // Column template shared by the saved-list header and every row.
-  // Order: Model · Def · Txt · Txt+ · In · Out · Usage — the Default toggle sits
-  // immediately left of the capability columns rather than out on the far left.
-  // (Txt+ = a premium / more-capable model the agent can upgrade onto; not to be
-  // confused with provider reasoning "effort" levels — min/low/med/high.)
-  const SAVED_GRID = 'minmax(0, 1fr) 28px 28px 28px 28px 28px 38px';
+  /** Compute which roles are unassigned (header) vs assigned to each model.
+   *  Returns { headerFlags: [...], rowFlags: { uid: [...] } }. */
+  function _computeFlags() {
+    const allRows = [...S.inherited, ...S.providers];
+    const assigned = new Set();  // role keys that SOME model holds
+    const rowMap = {};           // uid → role keys this row holds
+    allRows.forEach(p => {
+      const keys = [];
+      ROLE_FLAGS.forEach(rf => {
+        if (p[rf.key]) { keys.push(rf.key); assigned.add(rf.key); }
+      });
+      if (keys.length) rowMap[p._uid] = keys;
+    });
+    const headerFlags = ROLE_FLAGS.filter(rf => !assigned.has(rf.key));
+    return { headerFlags, rowMap };
+  }
 
   // Build + insert ONE saved-model row (just before the configurator anchor) and
-  // kick off its usage fetch. Returns the rowWrap. Capability toggles and the
+  // kick off its usage fetch. Capability toggles and the
   // default radio persist IN PLACE — no list rebuild — so editing a row never
   // collapses the table or disturbs the scroll position.
-  function _buildSavedRow(p, readOnly, checked, cfgAnchor) {
-    const rowWrap = document.createElement('div'); rowWrap.className = 'ac-row ac-saved-injected';
+  function _buildSavedRow(p, readOnly, checked, cfgAnchor, rolesEditable) {
+    const isRoleAssigned = !!(p.enabled || p.high_effort_capable || p.use_for_image || p.use_for_image_out || p.use_for_system || p.use_for_voice);
+    const rowWrap = document.createElement('div'); rowWrap.className = 'ac-row ac-saved-injected' + (readOnly ? ' ac-saved-inherited' : ' ac-saved-own') + (isRoleAssigned ? ' ac-saved-role' : '');
     rowWrap.dataset.mtUid = p._uid;
+    rowWrap.dataset.id = String(p._uid);  // for makeRowsReorderable's rowIdList()
     const row = document.createElement('div'); row.className = 'ac-ability-row ac-saved-row';
     row.style.gridTemplateColumns = SAVED_GRID;
+    // Role-assigned rows stay fixed at the top. Only custom, agent-owned rows
+    // may be reordered.
+    if (!readOnly && !isRoleAssigned) {
+      const grip = document.createElement('span');
+      grip.className = 'ac-saved-drag-handle';
+      grip.title = 'Drag to reorder';
+      grip.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="18" x2="16" y2="18"/></svg>';
+      row.appendChild(grip);
+    } else {
+      row.appendChild(document.createElement('span')); // fixed-role/read-only slot
+    }
     // Single-line label: just the model name (the provider moved into the expanded
     // detail panel, so the row stays one line tall).
     const label = document.createElement('span'); label.className = 'ac-ability-label ac-saved-name-click';
     label.title = 'Show usage details';
-    const badge = readOnly ? ' <span class="ac-cap-badge on" title="Inherited from the app default" style="margin-left:6px;">Inherited</span>' : '';
+    const badge = readOnly
+      ? ' <span class="ac-cap-badge on" title="Inherited from the app default — read-only reference" style="margin-left:6px;">Inherited</span>'
+      : '';
     label.innerHTML = `<span class="ac-ability-name ac-saved-model-name">${esc(p.model || '—')}${badge}</span>`;
     row.appendChild(label);
-    // Default toggle sits just left of the capability columns.
-    const defCell = defaultCell(p, checked, readOnly);
-    const defInput = defCell.querySelector('.ac-saved-def-input');
-    row.appendChild(defCell);
-    // Persist a capability change without rebuilding the list — behind the
-    // hold-to-cancel guard so an accidental double-click can't flip it back. The
-    // box locks the moment it's ticked (hazard triangle on top); the save runs,
-    // then settles to a green ✓ (or an orange ⚠ + revert on failure). A deliberate
-    // long-press of the triangle reverts the box and saves the reverted value.
-    // `afterChange` re-syncs dependent UI (default-radio eligibility) on both the
-    // optimistic flip AND any revert. (guardCapToggle reads the flipped state off
-    // the checkbox, so `v` is passed only to keep the call sites self-documenting.)
-    const persistCap = (key, v, cb, afterChange) => {
-      guardCapToggle(cb, {
-        writeFlag: (val) => { p[key] = val; },
-        save: () => adapter.saveRoster({ providers: S.providers }),
-        afterChange,
+    // Flags column — small 10×10 square avatars for roles THIS model holds.
+    const flagsCell = document.createElement('span'); flagsCell.className = 'ac-saved-flags';
+    const { rowMap } = _computeFlags();
+    const myFlags = rowMap[p._uid] || [];
+    const flagLookup = {};
+    ROLE_FLAGS.forEach(rf => { flagLookup[rf.key] = rf; });
+    myFlags.forEach(k => { const rf = flagLookup[k]; if (rf) flagsCell.appendChild(_flagDom(rf.symbol, rf.title)); });
+    row.appendChild(flagsCell);
+    // Roles more-button — opens a floating popover with capability toggles,
+    // mirroring the chat header more-menu style. Replaces the old inline column
+    // checkboxes (Def radio + Standard/Premium/Vision/Image).
+    const rolesCell = document.createElement('span');
+    rolesCell.className = 'ac-saved-cap ac-saved-roles-cell';
+    rolesCell.style.position = 'relative';
+    // Build a badge string showing assigned roles
+    const roleLabels = [];
+    if (p.enabled) roleLabels.push('Standard');
+    if (p.high_effort_capable) roleLabels.push('Premium');
+    if (p.use_for_image) roleLabels.push('Vision');
+    if (p.use_for_image_out) roleLabels.push('Image');
+    if (p.use_for_system) roleLabels.push('System');
+    if (p.use_for_voice) roleLabels.push('Voice');
+    const rolesBtn = document.createElement('button');
+    rolesBtn.type = 'button';
+    rolesBtn.className = 'ac-saved-roles-btn';
+    rolesBtn.title = roleLabels.length ? roleLabels.join(' · ') : 'No roles assigned';
+    rolesBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>';
+    // Show a small colour-coded dot indicator for assigned roles
+    const roleDot = document.createElement('span');
+    roleDot.className = 'ac-saved-role-dot' + (roleLabels.length ? ' has-roles' : '');
+    roleDot.style.setProperty('--role-count', String(roleLabels.length));
+    roleDot.setAttribute('aria-hidden', 'true');
+    rolesBtn.appendChild(roleDot);
+    rolesCell.appendChild(rolesBtn);
+    // Floating popover — section-based like the chat header more-menu,
+    // so future per-model controls can be added as their own sections.
+    const popover = document.createElement('div');
+    popover.className = 'ac-saved-roles-popover';
+    popover.hidden = true;
+    popover.setAttribute('role', 'menu');
+    rolesCell.appendChild(popover);
+
+    // ── Roles section ──
+    const rolesSection = document.createElement('div');
+    rolesSection.className = 'ac-pm-section';
+    const rolesHead = document.createElement('div');
+    rolesHead.className = 'ac-pm-section-head';
+    const rolesTitle = document.createElement('span');
+    rolesTitle.className = 'ac-pm-section-title';
+    rolesTitle.textContent = 'Roles';
+    rolesHead.appendChild(rolesTitle);
+    rolesSection.appendChild(rolesHead);
+
+    // ── Popover content ──
+    // Persist a role change on an agent-owned row. Roles stay single-assignment:
+    // taking a role clears it on every other row — including inherited ones, which
+    // then simply sink in the sort. Inherited rows themselves are read-only, so
+    // nothing here ever creates a per-agent copy of an app default.
+    const persistRole = async (key, v, cb) => {
+      const target = p;
+      const provSnapshot = S.providers.slice(), inhSnapshot = S.inherited.slice();
+      const allRows = [...S.inherited, ...S.providers];
+      const before = allRows.map(item => item[key]);
+      if (v) allRows.forEach(item => { if (item !== target) item[key] = false; });
+      target[key] = v;
+      cb.disabled = true;
+      _markSaving(cb.closest('.ac-saved-cap'));
+      try {
+        const saves = [];
+        if (S.providers.length) saves.push(adapter.saveRoster({ providers: S.providers }));
+        await Promise.all(saves);
+        _flashSaveCheck(cb.closest('.ac-saved-cap'), true);
+        renderSaved();
+        // Re-open this row's popover — renderSaved destroys the DOM, so we
+        // re-find the new row by uid and open its popover.
+        const newRow = table.querySelector(`.ac-saved-injected[data-mt-uid="${target._uid}"]`);
+        if (newRow) {
+          const newBtn = newRow.querySelector('.ac-saved-roles-btn');
+          const newPop = newRow.querySelector('.ac-saved-roles-popover');
+          if (newBtn && newPop) {
+            newPop.hidden = false;
+            newBtn.classList.add('open');
+          }
+        }
+      } catch (e) {
+        allRows.forEach((item, i) => { item[key] = before[i]; });
+        S.providers = provSnapshot; S.inherited = inhSnapshot;
+        _flashSaveCheck(cb.closest('.ac-saved-cap'), false, e.message || 'Save failed');
+        cb.disabled = false;
+      }
+    };
+    // Inherited rows are read-only references to the app default; their role
+    // toggles stay locked (the lock hint explains why).
+    const locked = readOnly && !rolesEditable;
+    const lockHint = ' (app default — read-only)';
+    _buildRoleToggle(rolesSection, p.text_capable !== false, p.enabled, 'Standard', 'The primary chat / brain model',
+      (v, cb) => persistRole('enabled', v, cb), locked, lockHint);
+    _buildRoleToggle(rolesSection, p.text_capable !== false, !!p.high_effort_capable, 'Premium', 'A premium model for harder tasks',
+      (v, cb) => persistRole('high_effort_capable', v, cb), locked, lockHint);
+    _buildRoleToggle(rolesSection, !!p.image_capable, !!p.use_for_image, 'Vision', 'Use to read attached images',
+      (v, cb) => persistRole('use_for_image', v, cb), locked, lockHint);
+    _buildRoleToggle(rolesSection, !!p.image_out_capable, !!p.use_for_image_out, 'Image', 'Use to generate images',
+      (v, cb) => persistRole('use_for_image_out', v, cb), locked, lockHint);
+    _buildRoleToggle(rolesSection, p.text_capable !== false, !!p.use_for_system, 'System', 'App misc. LLM tasks (session naming, context mgmt)',
+      (v, cb) => persistRole('use_for_system', v, cb), locked, lockHint);
+    _buildRoleToggle(rolesSection, p.text_capable !== false, !!p.use_for_voice, 'Voice', 'LLM-powered voice input in chat',
+      (v, cb) => persistRole('use_for_voice', v, cb), locked, lockHint);
+    popover.appendChild(rolesSection);
+
+    // ── Wire popover open/close ──
+    rolesBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = !popover.hidden;
+      // Close all other popovers first
+      table.querySelectorAll('.ac-saved-roles-popover:not([hidden])').forEach(m => {
+        if (m !== popover) m.hidden = true;
       });
+      table.querySelectorAll('.ac-saved-roles-btn.open').forEach(b => b.classList.remove('open'));
+      popover.hidden = isOpen;
+      rolesBtn.classList.toggle('open', !isOpen);
+    });
+    // Click-away closes
+    const closeRoles = (e) => {
+      if (!rolesCell.contains(e.target)) {
+        popover.hidden = true;
+        rolesBtn.classList.remove('open');
+      }
     };
-    // Persist a per-agent opt-out on an INHERITED (app-default) model. Same guard +
-    // feedback as own rows, but writes the agent's chosen subset of the app-wide
-    // ceiling (saveInheritedOverride) instead of the agent's own roster.
-    const persistInherited = (key, v, cb, afterChange) => {
-      guardCapToggle(cb, {
-        writeFlag: (val) => { p[key] = val; },
-        save: () => (adapter.saveInheritedOverride ? adapter.saveInheritedOverride(p) : null),
-        afterChange,
-      });
-    };
-    // Toggling the Text column flips this model's eligibility to be the default —
-    // enable/disable the default radio live so the two columns stay consistent.
-    // Shared by the agent's own rows and the inherited (ceiling) rows: any
-    // Text-checked model is a default candidate, including inherited ones.
-    const syncDefaultEligibility = () => {
-      if (!defInput) return;
-      const ok = _canBeDefault(p);
-      defInput.disabled = !ok;
-      defInput.style.cursor = ok ? 'pointer' : 'default';
-      defInput.style.opacity = ok ? '1' : '0.4';
-      defInput.title = ok ? 'Use as the default model (the user can switch it per chat)'
-                          : 'Tick the Text column to make this model selectable as the default';
-      if (!ok) defInput.checked = false;
-    };
-    // Text toggles pass syncDefaultEligibility as the guard's afterChange, so the
-    // default radio's enabled/disabled state stays consistent on the optimistic
-    // flip AND on a hold-to-cancel revert.
-    const onTextToggle = (v, cb) => persistCap('enabled', v, cb, syncDefaultEligibility);
-    const onInhTextToggle = (v, cb) => persistInherited('enabled', v, cb, syncDefaultEligibility);
-    // Inherited rows whose admin ceiling is known render INTERACTIVE ceiling cells
-    // (opt in/out within the app-wide allowance); all other rows (the agent's own
-    // models, or inherited rows on a pre-ceiling backend) use the standard cells.
-    const ceil = (readOnly && p._ceiling) ? p._ceiling : null;
-    if (ceil) {
-      row.appendChild(capCellInherited(ceil.text, p.enabled, 'Available as the chat / brain model', onInhTextToggle));
-      row.appendChild(capCellInherited(ceil.effort, !!p.high_effort_capable, 'Text + — a premium / more-capable model the agent can upgrade onto for a hard task', (v, cb) => persistInherited('high_effort_capable', v, cb)));
-      row.appendChild(capCellInherited(ceil.image_in, !!p.use_for_image, 'Use to read attached images', (v, cb) => persistInherited('use_for_image', v, cb)));
-      row.appendChild(capCellInherited(ceil.image_out, !!p.use_for_image_out, 'Use to generate images', (v, cb) => persistInherited('use_for_image_out', v, cb)));
-    } else {
-      row.appendChild(capCell(p.text_capable !== false, p.enabled, 'Available as the chat / brain model', onTextToggle, readOnly));
-      // Text + tier — only text/brain models can be a Text + target, so the gate
-      // mirrors the Text column (an image-only worker shows an inert dot).
-      row.appendChild(capCell(p.text_capable !== false, !!p.high_effort_capable, 'Text + — a premium / more-capable model the agent can upgrade onto for a hard task', (v, cb) => persistCap('high_effort_capable', v, cb), readOnly));
-      row.appendChild(capCell(!!p.image_capable, !!p.use_for_image, 'Use to read attached images', (v, cb) => persistCap('use_for_image', v, cb), readOnly));
-      row.appendChild(capCell(!!p.image_out_capable, !!p.use_for_image_out, 'Use to generate images', (v, cb) => persistCap('use_for_image_out', v, cb), readOnly));
-    }
+    document.addEventListener('pointerdown', closeRoles);
+    docListeners.push(['pointerdown', closeRoles]);
     const usageCell = document.createElement('span'); usageCell.className = 'ac-saved-usage';
     const statIn = usageLine('Total input tokens'), statOut = usageLine('Total output tokens'), statCost = usageLine('Total provider cost');
     usageCell.appendChild(statIn.line); usageCell.appendChild(statOut.line); usageCell.appendChild(statCost.line);
     row.appendChild(usageCell);
+    row.appendChild(rolesCell);
     const body = document.createElement('div'); body.className = 'ac-ability-body';
     body.innerHTML = '<div class="ac-hint" style="margin:0;">Loading details…</div>';
     label.addEventListener('click', () => { const open = rowWrap.classList.toggle('expanded'); if (open) loadSavedDetail(p, body, statIn.val, statOut.val, statCost.val, readOnly); });
@@ -859,43 +985,86 @@ export function mountModelTable(host, opts = {}) {
     return rowWrap;
   }
 
-  // Build the saved-list header (Model · Def · Txt · Txt+ · In · Out · Usage) once.
+  // Build the saved-list header (Model · Flags · Usage · (empty for More)) once.
   function _buildSavedHead(cfgAnchor) {
+    const { headerFlags } = _computeFlags();
     const head = document.createElement('div');
     head.className = 'ac-ability-row ac-saved-head ac-saved-row ac-saved-injected';
     head.style.gridTemplateColumns = SAVED_GRID;
+    // Empty slot for the drag-handle column
+    head.appendChild(document.createElement('span'));
     const headName = document.createElement('span'); headName.className = 'ac-ability-label';
     headName.innerHTML = '<span class="ac-saved-th">Model</span>'; head.appendChild(headName);
-    const headDef = document.createElement('span'); headDef.className = 'ac-saved-cap ac-saved-th';
-    headDef.textContent = 'Def'; headDef.title = 'Default model — the one the agent runs by default (users can switch it per chat)';
-    head.appendChild(headDef);
-    colCells(head, [['Txt', 'Available as the chat / brain model'], ['Txt+', 'Text + — a premium / more-capable model the agent can upgrade onto for a hard task'], ['In', 'Use to read attached images (vision)'], ['Out', 'Use to generate images']]);
+    // Flags column — shows flags for unassigned roles
+    const headFlags = document.createElement('span'); headFlags.className = 'ac-saved-flags';
+    headerFlags.forEach(rf => headFlags.appendChild(_flagDom(rf.symbol, rf.title)));
+    head.appendChild(headFlags);
     const headUsage = document.createElement('span'); headUsage.className = 'ac-saved-th ac-saved-usage-th';
     headUsage.textContent = 'Usage'; headUsage.title = 'Total tokens in / out and provider cost'; head.appendChild(headUsage);
+    head.appendChild(document.createElement('span')); // empty — More button has no header label
     table.insertBefore(head, cfgAnchor);
   }
 
-  // Full (re)build of the saved list — used on initial load only. In-place edits
-  // (toggle / default / add / remove) update just their own row, never call this.
-  function renderSaved() {
+  // Full (re)build of the saved list. Initial loads render immediately; role,
+  // add, and remove changes can opt into keyed layout animation.
+  function renderSaved({ animate = false, enteringUids = [] } = {}) {
+    const before = animate ? _snapshotSavedLayout() : null;
     table.querySelectorAll('.ac-saved-injected').forEach(n => n.remove());
-    // Inherited (app default) rows render first, read-only; the agent's own
-    // editable rows follow. On the admin table S.inherited is always empty.
-    // A model the agent picked that matches an app default is shown BOTH ways on
-    // purpose: once as the read-only "Inherited" app row, and once as the agent's
-    // own editable row — so it's clear the agent is reusing an app-wide model.
+    // Inherited (app default) rows render first; the agent's own editable rows
+    // follow. On the admin table S.inherited is always empty. On the per-agent
+    // table an inherited row is NOT hidden when the agent also owns the same
+    // model — the redundant pair shows side by side (the inherited row is the
+    // read-only app-default reference, the own row is the agent's working copy).
     const rows = [
-      ...(S.inherited || []).map(p => ({ p, readOnly: true })),
-      ...S.providers.map(p => ({ p, readOnly: false })),
+      ...(S.inherited || []).map(p => ({ p, readOnly: true, rolesEditable: false })),
+      ...S.providers.map(p => ({ p, readOnly: false, rolesEditable: false })),
     ];
-    if (!rows.length) return;
+    const slotRank = (p) => {
+      if (p.enabled) return 0;
+      if (p.high_effort_capable) return 1;
+      if (p.use_for_image) return 2;
+      if (p.use_for_image_out) return 3;
+      if (p.use_for_system) return 4;
+      if (p.use_for_voice) return 5;
+      return 6;
+    };
+    rows.sort((a, b) => slotRank(a.p) - slotRank(b.p));
+    if (!rows.length) {
+      if (before) _animateSavedLayout(before, enteringUids);
+      return;
+    }
     const cfgAnchor = table.querySelector('.ac-model-cfg-row');
-    const defUid = _defaultRowUid(rows);
-    S.defaultUid = defUid;
     _buildSavedHead(cfgAnchor);
-    rows.forEach(({ p, readOnly }) => _buildSavedRow(p, readOnly, p._uid === defUid, cfgAnchor));
+    rows.forEach(({ p, readOnly, rolesEditable }) => _buildSavedRow(p, readOnly, false, cfgAnchor, rolesEditable));
     // keep the advanced/+ row pinned last
     table.appendChild(advRow);
+    // Wire drag-to-reorder on the agent's own rows (not inherited/read-only).
+    // The handle is `.ac-saved-drag-handle`; rows are identified by `data-mt-uid`.
+    makeRowsReorderable(table, {
+      rowSelector: '.ac-saved-own[data-mt-uid]:not(.ac-saved-role)',
+      handleSelector: '.ac-saved-drag-handle',
+      dropBefore: advRow,
+      onReorder: (orderedUids) => {
+        // Reorder S.providers to match the new DOM order. Inherited rows are
+        // read-only and never have a drag handle, so they stay put; only the
+        // agent's own rows (which carry _uid matching data-mt-uid) are reordered.
+        const uidToIdx = new Map();
+        S.providers.forEach((p, i) => uidToIdx.set(String(p._uid), i));
+        const ownUids = orderedUids.filter(uid => uidToIdx.has(uid));
+        if (!ownUids.length) return;
+        // Build the new providers array in the dragged order.
+        const reordered = ownUids.map(uid => S.providers[uidToIdx.get(uid)]);
+        // Preserve any own-rows that somehow weren't in the DOM (shouldn't
+        // happen, but defensive) at the end in their original order.
+        const seen = new Set(ownUids);
+        S.providers.forEach((p, i) => {
+          if (!seen.has(String(p._uid))) reordered.push(p);
+        });
+        S.providers = reordered;
+        adapter.saveRoster({ providers: S.providers });
+      },
+    });
+    if (before) _animateSavedLayout(before, enteringUids);
   }
 
   // ── Add / Clear ──
@@ -905,7 +1074,7 @@ export function mountModelTable(host, opts = {}) {
     if (!baseUrl) return setModelStatus('Please enter a Base URL');
     if (!apiKey) return setModelStatus('Please enter an API Key');
     if (!S.selectedModel) return setModelStatus('Please select a model');
-    const capText = S.selCaps.text !== false, capImage = !!S.selCaps.image, capImageOut = !!S.selCaps.imageOut;
+    const capText = S.selCaps.text !== false, capImage = !!S.selCaps.image, capImageOut = !!S.selCaps.imageOut, capVoice = !!S.selCaps.voice;
     // saveSingle persists the ONE top-level default-brain slot (provider/url/key/
     // model) — it must only be touched when this model is actually meant to become
     // that default. That's true for the very first model ever added (the agent
@@ -915,27 +1084,28 @@ export function mountModelTable(host, opts = {}) {
     // why adding a second (purpose-specific) model silently clobbered the first.
     const becomesDefault = capText || !S.providers.length;
     if (becomesDefault) {
-      await adapter.saveSingle({ provider, base_url: baseUrl, api_key: apiKey, model: S.selectedModel, providers: S.providerConfigs, text_capable: capText, image_capable: capImage, image_out_capable: capImageOut });
+      await adapter.saveSingle({ provider, base_url: baseUrl, api_key: apiKey, model: S.selectedModel, providers: S.providerConfigs, text_capable: capText, image_capable: capImage, image_out_capable: capImageOut, voice_capable: capVoice });
     }
     const dupe = S.providers.find(p => p.provider === provider && p.model === S.selectedModel && p.base_url === baseUrl);
     if (!dupe) {
-      const newP = { provider, base_url: baseUrl, api_key: apiKey, model: S.selectedModel, enabled: true, text_capable: capText, image_capable: capImage, use_for_image: capImage, image_out_capable: capImageOut, use_for_image_out: capImageOut, high_effort_capable: false, _uid: ++S.uid };
+      const newP = { provider, base_url: baseUrl, api_key: apiKey, model: S.selectedModel, enabled: true, text_capable: capText, image_capable: capImage, use_for_image: capImage, image_out_capable: capImageOut, use_for_image_out: capImageOut, high_effort_capable: false, use_for_system: false, use_for_voice: false, _uid: ++S.uid };
+      // A checked slot always belongs to one model. Adding a model with a
+      // capability therefore replaces the previous holder of that slot — an
+      // inherited row that loses the role simply sinks in the sort; no copy is
+      // created (inherited rows are read-only references to the app default).
+      const existingRows = [...S.inherited, ...S.providers];
+      if (newP.enabled) existingRows.forEach(p => { p.enabled = false; });
+      if (newP.high_effort_capable) existingRows.forEach(p => { p.high_effort_capable = false; });
+      if (newP.use_for_image) existingRows.forEach(p => { p.use_for_image = false; });
+      if (newP.use_for_image_out) existingRows.forEach(p => { p.use_for_image_out = false; });
+      if (newP.use_for_system) existingRows.forEach(p => { p.use_for_system = false; });
+      if (newP.use_for_voice) existingRows.forEach(p => { p.use_for_voice = false; });
       S.providers.push(newP);
-      await adapter.saveRoster({ providers: S.providers });
-      // Append ONLY the new row — no full rebuild/reload, so the list (and scroll)
-      // stays put. If this add became the default (becomesDefault above), its
-      // radio is checked below; clear the others to keep the single-selection
-      // invariant. First model ever? There's no header yet — do a one-time full render.
-      const cfgAnchor = table.querySelector('.ac-model-cfg-row');
-      if (table.querySelector('.ac-saved-head')) {
-        // Only a text/brain model can become the default; clear the other radios
-        // just in that case so a new image-only worker can't blank the default.
-        if (capText) { table.querySelectorAll(`input[name="${defaultRadioName}"]`).forEach(rb => { rb.checked = false; }); S.defaultUid = newP._uid; }
-        _buildSavedRow(newP, false, !!capText, cfgAnchor);
-        table.appendChild(advRow);            // keep the advanced/+ row pinned last
-      } else {
-        renderSaved();
-      }
+      const saves = [adapter.saveRoster({ providers: S.providers })];
+      await Promise.all(saves);
+      // Rebuild into the role-sorted position. Stable row ids let renderSaved
+      // slide existing rows around the insertion while the new row fades in.
+      renderSaved({ animate: true, enteringUids: [newP._uid] });
     } else {
       if (apiKey && dupe.api_key !== apiKey) { dupe.api_key = apiKey; }
       await adapter.saveRoster({ providers: S.providers });
@@ -989,11 +1159,16 @@ export function mountModelTable(host, opts = {}) {
   async function reload() {
     table.style.display = '';
     table.classList.add('ac-cfg-collapsed');   // keep the add-a-model form hidden while loading
+    // Show skeleton immediately so the user sees structure (header + phantom rows)
+    // instead of just the Advanced/+ buttons during the async fetch.
+    if (skelRoot) skelRoot.style.display = '';
     try {
       const [presets, cfg] = await Promise.all([
         Promise.resolve(fetchPresets()).catch(() => ({})),
         Promise.resolve(adapter.loadConfig()).catch((e) => { console.warn('model-table: load failed', e); return {}; }),
       ]);
+      // Hide skeleton before rendering real data so there's no overlap flash
+      if (skelRoot) skelRoot.style.display = 'none';
       S.presets = presets || {};
       provSel.innerHTML = '';
       for (const [k, preset] of Object.entries(S.presets)) {
@@ -1008,8 +1183,8 @@ export function mountModelTable(host, opts = {}) {
       keyInput.value = cfg.api_key || '';
       S.selectedModel = cfg.model || '';
       modelSearch.value = S.selectedModel;
-      S.selCaps = { text: cfg.text_capable !== false, image: !!cfg.image_capable, imageOut: !!cfg.image_out_capable };
-      renderDetectedCaps(S.selectedModel ? { text_capable: S.selCaps.text, image_capable: S.selCaps.image, image_out_capable: S.selCaps.imageOut } : null);
+      S.selCaps = { text: cfg.text_capable !== false, image: !!cfg.image_capable, imageOut: !!cfg.image_out_capable, voice: !!cfg.voice_capable };
+      renderDetectedCaps(S.selectedModel ? { text_capable: S.selCaps.text, image_capable: S.selCaps.image, image_out_capable: S.selCaps.imageOut, voice_capable: S.selCaps.voice } : null);
       setModelStatus(S.selectedModel ? `Selected: ${S.selectedModel}` : '', true);
 
       const norm = (p) => ({
@@ -1017,14 +1192,20 @@ export function mountModelTable(host, opts = {}) {
         enabled: p.enabled !== false,
         text_capable: p.text_capable !== false, image_capable: !!p.image_capable, use_for_image: !!p.use_for_image,
         image_out_capable: !!p.image_out_capable, use_for_image_out: !!p.use_for_image_out,
-        high_effort_capable: !!p.high_effort_capable, _uid: ++S.uid,
-        // Inherited-row extras (undefined on the agent's own rows): the admin
-        // ceiling that gates which capability boxes are editable, and the stable
-        // key the per-agent opt-out is stored under. Preserved verbatim.
-        _ceiling: p._ceiling, _ovrKey: p._ovrKey,
+        high_effort_capable: !!p.high_effort_capable,
+        use_for_system: !!p.use_for_system,
+        use_for_voice: !!p.use_for_voice, _uid: ++S.uid,
+        // Stable key for inherited rows. Preserved verbatim.
+        _ovrKey: p._ovrKey,
       });
       S.inherited = (Array.isArray(cfg.inherited) ? cfg.inherited : []).map(norm);
       S.providers = (Array.isArray(cfg.roster) ? cfg.roster : []).map(norm);
+      // Per-agent table: inherited (app-default) rows ALWAYS stay visible, even
+      // when the agent also owns a row for the same (provider|base_url|model) —
+      // the redundant pair is intentional, so the agent admin can see the app
+      // default and their own copy side by side. The backend union keeps the
+      // agent's own row authoritative for that model at runtime; editing roles
+      // on the inherited row still materializes a per-agent override.
       renderSaved();
       // First load with no saved models: open the configurator so the user sees
       // the add-a-model form up front. Once at least one model is saved, default

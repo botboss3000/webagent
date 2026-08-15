@@ -21,6 +21,7 @@
     "get_genui_logs",
     "check_credential",
     "request_credential",
+    "present_chat_component",
     "list_vault_keys",
     "screenshot_genui"
   ],

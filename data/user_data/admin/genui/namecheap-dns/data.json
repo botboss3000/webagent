@@ -1,0 +1,53 @@
+{
+  "table": {
+    "columns": [
+      "Type",
+      "Host",
+      "Value",
+      "TTL"
+    ],
+    "rows": [
+      [
+        "A Record",
+        "@",
+        "34.30.5.3",
+        "Automatic"
+      ],
+      [
+        "CNAME Record",
+        "www",
+        "webagent.live.",
+        "Automatic"
+      ],
+      [
+        "TXT Record",
+        "@",
+        "google-site-verification=B_1EEU0hzlMX9YSobLslTTz3Tu4SFgh0_Icc4CjVau8",
+        "Automatic"
+      ],
+      [
+        "TXT Record",
+        "@",
+        "v=spf1 include:spf.efwd.registrar-servers.com ~all",
+        "Automatic"
+      ]
+    ]
+  },
+  "meta": {
+    "lastUpdated": "2026-05-08T19:56:27Z",
+    "status": "ok",
+    "domain": "webagent.live",
+    "note": "4 records found"
+  },
+  "chatConfig": {
+    "button": {
+      "title": "Manage DNS",
+      "iconName": "sparkle",
+      "prompt": "You are managing DNS for the Namecheap domain shown on this page. The Namecheap login is saved in the vault (browser_control). Use the Advanced DNS panel: fetch records, or add / edit / delete records as the user asks. Confirm risky changes (e.g. MX or NS) before applying.",
+      "session": {
+        "target_name": "Namecheap DNS \u2014 fetch",
+        "mode": "new_reuse"
+      }
+    }
+  }
+}

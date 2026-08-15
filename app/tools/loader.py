@@ -56,6 +56,7 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "load_tool":                     {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "load_ability":                  {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "set_execution_mode":            {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
+    "run_soft_ability":              {"stages": ["guardrails", "execute_tools"],                 "destructive": True, "requires_confirmation": True, "agent_types": []},
     # ── Web & browser ──
     "web_search":                    {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "browser_action":                {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
@@ -107,9 +108,8 @@ BUILTIN_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "get_webhook_log":               {"stages": ["execute_tools"],                               "destructive": False, "agent_types": []},
     # ── Optimizer ──
     "run_optimizer":                 {"stages": ["user_input", "execute_tools"],                 "destructive": False, "agent_types": ["default"]},
-    "run_worker_trials":             {"stages": ["opt_validate"],                                "destructive": False, "agent_types": ["optimizer-planner"]},
-    "handoff_to_closer":          {"stages": ["opt_propose"],                                 "destructive": False, "agent_types": ["optimizer-planner"]},
-    "deploy_optimization":           {"stages": ["opt_apply"],                                   "destructive": True,  "agent_types": ["optimizer-closer"]},
+    "run_worker_trials":             {"stages": ["opt_validate"],                                "destructive": False, "agent_types": ["optimizer"]},
+    "deploy_optimization":           {"stages": ["opt_apply"],                                   "destructive": True,  "agent_types": ["optimizer"]},
     # ── Delegation ──
     "delegate_to_agent":             {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
     "list_delegatable_agents":       {"stages": ["execute_tools"],                                "destructive": False, "agent_types": []},
@@ -452,17 +452,39 @@ class ToolLoader:
             enabled_providers = set()
 
         # ── Orchestration gating ─────────────────────────────────────────────
-        # `_is_opt_agent`   → this run IS the optimizer's own Planner/Closer.
-        #                     Only these get the internal optimizer-pipeline
-        #                     tools (run_worker_trials / handoff_to_closer /
-        #                     deploy_optimization). No normal agent ever sees
-        #                     them — otherwise agents (e.g. admin) discover them
-        #                     via list_tools/search_tools and loop on them.
-        _is_opt_agent = agent_template_id in ("opt_planner", "opt_closer")
+        # `_is_opt_agent`   → this run IS the Optimizer agent.
+        #                     Only the Optimizer gets the internal optimizer-pipeline
+        #                     tools (run_worker_trials / deploy_optimization).
+        #                     No normal agent ever sees them — otherwise agents
+        #                     (e.g. admin) discover them via list_tools/search_tools
+        #                     and loop on them.
+        _is_opt_agent = agent_template_id == "optimizer"
 
         # create_tool (create_tools ability) → moved to plugins/abilities/create_tools.py build_tools.
 
         # ── rate_skill (record user feedback on tool executions) ──
+        async def _run_soft_ability_wrapper(ability_id: str, inputs: Optional[dict] = None):
+            from app.abilities.soft_workflows import execute_soft_ability
+            return await execute_soft_ability(
+                ability_id=ability_id, inputs=inputs or {}, user_id=user_id,
+                agent_id=agent_id, session_id=session_id,
+            )
+
+        tools["run_soft_ability"] = ToolInfo(
+            name="run_soft_ability",
+            handler=_run_soft_ability_wrapper,
+            requires_confirmation=True,
+            destructive=True,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "ability_id": {"type": "string", "description": "Custom ability id or slug to execute."},
+                    "inputs": {"type": "object", "description": "Named inputs referenced as ${inputs.name}."},
+                },
+                "required": ["ability_id"],
+            },
+        )
+
         async def _rate_skill_wrapper(skill_name: str, feedback_type: str, message: Optional[str] = None):
             db = get_db()
             skill_id = await db.skill_get_id_by_name(user_id, skill_name)
@@ -1322,13 +1344,20 @@ class ToolLoader:
         # -> moved to plugins/abilities/automation.py build_tools.
 
 
-        # ── Optimizer tools (Planner / Closer subagents) ──
-        from app.tools.optimizer_tools import run_worker_trials, handoff_to_closer, deploy_optimization
+        # ── Optimizer tools ──
+        from app.tools.optimizer_tools import run_worker_trials, deploy_optimization
 
-        def _latest_optimizer_sid() -> str:
-            """The most recent optimizer-* session id (or a fresh fallback id if
-            none exists). Shared by all three optimizer-tool wrappers below."""
+        def _optimizer_session_id() -> str:
+            """The current Optimizer session.
+
+            Tool handlers are built for one chat turn.  Selecting the newest
+            optimizer session globally can attach a Planner's trial or handoff to
+            another user's concurrent optimization, leaving the Closer without
+            the right baseline and proposal.
+            """
             import uuid as _uid
+            if session_id.startswith("optimizer-"):
+                return session_id
             from app.db import get_db as _gdb
             db = _gdb()._get_conn()
             try:
@@ -1342,7 +1371,7 @@ class ToolLoader:
         async def _run_worker_trials_wrapper(changes_json: str = ""):
             import traceback as _tb
             try:
-                sid = _latest_optimizer_sid()
+                sid = _optimizer_session_id()
                 result = await run_worker_trials(changes_json=changes_json, user_id=user_id, session_id=sid)
                 return result
             except Exception as e:
@@ -1360,32 +1389,8 @@ class ToolLoader:
             },
         )
 
-        async def _handoff_to_closer_wrapper(summary: str = "", judging_criteria: str = "",
-                                                  baseline_transcript: str = "", worker_results: str = ""):
-            sid = _latest_optimizer_sid()
-            return await handoff_to_closer(
-                summary=summary, user_id=user_id, session_id=sid,
-                judging_criteria=judging_criteria,
-                baseline_transcript=baseline_transcript,
-                worker_results=worker_results,
-            )
-        tools["handoff_to_closer"] = ToolInfo(
-            name="handoff_to_closer",
-            handler=_handoff_to_closer_wrapper,
-            parameters={
-                "type": "object",
-                "properties": {
-                    "summary": {"type": "string", "description": "Summary of what was discussed and decided to pass to the Closer"},
-                    "judging_criteria": {"type": "string", "description": "Criteria used to judge worker trial quality, set by Planner + user"},
-                    "baseline_transcript": {"type": "string", "description": "Original user question + agent answer transcript before optimization"},
-                    "worker_results": {"type": "string", "description": "Worker trial results and transcripts for each proposed change"},
-                },
-                "required": ["summary"],
-            },
-        )
-
         async def _deploy_optimization_wrapper(changes_json: str = ""):
-            sid = _latest_optimizer_sid()
+            sid = _optimizer_session_id()
             return await deploy_optimization(changes_json=changes_json, user_id=user_id, session_id=sid)
         tools["deploy_optimization"] = ToolInfo(
             name="deploy_optimization",
@@ -1399,13 +1404,13 @@ class ToolLoader:
             },
         )
 
-        # ── Lock optimizer-pipeline tools to the Planner/Closer ──────────────
+        # Lock optimizer-pipeline tools to the Optimizer agent ─────────────
         # The wrappers above are defined unconditionally (cheap closures), but a
         # normal agent must never be able to CALL them. Remove them unless this
-        # run is the optimizer's own sub-agent. This is the guard that stops the
-        # admin agent (or any agent) from invoking run_worker_trials et al.
+        # run is the Optimizer agent. This is the guard that stops any non-optimizer
+        # agent from invoking run_worker_trials or deploy_optimization.
         if not _is_opt_agent:
-            for _opt_only in ("run_worker_trials", "handoff_to_closer", "deploy_optimization"):
+            for _opt_only in ("run_worker_trials", "deploy_optimization"):
                 tools.pop(_opt_only, None)
 
         # ── check_oauth_connection ──────────────────────────────────────────────
@@ -1691,18 +1696,11 @@ async def load_tools(
             if ti.tool_id and ti.tool_id not in allowed_id_set:
                 del tools[name]
 
-    # ── Optimizer pipeline agents: HARD-restrict to their action tools ──────────
-    # The Planner and Closer run UNATTENDED on a cheap model. With a full toolset
-    # they squander turns on memory_search / search_this_session / compact_context /
-    # recall_compacted (all returning nothing) and may never reach their pipeline
-    # tools. They need no others: the Planner reads the session from its injected
-    # context and drives the pipeline; the Closer judges from pre-injected history
-    # and deploys. This is the final word — applied after every other filter.
-    # (The simulated Worker is loaded via a SEPARATE load_tools call with the REAL
-    #  agent's template, so it keeps the full toolset — only these two are pinned.)
+    # ── Optimizer pipeline agent: full tool access ────────────────────────────────
+    # The single Optimizer agent gets the full toolset — it does everything:
+    # analysis, codebase search, diagnostics, trials, judging, and deploying.
+    # No tool restrictions needed (the old closer-only restriction is removed).
     _OPT_PIPELINE_TOOLS = {
-        "opt_planner": {"run_worker_trials", "handoff_to_closer"},
-        "opt_closer": {"deploy_optimization"},
     }
     _opt_keep = _OPT_PIPELINE_TOOLS.get(agent_template_id)
     if _opt_keep is not None:

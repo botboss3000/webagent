@@ -225,12 +225,6 @@
       group.id = 'admin-tools-group';
       group.dataset.generated = '1';
       group.appendChild(btn);
-      // Adopt the static debug-console toggle (the bug icon) into the group, to
-      // the right of the health dot. It's a sibling <button>, NOT a child of the
-      // Admin Tools tab, so clicking the bug toggles the console without firing
-      // the tab switch. Moved (not cloned) so debugConsole.js's wiring survives.
-      var dbg = document.getElementById('debug-console-toggle');
-      if (dbg) group.appendChild(dbg);
       return group;
     }
     return btn;
@@ -268,13 +262,6 @@
 
     var pages = sortPages(mainPages);
 
-    // Rescue the static debug-console toggle out of the (generated) Admin Tools
-    // group before the purge below, else removing the old group would also
-    // remove this non-generated button nested inside it. buildButton re-adopts
-    // it into the freshly-built group, keeping the move idempotent.
-    var dbg = document.getElementById('debug-console-toggle');
-    if (dbg) tabBar.appendChild(dbg);
-
     tabBar.querySelectorAll('[data-generated="1"]').forEach(function (el) { el.remove(); });
     pages.forEach(function (p) {
       var node = buildButton(p);
@@ -302,6 +289,18 @@
     }
 
     pages.forEach(function (p) { ensureContentMount(p, panel); });
+
+    // Re-highlight the currently active tab button after a rebuild.  The
+    // observer in index.html guards against redundant same-tab syncs, so it
+    // won't re-fire for the same id — we must explicitly set .active here
+    // or the strip shows no selection until the user clicks a tab.
+    var activeContent = panel.querySelector('.tab-content.active');
+    if (activeContent) {
+      var activeId = activeContent.id.replace('tab-', '');
+      tabBar.querySelectorAll('.main-tab').forEach(function (b) {
+        b.classList.toggle('active', b.dataset.value === activeId);
+      });
+    }
 
     if (window.lucide && typeof window.lucide.createIcons === 'function') {
       try { window.lucide.createIcons(); } catch (e) {}
@@ -357,7 +356,12 @@
       t.setAttribute('aria-expanded', on ? 'true' : 'false');
       t.title = on ? 'Collapse sidebar' : 'Expand sidebar';
       var ic = t.querySelector('[data-lucide]');
-      if (ic) ic.setAttribute('data-lucide', on ? 'panel-left-close' : 'panel-left-open');
+      if (ic) {
+        ic.setAttribute('data-lucide', on ? 'panel-left-close' : 'panel-left-open');
+        // Mark this deliberately changed icon as pending. The shared Lucide
+        // guard skips stable rendered SVGs so clicks elsewhere remain intact.
+        ic.classList.remove('lucide');
+      }
     }
   }
   function ensureRailToggle(strip) {

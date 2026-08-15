@@ -19,7 +19,7 @@ Import reverses the operation: validates the payload, then INSERTs (best-effort
 upsert) into each table on the active backend.
 
 Both directions go through `db.get_raw_client().table(name)` which both
-LocalBackend and SupabaseBackend implement with the same query-builder shape.
+LocalBackend implements with the same query-builder shape.
 """
 
 import json

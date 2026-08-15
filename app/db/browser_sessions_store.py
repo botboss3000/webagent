@@ -7,7 +7,7 @@ agent, and a ``shared`` flag (0 = private to the user, 1 = visible to the linked
 agent).
 
 Backend-agnostic: everything routes through ``get_db().get_raw_client()`` (the
-Supabase-style query builder, emulated for SQLite/Postgres in
+local query-builder idiom, emulated for SQLite/Postgres in
 ``app/db/local.py``), so the same code runs on every backend with no per-dialect
 SQL. Used by the Playwright engine (``app/tools/browser.py`` keys live pages by
 these rows' ids) and the REST + WebSocket layer (``app/api/browser_stream.py``).

@@ -35,6 +35,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -46,19 +47,19 @@ RESUME_BACKOFF_CAP_SECONDS = 1800.0
 LEASE_SECONDS = 120.0
 BOOT_RESUME_CONCURRENCY = 4
 
-# Origins / sessions that must NEVER be auto-resumed (throwaway test sandboxes).
-_EXCLUDED_ORIGINS = ("sandbox", "optimizer")
-_THROWAWAY_PREFIXES = ("test-", "trial-")
-_RESUMABLE_CAUSES = ("server_restart", "zombie", "frozen", "crash")
+# Origins / sessions that are never auto-resumed (configurable per-agent via auto_resume).
+_EXCLUDED_ORIGINS: tuple = ()
+_THROWAWAY_PREFIXES: tuple = ()
+_RESUMABLE_CAUSES = ("server_restart", "zombie", "frozen", "crash", "empty_response")
 
 # The continue-instruction handed to a resumed turn. It is passed as the trailing
 # user_message (which the loop does NOT persist), so it nudges this LLM call only
 # and never pollutes the stored conversation.
 RESUME_NUDGE = (
-    "[SYSTEM] Your previous response was interrupted before it finished. Continue "
-    "from where you left off based on the conversation so far — do not restart from "
-    "scratch, and do not repeat work you have already completed. If your last action "
-    "already finished the task, simply provide the final result."
+    "[SYSTEM] Your session has been resumed after an interruption. "
+    "Continue exactly where you left off. Do not restart from scratch. "
+    "A prior model response may have been empty; finish the user's outstanding task "
+    "with visible final text."
 )
 
 
@@ -202,6 +203,7 @@ async def run_supervised_turn(
     """
     from app.db import get_db
     from app.agent.run_manager import get_run_manager
+    from app.agent import session_gate
 
     db = get_db()
     rm = get_run_manager()
@@ -215,33 +217,48 @@ async def run_supervised_turn(
             fut.set_result(outcome)
 
     async def _do(replaced: bool) -> RunOutcome:
-        if fresh:
-            try:
-                await db.run_state_begin(
-                    session_id, user_id, agent_id, turn_id,
-                    origin=origin, relaunch_ctx=rc_json,
-                    max_resume_attempts=max_resume_attempts,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.debug("run_state_begin failed for %s: %s", session_id[:12], e)
-        outcome = RunOutcome()
+        # App-wide session cap (app/agent/session_gate.py): wait for a free slot
+        # before starting when max_active_sessions is reached. Fail-open: a gate
+        # error must never block a run (release() then no-ops).
         try:
-            outcome = _norm_outcome(await build_turn(replaced))
+            await session_gate.acquire(session_id)
         except asyncio.CancelledError:
-            outcome = RunOutcome(status="interrupted")
-            await _finish_run(db, session_id, outcome)
-            _resolve(outcome)
             raise
-        except Exception as e:  # noqa: BLE001 — supervisor records, never propagates a crash silently
-            logger.error("supervised turn %s (origin=%s) failed: %s",
-                         session_id[:12], origin, e, exc_info=True)
-            outcome = RunOutcome(status="error", stop_cause="crash", error=str(e)[:500])
+        except Exception as _ge:  # noqa: BLE001
+            logger.debug("session gate acquire failed for %s: %s", session_id[:12], _ge)
+        try:
+            if fresh:
+                try:
+                    await db.run_state_begin(
+                        session_id, user_id, agent_id, turn_id,
+                        origin=origin, relaunch_ctx=rc_json,
+                        max_resume_attempts=max_resume_attempts,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("run_state_begin failed for %s: %s", session_id[:12], e)
+            outcome = RunOutcome()
+            try:
+                outcome = _norm_outcome(await build_turn(replaced))
+            except asyncio.CancelledError:
+                outcome = RunOutcome(status="interrupted")
+                await _finish_run(db, session_id, outcome)
+                _resolve(outcome)
+                raise
+            except Exception as e:  # noqa: BLE001 — supervisor records, never propagates a crash silently
+                logger.error("supervised turn %s (origin=%s) failed: %s",
+                             session_id[:12], origin, e, exc_info=True)
+                outcome = RunOutcome(status="error", stop_cause="crash", error=str(e)[:500])
+                await _finish_run(db, session_id, outcome)
+                _resolve(outcome)
+                return outcome
             await _finish_run(db, session_id, outcome)
             _resolve(outcome)
             return outcome
-        await _finish_run(db, session_id, outcome)
-        _resolve(outcome)
-        return outcome
+        finally:
+            try:
+                await session_gate.release(session_id)
+            except Exception as _gr:  # noqa: BLE001
+                logger.debug("session gate release failed for %s: %s", session_id[:12], _gr)
 
     if replace:
         await rm.start_or_replace(
@@ -252,6 +269,7 @@ async def run_supervised_turn(
         started = await rm.start_run(
             session_id=session_id, user_id=user_id, turn_id=turn_id,
             run_factory=lambda: _do(False),
+            db=db,
         )
         if not started:
             # A live run already owns this session (a user message, or another
@@ -383,9 +401,49 @@ async def resume_one(session_id: str, *, reason: Optional[str] = None) -> bool:
     effective_max = _effective_max(row)
     attempts = int(row.get("resume_attempts") or 0)
     if attempts >= effective_max:
-        await db.run_state_mark_failed(session_id, f"exhausted {effective_max} resume attempts")
+        # Keep the last concrete failure.  Replacing it with only "exhausted N
+        # attempts" is what made the terminal chat notice useless.
+        _root_error = (row.get("error") or "").strip()
+        await db.run_state_mark_failed(session_id, None)
         logger.warning("Run %s exhausted %d resume attempts — marked failed",
                        session_id[:12], effective_max)
+        try:
+            from app.agent.diagnostics import record as _diag
+            _diag("warning", "run",
+                  f"Session {session_id[:12]} exhausted {effective_max} resume attempts — marked failed",
+                  source="resume_exhausted",
+                  detail={"session_id": session_id, "attempts": attempts, "max": effective_max},
+                  session_id=session_id)
+        except Exception:
+            pass
+        # Persist a user-facing system message so the user sees the failure in chat
+        _stop_cause = row.get("stop_cause") or "crash"
+        _err = _root_error
+        _sys_msg = (
+            f"❌ **Run failed after {effective_max} recovery attempt"
+            f"{'s' if effective_max != 1 else ''}**\n"
+            f"• Cause: {_stop_cause}\n"
+            + (f"• Last failure: {_err}\n" if _err else
+               "• Last failure: no exception detail was captured\n")
+            + f"• Attempts: {attempts}/{effective_max}\n"
+            f"• Recovery stopped because the retry budget was exhausted.\n"
+            f"• Send a new message to start a fresh run after correcting the failure above."
+        )
+        try:
+            await db.insert_interaction(
+                user_id=row.get("user_id"),
+                session_id=session_id,
+                role="system",
+                content=_sys_msg,
+                source="system:error",
+                # Allocate a session_seq so the message actually reaches the chat
+                # UI: transcript fetches order by session_seq and the live
+                # reconcile poll filters "session_seq IS NOT NULL" — a seq-less
+                # system row stays invisible.
+                session_seq=await db.next_session_seq(session_id),
+            )
+        except Exception:
+            pass
         return False
 
     origin = row.get("origin") or "web"
@@ -409,6 +467,17 @@ async def resume_one(session_id: str, *, reason: Optional[str] = None) -> bool:
     rc.setdefault("session_id", session_id)
     rc.setdefault("user_id", row.get("user_id"))
     rc.setdefault("agent_id", row.get("agent_id"))
+    # This is UI-only operational context. It is emitted to the chat as a
+    # recoverable notice and is never added to the agent's model messages.
+    rc["recovery"] = {
+        "stop_cause": row.get("stop_cause") or "unknown",
+        "issue": row.get("error") or "",
+        "stopped_at": row.get("updated_at") or row.get("heartbeat_at") or "",
+        "recovered_at": datetime.now(timezone.utc).isoformat(),
+        "attempt": attempts + 1,
+        "max_attempts": effective_max,
+        "trigger": reason or "watchdog",
+    }
     logger.info("Resuming run %s (origin=%s cause=%s attempt=%d/%d reason=%s)",
                 session_id[:12], origin, row.get("stop_cause"),
                 attempts + 1, effective_max, reason or "watchdog")
@@ -538,7 +607,7 @@ async def _generic_background_resume(rc: Dict[str, Any], replaced: bool) -> RunO
     automation / event / inbound / webhook origins (no UI attached)."""
     from app.db import get_db
     from app.agent.prompts import build_system_prompt
-    from app.agent.session_history import build_openai_history_from_session, trim_history_for_resume
+    from app.agent.session_history import build_openai_history_from_session
     from app.agent.loop import run_agent_loop_buffered
 
     db = get_db()
@@ -576,9 +645,14 @@ async def _generic_background_resume(rc: Dict[str, Any], replaced: bool) -> RunO
     system_prompt = await build_system_prompt(
         context_docs, brain_context=None, user_id=user_id, agent_id=agent_id)
 
-    # Bounded checkpoint, not the full transcript — see trim_history_for_resume.
-    history = await build_openai_history_from_session(db, user_id, sid, agent_id=agent_id)
-    history = trim_history_for_resume(history)
+    # Pre-load full compacted history so the agent sees the conversation exactly
+    # as it was before the crash — no bootstrap tool call needed.
+    try:
+        from app.agent.session_history import build_openai_history_from_session
+        history = await build_openai_history_from_session(
+            db, user_id, sid, agent_id=agent_id)
+    except Exception:
+        history = []
 
     raw_allowed = agent.get("allowed_tools", [])
     if isinstance(raw_allowed, str):

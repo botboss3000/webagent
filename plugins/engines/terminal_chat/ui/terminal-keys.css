@@ -14,7 +14,7 @@
    pill takes on, not a separate panel. Theme via design-system tokens.
 
    Both #chat-input-area and #chat-input-row are core chat-pill nodes (in
-   ui/chat-side-panel/chat-side-panel.html); the button + keypad they style are
+   ui/chat/chat-side-panel.html); the button + keypad they style are
    injected at runtime by this engine's terminal-keys.js. If the terminal_chat
    engine is dropped, delete this whole ui/ folder — the core carries none of it.
    ────────────────────────────────────────────────────────────────────────── */

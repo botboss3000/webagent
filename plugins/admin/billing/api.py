@@ -21,8 +21,11 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.auth.identity import assert_caller_is
-from app.db import get_db
-from plugins.billing.pricing import Strategy, _has_billing_tables
+from app.db import get_app_db
+from plugins.billing.pricing import (
+    _has_billing_tables,
+    parse_strategy_selection,
+)
 from plugins.billing.processors import get_processor
 from plugins.admin.billing import store
 
@@ -56,6 +59,9 @@ def _platform_config_to_response(row: dict) -> dict:
         "allowed_processors": _j(row.get("allowed_processors"), []),
         "rate_card_default_llm": _j(row.get("rate_card_default_llm"), {}),
         "rate_card_byo_llm": _j(row.get("rate_card_byo_llm"), {}),
+        "cost_multiplier": float(row.get("cost_multiplier") or 1.0),
+        "min_charge_cents": int(row.get("min_charge_cents") or 1),
+        "flat_image_cost_usd": float(row.get("flat_image_cost_usd") or 0.01),
         "platform_fee_pct": float(row.get("platform_fee_pct") or 0),
         "platform_fee_flat_cents": int(row.get("platform_fee_flat_cents") or 0),
         "trial_config": _j(row.get("trial_config"), {}),
@@ -73,6 +79,9 @@ class PlatformConfigBody(BaseModel):
     allowed_processors: Optional[List[str]] = None
     rate_card_default_llm: Optional[Dict[str, Any]] = None
     rate_card_byo_llm: Optional[Dict[str, Any]] = None
+    cost_multiplier: Optional[float] = None
+    min_charge_cents: Optional[int] = None
+    flat_image_cost_usd: Optional[float] = None
     platform_fee_pct: Optional[float] = None
     platform_fee_flat_cents: Optional[int] = None
     trial_config: Optional[Dict[str, Any]] = None
@@ -90,7 +99,7 @@ class OnboardBody(BaseModel):
 
 @router.get("/config/platform")
 async def get_platform_config(user_id: str = Query(...)):
-    db = get_db()
+    db = get_app_db()
     row = await store.read_platform_config(db)
     return {"platform": _platform_config_to_response(row or {})}
 
@@ -98,19 +107,22 @@ async def get_platform_config(user_id: str = Query(...)):
 @router.put("/config/platform")
 async def put_platform_config(body: PlatformConfigBody, fastapi_request: Request):
     body.user_id = await assert_caller_is(fastapi_request, body.user_id)
-    db = get_db()
+    db = get_app_db()
     await _require_platform_admin(db, body.user_id)
     fields: Dict[str, Any] = {}
     if body.strategy is not None:
-        if body.strategy not in {s.value for s in Strategy}:
-            raise HTTPException(status_code=400, detail=f"Unknown strategy: {body.strategy}")
-        fields["strategy"] = body.strategy
+        try:
+            selected = parse_strategy_selection(body.strategy, strict=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        fields["strategy"] = ",".join(selected)
     for src_name in ("allowed_strategies", "allowed_processors",
                      "rate_card_default_llm", "rate_card_byo_llm", "trial_config"):
         v = getattr(body, src_name)
         if v is not None:
             fields[src_name] = json.dumps(v)
-    for n in ("platform_fee_pct", "platform_fee_flat_cents",
+    for n in ("cost_multiplier", "min_charge_cents", "flat_image_cost_usd",
+              "platform_fee_pct", "platform_fee_flat_cents",
               "subscription_price_cents", "currency"):
         v = getattr(body, n)
         if v is not None:
@@ -138,11 +150,11 @@ async def connect_onboard(body: OnboardBody, fastapi_request: Request):
     except Exception as e:
         logger.error("onboard failed: %s", e)
         raise HTTPException(status_code=502, detail=f"Onboarding failed: {e}")
-    store.upsert_payment_account(get_db(), body.user_id, body.processor, link.account_id, complete=link.complete)
+    store.upsert_payment_account(get_app_db(), body.user_id, body.processor, link.account_id, complete=link.complete)
     return {"redirect_url": link.redirect_url, "account_id": link.account_id}
 
 
 @router.get("/connect/status")
 async def connect_status(user_id: str = Query(...)):
-    db = get_db()
+    db = get_app_db()
     return {"accounts": store.list_payment_accounts(db, user_id)}

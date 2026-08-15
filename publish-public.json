@@ -16,7 +16,6 @@
     "scripts/",
     "tests/",
     "migrations/",
-    "supabase/",
     "logs/",
     "data/",
     "docs/",

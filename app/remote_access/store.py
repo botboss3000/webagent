@@ -30,7 +30,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILE = PROJECT_ROOT / "data" / "config" / "remote_access.json"
 POINTERS_FILE = PROJECT_ROOT / "data" / "config" / "remote_access_pointers.json"
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 DEFAULT_SIGNPOST_SERVER = "https://webagent.live"
 
@@ -40,6 +40,9 @@ METHODS = ("same_network", "ngrok", "cloudflare", "tailscale", "manual")
 DEFAULT_CONFIG: Dict[str, Any] = {
     "active_method": "same_network",
     "auto_start": False,            # start the managed tunnel on server boot
+    "headful_url": "",             # last URL reported by the detached tunnel slave
+    "slave_running": False,         # last reported state; fresh status is authoritative
+    "slave_tokens": {},             # app port -> per-launch control/report token
     "rendezvous_key": "",           # public-ish; lives in the phone bookmark
     "push_token": "",               # secret; authorizes pointer updates
     "ngrok": {
@@ -111,9 +114,31 @@ def save_config(cfg: Dict[str, Any]) -> None:
 
 def update_config(patch: Dict[str, Any]) -> Dict[str, Any]:
     """Deep-merge a patch into the saved config and return the result."""
-    cfg = _deep_merge(load_config(), patch or {})
-    save_config(cfg)
-    return cfg
+    with _lock:
+        cfg = _deep_merge(load_config(), patch or {})
+        save_config(cfg)
+        return cfg
+
+
+def update_slave_state(port: int, *, token: Optional[str] = None,
+                       running: Optional[bool] = None, url: Optional[str] = None,
+                       clear_token: bool = False) -> Dict[str, Any]:
+    """Update the detached slave fields without losing concurrent config edits."""
+    key = str(int(port))
+    with _lock:
+        cfg = load_config()
+        tokens = dict(cfg.get("slave_tokens") or {})
+        if clear_token:
+            tokens.pop(key, None)
+        elif token is not None:
+            tokens[key] = token
+        cfg["slave_tokens"] = tokens
+        if running is not None:
+            cfg["slave_running"] = bool(running)
+        if url is not None:
+            cfg["headful_url"] = str(url or "")
+        save_config(cfg)
+        return cfg
 
 
 def regenerate_keys() -> Dict[str, str]:

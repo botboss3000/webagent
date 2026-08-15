@@ -5,7 +5,7 @@
 // ──────────────────────────────────────────────────────────────────────────
 // Ships WITH the terminal_chat engine, NOT with the core chat panel. Served off
 // disk at /plugins/engines/terminal_chat/ui/terminal-keys.js and loaded lazily
-// (dynamic import) by the core engine adapter (ui/chat-side-panel/js/
+// (dynamic import) by the core engine adapter (ui/chat/js/
 // chat-terminal-engine.js) ONLY when a Terminal Chat session mounts. A normal
 // (LLM-loop) agent never fetches, builds, or sees any of this — so the footer
 // keyboard button is only present for terminal-chat agents.

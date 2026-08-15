@@ -79,9 +79,11 @@
 
   /* ── Responsive ── */
   @media (max-width: 800px) {
+    html { overflow: hidden; }
     #stage { flex-direction: column; }
     #chat-panel { width: 100%; min-width: 0; border-left: none; border-top: var(--border-width) solid var(--border); flex: 1; min-height: 0; max-height: none; }
     #main-panel { flex: 1; min-height: 0; }
+    #chat-input-area { touch-action: pan-y; overscroll-behavior: none; }
     body.chat-hidden #chat-panel,
     body.chat-hidden #chat-resize-handle { display: none !important; }
     body.chat-visible #main-panel { display: none !important; }

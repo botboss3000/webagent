@@ -1,5 +1,5 @@
 /* Web page — in-app, AI-augmented browser.
-   Markup: ui/browser/browser.html · logic: ui/browser/js/browser.js.
+   Markup: ui/main-panel/browser/browser.html · logic: ui/main-panel/browser/js/browser.js.
    Theme-driven (design-system variables only) so it works in dark + light.
    #tab-browser is a .tab-content, which is `display:flex; flex-direction:column`
    when active, so .browser-page just grows to fill it.

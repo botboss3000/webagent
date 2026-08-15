@@ -11,7 +11,7 @@ to describe its own one-liner.
 
 The Linux/Termux target (``app/deploy/providers/termux.py``) predates this module
 and keeps its own copy of the same helpers; the browser mirrors all of them in
-``ui/admin-tools/app-config/app-settings/deploy.js`` so the command box renders
+``ui/admin-tools/instances/app-config/data-settings/deploy.js`` so the command box renders
 LIVE even before the server is restarted.
 """
 

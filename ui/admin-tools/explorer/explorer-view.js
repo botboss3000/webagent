@@ -21,7 +21,8 @@
 import { copyText } from '../../shared/js/clipboard.js';
 import { _refreshLucideIcons, openFloatingMenu, closeFloatingMenu } from '../../shared/js/dom-utils.js';
 import { streamCopy, streamPush, streamRelease, restartServerAndReload, _RELEASE_PHASE_LABELS } from '../../shared/js/files-git.js';
-import { authHeaders } from '../../shared/js/left-login.js';
+import { applyRubberBand } from '../../shared/js/rubber-band.js';
+import { authHeaders, isAdmin } from '../../shared/js/left-login.js';
 
 // ── Module state ──────────────────────────────────────────────────
 const API_BASE = '/api/v1/files';
@@ -39,6 +40,14 @@ let prodViewMode = 'dev';      // 'dev' | 'prod' (production preview hides dev-o
 let gitLineStats = {};   // absolute file path -> { added, removed } since HEAD
 let gitFolderStats = {}; // absolute folder path -> summed { added, removed } of its descendants
 let gitStatsRoot = '';   // repo root the stats are keyed under (aggregation boundary)
+// Git tracked/ignored view state — the path sets fetched from /git-status,
+// remapped to absolute paths so the tree rows can be marked in place.
+let gitRepoRoot = '';          // repo root the tracked/ignored sets are keyed under
+let gitTracked = new Set();    // absolute paths of tracked files (git ls-files)
+let gitIgnored = new Set();    // absolute paths of ignored files / collapsed dirs
+let _gitTrackedSorted = [];    // sorted absolute tracked paths (descendant lookup)
+let _gitDescCache = new Map(); // 'tracked|path' / 'ignored|path' → bool
+let _gitStatusLoaded = false;  // true once a git-status fetch has resolved
 let _prodActionBusy = false;   // guards against a double-fire while syncing/pushing
 let _prodFolder = '';          // cached destination folder (editable in the More menu)
 let _prodFolderDefault = '';   // backend's suggested default (placeholder when unset)
@@ -54,6 +63,7 @@ const LS_ACTIVE_FILE  = 'files.activeFile';
 const LS_EXPANDED     = 'files.expandedDirs';
 const LS_CURRENT_ROOT = 'files.currentRoot';
 const LS_PROD_VIEW    = 'files.prodView';         // 'dev' | 'prod' explorer view
+const LS_SCROLL_POS  = 'files.scrollPos';        // file path → scrollTop (persisted across refreshes)
 
 // ── Shared fetch helper (auth headers + user_id), duplicated verbatim from the
 // frame so the module has no dependency on the frame's internals. ──
@@ -264,7 +274,7 @@ async function setProdExclude(path, excluded) {
       body: JSON.stringify({ path, excluded }),
     });
     if (excluded) prodExcluded.add(path); else prodExcluded.delete(path);
-    refreshProdMarks();
+    refreshTreeMarks();
   } catch (e) {
     alert('Could not update production exclude: ' + (e.message || 'failed'));
   }
@@ -284,7 +294,7 @@ async function setProdExcludeBulk(addPaths, removePaths) {
     });
     remove.forEach((p) => prodExcluded.delete(p));
     add.forEach((p) => prodExcluded.add(p));
-    refreshProdMarks();
+    refreshTreeMarks();
   } catch (e) {
     alert('Could not update production exclude: ' + (e.message || 'failed'));
   }
@@ -314,40 +324,219 @@ function toggleProdExclude(entry) {
   }
 }
 
+// ── Git tracked/ignored view ───────────────────────────────────────
+// Fetch the repo's tracked + ignored path sets from the backend (one call,
+// whole repo, pinned to the project root) and remap them to absolute paths so
+// the tree's rows can be marked. Non-fatal throughout: no data → no marks.
+
+// Remap the backend's repo-relative sets to absolute paths and repaint every
+// rendered row — shared by the initial load and every interactive toggle.
+function applyGitStatusData(data) {
+  const root = String(data.repo_root || projectRoot || '').replace(/\/+$/, '');
+  gitRepoRoot = root;
+  const tracked = new Set();
+  const ignored = new Set();
+  const add = (set, rel) => {
+    rel = String(rel || '').trim();
+    if (rel) set.add(root ? root + '/' + rel : rel);
+  };
+  (data.tracked || []).forEach((r) => add(tracked, r));
+  (data.ignored || []).forEach((r) => add(ignored, r));
+  gitTracked = tracked;
+  gitIgnored = ignored;
+  _gitTrackedSorted = Array.from(tracked).sort();
+  _gitDescCache.clear();
+  refreshTreeMarks();
+}
+
+async function loadGitStatus() {
+  _gitStatusLoaded = true;
+  try {
+    const data = await apiFetch('/api/v1/github/git-status');
+    applyGitStatusData(data);
+  } catch (_) {
+    // Non-fatal — without the sets we simply render no git marks.
+  }
+}
+
+// An absolute tree path → repo-relative path (what the git endpoints expect).
+function absToRepoRel(absPath) {
+  if (!gitRepoRoot) return absPath;
+  if (absPath === gitRepoRoot) return '';
+  if (absPath.startsWith(gitRepoRoot + '/')) return absPath.slice(gitRepoRoot.length + 1);
+  return absPath;
+}
+
+// Flip one path's tracked/ignored state in git (the git-view checkboxes are
+// live toggles: ticking = un-ignore + track, unticking = ignore + untrack).
+// The backend edits .gitignore / the index and returns the fresh sets; we
+// repaint every row from those so the tree always reflects reality.
+async function toggleGitTracked(path, isDir, tracked) {
+  const rel = absToRepoRel(path);
+  if (!rel) return;
+  try {
+    const data = await apiFetch('/api/v1/github/git-ignore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: rel, tracked }),
+    });
+    applyGitStatusData(data);
+  } catch (e) {
+    alert('Could not update git ignore state: ' + (e.message || 'failed'));
+  }
+}
+
+// True when the path itself is listed as ignored (the set holds individual
+// files and whole collapsed directories from `git status --ignored`).
+function gitIsIgnored(path) {
+  return gitIgnored.has(path);
+}
+
+// True when any ancestor directory of the path is ignored — everything beneath
+// a collapsed ignored folder is ignored too, even though only the folder
+// itself appears in the set.
+function gitUnderIgnored(path) {
+  let i = path.lastIndexOf('/');
+  while (i > 0) {
+    if (gitIgnored.has(path.slice(0, i))) return true;
+    i = path.lastIndexOf('/', i - 1);
+  }
+  return false;
+}
+
+function gitIsIgnoredOrUnder(path) {
+  return gitIsIgnored(path) || gitUnderIgnored(path);
+}
+
+// First index in `sorted` whose value is >= prefix (binary search). Path
+// comparison is byte-wise, so 'folder/x' sorts after both 'folder.txt' and
+// 'folder' — a startsWith check on the hit distinguishes real descendants.
+function _firstGte(sorted, prefix) {
+  let lo = 0, hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid] < prefix) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+// Whether any entry of `kind` ('tracked' | 'ignored') lives inside this folder.
+// Tracked uses a binary search over the sorted list; ignored scans the (small,
+// collapsed) set. Results are cached per folder+kind because the same folders
+// re-appear on every render/refresh.
+function gitHasDescendant(kind, folderPath) {
+  const key = kind + '|' + folderPath;
+  const cached = _gitDescCache.get(key);
+  if (cached !== undefined) return cached;
+  const prefix = folderPath + '/';
+  let has = false;
+  if (kind === 'tracked') {
+    const i = _firstGte(_gitTrackedSorted, prefix);
+    has = i < _gitTrackedSorted.length && _gitTrackedSorted[i].startsWith(prefix);
+  } else {
+    for (const p of gitIgnored) {
+      if (p.startsWith(prefix)) { has = true; break; }
+    }
+  }
+  _gitDescCache.set(key, has);
+  return has;
+}
+
+// Tri-state for a FOLDER checkbox in git view:
+//   'checked'       — git tracks something inside (nothing here is ignored)
+//   'indeterminate' — some contents are tracked and some are git-ignored
+//   'unchecked'     — the folder itself is ignored (or under one), or it holds
+//                     only untracked, non-ignored files
+function gitFolderState(path) {
+  if (gitIsIgnoredOrUnder(path)) return 'unchecked';
+  if (gitHasDescendant('ignored', path)) return 'indeterminate';
+  if (gitHasDescendant('tracked', path)) return 'checked';
+  return 'unchecked';
+}
+
+// A FILE's git state: 'tracked' | 'ignored' | 'untracked'
+function gitFileState(path) {
+  if (gitIsIgnoredOrUnder(path)) return 'ignored';
+  return gitTracked.has(path) ? 'tracked' : 'untracked';
+}
+
+function gitFolderTitle(state, underIgnored) {
+  if (underIgnored) return 'A parent folder is git-ignored — check to track everything inside';
+  if (state === 'indeterminate') return 'Partially ignored — click to track everything, click again to ignore everything';
+  if (state === 'checked') return 'Tracked by git — uncheck to ignore the whole folder';
+  return 'Ignored by git — check to track everything inside';
+}
+
+function gitFileTitle(state, underIgnored) {
+  if (state === 'ignored') return underIgnored
+    ? 'A parent folder is git-ignored — check to track this file'
+    : 'Ignored by git — check to track it';
+  if (state === 'tracked') return 'Tracked by git — uncheck to ignore it';
+  return 'Not tracked by git yet — check to track it';
+}
+
+// Paint one checkbox from the git sets. Unlike prod view these are LIVE
+// toggles: every box stays clickable (even under an ignored parent — checking
+// it un-ignores the chain), and the change handler posts the flip to git.
+function applyGitCheckState(check, path, isDir) {
+  const under = gitUnderIgnored(path);
+  if (isDir) {
+    const st = gitFolderState(path);
+    check.checked = st === 'checked';
+    check.indeterminate = st === 'indeterminate';
+    check.disabled = false;
+    check.title = gitFolderTitle(st, under);
+  } else {
+    const st = gitFileState(path);
+    check.checked = st === 'tracked';
+    check.indeterminate = false;
+    check.disabled = false;
+    check.title = gitFileTitle(st, under);
+  }
+}
+
+// Paint one checkbox for the CURRENT view mode: git marks in git view, the
+// production exclude marks otherwise.
+function applyTreeCheckState(check, path, isDir) {
+  if (prodViewMode === 'git') { applyGitCheckState(check, path, isDir); return; }
+  const underExcluded = !!prodExcludedAncestor(path);
+  if (isDir) {
+    // Folders carry a tri-state: a partial tick when some items inside are
+    // dev-only. The indeterminate flag is visual-only and must be re-set here.
+    const st = prodFolderState(path);
+    check.checked = st === 'checked';
+    check.indeterminate = st === 'indeterminate';
+    check.disabled = underExcluded;
+    check.title = prodFolderTitle(st, underExcluded);
+  } else {
+    const ships = prodWillShip(path);
+    check.checked = ships;
+    check.indeterminate = false;
+    check.disabled = underExcluded;
+    check.title = prodCheckTitle(ships, underExcluded);
+  }
+}
+
 // Walk every rendered row and resync its checkbox, "Dev" badge and dropped
-// styling to the current exclude set — called after any single toggle so the
-// whole visible subtree reflects the change without a server round-trip.
-function refreshProdMarks() {
+// styling to the current view mode's state — called after any single toggle or
+// a fresh git-status load so the whole visible subtree reflects the change
+// without a server round-trip.
+function refreshTreeMarks() {
   const tree = document.getElementById('files-tree');
   if (!tree) return;
   tree.querySelectorAll('.files-tree-node').forEach((node) => {
     const path = node.dataset.path;
     if (!path) return;
     const isDir = node.dataset.kind === 'dir';
-    const ships = prodWillShip(path);
-    const underExcluded = !!prodExcludedAncestor(path);
-    node.classList.toggle('is-prod-dropped', !ships);
     const row = node.querySelector(':scope > .files-tree-row');
     if (!row) return;
     const check = row.querySelector('.files-tree-check');
-    if (check) {
-      if (isDir) {
-        // Folders carry a tri-state: a partial tick when some items inside are
-        // dev-only. The indeterminate flag is visual-only and must be re-set here.
-        const st = prodFolderState(path);
-        check.checked = st === 'checked';
-        check.indeterminate = st === 'indeterminate';
-        check.disabled = underExcluded;
-        check.title = prodFolderTitle(st, underExcluded);
-      } else {
-        check.checked = ships;
-        check.indeterminate = false;
-        check.disabled = underExcluded;
-        check.title = prodCheckTitle(ships, underExcluded);
-      }
-    }
+    if (check) applyTreeCheckState(check, path, isDir);
+    // Dimming: prod view drops non-shipping rows, git view drops ignored rows.
+    const dropped = prodViewMode === 'git' ? gitIsIgnoredOrUnder(path) : !prodWillShip(path);
+    node.classList.toggle('is-prod-dropped', dropped);
     const badge = row.querySelector('.files-tree-badge.dev-only');
-    if (badge) badge.classList.toggle('show', isProdExcluded(path));
+    if (badge) badge.classList.toggle('show', prodViewMode !== 'git' && isProdExcluded(path));
   });
 }
 
@@ -358,27 +547,32 @@ function _atProjectRoot() {
   return !projectRoot || currentRoot === projectRoot;
 }
 
-// Reflect the dev/production view mode onto the tree container. In production-
-// preview mode the per-row checkboxes appear so the admin can tick exactly what
-// ships; dev view hides them again. The preview only applies at the project root
-// (home) — away from home the checkboxes stay hidden even when the mode is 'prod'
-// so the persisted preference resumes when the user returns home. The eye lives
-// in the "More" popover now, so there's no toolbar button to restyle here — just
-// the tree + the status line.
+// Reflect the dev/production/git view mode onto the tree container. In prod
+// preview the dev-only checkboxes appear; in git view the tracked/ignored
+// checkboxes appear; dev view hides them again. Both only apply at the project
+// root (home) — away from home the checkboxes stay hidden even when the mode is
+// set, so the persisted preference resumes when the user returns home. The
+// toggles live in the "More" popover now, so there's no toolbar button to
+// restyle here — just the tree + the status line.
 function applyProdViewClass() {
   const tree = document.getElementById('files-tree');
-  const showing = prodViewMode === 'prod' && _atProjectRoot();
-  if (tree) tree.classList.toggle('prod-view', showing);
+  const atHome = _atProjectRoot();
+  if (tree) {
+    tree.classList.toggle('prod-view', prodViewMode === 'prod' && atHome);
+    tree.classList.toggle('git-view', prodViewMode === 'git' && atHome);
+  }
   // Leaving production-preview clears any lingering copy/push status line.
   const status = document.getElementById('files-prod-status');
-  if (status && !showing) status.classList.remove('show');
+  if (status && prodViewMode !== 'prod') status.classList.remove('show');
 }
 
-// Flip production-preview on/off (the eye / "Show dev checkboxes" menu item).
-function toggleProdView() {
-  prodViewMode = prodViewMode === 'prod' ? 'dev' : 'prod';
+// Flip the tree's checkbox view mode ('dev' = none, 'prod' = dev-only marks,
+// 'git' = tracked/ignored marks). Used by the More menu's two toggle rows.
+function setTreeViewMode(mode) {
+  prodViewMode = mode;
   try { localStorage.setItem(LS_PROD_VIEW, prodViewMode); } catch (_) {}
   applyProdViewClass();
+  refreshTreeMarks();
 }
 
 // Fetch how dev and the production folder differ and write a one-line summary
@@ -513,13 +707,21 @@ function openProductionMenu(anchorBtn) {
   const rect = anchorBtn.getBoundingClientRect();
   const atHome = _atProjectRoot();
   const previewing = prodViewMode === 'prod' && atHome;
+  const gitViewing = prodViewMode === 'git' && atHome;
   const items = [
+    // Git tracked/ignored status: read-only checkboxes showing what git tracks
+    // vs ignores, at the project root (the app's own repo).
+    atHome
+      ? { icon: gitViewing ? 'eye-off' : 'git-branch', label: 'Show git status',
+          checked: gitViewing, action: () => setTreeViewMode(gitViewing ? 'dev' : 'git') }
+      : { icon: 'git-branch', label: 'Git status only in Project root',
+          disabled: true },
     // The production folder is defined relative to the project root, so the
     // dev-only checkboxes only work at home. Away from home the row turns into a
     // disabled hint telling the user where to go.
     atHome
       ? { icon: previewing ? 'eye-off' : 'eye', label: 'Show dev checkboxes',
-          checked: previewing, action: toggleProdView }
+          checked: previewing, action: () => setTreeViewMode(previewing ? 'dev' : 'prod') }
       : { icon: 'eye-off', label: 'Dev checkboxes only in Project root',
           disabled: true },
     { separator: true },
@@ -571,7 +773,11 @@ function openProductionMenu(anchorBtn) {
 // remap it to absolute paths, roll the files up into folder sums, then repaint
 // the badges on every rendered row. Non-fatal throughout: no data → no badges.
 
+let _lineStatsPending = false;
+
 async function loadLineStats() {
+  if (_lineStatsPending) return;
+  _lineStatsPending = true;
   try {
     const data = await apiFetch('/api/v1/github/line-stats');
     const root = String(data.project_root || projectRoot || '').replace(/\/+$/, '');
@@ -586,8 +792,10 @@ async function loadLineStats() {
     rebuildFolderStats();
     refreshLineStatMarks();
   } catch (_) {
+    _lineStatsPending = false;
     // Non-fatal — without the stats we simply render no counts.
   }
+  _lineStatsPending = false;
 }
 
 // Sum each changed file's counts into every ancestor folder up to (and
@@ -665,15 +873,16 @@ function refreshLineStatMarks() {
 // device) show up without a manual reload. Paused while the browser tab is
 // hidden or the active sidebar view isn't the tree, and only one timer ever
 // runs (start is idempotent). Mirrors the Source-Control auto-refresh.
-const LINE_STATS_REFRESH_MS = 20000;   // 20s
+const LINE_STATS_REFRESH_MS = 60000;
 let _lineStatsTimer = null;
 
 function startLineStatsAutoRefresh() {
   if (_lineStatsTimer) return;          // already polling
   _lineStatsTimer = setInterval(() => {
     if (document.hidden) return;        // browser tab not visible → skip the round-trip
-    if (!isAdmin) return;
+    if (!isAdmin()) return;
     const sb = document.getElementById('files-sidebar');
+    if (!sb || sb.offsetParent === null) return;
     if (sb && sb.dataset.view !== 'explorer') return;  // only while the tree is the active view
     loadLineStats();                    // cheap re-fetch; repaints badges in place
   }, LINE_STATS_REFRESH_MS);
@@ -699,35 +908,38 @@ function renderTreeRow(entry, depth) {
     } catch (_) {}
   });
 
-  // Production-preview checkbox (hidden unless the tree is in prod-view). Ticked
-  // = this path ships to the production mirror; unticking marks it dev-only. A
-  // path under an already-excluded folder shows unticked + locked. Shared
-  // exclude list with the Git page's Production panel. Created here but appended
-  // AFTER the chevron, so the row reads: chevron → checkbox → name.
+  // Production-preview / git-status checkbox (hidden unless the tree is in a
+  // checkbox view). In prod view: ticked = ships to the production mirror,
+  // unticking marks it dev-only, a path under an already-excluded folder shows
+  // unticked + locked. In git view: checked = git-tracked, blank = ignored,
+  // partial dash = some contents ignored — and the boxes are LIVE toggles that
+  // change the actual .gitignore rules / index (see toggleGitTracked). The prod
+  // exclude list is shared with the Git page's Production panel. Created here
+  // but appended AFTER the chevron, so the row reads: chevron → checkbox →
+  // name.
   const check = document.createElement('input');
   check.type = 'checkbox';
   check.className = 'files-tree-check';
-  const underExcluded = !!prodExcludedAncestor(entry.path);
-  if (entry.is_dir) {
-    // Folder checkbox is tri-state: ticked (all ships), a partial dash (some
-    // items inside are dev-only), or unticked (the whole folder is dev-only).
-    const st = prodFolderState(entry.path);
-    check.checked = st === 'checked';
-    check.indeterminate = st === 'indeterminate';
-    check.disabled = underExcluded;
-    check.title = prodFolderTitle(st, underExcluded);
-  } else {
-    const ships = prodWillShip(entry.path);
-    check.checked = ships;
-    check.disabled = underExcluded;
-    check.title = prodCheckTitle(ships, underExcluded);
-  }
+  applyTreeCheckState(check, entry.path, entry.is_dir);
   // A checkbox click must not open the file / toggle the folder. (The checkbox
   // also re-enables pointer-events in CSS, since the row sets them off on every
   // child so the whole row is one click target.)
   check.addEventListener('click', (e) => e.stopPropagation());
   check.addEventListener('change', (e) => {
     e.stopPropagation();
+    if (prodViewMode === 'git') {
+      // Git view checkboxes are live: ticking includes the path in git
+      // (tracked), unticking makes it ignored. A folder's tri-state click
+      // intent works like prod view — tick = whole subtree tracked, untick =
+      // whole subtree ignored.
+      if (entry.is_dir) {
+        if (check.checked) toggleGitTracked(entry.path, true, true);
+        else toggleGitTracked(entry.path, true, false);
+      } else {
+        toggleGitTracked(entry.path, false, check.checked);
+      }
+      return;
+    }
     if (entry.is_dir) {
       // The browser has already resolved the tri-state on click: ticking a
       // partial (or empty) folder includes the whole subtree, unticking a full
@@ -767,7 +979,7 @@ function renderTreeRow(entry, depth) {
 
   // Dev-only badge — shown (via the `show` class) when this exact path is
   // excluded from the production mirror, for files and folders alike. Always
-  // present but hidden otherwise, so refreshProdMarks() can toggle it live
+  // present but hidden otherwise, so refreshTreeMarks() can toggle it live
   // without rebuilding the row.
   const badge = document.createElement('span');
   badge.className = 'files-tree-badge dev-only' + (isProdExcluded(entry.path) ? ' show' : '');
@@ -789,9 +1001,11 @@ function renderTreeNode(entry, depth) {
   node.className = 'files-tree-node';
   node.dataset.path = entry.path;
   node.dataset.kind = entry.is_dir ? 'dir' : 'file';
-  // Mark non-shipping nodes (excluded themselves or under an excluded folder)
-  // so production-preview can dim + strike them — files and folders alike.
-  if (!prodWillShip(entry.path)) node.classList.add('is-prod-dropped');
+  // Mark dropped nodes so the checkbox views can dim + strike them: in prod
+  // view that's non-shipping (excluded) paths, in git view it's ignored ones.
+  if (prodViewMode === 'git' ? gitIsIgnoredOrUnder(entry.path) : !prodWillShip(entry.path)) {
+    node.classList.add('is-prod-dropped');
+  }
 
   const row = renderTreeRow(entry, depth);
   node.appendChild(row);
@@ -1031,9 +1245,12 @@ async function loadRoot() {
     currentRoot = data.path || currentRoot;
     if (data.project_root) projectRoot = data.project_root;
     renderBreadcrumb(currentRoot, data.parent);
-    // Hide/show the dev-only checkboxes now we know where the tree is rooted —
-    // they only apply at the project root (home).
+    // Hide/show the checkbox views now we know where the tree is rooted — they
+    // only apply at the project root (home).
     applyProdViewClass();
+    // Git status marks must be in hand before the first paint in git view,
+    // otherwise every row would render blank and then jump when the fetch lands.
+    if (prodViewMode === 'git' && !_gitStatusLoaded) await loadGitStatus();
 
     tree.innerHTML = '';
     if (!data.entries.length) {
@@ -1248,6 +1465,26 @@ function showTabMenu(tab, anchorBtn) {
   ];
   if (isMarkdownFile(tab.name)) {
     items.push({ icon: 'eye', label: 'Markdown preview', checked: !!tab.preview, action: () => togglePreview(tab.path) });
+  }
+  // Fold level — number of bracket nesting levels to keep open (for .json files)
+  if (/\.json$/i.test(tab.name)) {
+    items.push({
+      field: true, label: 'Fold level',
+      fieldType: 'number',
+      value: String(tab.foldLevel != null ? tab.foldLevel : 10),
+      placeholder: '10',
+      onSave: (v) => {
+        const level = Math.max(0, parseInt(v, 10) || 10);
+        tab.foldLevel = level;
+        // Re-render the pane's fold highlights
+        const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(tab.path) + '"]');
+        if (pane) {
+          const ta = pane.querySelector('textarea.files-textarea-overlay');
+          if (ta) scheduleHighlight(pane);
+        }
+        persistTabs();
+      }
+    });
   }
   const findDisabled = !!tab.binary || isImageFile(tab.name) || (isMarkdownFile(tab.name) && tab.preview);
   items.push({ icon: 'search', label: 'Find / Replace…', disabled: findDisabled, action: () => openFindBarForActiveTab(tab.path, false) });
@@ -1515,6 +1752,7 @@ function initTabCarousel() {
     prev.addEventListener('click', () => { bar.scrollBy({ left: -SCROLL_STEP, behavior: 'smooth' }); });
     next.addEventListener('click', () => { bar.scrollBy({ left:  SCROLL_STEP, behavior: 'smooth' }); });
     bar.addEventListener('scroll', updateTabCarousel, { passive: true });
+    applyRubberBand(bar);
 
     // Auto-scroll while dragging a tab past either edge
     [c.prev, c.next].forEach((id) => {
@@ -1679,6 +1917,14 @@ function buildTextEditorPane(pane, tab) {
   highlight.appendChild(code);
   wrap.appendChild(highlight);
 
+  // Fold gutter — holds clickable triangle buttons for code folding
+  const gutter = document.createElement('div');
+  gutter.className = 'files-fold-gutter';
+  gutter.setAttribute('aria-hidden', 'true');
+  wrap.appendChild(gutter);
+  pane._foldPairs = [];
+  pane._foldedSet = new Set();
+
   const ta = document.createElement('textarea');
   ta.className = 'files-textarea files-textarea-overlay' + (tab.wrap ? ' wrap' : '');
   ta.spellcheck = false;
@@ -1686,19 +1932,41 @@ function buildTextEditorPane(pane, tab) {
   ta.autocapitalize = 'off';
   ta.value = tab.content || '';
 
+  function syncCursorLine() {
+    if (!ta || !tab || tab.binary) return;
+    const before = ta.value.slice(0, ta.selectionStart);
+    const line = before.split('\n').length;
+    if (tab._cursorLine !== line) {
+      tab._cursorLine = line;
+      return true; // changed
+    }
+    return false;
+  }
   ta.addEventListener('input', () => {
     tab.content = ta.value;
     if (!tab.dirty) {
       tab.dirty = true;
       renderTabs();
     }
+    syncCursorLine();
     updateStatusBar(tab);
     scheduleHighlight(pane);
   });
   ta.addEventListener('scroll', () => {
     highlight.scrollTop = ta.scrollTop;
     highlight.scrollLeft = ta.scrollLeft;
+    const gutter = wrap.querySelector('.files-fold-gutter');
+    if (gutter) gutter.scrollTop = ta.scrollTop;
+    // Save scroll position to local storage for persistence across refreshes
+    try {
+      const pos = JSON.parse(localStorage.getItem(LS_SCROLL_POS) || '{}');
+      pos[tab.path] = ta.scrollTop;
+      localStorage.setItem(LS_SCROLL_POS, JSON.stringify(pos));
+    } catch (_) {}
   });
+  ta.addEventListener('click', () => { if (syncCursorLine()) updateStatusBar(tab); });
+  ta.addEventListener('keyup', () => { if (syncCursorLine()) updateStatusBar(tab); });
+  ta.addEventListener('focus', () => { if (syncCursorLine()) updateStatusBar(tab); });
   ta.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
@@ -1727,12 +1995,52 @@ function buildTextEditorPane(pane, tab) {
       scheduleHighlight(pane);
     }
   });
+  // JSON error popover — click on the error line shows the parse error
+  wireJsonErrorClick(ta, pane);
+  // Code folding auto-unfold when cursor enters a folded region
+  wireFoldAutoUnfold(ta, pane);
   wrap.appendChild(ta);
   pane.appendChild(wrap);
+
+  // Restore scroll position from local storage after layout settles
+  try {
+    const pos = JSON.parse(localStorage.getItem(LS_SCROLL_POS) || '{}');
+    const saved = pos[tab.path];
+    if (saved != null) {
+      requestAnimationFrame(() => {
+        ta.scrollTop = saved;
+        highlight.scrollTop = saved;
+        const g = wrap.querySelector('.files-fold-gutter');
+        if (g) g.scrollTop = saved;
+      });
+    }
+  } catch (_) {}
 
   // Initial highlight pass — done lazily so the autoloader has a tick
   // to fetch the grammar.
   scheduleHighlight(pane);
+}
+
+// ── JSON validation ───────────────────────────────────────────────
+// Validates .json file content with JSON.parse and returns structured
+// error info (message, position, line, column) or null when valid.
+
+function validateJsonContent(text) {
+  if (typeof text !== 'string') return null;
+  try {
+    JSON.parse(text);
+    return null;
+  } catch (e) {
+    const msg = e.message;
+    const posMatch = msg.match(/position\s+(\d+)/);
+    const position = posMatch ? parseInt(posMatch[1], 10) : 0;
+    const clampedPos = Math.max(0, Math.min(position, text.length));
+    const before = text.slice(0, clampedPos);
+    const lines = before.split('\n');
+    const line = lines.length;
+    const column = lines[lines.length - 1].length + 1;
+    return { message: msg, position: clampedPos, line, column };
+  }
 }
 
 // ── Syntax highlighting (Prism, debounced) ────────────────────────
@@ -1767,19 +2075,42 @@ function updateHighlightOverlay(pane) {
   const ta = pane && pane.querySelector('textarea.files-textarea-overlay');
   if (!code || !ta) return;
   const value = ta.value;
+  const langClass = (code.className.match(/language-(\S+)/) || [])[1] || 'plain';
+
+  // Recalculate foldable bracket pairs from the raw text
+  pane._foldPairs = langClass === 'json' ? findBracketPairs(value) : [];
+
+  // Apply fold level from the tab — fold pairs deeper than the level
+  const tab = openTabs.find(t => t.path === pane.dataset.path);
+  const foldLevel = (tab && tab.foldLevel != null) ? tab.foldLevel : 10;
+  if (pane._foldPairs.length) {
+    pane._foldedSet = new Set();
+    for (let i = 0; i < pane._foldPairs.length; i++) {
+      if (pane._foldPairs[i].depth > foldLevel) {
+        pane._foldedSet.add(i);
+      }
+    }
+  } else {
+    pane._foldedSet = new Set();
+  }
+
+  // Build modified text with folded regions replaced by markers
+  const { text: foldText, markers } = buildFoldMarkersText(value, pane._foldPairs, pane._foldedSet);
+
   // Append a newline so the highlight has the same trailing-line height
   // as the textarea (which always reserves a blank line for the caret).
   if (window.Prism && window.Prism.highlight) {
-    const langClass = (code.className.match(/language-(\S+)/) || [])[1] || 'plain';
     if (langClass !== 'plain') {
       const grammar = window.Prism.languages[langClass];
       if (grammar) {
         try {
-          code.innerHTML = window.Prism.highlight(value + '\n', grammar, langClass);
+          code.innerHTML = window.Prism.highlight(foldText + '\n', grammar, langClass);
+          postProcessFoldMarkers(code, markers);
+          applyJsonErrorMarkers(pane, code, value, langClass);
+          applyFoldGutter(pane, pane._foldPairs, pane._foldedSet, langClass);
           return;
         } catch (_) {}
       } else if (window.Prism.plugins && window.Prism.plugins.autoloader) {
-        // Trigger the autoloader to fetch the language grammar, then retry.
         window.Prism.plugins.autoloader.loadLanguages([langClass], () => {
           if (document.body.contains(pane)) updateHighlightOverlay(pane);
         });
@@ -1787,7 +2118,244 @@ function updateHighlightOverlay(pane) {
     }
   }
   // Fallback / pre-Prism state / plain text: just show the raw value.
-  code.textContent = value + '\n';
+  code.textContent = foldText + '\n';
+  postProcessFoldMarkers(code, markers);
+  applyJsonErrorMarkers(pane, code, value, langClass);
+  applyFoldGutter(pane, pane._foldPairs, pane._foldedSet, langClass);
+}
+
+// ── JSON error markers (red wavy underline + click popover) ──────
+
+function clearJsonErrorMarkers(pane) {
+  const existing = pane && pane.querySelector('.json-error-squiggle');
+  if (existing) existing.remove();
+  const popover = pane && pane.querySelector('.json-error-popover');
+  if (popover) popover.remove();
+  delete pane._jsonError;
+}
+
+function applyJsonErrorMarkers(pane, code, value, langClass) {
+  clearJsonErrorMarkers(pane);
+  if (langClass !== 'json') return;
+
+  const error = validateJsonContent(value);
+  if (!error) return;
+
+  // Store error on the pane so click handlers can read it
+  pane._jsonError = error;
+
+  // Inject a squiggle marker inside the <code> element so it scrolls
+  // with the content. The squiggle spans the full width of the error
+  // line and shows a red wavy underline.
+  const squiggle = document.createElement('div');
+  squiggle.className = 'json-error-squiggle';
+  // Position the squiggle at the error line's Y offset.
+  // The <code> element sits inside the <pre> which has 8px padding-top;
+  // each line is 13px font × 1.5 line-height = 19.5px.
+  squiggle.style.top = ((error.line - 1) * 19.5) + 'px';
+  code.appendChild(squiggle);
+}
+
+// ── JSON error popover (floating tooltip anchored to textarea) ───
+
+function showJsonErrorPopover(pane, error, textarea) {
+  // Remove any existing popover
+  const old = document.querySelector('.json-error-popover');
+  if (old) old.remove();
+
+  const popover = document.createElement('div');
+  popover.className = 'json-error-popover';
+  popover.textContent = error.message;
+  document.body.appendChild(popover);
+
+  // Position below the error line
+  const wrapRect = textarea.getBoundingClientRect();
+  const lineY = 8 + (error.line - 1) * 19.5;
+  const lineTop = wrapRect.top + lineY;
+  const lineLeft = wrapRect.left + 36; // match padding-left (36px)
+
+  popover.style.top  = Math.min(lineTop + 24, window.innerHeight - popover.offsetHeight - 8) + 'px';
+  popover.style.left = Math.max(8, Math.min(lineLeft, window.innerWidth - popover.offsetWidth - 8)) + 'px';
+
+  // Dismiss on click-away or Escape
+  const dismiss = (e) => {
+    if (!popover.contains(e.target) && e.target !== textarea) {
+      popover.remove();
+      cleanup();
+    }
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { popover.remove(); cleanup(); }
+  };
+  const cleanup = () => {
+    document.removeEventListener('mousedown', dismiss, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown', dismiss, true);
+    document.addEventListener('keydown', onKey, true);
+  }, 0);
+}
+
+// Wire JSON error popover click on the textarea (called once per textarea creation)
+function wireJsonErrorClick(ta, pane) {
+  ta.addEventListener('click', () => {
+    const error = pane._jsonError;
+    if (!error) return;
+    // Only show if the cursor is on the error line
+    const taValue = ta.value;
+    const before = taValue.slice(0, ta.selectionStart);
+    const cursorLine = before.split('\n').length;
+    if (cursorLine === error.line) {
+      showJsonErrorPopover(pane, error, ta);
+    }
+  });
+}
+
+// ── Code folding (bracket collapse) ──────────────────────────────
+
+// Find all multi-line bracket pairs ({…} or […]) in JSON text.
+// Returns [{ startPos, startLine, startCol, endPos, endLine, endCol, type, depth }]
+function findBracketPairs(text) {
+  const pairs = [];
+  const stack = [];
+  let line = 1, col = 0;
+  let inString = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === '"') inString = false;
+      continue;
+    }
+
+    col++;
+    if (ch === '\n') { line++; col = 0; continue; }
+
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{' || ch === '[') {
+      stack.push({ char: ch, pos: i, line, col, depth: stack.length + 1 });
+    } else if (ch === '}' || ch === ']') {
+      const expected = ch === '}' ? '{' : '[';
+      if (stack.length && stack[stack.length - 1].char === expected) {
+        const start = stack.pop();
+        if (start.line < line) { // multi-line only
+          pairs.push({
+            startPos: start.pos, startLine: start.line, startCol: start.col,
+            endPos: i, endLine: line, endCol: col,
+            type: start.char === '{' ? 'brace' : 'bracket',
+            depth: start.depth
+          });
+        }
+      }
+    }
+  }
+  return pairs;
+}
+
+// Marker prefix/suffix — ASCII-only, Prism JSON won't tokenize these chars
+const _FOLD_PREF = '___FOLD_';
+const _FOLD_SUFF = '___';
+
+// Replace the inner content of each folded region with a unique text marker.
+// Returns { text, markers[] } where markers carry the info to post-process.
+function buildFoldMarkersText(value, folds, foldedSet) {
+  if (!foldedSet || !foldedSet.size) return { text: value, markers: [] };
+
+  const active = folds
+    .map((f, i) => ({ ...f, idx: i }))
+    .filter(f => foldedSet.has(f.idx))
+    .sort((a, b) => b.startPos - a.startPos); // right-to-left so offsets stay valid
+
+  if (!active.length) return { text: value, markers: [] };
+
+  const markers = [];
+  let result = value;
+  for (const f of active) {
+    const lines = f.endLine - f.startLine;
+    const marker = `${_FOLD_PREF}${f.startPos}_${lines}_${f.type}${_FOLD_SUFF}`;
+    markers.push({ idx: f.idx, marker, line: f.startLine, endLine: f.endLine, type: f.type, lines });
+    // Keep the opening bracket, replace inner content + closing bracket with marker
+    result = result.slice(0, f.startPos + 1) + marker + result.slice(f.endPos);
+  }
+  return { text: result, markers };
+}
+
+// After Prism highlighting, replace marker strings in the code element's innerHTML
+// with styled fold-placeholder spans.
+function postProcessFoldMarkers(code, markers) {
+  if (!markers || !markers.length) return;
+  let html = code.innerHTML;
+  for (const m of markers) {
+    const label = m.lines === 1 ? '1 line' : `${m.lines} lines`;
+    html = html.replace(
+      m.marker,
+      `<span class="fold-collapsed" data-fold-idx="${m.idx}">${m.type === 'brace' ? '…}' : '…]'}</span>`
+    );
+  }
+  code.innerHTML = html;
+}
+
+// Populate the fold gutter with clickable triangle buttons for each foldable line.
+function applyFoldGutter(pane, folds, foldedSet, langClass) {
+  const gutter = pane && pane.querySelector('.files-fold-gutter');
+  if (!gutter) return;
+  gutter.innerHTML = '';
+
+  if (langClass !== 'json' || !folds.length) return;
+
+  const LINE_H = 19.5; // 13px font × 1.5 line-height
+
+  for (let i = 0; i < folds.length; i++) {
+    const f = folds[i];
+    const isFolded = foldedSet.has(i);
+    const btn = document.createElement('button');
+    btn.className = 'fold-btn' + (isFolded ? ' folded' : '');
+    btn.dataset.foldIdx = i;
+    btn.setAttribute('aria-label', isFolded ? 'Expand' : 'Collapse');
+    // Position at the foldable line's Y offset (the opening bracket's line)
+    btn.style.top = ((f.startLine - 1) * LINE_H) + 'px';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFoldState(pane, parseInt(btn.dataset.foldIdx, 10));
+    });
+    gutter.appendChild(btn);
+  }
+}
+
+// Toggle a fold on/off and re-render the highlight.
+function toggleFoldState(pane, idx) {
+  if (!pane._foldedSet) return;
+  if (pane._foldedSet.has(idx)) {
+    pane._foldedSet.delete(idx);
+  } else {
+    pane._foldedSet.add(idx);
+  }
+  // Re-trigger highlight on the textarea
+  const ta = pane.querySelector('textarea.files-textarea-overlay');
+  if (ta) scheduleHighlight(pane);
+}
+
+// Auto-unfold when the cursor lands inside a folded region.
+function wireFoldAutoUnfold(ta, pane) {
+  ta.addEventListener('click', () => {
+    if (!pane._foldedSet || !pane._foldedSet.size) return;
+    const before = ta.value.slice(0, ta.selectionStart);
+    const cursorLine = before.split('\n').length;
+
+    // Check if any fold range spans the cursor line
+    for (const idx of pane._foldedSet) {
+      const f = pane._foldPairs[idx];
+      if (!f) continue;
+      // Folded region covers lines f.startLine+1 to f.endLine-1
+      if (cursorLine > f.startLine && cursorLine < f.endLine) {
+        pane._foldedSet.delete(idx);
+        scheduleHighlight(pane);
+        return; // unfold one at a time
+      }
+    }
+  });
 }
 
 // ── Markdown rendering ────────────────────────────────────────────
@@ -1980,18 +2548,22 @@ function formatBytes(n) {
 }
 
 function updateStatusBar(tab) {
-  const path = document.getElementById('files-status-path');
   const info = document.getElementById('files-status-info');
-  if (!path || !info) return;
+  if (!info) return;
   if (!tab) {
-    path.textContent = '';
     info.textContent = '';
     info.classList.remove('dirty');
     return;
   }
-  path.textContent = tab.path;
   info.classList.toggle('dirty', !!tab.dirty);
   info.innerHTML = '';
+  if (!tab.binary) {
+    const lineNum = document.createElement('span');
+    lineNum.className = 'files-cursor-line';
+    lineNum.textContent = 'line ' + (tab._cursorLine || 1);
+    info.appendChild(lineNum);
+    info.appendChild(document.createTextNode(' '));
+  }
   const meta = document.createElement('span');
   meta.textContent = tab.dirty ? 'Unsaved changes' : (tab.binary ? 'binary' : 'Saved');
   info.appendChild(meta);
@@ -2031,6 +2603,7 @@ async function openFile(path, name) {
     binary: data.binary,
     encoding: data.encoding,
     size: data.size,
+    _cursorLine: 1,
     // .md files open in rendered preview by default; toggle in tab menu
     // switches back to raw editing. Other types open as plain text.
     preview: isMarkdownFile(tabName),
@@ -2104,6 +2677,11 @@ async function saveTab(path) {
     updateStatusBar(tab);
     // Saving changes the file's line count vs HEAD — refresh the tree badges.
     loadLineStats();
+    // If the saved file is chat_ui.json, notify the chat panel so in-memory
+    // snapshots and pill toggles re-read the fresh value without a refresh.
+    if (path === 'data/config/chat_ui.json' || path.endsWith('/data/config/chat_ui.json')) {
+      try { window.dispatchEvent(new CustomEvent('chat-ui-file-saved', { detail: { path } })); } catch (_) {}
+    }
   } catch (e) {
     alert('Save failed: ' + e.message);
   }
@@ -2136,7 +2714,7 @@ async function promptNew(kind) {
 function persistTabs() {
   try {
     const minimal = openTabs.map((t) => (
-      { path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview }
+      { path: t.path, name: t.name, wrap: !!t.wrap, preview: !!t.preview, foldLevel: t.foldLevel }
     ));
     localStorage.setItem(LS_OPEN_TABS, JSON.stringify(minimal));
     localStorage.setItem(LS_ACTIVE_FILE, activeFilePath || '');
@@ -2160,7 +2738,7 @@ function restoreState() {
   } catch (_) {}
   try {
     const v = localStorage.getItem(LS_PROD_VIEW);
-    if (v === 'prod' || v === 'dev') prodViewMode = v;
+    if (v === 'prod' || v === 'dev' || v === 'git') prodViewMode = v;
   } catch (_) {}
 }
 
@@ -2184,10 +2762,11 @@ async function restoreOpenTabs() {
         await openFile(t.path, t.name);
         const opened = openTabs.find((o) => o.path === t.path);
         if (!opened) continue;
-        if (t.wrap)    opened.wrap = true;
-        if (t.preview) opened.preview = true;
-        if (t.wrap || t.preview) {
-          // Re-render so the wrap class / preview mode get applied
+        if (t.wrap)       opened.wrap = true;
+        if (t.preview)    opened.preview = true;
+        if (t.foldLevel != null) opened.foldLevel = t.foldLevel;
+        if (t.wrap || t.preview || t.foldLevel != null) {
+          // Re-render so the wrap class / preview mode / fold level get applied
           const pane = document.querySelector('.files-editor-pane[data-path="' + cssEscape(opened.path) + '"]');
           if (pane) pane.remove();
         }
@@ -2250,6 +2829,7 @@ export async function startView() {
     // Production-mirror exclude list first (dev-only badges render on first
     // paint), then the tree + dev/prod view mode, then restore open file tabs.
     await loadProdExcludes();
+    loadGitStatus();    // fire-and-forget — fills tracked/ignored marks when they land
     loadProdConfig();   // fire-and-forget — populates the More menu's folder field
     await loadRoot();
     applyProdViewClass();
@@ -2260,9 +2840,29 @@ export async function startView() {
   // while Explorer is the active view.
   loadLineStats();
   startLineStatsAutoRefresh();
+
+  // Deep-link: chat controls set __explorerOpenFileOnStart before switching
+  // to Admin Tools; open that file now. Consumed once.
+  const pending = window.__explorerOpenFileOnStart;
+  if (pending && pending.path) {
+    window.__explorerOpenFileOnStart = null;
+    openFile(pending.path, pending.name || pending.path.split('/').pop());
+  }
 }
 
 export function stopView() {
   // Stop the Explorer +/- badge poll (it resumes when Explorer is reopened).
   stopLineStatsAutoRefresh();
 }
+
+// Deep-link helper for other modules (e.g. the chat Thinking pill): open a
+// file in the Explorer editor by absolute path. Idempotent — re-opening an
+// already-open tab just activates it.
+export function openFileAt(path, name) {
+  if (!path) return;
+  return openFile(path, name || path.split('/').pop());
+}
+
+// Pending-file deep link: chat controls set window.__explorerOpenFileOnStart
+// before switching to Admin Tools; Explorer opens the file on start. One-shot.
+window.__explorerOpenFileOnStart = window.__explorerOpenFileOnStart || null;

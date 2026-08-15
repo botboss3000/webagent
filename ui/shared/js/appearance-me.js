@@ -7,7 +7,7 @@
  * My appearance — the per-user theme editor on the account page.
  *
  * The self-service sibling of the admin Appearance panel
- * (ui/admin-tools/app-config/app-settings/app-settings.js): a Light/Dark theme
+ * (ui/admin-tools/instances/app-config/app-settings/app-settings.js): a Light/Dark theme
  * table (preset chips + animated-background select + the full colour palette as
  * swatches) plus a shared fonts/border card and a "Reset my theme" button. It
  * appears on the Manage Account tab (ui/shared/js/account.js) ONLY when the admin

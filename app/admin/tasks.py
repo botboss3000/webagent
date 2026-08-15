@@ -37,7 +37,7 @@ boundary there would be a storm).
 `_decide_boundary` (text rule) and `_llm_decide_related` (LLM tie-breaker) are
 kept isolated from the turn reconstruction and the endpoints so either can evolve
 on its own. NOTE: the chat-side task-frame overlay
-(``ui/chat-side-panel/js/chat-task-frames.js``) still mirrors the text-only rule
+(``ui/chat/js/chat-task-frames.js``) still mirrors the text-only rule
 client-side for an instant draw, so its frames can differ from this endpoint's
 LLM-refined grouping; wiring it to this endpoint is a possible follow-up.
 """
@@ -48,6 +48,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Query
@@ -93,7 +94,7 @@ _CONTINUATION_PREFIXES = (
 # a follow-up timer, an event trigger, an optimizer kick). They must NEVER open a
 # task boundary, or every background wake-up would shatter a session into one task
 # per event. Detected by content marker or by source. Kept in sync with the chat
-# frontend's mirror in ui/chat-side-panel/js/chat-task-frames.js.
+# frontend's mirror in ui/chat/js/chat-task-frames.js.
 _SYNTHETIC_USER_PREFIXES = (
     "[orchestration event]",
     "[event trigger]",
@@ -268,37 +269,160 @@ def _load_classifier_prompt() -> str:
     return _FALLBACK_CLASSIFIER_PROMPT
 
 
-def _classifier_model() -> str:
-    return (
-        os.environ.get("LLM_MODEL")
-        or os.environ.get("OPENROUTER_MODEL")
-        or "deepseek/deepseek-v4-flash"
-    )
+_CLASSIFIER_CONFIG_CACHE: Optional[tuple] = None  # (model, base_url, api_key, expiry_ts)
+_CLASSIFIER_CACHE_TTL = 300  # 5 minutes
 
 
-def _classifier_client():
-    """Bounded LLM client for the grouping tie-breaker — same provider config the
-    chat path uses, but with a short timeout and NO retries so a flaky call fails
-    once and we fall back to the keyword verdict instead of stalling a read."""
-    base_url = (
-        os.environ.get("LLM_BASE_URL")
-        or os.environ.get("OPENROUTER_BASE_URL")
-        or "https://openrouter.ai/api/v1"
-    )
+def _infer_classifier_provider(base_url: str) -> str:
+    """Best-effort provider name for the classifier from its base URL — used only
+    for the alert message so the user knows which account to top up."""
+    b = (base_url or "").lower()
+    if "openrouter" in b:
+        return "openrouter"
+    if "routellm" in b or "abacus" in b:
+        return "abacus"
+    if "deepseek" in b:
+        return "deepseek"
+    if "generativelanguage" in b or "googleapis" in b:
+        return "google"
+    if "openai" in b:
+        return "openai"
+    return ""
+
+
+async def _classifier_config() -> tuple:
+    """Resolve (model, provider, client) for the LLM tie-breaker.
+
+    Priority chain (first-win):
+      1. Dedicated CLASSIFIER_MODEL / CLASSIFIER_BASE_URL / CLASSIFIER_API_KEY env vars
+      2. Multi-provider roster from DB — picks the first enabled text-capable row,
+         guaranteeing the model always reaches the right endpoint.
+      3. Plain env vars (LLM_MODEL / LLM_BASE_URL / LLM_API_KEY) with the
+         DeepSeek-base-url + non-DeepSeek-model auto-correction.
+
+    Returns (model_str, provider_str, AsyncOpenAI | None).  If no API key is
+    available anywhere the client is None and the caller falls back to the
+    keyword verdict.
+    """
+    global _CLASSIFIER_CONFIG_CACHE
+
+    now = time.time()
+
+    # --- 1. Dedicated classifier env vars ---
+    model = os.environ.get("CLASSIFIER_MODEL")
+    base_url = os.environ.get("CLASSIFIER_BASE_URL") or os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL")
+    api_key = os.environ.get("CLASSIFIER_API_KEY") or os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+    if model:
+        return _build_classifier(model, base_url or "", api_key or "",
+                                 _infer_classifier_provider(base_url or ""))
+
+    # --- 2. Multi-provider roster from DB ---
+    if _CLASSIFIER_CONFIG_CACHE and _CLASSIFIER_CONFIG_CACHE[4] > now:
+        cached_model, cached_url, cached_key, cached_provider, _ = _CLASSIFIER_CONFIG_CACHE
+        return _build_classifier(cached_model, cached_url, cached_key, cached_provider)
+
+    try:
+        from app.admin.settings import _resolve_user_config as _resolve_llm_config
+        cfg = await _resolve_llm_config("admin")
+        roster = cfg.get("multi_providers") or []
+        for entry in roster:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("enabled") is not False and entry.get("text_capable") is not False:
+                m = entry.get("model") or ""
+                u = entry.get("base_url") or ""
+                k = entry.get("api_key") or ""
+                if m and u and k:
+                    _CLASSIFIER_CONFIG_CACHE = (m, u, k, entry.get("provider", ""),
+                                                now + _CLASSIFIER_CACHE_TTL)
+                    return _build_classifier(m, u, k, entry.get("provider", ""))
+    except Exception as exc:
+        logger.debug("classifier: multi-provider lookup failed: %s", exc)
+
+    _CLASSIFIER_CONFIG_CACHE = ("", "", "", "", 0)  # negative cache — don't retry immediately
+
+    # --- 3. Plain env vars (current fallback) ---
+    model = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or ""
+    base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL") or ""
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or ""
+    # DeepSeek auto-correction: if the endpoint is DeepSeek but the model name
+    # has a non-DeepSeek prefix, swap to a safe default.
+    if "deepseek" in base_url.lower() and model and not model.lower().startswith("deepseek"):
+        model = "deepseek-v4-flash"
+    if not model:
+        model = ""
+    return _build_classifier(model, base_url or "", api_key,
+                             _infer_classifier_provider(base_url or ""))
+
+
+def _build_classifier(model: str, base_url: str, api_key: str,
+                      provider: str = "") -> tuple:
+    """Build the (model, provider, client_or_None) tuple from resolved config.
+
+    Extracted so the priority chain always constructs the client the same way
+    regardless of which tier won. ``provider`` is carried for the user-facing
+    alert message (which account is out of credits).
+    """
     if not api_key:
-        return None
+        return (model, provider, None)
     try:
         from openai import AsyncOpenAI
-        return AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=_LLM_TIMEOUT, max_retries=0)
+        return (model, provider, AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=_LLM_TIMEOUT, max_retries=0))
     except ImportError:  # pragma: no cover
         try:
             from app.openai_compat import AsyncOpenAI
-            return AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=_LLM_TIMEOUT)
+            return (model, provider, AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=_LLM_TIMEOUT))
         except Exception:
-            return None
+            return (model, provider, None)
     except Exception:
-        return None
+        return (model, provider, None)
+
+
+async def _maybe_alert_402(err: Exception, user_id: str) -> None:
+    """Detect provider credit/billing errors (402 Insufficient Balance or gateway
+    "no remaining credits" 400s) from the task-grouping classifier and surface
+    them as a visible system:error message in the user's most recent active
+    session. Delegates to the shared alert utility."""
+    text = str(err)
+    from app.util.alerts import is_provider_credit_error
+    if not is_provider_credit_error(text):
+        return
+
+    # Resolve the provider model name from the classifier config.
+    model_str = ""
+    provider_str = ""
+    try:
+        model_str, provider_str, _ = await _classifier_config()
+        model_str = model_str or ""
+        provider_str = provider_str or ""
+    except Exception:
+        pass
+
+    # Find the most recent active session for this user.
+    sid = ""
+    try:
+        from app.db import get_db
+        db = get_db()
+        raw = getattr(db, "_get_conn", None)
+        if raw:
+            conn = raw()
+            try:
+                row = conn.execute(
+                    "SELECT id FROM sessions WHERE user_id=? AND (status IS NULL OR status='active') ORDER BY updated_at DESC LIMIT 1",
+                    (user_id,),
+                ).fetchone()
+                if row:
+                    sid = row[0]
+            finally:
+                conn.close()
+    except Exception:
+        return
+
+    if not sid:
+        return
+
+    from app.util.alerts import persist_402_alert
+    await persist_402_alert(text, user_id, sid, model_str, provider_str)
 
 
 async def _llm_decide_related(prior_user_msgs: List[str], new_msg: str) -> Optional[bool]:
@@ -315,8 +439,8 @@ async def _llm_decide_related(prior_user_msgs: List[str], new_msg: str) -> Optio
     # toggle takes effect immediately (no restart). Fails ON (never silently
     # disables a default-on function if the catalog/config can't be read).
     try:
-        from app.abilities import ability_app_enabled
-        if not ability_app_enabled("task_grouping"):
+        from app.abilities import app_function_enabled
+        if not app_function_enabled("task_grouping"):
             return None
     except Exception:
         pass
@@ -329,7 +453,7 @@ async def _llm_decide_related(prior_user_msgs: List[str], new_msg: str) -> Optio
     if cache_key in _llm_cache:
         return _llm_cache[cache_key]
 
-    client = _classifier_client()
+    model_str, _, client = await _classifier_config()
     if client is None:
         return None
 
@@ -339,7 +463,7 @@ async def _llm_decide_related(prior_user_msgs: List[str], new_msg: str) -> Optio
     )
     try:
         resp = await client.chat.completions.create(
-            model=_classifier_model(),
+            model=model_str,
             messages=[{"role": "user", "content": prompt}],
             # Generous cap on purpose: the answer is one word, but the app's
             # configured model may be a REASONING model that spends hidden tokens
@@ -355,7 +479,7 @@ async def _llm_decide_related(prior_user_msgs: List[str], new_msg: str) -> Optio
             if _u:
                 from plugins.billing.usage import record_background_usage
                 await record_background_usage(
-                    model=_classifier_model(),
+                    model=model_str,
                     input_tokens=getattr(_u, "prompt_tokens", 0) or 0,
                     output_tokens=getattr(_u, "completion_tokens", 0) or 0,
                     label="task-group",
@@ -364,6 +488,7 @@ async def _llm_decide_related(prior_user_msgs: List[str], new_msg: str) -> Optio
             pass
     except Exception as e:
         logger.warning("task grouping: classifier call failed: %s", e)
+        await _maybe_alert_402(e, "admin")
         return None
 
     if "SAME" in raw:

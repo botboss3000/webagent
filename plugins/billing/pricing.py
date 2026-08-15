@@ -13,7 +13,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from plugins.billing.extensions import apply_config_augment
 
@@ -32,6 +32,49 @@ class Strategy(str, Enum):
     TRIAL = "trial"
 
 
+def parse_strategy_selection(value: Any, *, strict: bool = False) -> List[str]:
+    """Parse the stored comma-separated strategy selection.
+
+    Existing single-value configs remain valid. ``trial`` and ``subscription``
+    act as access options/modifiers; when several metered strategies are
+    selected, the first one is the charge calculation used after the trial.
+    """
+    raw_values = value if isinstance(value, (list, tuple, set)) else str(value or "").split(",")
+    known = {strategy.value for strategy in Strategy}
+    selected: List[str] = []
+    unknown: List[str] = []
+    for raw in raw_values:
+        token = str(raw).strip().lower()
+        if not token or token in selected:
+            continue
+        if token not in known:
+            unknown.append(token)
+            continue
+        selected.append(token)
+    if strict and unknown:
+        raise ValueError(f"Unknown strategy: {','.join(unknown)}")
+    if len(selected) > 1 and Strategy.FREE.value in selected:
+        selected.remove(Strategy.FREE.value)
+    return selected or [Strategy.FREE.value]
+
+
+def primary_strategy(value: Any) -> str:
+    """Return the strategy used once trial/subscription access does not apply."""
+    selected = parse_strategy_selection(value)
+    for strategy in selected:
+        if strategy in {
+            Strategy.CREDITS.value,
+            Strategy.PER_MESSAGE.value,
+            Strategy.PER_TOKEN.value,
+        }:
+            return strategy
+    if Strategy.SUBSCRIPTION.value in selected:
+        return Strategy.SUBSCRIPTION.value
+    if Strategy.TRIAL.value in selected:
+        return Strategy.TRIAL.value
+    return Strategy.FREE.value
+
+
 @dataclass
 class Usage:
     """Output of one LLM call. Tokens come straight from chunk.usage."""
@@ -43,7 +86,7 @@ class Usage:
 
 @dataclass
 class ChargeResult:
-    """What the end user pays for one LLM call (the agent admin keeps it).
+    """What the end user pays for one usage event (the agent admin keeps it).
 
     Any allocation of that charge is applied downstream by the optional billing
     extension; this calculation does not know about it."""
@@ -53,22 +96,36 @@ class ChargeResult:
     is_trial: bool = False
     is_exempt: bool = False
     exempt_reason: Optional[str] = None
-    insufficient_funds: bool = False
+    # How a charge is covered: the trial grant pays `trial_used_cents`, the
+    # credit wallet pays `wallet_charge_cents`. Both default to the full charge
+    # for their respective paths (kept explicit so the debit side never guesses).
+    trial_used_cents: int = 0
+    wallet_charge_cents: int = 0
     notes: Dict[str, Any] = field(default_factory=dict)
 
 
 # ── Config loading ─────────────────────────────────────────────────────────
 
 
-_DEFAULT_RATE_CARD = {
-    "credits_per_message_cents": 100,      # 1 credit = 1 cent; flat 100¢/msg
-    "credits_per_1k_input_tokens": 50,
-    "credits_per_1k_output_tokens": 150,
-    "per_message_cents": 100,
-    "per_1k_input_token_cents": 50,
-    "per_1k_output_token_cents": 150,
-    "llm_markup_pct": 50.0,                # only applied for default-LLM
-    "min_charge_cents": 1,
+# The ONLY pricing knobs: a multiplier over the platform's real provider cost,
+# a minimum charge floor, and a per-image estimate for image models that don't
+# report usage. Credits are consumed as 1 credit = 1¢ of charged cost.
+_DEFAULT_BILLING = {
+    "cost_multiplier": 1.0,        # charge = provider_cost × this
+    "min_charge_cents": 1,         # floor per usage event
+    "flat_image_cost_usd": 0.01,   # per-image estimate when the provider
+                                   # reports no usage (OpenAI /images, etc.)
+}
+
+# Strategies that draw from the credit wallet (legacy per_message/per_token now
+# behave as credits — clean cutover). subscription is deliberately EXCLUDED: a
+# subscription agent never draws on the wallet (its access is the subscription
+# itself); a cancelled/lapsed subscription simply falls through to free in
+# resolve_charge (the access gate is what blocks the user).
+_METERED_STRATEGIES = {
+    Strategy.CREDITS.value,
+    Strategy.PER_MESSAGE.value,
+    Strategy.PER_TOKEN.value,
 }
 
 
@@ -95,10 +152,30 @@ def _row_to_config(row: Optional[dict]) -> dict:
         "allowed_processors": _parse_json(row.get("allowed_processors"), []),
         "rate_card_default_llm": _parse_json(row.get("rate_card_default_llm"), {}),
         "rate_card_byo_llm": _parse_json(row.get("rate_card_byo_llm"), {}),
+        # Cost-based pricing knobs — returned RAW (None when the agent hasn't
+        # overridden them) so the effective-config merge can distinguish "unset"
+        # (inherit the platform default) from an explicit value. Consumers
+        # default via _cost_setting() at use time, never here.
+        "cost_multiplier": row.get("cost_multiplier"),
+        "min_charge_cents": row.get("min_charge_cents"),
+        "flat_image_cost_usd": row.get("flat_image_cost_usd"),
         "trial_config": _parse_json(row.get("trial_config"), {}),
         "subscription_price_cents": int(row.get("subscription_price_cents") or 0),
         "currency": row.get("currency") or "usd",
     }
+
+
+def _cost_setting(cfg: dict, key: str) -> float:
+    """A cost knob with a sane default when unset (None/empty). 0 is honoured
+    (e.g. min_charge_cents=0 disables the floor), only negatives are rejected."""
+    try:
+        v = cfg.get(key)
+        if v is None or v == "":
+            return _DEFAULT_BILLING[key]
+        f = float(v)
+        return f if f >= 0 else _DEFAULT_BILLING[key]
+    except (TypeError, ValueError):
+        return _DEFAULT_BILLING[key]
 
 
 def _empty_config() -> dict:
@@ -123,9 +200,18 @@ async def load_effective_config(db: Any, agent_id: str) -> dict:
 
 
 async def is_exempt(db: Any, agent_id: str, user_id: str) -> Optional[str]:
-    """Return a string reason if exempt, else None. Cheap — three indexed lookups."""
+    """Return a string reason if exempt, else None."""
     if not _has_billing_tables(db):
         return None
+    # Platform administrators operate and test the app itself. They must never
+    # consume trials, credits, or subscriptions, regardless of per-agent billing
+    # configuration. Keep this in the shared exemption seam so it applies both
+    # to the pre-send access gate and to post-response charge settlement.
+    try:
+        if hasattr(db, "is_user_admin") and await db.is_user_admin(user_id):
+            return "admin"
+    except Exception as exc:
+        logger.debug("billing admin exemption check failed for %s: %s", user_id, exc)
     # Agent-wide
     row = await _fetch_one(db, "billing_exemptions", {"kind": "agent", "agent_id": agent_id})
     if row:
@@ -171,67 +257,37 @@ def _is_byo_llm(agent: dict) -> bool:
     return False
 
 
-# ── Strategy implementations ──────────────────────────────────────────────
+# ── Charge computation ────────────────────────────────────────────────────
 
 
-def _rate_card_for(agent: dict, cfg: dict) -> dict:
-    byo = _is_byo_llm(agent)
-    card_raw = cfg.get("rate_card_byo_llm") if byo else cfg.get("rate_card_default_llm")
-    card = dict(_DEFAULT_RATE_CARD)
-    if isinstance(card_raw, dict):
-        card.update({k: v for k, v in card_raw.items() if v is not None})
-    return card
+def _compute_charge(usage: Usage, cfg: dict) -> int:
+    """The charge for one usage event: the platform's real provider cost scaled
+    by the admin's multiplier, floored at the minimum charge. Applied whenever
+    the run uses an inherited (platform-key) model; own-key runs are free."""
+    multiplier = _cost_setting(cfg, "cost_multiplier")
+    cents = usage.provider_cost_cents * multiplier
+    floor = int(_cost_setting(cfg, "min_charge_cents"))
+    return max(int(round(cents)), floor)
 
 
-def _strategy_credits(usage: Usage, agent: dict, cfg: dict) -> int:
-    card = _rate_card_for(agent, cfg)
-    # Charge per-token if rates are set, else fall back to flat-per-message.
-    in_rate = card.get("credits_per_1k_input_tokens", 0)
-    out_rate = card.get("credits_per_1k_output_tokens", 0)
-    if in_rate or out_rate:
-        cents = (
-            usage.input_tokens * in_rate / 1000.0
-            + usage.output_tokens * out_rate / 1000.0
-        )
-    else:
-        cents = card.get("credits_per_message_cents", 0) * usage.message_count
-    if not _is_byo_llm(agent):
-        markup = float(card.get("llm_markup_pct", 0))
-        if markup:
-            cents += usage.provider_cost_cents * markup / 100.0
-    return max(int(round(cents)), int(card.get("min_charge_cents", 1)))
+# Test seam: tests stub this to control the own-LLM probe without a DB.
+_own_llm_probe = None  # async (user_id) -> bool
 
 
-def _strategy_per_message(usage: Usage, agent: dict, cfg: dict) -> int:
-    card = _rate_card_for(agent, cfg)
-    cents = card.get("per_message_cents", 0) * usage.message_count
-    if not _is_byo_llm(agent):
-        markup = float(card.get("llm_markup_pct", 0))
-        if markup:
-            cents += usage.provider_cost_cents * markup / 100.0
-    return max(int(round(cents)), int(card.get("min_charge_cents", 1)))
+async def _user_has_own_llm(user_id: str) -> bool:
+    """True when the USER has their own LLM config (their key pays for runs).
 
-
-def _strategy_per_token(usage: Usage, agent: dict, cfg: dict) -> int:
-    card = _rate_card_for(agent, cfg)
-    in_rate = card.get("per_1k_input_token_cents", 0)
-    out_rate = card.get("per_1k_output_token_cents", 0)
-    cents = (
-        usage.input_tokens * in_rate / 1000.0
-        + usage.output_tokens * out_rate / 1000.0
-    )
-    if not _is_byo_llm(agent):
-        markup = float(card.get("llm_markup_pct", 0))
-        if markup:
-            cents += usage.provider_cost_cents * markup / 100.0
-    return max(int(round(cents)), int(card.get("min_charge_cents", 1)))
-
-
-_STRATEGY_DISPATCH = {
-    Strategy.CREDITS.value: _strategy_credits,
-    Strategy.PER_MESSAGE.value: _strategy_per_message,
-    Strategy.PER_TOKEN.value: _strategy_per_token,
-}
+    Billing is deliberately symmetric with the runtime resolution
+    (app.admin.settings.apply_provider_for_run): when the user's own config
+    carries a key, the platform isn't footing the bill, so no credits apply.
+    """
+    if _own_llm_probe is not None:
+        return await _own_llm_probe(user_id)
+    try:
+        from app.admin.settings import user_has_own_llm_config
+        return await user_has_own_llm_config(user_id)
+    except Exception:
+        return False
 
 
 # ── Public entry point ─────────────────────────────────────────────────────
@@ -246,17 +302,25 @@ async def resolve_charge(
     cfg: Optional[dict] = None,
     trial_row: Optional[dict] = None,
     subscription_row: Optional[dict] = None,
+    own_llm: Optional[bool] = None,
 ) -> ChargeResult:
-    """Compute the charge for one LLM call. Caller passes already-loaded rows
-    to avoid extra queries when we already have them.
+    """Compute the charge for one usage event (LLM call or image).
 
     Order of precedence:
         1. Exemption (returns zero, flag set)
-        2. Trial (if active for this (user, agent), decrements counters)
-        3. Subscription (if active, free for the user; agent admin still gets
+        2. Own-key run (agent ships its own key, or the user has their own key
+           for THIS modality) → zero. The platform isn't footing the bill, so
+           credits never apply to inherited models only.
+        3. Trial grant (if active) covers up to its remaining credits; anything
+           beyond that is charged to the wallet.
+        4. Subscription (if active, free for the user; agent admin still gets
            a portion of the subscription revenue tracked elsewhere)
-        4. Strategy on the effective config
-        5. Default 'free'
+        5. Metered strategy on the effective config → cost × multiplier
+        6. Default 'free'
+
+    ``own_llm`` is an explicit ownership override for callers who already know
+    whose key pays (e.g. image generation, where the relevant key is the user's
+    IMAGE provider, not their text LLM). None = probe the user's text LLM.
     """
     agent_id = agent.get("id") or agent.get("agent_id") or ""
 
@@ -268,17 +332,40 @@ async def resolve_charge(
     # 2. Effective config
     if cfg is None:
         cfg = await load_effective_config(db, agent_id)
-    strategy = (cfg.get("strategy") or "free").lower()
+    strategy = primary_strategy(cfg.get("strategy"))
     byo = _is_byo_llm(agent)
 
-    # 3. Trial
-    if trial_row is None and _has_billing_tables(db):
+    # 2b. Own-key run → free. The agent shipping its own key, or the user
+    # bringing their own key for this modality, both mean the platform's wallet
+    # is not touched.
+    own_key = byo or (own_llm if own_llm is not None else await _user_has_own_llm(user_id))
+    if own_key:
+        return ChargeResult(strategy=strategy, is_byo_llm=byo,
+                            notes={"own_llm": not byo})
+
+    charge = _compute_charge(usage, cfg)
+
+    # 3. Trial grant covers its remaining credits first; the wallet covers the
+    # excess. (If the charge is larger than the grant remainder, the wallet
+    # pays the difference — no weird "3 credits left but message costs 10" wall.)
+    # Only metered strategies (or a trial-only agent) burn a trial — a free or
+    # subscription agent must never consume the grant.
+    trial_applies = strategy in _METERED_STRATEGIES or strategy == Strategy.TRIAL.value
+    if trial_applies and trial_row is None and _has_billing_tables(db):
         trial_row = await _fetch_one(
             db, "trials", {"user_id": user_id, "agent_id": agent_id}
         )
-    if _trial_active(trial_row, usage):
-        # Decrement counters in-place; caller persists via settle().
-        return ChargeResult(strategy=strategy, is_byo_llm=byo, is_trial=True)
+    if trial_applies and _trial_active(trial_row):
+        remaining = max(0, int(trial_row.get("remaining_cents") or 0))
+        trial_used = min(remaining, charge)
+        return ChargeResult(
+            end_user_charge_cents=charge,
+            strategy=strategy,
+            is_byo_llm=byo,
+            is_trial=True,
+            trial_used_cents=trial_used,
+            wallet_charge_cents=charge - trial_used,
+        )
 
     # 4. Active subscription means no incremental charge.
     if subscription_row is None and _has_billing_tables(db):
@@ -288,22 +375,23 @@ async def resolve_charge(
     if subscription_row and subscription_row.get("status") == "active":
         return ChargeResult(strategy="subscription", is_byo_llm=byo)
 
-    # 5. Strategy dispatch — the end user pays and the agent admin keeps it. Any
-    # allocation of that charge is applied downstream by the optional billing
-    # extension, never in this calculation.
-    if strategy in _STRATEGY_DISPATCH:
-        end_user = _STRATEGY_DISPATCH[strategy](usage, agent, cfg)
+    # 5. Metered strategies — the end user pays and the agent admin keeps it.
+    # Any allocation is applied downstream by the optional billing extension,
+    # never in this calculation.
+    if strategy in _METERED_STRATEGIES:
         return ChargeResult(
-            end_user_charge_cents=end_user,
+            end_user_charge_cents=charge,
             strategy=strategy,
             is_byo_llm=byo,
+            wallet_charge_cents=charge,
         )
 
     # Default — free
     return ChargeResult(strategy="free", is_byo_llm=byo)
 
 
-def _trial_active(trial_row: Optional[dict], usage: Usage) -> bool:
+def _trial_active(trial_row: Optional[dict]) -> bool:
+    """A trial is active while its credit grant is unexpired AND unspent."""
     if not trial_row:
         return False
     import datetime as _dt
@@ -319,13 +407,12 @@ def _trial_active(trial_row: Optional[dict], usage: Usage) -> bool:
                 return False
         except Exception:
             pass
-    msgs = trial_row.get("messages_remaining")
-    if msgs is not None and msgs <= 0:
+    remaining = trial_row.get("remaining_cents")
+    if remaining is None:
+        # Legacy row without a grant (pre-credit-grant trials): treat as
+        # exhausted — clean cutover, no fallback.
         return False
-    toks = trial_row.get("tokens_remaining")
-    if toks is not None and toks < usage.input_tokens + usage.output_tokens:
-        return False
-    return True
+    return int(remaining) > 0
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────

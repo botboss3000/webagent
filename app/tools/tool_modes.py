@@ -339,15 +339,24 @@ def render_ability_index(
         )
     lines: List[str] = ["# [ABILITIES]", lead]
 
-    if order:
-        rank_of = {aid: i for i, aid in enumerate(order)}
-        ordered = sorted(
-            rows,
-            key=lambda r: (rank_of.get(r["id"], len(order)),
-                           (r.get("name") or r["id"]).lower()),
-        )
-    else:
-        ordered = sorted(rows, key=lambda r: (r.get("name") or r["id"]).lower())
+    # Cache order is a product invariant, not a per-message ranking.  The nested
+    # Simple -> Standard -> Advanced sequence lets smaller and larger agents
+    # share the longest DeepSeek prefix.  `order` is retained for API
+    # compatibility but intentionally no longer reshuffles this shared block;
+    # message-aware recommendations are emitted later as a separate overlay.
+    from app.agent.cache_profiles import ordered_ability_ids
+
+    position = {
+        ability_id: i
+        for i, ability_id in enumerate(ordered_ability_ids(r["id"] for r in rows))
+    }
+    ordered = sorted(
+        rows,
+        key=lambda r: (
+            position.get(r["id"], len(position)),
+            (r.get("name") or r["id"]).lower(),
+        ),
+    )
 
     for e in ordered:
         nm = e.get("name") or e["id"]

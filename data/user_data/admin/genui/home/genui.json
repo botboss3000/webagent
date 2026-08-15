@@ -1,0 +1,8 @@
+{
+  "kind": "project-management",
+  "topics": ["project tracking", "development tasks", "bug tracking", "feature planning", "qa workflow", "chat panel", "session dropdown", "model selector", "build agent", "notifications", "app settings", "admin"],
+  "description": "Tracks project development across multiple areas with task cards, each carrying QA threads, plans, execution logs, and linked chat sessions.",
+  "incorporates_agent_management": true,
+  "session_workflow": "tasks_as_sessions",
+  "session_naming_pattern": "{status_prefix} | {area} — {task_summary}"
+}

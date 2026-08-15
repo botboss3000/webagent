@@ -1,0 +1,53 @@
+{
+  "generated_at": "2026-08-01T16:52:00Z",
+  "empty": true,
+  "summary": {
+    "indexed_files": 0,
+    "symbols": 0,
+    "total_size_bytes": 0,
+    "total_lines": 0,
+    "features": 0,
+    "api_routes": 0,
+    "ui_components": 0,
+    "open_opportunities": 0
+  },
+  "progress": {},
+  "batches": [],
+  "comment_compliance": {
+    "compliant": 0,
+    "exempt": 0,
+    "malformed": 0,
+    "missing": 0,
+    "not_applicable": 0,
+    "stale": 0
+  },
+  "comment_header_styles": {
+    "block": 0,
+    "html": 0,
+    "jsdoc": 0,
+    "line": 0
+  },
+  "features": [],
+  "opportunities": [],
+  "languages": {},
+  "coverage": {
+    "indexed": 0,
+    "candidates": 0,
+    "percent": 0
+  },
+  "chatConfig": {
+    "button": {
+      "title": "Ask about the codebase",
+      "session": {
+        "target_name": "Code Index \u2014 initial scan",
+        "mode": "new_reuse"
+      }
+    },
+    "toolbar": {
+      "session": {
+        "target_name": "Code Index \u2014 initial scan",
+        "mode": "new_reuse"
+      }
+    }
+  }
+}

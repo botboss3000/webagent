@@ -21,10 +21,52 @@ def _connect_local(path: str):
     plaintext and keep using stdlib sqlite3 directly — they are transient.
     """
     from app.db import db_crypto
-    return db_crypto.connect(path, "local")
+    return db_crypto.connect(path, "_optimizer_data")
 
 
-# ── Simulation helpers ────────────────────────────────────────────────────────
+
+def _deployable_trial_context(worker_results: object) -> str:
+    """Build the Closer's canonical, deployable view of worker trial results.
+
+    Transcript snippets are useful evidence, but the Closer also needs the exact
+    full column value that the Worker tested.  Previously that value was silently
+    discarded while constructing the handoff history, making a PASS impossible to
+    deploy correctly.
+    """
+    try:
+        trials = json.loads(worker_results) if isinstance(worker_results, str) else worker_results
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(trials, list):
+        return ""
+
+    deployable = []
+    for trial in trials:
+        if not isinstance(trial, dict):
+            continue
+        # Keep the precise proposed value intact.  The Closer must pass this
+        # exact content to deploy_optimization, rather than reconstructing it
+        # from a transcript or a Planner summary.
+        deployable.append({
+            "element": trial.get("element", ""),
+            "element_type": trial.get("element_type", ""),
+            "new_content": trial.get("new_content", ""),
+            "success": trial.get("success", False),
+            "sim_user_satisfied": trial.get("sim_user_satisfied", False),
+            "tool_calls_made": trial.get("tool_calls_made", 0),
+            "turn_count": trial.get("turn_count", 0),
+            "confidence": trial.get("confidence", 0),
+        })
+    if not deployable:
+        return ""
+    return (
+        "## Deployable Worker Results\n"
+        "This is the authoritative tested change. On a PASS, pass its exact "
+        "element and full new_content to deploy_optimization.\n```json\n"
+        + json.dumps(deployable, indent=2, ensure_ascii=False)
+        + "\n```"
+    )
+
 
 async def _execute_sim_tool(name: str, args_str: str, tools: dict, test_uid: str, test_session_id: str) -> str:
     """Execute a tool handler in the simulation context.
@@ -313,6 +355,58 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
     if not isinstance(changes, list):
         changes = [changes]
 
+    # Enforce the optimizer's configured iteration budget in code. Previously
+    # max_iterations/trials.per_change were display-only values and the model
+    # could invoke this expensive tool indefinitely.
+    from app.optimizer.config import load_config as _load_optimizer_config
+    _optimizer_cfg = _load_optimizer_config()
+    try:
+        _max_changes = max(1, int(_optimizer_cfg.get("max_iterations") or 2))
+    except (TypeError, ValueError):
+        _max_changes = 2
+    try:
+        _max_trial_invocations = max(
+            1, int((_optimizer_cfg.get("trials") or {}).get("per_change") or 2)
+        )
+    except (TypeError, ValueError, AttributeError):
+        _max_trial_invocations = 2
+    if len(changes) > _max_changes:
+        return json.dumps({
+            "status": "error",
+            "error_type": "optimizer_budget",
+            "message": (
+                f"At most {_max_changes} proposed changes may be trialed "
+                "in one request."
+            ),
+        })
+
+    if session_id.startswith("optimizer-"):
+        from app.db.local import DB_DIR as _budget_db_dir
+        _budget_conn = sqlite3.connect(os.path.join(_budget_db_dir, "optimizer.db"))
+        try:
+            _last_user_rowid = _budget_conn.execute(
+                "SELECT COALESCE(MAX(rowid), 0) FROM interactions "
+                "WHERE session_id=? AND role='user'",
+                (session_id,),
+            ).fetchone()[0]
+            _prior_trial_calls = _budget_conn.execute(
+                "SELECT COUNT(*) FROM interactions WHERE session_id=? "
+                "AND tool_name='run_worker_trials' AND rowid>?",
+                (session_id, _last_user_rowid),
+            ).fetchone()[0]
+        finally:
+            _budget_conn.close()
+        if _prior_trial_calls >= _max_trial_invocations:
+            return json.dumps({
+                "status": "error",
+                "error_type": "optimizer_budget",
+                "message": (
+                    f"Worker-trial budget exhausted for this user turn "
+                    f"({_max_trial_invocations} invocations). Review the existing "
+                    "results before starting more trials."
+                ),
+            })
+
     # Resolve real user_id from optimizer agent user_id (opt_role_realuser -> realuser)
     real_user_id = user_id
     if user_id.startswith('opt_'):
@@ -328,8 +422,10 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
     # runner agree on where local.db is.
     _here = os.path.dirname(os.path.abspath(__file__))          # .../app/tools
     _project_root = os.path.normpath(os.path.join(_here, "..", ".."))  # project root
-    from app.db.local import DB_DIR as _db_dir                  # canonical data/db
-    _local_path = os.path.join(_db_dir, "local.db")
+    from app.db.local import DB_DIR as _db_dir
+    from app.db.user_store import _user_db_path
+    _local_path = _user_db_path(real_user_id)
+    _optimizer_path = os.path.join(_db_dir, "optimizer.db")
 
     # ── Read from local.db (read-only connection) ──
     _local_conn = _connect_local(_local_path)
@@ -355,27 +451,25 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
                 original_message = user_msgs[0].strip()
         logging.warning(f"run_worker_trials: original_message={original_message}")
 
-        # Locate the user's default agent by admin_users membership.
-        real_agent_row = _local_conn.execute(
-            """SELECT id FROM agents
-               WHERE EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)
-               ORDER BY is_user_default DESC, created_at ASC
-               LIMIT 1""",
-            (real_user_id,),
-        ).fetchone()
-        if not real_agent_row:
+        # Locate agent configuration through its own authority file.
+        from app.db import get_db, get_agent_db
+        real_agent = await get_db().get_agent_for_user(real_user_id)
+        if not real_agent:
             return json.dumps({"status": "error", "message": "No real agent found for user"})
-
-        real_agent_id = real_agent_row[0]
+        real_agent_id = real_agent["id"]
 
         # Read admin-base slot rows for the real agent.
-        base_slot_rows = _local_conn.execute(
-            """SELECT slot_name, order_index, lock, merge_mode, content
-               FROM agent_prompts
-               WHERE agent_id = ? AND user_id IS NULL
-               ORDER BY order_index ASC""",
-            (real_agent_id,),
-        ).fetchall()
+        agent_conn = get_agent_db(real_agent_id)._get_conn()
+        try:
+            base_slot_rows = agent_conn.execute(
+                """SELECT slot_name, order_index, lock, merge_mode, content
+                   FROM agent_prompts
+                   WHERE agent_id = ? AND user_id IS NULL
+                   ORDER BY order_index ASC""",
+                (real_agent_id,),
+            ).fetchall()
+        finally:
+            agent_conn.close()
         base_slots = [
             {
                 "slot_name":   r[0],
@@ -395,9 +489,9 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
     except ImportError:
         from app.openai_compat import AsyncOpenAI
 
-    llm_base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+    llm_base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL") or ""
     llm_api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or ""
-    llm_model = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or "deepseek/deepseek-v4-flash"
+    llm_model = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or ""
 
     _llm_client = AsyncOpenAI(base_url=llm_base_url, api_key=llm_api_key, timeout=60.0)
 
@@ -635,7 +729,7 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
         if best is not None:
             opt_tokens = int(best.get("token_estimate") or 0)
             opt_ms = int(best.get("duration_ms") or 0)
-            _rconn = _connect_local(_local_path)
+            _rconn = _connect_local(_optimizer_path)
             try:
                 _rconn.execute("PRAGMA busy_timeout=10000")
                 have = {r[1] for r in _rconn.execute("PRAGMA table_info(optimizer_runs)").fetchall()}
@@ -657,352 +751,6 @@ async def run_worker_trials(changes_json: str, user_id: str, session_id: str) ->
         logging.warning(f"run_worker_trials: metric capture skipped (non-fatal): {_cap_e}")
 
     return json.dumps(results, indent=2)
-
-
-async def handoff_to_closer(summary: str = "", user_id: str = "", session_id: str = "",
-                                judging_criteria: str = "", baseline_transcript: str = "",
-                                worker_results: str = "") -> str:
-    """Hand off the optimization to the Closer agent for review.
-    Creates a new closer-<uuid8> session with all relevant data pre-injected
-    as interaction rows in the session's temp DB. The Closer sees the full
-    context (criteria, baseline, trials) via its conversation history — not metadata.
-    """
-    import uuid as _uuid_mod
-    from datetime import datetime as _dt2, timezone as _tz2
-
-    # 1. Resolve real user_id
-    real_user_id = user_id
-    if user_id.startswith('opt_'):
-        parts = user_id.split('_', 2)
-        if len(parts) == 3:
-            real_user_id = parts[2]
-    logger.warning(f"handoff_to_closer: real_user_id={real_user_id}")
-
-    # 2. Compute paths — use the canonical runtime DB dir (data/db), not app/db.
-    #    app/db holds only an empty schema stub; reading it made the Closer handoff
-    #    fail to find the opt_closer template and the baseline session.
-    from app.db.local import DB_DIR as _db_dir
-    _local_path = os.path.join(_db_dir, "local.db")
-    os.makedirs(_db_dir, exist_ok=True)
-    temp_db_name = f"closer_{_uuid_mod.uuid4().hex[:16]}.db"
-    temp_db_path = os.path.join(_db_dir, temp_db_name)
-
-    # 3. Init temp DB schema directly — no LocalBackend constructor (avoids seeding side effects)
-    from app.db.local import SCHEMA_SQL as _FSQL
-    _tc = sqlite3.connect(temp_db_path)
-    try:
-        _tc.executescript(_FSQL)
-        _tc.commit()
-    finally:
-        _tc.close()
-
-    # 4. Read opt_closer template from agent_templates in local.db
-    template_data = {}
-    try:
-        _lc = _connect_local(_local_path)
-        try:
-            trow = _lc.execute("SELECT * FROM agent_templates WHERE id='opt_closer'").fetchone()
-            if trow:
-                template_data = dict(trow)
-        finally:
-            _lc.close()
-    except Exception as e:
-        logger.warning(f"handoff_to_closer: failed to read agent_templates: {e}")
-
-    if not template_data:
-        return json.dumps({"status": "error", "message": "opt_closer template not found in agent_templates"})
-
-    # 5. Find target_session_id from planner session metadata in local.db
-    target_session_id = ""
-    try:
-        _lc2 = _connect_local(_local_path)
-        try:
-            srow = _lc2.execute("SELECT metadata FROM sessions WHERE id=?", (session_id,)).fetchone()
-            if srow and srow["metadata"]:
-                _smeta = json.loads(srow["metadata"])
-                target_session_id = _smeta.get("target_session", "")
-        finally:
-            _lc2.close()
-    except Exception as e:
-        logger.warning(f"handoff_to_closer: failed to find target_session: {e}")
-
-    # 6. Generate session ID and timestamps
-    closer_sid = f"closer-{_uuid_mod.uuid4().hex[:8]}"
-    agent_user_id = f"opt_closer_{real_user_id}"
-    now_sql = _dt2.now(_tz2.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-    # 6a. Reuse or create the closer agent in local.db so it persists across runs.
-    #     The agent row is then copied into the temp DB (same ID) so chat.py can find
-    #     it after switching the db pointer to the temp DB for this session.
-    _agent_cols = (
-        "id", "template_id",
-        "max_turn_count", "model", "provider", "temperature", "max_tokens",
-        "status", "metadata", "admin_users",
-        "created_at", "updated_at",
-    )
-    _agent_vals_new = (
-        str(_uuid_mod.uuid4()),          # id — placeholder, overwritten below
-        "opt_closer",
-        template_data.get("max_turn_count", 0),
-        template_data.get("model"),
-        template_data.get("provider"),
-        template_data.get("temperature", 0.2),
-        template_data.get("max_tokens", 8000),
-        "active",
-        template_data.get("metadata", "{}"),
-        json.dumps([agent_user_id]),
-        now_sql, now_sql,
-    )
-
-    _lc_agent = _connect_local(_local_path)
-    try:
-        existing_agent = _lc_agent.execute(
-            """SELECT * FROM agents
-               WHERE template_id = 'opt_closer'
-                 AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)
-               LIMIT 1""",
-            (agent_user_id,),
-        ).fetchone()
-        if existing_agent:
-            agent_id = existing_agent["id"]
-            agent_row_dict = dict(existing_agent)
-            logger.warning(f"handoff_to_closer: reusing existing closer agent {agent_id[:8]}")
-        else:
-            agent_id = str(_uuid_mod.uuid4())
-            vals = (agent_id,) + _agent_vals_new[1:]  # replace placeholder id
-            _lc_agent.execute(
-                f"INSERT INTO agents ({', '.join(_agent_cols)}) VALUES ({', '.join(['?']*len(_agent_cols))})",
-                vals,
-            )
-            _lc_agent.commit()
-            agent_row_dict = dict(zip(_agent_cols, vals))
-            logger.warning(f"handoff_to_closer: created new closer agent {agent_id[:8]} in local.db")
-
-        # Clone the opt_closer instruction slots (system prompt etc.) into this
-        # agent's agent_prompts. Without this the Closer runs with a BLANK system
-        # prompt — handoff creates the agent row directly, bypassing the normal
-        # materialization path that would otherwise clone the template slots.
-        # Idempotent: only clone when the agent has no slots yet.
-        try:
-            have_slots = _lc_agent.execute(
-                "SELECT 1 FROM agent_prompts WHERE agent_id=? LIMIT 1", (agent_id,)
-            ).fetchone()
-            if not have_slots:
-                tpl_slots = _lc_agent.execute(
-                    """SELECT slot_name, order_index, lock, merge_mode, content, version
-                       FROM agent_prompt_templates WHERE template_id='opt_closer'
-                       ORDER BY order_index""",
-                ).fetchall()
-                for s in tpl_slots:
-                    _lc_agent.execute(
-                        """INSERT INTO agent_prompts
-                           (id, agent_id, slot_name, user_id, order_index, lock,
-                            merge_mode, content, template_version, updated_at, updated_by)
-                           VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'system')""",
-                        (str(_uuid_mod.uuid4()), agent_id, s["slot_name"],
-                         s["order_index"], s["lock"], s["merge_mode"],
-                         s["content"], s["version"], now_sql),
-                    )
-                _lc_agent.commit()
-                logger.warning(f"handoff_to_closer: cloned {len(tpl_slots)} opt_closer slots into {agent_id[:8]}")
-        except Exception as _slot_err:
-            logger.warning(f"handoff_to_closer: slot clone failed (non-fatal): {_slot_err}")
-    finally:
-        _lc_agent.close()
-
-    # 7. Create session in temp DB and copy agent row into it so chat.py can find it
-    #    after switching the db pointer to the temp DB.
-    _tc2 = sqlite3.connect(temp_db_path)
-    try:
-        _tc2.execute(
-            f"INSERT OR IGNORE INTO agents ({', '.join(_agent_cols)}) VALUES ({', '.join(['?']*len(_agent_cols))})",
-            tuple(agent_row_dict[c] for c in _agent_cols),
-        )
-        participants_json = json.dumps([
-            {"id": real_user_id, "role": "user"},
-            {"id": agent_id, "role": "agent"},
-        ])
-        _tc2.execute(
-            "INSERT INTO sessions (id, user_id, title, agent_id, participants, metadata, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (closer_sid, real_user_id,
-             f"Closer - {session_id[:12]}",
-             agent_id, participants_json,
-             json.dumps({"opt_role": "closer", "source_optimizer_session": session_id}),
-             now_sql, now_sql),
-        )
-        _tc2.commit()
-
-        # 8. Pre-inject all context as interaction rows so Closer sees them in history
-        _iid_counter = [0]
-        def _inject(role, content):
-            _iid_counter[0] += 1
-            # offset created_at by counter so ORDER BY created_at gives deterministic order
-            from datetime import datetime as _dti, timezone as _tzi, timedelta as _tdd
-            ts = (_dti.now(_tzi.utc) + _tdd(seconds=_iid_counter[0])).strftime("%Y-%m-%d %H:%M:%S")
-            _tc2.execute(
-                "INSERT INTO interactions (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
-                (str(_uuid_mod.uuid4()), closer_sid, role, content, ts),
-            )
-
-        # 8a. Judging criteria + summary as the opening context
-        _inject("user", f"## Judging Criteria\n{judging_criteria}\n\n## Optimization Summary\n{summary}")
-
-        # 8b. Baseline interactions from target session in local.db.
-        # Inject the whole baseline as ONE 'user' context block — NOT as role-played
-        # user/assistant turns. Replaying the baseline agent's replies as 'assistant'
-        # rows pollutes the Closer's own history (it sees prior "assistant" turns that
-        # aren't its own) and a weak model then continues that persona instead of
-        # judging + deploying. A single labelled block keeps the Closer's assistant
-        # history clean: the only assistant turn is its verdict.
-        baseline_injected = False
-        if target_session_id:
-            try:
-                _lc3 = _connect_local(_local_path)
-                try:
-                    b_rows = _lc3.execute(
-                        "SELECT role, content FROM interactions WHERE session_id=? ORDER BY created_at",
-                        (target_session_id,)
-                    ).fetchall()
-                    if b_rows:
-                        _lines = [f"## Baseline Conversation (original session `{target_session_id[:8]}`)",
-                                  "This is the ORIGINAL transcript before optimization — for comparison only."]
-                        for br in b_rows:
-                            r = br["role"] if br["role"] in ("user", "assistant", "tool") else "user"
-                            label = {"user": "User", "assistant": "Agent", "tool": "Tool"}.get(r, r)
-                            _lines.append(f"[{label}]: {(br['content'] or '')[:1500]}")
-                        _inject("user", "\n".join(_lines))
-                        baseline_injected = True
-                finally:
-                    _lc3.close()
-            except Exception as e:
-                logger.warning(f"handoff_to_closer: baseline inject failed: {e}")
-
-        if not baseline_injected and baseline_transcript:
-            _inject("user", f"## Baseline Transcript\n{baseline_transcript[:3000]}")
-
-        # 8c. Trial transcripts from worker_results JSON
-        try:
-            wr_data = json.loads(worker_results) if isinstance(worker_results, str) else worker_results
-            if isinstance(wr_data, list):
-                for i, trial in enumerate(wr_data):
-                    t_transcript = trial.get("trial_transcript", [])
-                    sim_satisfied = trial.get("sim_user_satisfied", False)
-                    element = trial.get("element", "?")
-                    tool_count = trial.get("tool_calls_made", 0)
-                    lines = [
-                        f"## Trial {i+1}: `{element}` | Sim User Satisfied: {'YES' if sim_satisfied else 'NO'} | Tools Called: {tool_count}"
-                    ]
-                    for entry in t_transcript:
-                        role_label = {
-                            "sim_user": "Sim User",
-                            "worker": "Worker",
-                            "tool_call": "Tool Call",
-                            "tool_result": "Tool Result",
-                        }.get(entry.get("role", ""), entry.get("role", ""))
-                        terminal = " [SATISFIED]" if entry.get("terminal") else ""
-                        lines.append(f"[{role_label}]{terminal}: {entry.get('content', '')[:500]}")
-                    _inject("user", "\n".join(lines))
-        except Exception as e:
-            logger.warning(f"handoff_to_closer: trial transcript inject failed: {e}")
-            if worker_results:
-                _inject("user", f"## Worker Results (raw)\n{worker_results[:3000]}")
-
-        _tc2.commit()
-    finally:
-        _tc2.close()
-
-    # 9. Create session in local.db with temp_db_path in metadata so chat.py switches to temp DB
-    local_meta = json.dumps({
-        "opt_role": "closer",
-        "source_optimizer_session": session_id,
-        "temp_db_path": temp_db_path,
-    })
-    _lc4 = _connect_local(_local_path)
-    try:
-        _lc4.execute(
-            "INSERT OR IGNORE INTO sessions (id, user_id, title, metadata, agent_id, participants, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (closer_sid, real_user_id,
-             f"Closer - {session_id[:12]}",
-             local_meta, agent_id,
-             json.dumps([{"id": real_user_id, "role": "user"}, {"id": agent_id, "role": "agent"}]),
-             now_sql, now_sql),
-        )
-        _lc4.commit()
-    finally:
-        _lc4.close()
-
-    logger.warning(f"Closer session created: {closer_sid} (user={real_user_id}, agent={agent_id[:8]})")
-
-    # 10. Kickstart the Closer
-    try:
-        asyncio.create_task(_kickstart_closer(real_user_id, closer_sid, summary))
-    except Exception:
-        pass
-
-    return json.dumps({
-        "status": "ok",
-        "closer_session_id": closer_sid,
-        "summary": summary,
-    })
-
-
-async def _kickstart_closer(user_id: str, closer_sid: str, summary: str) -> None:
-    """Kickstart the Closer by posting a trigger message to the chat API.
-    The Closer's system prompt has Auto-Start Rule: it evaluates immediately on first message.
-    All context (criteria, baseline, trials) is pre-injected as session history.
-    """
-    import asyncio, httpx, os, logging as _log
-    try:
-        port = os.environ.get('PORT', '8080')
-        _log.warning(f"Kickstarting Closer {closer_sid}")
-
-        # Mint a short-lived JWT so this loopback POST passes the chat endpoint's
-        # caller-identity check — same fix as the Planner kickstart. Without it the
-        # request is rejected 401 → surfaced as 500, silently killing the Closer
-        # before it ever evaluates.
-        headers = {}
-        try:
-            from app.auth.jwt import create_access_token
-            headers["Authorization"] = (
-                f"Bearer {create_access_token(username=user_id, user_id=user_id)}"
-            )
-        except Exception as _auth_err:
-            _log.warning(f"Could not mint Closer kickstart token for {user_id}: {_auth_err}")
-
-        # The closer session + agent are written right before this fires; give the
-        # writes a moment to settle, then retry on 5xx / connection errors. The
-        # trigger message is idempotent (the Closer re-evaluates from injected
-        # history), so a retry can't duplicate work.
-        await asyncio.sleep(0.6)
-        delays = [1.0, 2.5, 5.0]
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            for attempt in range(len(delays) + 1):
-                try:
-                    resp = await client.post(
-                        f"http://127.0.0.1:{port}/api/v1/chat",
-                        json={
-                            "message": "Start your evaluation.",
-                            "user_id": user_id,
-                            "session_id": closer_sid,
-                        },
-                        headers=headers,
-                    )
-                    if resp.status_code < 500 or attempt >= len(delays):
-                        _log.warning(f"Kickstart Closer responded: {resp.status_code}"
-                                     + (f" (attempt {attempt + 1})" if attempt else ""))
-                        break
-                    _log.warning(f"Kickstart Closer got {resp.status_code}; "
-                                 f"retrying in {delays[attempt]}s (attempt {attempt + 1})")
-                except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as ce:
-                    if attempt >= len(delays):
-                        _log.warning(f"Kickstart Closer connection failed: {ce}")
-                        break
-                    _log.warning(f"Kickstart Closer connect error; retrying in {delays[attempt]}s")
-                await asyncio.sleep(delays[attempt])
-    except Exception as e:
-        _log.warning(f"Kickstart Closer failed (non-fatal): {e}")
 
 
 async def deploy_optimization(changes_json: str, user_id: str, session_id: str) -> str:
@@ -1088,4 +836,3 @@ async def deploy_optimization(changes_json: str, user_id: str, session_id: str) 
         deployed.append(slot_name)
 
     return json.dumps({"status": "ok", "deployed": deployed, "agent_id": agent_id})
- 

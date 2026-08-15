@@ -5,12 +5,7 @@ Supports:
   - metadata_logging: stores full prompt context in interactions.metadata
   - provider: per-user AI provider config (provider, base_url, api_key, model)
 
-Provider configs are stored per user_id in provider.json:
-  {
-    "__anonymous__": { ... config ... },
-    "admin": { ... config ... },
-    ...
-  }
+Provider configs are stored per user_id in the auth_elements DB table.
 """
 
 import json
@@ -31,14 +26,13 @@ router = APIRouter(prefix="/admin/settings", tags=["admin"])
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 METADATA_FLAG = PROJECT_ROOT / ".metadata-enabled"
-PROVIDER_FILE = PROJECT_ROOT / "data" / "config" / "provider.json"
 APP_SETTINGS_FILE = PROJECT_ROOT / "data" / "config" / "app-settings.json"
 
 ANONYMOUS_KEY = "__anonymous__"
 
 DEFAULT_PROVIDER = {
-    "provider": "openrouter",
-    "base_url": "https://openrouter.ai/api/v1",
+    "provider": "",
+    "base_url": "",
     "api_key": "",
     "model": "",
     "providers": {},
@@ -49,6 +43,10 @@ PROVIDER_PRESETS = {
     "openrouter": {
         "name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
+    },
+    "abacus": {
+        "name": "Abacus.AI (RouteLLM)",
+        "base_url": "https://routellm.abacus.ai/v1",
     },
     "openai": {
         "name": "OpenAI",
@@ -117,49 +115,6 @@ def _resolve_user_id(authorization: str = "", token_qs: str = "") -> str:
     return ANONYMOUS_KEY
 
 
-# ── Per-user provider storage ──────────────────────────────────────────────
-
-def _load_all_providers() -> dict:
-    """Load the full provider.json (map of user_id → config)."""
-    try:
-        if PROVIDER_FILE.exists():
-            with open(PROVIDER_FILE) as f:
-                data = json.load(f)
-                # Migration: if old flat format (has "provider" key at root),
-                # wrap under ANONYMOUS_KEY
-                if "provider" in data:
-                    data = {ANONYMOUS_KEY: data}
-                    _save_all_providers(data)
-                return data
-    except Exception as e:
-        logger.warning("Failed to load provider.json: %s", e)
-    return {}
-
-
-def _save_all_providers(data: dict) -> None:
-    """Save the full provider.json (creates data/config/ on demand)."""
-    try:
-        safe_write_json(PROVIDER_FILE, data)
-    except Exception as e:
-        logger.warning("Failed to save provider.json: %s", e)
-
-
-def _load_provider(user_id: str) -> dict:
-    """Load provider config for a specific user. Returns DEFAULT_PROVIDER if none."""
-    all_configs = _load_all_providers()
-    config = all_configs.get(user_id)
-    if config:
-        return dict(config)
-    # Fall back to admin user's config (so anonymous users get a working LLM)
-    config = all_configs.get("admin")
-    if config:
-        return dict(config)
-    # Fall back to anonymous config
-    config = all_configs.get(ANONYMOUS_KEY)
-    if config:
-        return dict(config)
-    return dict(DEFAULT_PROVIDER)
-
 
 # ── LLM secret handling — keys live ONLY in the encrypted vault ─────────────
 #
@@ -167,10 +122,10 @@ def _load_provider(user_id: str) -> dict:
 # entry in the ``providers`` map, and one per saved-roster model. The vault row
 # (``auth_elements``) only Fernet-encrypts ``secret_ref``; its ``config`` blob is
 # a plaintext column. So we pack EVERY key into a single JSON bundle stored in
-# ``secret_ref`` (encrypted), and keep every other store — the ``config`` blob and
-# provider.json — stripped of keys. Reads rehydrate the keys back out of the
-# bundle, so callers see a complete config without any plaintext key ever landing
-# on disk or in an unencrypted column.
+# ``secret_ref`` (encrypted), and keep the plaintext ``config`` blob stripped of
+# keys. Reads rehydrate the keys back out of the bundle, so callers see a
+# complete config without any plaintext key ever landing on disk or in an
+# unencrypted column.
 
 def _has_plaintext_key(cfg: dict) -> bool:
     """True if any api_key is present anywhere in a config dict."""
@@ -189,7 +144,7 @@ def _has_plaintext_key(cfg: dict) -> bool:
 
 def _strip_provider_secrets(config: dict) -> dict:
     """Return a copy of a provider config with every api_key blanked — the shape
-    written to provider.json and to the vault's plaintext ``config`` blob."""
+    written to the vault's plaintext ``config`` blob."""
     clean = dict(config or {})
     clean["api_key"] = ""
     provs = clean.get("providers")
@@ -285,9 +240,7 @@ async def _persist_llm_config(user_id: str, full: dict) -> None:
 
     Guarantees no API key is ever stored in plaintext: every key is packed into
     ONE encrypted vault secret (``auth_elements.secret_ref``); the DB ``config``
-    blob and provider.json receive a key-stripped copy. provider.json stays as a
-    non-secret fallback + boot seed; the active env (this process) still gets the
-    real key.
+    blob receives a key-stripped copy.
     """
     secret = _pack_llm_secret(full)
     stripped = _strip_provider_secrets(full)
@@ -303,13 +256,11 @@ async def _persist_llm_config(user_id: str, full: dict) -> None:
         )
     except Exception as e:
         logger.warning("Failed to save LLM config to vault: %s", e)
-    # provider.json (stripped inside _save_provider) + active env (full, with key)
-    _save_provider(user_id, full)
 
 
 async def _load_own_llm_config(user_id: str) -> Optional[dict]:
-    """Load a user's OWN LLM config (vault row, else its provider.json entry) with
-    keys rehydrated — NO admin/anonymous fallback. Used by the migration so we
+    """Load a user's OWN LLM config from the vault with keys rehydrated —
+    NO admin/anonymous fallback. Used by the migration so we
     never copy one user's config onto another."""
     try:
         from app.db import get_db
@@ -322,16 +273,12 @@ async def _load_own_llm_config(user_id: str) -> Optional[dict]:
             return _rehydrate_llm_keys(cfg, elem.get("secret_ref", ""))
     except Exception:
         pass
-    fc = _load_all_providers().get(user_id)
-    return dict(fc) if isinstance(fc, dict) else None
+    return None
 
 
 async def _llm_storage_has_plaintext(user_id: str) -> bool:
-    """True if a user's provider.json entry or vault config blob still holds a
-    plaintext api_key (an encrypted secret_ref does NOT count)."""
-    fc = _load_all_providers().get(user_id)
-    if _has_plaintext_key(fc):
-        return True
+    """True if a user's vault config blob still holds a plaintext api_key
+    (an encrypted secret_ref does NOT count)."""
     try:
         from app.db import get_db
         db = get_db()
@@ -353,13 +300,13 @@ async def _llm_storage_has_plaintext(user_id: str) -> bool:
 async def migrate_llm_secrets() -> None:
     """One-time scrub of historically plaintext LLM keys.
 
-    For every user that has a provider config, fold any plaintext api_key (from
-    provider.json OR the DB ``config`` blob) into the encrypted vault secret and
-    rewrite both stores stripped. Idempotent: once no plaintext key remains for a
-    user, re-running skips them. Safe to call on every startup.
+    For the admin user, fold any plaintext api_key from the DB ``config`` blob
+    into the encrypted vault secret and rewrite the store stripped. Idempotent:
+    once no plaintext key remains, re-running skips. Safe to call on every
+    startup.
     """
     try:
-        candidates = set(_load_all_providers().keys()) | {"admin"}
+        candidates = {"admin"}
     except Exception:
         candidates = {"admin"}
     secured = 0
@@ -378,36 +325,10 @@ async def migrate_llm_secrets() -> None:
         logger.info("Secured plaintext LLM key(s) for %d user(s) into the vault", secured)
 
 
-def _save_provider(user_id: str, config: dict) -> None:
-    """Save provider config for a specific user to provider.json — WITHOUT any
-    api_key — and apply it to the active env (with the key) for this process.
-
-    The secret never lands in provider.json; it lives only in the encrypted vault
-    (see _persist_llm_config). provider.json keeps the non-secret fields
-    (provider/model/base_url/capabilities/roster) as a fallback + boot seed; every
-    other user's config is preserved and data/config/ is created on demand.
-    """
-    # Fill in base_url from preset if missing
-    provider = config.get("provider", "")
-    if not config.get("base_url") and provider in PROVIDER_PRESETS:
-        config["base_url"] = PROVIDER_PRESETS[provider]["base_url"]
-
-    try:
-        set_config_key(PROVIDER_FILE, user_id, _strip_provider_secrets(config))
-    except Exception as e:
-        logger.warning("Failed to save provider.json: %s", e)
-
-    # Apply this config as the active env vars (current user's session) — uses the
-    # in-memory config WITH the key; only the on-disk copy is stripped.
-    _apply_config_to_env(config)
-
-    logger.info("Provider config saved for user %s: %s", user_id[:12], config.get("provider"))
-
-
 async def _resolve_user_config(user_id: str) -> dict:
     """Resolve a user's provider config WITHOUT touching env.
-    Tries auth_elements DB table first (own config, then admin fallback), then
-    provider.json. Shared by the runtime applier and the chat-footer resolver so
+    Reads from the auth_elements DB table (own config, then admin fallback).
+    Shared by the runtime applier and the chat-footer resolver so
     both see the exact same base config.
     """
     try:
@@ -422,10 +343,37 @@ async def _resolve_user_config(user_id: str) -> dict:
             if isinstance(cfg, str):
                 cfg = json.loads(cfg or "{}")
             _rehydrate_llm_keys(cfg, elem.get("secret_ref", ""))
+            if elem.get("_secret_error") == "decrypt_failed":
+                cfg["_credential_error"] = "decrypt_failed"
             return cfg
     except Exception:
         pass
-    return _load_provider(user_id)
+    return dict(DEFAULT_PROVIDER)
+
+
+async def user_has_own_llm_config(user_id: str) -> bool:
+    """True when the user has their OWN provider config (their own key), as
+    opposed to the admin fallback. Used by billing to decide whether a run is
+    billed to the platform (inherited models → credits) or to the user's own
+    key (free). Cheap existence check — no vault decryption.
+    """
+    try:
+        from app.db import get_db
+        db = get_db()
+        elem = await db.auth_element_get(user_id, "llm", "default")
+        if not elem:
+            return False
+        cfg = elem.get("config") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg or "{}")
+            except Exception:
+                cfg = {}
+        if isinstance(cfg, dict) and (cfg.get("api_key") or cfg.get("secret_ref")):
+            return True
+        return bool(elem.get("secret_ref"))
+    except Exception:
+        return False
 
 
 def _agent_llm_override(agent_rec: Optional[dict]) -> Optional[dict]:
@@ -456,35 +404,138 @@ def _agent_llm_override(agent_rec: Optional[dict]) -> Optional[dict]:
     has_roster = isinstance(mp, list) and any(
         isinstance(p, dict) and p.get("model") for p in mp
     )
-    # A bare inherited-model opt-out (no own model / roster) still counts as an
-    # override: the agent is narrowing which app-default models / capabilities it
-    # uses, which must reach _merge_agent_override to take effect at runtime.
-    inh = cfg.get("inherited_overrides")
-    has_inh = isinstance(inh, dict) and len(inh) > 0
-    if not cfg.get("model") and not has_roster and not has_inh:
+    if not cfg.get("model") and not has_roster:
         return None
     return cfg
 
 
+# ── Role-name normalization ──
+# Migrated from legacy "text" / "text_plus" to "standard" / "premium". This
+# helper accepts either form (old or new) and always returns the canonical new
+# name, so stored configs from before the rename keep working.
+_ROLE_ALIASES = {
+    "text": "standard", "text_plus": "premium",
+    "standard": "standard", "premium": "premium",
+    "image_in": "image_in", "image_out": "image_out",
+}
+_STANDARD_ROLES = ("standard", "premium", "image_in", "image_out")
+
+
+def _normalize_role(name: str) -> str:
+    """Canonicalize a role name (accepts legacy 'text'/'text_plus')."""
+    return _ROLE_ALIASES.get(name, name)
+
+
+def _assign_slots(providers: list, default_model_id: str = "") -> dict:
+    """Scan a roster (the ``multi_providers`` union) and assign each model to its
+    first-matching semantic role (standard / premium / image_in / image_out).
+    If ``default_model_id`` is set and standard-capable, it is preferred for the
+    ``standard`` role over the first standard-capable position (honors the Default
+    radio). A single model can fill multiple roles. The remaining models become
+    custom positions in roster order.
+
+    Returns:
+      {"roles": {"standard": p or None, "premium": p or None,
+                 "image_in": p or None, "image_out": p or None},
+       "custom": [p, ...],
+       "slot_list": [{"type": "role", "role": "standard", ...} | {"type": "custom", "position": n, ...}, ...]}
+    """
+    roles = {"standard": None, "premium": None, "image_in": None, "image_out": None}
+    role_checks = {
+        "standard":   lambda p: p.get("enabled") is not False and p.get("text_capable") is not False,
+        "premium":    lambda p: bool(p.get("high_effort_capable")),
+        "image_in":   lambda p: bool(p.get("image_capable")) and bool(p.get("use_for_image")),
+        "image_out":  lambda p: bool(p.get("image_out_capable")) and bool(p.get("use_for_image_out")),
+    }
+    # If a default model ID is given and it's standard-capable in the roster, pin it
+    # as the standard role before scanning (honors the Default radio in the configurator).
+    if default_model_id:
+        for p in providers:
+            if p.get("model") == default_model_id and role_checks["standard"](p):
+                roles["standard"] = dict(p)
+                break
+    for p in providers:
+        for role_name, check in role_checks.items():
+            if roles[role_name] is None and check(p):
+                roles[role_name] = dict(p)
+
+    # Custom positions: every unique provider entry NOT already filling a role.
+    role_keys = set()
+    for v in roles.values():
+        if v:
+            role_keys.add((v.get("provider"), v.get("model"), v.get("base_url")))
+    custom = []
+    seen = set()
+    for p in providers:
+        key = (p.get("provider"), p.get("model"), p.get("base_url"))
+        if key in seen:
+            continue
+        seen.add(key)
+        if key not in role_keys:
+            custom.append(dict(p))
+
+    # Build the ordered slot list for the chat picker: role slots first (non-None),
+    # then custom positions.
+    slot_list = []
+    for role_name in _STANDARD_ROLES:
+        v = roles[role_name]
+        if v:
+            slot_list.append({
+                "type": "role", "role": role_name,
+                "provider": v.get("provider", ""),
+                "model": v.get("model", ""),
+                "base_url": v.get("base_url", ""),
+                "api_key": v.get("api_key", ""),
+            })
+    for i, p in enumerate(custom, start=1):
+        slot_list.append({
+            "type": "custom", "position": i,
+            "provider": p.get("provider", ""),
+            "model": p.get("model", ""),
+            "base_url": p.get("base_url", ""),
+            "api_key": p.get("api_key", ""),
+        })
+
+    return {"roles": roles, "custom": custom, "slot_list": slot_list}
+
+
+def _resolve_slot(slots: dict, selection_type: str, role: str = "",
+                  custom_position: int = 0) -> Optional[dict]:
+    """Find a specific slot in the assignment and return its provider entry
+    (a dict with provider/base_url/api_key/model), or None if unresolved."""
+    for s in slots.get("slot_list", []):
+        if selection_type == "role" and s.get("type") == "role" and s.get("role") == role:
+            return {"provider": s.get("provider", ""), "base_url": s.get("base_url", ""),
+                    "api_key": s.get("api_key", ""), "model": s.get("model", "")}
+        if selection_type == "custom" and s.get("type") == "custom" and s.get("position") == custom_position:
+            return {"provider": s.get("provider", ""), "base_url": s.get("base_url", ""),
+                    "api_key": s.get("api_key", ""), "model": s.get("model", "")}
+    return None
+
+
+def _slot_ref(selection_type: str, role: str = "",
+              custom_position: int = 0) -> str:
+    """The stable string key for a slot — used for per-slot effort look-up.
+    e.g. 'role:text', 'custom:2'."""
+    if selection_type == "role":
+        return f"role:{role}"
+    return f"custom:{custom_position}"
+
+
 def _merge_agent_override(base: dict, override: dict) -> dict:
     """Layer an agent's (or session's) non-empty override fields over the base.
-    Preserves the user's api_key / base_url when the override didn't set its own
-    (e.g. an agent that only swaps the model on the same provider + key).
 
-    The override's top-level provider/base_url/api_key/model IS the chosen default
-    brain (set by the model table's "Default" radio, or the per-chat switcher).
-    When the override also carries its own ``multi_providers`` roster it becomes
-    the UNION of inherited (app-default) + own models. That roster is NOT raced —
+    The override's top-level provider/base_url/api_key/model IS the chosen brain.
+    When the override carries its own ``multi_providers`` roster it becomes the
+    UNION of inherited (app-default) + own models. That roster is NOT raced —
     parallel racing was removed; it only supplies the candidate list for the chat
-    model-switcher and the vision / image-out worker picks. If the override set no
-    top-level model, the first roster entry is mirrored up so there's always a
-    concrete default to run / report.
+    model-switcher and the vision / image-out worker picks.
 
-    The override may also carry ``inherited_overrides`` — a per-model map (keyed
-    ``provider|base_url|model``) of the agent's chosen capability subset for the
-    app-default models. Each flag is clamped to the admin's stored ceiling (an agent
-    can only narrow, never widen), and an inherited model the agent turned fully off
-    is dropped from the union.
+    NEW — slot-based resolution (replaces bare-Model-ID session pinning):
+    When a session override has ``selection_type`` ('role' | 'custom'), the model
+    is resolved LIVE against the current roster via ``_assign_slots`` + ``_resolve_slot``.
+    If the slot no longer resolves (admin removed the model or unticked its capability),
+    no model is set → the chat errors with 'No text model configured'.
     """
     merged = dict(base or {})
     for k in ("provider", "base_url", "api_key", "model"):
@@ -493,8 +544,6 @@ def _merge_agent_override(base: dict, override: dict) -> dict:
             merged[k] = v
     mp = override.get("multi_providers")
     own = [p for p in mp if isinstance(p, dict) and p.get("model")] if isinstance(mp, list) else []
-    inh_ovr = override.get("inherited_overrides")
-    inh_ovr = inh_ovr if isinstance(inh_ovr, dict) else {}
     # When "Extend default LLM to agents" is on, the agent's candidate models are the
     # UNION of the app-default roster (inherited) + its own — matching the per-agent
     # UI, which shows the defaults as inherited rows plus the agent's own. When off,
@@ -505,68 +554,117 @@ def _merge_agent_override(base: dict, override: dict) -> dict:
         extend_on = _load_app_settings().get("extend_llm_to_agents", True) is not False
     except Exception:
         extend_on = True
-    inherited_raw = [p for p in (base.get("multi_providers") or [])
-                     if isinstance(p, dict) and p.get("model")] if extend_on else []
-    # Apply this agent's per-model opt-outs. The admin's stored flags are the
-    # CEILING; the agent's choice can only narrow them, never widen. A model the
-    # agent turned fully off (no Text / In / Out / Eff left) is dropped entirely.
-    inherited = []
-    for p in inherited_raw:
-        key = f"{p.get('provider') or ''}|{p.get('base_url') or ''}|{p.get('model') or ''}"
-        ov = inh_ovr.get(key)
-        if not ov:
-            inherited.append(p)
-            continue
-        q = dict(p)
-        q["enabled"] = (p.get("enabled") is not False) and (ov.get("enabled") is not False)
-        q["use_for_image"] = bool(p.get("use_for_image")) and bool(ov.get("use_for_image"))
-        q["use_for_image_out"] = bool(p.get("use_for_image_out")) and bool(ov.get("use_for_image_out"))
-        q["high_effort_capable"] = bool(p.get("high_effort_capable")) and bool(ov.get("high_effort_capable"))
-        if not (q["enabled"] or q["use_for_image"] or q["use_for_image_out"] or q["high_effort_capable"]):
-            continue   # agent opted out of this inherited model completely
-        inherited.append(q)
-    # Build the union whenever there's anything to offer — the agent's own roster,
-    # an opt-out map, OR inherited candidates (so pinning an inherited model as the
-    # default still leaves the rest of the app defaults switchable).
-    if own or inh_ovr or inherited:
+    inherited = [p for p in (base.get("multi_providers") or [])
+                 if isinstance(p, dict) and p.get("model")] if extend_on else []
+    # Build the union whenever there's anything to offer — the agent's own roster
+    # or inherited candidates (so pinning an inherited model as the default still
+    # leaves the rest of the app defaults switchable). The agent's OWN rows come
+    # FIRST and win on (provider, model, base_url) collisions, so an own model
+    # that shares an id with an app default is authoritative for THIS agent while
+    # the app-wide roster stays untouched (no per-agent override copies exist).
+    if own or inherited:
         seen, union = set(), []
-        for p in inherited + own:
+        inh_by_key = {
+            (x.get("provider"), x.get("model"), x.get("base_url")): x
+            for x in inherited
+        }
+        for p in own + inherited:
             key = (p.get("provider"), p.get("model"), p.get("base_url"))
             if key in seen:
                 continue
             seen.add(key)
-            union.append(p)
+            row = p
+            # An agent's own row may store a BLANK api_key (the per-agent table
+            # never persists the app credential). Fall back to the inherited
+            # row's key for the same model so the row keeps running on the app's
+            # credential — and keeps picking up admin key rotations automatically.
+            if not row.get("api_key"):
+                q = inh_by_key.get(key)
+                if q and q.get("api_key"):
+                    row = {**row, "api_key": q["api_key"]}
+            union.append(row)
         merged["multi_providers"] = union
         if union:
             first = union[0]
-            for k in ("provider", "base_url", "api_key", "model"):
-                if first.get(k) and not override.get(k):
-                    merged[k] = first[k]
-            # If the resolved default brain was itself opted out (no longer in the
-            # union), repoint it to the first surviving candidate so the agent still
-            # runs a valid model instead of a dropped one.
-            union_models = {p.get("model") for p in union}
-            if merged.get("model") not in union_models:
+            # A selected model must get its credentials from the same provider
+            # row.  Filling a blank override API key from ``union[0]`` used to
+            # combine e.g. a DeepSeek URL/model with an Abacus key whenever an
+            # Abacus high-effort row happened to sort first.
+            selected = next((p for p in union if
+                             p.get("provider") == merged.get("provider")
+                             and p.get("model") == merged.get("model")
+                             and p.get("base_url") == merged.get("base_url")), None)
+            if selected:
+                # Keep a matching base key when the agent's row leaves its key
+                # blank (the normal inherited-model case); otherwise use only
+                # the matching row's key, never another provider's key.
+                if selected.get("api_key"):
+                    merged["api_key"] = selected["api_key"]
+            elif not merged.get("model"):
+                # A roster-only override has no chosen brain, so make its first
+                # row the complete default configuration.
                 for k in ("provider", "base_url", "api_key", "model"):
                     if first.get(k):
                         merged[k] = first[k]
     else:
         merged["multi_providers"] = []
+
+    # ── Stale pinned-model guard ──
+    # An agent override may pin a default model that was later REMOVED from
+    # every available roster (the agent's own multi_providers, the inherited
+    # app-defaults, or both). Without this guard the agent runs on a removed
+    # model it can never switch away from.
+    #  1. Roster non-empty, pinned model gone → repoint to first survivor.
+    #  2. Roster EMPTY (no models at all) → revert to the base config's default
+    #     so the agent runs on a valid model.
+    roster_models = {p.get("model") for p in merged.get("multi_providers", []) if p.get("model")}
+    if merged.get("model") and roster_models and merged.get("model") not in roster_models:
+        first = merged["multi_providers"][0]
+        for k in ("provider", "base_url", "api_key", "model"):
+            if first.get(k):
+                merged[k] = first[k]
+    elif merged.get("model") and not roster_models:
+        for k in ("model", "provider", "base_url", "api_key"):
+            merged[k] = base.get(k, "")
+
+    # ── Slot-based session-override resolution ──
+    # A session that picked a slot (instead of pinning a bare model ID) resolves
+    # LIVE against the current agent roster. If the slot no longer exists (admin
+    # removed the model or unticked its required capability), the model is left
+    # empty → the chat will error with 'No standard model configured'.
+    sel_type = override.get("selection_type")
+    if sel_type and override.get("use_default") is False:
+        union = merged.get("multi_providers") or []
+        slots = _assign_slots(union, default_model_id=merged.get("model", ""))
+        sel_role = _normalize_role(override.get("role", ""))
+        sel_pos = override.get("custom_position", 0)
+        resolved = _resolve_slot(slots, sel_type, sel_role, sel_pos)
+        if resolved:
+            for k in ("provider", "base_url", "api_key", "model"):
+                if resolved.get(k):
+                    merged[k] = resolved[k]
+            merged["_slot_ref"] = _slot_ref(sel_type, sel_role, sel_pos)
+        else:
+            # Slot unresolvable — leave model blank so the chat errors.
+            merged["model"] = ""
+            merged["_slot_ref"] = _slot_ref(sel_type, sel_role, sel_pos)
+
     return merged
 
 
 def _session_llm_override(cfg: Optional[dict]) -> Optional[dict]:
     """Return a session's custom LLM config IF it overrides the layer below.
 
-    Sessions store ``{use_default, model}`` in ``metadata['llm_config']`` (set by
-    the chat footer model picker). Only an explicit ``use_default=False`` carrying
-    a model counts; anything else means "fall back to the agent/app default".
+    Sessions store either a concrete ``model`` OR a ``selection_type`` + role/position
+    (set by the chat footer model picker). Only an explicit ``use_default=False``
+    carrying a model or a selection counts; anything else means "fall back to the
+    agent/app default".
     """
     if not isinstance(cfg, dict):
         return None
     if cfg.get("use_default") is not False:
         return None
-    if not cfg.get("model"):
+    if not cfg.get("model") and not cfg.get("selection_type"):
         return None
     return cfg
 
@@ -578,18 +676,22 @@ def _session_llm_override(cfg: Optional[dict]) -> Optional[dict]:
 REASONING_EFFORT_LEVELS = ["default", "minimal", "low", "medium", "high"]
 
 
-def _resolve_session_effort(session_override: Optional[dict], model: Optional[str]) -> Optional[str]:
-    """The reasoning-effort level stored for ``model`` on this session, or None.
+def _resolve_session_effort(session_override: Optional[dict],
+                              model: Optional[str] = None,
+                              slot_ref: Optional[str] = None) -> Optional[str]:
+    """The reasoning-effort level stored for this session's current selection.
 
-    Read straight from the raw session override's ``model_effort`` map — NOT gated
-    on a model override, so an effort applies even when the chat runs the agent's
-    default model. ``"default"`` (or unknown) resolves to None (no hint sent)."""
-    if not isinstance(session_override, dict) or not model:
+    Looked up by ``slot_ref`` first (e.g. 'role:standard', 'custom:2'), then by
+    bare ``model`` for legacy overrides. ``"default"`` (or unknown) → None."""
+    if not isinstance(session_override, dict):
         return None
     effort_map = session_override.get("model_effort")
     if not isinstance(effort_map, dict):
         return None
-    level = (effort_map.get(model) or "").strip().lower()
+    key = slot_ref or model
+    if not key:
+        return None
+    level = (effort_map.get(key) or "").strip().lower()
     if level in ("", "default") or level not in REASONING_EFFORT_LEVELS:
         return None
     return level
@@ -631,7 +733,7 @@ async def _load_session_override(session_id: Optional[str]) -> Optional[dict]:
 
 async def load_provider_for_user(user_id: str) -> None:
     """Load a user's provider config into env vars.
-    Tries auth_elements DB table first, falls back to provider.json.
+    Reads from the auth_elements DB table.
     Called at the start of each agent loop.
     """
     _apply_config_to_env(await _resolve_user_config(user_id))
@@ -641,6 +743,8 @@ async def apply_provider_for_run(
     user_id: str,
     agent_rec: Optional[dict] = None,
     session_id: Optional[str] = None,
+    *,
+    apply_env: bool = True,
 ) -> dict:
     """Apply the effective provider config for a run to env, honoring a per-agent
     LLM override (``metadata['llm_config']`` with ``use_default=False``) and then a
@@ -654,12 +758,26 @@ async def apply_provider_for_run(
     session_override = await _load_session_override(session_id)
     effective = _effective_config(await _resolve_user_config(user_id), agent_rec, session_override)
     effective = await _ensure_tool_capable(effective, user_id)
-    _apply_config_to_env(effective)
+    # The default loop consumes this config directly so simultaneous chats cannot
+    # overwrite each other's credentials through process-global environment
+    # variables.  Keep the env application for legacy/background callers.
+    if apply_env:
+        _apply_config_to_env(effective)
     # Per-session reasoning-effort for the resolved model (footer picker / Model
     # Switcher ability). Decoupled from the model override so an effort can apply
     # even when the chat runs on the agent's default model. The loop reads
     # LLM_REASONING_EFFORT and passes it as the provider reasoning hint.
-    _apply_effort_to_env(_resolve_session_effort(session_override, effective.get("model")))
+    # Look up by slot ref (new) or model ID (legacy).
+    effort = _resolve_session_effort(
+        session_override,
+        model=effective.get("model"),
+        slot_ref=effective.get("_slot_ref"),
+    )
+    # This transient value lets a caller use the fully resolved run config
+    # without reading the shared environment. It is never persisted.
+    effective["reasoning_effort"] = effort
+    if apply_env:
+        _apply_effort_to_env(effort)
     return effective
 
 
@@ -687,38 +805,42 @@ async def resolve_agent_models(
     agent_rec: Optional[dict] = None,
     session_id: Optional[str] = None,
 ) -> dict:
-    """Return the Text-capable candidate models a chat user can switch between for
-    this agent — the SAME union the run would consider (app default(s) + the
-    agent's own roster, per the extend-to-agents setting) — plus the model
-    currently active for this chat. Powers the chat footer model switcher.
+    """Return the candidate models a chat user can switch between for this agent —
+    organised as semantic slots (standard / premium / image_in / image_out) followed
+    by custom positions. Powers the chat footer model switcher.
 
-    Returns ``{"models": [{"id", "provider"}], "active": "<model id>"}``.
+    Returns:
+      {"slots": [{"type":"role","role":"standard","model":"gpt-4o",...}, ...],
+       "active_slot": {"type":"role","role":"standard"} | None,
+       "model_effort": {"role:standard":"high", "custom:2":"low"}}
     """
     session_override = await _load_session_override(session_id)
     effective = _effective_config(await _resolve_user_config(user_id), agent_rec, session_override)
-    active = (effective.get("model") or "").strip()
-    models, seen = [], set()
-    for p in (effective.get("multi_providers") or []):
-        mid = (p.get("model") or "").strip()
-        if not mid or mid in seen:
-            continue
-        if p.get("text_capable") is False:   # workers (vision / image-out only) aren't brains
-            continue
-        seen.add(mid)
-        models.append({"id": mid, "provider": p.get("provider", "") or ""})
-    # The active/default model is always offered, even if it isn't in the roster.
-    if active and active not in seen:
-        models.insert(0, {"id": active, "provider": effective.get("provider", "") or ""})
-    # Per-model reasoning-effort the chat has chosen (footer picker shows it per row).
+    union = effective.get("multi_providers") or []
+    slots = _assign_slots(union, default_model_id=effective.get("model", ""))
+
+    # The active slot: either the session's explicit selection or the standard role.
+    active_slot = None
+    if session_override and session_override.get("selection_type"):
+        role = _normalize_role(session_override.get("role", ""))
+        active_slot = {
+            "type": session_override["selection_type"],
+            "role": role,
+            "custom_position": session_override.get("custom_position", 0),
+        }
+    elif slots["slot_list"]:
+        # Default active = first slot (the standard role, if it exists).
+        active_slot = {"type": slots["slot_list"][0]["type"]}
+        if slots["slot_list"][0]["type"] == "role":
+            active_slot["role"] = slots["slot_list"][0]["role"]
+        else:
+            active_slot["custom_position"] = slots["slot_list"][0]["position"]
+
+    # Per-slot reasoning-effort the chat has chosen.
     effort_map = (session_override or {}).get("model_effort")
     effort_map = effort_map if isinstance(effort_map, dict) else {}
-    return {"models": models, "active": active, "model_effort": effort_map}
-
-
-def apply_provider_config() -> None:
-    """Call on startup to apply saved anonymous provider config."""
-    config = _load_provider(ANONYMOUS_KEY)
-    _apply_config_to_env(config)
+    return {"slots": slots["slot_list"], "active_slot": active_slot,
+            "model_effort": effort_map}
 
 
 def _apply_config_to_env(config: dict) -> None:
@@ -746,8 +868,16 @@ def _apply_config_to_env(config: dict) -> None:
         os.environ.pop("LLM_BASE_URL", None)
         os.environ.pop("OPENROUTER_BASE_URL", None)
     if config.get("model"):
-        os.environ["LLM_MODEL"] = config["model"]
-        os.environ["OPENROUTER_MODEL"] = config["model"]
+        _model = config["model"]
+        # OpenRouter uses "provider/model" format; native provider APIs (DeepSeek,
+        # Anthropic, etc.) expect bare model names. Strip the prefix when the
+        # base_url is NOT openrouter.ai.
+        if base_url and "openrouter.ai" not in base_url and "/" in _model:
+            _stripped = _model.split("/", 1)[-1]
+            logger.debug("stripped provider prefix from model '%s' → '%s' (native API)", _model, _stripped)
+            _model = _stripped
+        os.environ["LLM_MODEL"] = _model
+        os.environ["OPENROUTER_MODEL"] = _model
     else:
         os.environ.pop("LLM_MODEL", None)
         os.environ.pop("OPENROUTER_MODEL", None)
@@ -758,7 +888,7 @@ def _apply_config_to_env(config: dict) -> None:
     os.environ.pop("MULTI_PROVIDERS", None)
 
 
-async def load_llm_capabilities_for_user(user_id: str) -> dict:
+async def load_llm_capabilities_for_user(user_id: str, agent_rec: Optional[dict] = None) -> dict:
     """Read the user's LLM config (own → admin) and return media-capability
     info WITHOUT touching env vars.
 
@@ -766,6 +896,10 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
     image must be described by a separate vision model before the turn runs. This
     is a per-request DB read on purpose — the env vars set by
     ``_apply_config_to_env`` are process-global and shared across users.
+
+    When ``agent_rec`` is provided, the agent's ``metadata.llm_config`` override
+    (per-agent model) is layered in so the ``default`` model reflects what THIS
+    agent actually runs on — not just the global app default. (grep AGENT-AWARE-CAPS)
 
     Shape:
       {
@@ -798,7 +932,13 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
     except Exception as e:
         logger.debug("load_llm_capabilities_for_user DB read failed: %s", e)
     if cfg is None:
-        cfg = _load_provider(user_id)
+        cfg = dict(DEFAULT_PROVIDER)
+
+    # Factor in the agent's LLM override so caps reflect what THIS agent runs on.
+    # Mirrors the runtime resolution (apply_provider_for_run) so list_models and
+    # the switcher tools agree with the model the loop actually uses. (grep AGENT-AWARE-CAPS)
+    if agent_rec:
+        cfg = _effective_config(cfg, agent_rec)
 
     default = {
         "model": cfg.get("model", ""),
@@ -808,6 +948,7 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
         "text_capable": bool(cfg.get("text_capable", True)),
         "image_capable": bool(cfg.get("image_capable", False)),
         "image_out_capable": bool(cfg.get("image_out_capable", False)),
+        "voice_capable": bool(cfg.get("voice_capable", False)),
         "use_for_image_out": bool(cfg.get("use_for_image_out", False)),
         "high_effort_capable": bool(cfg.get("high_effort_capable", False)),
     }
@@ -824,6 +965,9 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
             "use_for_image": bool(p.get("use_for_image", False)),
             "image_out_capable": bool(p.get("image_out_capable", False)),
             "use_for_image_out": bool(p.get("use_for_image_out", False)),
+            "voice_capable": bool(p.get("voice_capable", False)),
+            "use_for_voice": bool(p.get("use_for_voice", False)),
+            "use_for_system": bool(p.get("use_for_system", False)),
             "high_effort_capable": bool(p.get("high_effort_capable", False)),
         })
 
@@ -838,7 +982,8 @@ async def load_llm_capabilities_for_user(user_id: str) -> dict:
         match = next((r for r in racers if r.get("model") == default["model"]), None)
         if match:
             for k in ("text_capable", "image_capable",
-                      "image_out_capable", "use_for_image_out",
+                      "image_out_capable", "voice_capable",
+                      "use_for_image_out", "use_for_voice",
                       "high_effort_capable"):
                 if k in match:
                     default[k] = match[k]
@@ -1034,15 +1179,23 @@ def media_routing(caps: dict) -> dict:
 
 
 def high_effort_targets(caps: dict) -> list:
-    """The enabled models an admin flagged "high-effort" that can actually be the
+    """The models flagged "high-effort" (the *Eff* tick) that can actually be the
     agent's brain (text + tool-capable). These are the models the Model Control
-    ability may upgrade ONTO for a hard task. Catalog-guarded via ``_is_tool_capable``
-    so a mis-ticked tool-less model is excluded. Returns a sorted list of model ids.
+    ability may upgrade ONTO for a hard task.
+
+    A premium model is a deliberate NON-default upgrade target, so the roster's
+    ``enabled`` flag does NOT gate it — the common per-agent configuration (and
+    the default template) marks the Eff model ``enabled: false,
+    high_effort_capable: true`` ("premium-only": not an everyday brain, but the
+    tier the agent upgrades onto). Filtering on ``enabled`` first (the old
+    behaviour) silently hid exactly that model. Catalog-guarded via
+    ``_is_tool_capable`` so a mis-ticked tool-less model is excluded. Returns a
+    sorted list of model ids.
     """
     caps = caps or {}
     default = caps.get("default") or {}
-    enabled = [r for r in (caps.get("racers") or []) if r.get("enabled")]
-    brains = [default] + enabled
+    racers = caps.get("racers") or []
+    brains = [default] + list(racers)
     return sorted({
         b["model"] for b in brains
         if b.get("model") and b.get("text_capable")
@@ -1164,6 +1317,11 @@ def _save_app_settings(data: dict) -> None:
         logger.warning("Failed to save app-settings.json: %s", e)
 
 
+def shared_default_agent_enabled() -> bool:
+    """Read the shared-default-agent toggle from app-settings.json, defaulting True."""
+    return _load_app_settings().get("shared_default_agent_enabled", True) is True
+
+
 def _is_metadata_enabled() -> bool:
     return METADATA_FLAG.exists()
 
@@ -1180,6 +1338,7 @@ class ProviderConfig(BaseModel):
     text_capable: bool = True
     image_capable: bool = False
     image_out_capable: bool = False   # can generate images
+    voice_capable: bool = False       # accepts audio/voice input
     use_for_image_out: bool = False   # this model is the image generator
     high_effort_capable: bool = False  # admin-marked "premium" tier the agent may upgrade ONTO
 
@@ -1196,6 +1355,9 @@ class MultiProviderEntry(BaseModel):
     use_for_image: bool = False   # eligible to describe images for text-only models
     image_out_capable: bool = False  # can generate images
     use_for_image_out: bool = False  # the image generator for the generate_image tool
+    voice_capable: bool = False      # accepts audio/voice input
+    use_for_voice: bool = False      # eligible for LLM-powered voice input
+    use_for_system: bool = False     # eligible for app misc. LLM tasks
     high_effort_capable: bool = False  # admin-marked "premium" tier the agent may upgrade ONTO
 
 
@@ -1210,15 +1372,17 @@ class MetadataSetting(BaseModel):
 class AppSettings(BaseModel):
     extend_llm_to_agents: bool = True
     access_mode: str = "admin_approval"  # admin_approval | public_registered
-    # ── Multi-tenant data (per-user bring-your-own-database) ──
+    # Replace the main-header tab carousel with compact hamburger navigation.
+    mobile_mode: bool = False
+    # ── User BYOD (per-user bring-your-own-database) ──
     # OFF (default): single-tenant — every user shares the one admin-configured
     # database, exactly as before (self-hosters and existing installs are
     # unaffected). ON: each user's INTERACTION data (chats, memories, their own
     # LLM keys/vault) is routed to that user's OWN database, while the central
     # admin database keeps the shared parts (accounts, the agent catalog,
-    # billing). Read on the DB hot path via get_multi_tenant_enabled() (cached).
+    # billing). Read on the DB hot path via get_user_byod_enabled() (cached).
     # See app/db/router.py (TenantRouterBackend) and app/db/tenant.py.
-    multi_tenant: bool = False
+    user_byod: bool = False
     # ── Memory embeddings (app/agent/embed.py) ──
     # Which embedder powers memory save + search, chosen APP-WIDE — never
     # per-agent: every stored vector shares one column of one width, and a search
@@ -1260,21 +1424,93 @@ class AppSettings(BaseModel):
     # via the public /api/v1/auth/ui-config endpoint so the account page can gate
     # its editor on it.
     allow_user_appearance: bool = False
+    # ── App control quick message (point-and-share panel) ──
+    # Master on/off for the USER-facing half of App Control: long-press (touch) or
+    # right-click anywhere in the app to point at an element and hand it to the chat
+    # (ui/shared/js/app-control-point.js). Served via the public
+    # /api/v1/auth/ui-config endpoint so the panel can gate on it at boot. Defaults
+    # True — the point-and-share panel has always been available.
+    app_control_quick_message: bool = True
+    # ── Session completion notifications (sliding panel) ──
+    # Master on/off for the sliding notification panel that appears when a
+    # background session finishes (ui/chat/js/session-notification.js). Served
+    # via the public /api/v1/auth/ui-config endpoint so the panel can gate on it
+    # at boot. Defaults True — the panel has always been available.
+    session_completion_notifications: bool = True
+    # ── Always-on display (Screen Wake Lock) ──
+    # Master on/off for keeping the device screen awake while the app tab is
+    # visible, app-wide — the same operation as the chat wake_lock control
+    # (ui/shared/js/screen-wake.js). Served via the public /api/v1/auth/ui-config
+    # endpoint so every visitor's browser can apply it at boot. Defaults False —
+    # the screen sleeps normally.
+    always_on_display: bool = False
+    # ── Voice dictation: optional server/LLM transcription ──
+    # OFF keeps browser-native SpeechRecognition only. ON allows recorded audio
+    # to be sent to the configured provider. browser_then_llm prefers the
+    # browser and falls back to LLM where unavailable; llm_only records and uses
+    # the configured provider for every dictation.
+    voice_dictation_llm_enabled: bool = True
+    voice_dictation_mode: str = "browser_then_llm"
+    # ── Mobile: hide header when on-screen keyboard appears ──
+    # Master on/off for hiding the main app header (#main-header, #chat-header,
+    # #chat-sub-header) when the mobile on-screen keyboard is open and the chat
+    # input has focus. Defaults False (no hiding). Only active at narrow viewports
+    # (≤800px). Served via /api/v1/auth/ui-config so chat-ui.js can gate on it.
+    hide_header_on_keyboard: bool = False
+    # ── Mobile: hide-header viewport height threshold ──
+    # When hide_header_on_keyboard is ON, this controls when the header hides:
+    # 0 = always hide when keyboard is open and input focused. Any positive value
+    # = only hide when the remaining viewport height (visualViewport.height, i.e.
+    # the space left after the keyboard) is below this many px. Default 200px.
+    # Served via /api/v1/auth/ui-config so the viewport tracker can gate on it.
+    hide_header_kb_threshold: int = 200
     # Seconds to keep a completed turn's in-memory RunBuffer around for
     # WS-replay on reconnect. 0 = drop immediately. Default 60s gives a
     # smooth refresh-after-completion UX without holding RAM long.
     stream_buffer_retention_seconds: int = 60
+    # ── Session concurrency cap (app/agent/session_gate.py) ──
+    # Maximum number of SESSIONS that may be actively running a turn at the
+    # same time, app-wide. 0 = unlimited (the default — exactly the historical
+    # behaviour). When the cap is reached, sessions that try to start a run
+    # wait in a FIFO queue and begin only after an active session completes.
+    max_active_sessions: int = 0
+    # ── Anonymous session rate limits (app/api/rate_limit.py) ──
+    # Maximum new anonymous sessions per client IP within the window below.
+    # 0 disables the check entirely. Env var WEBAGENT_ANON_SESSION_MAX overrides.
+    anon_session_max: int = 20
+    # Rolling window in seconds for the anonymous-session rate limit above.
+    # Env var WEBAGENT_ANON_SESSION_WINDOW overrides.
+    anon_session_window: int = 60
+    # ── Anonymous chat message rate limits (app/api/rate_limit.py) ──
+    # Maximum messages per anonymous identity within the window below. Env var
+    # WEBAGENT_ANON_CHAT_MAX overrides. 0 disables the per-identity check.
+    anon_chat_max: int = 30
+    # Rolling window in seconds for the per-identity message limit above.
+    # Env var WEBAGENT_ANON_CHAT_WINDOW overrides.
+    anon_chat_window: int = 300
+    # Maximum messages across ALL anonymous identities from one IP within the
+    # window below. Catches a single IP cycling through minted tokens. Env var
+    # WEBAGENT_ANON_CHAT_IP_MAX overrides. 0 disables the per-IP check.
+    anon_chat_ip_max: int = 90
+    # Rolling window in seconds for the per-IP message limit above.
+    # Env var WEBAGENT_ANON_CHAT_IP_WINDOW overrides.
+    anon_chat_ip_window: int = 300
     # ── Self-healing / auto-resume (app/agent/runner.py + app/agent/watchdog.py) ──
     # The liveness watchdog re-ignites runs that stopped involuntarily (server
     # restart, vanished task, frozen await) from durable history, fully backend-
     # driven (no user WebSocket). These tune detection + retry behavior.
     run_watchdog_enabled: bool = True              # master on/off for the watchdog
-    run_watchdog_poll_seconds: int = 30            # how often the watchdog sweeps active runs
+    run_watchdog_poll_seconds: int = 15            # how often the watchdog sweeps active runs
     # live task + no liveness heartbeat for this long ⇒ frozen. The loop beats at
-    # each turn boundary and during token streams, so a healthy run beats often;
-    # keep this ABOVE the loop's wall-clock cap (AGENT_MAX_WALL_SECONDS, 300s) so a
-    # single legitimately-long turn is never mistaken for a hang.
-    run_frozen_threshold_seconds: int = 360
+    # each turn boundary, during tool execution, and via a background timer during
+    # LLM streaming — so a healthy run beats every ~5s. The per-chunk stall guard
+    # (AGENT_STREAM_STALL_SECONDS, default 45s) catches silent streams first; this
+    # threshold is the backstop for cases where the stall guard is disabled or the
+    # event loop is truly blocked.
+    run_frozen_threshold_seconds: int = 120
+    # live task with fresh heartbeat but no new interactions for this long ⇒ frozen
+    # (catches alterna-engine hangs where the subprocess stays alive but silent)
+    run_no_progress_threshold_seconds: int = 900
     run_zombie_grace_seconds: int = 45             # row 'running' + no live task this long ⇒ zombie
     run_max_resume_attempts: int = 3               # per-run resume budget before giving up (failed)
     run_resume_backoff_seconds: int = 30           # base for exponential resume backoff
@@ -1334,8 +1570,8 @@ class AppSettings(BaseModel):
     #                     them ALL off (accent/status/focus borders are untouched).
     #   font_sans/_mono — the CSS font-family stacks for body text / monospace.
     # A blank value falls back to the design-system.css default for that token.
-    border_color_dark: str = "#3a2c1e"
-    border_color_light: str = "#cfe6f2"
+    border_color_dark: str = "#333333"
+    border_color_light: str = "#cccccc"
     border_width: str = "1px"
     font_sans: str = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
     font_mono: str = "'JetBrains Mono', 'Fira Code', Menlo, ui-monospace, monospace"
@@ -1358,28 +1594,28 @@ class AppSettings(BaseModel):
     #   text          → --fg-1   (primary text)
     #   text_muted    → --fg-3   (muted text)
     #   ambient       → --ambient-2-rgb (the page-background glow, stored as hex)
-    accent_dark: str = "#e0a35e"
-    accent_light: str = "#1f8fbf"
-    secondary_dark: str = "#c8915a"
-    secondary_light: str = "#3b6ea5"
-    success_dark: str = "#9ece6a"
-    success_light: str = "#5a8a4a"
-    warning_dark: str = "#e0af68"
-    warning_light: str = "#d4873a"
-    danger_dark: str = "#f7768e"
-    danger_light: str = "#d44848"
-    surface_bg_dark: str = "#16100b"
-    surface_bg_light: str = "#f5fafd"
-    surface_panel_dark: str = "#241a12"
-    surface_panel_light: str = "#e9f3fa"
-    surface_tint_dark: str = "#36281c"
-    surface_tint_light: str = "#dbeaf5"
-    text_dark: str = "#ece0d2"
-    text_light: str = "#163040"
-    text_muted_dark: str = "#9a8266"
-    text_muted_light: str = "#5a7589"
-    ambient_dark: str = "#7a5636"
-    ambient_light: str = "#9fd6ec"
+    accent_dark: str = "#ffffff"
+    accent_light: str = "#000000"
+    secondary_dark: str = "#d9d9d9"
+    secondary_light: str = "#262626"
+    success_dark: str = "#22c55e"
+    success_light: str = "#16a34a"
+    warning_dark: str = "#eab308"
+    warning_light: str = "#ca8a04"
+    danger_dark: str = "#ef4444"
+    danger_light: str = "#dc2626"
+    surface_bg_dark: str = "#000000"
+    surface_bg_light: str = "#ffffff"
+    surface_panel_dark: str = "#0d0d0d"
+    surface_panel_light: str = "#f5f5f5"
+    surface_tint_dark: str = "#1a1a1a"
+    surface_tint_light: str = "#e8e8e8"
+    text_dark: str = "#ffffff"
+    text_light: str = "#000000"
+    text_muted_dark: str = "#a3a3a3"
+    text_muted_light: str = "#666666"
+    ambient_dark: str = "#404040"
+    ambient_light: str = "#d9d9d9"
     # Chat bubbles — optional per-theme overrides for the user / agent message
     # bubble fill. Blank = follow the theme-derived default in design-system.css.
     # Stored as #rrggbb or #rrggbbaa (trailing aa = opacity; 00 = transparent).
@@ -1429,7 +1665,7 @@ class AppSettings(BaseModel):
     media_cache_budget_mb: str = "128"
     chat_pill_max_width: str = "500px"
     chat_pill_radius: str = "20px"
-    chat_pill_padding: str = "4px 4px 4px 14px"
+    chat_pill_padding: str = "4px 4px 0px 4px"
     chat_pill_min_height: str = "96px"
     chat_pill_max_height: str = "160px"
     chat_pill_font_size: str = "14px"
@@ -1448,11 +1684,24 @@ class AppSettings(BaseModel):
     #                           per-browser choice wins; this only seeds the default.
     chat_position: str = "right"
     chat_default_visible: str = "visible"
+    # ── Chat widget (global floating launcher + embed) config ──
+    # Admin-configured corners, agent, prompt, and detection toggles for the
+    # floating chat widget. Served via /api/v1/auth/ui-config and consumed by
+    # webagent-launcher.js. Default {} — the widget uses chat_ui.json defaults
+    # for corners and fall-back agent resolution.
+    chat_widget: dict = {}
     # User-saved custom themes — a JSON array string of
     # [{id, name, dark:{<token>:val,…}, light:{…}}], managed by the Appearance
     # panel's "Add theme" button. Admin-only editor; not served via ui-config
     # (visitors only need the resolved palette, not the preset list).
     custom_themes: str = "[]"
+    # ── Shared default agent ──
+    # When True (DEFAULT), every user shares the SAME default WebAgent
+    # (id="shared_default", owned by the app admin) instead of getting a per-user
+    # clone. Users see it in their roster as read-only; only the app admin can
+    # edit prompts/skills/tools. When False, no default is provisioned and a new
+    # user starts with an empty roster.
+    shared_default_agent_enabled: bool = True
 
 
 # The two canonical access levels surfaced in User Management:
@@ -1516,8 +1765,8 @@ def get_background_config() -> dict:
 # These are the values shipped in design-system.css; the appearance config
 # overrides them app-wide when the admin edits app-settings.json.
 _DEFAULT_APPEARANCE = {
-    "border_color_dark": "#3a2c1e",
-    "border_color_light": "#cfe6f2",
+    "border_color_dark": "#333333",
+    "border_color_light": "#cccccc",
     "border_width": "1px",
     "font_sans": "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
     "font_mono": "'JetBrains Mono', 'Fira Code', Menlo, ui-monospace, monospace",
@@ -1525,28 +1774,28 @@ _DEFAULT_APPEARANCE = {
     # blocks; kept in sync with the AppSettings fields + ui/shared/js/appearance.js
     # DEFAULTS. get_appearance_config() iterates this dict, so adding a key here
     # automatically carries it through the public /api/v1/auth/ui-config endpoint.
-    "accent_dark": "#e0a35e",
-    "accent_light": "#1f8fbf",
-    "secondary_dark": "#c8915a",
-    "secondary_light": "#3b6ea5",
-    "success_dark": "#9ece6a",
-    "success_light": "#5a8a4a",
-    "warning_dark": "#e0af68",
-    "warning_light": "#d4873a",
-    "danger_dark": "#f7768e",
-    "danger_light": "#d44848",
-    "surface_bg_dark": "#16100b",
-    "surface_bg_light": "#f5fafd",
-    "surface_panel_dark": "#241a12",
-    "surface_panel_light": "#e9f3fa",
-    "surface_tint_dark": "#36281c",
-    "surface_tint_light": "#dbeaf5",
-    "text_dark": "#ece0d2",
-    "text_light": "#163040",
-    "text_muted_dark": "#9a8266",
-    "text_muted_light": "#5a7589",
-    "ambient_dark": "#7a5636",
-    "ambient_light": "#9fd6ec",
+    "accent_dark": "#ffffff",
+    "accent_light": "#000000",
+    "secondary_dark": "#d9d9d9",
+    "secondary_light": "#262626",
+    "success_dark": "#22c55e",
+    "success_light": "#16a34a",
+    "warning_dark": "#eab308",
+    "warning_light": "#ca8a04",
+    "danger_dark": "#ef4444",
+    "danger_light": "#dc2626",
+    "surface_bg_dark": "#000000",
+    "surface_bg_light": "#ffffff",
+    "surface_panel_dark": "#0d0d0d",
+    "surface_panel_light": "#f5f5f5",
+    "surface_tint_dark": "#1a1a1a",
+    "surface_tint_light": "#e8e8e8",
+    "text_dark": "#ffffff",
+    "text_light": "#000000",
+    "text_muted_dark": "#a3a3a3",
+    "text_muted_light": "#666666",
+    "ambient_dark": "#404040",
+    "ambient_light": "#d9d9d9",
     # Chat bubble overrides (blank = follow the theme default). #rrggbb[aa].
     "user_bubble_dark": "",
     "user_bubble_light": "",
@@ -1567,8 +1816,8 @@ _DEFAULT_APPEARANCE = {
     # Chat-composer geometry + button knobs (see the AppSettings fields).
     "chat_pill_max_width": "500px",
     "chat_pill_radius": "20px",
-    "chat_pill_padding": "4px 4px 4px 14px",
-    "chat_pill_min_height": "96px",
+    "chat_pill_padding": "4px 4px 0px 4px",
+    "chat_pill_min_height": "",
     "chat_pill_max_height": "160px",
     "chat_pill_font_size": "14px",
     "chat_pill_attach_size": "38px",
@@ -1608,6 +1857,40 @@ def get_splash_enabled() -> bool:
     return _load_app_settings().get("splash_enabled", False) is True
 
 
+def get_safety_lock_enabled() -> bool:
+    """Master switch for the safety lock feature. When False, the feature
+    is completely disabled — no splash, no gate, no recovery suppression.
+    Defaults to False (disabled) when unset."""
+    return _load_app_settings().get("safety_lock_enabled", False) is True
+
+
+def set_safety_lock_enabled(enabled: bool) -> None:
+    """Set or clear the master switch for the safety lock feature."""
+    data = _load_app_settings()
+    if enabled:
+        data["safety_lock_enabled"] = True
+    else:
+        data.pop("safety_lock_enabled", None)
+    _save_app_settings(data)
+
+
+def get_safety_lock_active() -> bool:
+    """Persistent lock flag — set on every graceful shutdown, NEVER cleared
+    from disk. Only the master switch (safety_lock_enabled) can suppress it.
+    This ensures every restart shows the splash, even after a crash.
+
+    Read from app-settings.json. Defaults to False when unset."""
+    return _load_app_settings().get("safety_lock_active", False) is True
+
+
+def set_safety_lock_active() -> None:
+    """Set the persistent lock flag. Called on shutdown. Never cleared from
+    disk — the lock stays until the admin turns off the master switch."""
+    data = _load_app_settings()
+    data["safety_lock_active"] = True
+    _save_app_settings(data)
+
+
 def get_hints_enabled() -> bool:
     """Master on/off for the in-app tour / hint bubbles (app-wide), read live from
     app-settings.json. Served via /api/v1/auth/ui-config so the tutorial module
@@ -1622,6 +1905,127 @@ def get_allow_user_appearance() -> bool:
     knows whether to layer a caller's saved overrides on top of the global
     theme. Defaults to False (off) when unset/blank."""
     return _load_app_settings().get("allow_user_appearance", False) is True
+
+
+def get_hide_header_on_keyboard() -> bool:
+    """Master on/off for hiding the header when the mobile keyboard is open.
+    Always OFF (no hiding) when unset. Served via /api/v1/auth/ui-config so
+    chat-ui.js can gate on it. Only applies at ≤800px viewports."""
+    return _load_app_settings().get("hide_header_on_keyboard", False) is True
+
+
+def get_mobile_mode() -> bool:
+    """Use compact hamburger navigation instead of the header carousel."""
+    return _load_app_settings().get("mobile_mode", False) is True
+
+
+def get_hide_header_kb_threshold() -> int:
+    """Viewport height threshold for the hide-header-on-keyboard feature.
+    0 = always hide when keyboard is open. Positive = only hide when the
+    remaining viewport height is below this many px. Default 200."""
+    val = _load_app_settings().get("hide_header_kb_threshold", 200)
+    try:
+        v = int(val)
+        return max(0, v)
+    except (TypeError, ValueError):
+        return 200
+
+
+def get_max_active_sessions() -> int:
+    """App-wide cap on concurrently active sessions (app/agent/session_gate.py).
+    0 = unlimited (the default). Read live from app-settings.json so an admin
+    edit takes effect on the next run start without a restart."""
+    val = _load_app_settings().get("max_active_sessions", 0)
+    try:
+        v = int(val)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, v)
+
+
+def _env_int_for(name: str, default: int) -> int:
+    """Read an int from the environment if set, otherwise from app-settings.json,
+    falling back to ``default``."""
+    import os
+    env = os.environ.get(name, "").strip()
+    if env:
+        try:
+            return int(env)
+        except (TypeError, ValueError):
+            pass
+    val = _load_app_settings().get(name.lower(), default)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_anon_session_max() -> int:
+    """Max new anonymous sessions per client IP within the window."""
+    return max(0, _env_int_for("WEBAGENT_ANON_SESSION_MAX", 20))
+
+
+def get_anon_session_window() -> int:
+    """Window in seconds for the anonymous-session rate limit."""
+    return max(1, _env_int_for("WEBAGENT_ANON_SESSION_WINDOW", 60))
+
+
+def get_anon_chat_max() -> int:
+    """Max messages per anonymous identity within the window."""
+    return max(0, _env_int_for("WEBAGENT_ANON_CHAT_MAX", 30))
+
+
+def get_anon_chat_window() -> int:
+    """Window in seconds for the per-identity message limit."""
+    return max(1, _env_int_for("WEBAGENT_ANON_CHAT_WINDOW", 300))
+
+
+def get_anon_chat_ip_max() -> int:
+    """Max messages across all anon identities from one IP within the window."""
+    return max(0, _env_int_for("WEBAGENT_ANON_CHAT_IP_MAX", 90))
+
+
+def get_anon_chat_ip_window() -> int:
+    """Window in seconds for the per-IP message limit."""
+    return max(1, _env_int_for("WEBAGENT_ANON_CHAT_IP_WINDOW", 300))
+
+
+def get_app_control_quick_message() -> bool:
+    """Master on/off for the App-control point-and-share panel (long-press /
+    right-click), read live from app-settings.json. Served via
+    /api/v1/auth/ui-config so ui/shared/js/app-control-point.js can gate on it.
+    Defaults True (on) when unset/blank — the panel has always been available."""
+    return _load_app_settings().get("app_control_quick_message", True) is not False
+
+
+def get_session_completion_notifications() -> bool:
+    """Master on/off for the sliding session-completion notification panel
+    (running → done/interrupted/error), read live from app-settings.json. Served
+    via /api/v1/auth/ui-config so ui/chat/js/session-notification.js can gate on
+    it. Defaults True (on) when unset/blank — the panel has always been
+    available."""
+    return _load_app_settings().get("session_completion_notifications", True) is not False
+
+
+def get_always_on_display() -> bool:
+    """Master on/off for the always-on display (Screen Wake Lock), read live
+    from app-settings.json. Served via /api/v1/auth/ui-config so every visitor's
+    browser can apply it at boot (ui/shared/js/main.js) — the same operation as
+    the chat wake_lock control. Defaults False (screen sleeps normally) when
+    unset/blank."""
+    return _load_app_settings().get("always_on_display", False) is True
+
+
+def get_voice_dictation_config() -> dict:
+    """Return the validated app-wide voice dictation policy."""
+    raw = _load_app_settings()
+    mode = raw.get("voice_dictation_mode", "browser_then_llm")
+    if mode not in {"browser_then_llm", "llm_only"}:
+        mode = "browser_then_llm"
+    return {
+        "llm_enabled": raw.get("voice_dictation_llm_enabled", True) is not False,
+        "mode": mode,
+    }
 
 
 def valid_background(val: str | None, fallback: str) -> str:
@@ -1649,26 +2053,26 @@ def get_access_mode() -> str:
     return normalize_access_mode(_load_app_settings().get("access_mode"))
 
 
-# Multi-tenant is read on the DB hot path (every get_db()), so a raw file read
+# User BYOD is read on the DB hot path (every get_db()), so a raw file read
 # per call would be wasteful. Cache it for a short window; a flip via the App
 # Settings toggle takes effect within the TTL without a restart.
-_MT_CACHE: dict = {"val": None, "at": 0.0}
-_MT_TTL_SECONDS = 3.0
+_BYOD_CACHE: dict = {"val": None, "at": 0.0}
+_BYOD_TTL_SECONDS = 3.0
 
 
-def get_multi_tenant_enabled() -> bool:
+def get_user_byod_enabled() -> bool:
     """True when per-user bring-your-own-database routing is switched on (App
-    Settings → Multi-tenant data). Sync + cached (see _MT_TTL_SECONDS) because
+    Settings → User BYOD). Sync + cached (see _BYOD_TTL_SECONDS) because
     it gates get_db() on the hot path. Defaults False (single-tenant)."""
     import time as _t
     now = _t.monotonic()
-    if _MT_CACHE["val"] is not None and (now - _MT_CACHE["at"]) < _MT_TTL_SECONDS:
-        return _MT_CACHE["val"]
+    if _BYOD_CACHE["val"] is not None and (now - _BYOD_CACHE["at"]) < _BYOD_TTL_SECONDS:
+        return _BYOD_CACHE["val"]
     try:
-        val = bool(_load_app_settings().get("multi_tenant", False))
+        val = bool(_load_app_settings().get("user_byod", False))
     except Exception:  # noqa: BLE001
         val = False
-    _MT_CACHE.update(val=val, at=now)
+    _BYOD_CACHE.update(val=val, at=now)
     return val
 
 
@@ -1702,6 +2106,7 @@ def get_self_heal_config() -> dict:
         "poll_seconds": max(5, int(s.run_watchdog_poll_seconds)),
         "frozen_threshold_seconds": max(15, int(s.run_frozen_threshold_seconds)),
         "zombie_grace_seconds": max(10, int(s.run_zombie_grace_seconds)),
+        "no_progress_threshold_seconds": max(60, int(s.run_no_progress_threshold_seconds)),
         "max_resume_attempts": max(0, int(s.run_max_resume_attempts)),
         "backoff_seconds": max(1, int(s.run_resume_backoff_seconds)),
     }
@@ -1721,12 +2126,12 @@ async def get_provider(
     token: Optional[str] = Query(None),
 ):
     """Get current provider configuration for the requesting user.
-    Reads from the auth_elements table in the DB (per-user), falls back to provider.json.
+    Reads from the auth_elements table in the DB (per-user).
     API key is returned as plaintext.
     """
     user_id = _resolve_user_id(authorization or "", token or "")
 
-    # Resolve own config → admin fallback → provider.json (shared resolver).
+    # Resolve own config → admin fallback (shared resolver).
     config = await _resolve_user_config(user_id)
 
     # Ensure providers dict exists
@@ -1749,13 +2154,13 @@ async def set_provider(
 ):
     """Set provider configuration for the requesting user.
     API keys are packed into the ENCRYPTED vault secret (auth_elements.secret_ref);
-    the DB config blob + provider.json fallback are stored key-stripped. Never
+    the DB config blob is stored key-stripped. Never
     shared between users.
     """
     user_id = _resolve_user_id(authorization or "", token or "")
     # Resolve the CURRENT config from the vault (keys rehydrated) so a partial
     # save — e.g. changing the model with the key field left blank to "keep" — does
-    # not wipe the stored key now that provider.json no longer holds it.
+    # not wipe the stored key.
     existing = await _resolve_user_config(user_id)
     existing_providers = existing.get("providers", {})
     request_providers = config.providers or {}
@@ -1794,7 +2199,7 @@ async def set_provider(
     }
 
     # Persist through the single secret-safe path: keys packed into the encrypted
-    # vault secret, plaintext stores (DB config blob + provider.json) stripped.
+    # vault secret, plaintext DB config blob stripped.
     await _persist_llm_config(user_id, merged)
 
     logger.info("Provider config set for user %s: %s", user_id[:12], config.provider)
@@ -1808,8 +2213,7 @@ async def clear_provider(
 ):
     """Clear provider configuration for the requesting user."""
     user_id = _resolve_user_id(authorization or "", token or "")
-    # Clear the vault (now authoritative) as well as provider.json + env, so a
-    # cleared key cannot be resurrected from the vault on the next read.
+    # Clear the vault so a cleared key cannot be resurrected on the next read.
     await _persist_llm_config(user_id, dict(DEFAULT_PROVIDER))
     logger.info("Provider config cleared for user %s", user_id[:12])
     return {"status": "ok", "message": "Provider settings cleared", "user": user_id}
@@ -1825,7 +2229,7 @@ async def get_multi_providers(
     """
     user_id = _resolve_user_id(authorization or "", token or "")
 
-    # Resolve own config → admin fallback → provider.json (shared resolver).
+    # Resolve own config → admin fallback (shared resolver).
     config = await _resolve_user_config(user_id)
 
     return {
@@ -1850,7 +2254,7 @@ async def get_provider_bundle(
     """
     user_id = _resolve_user_id(authorization or "", token or "")
 
-    # ONE resolve (own config → admin fallback → provider.json), keys rehydrated.
+    # ONE resolve (own config → admin fallback), keys rehydrated.
     config = await _resolve_user_config(user_id)
 
     if "providers" not in config:
@@ -1873,7 +2277,7 @@ async def set_multi_providers(
     token: Optional[str] = Query(None),
 ):
     """Save the user's saved-model roster (the candidate models for the chat
-    switcher + vision/image workers) to both DB auth_elements and provider.json.
+    switcher + vision/image workers) to DB auth_elements.
     The default brain model is owned separately by POST /provider (the "Default"
     radio) and is NOT changed here unless none is set yet.
     """
@@ -1885,10 +2289,23 @@ async def set_multi_providers(
     merged = dict(existing)
     merged["multi_providers"] = [p.model_dump() for p in body.providers]
 
-    # Mirror the first provider up to the root default slots ONLY when no default
-    # model is set yet. The explicit "Default" radio (POST /provider) owns the
-    # default — re-saving the roster (e.g. a capability toggle) must not clobber it.
-    if body.providers and not merged.get("model"):
+    # The Standard role (enabled + text_capable) IS the default brain model.
+    # When a roster save designates a Standard model, promote it to the
+    # top-level provider/model slots so new sessions start with it.  If no
+    # model has the Standard role, leave the existing default in place.
+    standard = next(
+        (p for p in body.providers if p.enabled and p.text_capable is not False),
+        None,
+    )
+    if standard:
+        merged["provider"] = standard.provider
+        if standard.base_url:
+            merged["base_url"] = standard.base_url
+        if standard.api_key:
+            merged["api_key"] = standard.api_key
+        if standard.model:
+            merged["model"] = standard.model
+    elif body.providers and not merged.get("model"):
         first = body.providers[0]
         merged["provider"] = first.provider
         if first.base_url:
@@ -1928,12 +2345,13 @@ def _name_suggests_image_out(model_id: str) -> bool:
 def _detect_model_modalities(m: dict) -> tuple:
     """Best-effort detection of a model's media capabilities from a provider's
     /models entry. Returns
-    ``(text_capable, image_capable, image_out_capable, modality_known)``.
+    ``(text_capable, image_capable, image_out_capable, voice_capable, modality_known)``.
 
       image_capable      = accepts image INPUT (vision).
       image_out_capable  = can GENERATE images — from the provider's
         ``output_modalities`` when present, plus a model-id name heuristic
         (dedicated image hosts don't report modalities on /models).
+      voice_capable      = accepts audio INPUT (voice/audio).
       modality_known     = the provider reported structured INPUT modality info.
 
     Handles OpenRouter's ``architecture.input_modalities`` list and the legacy
@@ -1950,16 +2368,16 @@ def _detect_model_modalities(m: dict) -> tuple:
     if not img_out:
         img_out = _name_suggests_image_out(m.get("id", ""))
 
-    # Image INPUT (vision).
+    # Image INPUT (vision) + Voice INPUT (audio).
     mods = arch.get("input_modalities") or m.get("input_modalities")
     if isinstance(mods, list) and mods:
         low = [str(x).lower() for x in mods]
-        return (True, "image" in low, img_out, True)
+        return (True, "image" in low, img_out, "audio" in low, True)
     modality = arch.get("modality") or m.get("modality")
     if isinstance(modality, str) and modality:
         inp = modality.split("->")[0].lower()
-        return (True, ("image" in inp or "vision" in inp), img_out, True)
-    return (True, False, img_out, False)
+        return (True, ("image" in inp or "vision" in inp), img_out, "audio" in inp, True)
+    return (True, False, img_out, False, False)
 
 
 @router.get("/models")
@@ -1982,12 +2400,12 @@ async def get_models(
         pass
     else:
         # Fall back to saved provider config
-        config = _load_provider(user_id)
+        config = await _resolve_user_config(user_id)
         api_key = config.get("api_key", "")
         if not api_key:
             return {"error": "No API key configured", "models": []}
 
-        prov = provider or config.get("provider", "openrouter")
+        prov = provider or config.get("provider", "")
         base_url = config.get("base_url", "")
 
         # If no saved base_url, get from preset
@@ -2023,13 +2441,14 @@ async def get_models(
             data = resp.json()
             models = []
             for m in data.get("data", []):
-                tcap, icap, iocap, known = _detect_model_modalities(m)
+                tcap, icap, iocap, vcap, known = _detect_model_modalities(m)
                 entry = {
                     "id": m["id"],
                     "name": m.get("name", m["id"]),
                     "text_capable": tcap,
                     "image_capable": icap,
                     "image_out_capable": iocap,
+                    "voice_capable": vcap,
                     "modality_known": known,
                     # Metadata fields (populated below from the catalog when known).
                     "context": None,
@@ -2474,6 +2893,26 @@ def _claude_model_window(model: str):
     return None
 
 
+def _codex_model_window(model: str):
+    """Best-effort context window (in tokens) for a Codex CLI model id.
+
+    Same rationale as _claude_model_window: the local `codex` CLI isn't in the
+    app's OpenRouter catalog. Map by family — GPT-5 family runs a 400K window,
+    o-series 200K, GPT-4.1 1M; blank/unknown returns None (the footer then shows
+    no max until the run reports its real model).
+    """
+    m = (model or "").lower()
+    if not m:
+        return None
+    if "gpt-4.1" in m:
+        return 1_000_000
+    if "o4" in m or "o3" in m or "o1" in m:
+        return 200_000
+    if "gpt-5" in m or "gpt-4o" in m:
+        return 400_000
+    return None
+
+
 @router.get("/current-model-info")
 async def get_current_model_info(
     agent_id: str = Query("", alias="agent_id"),
@@ -2535,7 +2974,20 @@ async def get_current_model_info(
             "engine": engine, "found": bool(cc_model),
             "context": _claude_model_window(cc_model), "max_output": None,
             "cost_input": None, "cost_output": None,
-            "reasoning_effort": "default", "reasoning": None,
+            "reasoning_effort": str(cc_meta.get("effort") or "default"), "reasoning": None,
+        }
+
+    # Local Codex: same treatment — the configured codex model + its window.
+    if engine == "codex":
+        _cx = _eng_meta.get("codex_code") if isinstance(_eng_meta, dict) else {}
+        _cx = _cx if isinstance(_cx, dict) else {}
+        cx_model = str(_cx.get("model") or "").strip()
+        return {
+            "error": None, "model": cx_model, "provider": "openai",
+            "engine": engine, "found": bool(cx_model),
+            "context": _codex_model_window(cx_model), "max_output": None,
+            "cost_input": None, "cost_output": None,
+            "reasoning_effort": str(_cx.get("effort") or "default"), "reasoning": None,
         }
 
     result = {
@@ -2656,6 +3108,8 @@ async def set_app_settings(request: Request):
     existing = _load_app_settings()
     settings = AppSettings(**{**existing, **body})
     settings.access_mode = normalize_access_mode(settings.access_mode)
+    if settings.voice_dictation_mode not in {"browser_then_llm", "llm_only"}:
+        settings.voice_dictation_mode = "browser_then_llm"
     # Clamp stream buffer retention to a sane range so a bad value can't
     # exhaust RAM (huge) or break replay-after-reconnect entirely (negative).
     try:
@@ -2667,6 +3121,13 @@ async def set_app_settings(request: Request):
     if sb > 3600:
         sb = 3600
     settings.stream_buffer_retention_seconds = sb
+    # Clamp the session-concurrency cap: negative values would block every new
+    # run, so force 0 (unlimited) and bound the upper end to something sane.
+    try:
+        mas = int(settings.max_active_sessions)
+    except (TypeError, ValueError):
+        mas = 0
+    settings.max_active_sessions = max(0, min(9999, mas))
     # Preserve any unknown raw keys already in the file while writing the merged
     # validated settings on top.
     _save_app_settings({**existing, **settings.model_dump()})

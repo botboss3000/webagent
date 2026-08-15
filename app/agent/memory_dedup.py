@@ -14,7 +14,7 @@ per fact, newest wording wins (the behaviour an admin picked).
 
 Design notes:
 - **Backend-agnostic.** It uses only the public ``db.memory_search`` (already
-  implemented for SQLite / Postgres / hybrid / Supabase) plus the in-process
+  implemented for SQLite / Postgres / hybrid) plus the in-process
   embedder. No per-backend vector SQL here.
 - **Absolute similarity, not rank.** ``memory_search`` returns an RRF *rank*,
   which is a fusion score, not a cosine distance — useless as a duplicate

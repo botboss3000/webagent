@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Project Dashboard</title>
+<!-- ========================================================================
+     GENUI HOME - SPLIT-FILE SOURCE            (grep: GENUI-SPLIT)
+     This index.html is MARKUP ONLY. The page's real source:
+       styles.css          all styling (inlined into <head>)
+       app.01-icons.js     icons + helpers          (part 01/14)
+       app.02-data.js      data bag + config        (part 02/14)
+       app.03-prompts.js   prompt fallbacks         (part 03/14)
+       app.04-session.js   session routing          (part 04/14)
+       app.05-state.js     STATE + persistence      (part 05/14)
+       app.06-live.js      live polling + charts    (part 06/14)
+       app.07-delete.js    two-click delete         (part 07/14)
+       app.08-cards.js     card/detail renderers    (part 08/14)
+       app.09-interact.js  card interactions        (part 09/14)
+       app.10-qa.js        QA core                  (part 10/14)
+       app.11-stop.js      stop-operation           (part 11/14)
+       app.12-chevrons.js  carousel chevrons        (part 12/14)
+       app.13-sticky.js    sticky carousel + head   (part 13/14)
+       app.14-boot.js      boot() - runs last       (part 14/14)
+     HOW IT WORKS: _inline_genui_assets (app/api/genui.py) inlines
+     styles.css into <head> and concatenates the app.*.js parts in
+     FILENAME ORDER inside ONE IIFE before </body>. Every part shares
+     one scope - never redeclare a name another part declares.
+     RULES FOR THE NEXT AGENT:
+       1. Edit the SPLIT FILES, never this index.html. Do NOT paste a
+          full <style> or <script> document back here - the serve
+          route would double-inline. (Escape hatch: a single app.js
+          monolith takes precedence over parts if you ever revert.)
+       2. Adding a part? Name it app.<NN>-<name>.js (NN = order) and
+          add it to the list above. Renumber when removing.
+       3. data.json = content only (JSON has no comments);
+          page.json/widget.json = metadata/launcher config.
+       4. VERIFY after any edit: scripts/check-js-syntax.mjs on the
+          edited part(s), then screenshot_genui('home','both').
+     ======================================================================== -->
+</head>
+<body>
+<header class="toolbar"><div class="brand-icon" title="Project Dashboard" id="brandIcon"></div><div class="spacer"></div><div class="quick-note-pill" id="quickNotePill"><textarea class="qn-input" id="qnInput" rows="1" autocomplete="off" placeholder="Quick note — add item, task, or idea..."></textarea><button class="qn-send" id="qnSend" title="Send as quick note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4z"/></svg></button></div></header>
+<div class="composer" id="composer" hidden><div class="field"><label for="projName">Project name</label><input id="projName" type="text" placeholder="e.g. Mobile App"/></div><div class="field" style="flex:0 1 180px"><label for="projStatus">Status</label><select id="projStatus"><option value="active">Active</option><option value="at-risk">At Risk</option><option value="on-track">On Track</option><option value="blocked">Blocked</option><option value="done">Done</option></select></div><button class="btn btn-primary" id="projCreate">Create</button><button class="btn btn-ghost" id="projCancel">Cancel</button></div>
+<main>
+<div class="sec-head"><h2>Projects</h2><span class="countchip" id="gridCount">0</span><span class="sub" id="gridSub"></span><button class="btn btn-primary" id="projNew" title="Add a project">+ New</button></div>
+<div class="car-zone" id="car-zone" aria-label="Project topics"><section class="car-wrap" id="car-wrap"><button type="button" class="car-chev left" id="car-chev-left" aria-label="Scroll left"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg></button><div class="car-track" id="car-track"></div><button type="button" class="car-chev right" id="car-chev-right" aria-label="Scroll right"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button></section></div>
+<div class="detail-lock" id="detail-lock"><section id="detail-zone" aria-label="Project details"></section></div>
+</main>
+<div class="toast" id="toast" role="status"></div>
+</body>
+</html>

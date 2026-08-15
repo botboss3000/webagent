@@ -73,6 +73,13 @@ class CallerIdentityMiddleware:
                 if payload:
                     uid = payload.get("user_id") or payload.get("sub")
             set_verified_caller_uid(uid)
+            # Also set the DB-layer user context so _get_conn() knows which
+            # per-user database file to attach.
+            try:
+                from app.db.local import set_db_user_context
+                set_db_user_context(uid or "admin")
+            except Exception:
+                pass
         await self.app(scope, receive, send)
 
     @staticmethod

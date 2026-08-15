@@ -1,6 +1,6 @@
 """
 Load/save optimizer.json — configuration for the skill optimizer.
-Lives in project root, same pattern as provider.json.
+Lives in project root, same pattern as app-settings.json.
 
 CONFIGURABLE VALUES:
 - mode: "on" (auto-run) or "off" (manual only).
@@ -33,7 +33,7 @@ CONFIG_PATH = PROJECT_ROOT / "data" / "config" / "optimizer.json"
 
 
 DEFAULTS: Dict[str, Any] = {
-    "mode": "on",
+    "mode": "off",
     "user_feedback": "always",
     "intensity": 3,
     "sessions": {
@@ -50,6 +50,7 @@ DEFAULTS: Dict[str, Any] = {
         "validator": None,
     },
     "trials": {"per_change": 2},
+    "max_iterations": 2,
     "target_metrics": ["turns", "tokens", "time", "failures", "rating"],
     "app_wide": {
         "auto_deploy": True,

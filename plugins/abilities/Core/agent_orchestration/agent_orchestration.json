@@ -24,7 +24,8 @@
     "list_delegatable_agents",
     "delegate_task_to_agent",
     "list_task_delegatable_agents",
-    "run_optimizer"
+    "run_optimizer",
+    "fork_self"
   ],
   "config": {
     "bias": {

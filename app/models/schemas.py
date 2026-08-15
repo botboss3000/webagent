@@ -38,6 +38,7 @@ class ChatRequest(BaseModel):
     execution_mode: Optional[str] = 'ask'  # 'ask' | 'plan' | 'auto' (legacy 'read'/'write' accepted) — controls tool execution permission
     target_device: Optional[str] = None  # optional device instance-id to run this turn on instead of locally; the target device's worker claims & runs it in THIS session, reply flows back over the shared DB (see app/devices/)
     client_msg_id: Optional[str] = None  # browser-generated unique id for this send (the outbox entry id). Lets the server dedupe an outbox retry so an unconfirmed-but-accepted message can't be inserted twice (idempotent /send). Stored as metadata.cmid; see _find_interaction_by_cmid in app/api/chat.py
+    genui_label: Optional[str] = None  # friendly user-facing label for a genui-page-initiated send (field/button prompt). When set, the chat UI renders a green "label" notice instead of the raw prompt as a "You" bubble; the raw prompt still reaches the agent. Stored as metadata.genui + metadata.genui_label; also echoed on the user_message WS event.
 
 
 class ChatResponse(BaseModel):
@@ -186,7 +187,7 @@ class AgentRecord(BaseModel):
     id: str
     user_id: str
     system_prompt: str
-    max_turn_count: int = 9999  # bounded "effectively unlimited" default; 0 = truly unlimited
+    max_turn_count: int = 12  # safe application default; 0 = truly unlimited
     max_wall_seconds: Optional[float] = None
     model: Optional[str] = None
     provider: Optional[str] = None

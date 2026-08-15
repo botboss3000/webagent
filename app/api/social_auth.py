@@ -112,7 +112,13 @@ async def start_login(provider_id: str, request: Request):
         raise HTTPException(status_code=503, detail="This sign-in method is not configured")
     creds = await registry.get_credentials(provider_id)
     redirect_uri = _redirect_uri(request, provider_id)
-    state = flow.make_state(provider_id)
+    device_id = request.query_params.get("device_id", "").strip()
+    if device_id and (
+        len(device_id) > 128
+        or not all(ch.isalnum() or ch in "-_" for ch in device_id)
+    ):
+        raise HTTPException(status_code=400, detail="Invalid device identifier")
+    state = flow.make_state(provider_id, device_id=device_id)
     url = flow.build_authorize_url(provider_id, redirect_uri, creds, state)
     return RedirectResponse(url, status_code=302)
 
@@ -147,7 +153,8 @@ async def _complete(provider_id: str, request: Request, code, state, error, *, f
     name = d.get("display_name") or provider_id
     if error:
         return _error_page(f"{name} reported: {error}")
-    if not code or not state or not flow.read_state(state, provider_id):
+    state_payload = flow.read_state_payload(state, provider_id) if state else None
+    if not code or not state_payload:
         return _error_page("Sign-in link expired or invalid. Please try again.")
     if not await registry.is_configured(provider_id):
         return _error_page(f"{name} sign-in is not configured on this server.")
@@ -175,13 +182,34 @@ async def _complete(provider_id: str, request: Request, code, state, error, *, f
             "be created. Enable email sharing and try again."
         )
 
-    if not user.is_approved:
+    from app.admin.settings import get_access_mode as _gam_social
+    if not user.is_approved and _gam_social() == "admin_approval":
         return _pending_page(name)
 
+    device_id = str(state_payload.get("device_id") or "")
     token = create_access_token(
         user.username, user.user_id,
         expires_minutes=user.session_lifetime_minutes,
+        device_id=device_id or None,
+        reauthenticated=True,
     )
+    try:
+        from app.auth.device_location import location_for_ip, request_client_ip
+        from app.auth.jwt import decode_signed_token
+        from app.auth.revocation import update_device_metadata
+
+        token_payload = decode_signed_token(token) or {}
+        resolved_device_id = str(token_payload.get("device_id") or "")
+        ip_address = request_client_ip(request)
+        update_device_metadata(
+            user.user_id,
+            resolved_device_id,
+            ip_address=ip_address,
+            location=await location_for_ip(ip_address),
+            user_agent=request.headers.get("user-agent", ""),
+        )
+    except Exception:
+        pass
     try:
         await get_db().upsert_user_profile(
             user.user_id, last_login_at=datetime.now(timezone.utc).isoformat()
@@ -240,7 +268,7 @@ async def _resolve_account(provider_id: str, external_id: str, email: str, displ
 # ── Result pages ────────────────────────────────────────────────────────────
 
 _PAGE_HEAD = """<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>%(title)s</title><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>%(title)s</title><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <style>
  body{background:#0f1117;color:#e6e9f0;font-family:system-ui,-apple-system,sans-serif;
       display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}

@@ -134,3 +134,30 @@ def test_transactions_recorded(db):
     assert "hold" in kinds
     assert "usage" in kinds
     assert "release" in kinds
+
+
+# ── debit (post-hoc charge path — clamped, never negative) ──
+
+def test_debit_drains_exact_amount(db):
+    _run(wallet_mod.credit(db, "user", "u1", 500))
+    w = _run(wallet_mod.debit(db, "u1", 200))
+    assert w.balance_cents == 300
+
+
+def test_debit_clamps_at_zero(db):
+    """A charge larger than the balance drains it to 0, never negative."""
+    _run(wallet_mod.credit(db, "user", "u1", 430))
+    w = _run(wallet_mod.debit(db, "u1", 600))
+    assert w.balance_cents == 0
+
+
+def test_debit_records_actual_amount(db):
+    _run(wallet_mod.credit(db, "user", "u1", 430))
+    _run(wallet_mod.debit(db, "u1", 600))
+    w = _run(wallet_mod.get_balance(db, "u1"))
+    tx = _run(wallet_mod.list_transactions(db, w.wallet_id))
+    usage = [t for t in tx if t["kind"] == "usage"]
+    # The ledger records the REAL debited amount (430), not the requested 600.
+    assert len(usage) == 1
+    assert usage[0]["delta_cents"] == -430
+

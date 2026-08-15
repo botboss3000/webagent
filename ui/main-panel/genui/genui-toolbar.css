@@ -133,14 +133,16 @@ body.light-mode #genui-footer { background: transparent; }
   max-width: none;
 }
 
-/* The three right-side controls — chevron selector, New Gen UI (+), Refresh
-   Gen UI — are circular icon buttons sized to match the pill's mic / + / send
-   buttons (28px box, 18px glyph), so the whole footer row reads as one cohesive
-   set. (.header-plus-btn supplies the transparent base + hover; we only resize
-   here, and never touch the shared class.) */
+/* The four right-side controls — gallery toggle, chevron selector, New Gen UI
+   (+), Refresh Gen UI — are circular icon buttons sized to match the pill's
+   mic / + / send buttons (28px box, 18px glyph), so the whole footer row reads
+   as one cohesive set. (.header-plus-btn supplies the transparent base + hover;
+   we only resize here, and never touch the shared class.) */
 #genui-page-dropdown-trigger,
+#genui-gallery-btn,
 #genui-new-page-btn,
-#genui-refresh-btn {
+#genui-refresh-btn,
+#genui-version-btn {
   width: 28px;
   height: 28px;
   padding: 0;
@@ -152,8 +154,9 @@ body.light-mode #genui-footer { background: transparent; }
 }
 /* The chevron trigger reuses .session-dropdown-trigger (for the loaded-state
    gating) but is now a bare icon button like its neighbours, not a bordered
-   .status-select chip. */
-#genui-page-dropdown-trigger {
+   .status-select chip. The gallery toggle is the same bare icon button. */
+#genui-page-dropdown-trigger,
+#genui-gallery-btn {
   background: none;
   border: none;
   color: var(--fg-3);
@@ -161,15 +164,36 @@ body.light-mode #genui-footer { background: transparent; }
   transition: 0.15s;
 }
 #genui-page-dropdown-trigger:hover,
-#genui-page-dropdown.open #genui-page-dropdown-trigger {
+#genui-page-dropdown.open #genui-page-dropdown-trigger,
+#genui-gallery-btn:hover,
+#genui-gallery-btn.active {
   color: var(--brand);
   background: rgba(var(--brand-rgb), 0.08);
 }
 #genui-page-dropdown-trigger svg,
+#genui-gallery-btn svg,
 #genui-new-page-btn svg,
-#genui-refresh-btn svg {
+#genui-refresh-btn svg,
+#genui-version-btn svg {
   width: 18px;
   height: 18px;
+}
+
+/* ── Version check button states ──
+   The button inherits .header-plus-btn (transparent base + hover). We only layer
+   on the state colours and the checking animation — success/warning/danger all use
+   the global palette via var(--token) so they follow any re-skin. */
+#genui-version-btn.checking svg {
+  animation: genui-spin 1s linear infinite;
+  color: var(--fg-3);
+}
+#genui-version-btn.up-to-date { color: var(--success); }
+#genui-version-btn.outdated   { color: var(--warning); }
+#genui-version-btn.error      { color: var(--danger); }
+
+@keyframes genui-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
 body.light-mode #genui-page-label { color: var(--fg-3); }

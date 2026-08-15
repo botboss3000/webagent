@@ -660,13 +660,15 @@ philosophy but is driven entirely from the UI, with no rebuild.
   the tri-state), and an excluded path carries a "Dev" badge. The backend already
   accepts individual file paths (`set_excluded`/`set_excluded_bulk`/`_is_under_excluded`/
   `_norm_rel`), so file-level exclusion needed no engine change. The **Git page**
-  Production section
-  (`ui/shared/js/files-git.js`,
-  `renderProductionSection`) edits the prod repo URL + folder, shows the exclude
-  count / last release / "changes to release", and runs the streaming **Release to
-  production** button. This is an admin-tools extension, **not** a new ability —
-  it lives in the Git page + File Explorer's own modules, wired to nothing in the
-  agent core.
+  exposes a single streaming **Release to production** button in the sync row (next
+  to Merge — `ui/shared/js/files-git.js`, `renderReleaseButton` +
+  `doReleaseToProduction`); the old standalone Production section (repo URL / folder
+  inline edits, status badge, release-note field) was removed — the button alone
+  drives the trim → copy → commit → push, auto-writing the release note. The prod
+  repo URL + folder are now set from the File Explorer's production settings (still
+  `POST /api/v1/github/production/config`). This is an admin-tools extension, **not**
+  a new ability — it lives in the Git page + File Explorer's own modules, wired to
+  nothing in the agent core.
 
 ## Multi-repo Git Control page (the repo selector)
 

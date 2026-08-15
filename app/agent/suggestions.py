@@ -294,9 +294,9 @@ async def _resolve_default_llm(user_id: Optional[str]) -> Dict[str, Any]:
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("suggestions: default-model resolve failed: %s", e)
     model = (model or os.environ.get("LLM_MODEL")
-             or os.environ.get("OPENROUTER_MODEL") or "deepseek/deepseek-v4-flash")
+             or os.environ.get("OPENROUTER_MODEL") or "")
     base_url = (base_url or os.environ.get("LLM_BASE_URL")
-                or os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1")
+                or os.environ.get("OPENROUTER_BASE_URL") or "")
     api_key = (api_key or os.environ.get("LLM_API_KEY")
                or os.environ.get("OPENROUTER_API_KEY") or "")
     return {"model": model, "base_url": base_url, "api_key": api_key}

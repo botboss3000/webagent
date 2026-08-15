@@ -81,18 +81,18 @@
     font_sans: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
     font_mono: "'JetBrains Mono', 'Fira Code', Menlo, ui-monospace, monospace",
     // Border colour keeps its historical key names.
-    border_color_dark: '#3a2c1e',  border_color_light: '#cfe6f2',
-    accent_dark: '#e0a35e',        accent_light: '#1f8fbf',
-    secondary_dark: '#c8915a',     secondary_light: '#3b6ea5',
-    success_dark: '#9ece6a',       success_light: '#5a8a4a',
-    warning_dark: '#e0af68',       warning_light: '#d4873a',
-    danger_dark: '#f7768e',        danger_light: '#d44848',
-    surface_bg_dark: '#16100b',    surface_bg_light: '#f5fafd',
-    surface_panel_dark: '#241a12', surface_panel_light: '#e9f3fa',
-    surface_tint_dark: '#36281c',  surface_tint_light: '#dbeaf5',
-    text_dark: '#ece0d2',          text_light: '#163040',
-    text_muted_dark: '#9a8266',    text_muted_light: '#5a7589',
-    ambient_dark: '#7a5636',       ambient_light: '#9fd6ec',
+    border_color_dark: '#333333',  border_color_light: '#cccccc',
+    accent_dark: '#ffffff',        accent_light: '#000000',
+    secondary_dark: '#d9d9d9',     secondary_light: '#262626',
+    success_dark: '#22c55e',       success_light: '#16a34a',
+    warning_dark: '#eab308',       warning_light: '#ca8a04',
+    danger_dark: '#ef4444',        danger_light: '#dc2626',
+    surface_bg_dark: '#000000',    surface_bg_light: '#ffffff',
+    surface_panel_dark: '#0d0d0d', surface_panel_light: '#f5f5f5',
+    surface_tint_dark: '#1a1a1a',  surface_tint_light: '#e8e8e8',
+    text_dark: '#ffffff',          text_light: '#000000',
+    text_muted_dark: '#a3a3a3',    text_muted_light: '#666666',
+    ambient_dark: '#404040',       ambient_light: '#d9d9d9',
     // Bubbles default BLANK → follow the design-system.css derived defaults
     // (set a colour in the Appearance panel to override). Stored as #rrggbb or
     // #rrggbbaa (the trailing aa = opacity).
@@ -125,9 +125,9 @@
     //    CHAT-PILL-VARS); defaults mirror the CSS fallbacks. The compact 1-line
     //    bars keep their own fixed sizing. ──
     chat_pill_max_width: '500px',          // composer width cap
-    chat_pill_radius: '20px',              // corner roundness
-    chat_pill_padding: '4px 4px 4px 14px', // outer padding (CSS shorthand)
-    chat_pill_min_height: '96px',          // resting text-area height
+    chat_pill_radius: '41px',              // corner roundness
+    chat_pill_padding: '4px 4px 0px 4px', // outer padding (CSS shorthand)
+    chat_pill_min_height: '',          // resting text-area height — CSS file is the single source of truth
     chat_pill_max_height: '160px',         // grow cap before scrolling
     chat_pill_font_size: '14px',           // input + placeholder text size
     chat_pill_attach_size: '38px',         // attach (+) button box

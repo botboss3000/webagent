@@ -14,7 +14,7 @@
 
 import { app } from '../../../shared/js/state.js';
 import { authHeaders } from '../../../shared/js/left-login.js';
-import { icon, claudeMark } from '../../../shared/js/icons.js';
+import { icon, claudeMark, codexMark } from '../../../shared/js/icons.js';
 import { fetchAllToolMeta } from '../agent-loop/js/loop-logic.js';
 import { NODE_PANEL_INFO } from '../agent-loop/js/loop-node-data.js';
 import { LOOP_W, LOOP_NODES, TOGGLEABLE_NODES, renderLoopDiagram } from '../agent-loop/js/loop-diagram.js';
@@ -48,6 +48,7 @@ import { _openIconPicker } from './icon-picker.js';
 // card builds renderClaudeCreateBody, and a created claude_code agent opens into a
 // stripped, tab-less card. See ui/main-panel/agents/js/claude-agent.js.
 import { _isClaudeAgent, mountClaudeCardTabs, renderClaudeCreateBody, _defaultClaudeName } from './claude-agent.js';
+import { _isCodexAgent, renderCodexCreateBody, renderCodexSettings, _defaultCodexName, mountCodexCardTabs } from './codex-agent.js';
 // Terminal Chat is its OWN engine: the "Terminal" segment of the create card builds
 // renderTerminalChatCreateBody. See ui/main-panel/agents/js/terminal-chat-agent.js.
 import { _isTerminalChatAgent, mountTerminalChatCardTabs, renderTerminalChatCreateBody, _defaultTerminalChatName } from './terminal-chat-agent.js';
@@ -85,7 +86,12 @@ export function _renderSkeleton(count = 6) {
       </div>`;
   }
   grid.classList.remove('carousel');
+  // Preserve the toolbar — _renderSkeleton is called before _renderList, and
+  // _renderList saves+re-inserts the toolbar, but if we wipe it here with
+  // innerHTML the toolbar is gone for good. Same pattern as _renderList.
+  const toolbar = document.getElementById('agents-toolbar');
   grid.innerHTML = `<div class="agents-squares">${html}</div>`;
+  if (toolbar) grid.insertBefore(toolbar, grid.firstChild);
 }
 
 // ── Main render ───────────────────────────────────────────────────────────────
@@ -109,7 +115,13 @@ export function _renderList() {
   const _prevSqTop = _oldSquares ? _oldSquares.scrollTop : 0;
   const _prevSqLeft = _oldSquares ? _oldSquares.scrollLeft : 0;
 
+  // Save the toolbar so it can be re-inserted inside the grid after rebuild
+  const toolbar = document.getElementById('agents-toolbar');
+
   grid.innerHTML = '';
+
+  // Re-insert toolbar as the first child of the grid
+  if (toolbar) grid.appendChild(toolbar);
 
   // Squares strip
   const wrap = document.createElement('div');
@@ -336,9 +348,9 @@ function _renderClonesList(container) {
 // ── Squares carousel wiring ───────────────────────────────────────────────────
 
 // ╔═╗ CAROUSEL-WIRING PATTERN (1st of 4 copies)  ═══════════════════════════════════╗
-// ║ Drag-to-scroll + chevron affordance. Sisters: _wireTabCarousel below,         ║
+// ║ Native scroll + chevron affordance. Sisters: _wireTabCarousel below,         ║
 // ║ _wirePromptCarousel (tab-prompts.js), _wireSkillsCarousel (claude-skills.js). ║
-// ║ If you fix scroll, pointer capture, or affordance logic, update ALL FOUR.     ║
+// ║ If you fix scroll or affordance logic, update ALL FOUR.                      ║
 // ╚════════════════════════════════════════════════════════════════════════════════╝
 function _wireSquaresCarousel(wrap) {
   const scroller = wrap.querySelector('.agents-squares');
@@ -356,6 +368,7 @@ function _wireSquaresCarousel(wrap) {
   };
 
   scroller.addEventListener('scroll', updateAffordances, { passive: true });
+    applyRubberBand(scroller);
   requestAnimationFrame(updateAffordances);
   setTimeout(updateAffordances, 120);
   if (typeof ResizeObserver !== 'undefined') {
@@ -365,36 +378,12 @@ function _wireSquaresCarousel(wrap) {
   const page = () => Math.max(scroller.clientWidth * 0.7, 132);
   if (chevLeft)  chevLeft.addEventListener('click',  e => { e.stopPropagation(); scroller.scrollBy({ left: -page(), behavior: 'smooth' }); });
   if (chevRight) chevRight.addEventListener('click', e => { e.stopPropagation(); scroller.scrollBy({ left:  page(), behavior: 'smooth' }); });
-
-  let dragging = false, startX = 0, startScroll = 0, moved = false;
-  scroller.addEventListener('pointerdown', e => {
-    if (e.button !== 0) return;
-    dragging = true; moved = false;
-    startX = e.clientX; startScroll = scroller.scrollLeft;
-  });
-  scroller.addEventListener('pointermove', e => {
-    if (!dragging) return;
-    const dx = e.clientX - startX;
-    if (Math.abs(dx) > 4) { moved = true; try { scroller.setPointerCapture(e.pointerId); } catch (_) {} }
-    if (moved) { scroller.scrollLeft = startScroll - dx; e.preventDefault(); }
-  });
-  const endDrag = e => {
-    if (!dragging) return;
-    dragging = false;
-    try { scroller.releasePointerCapture(e.pointerId); } catch (_) {}
-  };
-  scroller.addEventListener('pointerup', endDrag);
-  scroller.addEventListener('pointercancel', endDrag);
-  scroller.addEventListener('click', e => {
-    if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; }
-  }, true);
 }
 
 // ── Tab carousel wiring ──────────────────────────────────────────────────────
 
 // ╔═╗ CAROUSEL-WIRING PATTERN (2nd of 4 copies — sister of _wireSquaresCarousel) ═╗
-// ║ Nearly identical to _wireSquaresCarousel above — drag-to-scroll + chevrons.   ║
-// ║ The differences are CSS class selectors and a `dragging` CSS class toggle.    ║
+// ║ Native scroll + chevron affordance. Differences: CSS selectors only.          ║
 // ║ Mirror fixes across all four copies (see the 1st-copy banner above).          ║
 // ╚════════════════════════════════════════════════════════════════════════════════╝
 function _wireTabCarousel(wrap) {
@@ -415,6 +404,7 @@ function _wireTabCarousel(wrap) {
   };
 
   scroller.addEventListener('scroll', updateAffordances, { passive: true });
+    applyRubberBand(scroller);
   requestAnimationFrame(updateAffordances);
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(updateAffordances).observe(scroller);
@@ -423,31 +413,6 @@ function _wireTabCarousel(wrap) {
   const page = () => Math.max(scroller.clientWidth * 0.7, 120);
   if (chevLeft)  chevLeft.addEventListener('click', e => { e.stopPropagation(); scroller.scrollBy({ left: -page(), behavior: 'smooth' }); });
   if (chevRight) chevRight.addEventListener('click', e => { e.stopPropagation(); scroller.scrollBy({ left: page(), behavior: 'smooth' }); });
-
-  let dragging = false, startX = 0, startScroll = 0, moved = false;
-  scroller.addEventListener('pointerdown', e => {
-    if (e.button !== 0) return;
-    dragging = true; moved = false;
-    startX = e.clientX; startScroll = scroller.scrollLeft;
-    scroller.classList.add('dragging');
-  });
-  scroller.addEventListener('pointermove', e => {
-    if (!dragging) return;
-    const dx = e.clientX - startX;
-    if (Math.abs(dx) > 4) { moved = true; try { scroller.setPointerCapture(e.pointerId); } catch (_) {} }
-    if (moved) { scroller.scrollLeft = startScroll - dx; e.preventDefault(); }
-  });
-  const endDrag = e => {
-    if (!dragging) return;
-    dragging = false;
-    scroller.classList.remove('dragging');
-    try { scroller.releasePointerCapture(e.pointerId); } catch (_) {}
-  };
-  scroller.addEventListener('pointerup', endDrag);
-  scroller.addEventListener('pointercancel', endDrag);
-  scroller.addEventListener('click', e => {
-    if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; }
-  }, true);
 }
 
 // ── Selection / toggle ────────────────────────────────────────────────────────
@@ -464,7 +429,7 @@ function _selectAgent(agent) {
 
 // Start a brand-new chat with this agent in the chat side-panel. Reveals the chat
 // panel if it's hidden, then hands off to the chat module's `switchToAgent`
-// (set in ui/chat-side-panel/js/session-init.js) with forceNewSession so the user
+// (set in ui/chat/js/session-init.js) with forceNewSession so the user
 // lands in a fresh session bound to this agent. Wired to the chat-message button
 // on both the grid square and the expanded agent card.
 function _startChatWithAgent(agent) {
@@ -604,6 +569,7 @@ function _renderAgentCard(grid, agent) {
 
   // Local Claude Code agents get an entirely separate, tab-less card.
   if (!isMock && _isClaudeAgent(agent)) { _renderClaudeAgentCard(grid, agent); return; }
+  if (!isMock && _isCodexAgent(agent)) { _renderCodexAgentCard(grid, agent); return; }
 
   // Terminal Chat agents get an entirely separate, stripped card.
   if (!isMock && _isTerminalChatAgent(agent)) { _renderTerminalChatAgentCard(grid, agent); return; }
@@ -619,8 +585,10 @@ function _renderAgentCard(grid, agent) {
   const iconSize = '20px';
 
   const mockIconColor = mockType === 'claude' ? 'color-claude'
+    : mockType === 'codex' ? 'color-codex'
     : mockType === 'terminal' ? 'color-terminal' : 'color-blue';
   const mockIconHtml = mockType === 'claude' ? claudeMark({ size: '30px' })
+    : mockType === 'codex' ? codexMark({ size: '30px' })
     : mockType === 'terminal' ? icon('terminal', { size: '30px' })
     : icon(_mockRandomIcon(), { size: '30px' });
   const mockPlaceholder = mockType === 'claude' ? 'Name this Claude agent…'
@@ -655,9 +623,10 @@ function _renderAgentCard(grid, agent) {
         <div class="agent-card-name-row">
           ${nameCell}
           ${isMock ? '' : `<span class="agent-status-dot${_isAgentRunning(agent.id) ? ' running' : ''}"></span>`}
+          ${_userIsAdmin && !isMock && agent.source === 'custom' ? `<span class="agent-edit-hint">long-press to edit</span>` : ''}
         </div>
         ${isMock ? '' : (agent.source === 'custom'
-          ? `<div class="agent-card-desc"></div>`
+          ? `<div class="agent-card-desc"></div>${_userIsAdmin ? `<span class="agent-edit-hint">long-press to edit</span>` : ''}`
           : (agent.description ? `<div class="agent-card-desc">${_esc(agent.description)}</div>` : ''))}
         ${isMock ? `<div class="agent-card-desc agent-card-mock-hint">${_esc(mockHint)}</div>` : ''}
       </div>
@@ -761,6 +730,7 @@ function _buildMockTypeToggle(activeType) {
   const opts = [
     ['webagent', 'WebAgent', icon('sparkles', { size: '14px' })],
     ['claude', 'Claude', claudeMark({ size: '14px' })],
+    ['codex', 'Codex', codexMark({ size: '14px' })],
     ['terminal', 'Terminal', icon('terminal', { size: '14px' })],
   ];
   for (const [key, label, ic] of opts) {
@@ -791,8 +761,8 @@ function _buildEngineCreatePanel(agent, type) {
   const body = document.createElement('div'); body.className = 'agent-detail-body';
   content.appendChild(body); panel.appendChild(content);
   const drafts = _mockEngineDraft();
-  panel._collect = (type === 'claude')
-    ? renderClaudeCreateBody(body, drafts.claude)
+  panel._collect = type === 'claude' ? renderClaudeCreateBody(body, drafts.claude)
+    : type === 'codex' ? renderCodexCreateBody(body, drafts.codex)
     : renderTerminalChatCreateBody(body, drafts.terminal);
   return panel;
 }
@@ -800,7 +770,7 @@ function _buildEngineCreatePanel(agent, type) {
 // The "+" accept button finalises the create form, dispatching on the chosen type.
 function _acceptMockCreate(card) {
   const type = _mockCreateType();
-  if (type === 'claude' || type === 'terminal') return _acceptEngineCreate(card, type);
+  if (type === 'claude' || type === 'codex' || type === 'terminal') return _acceptEngineCreate(card, type);
   return _acceptWebAgentCreate(card);
 }
 
@@ -840,8 +810,8 @@ async function _acceptEngineCreate(card, type) {
   const settings = collect ? collect() : null;
   const input = card.querySelector('.agent-mock-name-input');
   const typed = (_mockDraftName() || (input ? input.textContent : '') || '').trim();
-  const name = typed || (type === 'claude' ? _defaultClaudeName() : _defaultTerminalChatName());
-  const templateId = type === 'claude' ? 'local-claude' : 'terminal-chat';
+  const name = typed || (type === 'claude' ? _defaultClaudeName() : type === 'codex' ? _defaultCodexName() : _defaultTerminalChatName());
+  const templateId = type === 'claude' ? 'local-claude' : type === 'codex' ? 'local-codex' : 'terminal-chat';
   const goBtn = card.querySelector('.agent-mock-create-go');
   if (goBtn) { goBtn.disabled = true; goBtn.innerHTML = icon('loader-2', { size: '22px' }); }
   try {
@@ -849,7 +819,7 @@ async function _acceptEngineCreate(card, type) {
     if (newAgent && settings) {
       const updates = type === 'claude'
         ? { claude_code: settings.claude_code, default_execution_mode: settings.default_execution_mode }
-        : { terminal_chat: settings.terminal_chat };
+        : type === 'codex' ? { codex_code: settings.codex_code } : { terminal_chat: settings.terminal_chat };
       await _putAgentField(newAgent, updates, null, { silent: true });
       if (typeof window.__agentsRebuildDetailRegion === 'function') window.__agentsRebuildDetailRegion();
     }
@@ -930,6 +900,36 @@ function _renderClaudeAgentCard(grid, agent) {
   const tabBar = card.querySelector('.agent-card-tabs');
   mountClaudeCardTabs(tabBar, body, agent);
 
+  grid.appendChild(row);
+}
+
+// Codex is an alternate headless CLI engine too, but it deliberately keeps a
+// smaller card than Claude: credentials are managed by Codex itself, so the only
+// per-agent controls are its working folder, model, and optional CLI flags.
+function _renderCodexAgentCard(grid, agent) {
+  const card = document.createElement('div');
+  card.className = 'agent-card active agent-card-claude';
+  card.innerHTML = `
+    <div class="agent-card-top">
+      <div class="agent-card-icon-wrap ${_iconColor(agent)}">${_renderAgentIcon(agent, '20px')}</div>
+      <div class="agent-card-meta"><div class="agent-card-name-row"><span class="agent-card-name">${_esc(_displayName(agent))}</span><span class="agent-status-dot${_isAgentRunning(agent.id) ? ' running' : ''}"></span><span class="agent-card-claude-tag">Codex</span></div></div>
+      	      <div class="agent-card-badge-wrap"><button type="button" class="agent-card-close-btn" title="Close">${icon('x', { size: '16px' })}</button><button type="button" class="agent-card-chat-btn" title="New chat with this agent">${icon('message-square', { size: '16px' })}</button></div>
+	    </div>
+	    <div class="agent-card-tabs-wrap">
+	      <div class="agent-card-tabs" role="tablist"></div>
+	    </div>`;
+  card.querySelector('.agent-card-close-btn').addEventListener('click', e => { e.stopPropagation(); _clearExpanded(); _renderList(); _saveViewState(); });
+  card.querySelector('.agent-card-chat-btn').addEventListener('click', e => { e.stopPropagation(); _startChatWithAgent(agent); });
+  const iconWrap = card.querySelector('.agent-card-icon-wrap');
+  iconWrap.classList.add('agent-icon-editable'); iconWrap.title = 'Click to change icon';
+  iconWrap.addEventListener('click', e => { e.stopPropagation(); _openIconPicker(iconWrap, agent, null); });
+  _wireInlineEdit(card.querySelector('.agent-card-name'), agent, 'name', { placeholder: 'Name this agent…' });
+  const row = document.createElement('div'); row.className = 'agent-row expanded'; row.dataset.agentId = agent.id; row.appendChild(card);
+  const panel = document.createElement('div'); panel.className = 'agent-detail-panel agent-detail-panel-claude';
+  const content = document.createElement('div'); content.className = 'agent-detail-content';
+  const body = document.createElement('div'); body.className = 'agent-detail-body'; content.appendChild(body); panel.appendChild(content); row.appendChild(panel);
+  const tabBar = card.querySelector('.agent-card-tabs');
+  mountCodexCardTabs(tabBar, body, agent);
   grid.appendChild(row);
 }
 
@@ -1237,7 +1237,7 @@ export function _updateBinToolbar() {
   if (sub) {
     if (_binView) sub.textContent = ' · Recycling bin';
     else if (_clonesView) sub.textContent = ' · Clones';
-    else sub.textContent = ' · Agent templates · system prompts · model assignments';
+    else sub.textContent = '';
   }
   if (restoreBtn) { restoreBtn.style.display = _binView ? 'inline-flex' : 'none'; restoreBtn.disabled = (n === 0); }
   if (selectAll)   selectAll.disabled = (selectable === 0 || n >= selectable);
@@ -1367,11 +1367,16 @@ async function _trashSelected(btn) {
     fetch(`/api/v1/agents/${id}?user_id=${encodeURIComponent(app.currentUserId)}`, { method: 'DELETE', headers: { ...authHeaders() } }).catch(() => {})
   ));
   _selectedIds.clear();
+  // Remove trashed agents from local state immediately so the grid updates
+  // without waiting on the re-fetch (avoids stale-cache / race-condition
+  // issues where _loadAgents might return old data).
+  _setAgents(_agents.filter(a => !ids.includes(a.id)));
   window.__agentsSharedData = null;
-  await _loadAgents();
   _renderList();
   if (btn) resetDeleteBtn(btn, { size: '16px', title: 'Open recycling bin' });
   _updateBinToolbar();
+  // Background re-fetch to sync with server state.
+  _loadAgents().then(() => { _renderList(); _updateBinToolbar(); }).catch(() => {});
   if (typeof app.populateAgentSelect === 'function') { try { await app.populateAgentSelect(app.currentUserId); } catch (_) {} }
 }
 
@@ -1394,10 +1399,15 @@ async function _permanentDeleteSelected(btn) {
     fetch(`/api/v1/agents/${id}?user_id=${encodeURIComponent(app.currentUserId)}&permanent=true`, { method: 'DELETE', headers: { ...authHeaders() } }).catch(() => {})
   ));
   _selectedIds.clear();
-  await _loadAgents();
+  // Remove deleted agents from local state immediately so the bin grid updates
+  // without depending on the re-fetch.
+  _setAgents(_agents.filter(a => !ids.includes(a.id)));
+  window.__agentsSharedData = null;
   _renderList();
   if (btn) resetDeleteBtn(btn, { size: '16px', title: 'Select agents to delete' });
   _updateBinToolbar();
+  // Background re-fetch to sync with server state.
+  _loadAgents().then(() => { _renderList(); _updateBinToolbar(); }).catch(() => {});
 }
 
 
@@ -1471,3 +1481,4 @@ async function _renderMembersTab(body, agent) {
 
 
 import { _userIsAdmin, _setBinView, _setClonesView } from './state.js';
+import { applyRubberBand } from '../../../shared/js/rubber-band.js';

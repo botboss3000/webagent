@@ -109,6 +109,82 @@ def _record_tx(conn, wallet_id: str, delta_cents: int, kind: str, ref_id: Option
     return tx_id
 
 
+async def debit(
+    db: Any,
+    user_id: str,
+    amount_cents: int,
+    kind: str = "usage",
+    ref_id: Optional[str] = None,
+    note: Optional[str] = None,
+    currency: str = "usd",
+) -> Optional[WalletState]:
+    """Debit up to ``amount_cents`` from the user's wallet WITHOUT going
+    negative. Returns the wallet after (balance may be drained to 0 but never
+    below), or None when there is nothing to debit.
+
+    Used by the post-hoc charge path (text runs + image generation). The
+    pre-send access gate keeps most users above zero, but a charge that exceeds
+    the remaining balance (e.g. a big model call after a small purchase) is
+    clamped rather than pushed into debt."""
+    if amount_cents <= 0:
+        return None
+    wallet = await get_or_create_wallet(db, "user", user_id, currency)
+    if not wallet:
+        return None
+    try:
+        if hasattr(db, "_get_conn"):
+            conn = db._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE wallets SET balance_cents = balance_cents - ?, "
+                    "updated_at = datetime('now') WHERE id=? AND balance_cents >= ?",
+                    (amount_cents, wallet.wallet_id, amount_cents),
+                )
+                conn.commit()
+                if cur.rowcount == 0:
+                    # Partial: drain whatever is left (never negative).
+                    row = conn.execute(
+                        "SELECT balance_cents FROM wallets WHERE id=?",
+                        (wallet.wallet_id,),
+                    ).fetchone()
+                    bal = int(row["balance_cents"]) if row else 0
+                    actual = min(amount_cents, bal)
+                    if actual > 0:
+                        conn.execute(
+                            "UPDATE wallets SET balance_cents = 0, updated_at = datetime('now') WHERE id=?",
+                            (wallet.wallet_id,),
+                        )
+                        _record_tx(conn, wallet.wallet_id, -actual, kind, ref_id, note)
+                        conn.commit()
+                    wallet.balance_cents = max(0, bal - actual)
+                    return wallet
+                _record_tx(conn, wallet.wallet_id, -amount_cents, kind, ref_id, note)
+                conn.commit()
+                wallet.balance_cents -= amount_cents
+                return wallet
+            finally:
+                conn.close()
+        elif hasattr(db, "get_raw_client"):
+            cli = db.get_raw_client()
+            actual = min(amount_cents, wallet.balance_cents)
+            new_balance = wallet.balance_cents - actual
+            cli.table("wallets").update({"balance_cents": new_balance}).eq("id", wallet.wallet_id).execute()
+            if actual > 0:
+                cli.table("wallet_transactions").insert({
+                    "id": str(uuid.uuid4()),
+                    "wallet_id": wallet.wallet_id,
+                    "delta_cents": -int(actual),
+                    "kind": kind,
+                    "ref_id": ref_id,
+                    "note": note,
+                }).execute()
+            wallet.balance_cents = new_balance
+            return wallet
+    except Exception as e:
+        logger.error("wallet.debit failed: %s", e)
+    return None
+
+
 async def credit(
     db: Any,
     owner_type: str,

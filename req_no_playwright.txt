@@ -34,3 +34,5 @@ sqlglot>=23.0.0
 croniter>=2.0.0
 # QR codes for the Remote Access card (optional; the card degrades to text without it)
 qrcode>=7.4.2
+# WebRTC direct P2P transport (aiortc) — peer-to-peer data mirroring between instances
+aiortc>=1.7.0

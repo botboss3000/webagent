@@ -1,0 +1,44 @@
+/* ── Storage mode button — toggle browser ↔ server storage ─────────────────
+   Sits in the footer row alongside mode/abilities/target buttons.
+   Matches the styling of .chat-mode-btn for visual consistency.               */
+.chat-storage-mode-btn {
+    display: inline-flex;
+    align-items: center;
+    align-self: center;
+    background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent));
+    border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    color: var(--fg-3);
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    padding: 3px 8px;
+    height: 22px;
+    border-radius: 11px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    line-height: 1.4;
+    user-select: none;
+    -webkit-user-select: none;
+    white-space: nowrap;
+  }
+.chat-storage-mode-btn:hover {
+    color: var(--fg-1);
+    border-color: color-mix(in oklab, currentColor 25%, transparent);
+  }
+.chat-storage-mode-btn:active {
+    color: var(--brand);
+    border-color: rgba(var(--brand-rgb), 0.4);
+  }
+/* Browser mode gets a subtle brand tint to distinguish it */
+.chat-storage-mode-btn.is-browser {
+    color: var(--brand);
+    border-color: rgba(var(--brand-rgb), 0.25);
+  }
+.chat-storage-mode-btn.is-browser:hover {
+    border-color: rgba(var(--brand-rgb), 0.45);
+  }
+body.light-mode .chat-storage-mode-btn {
+    background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 85%, transparent));
+  }

@@ -179,6 +179,15 @@ def tunnel_snapshot() -> dict:
     method = (cfg.get("active_method") or "same_network").strip()
     provider = method if method in _MANAGED else ""
 
+    # The detached slave is authoritative while its synchronous status file is
+    # fresh. Reading it never blocks the heartbeat on a loopback/network probe.
+    slave_status = None
+    try:
+        from .slave import read_status
+        slave_status = read_status(netinfo.get_port())
+    except Exception:
+        slave_status = None
+
     mgr = get_manager()
     tun = mgr._tunnel
     running = bool(tun and tun.is_alive())
@@ -202,12 +211,27 @@ def tunnel_snapshot() -> dict:
     except Exception:
         configured = False
 
+    # Keep the compatibility field consumed by the Instances UI, but source it
+    # only from a fresh slave snapshot so an old ephemeral URL never looks live.
+    headful_url = ""
+    if slave_status and slave_status.get("state") in ("starting", "running"):
+        slave_provider = str(slave_status.get("provider") or "").strip()
+        if slave_provider in _MANAGED:
+            provider = slave_provider
+            method = slave_provider
+        running = True
+        # A named Cloudflare tunnel may never print its fixed hostname. Keep the
+        # configured URL calculated above until the slave reports a replacement.
+        public_url = str(slave_status.get("url") or "").strip() or public_url
+        headful_url = public_url
+
     return {
         "provider": provider,
         "method": method,
         "configured": configured,
         "running": running,
         "public_url": public_url,
+        "headful_url": headful_url,
     }
 
 
@@ -222,10 +246,21 @@ def get_manager() -> RemoteAccessManager:
 
 
 async def start_remote_access() -> None:
-    """Startup hook — auto-start the configured managed tunnel if requested."""
+    """Adopt a live slave, else auto-start the configured managed tunnel."""
     cfg = store.load_config()
     mgr = get_manager()
     mgr._method = cfg.get("active_method", "same_network")
+    try:
+        from .slave import read_status
+        slave_status = read_status(netinfo.get_port())
+    except Exception:
+        slave_status = None
+    if slave_status and slave_status.get("state") in ("starting", "running"):
+        url = str(slave_status.get("url") or "").strip()
+        store.update_slave_state(netinfo.get_port(), running=True, url=url)
+        logger.info("Remote Access adopted detached tunnel slave (pid=%s, url=%s)",
+                    slave_status.get("pid"), url or "resolving")
+        return
     if cfg.get("auto_start") and cfg.get("active_method") in _MANAGED:
         try:
             await mgr.start_method(cfg["active_method"])

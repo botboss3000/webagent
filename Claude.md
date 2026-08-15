@@ -1,47 +1,21 @@
-# WebAgent — agent instructions
+# Project notes for Claude
 
-**DO NOT work in a workspace. Update the main repo directly in `C:\Users\Alex R\Projects\webagent-dev`.**
+## Git / branching preferences
 
-**WebAgent** is the AI Agent Harness app in this repo (chat, tools, WebSockets, UI). Your job is to **edit and extend the WebAgent codebase** (Python backend, `ui/` frontend, config). When the user talks about the **agent process**, **flow**, **memory**, **skills**, or **tools** in this project, they mean **this application**, not the Pi Agent, Cursor, Hermes, or Claude assistants.
+- Do **NOT** create or commit to worktree branches (e.g. auto-generated
+  `claude/...` branches) unless we've explicitly agreed to it and the user has
+  given permission for that specific piece of work.
+- The default expectation is to commit straight to `main`. Only branch when the
+  user asks for it.
 
-Use **`README.md`** for architecture, module map, setup, env vars, and HTTP/WebSocket paths.
+## Git auth & line endings
 
-## Terminology
-
-- **"Chat"** — The in-app chat UI or `POST /api/v1/chat`, not this IDE chat between you and the user.
-- **"Agent"** — Unless they explicitly say something like **Pi Agent**, **agent** means WebAgent's runtime (loops, WebSocket stream, tools), not the coding assistant.
-
-## Explain logic, not code
-
-The user is **NOT a coder**. When explaining how something works or proposing a change, explain in **logic and behavior** — what happens, why, in what order, what the data flow is. Avoid:
-
-- Code blocks (Python, SQL, bash), function signatures, variable names, import statements, schema DDL syntax.
-
-If code is needed to understand the logic (e.g. a schema change), describe the **shape** of the data and the **rules**, not the syntax. Use tables, bullet lists, flow descriptions, and plain English. When the user asks "show me" or "what would X look like", describe the steps and the outcome — don't print source files.
-
-## Detailed guides — read the relevant one before you act
-
-These hold the full rules. Open the one that matches your task **before** making changes in that area.
-
-| If your task touches… | Read |
-|------------------------|------|
-| Anything under `ui/` or markup in `index.html` — the **breadcrumb comment standard** (file headers + REMOVE-WHEN/DEACTIVATED/KEEP markers), theming (dark/light), edge-fade masks, pinned rounded scroll corners, Lucide icons, chat pills (shared design + full-height float layout), toggle-lists (shared category + option-rows design) | [docs/claude/ui-guidance.md](docs/claude/ui-guidance.md) |
-| Adding / changing / renaming agent **loop nodes** or the loop diagram | [docs/claude/agent-loop.md](docs/claude/agent-loop.md) |
-| Deploy config, OAuth / secure-context APIs, or any **file the app writes at runtime** (gitignore rules) | [docs/claude/deployment.md](docs/claude/deployment.md) |
-| Docs upkeep (README + folder `.md`), where to put scratch/temp files, console-log cleanup, git push rules | [docs/claude/repo-conventions.md](docs/claude/repo-conventions.md) |
-| **Editions** / production-path, drop-in plugin discovery, the **feature catalog** (`FEATURE` headers), ability-bundled skills | [docs/claude/production-editions.md](docs/claude/production-editions.md) |
-| **Diagnosing a chat session** — why an agent run failed/misbehaved: pull the `interactions` transcript from `local.db`, the real traceback from `logs.db` `diagnostics`, and `tool_executions` | [docs/claude/diagnosing-sessions.md](docs/claude/diagnosing-sessions.md) |
-| **JS frontend fixups** — strict-mode declaration discipline, missing shared-module imports, the full checklist for avoiding undeclared-variable/missing-function bugs | [plugins/abilities/Administrator/codebase_admin.skill.md](plugins/abilities/Administrator/codebase_admin.skill.md) (Codebase Admin skill) |
-
-> **Updating these docs — touch the expanded files, not this one.** This `CLAUDE.md` is a deliberately small at-a-glance index. When a rule changes or a new convention is added, **put the detail in the relevant `docs/claude/*.md` file** (or create a new one and add a row above). Only edit `CLAUDE.md` itself for genuinely minor, index-level changes — fixing a routing row, adding a new guide link, or tweaking a one-line essential below. If you find yourself writing more than a line or two here, it belongs in an expanded file.
-
-**Always-on essentials from those guides:**
-
-- **README sync:** any change to repo structure, config, routes, or usage → update `README.md` in the same work. (full table → repo-conventions)
-- **Folder `.md` files:** read every `.md` in a folder before changing it; update them after. (→ repo-conventions)
-- **Temp / scratch files:** put non-Markdown scratch and new Markdown drafts under `temp/`; never treat `temp/` as a source of truth. (→ repo-conventions)
-- **UI in both themes:** every `ui/` feature must be correct in dark **and** light mode; use design-system CSS variables, never hard-coded hex. All theme colours derive from a single **palette** at the top of the two theme blocks in `ui/shared/css/design-system.css` (brand/purple/status/ambient, each with an `-rgb` triple for `rgba(var(--x-rgb), a)`), so a scheme swap is a one-file edit. **Borders** are likewise globally controlled from the same palette: every neutral container/table/divider border is written `var(--border-width) solid var(--border)`, so one block recolours them (`--border`/`-soft`/`-strong`), thickens them (`--border-width`), or turns them all off (`--border-width: 0`); never hard-code a `1px` width on a structural border. The **whole per-theme palette** (accent/secondary/status hues, surfaces, text, ambient glow, border) **and** the UI fonts also have a **live override** in `data/config/app-settings.json` (`<token>_dark`/`_light` keys + `border_width`, `font_sans`/`font_mono`) — served app-wide via `/api/v1/auth/ui-config` and injected at boot by `ui/shared/js/appearance.js` as two theme blocks (`body:not(.light-mode)` / `body.light-mode`), so editing the JSON + reloading re-skins every visitor with no restart (a *brand-new* key needs a server restart to register on the model); blank = fall back to the CSS default. Admins edit it all from the combined **App Settings → Appearance** panel: a **two-row expandable table** (Light · Dark, built on the shared ability-table component — each row expands to reveal preset themes + background select + full palette swatches) + a shared fonts/border-thickness card, each control auto-saving with the green tick. A few **theme-independent style knobs are JSON-only** (no UI): `radius_scale` (roundness), `shadow_strength` (depth), `ui_scale` (zoom), `reduce_motion`, `cursor_glow` — same override pipeline, edit them in `app-settings.json`. Full contract → ui-guidance "The Appearance panel". The animated **background** is a drop-in plugin system (`ui/background/<id>/`, selectable per theme in App Settings → Appearance); each background owns its colour tokens in its folder but references the palette. A few surfaces are documented self-contained exceptions (agent-loop visualizer, terminal ANSI, tutorial light badge, background plugins). (→ ui-guidance)
-- **JS strict-mode discipline:** every bare-name reference in a `'use strict';` file must resolve to a declaration, import, or window global. Found one missing declaration? Grep the whole file — they cluster. (→ Codebase Admin skill — `plugins/abilities/Administrator/codebase_admin.skill.md`)
-- **Core vs. plugins — new capabilities are DROP-IN FILES, never core edits.** A new integration, event source, communication channel, data connector, secrets vault, encryption method, payment processor, scheduler provider, or **agent ability** is added as **its own new file in the matching plugin folder**, carrying a `FEATURE = {...}` header (id, display_name, category, **status** stable/beta/experimental). It is then **auto-discovered**; you do **NOT** register it anywhere. **Never** wire a new capability into the core (`app/tools/loader.py`, `app/tools/core_tools.py`, `app/api/agents.py`, `app/main.py`, `ui/js/app-config.js`, `ui/js/agents.js`) or into a central `if/elif`/registry list. The core stays small; capabilities are external plug-ins so editions can ship a tested subset.
-  - **Canonical home is the root `plugins/` tree** (sibling to `app/`). Abilities live there now: `plugins/abilities/` — one **folder** per ability (`<Group>/<id>/` holding `<id>.json` descriptor + `<id>.py` runtime + optional `<id>.skill.md` and support files), declaring the tools it gates + its UI metadata (group/icon/colour/description); both ability panels render from it via `GET /api/v1/abilities/catalog`. Copy the skeletons in `plugins/abilities/_TEMPLATE.py` to add one. The other subsystems are mid-migration into `plugins/` and currently still under `app/`: `app/integrations/`, `app/events/sources/`, `app/communications/plugins/`, `app/connectors/`, `app/secrets/`, `app/encryption/`, `app/scheduler/providers/` (copy `app/integrations/_TEMPLATE.py`). **Billing** has already moved: the engine is `plugins/billing/` (agent tier) with an optional, strippable platform tier at `plugins/admin/billing/`. Full contract + `FEATURE` fields → [docs/claude/production-editions.md](docs/claude/production-editions.md).
-- **Mirror the two ability tables:** the admin **Agent Settings** ability table and the per-agent **Abilities tab** (agent card) are sister panels that must stay **mirrored in design** — any change to one (look, structure, grouping, toggle behaviour) must be applied to the other in the same work. Both now render from the shared **ability catalog** (`/api/v1/abilities/catalog`), so adding an ability needs **no** edit to either panel; only a change to the shared *look/structure* must be mirrored. Both carry the embedded marker `SISTER-PANEL: AGENT-ABILITY-TABLE` (grep it). (→ ui-guidance)
+- GitHub auth for CLI git is handled by a credential helper
+  (`scripts/git-credential-webagent.py`, registered in the global git config)
+  that resolves the app's shared vault token (`app/deploy/credentials.py`,
+  service `deploy_github_token`, mirrored to `data/config/provider.json`).
+  Plain `git fetch` / `pull` / `push` against github.com just works — never
+  paste tokens into URLs or repo config.
+- The repository stores LF (see `.gitattributes`). If a file ever shows up as
+  fully re-written in a diff, check `git ls-files --eol` for `i/crlf` and fix
+  with `git add --renormalize <file>` instead of committing the noise.

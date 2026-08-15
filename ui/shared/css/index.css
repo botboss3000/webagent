@@ -51,12 +51,12 @@ html, body { background: var(--bg-0) !important; }
    the glow never washes over the header. */
 #main-header { position: relative; z-index: 3; }
 
-/* —— App-wide Restricted Access gate ——————————————————————————————
+/* ── App-wide Restricted Access gate (spinner) ────────────────────────────
    When the visitor isn't authorized (body.app-restricted, set in main.js), the
    whole stage becomes the lock screen: every page (#main-panel), the chat panel
    and its resize handle are hidden, and the page tab buttons are removed so
    there's nothing to navigate to. The account avatar stays (it's how you sign
-   in) and the overlay's own Sign-in button opens the same menu. */
+   in). The overlay just shows a centered loading spinner — no card, no text. */
 #app-restricted-overlay {
   position: absolute;
   inset: 0;
@@ -66,30 +66,19 @@ html, body { background: var(--bg-0) !important; }
   background: var(--bg-0);
   z-index: 30;
 }
-.app-restricted-card {
-  margin: auto;
-  background: var(--bg-elev);
-  border: var(--border-width) solid var(--border);
-  border-radius: 12px;
-  padding: 32px 40px;
-  text-align: center;
-  max-width: 360px;
+#app-restricted-overlay::after {
+  content: "";
+  width: 34px;
+  height: 34px;
+  border: 3px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: appRestrictedSpin 0.8s linear infinite;
 }
-.app-restricted-icon  { color: var(--warning); margin-bottom: 12px; }
-.app-restricted-title { font-size: 16px; font-weight: 600; color: var(--fg-1); margin-bottom: 8px; }
-.app-restricted-desc  { font-size: 13px; color: var(--fg-3); margin-bottom: 18px; }
-.app-restricted-btn {
-  background: var(--brand);
-  color: var(--bg-0);
-  border: none;
-  border-radius: 8px;
-  padding: 9px 22px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s;
+@keyframes appRestrictedSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  #app-restricted-overlay::after { animation: none; }
 }
-.app-restricted-btn:hover { background: var(--accent-hover); }
 
 /* `#stage >` is intentional: it lifts specificity above the admin-tools lock
    rule (files.css `body.admin-restricted #main-panel{display:flex!important}`)
@@ -140,7 +129,8 @@ body.app-restricted #session-new-header-btn { display: none !important; }
 body.light-mode .chat-bubble.user  { --chat-bubble-bg: var(--user-bubble-bg, color-mix(in oklab, var(--bg-elev) 85%, transparent)); }
 body.light-mode .chat-bubble.agent { --chat-bubble-bg: var(--agent-bubble-bg, color-mix(in oklab, var(--bg-elev) 85%, transparent)); }
 #chat-header {
-  border-bottom: var(--border-width) solid color-mix(in oklab, currentColor 8%, transparent) !important;
+  border-bottom: none !important;
+  background: transparent !important;
 }
 /* Messages stay fully visible all the way to the bottom of the panel and
    scroll *behind* the floating input area, which has a transparent footer
@@ -202,6 +192,9 @@ body.light-mode .chat-bubble.agent { --chat-bubble-bg: var(--agent-bubble-bg, co
    bleeds through. Geometry/behaviour stay in app1.css; per-panel float LAYOUT
    lives in each panel's own CSS — change the glass LOOK here so every floating
    pill updates together. */
+.chat-surface .chat-pill,
+.chat-surface .chat-pill:focus-within,
+.chat-surface .chat-pill.drag-over,
 #chat-panel .chat-pill,
 .ability-search-pill.chat-pill,
 #genui-prompt-row.chat-pill,
@@ -213,6 +206,7 @@ body.light-mode .chat-bubble.agent { --chat-bubble-bg: var(--agent-bubble-bg, co
   backdrop-filter: blur(12px) saturate(140%) !important;
   -webkit-backdrop-filter: blur(12px) saturate(140%) !important;
 }
+.chat-surface .chat-pill:focus-within,
 #chat-panel .chat-pill:focus-within,
 .ability-search-pill.chat-pill:focus-within,
 #genui-prompt-row.chat-pill:focus-within,
@@ -222,6 +216,7 @@ body.light-mode .chat-bubble.agent { --chat-bubble-bg: var(--agent-bubble-bg, co
   border-color: color-mix(in oklab, currentColor 22%, transparent) !important;
   background: color-mix(in oklab, currentColor 9%, transparent) !important;
 }
+.chat-surface .chat-pill.drag-over,
 #chat-panel .chat-pill.drag-over,
 .ability-search-pill.chat-pill.drag-over,
 #genui-prompt-row.chat-pill.drag-over,
@@ -240,11 +235,17 @@ body.light-mode .chat-bubble.agent { --chat-bubble-bg: var(--agent-bubble-bg, co
    opacity) to recolour just this pill. The shared rules above still supply the
    border/blur/focus/drag feedback; these override only the background so a pinned
    colour survives focus + drag instead of flashing back to glass. */
+.chat-surface .chat-pill,
+.chat-surface .chat-pill:focus-within,
+.chat-surface .chat-pill.drag-over,
 #chat-panel .chat-pill,
 #chat-panel .chat-pill:focus-within,
 #chat-panel .chat-pill.drag-over {
   background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent)) !important;
 }
+body.light-mode .chat-surface .chat-pill,
+body.light-mode .chat-surface .chat-pill:focus-within,
+body.light-mode .chat-surface .chat-pill.drag-over,
 body.light-mode #chat-panel .chat-pill,
 body.light-mode #chat-panel .chat-pill:focus-within,
 body.light-mode #chat-panel .chat-pill.drag-over {
@@ -274,6 +275,7 @@ body.light-mode #chat-panel .chat-pill.drag-over {
 #ac-as-pa-bar .ability-search-pill.chat-pill.drag-over {
   background: var(--bg-elev) !important;
 }
+.chat-surface .chat-pill-input,
 #chat-panel .chat-pill-input,
 .ability-search-pill .chat-pill-input,
 #genui-prompt-row .chat-pill-input,
@@ -282,6 +284,17 @@ body.light-mode #chat-panel .chat-pill.drag-over {
 #ac-ds-pa-bar-row .chat-pill-input {
   background: transparent !important;
 }
+/* Keep all chat content centred on very wide hosts while preserving the
+   surface-specific outer dimensions (panel, floating card, or iframe).
+   The scrollbar lives on the parent (#chat-messages), so #chat-messages-inner
+   keeps its max-width while the scrollbar sticks to the panel edge. */
+#chat-panel #chat-messages-inner,
+#chat-panel #chat-input-area {
+  width: 100%;
+  max-width: var(--chat-surface-max-width, 1000px);
+  margin-inline: auto !important;
+}
+
 /* —— Main panel: a real panel (glass) —— */
 #main-panel {
   background: color-mix(in oklab, currentColor 4%, transparent) !important;
@@ -290,7 +303,6 @@ body.light-mode #chat-panel .chat-pill.drag-over {
   backdrop-filter: blur(16px) saturate(150%) !important;
   -webkit-backdrop-filter: blur(16px) saturate(150%) !important;
   box-shadow:
-    0 1px 0 color-mix(in oklab, currentColor 6%, transparent) inset,
     0 20px 60px -30px rgba(var(--shadow-rgb),0.6) !important;
   /* top/bottom 0 so the card aligns with the chat pane (header top / input
      pill bottom); left trimmed for a tighter gutter; right 1px to the handle. */
@@ -309,6 +321,17 @@ body.light-mode #main-panel {
   #main-panel { margin: 2px !important; }
   #chat-messages-inner { padding-left: 8px; padding-right: 8px; }
   #chat-input-area { padding-left: 6px; padding-right: 6px; }
+}
+
+/* —— Main-panel horizontal overscroll: the swipe-to-flip page gesture was
+   removed, so this rule now only stops an overscroll at the panel edge from
+   chaining into the browser's history back/forward. Inner native scrollers
+   (carousels, wide tables, tab strips) set their own overscroll-behavior-x. —— */
+#main-panel,
+#main-panel .tab-content,
+html,
+body {
+  overscroll-behavior-x: none;
 }
 
 /* —— Dynamic cursor-follow spotlight — applied via JS to .spot elements ——
@@ -384,6 +407,31 @@ body.light-mode #main-panel {
 body.light-mode .load-earlier-btn:hover {
   background: rgba(var(--ink-rgb),0.04);
   color: var(--fg-1);
+}
+
+/* ── Chat pill focused: hide main app header + chat panel header ──
+   When the chat pill is focused on MOBILE, the user is typing — reclaim
+   vertical space by hiding the top chrome (#main-header) and the chat panel's
+   own header (#chat-header + #chat-sub-header). Toggled by chat-ui.js
+   focusin/focusout on the document. Only active at narrow (≤800px) viewports.
+   Gated on body.hide-header-kb + hhk-active — set at boot from the
+   hide_header_on_keyboard app setting (default OFF), with threshold
+   checked by the viewport tracker at runtime. */
+@media (max-width: 800px) {
+  body.hide-header-kb.hhk-active.chat-pill-focused #main-header,
+  body.hide-header-kb.hhk-active.chat-pill-focused #chat-header,
+  body.hide-header-kb.hhk-active.chat-pill-focused #chat-sub-header {
+    max-height: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    border: none !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transition: max-height 0.15s ease, opacity 0.15s ease, padding 0.15s ease !important;
+  }
 }
 
 /* Feedback styles moved to ui/shared/css/app1.css (dropdown-feedback-view).

@@ -1,69 +1,31 @@
-/* ============================================================================
-   Welcome landing — standalone bootstrap (drop-in plugin)
-   ----------------------------------------------------------------------------
-   Loaded ONLY by the server-rendered landing page that app/main.py serves at the
-   front door (/). The markup is already in the document (inside #splash-root,
-   with `is-ready` set inline so it shows even before JS), so this module just:
-     • runs the shared splash effects (splash-effects.js), and
-     • wires the call-to-action: any "Enter app" button remembers the visit and
-       sends them to /app — the app's stable home, which bypasses this landing.
+const SEEN_KEY='webagent.splashSeen.v1';
+const DRAFT_KEY='webagent.chatDraft.v1';
+const state={path:'about',abilities:[],idea:'',access:'private',embed:false,deployTarget:''};
+const personalIdeas=['Make a dashboard to track my fitness goals','Make an agent to post content to social media','Create an app for my colleagues to collaborate on a project','Build a research assistant that organizes what it finds'];
 
-   "Remember the visit" sets the wa_seen_splash cookie (read SERVER-SIDE by the /
-   front door so returning visitors skip straight to the app). It is PERSISTENT
-   (1 year) only when the "Don't show this again" box is ticked; otherwise it's a
-   session cookie, so the landing returns in a fresh browser session. A localStorage
-   mirror is written on the persistent path for parity with the Manage Account
-   "Show welcome screen" toggle (window.WA_SPLASH). Delete ui/splash/splash-page/
-   and the landing, this script, and the front-door wiring all go together.
-   ========================================================================== */
+function setSeen(persist=true){try{document.cookie='wa_seen_splash=1; path=/; samesite=Lax'+(persist?'; max-age=31536000':'');if(persist)localStorage.setItem(SEEN_KEY,'1')}catch{}}
+function scrollToId(id){document.getElementById(id)?.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});}
+function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function renderIdeas(){const box=document.querySelector('[data-suggestions]');const input=document.querySelector('[data-idea]');const ideas=personalIdeas;box.innerHTML=ideas.slice(0,3).map(x=>`<button type="button">${esc(x)}</button>`).join('');box.querySelectorAll('button').forEach((b,i)=>b.onclick=()=>{input.value=ideas[i];state.idea=ideas[i];});typePlaceholder(input,ideas);}
+function typePlaceholder(el,ideas){let i=0,n=0,back=false;clearInterval(el._typeTimer);el.placeholder='';el._typeTimer=setInterval(()=>{if(el.value)return;const s=ideas[i];n+=back?-1:1;el.placeholder=s.slice(0,n)+(n<s.length?'|':'');if(n===s.length){back=true;clearInterval(el._typeTimer);setTimeout(()=>typePlaceholder(el,[...ideas.slice(i+1),...ideas.slice(0,i+1)]),1300)}},38);}
 
-import { initSplashEffects } from './splash-effects.js';
-
-const BASE = '/ui/splash/splash-page/';
-const SEEN_KEY = 'webagent.splashSeen.v1';
-
-function _reduceMotion() {
-  return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+async function loadAbilities(){const box=document.querySelector('[data-abilities]');let items=[];try{const r=await fetch('/api/v1/agents/abilities/catalog');if(r.ok){const data=await r.json();const map=data.abilities||{};items=Object.entries(map).filter(([,a])=>!a.placeholder&&a.kind!=='placeholder').slice(0,12).map(([id,a])=>({id,name:a.name||a.display_name||id,desc:a.summary||a.description||'Available to your agent'}));}}catch{}if(!items.length)items=[['web','Web research'],['browser','Browser control'],['files','Files & documents'],['visualizer','Live interfaces'],['automation','Automations'],['memory','Memory'],['image','Image tools'],['code','Code & data']].map(([id,name])=>({id,name,desc:'Available to your agent'}));state.abilities=items.map(x=>x.id);box.innerHTML=items.map(x=>`<button type="button" class="ability-card is-selected" data-id="${esc(x.id)}"><span class="ability-toggle"></span><strong>${esc(x.name)}</strong><small>${esc(x.desc)}</small></button>`).join('');box.querySelectorAll('button').forEach(b=>b.onclick=()=>{b.classList.toggle('is-selected');state.abilities=[...box.querySelectorAll('.is-selected')].map(x=>x.dataset.id);});}
+function selectPath(path){state.path=path;document.querySelectorAll('[data-path]').forEach(b=>{const on=b.dataset.path===path;b.classList.toggle('is-selected',on);b.setAttribute('aria-checked',on);b.querySelector('.choice-check').textContent=on?'Selected':'Choose';});document.querySelector('#product').hidden=path!=='about';document.querySelector('#selfhost').hidden=path!=='selfhost';['abilities','idea','configure','build'].forEach(id=>document.getElementById(id).hidden=path!=='personal');document.querySelector('[data-embed]').checked=false;state.embed=false;renderIdeas();}
+function brief(){const idea=state.idea.trim();const names=[...document.querySelectorAll('.ability-card.is-selected strong')].map(x=>x.textContent);return `Help me create and configure a new agent in WebAgent.${idea?`\n\nWhat it should do:\n${idea}`:'\n\nStart by helping me decide what this agent should do.'}\n\nSelected abilities: ${names.join(', ')||'none yet'}.\nAccess: ${state.access==='private'?'private / approved users':'anonymous visitors'}.\nEmbed widget: ${state.embed?'on':'off'}.\n\nBuild the agent instructions and an appropriate GenUI workspace in parallel. Ask only for details that materially affect the result, explain the choices you make, and let me review the agent prompt before finalizing.`;}
+function showBuild(){state.idea=document.querySelector('[data-idea]').value.trim();state.access=document.querySelector('input[name="access"]:checked').value;state.embed=document.querySelector('[data-embed]').checked;document.querySelector('[data-prompt-preview]').textContent=brief();document.querySelector('[data-build-title]').textContent=state.idea?'Your agent brief is ready':'Your guided setup is ready';scrollToId('build');}
+function updateProgress(){const scroller=document.querySelector('[data-splash-scroll]');const steps=[...document.querySelectorAll('.setup-step:not([hidden])')];let current=steps[0];for(const s of steps){if(s.getBoundingClientRect().top<innerHeight*.48)current=s;}const idx=Math.max(0,steps.indexOf(current));document.querySelector('[data-progress]').style.width=`${((idx+1)/steps.length)*100}%`;document.querySelector('[data-progress-label]').textContent=current.dataset.step;document.querySelector('[data-splash-topbar]').classList.toggle('is-stuck',scroller.scrollTop>20);}
+function boot(){
+ document.querySelectorAll('[data-next]').forEach(b=>b.onclick=()=>scrollToId(b.dataset.next==='idea'?(state.path==='about'?'product':state.path==='selfhost'?'selfhost':'idea'):b.dataset.next));
+ document.querySelectorAll('[data-path]').forEach(b=>b.onclick=()=>selectPath(b.dataset.path));
+ document.querySelectorAll('[data-product-path]').forEach(b=>b.onclick=()=>{selectPath(b.dataset.productPath);scrollToId(b.dataset.productPath==='selfhost'?'selfhost':'idea');});
+ document.querySelectorAll('[data-splash-enter]').forEach(b=>b.onclick=()=>{setSeen(false);location.assign('/app')});
+ document.querySelector('[data-idea]').oninput=e=>state.idea=e.target.value;
+ document.querySelector('[data-idea-next]').onclick=()=>scrollToId('abilities');
+ document.querySelectorAll('input[name="access"]').forEach(r=>r.onchange=()=>document.querySelectorAll('.config-option').forEach(l=>l.classList.toggle('is-selected',l.contains(r)&&r.checked)));
+ document.querySelector('[data-build]').onclick=showBuild;
+ document.querySelector('[data-start-agent]').onclick=()=>{try{localStorage.setItem(DRAFT_KEY,brief())}catch{}setSeen(document.querySelector('[data-splash-dontshow]').checked);location.assign('/app');};
+ document.querySelectorAll('.deploy-grid button').forEach(b=>b.onclick=()=>{state.deployTarget=b.dataset.target;document.querySelectorAll('.deploy-grid button').forEach(x=>x.classList.toggle('is-selected',x===b));});
+ document.querySelector('[data-open-deploy]').onclick=()=>{try{sessionStorage.setItem('webagent.onboarding.deployTarget',state.deployTarget)}catch{}setSeen(true);location.assign('/app#instances');};
+ const scroller=document.querySelector('[data-splash-scroll]');scroller.addEventListener('scroll',updateProgress,{passive:true});selectPath('about');loadAbilities();updateProgress();
 }
-
-// Remember that this device has seen the welcome. persist=true → never show again
-// on this device (1-year cookie + localStorage mirror); persist=false → skip for
-// this browser session only.
-function _setSeen(persist) {
-  try {
-    const maxAge = persist ? '; max-age=31536000' : '';   // 1 year, else session
-    document.cookie = 'wa_seen_splash=1; path=/; samesite=Lax' + maxAge;
-  } catch (_) {}
-  if (persist) { try { localStorage.setItem(SEEN_KEY, '1'); } catch (_) {} }
-}
-
-function _enterApp(dontShowAgain) {
-  _setSeen(!!dontShowAgain);
-  window.location.assign('/app');
-}
-
-function _boot() {
-  const root = document.getElementById('splash-root');
-  if (!root) return;
-  const scrollEl = root.querySelector('[data-splash-scroll]');
-
-  // CTA: every "Enter app" / "Get started" / "Proceed to app" button.
-  root.querySelectorAll('[data-splash-enter]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const cb = root.querySelector('[data-splash-dontshow]');
-      _enterApp(cb && cb.checked);
-    });
-  });
-
-  try {
-    initSplashEffects(root, scrollEl, BASE, { reduceMotion: _reduceMotion() });
-  } catch (e) {
-    console.warn('[landing] effects failed', e);
-  }
-}
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', _boot);
-} else {
-  _boot();
-}
+document.readyState==='loading'?document.addEventListener('DOMContentLoaded',boot):boot();

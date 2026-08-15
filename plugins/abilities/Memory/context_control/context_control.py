@@ -162,6 +162,14 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
                     "No summary was created."
                 ),
             })
+        # The summary train changed — drop the session's prewarmed prep bundle so
+        # the next turn rebuilds history compaction-aware. A stale pre-compaction
+        # bundle would otherwise be consumed within its TTL, negating the fold.
+        try:
+            from app.agent.turn_prewarm import invalidate as _invalidate_prewarm
+            _invalidate_prewarm(session_id)
+        except Exception:
+            pass
         return json.dumps({
             "status": "ok",
             "message": (

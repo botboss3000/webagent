@@ -1,0 +1,31 @@
+function directChat(msg,label){
+  // Bypass the genui dispatch pipeline entirely — no buildTaggedGenuiPrompt,
+  // no agent_context injection. The message sent is exactly what the caller
+  // builds. Used for quick notes where the prompt in data.json is complete.
+  // Reads identity from localStorage (auth_token / auth_user_id) because the
+  // genui page's scripts cannot see the app module's `app` object. Mirrors
+  // ui/shared/js/config.js apiPath() so it works under a subdirectory base.
+  try{
+    var sid=newId();
+    var tok=localStorage.getItem('auth_token')||'';
+    var uid=localStorage.getItem('auth_user_id')||'';
+    if(!uid||!tok)return '';
+    var p=window.location.pathname||'/';
+    p=p.replace(/\/index\.html?$/i,'');
+    if(p.length>1&&p.endsWith('/'))p=p.slice(0,-1);
+    if(/^\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p))p='';
+    else if(['/app','/setup','/setup.html'].indexOf(p.toLowerCase())>=0)p='';
+    else if(p==='/')p='';
+    var body={user_id:uid,session_id:sid,message:msg,execution_mode:'auto'};
+    // Friendly label so the chat panel shows a green notice instead of the raw
+    // prompt as a "You" bubble (the raw prompt still reaches the agent).
+    if(label)body.genui_label=label;
+    fetch(p+'/api/v1/chat/send',{method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
+      body:JSON.stringify(body)
+    }).catch(function(){});
+    return sid;
+  }catch(e){return ''}
+}
+function tplt(s,map){return s.replace(/\$\{(\w+)\}/g,function(_,k){return map[k]!==undefined?map[k]:'${'+k+'}'})}
+function cardChatPrompt(p,text){var cfg=CFG.cardChat&&CFG.cardChat.template?CFG.cardChat.template:'';if(!cfg)return'['+p.name+'] '+text;var oi=p.items?p.items.filter(function(i){return !i.done}):[],items=oi.map(function(i){return i.text+' ('+(i.tag||'task')+')'}).join('; ')||'none',done=p.items?p.items.filter(function(i){return i.done}).length:0,m=p.metrics||{},agent=p.chatAgentId||(CFG.cardChat&&CFG.cardChat.agentId)||'',map={name:p.name,status:p.statusLabel||p.status||'Active',progress:p.progress,open:p.open,tasks:p.tasks,daysLeft:m.daysLeft,commits:m.commits,prs:m.prs,reviewers:m.reviewers,items:items,done:done,c

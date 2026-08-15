@@ -69,7 +69,7 @@ GROUPS = ("db", "secrets", "attachments", "genui", "logs")
 
 # Postgres-family providers — these use the live Postgres backend, not SQLite, so
 # a DB reset drops the schema instead of removing files (mirrors the TUI tool).
-_PG_PROVIDERS = {"postgres", "neon", "gcp_cloud_sql", "aws_rds", "azure_postgres"}
+# Keep in sync with connection_config.is_postgres_provider() — the single source of truth.
 
 
 def repo_root() -> Path:
@@ -82,8 +82,8 @@ def repo_root() -> Path:
 # glob (attachments / genui under data/user_data/*) are expanded in _paths_for().
 
 _DB_SQLITE_FILES = [
-    "data/db/local.db", "data/db/local.db-journal", "data/db/local.db-wal",
-    "data/db/local.db-shm", "data/db/local.db.preprompt-bak",
+    "data/db/app.db", "data/db/app.db-journal", "data/db/app.db-wal",
+    "data/db/app.db-shm",
     # Legacy locations (pre data/db/ relocation) + a stray root copy.
     "app/db/local.db", "app/db/local.db-journal", "app/db/local.db-wal",
     "app/db/local.db-shm", "app/db/local.db.preprompt-bak",
@@ -124,8 +124,9 @@ def _paths_for(root: Path, groups: set[str]) -> list[str]:
     """Concrete repo-relative file/dir list for the selected groups (no PG — that
     is handled separately by _wipe_postgres). ``db`` files are added only when the
     active backend is SQLite (Postgres has no local DB file to move)."""
+    from app.db.connection_config import is_postgres_provider
     rels: list[str] = []
-    if "db" in groups and _active_provider(root) not in _PG_PROVIDERS:
+    if "db" in groups and not is_postgres_provider(_active_provider(root)):
         rels += _DB_SQLITE_FILES
     if "secrets" in groups:
         rels += _SECRETS_FILES
@@ -187,7 +188,7 @@ def _wipe_postgres(root: Path) -> tuple[bool, str]:
         cfg = load_config()
     except Exception as e:
         return False, f"could not load DB config: {e!r}"
-    if getattr(cfg, "provider", "sqlite") not in _PG_PROVIDERS:
+    if not is_postgres_provider(getattr(cfg, "provider", "sqlite")):
         return False, "active backend is not Postgres"
     schema = getattr(cfg, "schema", None) or "public"
     loc = f"{schema}@{cfg.host}:{cfg.port}/{cfg.database}"
@@ -242,7 +243,8 @@ def run_pending_reset() -> None:
     # 1) Live Postgres schema drop (only when resetting the DB on a PG backend).
     pg_ok: bool | None = None
     pg_detail = ""
-    if "db" in groups and _active_provider(root) in _PG_PROVIDERS:
+    from app.db.connection_config import is_postgres_provider
+    if "db" in groups and is_postgres_provider(_active_provider(root)):
         pg_ok, pg_detail = _wipe_postgres(root)
         logger.warning("[reset] postgres wipe ok=%s (%s)", pg_ok, pg_detail)
 

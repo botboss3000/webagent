@@ -2,7 +2,7 @@
 Encryption migration loops.
 
 Each loop is backend-agnostic — they call methods on the active StorageBackend
-(via app.db.get_db()) which work identically for SQLite + Supabase + Postgres.
+(via app.db.get_db()) which works identically for SQLite + Postgres.
 
 Loops:
     encrypt_all()          — re-encrypt every plaintext sensitive value with the
@@ -45,7 +45,7 @@ async def _all_users() -> List[str]:
     db = _unwrap(get_db())
     raw = db.get_raw_client()
     uids: set = set()
-    for table, col in (("user_profiles", "user_id"), ("auth_elements", "user_id")):
+    for table, col in (("user_profiles", "user_id"),):
         try:
             res = raw.table(table).select(col).execute()
             for row in (res.data or []):
@@ -54,35 +54,61 @@ async def _all_users() -> List[str]:
                     uids.add(uid)
         except Exception as e:
             logger.warning("Listing %s failed: %s", table, e)
+    # In layout v2 auth_elements is no longer a main-database table.  The raw
+    # backend's public list method already unions the three attached vaults, but
+    # it needs a user id.  For local SQLite, discover those ids directly from
+    # the scoped vault attachments; remote backends retain one auth_elements
+    # table and use the raw adapter.
+    if hasattr(db, "_get_conn"):
+        conn = db._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT user_id FROM vault_app.auth_elements UNION "
+                "SELECT user_id FROM vault_agent.auth_elements UNION "
+                "SELECT user_id FROM vault_user.auth_elements"
+            ).fetchall()
+            for row in rows:
+                uid = row["user_id"] if hasattr(row, "keys") else row[0]
+                if uid and uid != VAULT_SENTINEL_USER:
+                    uids.add(uid)
+        finally:
+            conn.close()
+    else:
+        try:
+            res = raw.table("auth_elements").select("user_id").execute()
+            for row in (res.data or []):
+                uid = row.get("user_id")
+                if uid and uid != VAULT_SENTINEL_USER:
+                    uids.add(uid)
+        except Exception as e:
+            logger.warning("Listing auth_elements failed: %s", e)
     return sorted(uids)
 
 
 async def _walk_auth_elements_for_user(user_id: str) -> List[dict]:
     from app.db import get_db
     db = _unwrap(get_db())
-    raw = db.get_raw_client()
     try:
-        res = (
-            raw.table("auth_elements")
-            .select("*")
-            .eq("user_id", user_id)
-            .execute()
-        )
-        return list(res.data or [])
+        return list(await db.auth_element_list(user_id))
     except Exception as e:
         logger.warning("Listing auth_elements(%s) failed: %s", user_id, e)
         return []
 
 
-async def _set_secret_ref(row_id: str, new_value: str) -> None:
+async def _set_secret_ref(row: dict, new_value: str) -> None:
     from app.db import get_db
     db = _unwrap(get_db())
-    raw = db.get_raw_client()
-    from datetime import datetime, timezone
-    raw.table("auth_elements") \
-       .update({"secret_ref": new_value, "updated_at": datetime.now(timezone.utc).isoformat()}) \
-       .eq("id", row_id) \
-       .execute()
+    config = row.get("config") or {}
+    if isinstance(config, str):
+        import json
+        config = json.loads(config or "{}")
+    await db.auth_element_set(
+        row.get("user_id") or "",
+        row.get("service") or "",
+        config,
+        new_value,
+        row.get("label") or "default",
+    )
 
 
 # ── Public loops ───────────────────────────────────────────────────────────
@@ -120,7 +146,7 @@ async def encrypt_all() -> dict:
                 continue
             try:
                 ct = await enc.encrypt(uid, secret)
-                await _set_secret_ref(row["id"], ct)
+                await _set_secret_ref(row, ct)
                 encrypted += 1
             except Exception as e:
                 logger.error("encrypt row %s failed: %s", row.get("id"), e)
@@ -166,7 +192,7 @@ async def decrypt_all() -> dict:
                 if pt == secret:
                     errors += 1
                     continue
-                await _set_secret_ref(row["id"], pt)
+                await _set_secret_ref(row, pt)
                 decrypted += 1
             except Exception as e:
                 logger.error("decrypt row %s failed: %s", row.get("id"), e)
@@ -214,7 +240,7 @@ async def rotate_dek(user_id: str) -> dict:
             # available in cache + vault until we purge).
             plain = await enc.decrypt(user_id, secret)
             ct = await enc.encrypt(user_id, plain)
-            await _set_secret_ref(row["id"], ct)
+            await _set_secret_ref(row, ct)
             n_rewrapped += 1
         except Exception as e:
             logger.error("rotate_dek row %s failed: %s", row.get("id"), e)

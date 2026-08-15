@@ -27,8 +27,20 @@
   var CONFIG_URL = '/api/v1/auth/ui-config';
   var BASE = 'ui/background/';
 
-  var genui = document.getElementById('stargaze-bg');
-  if (!genui) return;  // no background surface on this page
+  var genuiHost = document.getElementById('stargaze-bg');
+  if (!genuiHost) return;  // no background surface on this page
+
+  // The public mount is the GenUI custom element. Renderers need a 2D drawing
+  // surface, so keep its implementation canvas private inside that host rather
+  // than replacing the GenUI element with the legacy <canvas> tag.
+  var genui = genuiHost.querySelector(':scope > canvas[data-wa-bg-surface]');
+  if (!genui) {
+    genui = document.createElement('canvas');
+    genui.dataset.waBgSurface = 'true';
+    genui.setAttribute('aria-hidden', 'true');
+    genui.style.cssText = 'position:absolute;inset:0;display:block;pointer-events:none;';
+    genuiHost.appendChild(genui);
+  }
 
   var choice = readCache();      // { dark, light }
   var activeId = null;           // id currently drawing ('none' included)

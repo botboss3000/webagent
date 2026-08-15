@@ -35,6 +35,7 @@
   /* —— Spotlight tracking for cards / bubbles / dropdowns / panels —— */
   var SPOT_SELECTORS = [
     '#main-panel',
+    '#chat-resize-handle',
     '.ac-stickynav .ac-category-summary',
     '.chat-bubble',
     '.tab-select-popup',

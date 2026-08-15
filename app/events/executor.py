@@ -121,7 +121,7 @@ async def execute_event_subscription(
 
     agent_id = sub["agent_id"]
     user_id = sub["owner_user_id"]
-    # Multi-tenant: background fire with no request context — pin the data-plane
+    # User BYOD: background fire with no request context — pin the data-plane
     # router to the subscription OWNER before resolving db, so the session +
     # interactions written for this fire land in the owner's own database. No-op
     # in single-tenant mode.

@@ -166,7 +166,7 @@ async def upload_file(
             mime_type=mime_type_eff,
         )
     except RuntimeError as e:
-        # Backend not configured (missing SUPABASE_URL, no boto3, etc.).
+        # Backend not configured (missing env vars, no boto3, etc.).
         raise HTTPException(status_code=501, detail=f"Storage backend not ready: {e}")
     except IOError as e:
         raise HTTPException(status_code=500, detail=f"Failed to store file: {e}")

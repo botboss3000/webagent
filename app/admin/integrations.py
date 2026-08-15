@@ -600,46 +600,73 @@ def resolve_user_id(authorization: str = "", token_qs: str = "") -> str:
 _LAST_SEEN_BASE_URL: str = ""
 
 
-def _get_configured_base_url() -> Optional[str]:
-    """Return the deployment-configured canonical base URL, or None if unset.
+def _is_trusted_proxy(request: Request) -> bool:
+    """Return True when we should trust X-Forwarded-Proto from this request's peer.
 
-    Checked sources (in order): WEBHOOK_BASE_URL env var, then
-    webhook_base_url.txt at the repo root. Returns None when neither is set,
-    so callers can distinguish "operator picked a canonical host" from
-    "fall back to request-derived host"."""
-    from pathlib import Path
-    base_url = os.environ.get("WEBHOOK_BASE_URL", "").strip()
-    if not base_url:
+    The header is meaningful ONLY when the request arrived through a reverse proxy
+    we control (Caddy/nginx on the same box, Cloud Run's GFE, etc.).  An arbitrary
+    client can set X-Forwarded-Proto: https and we must not believe it.
+
+    Trusted peers:
+      - Loopback (127.0.0.0/8, ::1) — local Caddy / nginx / dev
+      - RFC 1918 private networks (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+      - Link-local (169.254.0.0/16) — cloud metadata / internal proxies
+      - IPs / CIDRs from TRUSTED_PROXY_IPS env var (comma-separated), to cover
+        Cloud Run GFE and other platforms where the proxy peer is a public IP.
+    """
+    import ipaddress
+    client_host = (request.client.host if request.client else None)
+    if not client_host:
+        return False
+    try:
+        ip = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return True
+    trusted_env = os.environ.get("TRUSTED_PROXY_IPS", "").strip()
+    if trusted_env:
         try:
-            wh_file = Path(__file__).resolve().parent.parent.parent / "webhook_base_url.txt"
-            if wh_file.exists():
-                base_url = wh_file.read_text().strip()
-        except Exception:
+            nets = [ipaddress.ip_network(s.strip(), strict=False) for s in trusted_env.split(",") if s.strip()]
+            if any(ip in net for net in nets):
+                return True
+        except ValueError:
             pass
-    return base_url or None
+    return False
+
+
+def _get_configured_base_url() -> Optional[str]:
+    """Always returns None — the app no longer supports a pre-configured URL.
+    All URL detection is request-derived. Kept as a stub for any callers that
+    checked this for "is the URL explicitly set by the operator" (now always
+    false)."""
+    return None
 
 
 def _get_base_url(request: Optional[Request] = None) -> str:
-    """Return the configured base URL.
+    """Return the detected base URL.
 
     Priority order:
-    1. WEBHOOK_BASE_URL env var (explicit override)
-    2. webhook_base_url.txt file
-    3. Derived from the incoming HTTP request (scheme + host) — works correctly
+    1. Derived from the incoming HTTP request (scheme + host) — works correctly
        on Cloud Run and any other hosted environment without extra config
-    4. Last-seen request-derived base URL (cached so background/agent code paths
+    2. Last-seen request-derived base URL (cached so background/agent code paths
        that have no Request object still produce the right URL instead of localhost)
-    5. Fallback to http://localhost:8000
+    3. Fallback to http://localhost:8000
+
+    Pre-configured URLs (env var, file) are no longer supported — the URL is
+    always detected from traffic.
     """
     global _LAST_SEEN_BASE_URL
-    base_url = _get_configured_base_url() or ""
+    base_url = ""
     if not base_url and request is not None:
         # Derive from the incoming request. Behind a TLS-terminating proxy (e.g.
         # Cloud Run, Caddy), the app sees http:// internally but the real scheme
-        # is in the X-Forwarded-Proto header — use that when present.
+        # is in the X-Forwarded-Proto header — use that only when the request
+        # comes from a trusted reverse proxy so we don't blindly trust a header
+        # any client can set.
         derived = str(request.base_url).rstrip("/")
         forwarded_proto = request.headers.get("x-forwarded-proto", "")
-        if forwarded_proto and derived.startswith("http://"):
+        if forwarded_proto and derived.startswith("http://") and _is_trusted_proxy(request):
             derived = "https://" + derived[len("http://"):]
         base_url = derived
     if base_url:
@@ -1332,6 +1359,21 @@ async def _ability_app_enabled(db, ability: str) -> bool:
     return abilities_catalog.ability_default_enabled(ability)
 
 
+def _app_function_enabled(app_function_id: str) -> bool:
+    """Sync app-level gate for an APP FUNCTION (Session Namer, …).
+
+    Unlike a real agent ability, an app function has no per-agent connection row
+    and is excluded from `get_ability_enabled_map()` (kind != "ability"), so its
+    on/off resolves through the same app-level store via
+    app.abilities.app_function_enabled. Fails ON on any read error (a
+    default-on function is never silently disabled)."""
+    try:
+        from app import abilities as _abilities_gate
+        return _abilities_gate.app_function_enabled(app_function_id)
+    except Exception:
+        return True
+
+
 async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[str]:
     """Return the set of connection_types that are set up and toggleable.
 
@@ -1352,14 +1394,26 @@ async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[s
         logger.debug("Failed to import db while checking configured providers: %s", e)
         return configured
 
+    # Pull ALL of the admin's auth elements in ONE query and index by service,
+    # instead of a per-service `auth_element_get` round-trip in each loop below.
+    # On a remote DB the old per-service form was ~13-20 serial round-trips and
+    # made this function (called on every Agents-page connections/abilities load)
+    # take multiple seconds. `secret_ref` semantics are unchanged.
+    try:
+        _admin_elems = await db.auth_element_list(_ADMIN_USER)
+    except Exception as e:
+        logger.debug("auth_element_list(admin) failed: %s", e)
+        _admin_elems = []
+    _admin_by_service: dict[str, dict] = {}
+    for _el in _admin_elems:
+        if (_el.get("label") or "default") == "default":
+            _admin_by_service[_el.get("service")] = _el
+
     # Channels: admin-enabled if their channel auth_element exists.
     for ct, service_key in _CHANNEL_CONFIG_KEY.items():
-        try:
-            elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
-            if elem and elem.get("secret_ref"):
-                configured.add(ct)
-        except Exception as e:
-            logger.debug("auth_element_get failed for channel %s: %s", service_key, e)
+        elem = _admin_by_service.get(service_key)
+        if elem and elem.get("secret_ref"):
+            configured.add(ct)
 
     # Agent Tools — every kind="ability" drop-in in the catalog. Whether each is
     # on is read from data/config/agent-abilities.json (with descriptor fallback)
@@ -1396,13 +1450,8 @@ async def get_admin_configured_providers(user_id: Optional[str] = None) -> set[s
             if seen[service_key]:
                 configured.add(ct)
             continue
-        ok = False
-        try:
-            elem = await db.auth_element_get(_ADMIN_USER, service_key, "default")
-            if elem and elem.get("secret_ref"):
-                ok = True
-        except Exception as e:
-            logger.debug("auth_element_get failed for %s: %s", service_key, e)
+        elem = _admin_by_service.get(service_key)
+        ok = bool(elem and elem.get("secret_ref"))
         seen[service_key] = ok
         if ok:
             configured.add(ct)
@@ -1665,7 +1714,10 @@ async def get_integration_config(
         "app_control_configured":         ability_enabled.get("app_control", False),
         "wiki_control_configured":         ability_enabled.get("wiki_control", False),
         "image_vision_configured":         ability_enabled.get("image_vision", False),
-        "session_titler_configured":       ability_enabled.get("session_titler", False),
+        # Session Namer is an APP FUNCTION, not an agent ability — it's excluded
+        # from the `abilities` map above, so resolve its legacy reader key from
+        # the app-level gate instead (never a stale False).
+        "session_titler_configured":       _app_function_enabled("session_titler"),
     }
 
 

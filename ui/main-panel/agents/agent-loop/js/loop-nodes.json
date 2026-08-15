@@ -120,9 +120,6 @@
     "memory_save": [
       { "name": "Settings → Source",     "type": "admin",   "desc": "View and manage memory and context documents" }
     ],
-    "fire_optimizer": [
-      { "name": "Settings → Optimizer",  "type": "admin",   "desc": "Optimizer fires on every exit path — configure run mode and intensity" }
-    ],
 
     "opt_collect": [
       { "name": "/optimize [feedback]",  "type": "command", "desc": "Trigger a new optimizer run against the current session" },
@@ -280,10 +277,10 @@
       ]
     },
     "interrupt_chk": {
-      "desc": "_check_interrupt() — checks for a cancellation or shutdown signal. Raises AgentInterrupted if set, which triggers fire_optimizer and ends the stream.",
+      "desc": "_check_interrupt() — checks for a cancellation or shutdown signal. Raises AgentInterrupted if set, which ends the stream.",
       "details": [
         { "key": "Checked", "val": "5× per turn: loop start, before LLM, in validation loop (per tool), after validation, in execution loop (per result)" },
-        { "key": "On flag", "val": "Raises AgentInterrupted → fire_optimizer fires → stream ends cleanly" }
+        { "key": "On flag", "val": "Raises AgentInterrupted → stream ends cleanly" }
       ]
     },
     "turn_counter": {
@@ -434,20 +431,12 @@
         { "key": "Optional", "val": "Skipped if the memory tool is disabled for this agent" }
       ]
     },
-    "fire_optimizer": {
-      "desc": "_fire_optimizer() — fires as a background task on every exit path. Analyzes the session and proposes skill and prompt improvements.",
-      "details": [
-        { "key": "Mode",     "val": "Fire-and-forget (asyncio.create_task) — never blocks the response stream" },
-        { "key": "Triggers", "val": "All exit paths: clean finish · max_turns · interrupt · unhandled error" },
-        { "key": "Output",   "val": "Optimizer session → planner → closer → skill updates in DB" }
-      ]
-    },
     "opt_collect": {
       "desc": "Triggered by a tool call from another agent — not by direct user input. Receives a structured JSON payload containing session_id, optional feedback, and scan scope.",
       "details": [
         { "key": "Trigger type", "val": "tool_call" },
         { "key": "Input shape",  "val": "JSON: { session_id, feedback?, scope?, intensity? }" },
-        { "key": "Fired by",     "val": "run_optimizer tool call · fire_optimizer background task · /optimize slash command" }
+        { "key": "Fired by",     "val": "run_optimizer tool call · /optimize slash command" }
       ]
     }
   }

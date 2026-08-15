@@ -17,6 +17,8 @@ import os
 import platform
 import shutil
 import socket
+import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -34,6 +36,15 @@ _DEVICE_LABEL: Optional[str] = None
 _CLAUDE_READY: Optional[bool] = None
 _CLAUDE_READY_AT: float = 0.0
 _CLAUDE_READY_TTL: float = 60.0
+
+# Working-tree diffstat, cached briefly. Computed at most once per TTL so the
+# periodic heartbeat never hammers git; on failure the cache is backdated so a
+# pathological repo is retried at most ~once a minute, never on every tick.
+_REPO_STATS: Optional[Dict[str, int]] = None
+_REPO_STATS_AT: float = 0.0
+_REPO_STATS_TTL: float = 8.0
+_REPO_STATS_FAIL_BACKOFF: float = 45.0
+_REPO_STATS_LOCK = threading.Lock()
 
 
 def _id_file() -> Path:
@@ -56,16 +67,17 @@ def device_id() -> str:
         if p.exists():
             val = p.read_text(encoding="utf-8").strip()
             if val:
-                _DEVICE_ID = val
-                return val
+                # Strip legacy "dev_" prefix from old installations
+                _DEVICE_ID = val[4:] if val.startswith("dev_") else val
+                return _DEVICE_ID
         p.parent.mkdir(parents=True, exist_ok=True)
-        val = f"dev_{uuid.uuid4().hex[:16]}"
+        val = uuid.uuid4().hex[:16]
         p.write_text(val, encoding="utf-8")
         _DEVICE_ID = val
         return val
     except Exception:
         # Never crash over identity — fall back to an ephemeral id.
-        _DEVICE_ID = _DEVICE_ID or f"dev_{uuid.uuid4().hex[:16]}"
+        _DEVICE_ID = _DEVICE_ID or uuid.uuid4().hex[:16]
         return _DEVICE_ID
 
 
@@ -121,6 +133,81 @@ def _repo_info() -> Dict[str, str]:
     return _REPO
 
 
+def repo_stats() -> Optional[Dict[str, int]]:
+    """Best-effort working-tree diffstat for THIS device's app repo (the project
+    root): how many files are changed and the +/− line totals since HEAD.
+    Untracked files count as all-additions — the same convention as the File
+    Explorer's +/− badges and Source Control's status.
+
+    Returns None when git is missing, the folder isn't a git checkout, or the
+    read fails/times out — the Instances page then simply omits the badge.
+    Pinned to the project root (never the admin's Source-Control selection), so
+    every device reports the state of the repo it actually runs."""
+    global _REPO_STATS, _REPO_STATS_AT
+    now = time.monotonic()
+    if (now - _REPO_STATS_AT) < _REPO_STATS_TTL:
+        return _REPO_STATS
+    with _REPO_STATS_LOCK:
+        now = time.monotonic()
+        if (now - _REPO_STATS_AT) < _REPO_STATS_TTL:
+            return _REPO_STATS
+        try:
+            root = Path(__file__).resolve().parents[2]
+            if not (root / ".git").exists():
+                _REPO_STATS = None
+                _REPO_STATS_AT = time.monotonic()
+                return None
+            files, added, removed = 0, 0, 0
+            # Tracked changes vs HEAD (staged + unstaged together).
+            diff = subprocess.run(
+                ["git", "-c", "core.quotePath=false", "diff", "--numstat", "--no-renames", "HEAD"],
+                cwd=root, capture_output=True, text=True, timeout=3)
+            if diff.returncode == 0:
+                for line in diff.stdout.splitlines():
+                    cols = line.split("\t")
+                    if len(cols) < 3:
+                        continue
+                    a, r = cols[0], cols[1]
+                    if a == "-" and r == "-":
+                        continue  # binary — no meaningful line count
+                    files += 1
+                    added += int(a) if a.isdigit() else 0
+                    removed += int(r) if r.isdigit() else 0
+            # Untracked files — every line is an addition (capped so a huge
+            # accidentally-untracked tree can't make this read forever).
+            st = subprocess.run(
+                ["git", "-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all"],
+                cwd=root, capture_output=True, text=True, timeout=3)
+            processed = 0
+            if st.returncode == 0:
+                for line in st.stdout.splitlines():
+                    if not line.startswith("?? "):
+                        continue
+                    if processed >= 1000:
+                        break
+                    processed += 1
+                    rel = line[3:].strip().strip('"')
+                    if not rel:
+                        continue
+                    files += 1
+                    try:
+                        p = root / rel
+                        if p.is_file():
+                            with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                                added += sum(1 for _ in fh)
+                    except Exception:
+                        pass
+            _REPO_STATS = {"files": files, "insertions": added, "deletions": removed}
+        except Exception:
+            # Git missing / not a repo / timed out — back off before retrying so a
+            # slow repo can't stall the heartbeat loop repeatedly.
+            _REPO_STATS = None
+            _REPO_STATS_AT = time.monotonic() + _REPO_STATS_FAIL_BACKOFF
+            return None
+        _REPO_STATS_AT = time.monotonic()
+        return _REPO_STATS
+
+
 def claude_ready() -> bool:
     """True if the `claude` CLI is installed on THIS machine (resolvable on PATH).
     Resolved the SAME way the engine launches it (shutil.which), so if this says
@@ -151,6 +238,30 @@ def capabilities() -> Dict[str, object]:
     except Exception:
         sysname = ""
     info = _repo_info()
-    return {"platform": sysname, "hostname": device_label(),
-            "repo": info["repo"], "branch": info["branch"],
-            "claude": claude_ready()}
+    deploy_provider = os.environ.get("WEBAGENT_DEPLOY_PROVIDER", "").strip()
+    deploy_repo = os.environ.get("WEBAGENT_DEPLOY_REPO", "").strip()
+    deploy_branch = os.environ.get("WEBAGENT_DEPLOY_BRANCH", "").strip()
+    out: Dict[str, object] = {
+        "platform": sysname,
+        "hostname": device_label(),
+        # Source archives do not contain .git metadata. Managed deployments
+        # inject their source identity so fleet controls can still show the repo.
+        "repo": deploy_repo or info["repo"],
+        "branch": deploy_branch or info["branch"],
+        # Working-tree diffstat (files changed / +− lines) — best-effort, None
+        # when git isn't available. The Instances Overview shows it next to the
+        # repo URL so a device's uncommitted work is visible at a glance.
+        "repo_stats": repo_stats(),
+        "claude": claude_ready(),
+    }
+    if deploy_provider:
+        out["deployment_provider"] = deploy_provider
+    if deploy_provider == "google_cloud_run":
+        out["cloud_run"] = {
+            "project": os.environ.get("WEBAGENT_CLOUD_RUN_PROJECT", "").strip(),
+            "region": os.environ.get("WEBAGENT_CLOUD_RUN_REGION", "").strip(),
+            "service": os.environ.get("WEBAGENT_CLOUD_RUN_SERVICE", "").strip(),
+            "repo": deploy_repo,
+            "branch": deploy_branch,
+        }
+    return out

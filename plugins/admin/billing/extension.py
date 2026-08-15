@@ -22,6 +22,7 @@ from typing import Any, Optional, Tuple
 from fastapi import HTTPException
 
 from plugins.admin.billing import store
+from plugins.billing.pricing import parse_strategy_selection
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,9 @@ def _merge(platform_row: dict, agent_cfg: dict) -> dict:
         "allowed_processors": _jlist(platform_row.get("allowed_processors")),
         "rate_card_default_llm": _jval(platform_row.get("rate_card_default_llm"), {}),
         "rate_card_byo_llm": _jval(platform_row.get("rate_card_byo_llm"), {}),
+        "cost_multiplier": float(platform_row.get("cost_multiplier") or 1.0),
+        "min_charge_cents": int(platform_row.get("min_charge_cents") or 1),
+        "flat_image_cost_usd": float(platform_row.get("flat_image_cost_usd") or 0.01),
         "trial_config": _jval(platform_row.get("trial_config"), {}),
         "subscription_price_cents": int(platform_row.get("subscription_price_cents") or 0),
         "currency": platform_row.get("currency") or "usd",
@@ -73,6 +77,13 @@ def _merge(platform_row: dict, agent_cfg: dict) -> dict:
         if k in ("allowed_strategies", "platform_fee_pct", "platform_fee_flat_cents"):
             continue  # ceilings/fee always from the platform row
         out[k] = v
+    # Cost-pricing fields: the agent overrides the platform ONLY when explicitly
+    # set (None = inherit). 0 is a valid explicit override (e.g. disabling the
+    # min-charge floor), so handle these outside the generic loop above which
+    # skips 0. _row_to_config returns raw (None) values for unset fields.
+    for k in ("cost_multiplier", "min_charge_cents", "flat_image_cost_usd"):
+        if (agent_cfg or {}).get(k) is not None:
+            out[k] = agent_cfg[k]
     return out
 
 
@@ -113,9 +124,11 @@ class PlatformBillingExtension:
         allowed_strategies = set(_jlist(platform.get("allowed_strategies")))
         allowed_processors = set(_jlist(platform.get("allowed_processors")))
         strat = fields.get("strategy")
-        if strat and strat != "free" and allowed_strategies and strat not in allowed_strategies:
+        selected = set(parse_strategy_selection(strat)) - {"free"} if strat else set()
+        disallowed = sorted(selected - allowed_strategies) if allowed_strategies else []
+        if disallowed:
             raise HTTPException(status_code=400,
-                                detail=f"Strategy '{strat}' not enabled by platform admin.")
+                                detail=f"Strategies not enabled by platform admin: {disallowed}")
         procs = fields.get("allowed_processors")
         if procs and allowed_processors:
             bad = [p for p in procs if p not in allowed_processors]

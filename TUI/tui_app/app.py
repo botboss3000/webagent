@@ -781,7 +781,7 @@ class ServerManagerApp(App):
 
     def _apply_provider(self) -> None:
         """(Re)resolve the AI provider for the current project and rebuild the LLM
-        client. Managed mode → the linked repo's provider.json wins; onboarding →
+        client. Managed mode → the linked repo's tui_provider.json wins; onboarding →
         the app key. Called at startup and on every relink (live key re-pick)."""
         self.provider = resolve_provider(self.project_root, self.cfg)
         self.llm = LLMClient(self.provider)
@@ -1055,7 +1055,7 @@ class ServerManagerApp(App):
             self.store.set_setting("repo_dir", str(self.project_root))
         except Exception:
             pass
-        self._apply_provider()                         # the repo's provider.json wins now
+        self._apply_provider()                         # the repo's tui_provider.json wins now
         if self.agent is not None:
             self.agent.project_root = self.project_root
         # A different checkout is in play now — drop any running app-brain engine
@@ -3293,7 +3293,7 @@ class ServerManagerApp(App):
                             api_key: str) -> None:
         """Persist the LLM into the TUI's OWN config so the internal brain uses it.
         Sets ``provider_override`` so the saved triple wins over the repo's
-        provider.json/.env, rebuilds the live LLM client immediately, and never
+        tui_provider.json/.env, rebuilds the live LLM client immediately, and never
         touches the web-app server (which keeps its own provider)."""
         if provider:
             self.cfg.provider = provider

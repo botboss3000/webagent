@@ -8,10 +8,10 @@ Three things are resolved here, all independent of the WebAgent server:
 * **project dir** — the target WebAgent checkout the agent operates on.
 * **LLM provider** — api key / base url / model, resolved from (highest first):
   an explicit per-TUI ``WEBAGENT_*`` override, then the linked repo's
-  ``provider.json`` (the live, *complete* credential store the web app itself
-  uses — authoritative once a checkout is linked), then generic/legacy ``LLM_*``
+  ``tui_provider.json`` (the TUI's own credential store — self-contained,
+  independent of the web app's DB), then generic/legacy ``LLM_*``
   / ``OPENROUTER_*`` (the app-level key used during onboarding), then the saved
-  config, then built-in defaults. Resolving ``provider.json`` as a coherent
+  config, then built-in defaults. Resolving ``tui_provider.json`` as a coherent
   (api_key, base_url, model) triple — above both the partial ``OPENROUTER_*`` env
   and the generic ``LLM_*`` key — fixes the 401 *and* makes a linked repo's key
   win over the app key. OpenAI-compatible.
@@ -105,23 +105,18 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 
 def _load_provider_json(project_dir: Path) -> dict[str, str]:
-    """Read the web app's ``provider.json`` and return a *coherent* provider triple.
+    """Read the TUI's ``tui_provider.json`` and return a *coherent* provider triple.
 
-    ``provider.json`` is the credential store the WebAgent server itself uses, so
-    its base_url / api_key / model always agree (unlike the project's ``.env``,
-    whose ``OPENROUTER_*`` values are often partial or stale). Mirrors the
-    selection in ``app/admin/settings.py``: prefer the ``admin`` profile
-    (this is an operator/admin tool), then ``__anonymous__``, then the first
-    profile that carries a key. Also handles the legacy flat format (config at the
-    root). Returns ``{}`` when the file is absent — it's gitignored, so fresh
-    checkouts won't have one — or unreadable, so resolution falls back cleanly.
+    ``tui_provider.json`` is the credential store the TUI uses to connect to an
+    LLM provider independently of the web app's DB. Returns ``{}`` when the file
+    is absent — it's gitignored, so fresh checkouts won't have one — or unreadable,
+    so resolution falls back cleanly.
 
-    Checks both ``data/config/provider.json`` (the canonical app path) and
-    ``provider.json`` at the project root (an older layout still in use).
+    Checks ``tui_data/tui_provider.json`` at the project root.
     """
     for candidate in (
-        project_dir / "data" / "config" / "provider.json",
-        project_dir / "provider.json",
+        project_dir / "tui_data" / "tui_provider.json",
+        project_dir / "tui_provider.json",
     ):
         try:
             data = json.loads(candidate.read_text(encoding="utf-8"))
@@ -129,15 +124,7 @@ def _load_provider_json(project_dir: Path) -> dict[str, str]:
             continue
         if not isinstance(data, dict):
             continue
-        if "api_key" in data and "base_url" in data:      # legacy flat format
-            cfg: Any = data
-        else:
-            cfg = data.get("admin") or data.get("__anonymous__")
-            if not isinstance(cfg, dict):
-                cfg = next(
-                    (v for v in data.values() if isinstance(v, dict) and v.get("api_key")),
-                    None,
-                )
+        cfg: Any = data
         if not isinstance(cfg, dict):
             continue
         return {
@@ -190,20 +177,20 @@ def resolve_provider(project_dir: Optional[Path], saved: "TuiConfig") -> Provide
     """Resolve LLM provider config. Order, highest priority first:
 
     1. explicit per-TUI override ``WEBAGENT_*`` (env or project ``.env``)
-    2. the linked repo's ``provider.json`` — a *complete*, internally-consistent
-       (api_key, base_url, model) triple; authoritative once a checkout is linked
+    2. the linked repo's ``tui_provider.json`` — a *complete*, internally-consistent
+       (api_key, base_url, model) triple; the TUI's own credential store
     3. generic/legacy ``LLM_*`` / ``OPENROUTER_*`` (env or project ``.env``) — these
        act as the app-level key during onboarding (no repo linked)
     4. the saved TUI config
     5. built-in defaults
 
     Two things this ordering buys us:
-    * ``provider.json`` above ``OPENROUTER_*`` fixes the 401 — those ``.env`` keys
+    * ``tui_provider.json`` above ``OPENROUTER_*`` fixes the 401 — those ``.env`` keys
       supply a key + model but no base URL, so base_url silently defaulted to
       OpenRouter while the key/model were really another provider's. Taking the
-      whole triple from ``provider.json`` keeps the three from being mixed.
-    * ``provider.json`` above the generic ``LLM_*`` means a **linked repo's key
-      wins** over an app-level ``LLM_*`` key — so onboarding uses the app key and a
+      whole triple from ``tui_provider.json`` keeps the three from being mixed.
+    * ``tui_provider.json`` above the generic ``LLM_*`` means a **linked repo's key
+      wins** over a generic ``LLM_*`` key — so onboarding uses a generic key and a
       linked checkout uses its own, exactly as intended.
     """
     env = os.environ
@@ -220,7 +207,7 @@ def resolve_provider(project_dir: Optional[Path], saved: "TuiConfig") -> Provide
         return ""
 
     # When provider_override is ON, the TUI is fully self-reliant: it ignores
-    # the web app's provider.json and project .env entirely. Only the explicit
+    # the web app's tui_provider.json and project .env entirely. Only the explicit
     # WEBAGENT_* env override (for emergencies) sits above the saved config.
     # This keeps the TUI working even when the web app has no LLM configured.
     if saved.provider_override and saved.api_key:
@@ -237,7 +224,7 @@ def resolve_provider(project_dir: Optional[Path], saved: "TuiConfig") -> Provide
         )
         return ProviderConfig(api_key=api_key.strip(), base_url=base_url.rstrip("/"), model=model.strip())
 
-    # Without a UI override, fall through to the web app's provider.json, then
+    # Without a UI override, fall through to tui_provider.json, then
     # legacy LLM_* / OPENROUTER_* env vars, then the saved config's fallback.
     api_key = (
         pick("WEBAGENT_API_KEY")
@@ -270,7 +257,7 @@ class TuiConfig:
     model: str = ""
     provider: str = ""             # provider preset name chosen in the App panel (display)
     provider_override: bool = False  # True once the user Saves a key/provider in the UI →
-                                     # the saved triple then wins over the repo's provider.json/.env
+                                     # the saved triple then wins over the repo's tui_provider.json/.env
     engine_mode: str = "webagent"    # which agent loop drives ordinary turns:
                                      #   "webagent" = the linked checkout's REAL loop (its agents,
                                      #     abilities + the app's own LLM) — the default once linked;

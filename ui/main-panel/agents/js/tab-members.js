@@ -86,6 +86,7 @@ function _buildMembersSection(agent, title, rows, kind, panelBody) {
     sec.appendChild(empty); return sec;
   }
   const showActions = kind === 'member';
+  const wrap = document.createElement('div'); wrap.className = 'members-table-wrap';
   const table = document.createElement('table'); table.className = 'members-table';
   table.innerHTML = `<thead><tr><th>User</th><th>Channel</th><th class="members-num">Sessions</th><th class="members-num">Messages</th><th>Last login</th>${showActions ? '<th>Status</th><th></th>' : ''}</tr></thead><tbody></tbody>`;
   const tbody = table.querySelector('tbody');
@@ -118,7 +119,7 @@ function _buildMembersSection(agent, title, rows, kind, panelBody) {
       } catch (e) { alert('Action failed: ' + e.message); btn.disabled = false; }
     });
   }
-  sec.appendChild(table); return sec;
+  wrap.appendChild(table); sec.appendChild(wrap); return sec;
 }
 
 // Loading skeleton — echoes the access-policy card + two member sections so the

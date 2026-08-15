@@ -1,0 +1,19 @@
+--- function saveBag[\s\S]{0,400} @ 37437:
+function saveBag(){
+  clearTimeout(_saveTimer);
+  _saveTimer=setTimeout(function(){
+    try{
+      // Build the full data bag (projects + config) the same way loadBag expects
+      var bag={projects:STATE.projects,config:BAG.config||{},sessions:STATE.sessions||{}};
+      fetch('/api/v1/genui/home/data?user_id=admin',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+    
+
+--- api\.getData[\s\S]{0,200} @ 37209:
+api.getData==='function')d=window.WebagentGenui.api.getData()}catch(e){}return d||{projects:[],config:{}}}
+var BAG=loadBag();
+
+/* ── Persist QA state to data.json so Research/plan status survives refresh ── */
+v
+

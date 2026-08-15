@@ -211,12 +211,20 @@ async def memory(
             if dup:
                 target_slug = dup["slug"]
                 merged_from = slug
+            try:
+                from app.tools.execution_context import current_tool_context
+                _memory_ctx = current_tool_context()
+            except Exception:
+                _memory_ctx = None
             result = await db.memory_upsert(
                 user_id, target_slug,
                 page_type=page_type or "note",
                 title=title or target_slug,
                 compiled_truth=compiled_truth,
                 timeline=timeline or "",
+                origin="deliberate",
+                source_session_id=getattr(_memory_ctx, "session_id", None),
+                source_interaction_id=getattr(_memory_ctx, "tool_call_id", None),
             )
             resp = {"status": "ok", "slug": target_slug, "action": "upserted"}
             if merged_from:
@@ -265,7 +273,7 @@ async def session_search(
         db = get_db()
         q = query.lower()
         
-        # Try Supabase client first
+        # Try the raw query-builder client first
         raw = getattr(db, 'get_raw_client', None)
         if raw:
             try:
@@ -296,7 +304,7 @@ async def session_search(
                         break
                 return json.dumps({"status": "ok", "query": query, "count": len(matches), "results": matches})
             except Exception as e:
-                logger.debug("Supabase session_search failed, falling back to local: %s", e)
+                logger.debug("Raw client session_search failed, falling back to local: %s", e)
         
         # Fallback: the active local backend (SQLite or Postgres)
         from app.db import get_db
@@ -869,3 +877,6 @@ async def calculate(expression: str) -> str:
         return f"{expression} = {formatted}"
     except Exception as e:
         return f"Error evaluating '{expression}': {e}. Only basic math expressions are supported."
+    except Exception as e:
+        logger.error("resume_session failed: %s", e)
+        return json.dumps({"status": "error", "message": str(e)})

@@ -149,6 +149,30 @@ async def load_image_provider_for_user(user_id: str) -> Optional[dict]:
     return None
 
 
+# ── Per-image cost estimation ───────────────────────────────────────────────
+# Image endpoints that return real usage (OpenRouter chat-completions, Gemini
+# generateContent) could report exact cost; OpenAI-shape /images/generations and
+# Stability return NO usage at all. For those we estimate from published list
+# prices (normalized model name → USD per image) and fall back to the admin's
+# flat_image_cost_usd from the billing config. Credits then consume the same
+# cost × multiplier as text.
+_IMAGE_COST_USD = {
+    "dall-e-3": 0.04, "dall-e-2": 0.02, "gpt-image-1": 0.04,
+    "flux.1-schnell": 0.003, "flux.1-dev": 0.025,
+    "flux-1-schnell": 0.003, "flux-1-dev": 0.025,
+    "sd3.5-large": 0.065, "sd3.5-medium": 0.035,
+    "core": 0.03, "ultra": 0.08,
+    "imagen-3.0-generate-002": 0.04,
+}
+
+
+def _image_cost_usd(model: str, count: int, flat: Optional[float]) -> float:
+    per = _IMAGE_COST_USD.get((model or "").lower().strip())
+    if per is None:
+        per = float(flat if flat and flat > 0 else 0.01)
+    return round(per * max(int(count or 1), 1), 6)
+
+
 # ── The tool ────────────────────────────────────────────────────────────────
 
 
@@ -159,8 +183,16 @@ async def generate_image(
     n: int = 1,
     quality: Optional[str] = None,
     style: Optional[str] = None,
+    *,
+    agent_id: str = "",
+    session_id: str = "",
 ) -> str:
-    """Generate one or more images from a text prompt using the configured provider."""
+    """Generate one or more images from a text prompt using the configured provider.
+
+    On success the estimated provider cost flows through the same billing path
+    as text runs (plugins.billing.charge.record_and_charge): inherited-model
+    runs burn credits (trial grant first), own-key runs are free. Best-effort —
+    billing never blocks or fails the image."""
     if not prompt or not prompt.strip():
         return json.dumps({"status": "error", "message": "prompt is required"})
 
@@ -199,30 +231,120 @@ async def generate_image(
 
     try:
         if api_shape == "openai":
-            return await _openai_compatible(
+            out = await _openai_compatible(
                 user_id=user_id, base_url=base_url, api_key=api_key, model=model,
                 prompt=prompt, size=size, n=n, quality=quality, style=style,
                 client_cls=httpx.AsyncClient,
             )
-        if api_shape == "stability":
-            return await _stability(
+        elif api_shape == "stability":
+            out = await _stability(
                 user_id=user_id, base_url=base_url, api_key=api_key, model=model,
                 prompt=prompt, client_cls=httpx.AsyncClient,
             )
-        if api_shape == "gemini":
-            return await _gemini(
+        elif api_shape == "gemini":
+            out = await _gemini(
                 user_id=user_id, base_url=base_url, api_key=api_key, model=model,
                 prompt=prompt, n=n, client_cls=httpx.AsyncClient,
             )
-        if api_shape == "openrouter":
-            return await _openrouter(
+        elif api_shape == "openrouter":
+            out = await _openrouter(
                 user_id=user_id, base_url=base_url, api_key=api_key, model=model,
                 prompt=prompt, client_cls=httpx.AsyncClient,
             )
-        return json.dumps({"status": "error", "message": f"Unknown api_shape '{api_shape}'"})
+        else:
+            return json.dumps({"status": "error", "message": f"Unknown api_shape '{api_shape}'"})
+        await _bill_image(user_id=user_id, agent_id=agent_id, session_id=session_id,
+                          model=model, provider=provider, result_str=out)
+        return out
     except Exception as e:
         logger.exception("generate_image failed")
         return json.dumps({"status": "error", "message": str(e)})
+
+
+async def _bill_image(user_id: str, agent_id: str, session_id: str, model: str,
+                      provider: str, result_str: str) -> None:
+    """Best-effort billing for a successful image render: estimate the provider
+    cost, then run the shared charge path (trial grant first, then credits).
+
+    The own-key test for images is the user's IMAGE provider, not their text
+    LLM — a user who brought their own image key isn't costing the platform
+    anything, so the render is free even if their text model is inherited."""
+    if not user_id or not agent_id:
+        return
+    try:
+        payload = json.loads(result_str)
+    except Exception:
+        return
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return
+    count = int(payload.get("count") or 0)
+    if count <= 0:
+        return
+    try:
+        from app.db import get_app_db
+        from plugins.billing import pricing as _pricing
+        from plugins.billing.charge import record_and_charge
+        db = get_app_db()
+        cfg = await _pricing.load_effective_config(db, agent_id)
+        est_usd = _image_cost_usd(model, count, cfg.get("flat_image_cost_usd"))
+        own_key = await user_has_own_image_config(user_id)
+        await record_and_charge(
+            db, agent_id, user_id,
+            provider_cost_cents=int(round(est_usd * 100)),
+            model=model or "",
+            provider=provider or "",
+            session_id=session_id or None,
+            cost_usd=est_usd,
+            cost_source="image_estimate",
+            source="image",
+            own_key=own_key,
+        )
+    except Exception as e:
+        logger.debug("image billing skipped: %s", e)
+
+
+async def user_has_own_image_config(user_id: str) -> bool:
+    """True when the user's OWN config provides the image generator (their key
+    pays for generation). Mirrors load_image_provider_for_user's source order
+    but WITHOUT the admin fallback, so "own" means exactly the user's key."""
+    try:
+        from app.db import get_db
+        from app.admin.settings import _rehydrate_llm_keys
+        db = get_db()
+
+        def _img_out(e: dict) -> bool:
+            return bool(e.get("use_for_image_out") and e.get("image_out_capable")
+                        and e.get("model") and (e.get("api_key") or e.get("secret_ref")))
+
+        # 1) Unified Models list — the user's OWN llm config only.
+        elem = await db.auth_element_get(user_id, "llm", "default")
+        if elem:
+            c = elem.get("config") or {}
+            if isinstance(c, str):
+                try:
+                    c = json.loads(c)
+                except Exception:
+                    c = {}
+            _rehydrate_llm_keys(c, elem.get("secret_ref", ""))
+            if _img_out(c):
+                return True
+            for p in (c.get("multi_providers") or []):
+                if isinstance(p, dict) and _img_out(p):
+                    return True
+        # 2) Legacy standalone image_gen config (user's own only).
+        legacy = await db.auth_element_get(user_id, "image_gen", "default")
+        if legacy:
+            lc = legacy.get("config") or {}
+            if isinstance(lc, str):
+                try:
+                    lc = json.loads(lc)
+                except Exception:
+                    lc = {}
+            if lc.get("model") and (lc.get("api_key") or legacy.get("secret_ref")):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 # ── Per-provider implementations ────────────────────────────────────────────
@@ -486,6 +608,7 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         return await generate_image(
             user_id=user_id, prompt=prompt, size=size, n=n,
             quality=quality, style=style,
+            agent_id=agent_id or "", session_id=session_id or "",
         )
 
     TOOL_SCHEMAS.clear()

@@ -49,7 +49,7 @@ DEFAULT_NODE_ORDER: List[str] = [
     # CONTINUE?
     "check_continue",
     # OUTPUT
-    "final_response", "db_persist_final", "memory_save", "fire_optimizer",
+    "final_response", "db_persist_final", "memory_save",
 ]
 
 # Nodes that are structurally required — disabling them would break the loop.
@@ -73,7 +73,7 @@ GATED_NODES: frozenset = frozenset({
     "skill_track",     # Skip skill-execution DB writes (lightweight agents)
     "memory_search",   # Skip brain context lookup (lightweight / tool-only agents)
     "memory_save",     # Skip post-chat memory upsert (ephemeral agents)
-    "fire_optimizer",  # Skip optimizer trigger after completion
+
     "copy_defaults",   # Skip copying default context docs on first use
     "data_src_load",   # Skip per-agent external data-source tool injection
     "attachment_describe",  # Skip describing images for non-multimodal models

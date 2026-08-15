@@ -1,0 +1,140 @@
+<template data-slot="#ac-section-slot-data-settings">
+<section id="ac-section-data-settings" class="ac-section ac-stickynav">
+  <!-- DATA SETTINGS — admin-only. No page-title header: the tab carousel already
+       names this page. Follows the standard config-page layout (App Settings /
+       Agent Settings) — a stack of always-open, sticky `.ac-category-group`
+       headings (no chevron) plus a bottom page-assistant chat pill (like App
+       Settings). See docs/claude/ui-guidance.md point 5 + "the standard
+       config-page layout".
+
+       PAGE-ASSISTANT: each `.ac-category-group` below carries a `data-pa-area`
+       key (app_access · database · remote_access); the bottom pill (markup in
+       app-config.html as #ac-ds-pa-bar, wired by _initPageAssistant in
+       data-settings.js) reads which area the mouse is over and swaps its
+       placeholder + wraps the sent message with that area's prompt. The whole
+       assistant is steered toward helping the admin get people SIGNED IN to this
+       instance — text catalog in app-prompts.json → page_assistants.data_settings.
+
+       Its first group is APP ACCESS. The former DEPLOYMENT group (the local-
+       deployments list — this app's HOLD-TO-RESTART + port editor, plus any sibling
+       checkouts on this machine) was REMOVED from this page and MOVED to the Admin
+       Tools → Instances page, into the "This device" tile's Overview as a "Server"
+       section (ui/main-panel/instances/instances.js `_serverSectionHtml`). The
+       "+ New deployment" flow had already moved to that page's "New instance" tile,
+       so the whole deployment surface now lives with the fleet it manages. deploy.js
+       is STILL imported by this page's data-settings.js — its `initDeploy` wires the
+       Export/Import setup-bundle bars that live in the DATABASE card's "Data
+       Migration" row (its now-absent repo/target/instances elements are `?.`-guarded
+       no-ops here). -->
+
+  <!-- ════════════════════════════════════════════════════════════════
+       APP ACCESS — how new users get into this instance.
+       The access-MODE selection (Private / Open Registration) MOVED to the
+       Instances page → "This device" → Users tab, where it renders as an
+       "Access policy" card mirroring the Agents page Members tab (mounted by
+       instances.js; see ui/main-panel/instances/users/ — it owns the
+       GET/POST /admin/settings/app access_mode + the /admin/users/* actions).
+
+       What remains here is SOCIAL SIGN-IN: these drop-in providers
+       (plugins/auth_providers/) say HOW people sign in — a "Sign in with"
+       group-header row over individual ability-style provider rows (icon +
+       name + Enabled switch + expandable keys body), rendered into
+       #ac-social-list by the sibling social-auth.js (initSocialAuth).
+       ════════════════════════════════════════════════════════════════ -->
+  <div class="ac-category-group" id="ac-access-card" data-pa-area="app_access">
+    <div class="ac-category-summary" class="ac-cursor-default">
+      <i data-lucide="key-round" class="lucide-icon" class="ac-ico-16 ac-fg-accent"></i>
+      <span class="ac-category-title">App Access</span>
+    </div>
+    <div class="ac-category-body">
+      <!-- ONE `.ac-list` tree (the ability-tree look): a "Sign in with"
+           sub-head that reads like an ability-group header (icon + title +
+           live count), then the provider rows — each an individual
+           ability-style row (icon + name + substate + Enabled switch +
+           expandable keys body), rendered by social-auth.js. The list draws
+           every hairline divider, so the providers read as one continuous
+           tree. -->
+      <div class="ac-list ac-access-list" id="ac-access-list" aria-label="How people can sign in to this instance">
+
+        <!-- ── Sign in options ── an EXPANDABLE group-header row for the social
+             providers below: a LEFT chevron + icon + title + a live "N on" count
+             (set by social-auth.js), the same anatomy as an ability-group head.
+             Clicking the bar expands/collapses the provider list (#ac-social-list),
+             which is collapsed by default. Wired by _wireSocialHead in app-access.js;
+             the collapse + left-chevron-rotate rules live in app3.css. -->
+        <div class="ac-ability-row ac-access-subhead" id="ac-social-head" role="button" tabindex="0" aria-expanded="false">
+          <span class="ac-row-chevron ac-row-chevron--left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+          <span class="ac-ability-icon"><i data-lucide="log-in" class="lucide-icon" class="ac-ico-16 ac-fg-muted"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Sign in options</div>
+            <div class="ac-ability-desc">One-click social login (Google, GitHub, …). New accounts follow the access policy on the Instances → Users tab.</div>
+          </div>
+          <span class="ac-category-count" id="ac-social-count"></span>
+        </div>
+
+        <!-- ── Provider rows ── each an individual ability-style row, rendered by
+             social-auth.js. Direct child of the list so the header/first-provider
+             hairline is drawn by the list; provider↔provider hairlines come from
+             the `#ac-social-list > * + *` rule (app3.css). -->
+        <div id="ac-social-list">
+          <div class="ac-table-empty" class="ac-p14">Loading providers…</div>
+        </div>
+
+      </div><!-- /.ac-list -->
+
+    </div><!-- /.ac-category-body -->
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       STORAGE ROUTING — maps each data function to its storage backend.
+       One row per function, three columns for Browser (IndexedDB), Server
+       (SQLite), Remote. One radio per row selects the backend. Changes
+       are saved immediately to the server config.
+
+       Driver: ui/main-panel/instances/app-config/data-settings/storage-routing.js
+       Endpoint: GET/POST /admin/storage/routing
+       ════════════════════════════════════════════════════════════════ -->
+  <div class="ac-category-group" id="ac-database-card" data-pa-area="database">
+    <div class="ac-category-summary" class="ac-cursor-default">
+      <i data-lucide="database" class="lucide-icon" class="ac-ico-16 ac-fg-accent"></i>
+      <span class="ac-category-title">Storage Routing</span>
+    </div>
+    <div class="ac-category-body">
+
+      <div class="ac-list" id="ac-sr-list">
+        <div class="ac-sr-status" class="ac-py6-fs11-fg3">Loading routing config…</div>
+      </div>
+
+      <div class="ac-mt6">
+        <span id="ac-sr-saved" class="ac-fs10-success-hidden">✓ Saved</span>
+      </div>
+
+      <!-- Browser storage policy is configured via data/config/browser_storage_policy.json
+           (env-overridable via WEBAGENT_BROWSER_* when WEBAGENT_CONFIG_SOURCE=env). -->
+
+      <!-- ── Row · User BYOD (per-user bring-your-own-database master switch) ──
+           App-wide switch for per-user BYO-database routing (user_byod in
+           app-settings.json). OFF (default) = single shared database. ON = each
+           signed-in user can point their interaction data (chats, memories,
+           agents, their own LLM keys) at a Postgres database THEY connect from
+           the account page (ui/shared/js/tenant-db.js); the central DB keeps
+           accounts, the agent catalog and billing. Backend routing: app/db/router.py
+           + app/db/tenant.py. Wired in data-settings.js (initUserByod). -->
+      <div class="ac-list ac-mt6">
+        <div class="ac-ability-row" id="ac-row-user-byod">
+          <span class="ac-ability-icon"><i data-lucide="server" class="lucide-icon" class="ac-ico-18 ac-fg-accent"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">User BYOD</div>
+            <div class="ac-ability-desc">When on, each signed-in user can connect their own database and keep their chats, memories and keys there instead of the shared one. Off = single shared database for everyone.</div>
+          </div>
+          <span class="ac-category-count" id="ac-user-byod-badge">Off</span>
+          <span class="ac-config-control">
+            <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+              <input type="checkbox" id="ac-user-byod" class="conn-toggle">
+              <span class="conn-toggle-track"></span>
+            </label>
+          </span>
+        </div>
+      </div>
+
+    </div><!-- /.ac-category-body -->

@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 TOOL_MARKER = "\n\n[Tool calls: "  # legacy — kept for backward compat with old rows
 INTERNAL_TOOL_NAMES = frozenset({"memory_search", "memory_save"})
 
+# Tool output is often much larger than normal chat text. Bound each replayed
+# result, while leaving conversation-level history management to Context Control
+# so its summary-and-recall path preserves long-running work.
+TOOL_RESULT_MAX_CHARS = 12_000
+
 # Rows whose `source` is this are terminal-tunnel traffic: persisted to the
 # transcript but excluded from the agent's LLM context (defined in
 # app/agent/terminal_tunnel.py; duplicated here as a literal to avoid an
@@ -43,6 +48,15 @@ def strip_think_blocks(content: Optional[str]) -> str:
     return cleaned.strip()
 
 
+def _bounded_tool_content(content: Optional[str]) -> str:
+    """Keep persisted tool results useful without replaying arbitrarily large blobs."""
+    value = content or ""
+    if len(value) <= TOOL_RESULT_MAX_CHARS:
+        return value
+    omitted = len(value) - TOOL_RESULT_MAX_CHARS
+    return f"{value[:TOOL_RESULT_MAX_CHARS]}\n\n[tool output truncated: {omitted:,} characters omitted]"
+
+
 def _is_parallel_loser(metadata_str: Optional[str]) -> bool:
     """True when an assistant row is a parallel-racing LOSER. Parallel racing was
     removed so no NEW loser rows are written, but historical rows persist in older
@@ -56,6 +70,66 @@ def _is_parallel_loser(metadata_str: Optional[str]) -> bool:
         return False
 
 
+def _ensure_no_orphaned_tool_calls(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Last-resort safety net: drop any assistant tool_calls that have no
+    matching tool results, and drop any orphan tool results whose preceding
+    assistant is missing or has no tool_calls. Called at the very end of
+    history assembly so the model API never sees an invalid message sequence.
+    """
+    if not messages:
+        return messages
+    # Build a set of tool_call_ids that have a result anywhere.
+    answered: Set[str] = set()
+    for m in messages:
+        if m.get("role") == "tool" and m.get("tool_call_id"):
+            answered.add(m["tool_call_id"])
+
+    out: List[Dict[str, Any]] = []
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            # Keep only tool_calls that have matching results; if none remain,
+            # drop the tool_calls key entirely.
+            kept = [tc for tc in m["tool_calls"] if tc.get("id") in answered]
+            if kept:
+                m = dict(m)
+                m["tool_calls"] = kept
+            else:
+                m = dict(m)
+                m.pop("tool_calls", None)
+                # Also drop if now empty (no content, no tool_calls)
+                if not m.get("content") and not m.get("tool_calls"):
+                    i += 1
+                    continue
+            out.append(m)
+            i += 1
+        elif m.get("role") == "tool":
+            # Walk backward: the nearest assistant must have tool_calls with
+            # this tool_call_id, otherwise this tool row is orphan.
+            _ok = False
+            for _j in range(len(out) - 1, -1, -1):
+                _prev = out[_j]
+                if _prev.get("role") != "assistant":
+                    continue
+                if _prev.get("tool_calls") and any(
+                    tc.get("id") == m.get("tool_call_id") for tc in _prev["tool_calls"]
+                ):
+                    _ok = True
+                break  # only check the nearest assistant
+            if _ok:
+                out.append(m)
+            else:
+                logger.debug(
+                    "Skipping orphan tool row tool_call_id=%s — no matching assistant tool_calls",
+                    m.get("tool_call_id"))
+            i += 1
+        else:
+            out.append(m)
+            i += 1
+    return out
+
+
 def _extract_tool_calls_from_output(output_str: Optional[str]) -> Optional[List[Dict[str, Any]]]:
     """Try to extract tool_calls from the interaction's output JSON field.
 
@@ -63,11 +137,20 @@ def _extract_tool_calls_from_output(output_str: Optional[str]) -> Optional[List[
     as ``{"role": "assistant", "content": "...", "tool_calls": [...]}``.
     Legacy rows have no output field and rely on the ``[Tool calls: ...]``
     marker in the content string.
+
+    Returns ``None`` when the output is a remote skeleton
+    (``_remote_placeholder: true``) — the caller should skip the tool_calls
+    so the history rebuild doesn't feed the model orphaned tool result rows.
     """
     if not output_str:
         return None
     try:
         parsed = json.loads(output_str)
+        # Remote placeholder skeleton — tool names + IDs only, no real data.
+        # Return None so the caller skips pairing and the orphaned tool result
+        # rows that follow are also skipped (see interactions_to_openai_messages).
+        if parsed.get("_remote_placeholder"):
+            return None
         tc = parsed.get("tool_calls")
         if tc and isinstance(tc, list):
             return tc
@@ -133,13 +216,57 @@ def interactions_to_openai_messages(
 
             # NEW: try clean path first — read tool calls from the output field
             tool_calls_from_output = _extract_tool_calls_from_output(r.output)
+
+            # Check for remote placeholder skeleton — output has tool names + IDs
+            # only, with no real data. The full output lives on the originating
+            # device's local store.
+            _is_remote_placeholder = False
+            if r.output:
+                try:
+                    _parsed = json.loads(r.output)
+                    _is_remote_placeholder = bool(_parsed.get("_remote_placeholder"))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
             if tool_calls_from_output:
                 # Clean content (no marker), tool calls from output field.
                 # These are already in OpenAI format: {id, type, function: {name, arguments}}.
+                #
+                # Guard: providers reject assistant messages with both content=None
+                # and tool_calls=[].  Skip any row where both are empty — there is
+                # nothing to replay and the model API will 400.
+                _clean = content.strip() or None
+
+                # Peek ahead at following tool rows to find which tool_call_ids
+                # have a result row (rows with status='deleted' are already
+                # excluded by fetch_interactions). Only include tool calls that
+                # are answered, so intentionally deleted tool calls don't produce
+                # spurious "[interrupted — no result]" placeholders.
+                _answered_ids: Set[str] = set()
+                _j = i + 1
+                while _j < n and filtered[_j].role == "tool":
+                    if filtered[_j].tool_call_id:
+                        _answered_ids.add(filtered[_j].tool_call_id)
+                    _j += 1
+                _filtered_calls = [tc for tc in tool_calls_from_output
+                                   if tc.get("id") in _answered_ids or not tc.get("id")]
+
+                if not _filtered_calls:
+                    # All tool calls were deleted — emit nothing or just text
+                    if _clean:
+                        out.append({"role": "assistant", "content": _clean})
+                    i += 1
+                    while i < n and filtered[i].role == "tool":
+                        i += 1
+                    continue
+
+                if (not _clean and not _filtered_calls) and not _is_remote_placeholder:
+                    i += 1
+                    continue
                 out.append({
                     "role": "assistant",
-                    "content": content.strip() or None,
-                    "tool_calls": tool_calls_from_output,
+                    "content": _clean,
+                    "tool_calls": _filtered_calls,
                 })
                 i += 1
                 # Consume following tool rows, pairing by tool_call_id
@@ -147,17 +274,37 @@ def interactions_to_openai_messages(
                 while i < n and filtered[i].role == "tool":
                     tr = filtered[i]
                     if tr.tool_call_id:
-                        out.append({"role": "tool", "content": tr.content, "tool_call_id": tr.tool_call_id})
+                        out.append({"role": "tool", "content": _bounded_tool_content(tr.content), "tool_call_id": tr.tool_call_id})
                         answered.add(tr.tool_call_id)
                     i += 1
                 # Self-repair: if the turn was interrupted mid-tool-execution, some
                 # tool_calls may have no result row. OpenAI-style APIs reject an
                 # assistant message whose tool_calls aren't ALL answered, so emit a
                 # synthetic placeholder for any unanswered id.
-                for _tc in tool_calls_from_output:
+                for _tc in _filtered_calls:
                     _tid = _tc.get("id")
                     if _tid and _tid not in answered:
                         out.append({"role": "tool", "content": "[interrupted — no result]", "tool_call_id": _tid})
+                continue
+
+            # Remote placeholder skeleton — output has tool names + IDs only,
+            # no real data. Emit the assistant text without tool_calls, then
+            # skip the orphaned tool result rows that follow (they have no
+            # matching assistant tool_call to pair with, and the model API
+            # rejects orphan tool rows).
+            if _is_remote_placeholder:
+                # Guard: skip if both content and tool_calls are empty — the
+                # model API rejects {"role":"assistant","content":null}.
+                _clean = content.strip() or None
+                if not _clean:
+                    i += 1
+                    while i < n and filtered[i].role == "tool":
+                        i += 1
+                    continue
+                out.append({"role": "assistant", "content": _clean})
+                i += 1
+                while i < n and filtered[i].role == "tool":
+                    i += 1
                 continue
 
             # LEGACY: parse tool calls from the [Tool calls: ...] marker in content
@@ -205,23 +352,44 @@ def interactions_to_openai_messages(
                     if tr.tool_call_id:
                         out.append({
                             "role": "tool",
-                            "content": tr.content,
+                            "content": _bounded_tool_content(tr.content),
                             "tool_call_id": tr.tool_call_id,
                         })
-                for j in range(pair_n, len(tool_rows)):
-                    tr = tool_rows[j]
-                    if tr.tool_call_id:
-                        out.append({
-                            "role": "tool",
-                            "content": tr.content,
-                            "tool_call_id": tr.tool_call_id,
-                        })
+                # Skip extra tool rows beyond pair_n — they have no matching
+                # tool_call in spec and would be orphaned (model API rejects them).
+                # Also add synthetic placeholders for any unanswered calls.
+                for _tc in spec:
+                    _tid = _tc.get("id") if isinstance(_tc, dict) else None
+                    _answered = any(
+                        tr.tool_call_id == _tid for tr in tool_rows[:pair_n]
+                    ) if _tid else True
+                    if _tid and not _answered:
+                        out.append({"role": "tool", "content": "[interrupted — no result]", "tool_call_id": _tid})
             else:
-                out.append({"role": "assistant", "content": content})
+                # Guard: skip empty assistant messages (no tool calls, no content).
+                # The model API rejects {"role":"assistant","content":""}.
+                if content.strip():
+                    out.append({"role": "assistant", "content": content})
                 i += 1
         elif r.role == "tool":
+            # Skip orphan tool rows — a tool message must follow an assistant
+            # message with tool_calls, otherwise the model API rejects it.
+            # The live loop can never produce this shape, but DB-replay can
+            # when an assistant row has no tool_calls in its output field and
+            # no legacy marker.
             if r.tool_call_id:
-                out.append({"role": "tool", "content": r.content, "tool_call_id": r.tool_call_id})
+                # Walk backward to find the last assistant message (skip
+                # intermediate tool rows that are siblings of the same call).
+                _prev_asst = None
+                for _pm in reversed(out):
+                    if _pm.get("role") == "assistant":
+                        _prev_asst = _pm
+                        break
+                if _prev_asst and _prev_asst.get("tool_calls"):
+                    out.append({"role": "tool", "content": _bounded_tool_content(r.content), "tool_call_id": r.tool_call_id})
+                else:
+                    logger.debug("Skipping orphan tool row id=%s tool_call_id=%s — no preceding assistant tool_calls",
+                                 r.id, r.tool_call_id)
             i += 1
         else:
             logger.debug("Skipping unknown interaction role %s id=%s", r.role, r.id)
@@ -237,7 +405,7 @@ def interactions_to_openai_messages(
 # re-ignitions a day) that drove the runaway memory spikes. The first user
 # message (the task) and any leading rolling-summary are kept regardless, so the
 # model still has grounding without the full history.
-RESUME_TAIL_MESSAGES = 12
+RESUME_TAIL_MESSAGES = 32
 
 # Below this many stored rows, a session CANNOT have been compacted: compaction
 # never deletes raw turns (they stay searchable), so any session that has summary
@@ -296,11 +464,38 @@ def trim_history_for_resume(
         start += 1
     tail = tail[start:]
 
+    # If any assistant message in the tail has tool_calls, the cut may have
+    # landed between the call and some of its results. Walk backward from the
+    # cut to include all matching tool results so every tool_call_id is
+    # answered (the model API rejects orphaned tool_call_ids).
+    _cut_idx = len(body) - max_tail_messages + start  # first index of tail in body
+    for _pos, _msg in enumerate(tail):
+        if _msg.get("role") != "assistant" or not _msg.get("tool_calls"):
+            continue
+        _tcs = [tc.get("id") for tc in _msg["tool_calls"] if tc.get("id")]
+        if not _tcs:
+            continue
+        # Which tool_call_ids already have results AFTER this assistant in tail?
+        _answered: Set[str] = set()
+        for _fm in tail[_pos + 1:]:
+            if _fm.get("role") == "tool" and _fm.get("tool_call_id"):
+                _answered.add(_fm["tool_call_id"])
+        for _tid in _tcs:
+            if _tid not in _answered:
+                # A tool result for this call_id was trimmed — scan backward
+                for _j in range(_cut_idx - 1, -1, -1):
+                    if body[_j].get("role") == "tool" and body[_j].get("tool_call_id") == _tid:
+                        tail.insert(_pos + 1, body[_j])
+                        # Shift _pos right so the next call_ids scan the same
+                        # assistant's now-augmented tool-results correctly.
+                        _pos += 1
+                        break
+
     out = list(head)
     if anchor is not None and anchor not in tail:
         out.append(anchor)
     out.extend(tail)
-    return out
+    return _ensure_no_orphaned_tool_calls(out)
 
 
 async def build_openai_history_from_session(
@@ -321,14 +516,11 @@ async def build_openai_history_from_session(
         ``[summary] + [verbatim tail]`` instead of the full transcript. The raw
         rows are never deleted — they stay searchable.
     """
-    # Read the transcript once, up front. A new/short session can't have been
-    # compacted (raw rows are never deleted, so a compacted session always has
-    # many rows) and so has no summary segments and nothing to fold — skip the
-    # whole context-strategy + compaction + segment-loading machinery (several
-    # sequential remote round-trips) and return the direct mapping. This is the
-    # common hot path; see HISTORY_FULL_PATH_FLOOR for why it is safe.
-    rows = await db.fetch_interactions(user_id, session_id)
-    if len(rows) < HISTORY_FULL_PATH_FLOOR:
+    # Count first. A compacted session's raw prefix remains searchable, but it
+    # must not re-enter Python merely to discover the hot-tail boundary.
+    row_count = await db.count_interactions(user_id, session_id)
+    if row_count < HISTORY_FULL_PATH_FLOOR:
+        rows = await db.fetch_interactions(user_id, session_id)
         return interactions_to_openai_messages(
             rows, exclude_interaction_ids=exclude_interaction_ids)
 
@@ -348,12 +540,7 @@ async def build_openai_history_from_session(
                 _compact = getattr(strategy, "CONTEXT_COMPACT", None)
                 settings = (await _get(db, agent_id, session_id, user_id)) if _get else {}
                 if settings.get("enabled") and settings.get("compaction_enabled", True) and _compact:
-                    # Re-read only if compaction actually reshaped the stored train
-                    # (it returns a truthy result when it folded turns); otherwise
-                    # the rows we already have are current.
-                    _changed = await _compact(db, user_id, session_id, settings)
-                    if _changed:
-                        rows = await db.fetch_interactions(user_id, session_id)
+                    await _compact(db, user_id, session_id, settings)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("context strategy (write side) skipped: %s", e)
 
@@ -368,6 +555,10 @@ async def build_openai_history_from_session(
         try:
             _assemble = getattr(strategy, "CONTEXT_ASSEMBLE", None)
             if _assemble is not None:
+                # Custom assemblers explicitly own the full transcript shape.
+                # The default Context Control strategy has no assembler and
+                # therefore stays on the bounded suffix path below.
+                rows = await db.fetch_interactions(user_id, session_id)
                 shaped = await _assemble(db, user_id, session_id, rows, settings)
                 if shaped is not None:
                     return shaped
@@ -380,17 +571,93 @@ async def build_openai_history_from_session(
     segments: List[Dict[str, Any]] = []
     try:
         from app.agent.compaction import load_segments, render_segment_message
-        segments = await load_segments(db, user_id, session_id, rows)
+        segments = await load_segments(
+            db, user_id, session_id, total_count=row_count)
     except Exception as e:  # pragma: no cover - older backends / read error
         logger.debug("load_segments unavailable: %s", e)
     if segments:
         covered = max(int(s.get("end_index") or 0) for s in segments)
-        covered = max(0, min(covered, len(rows)))
+        covered = max(0, min(covered, row_count))
         total = len(segments)
         car_msgs = [render_segment_message(s, i + 1, total) for i, s in enumerate(segments)]
-        tail = rows[covered:]
+        tail = await db.fetch_interactions_from_offset(
+            user_id, session_id, covered)
         msgs = interactions_to_openai_messages(
             tail, exclude_interaction_ids=exclude_interaction_ids)
-        return car_msgs + msgs
+        return _ensure_no_orphaned_tool_calls(car_msgs + msgs)
 
-    return interactions_to_openai_messages(rows, exclude_interaction_ids=exclude_interaction_ids)
+    rows = await db.fetch_interactions(user_id, session_id)
+    return _ensure_no_orphaned_tool_calls(interactions_to_openai_messages(rows, exclude_interaction_ids=exclude_interaction_ids))
+
+
+# ── Engine compact-and-restart recap (shared by the Claude + Codex engines) ──
+# Alternate engines keep their memory OUTSIDE WebAgent (the local CLI's own
+# session/thread, which only ever grows). When the user runs `/compact`, the
+# engine's compact_restart hook folds this chat into a recap built from the DB
+# transcript and arms a one-shot reseed; the engine then starts a FRESH CLI
+# session seeded with the recap. The builders below are engine-agnostic, so they
+# live here (shared code under app/) — the engines just call them.
+
+RESEED_MSG_CAP = 6000        # max chars kept per recap message
+RESEED_TOOL_CAP = 1500       # tool results are often huge dumps — trim harder
+RESEED_TOTAL_CAP = 120_000   # overall recap ceiling (chars)
+
+
+def flatten_msg_content(content: Any) -> str:
+    """Best-effort plain text from an OpenAI-style message ``content`` — a plain
+    string, or the multimodal list of parts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out: List[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                t = part.get("text") or part.get("content")
+                if isinstance(t, str) and t.strip():
+                    out.append(t)
+            elif isinstance(part, str):
+                out.append(part)
+        return "\n".join(out)
+    return ""
+
+
+def strip_native_recall_hint(text: str) -> str:
+    """Drop the Context-Control recall footer from a rendered summary 'car'. Those
+    hints point at WebAgent native tools (recall_compacted / search_this_session)
+    that a local CLI (Claude / Codex) does NOT have, so they'd only confuse it."""
+    idx = text.find("Nothing here was deleted")
+    return text[:idx].rstrip() if idx != -1 else text
+
+
+def build_reseed_context(messages: List[Dict[str, Any]]) -> str:
+    """Render the compaction-assembled history (summary cars + verbatim tail) into
+    one readable recap block to seed a fresh engine session. Size-bounded so a
+    long tail can't blow up the new prompt."""
+    lines: List[str] = []
+    total = 0
+    for m in messages:
+        role = (m.get("role") or "").strip()
+        body = flatten_msg_content(m.get("content")).strip()
+        if not body:
+            continue
+        if role == "system":
+            chunk = strip_native_recall_hint(body)
+        elif role == "user":
+            chunk = f"User: {body[:RESEED_MSG_CAP]}"
+        elif role == "assistant":
+            chunk = f"Assistant: {body[:RESEED_MSG_CAP]}"
+        elif role == "tool":
+            snippet = body[:RESEED_TOOL_CAP]
+            if len(body) > RESEED_TOOL_CAP:
+                snippet += " …[trimmed]"
+            chunk = f"[earlier tool result] {snippet}"
+        else:
+            chunk = body[:RESEED_MSG_CAP]
+        if not chunk.strip():
+            continue
+        if total + len(chunk) > RESEED_TOTAL_CAP:
+            lines.append("…[earlier turns trimmed to fit]")
+            break
+        lines.append(chunk)
+        total += len(chunk)
+    return "\n\n".join(lines).strip()

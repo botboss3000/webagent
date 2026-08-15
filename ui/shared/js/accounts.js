@@ -1,5 +1,7 @@
 'use strict';
 
+import { browserPersistenceAllowed } from './browser-storage-policy.js';
+
 /**
  * Multi-account localStorage manager.
  *
@@ -21,7 +23,10 @@ const LEGACY_KEYS = {
   remember_token: 'remember_token',
 };
 
-function _read() {
+let _memoryAccounts = [];
+let _memoryActiveId = '';
+
+function _readPersistent() {
   try {
     const raw = localStorage.getItem(ACCOUNTS_KEY);
     if (!raw) return [];
@@ -32,7 +37,15 @@ function _read() {
   }
 }
 
+function _read() {
+  return browserPersistenceAllowed() ? _readPersistent() : [..._memoryAccounts];
+}
+
 function _write(list) {
+  if (!browserPersistenceAllowed()) {
+    _memoryAccounts = [...list];
+    return;
+  }
   try {
     localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(list));
   } catch (_) {}
@@ -63,6 +76,7 @@ _migrateLegacy();
 
 /** Mirror an account into the legacy single-account localStorage keys. */
 function _writeLegacy(acct) {
+  if (!browserPersistenceAllowed()) return;
   try {
     if (!acct) {
       Object.values(LEGACY_KEYS).forEach((k) => localStorage.removeItem(k));
@@ -89,7 +103,9 @@ export function listAccounts() {
 export function getActive() {
   const list = _read();
   if (list.length === 0) return null;
-  const activeId = localStorage.getItem(ACTIVE_KEY);
+  const activeId = browserPersistenceAllowed()
+    ? localStorage.getItem(ACTIVE_KEY)
+    : _memoryActiveId;
   return list.find((a) => a.user_id === activeId) || list[0];
 }
 
@@ -108,7 +124,11 @@ export function upsertAccount(payload) {
   if (idx >= 0) list[idx] = merged;
   else list.push(merged);
   _write(list);
-  try { localStorage.setItem(ACTIVE_KEY, merged.user_id); } catch (_) {}
+  if (browserPersistenceAllowed()) {
+    try { localStorage.setItem(ACTIVE_KEY, merged.user_id); } catch (_) {}
+  } else {
+    _memoryActiveId = merged.user_id;
+  }
   _writeLegacy(merged);
   _notify();
   return merged;
@@ -126,13 +146,23 @@ export function updateActive(patch) {
 export function removeAccount(user_id) {
   const list = _read().filter((a) => a.user_id !== user_id);
   _write(list);
-  const activeId = localStorage.getItem(ACTIVE_KEY);
+  const activeId = browserPersistenceAllowed()
+    ? localStorage.getItem(ACTIVE_KEY)
+    : _memoryActiveId;
   if (activeId === user_id) {
     if (list.length > 0) {
-      try { localStorage.setItem(ACTIVE_KEY, list[0].user_id); } catch (_) {}
+      if (browserPersistenceAllowed()) {
+        try { localStorage.setItem(ACTIVE_KEY, list[0].user_id); } catch (_) {}
+      } else {
+        _memoryActiveId = list[0].user_id;
+      }
       _writeLegacy(list[0]);
     } else {
-      try { localStorage.removeItem(ACTIVE_KEY); } catch (_) {}
+      if (browserPersistenceAllowed()) {
+        try { localStorage.removeItem(ACTIVE_KEY); } catch (_) {}
+      } else {
+        _memoryActiveId = '';
+      }
       _writeLegacy(null);
     }
   }
@@ -208,3 +238,17 @@ function _notify() {
   }
   try { window.dispatchEvent(new CustomEvent('webagent-accounts-changed')); } catch (_) {}
 }
+
+// The policy event is synchronous and fires before durable account mirrors are
+// erased. Preserve the active tab's identity in memory, never in another
+// browser persistence API.
+window.addEventListener('webagent-browser-storage-policy', (event) => {
+  if (event.detail?.mode === 'persistent_cache') return;
+  const durable = _readPersistent();
+  _memoryAccounts = durable;
+  try {
+    _memoryActiveId = localStorage.getItem(ACTIVE_KEY) || durable[0]?.user_id || '';
+  } catch (_) {
+    _memoryActiveId = durable[0]?.user_id || '';
+  }
+});

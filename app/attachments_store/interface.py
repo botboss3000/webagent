@@ -9,7 +9,6 @@ Implementations:
   - BrowserAttachmentStore   server records metadata only; bytes live in the
                              user's browser IndexedDB. Multi-device users
                              will not see each other's attachments.
-  - SupabaseAttachmentStore  Supabase Storage bucket
   - S3AttachmentStore        AWS S3 (boto3, lazy-imported)
   - GcsAttachmentStore       Google Cloud Storage (google-cloud-storage, lazy)
 

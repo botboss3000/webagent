@@ -19,7 +19,7 @@
  */
 
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, relative } from "node:path";
 
@@ -53,23 +53,46 @@ function collectDefault() {
 function checkFile(file) {
   let code;
   try { code = readFileSync(file, "utf8"); } catch (e) {
-    return { ok: false, error: `cannot read file: ${e.message}` };
+    return Promise.resolve({ ok: false, error: `cannot read file: ${e.message}` });
   }
-  const res = spawnSync(process.execPath, ["--input-type=module", "--check"], {
-    input: code,
-    encoding: "utf8",
+  return new Promise((resolveResult) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--check"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => resolveResult({ ok: false, error: error.message }));
+    child.on("close", (status) => resolveResult(status === 0
+      ? { ok: true }
+      : { ok: false, error: (stderr || stdout || "syntax error").trim() }));
+    child.stdin.end(code);
   });
-  if (res.status === 0) return { ok: true };
-  // Node prints the parse error (with the line) to stderr.
-  return { ok: false, error: (res.stderr || res.stdout || "syntax error").trim() };
 }
 
 const args = process.argv.slice(2);
 const files = (args.length ? args.map((a) => resolve(a)) : collectDefault());
 
+// Starting a fresh Node parser is the expensive part. Keep several busy at once
+// without launching hundreds simultaneously, which is slower on Windows.
+const concurrency = Math.min(8, files.length || 1);
+const results = new Array(files.length);
+let next = 0;
+async function worker() {
+  for (;;) {
+    const index = next++;
+    if (index >= files.length) return;
+    results[index] = await checkFile(files[index]);
+  }
+}
+await Promise.all(Array.from({ length: concurrency }, worker));
+
 let failures = 0;
-for (const file of files) {
-  const { ok, error } = checkFile(file);
+for (let index = 0; index < files.length; index++) {
+  const file = files[index];
+  const { ok, error } = results[index];
   if (!ok) {
     failures++;
     console.error(`\n✗ ${relative(ROOT, file)}`);

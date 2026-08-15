@@ -503,7 +503,8 @@ def _unavailable(reason: str) -> str:
     return "{}: {}".format(_REVIEW_UNAVAILABLE, reason)
 
 
-async def _vision_review(db, vision, att_id: str, theme: str) -> str:
+async def _vision_review(db, vision, att_id: str, theme: str,
+                         user_id: str = "", session_id: str = "") -> str:
     """Delegate the just-rendered screenshot to the vision model and return its
     written critique — the SAME mechanism the image_vision ability uses, folded in
     so the agent gets the verdict in this one tool call (no separate process_image).
@@ -511,8 +512,11 @@ async def _vision_review(db, vision, att_id: str, theme: str) -> str:
 
     NEVER returns None: on any failure it returns an ``unavailable: <reason>`` string
     AND logs a warning, so the miss is visible in the result and recorded in
-    diagnostics (``ask_model`` itself swallows call failures and returns None, so
-    without this the review would silently come back empty)."""
+    diagnostics. ``ask_model`` itself swallows call failures and returns None, so
+    without this the review would silently come back empty — the real error (e.g.
+    the provider being out of credits) is captured via ``error_sink`` and folded
+    into the reason so the AGENT knows the actual cause, and the user-facing
+    402/credit alert is persisted so the human sees it too."""
     try:
         from app.agent.model_worker import ask_model
         att = await db.get_attachment(att_id)
@@ -527,16 +531,32 @@ async def _vision_review(db, vision, att_id: str, theme: str) -> str:
             "overlap, clipping, empty or broken panels, uneven spacing). If it's clean, say so "
             "briefly.".format(theme)
         )
-        out = await ask_model(vision, _VISION_SYS, question, attachments=[att], max_tokens=600)
+        err_sink: List[str] = []
+        out = await ask_model(vision, _VISION_SYS, question, attachments=[att],
+                              max_tokens=600, error_sink=err_sink)
         if not out or not out.strip():
             # ask_model returns None on incomplete config OR a failed/empty call —
-            # it does not raise, so log here or the failure is invisible.
+            # it does not raise, so log here or the failure is invisible. error_sink
+            # carries the real provider error (e.g. "no remaining credits").
             model_name = (vision or {}).get("model", "?")
+            err_text = (err_sink[-1] if err_sink else "").strip()
             logger.warning(
-                "screenshot_genui: vision review empty (model=%s, theme=%s) — "
-                "Image-in model returned no text (check App Config -> Models)", model_name, theme)
-            return _unavailable("the Image-in model returned no text — check it is configured "
-                                "and reachable in App Config -> Models")
+                "screenshot_genui: vision review empty (model=%s, theme=%s) — %s",
+                model_name, theme,
+                err_text or "Image-in model returned no text (check App Config -> Models)")
+            reason = err_text or ("the Image-in model returned no text — check it is configured "
+                                  "and reachable in App Config -> Models")
+            # Provider account out of credits? Persist the user-facing alert in this
+            # session so the human sees WHY vision is down (not just the agent).
+            if err_text:
+                try:
+                    from app.util.alerts import is_provider_credit_error, persist_402_alert
+                    if is_provider_credit_error(err_text):
+                        await persist_402_alert(err_text, user_id, session_id,
+                                                model_name, vision.get("provider", ""))
+                except Exception:
+                    pass
+            return _unavailable(reason)
         return out.strip()
     except Exception as e:  # pragma: no cover - defensive
         logger.warning("screenshot_genui: vision review failed: %s", e)
@@ -591,6 +611,12 @@ async def screenshot_genui(
     genui_html = await get_genui_html(user_id=user_id, slug=slug)
     if not genui_html:
         return json.dumps({"status": "error", "message": "Gen UI '{}' not found or empty.".format(slug)})
+    # The page may keep its source split (styles.css + app.js / app.*.js parts
+    # inlined into the served document by the API route). Mirror that inlining
+    # here so the headless render + palette lint see the same document a
+    # browser gets — otherwise a split page would render unstyled/script-less.
+    from app.api.genui import _inline_genui_assets
+    genui_html = _inline_genui_assets(user_id=user_id, slug=slug, html=genui_html)
     # The page's content lives in its data bag; bake it into the headless render
     # so the screenshot shows real data, not empty slots.
     genui_data = await get_genui_data(user_id=user_id, slug=slug)
@@ -701,7 +727,8 @@ async def screenshot_genui(
                 review = None
                 if vision:
                     if att_id:
-                        review = await _vision_review(db, vision, att_id, th)
+                        review = await _vision_review(db, vision, att_id, th,
+                                                      user_id=user_id, session_id=session_id)
                     else:
                         review = _unavailable("screenshot was not saved as an attachment")
 

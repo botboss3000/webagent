@@ -147,6 +147,8 @@ def load_config() -> dict:
             "folder": folder,
             "remote_url": str(r.get("remote_url") or "").strip(),
             "token": str(r.get("token") or ""),
+            "git_user_name": str(r.get("git_user_name") or "").strip(),
+            "git_user_email": str(r.get("git_user_email") or "").strip(),
         })
     active_id = str(data.get("active_id") or BUILTIN_ID).strip() or BUILTIN_ID
     # A selection pointing at a now-removed repo falls back to the built-in.
@@ -202,6 +204,8 @@ def _builtin_origin() -> str:
 def _builtin_entry() -> dict:
     """The always-present WebAgent repo: project root, live origin + shared token."""
     origin = _builtin_origin()
+    name, _, _ = _git(["config", "user.name"], cwd=_PROJECT_ROOT)
+    email, _, _ = _git(["config", "user.email"], cwd=_PROJECT_ROOT)
     return {
         "id": BUILTIN_ID,
         "label": BUILTIN_LABEL,
@@ -209,6 +213,8 @@ def _builtin_entry() -> dict:
         "remote_url": origin,
         "token": _shared_token(),
         "builtin": True,
+        "git_user_name": name.strip(),
+        "git_user_email": email.strip(),
     }
 
 
@@ -234,6 +240,8 @@ def list_repos() -> list[dict]:
             "has_token": bool(r.get("token")),
             "builtin": bool(r.get("builtin")),
             "active": r["id"] == active,
+            "git_user_name": r.get("git_user_name", ""),
+            "git_user_email": r.get("git_user_email", ""),
         })
     return out
 
@@ -290,7 +298,8 @@ def set_active(repo_id: str) -> dict:
 
 
 def add_repo(label: str = "", folder: str = "", remote_url: str = "",
-             token: str = "") -> dict:
+             token: str = "", git_user_name: str = "",
+             git_user_email: str = "") -> dict:
     """Register a new local repo. Validates the folder is a git repo and isn't the
     built-in project root. Returns the new entry (token stripped)."""
     folder_n = _norm_folder(folder)
@@ -310,6 +319,8 @@ def add_repo(label: str = "", folder: str = "", remote_url: str = "",
         "folder": folder_n,
         "remote_url": (remote_url or "").strip() or info.get("origin", ""),
         "token": token or "",
+        "git_user_name": (git_user_name or "").strip(),
+        "git_user_email": (git_user_email or "").strip(),
     }
     cfg["repos"].append(entry)
     _save(cfg)
@@ -317,7 +328,8 @@ def add_repo(label: str = "", folder: str = "", remote_url: str = "",
 
 
 def update_repo(repo_id: str, *, label=None, folder=None, remote_url=None,
-                token=None) -> dict:
+                token=None, git_user_name=None,
+                git_user_email=None) -> dict:
     """Edit a registered repo. A blank/None *token* keeps the existing one. The
     built-in repo can't be edited here."""
     rid = (repo_id or "").strip()
@@ -340,6 +352,10 @@ def update_repo(repo_id: str, *, label=None, folder=None, remote_url=None,
             r["remote_url"] = remote_url.strip()
         if token:  # blank = keep existing key
             r["token"] = token
+        if git_user_name is not None:
+            r["git_user_name"] = git_user_name.strip()
+        if git_user_email is not None:
+            r["git_user_email"] = git_user_email.strip()
         _save(cfg)
         return {**r, "token": "", "has_token": bool(r["token"]), "builtin": False}
     raise ValueError("Unknown repository.")

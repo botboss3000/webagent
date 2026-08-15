@@ -188,6 +188,12 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
      directly below. */
   --agents-content-inset: 20px;
 }
+/* The toolbar lives inside #agents-grid so it scrolls away with the card in
+   carousel mode. In grid mode (no agent open) the grid has overflow:hidden and
+   only the squares scroll internally, so the toolbar stays pinned. */
+#agents-grid #agents-toolbar {
+  flex-shrink: 0;
+}
 /* Mobile / narrow screens: halve the side inset (20px → 10px) so content gets
    back ~20px of width on small viewports. One override drives every side margin
    on the page. 800px matches the app-wide mobile breakpoint. */
@@ -256,6 +262,7 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
   align-content: center;
   padding: 3px 0; /* room for the .activated glow ring — see wrap padding note */
   scrollbar-width: none;
+  overscroll-behavior-x: none;
 }
 #agents-grid.carousel .agents-squares::-webkit-scrollbar { display: none; }
 /* Keep each square at its full 120px in the single row — never let nowrap
@@ -563,6 +570,10 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
    so the spark reads as the genuine Claude mark: orange glyph on a faint orange
    chip, independent of the app's current scheme. */
 .agent-card-icon-wrap.color-claude  { background: rgba(var(--claude-orange-rgb), 0.16); color: var(--claude-orange); }
+/* Local Codex accent — the real Codex neutral (brand constant, both themes) so
+   the knot reads as the genuine Codex mark: steel glyph on a faint steel chip,
+   independent of the app's current scheme. */
+.agent-card-icon-wrap.color-codex   { background: rgba(var(--codex-gray-rgb), 0.16); color: var(--codex-gray); }
 .agent-card-icon-wrap.color-terminal { background: rgba(var(--brand-rgb), 0.16); color: var(--accent); }
 
 .agent-card-meta {
@@ -648,6 +659,12 @@ body.light-mode .agent-clones-status { background: rgba(60, 44, 46, 0.08); color
   text-overflow: ellipsis;
   overflow-wrap: anywhere;
 }
+/* Show full description in expanded (card) mode */
+.agent-card.active .agent-card-desc {
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  display: block;
+}
 /* Hide description in collapsed (square) mode */
 .agent-card:not(.active) .agent-card-desc {
   display: none;
@@ -663,6 +680,25 @@ body.light-mode .agent-card-desc { color: var(--fg-2); }
 .agent-inline-editable:hover {
   background: rgba(var(--brand-rgb), 0.10);
   box-shadow: 0 0 0 3px rgba(var(--brand-rgb), 0.10);
+}
+
+/* "click to edit" hint shown next to name and below description for admins
+   on custom agents — subtle italic text in the theme's muted foreground. */
+.agent-edit-hint {
+  font-size: 10px;
+  font-style: italic;
+  color: var(--fg-4);
+  letter-spacing: 0.02em;
+  cursor: default;
+  flex-shrink: 0;
+  user-select: none;
+  margin-left: 4px;
+  align-self: center;
+}
+.agent-card-desc + .agent-edit-hint {
+  display: inline-block;
+  margin-left: 0;
+  margin-top: 1px;
 }
 .agent-inline-editable.editing {
   cursor: text;
@@ -766,15 +802,11 @@ body.light-mode .agent-card-desc { color: var(--fg-2); }
   scroll-behavior: smooth;
   scrollbar-width: none;
   -ms-overflow-style: none;
+  overscroll-behavior-x: none;
   min-width: 0;
   padding: 0 12px;
   cursor: grab;
-  touch-action: pan-y;
-}
-.agent-card-tabs.dragging {
-  cursor: grabbing;
-  scroll-behavior: auto;
-  user-select: none;
+  touch-action: pan-x pinch-zoom;
 }
 .agent-card-tabs::-webkit-scrollbar { display: none; }
 /* SISTER-CAROUSEL: ACTIVE-TAB-GROW — shared formatting with the App Configuration
@@ -1123,8 +1155,9 @@ body.light-mode .agent-card-chat-btn:hover { background: rgba(var(--brand-rgb), 
   padding: 2px 0 6px;
   scrollbar-width: none;
   -ms-overflow-style: none;
+  overscroll-behavior-x: none;
   cursor: grab;
-  touch-action: pan-y;
+  touch-action: pan-x pinch-zoom;
 }
 .prompt-squares-wrap.open .prompt-squares::-webkit-scrollbar,
 .skills-squares-wrap.open .skills-squares::-webkit-scrollbar { display: none; }
@@ -2407,6 +2440,17 @@ body.light-mode .members-table {
   background: var(--bg-1);
   border-color: var(--border-strong);
 }
+/* Wide tables scroll horizontally inside the tab body instead of overflowing.
+   The wrapper owns the rounded corners; the table keeps its own border so the
+   scrollbar sits inside the outline. */
+.members-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 6px;
+}
+.members-table-wrap .members-table {
+  min-width: 100%;
+}
 .members-table thead th {
   text-align: left;
   font-weight: 600;
@@ -2532,7 +2576,7 @@ body.light-mode .members-policy-opt-label { color: var(--fg-1); }
   background: rgba(var(--warning-rgb),0.12);
   border: 1px solid rgba(var(--warning-rgb),0.3);
 }
-.members-actions { text-align: right; }
+.members-actions { text-align: right; white-space: nowrap; }
 .members-btn {
   font-size: 11px;
   font-weight: 600;

@@ -14,6 +14,7 @@ Injects the following tools into the agent's tool registry:
   check_credential -- is an ability connected (vault) + what a login form needs (no secrets)
   request_credential -- ask the user for a NEW secret (secure card → vault), get a key id back
   list_vault_keys -- list the user's vault keys (id/name/service/filled) — never any value
+  refresh_genui   -- push a live reload of a genui to the browser (call after set_genui_data)
 
 Call register_tools(tools, user_id) from app/tools/loader.py.
 """
@@ -30,6 +31,32 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
     can name + chat to the agent that made each genui)."""
 
     from app.visualizer.tool import render_visual as _render_visual
+
+    # The browser persists this validated, declarative payload against the active
+    # chat session when the tool result streams in. No agent-authored HTML or JS
+    # is allowed to run inside the chat shell.
+    async def _present_chat_component(type: str, title: str = "", placement: str = "inline",
+                                      data: dict = None, lifecycle: dict = None,
+                                      component_id: str = None, **_extra):
+        from app.chat_components import validate_spec
+        try:
+            component = validate_spec({"id": component_id, "type": type, "title": title,
+                                       "placement": placement, "data": data or {},
+                                       "lifecycle": lifecycle or {}})
+        except ValueError as exc:
+            return json.dumps({"status": "error", "message": str(exc)})
+        return json.dumps({"status": "ok", "ui": "chat_component", "component": component})
+
+    tools["present_chat_component"] = ToolInfo(
+        name="present_chat_component", handler=_present_chat_component,
+        parameters={"type": "object", "properties": {
+            "type": {"type": "string", "enum": ["todo_list", "status", "choice", "approval", "form"]},
+            "title": {"type": "string"},
+            "placement": {"type": "string", "enum": ["inline", "hover", "sticky"]},
+            "data": {"type": "object"}, "lifecycle": {"type": "object"},
+            "component_id": {"type": "string"},
+        }, "required": ["type"]},
+    )
     from app.visualizer.edit import edit_genui as _edit_genui
     from app.visualizer.genui import (
         list_genui as _list_genui,
@@ -53,7 +80,9 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
     # steered to ``html`` + ``slug``; this is purely a crash-proofing net.
     async def _render_visual_wrapper(html: str, title: str = "", slug: str = "home",
                                      genui_name: str = None, page_name: str = None,
-                                     name: str = None, genui: str = None, **_extra):
+                                     name: str = None, genui: str = None,
+                                     session_target_name: str = "", session_mode: str = "",
+                                     session_id: str = "", **_extra):
         alias = genui_name or page_name or name or genui
         return await _render_visual(
             html=html,
@@ -62,6 +91,9 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
             genui_name=alias,
             user_id=user_id,
             agent_id=agent_id,
+            session_target_name=session_target_name,
+            session_mode=session_mode,
+            session_id=session_id,
         )
 
     tools["render_visual"] = ToolInfo(
@@ -90,6 +122,29 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
                         "match the genui the user is viewing, or your work lands on the wrong "
                         "genui. Only omit it for the 'home' genui (the default)."
                     ),
+                },
+                "session_target_name": {
+                    "type": "string",
+                    "description": (
+                        "REQUIRED when this render CREATES a brand-new genui (the slug "
+                        "doesn't exist yet): the title of the deployed agent session that "
+                        "this page's actions/chat dispatch into (e.g. 'Code Index — scan'). "
+                        "For an existing genui, omit — the page keeps its saved config."
+                    ),
+                },
+                "session_mode": {
+                    "type": "string",
+                    "enum": ["new_reuse", "new_each", "existing"],
+                    "description": (
+                        "REQUIRED when creating a new genui: new_reuse (first action "
+                        "creates a session, follow-ups reuse it — the default behaviour), "
+                        "new_each (every action starts a fresh session), or existing "
+                        "(always dispatch into session_id)."
+                    ),
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Required iff session_mode is 'existing': the session id to dispatch into.",
                 },
             },
             "required": ["html"],
@@ -200,7 +255,40 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
         title: str,
         agent_context: str = "",
         initial_html: str = "",
+        session_target_name: str = "",
+        session_mode: str = "",
+        session_id: str = "",
     ):
+        # REQUIRED session contract (mirrors the genui REST API): every genui
+        # must declare the deployed session's title + new-session behaviour.
+        name = (session_target_name or "").strip()
+        if not name:
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    "session_target_name is required — the deployed agent "
+                    "session's title (e.g. 'Code Index — scan'). No genui created."
+                ),
+            })
+        if session_mode not in ("new_reuse", "new_each", "existing"):
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    "session_mode is required and must be one of: new_reuse, "
+                    "new_each, existing. No genui created."
+                ),
+            })
+        cfg: dict = {"target_name": name, "mode": session_mode}
+        if session_mode == "existing":
+            if not (session_id or "").strip():
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        "session_mode is 'existing', so session_id is required. "
+                        "No genui created."
+                    ),
+                })
+            cfg["session_id"] = (session_id or "").strip()
         try:
             entry = await _create_genui(
                 user_id=user_id,
@@ -209,6 +297,7 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
                 agent_context=agent_context,
                 initial_html=initial_html,
                 agent_id=agent_id,
+                session_config=cfg,
             )
             return json.dumps({"status": "ok", "genui": entry})
         except ValueError as e:
@@ -240,8 +329,30 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
                     "type": "string",
                     "description": "Optional initial HTML to seed the genui with. If omitted, a blank placeholder is used.",
                 },
+                "session_target_name": {
+                    "type": "string",
+                    "description": (
+                        "REQUIRED — the title of the deployed agent session that this "
+                        "genui's actions/chat dispatch into (e.g. 'Code Index — scan'). "
+                        "This is the name that appears in the session sidebar, so make "
+                        "it descriptive and specific."
+                    ),
+                },
+                "session_mode": {
+                    "type": "string",
+                    "enum": ["new_reuse", "new_each", "existing"],
+                    "description": (
+                        "REQUIRED — new_reuse (default): first action creates a session, "
+                        "follow-ups reuse it; new_each: every action starts a fresh "
+                        "session; existing: always dispatch into the given session_id."
+                    ),
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Required iff session_mode is 'existing': the session id to dispatch into.",
+                },
             },
-            "required": ["slug", "title"],
+            "required": ["slug", "title", "session_target_name", "session_mode"],
         },
     )
 
@@ -270,10 +381,29 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
     )
 
     # -- rename_genui ---------------------------------------------------------
-    async def _rename_genui_wrapper(slug: str, title: str):
-        ok = await _rename_genui(user_id=user_id, slug=slug, new_title=title)
+    async def _rename_genui_wrapper(slug: str, title: str,
+                                    session_target_name: str = "",
+                                    session_mode: str = "",
+                                    session_id: str = ""):
+        # Optional session-contract update: PATCH may change title, config, or both.
+        session_config = None
+        if session_target_name or session_mode or session_id:
+            name = (session_target_name or "").strip()
+            if not name:
+                return json.dumps({"status": "error", "message": "session_target_name cannot be empty."})
+            if session_mode not in ("new_reuse", "new_each", "existing"):
+                return json.dumps({"status": "error", "message": "session_mode must be one of: new_reuse, new_each, existing."})
+            cfg: dict = {"target_name": name, "mode": session_mode}
+            if session_mode == "existing":
+                if not (session_id or "").strip():
+                    return json.dumps({"status": "error", "message": "session_id is required when session_mode is 'existing'."})
+                cfg["session_id"] = (session_id or "").strip()
+            session_config = cfg
+        ok = await _rename_genui(user_id=user_id, slug=slug, new_title=title,
+                                 session_config=session_config)
         if ok:
-            return json.dumps({"status": "ok", "message": "Gen UI '{}' renamed to '{}'.".format(slug, title)})
+            return json.dumps({"status": "ok", "message": "Gen UI '{}' renamed to '{}'.".format(slug, title),
+                               "session_config": session_config})
         return json.dumps({"status": "error", "message": "Gen UI '{}' not found.".format(slug)})
 
     tools["rename_genui"] = ToolInfo(
@@ -289,6 +419,19 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
                 "title": {
                     "type": "string",
                     "description": "New human-readable display title for the genui.",
+                },
+                "session_target_name": {
+                    "type": "string",
+                    "description": "Optional new session target name (the deployed session's title).",
+                },
+                "session_mode": {
+                    "type": "string",
+                    "enum": ["new_reuse", "new_each", "existing"],
+                    "description": "Optional new session mode: new_reuse, new_each, existing.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Required iff session_mode is 'existing': the session id to dispatch into.",
                 },
             },
             "required": ["slug", "title"],
@@ -333,6 +476,46 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
             base = dict(existing) if isinstance(existing, dict) else {}
             base.update(data)
             data = base
+        # ── Chat-input session contract gate ──────────────────────────────────
+        # Adding a chat input to a genui (chatConfig.button or chatConfig.toolbar)
+        # REQUIRES that input to declare its session target name + new-session
+        # mode — the same anti-confusing-names rule as genui creation. An input
+        # without a session config is refused with a clear error.
+        cc = data.get("chatConfig") if isinstance(data, dict) else None
+        if isinstance(cc, dict):
+            for _kind in ("button", "toolbar"):
+                _input = cc.get(_kind)
+                if not isinstance(_input, dict):
+                    continue
+                _sc = _input.get("session")
+                if not isinstance(_sc, dict) or not (_sc.get("target_name") or "").strip():
+                    return json.dumps({
+                        "status": "error",
+                        "message": (
+                            f"chatConfig.{_kind} requires a session config — every "
+                            "chat input must declare how its messages deploy into "
+                            "agent sessions. Add `\"session\": {{\"target_name\": "
+                            "\"<deployed session title>\", \"mode\": \"new_reuse\"}}` "
+                            "(mode: new_reuse | new_each | existing; session_id "
+                            "required for existing). No data saved."
+                        ),
+                    })
+                if _sc.get("mode") not in ("new_reuse", "new_each", "existing"):
+                    return json.dumps({
+                        "status": "error",
+                        "message": (
+                            f"chatConfig.{_kind}.session.mode must be one of: "
+                            "new_reuse, new_each, existing. No data saved."
+                        ),
+                    })
+                if _sc.get("mode") == "existing" and not (_sc.get("session_id") or "").strip():
+                    return json.dumps({
+                        "status": "error",
+                        "message": (
+                            f"chatConfig.{_kind}.session.mode is 'existing', so "
+                            "session.session_id is required. No data saved."
+                        ),
+                    })
         await _save_genui_data(user_id=user_id, slug=slug, data=data)
         return json.dumps({"status": "ok", "slug": slug, "merged": bool(merge), "keys": list(data.keys())})
 
@@ -351,7 +534,12 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
                     "description": (
                         "The genui's content as a JSON object (e.g. "
                         "{\"students\": [...], \"lessons\": {...}}). The page reads "
-                        "these via api.getData(). Use the SAME key names the page expects."
+                        "these via api.getData(). Use the SAME key names the page expects. "
+                        "NOTE: any chatConfig.button / chatConfig.toolbar entry MUST "
+                        "include a session config: {\"session\": {\"target_name\": "
+                        "\"<deployed session title>\", \"mode\": \"new_reuse\"}} "
+                        "(mode: new_reuse | new_each | existing; session_id required "
+                        "for existing)."
                     ),
                 },
                 "merge": {
@@ -427,6 +615,50 @@ def register_tools(tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "")
                 "limit": {
                     "type": "integer",
                     "description": "Max number of most-recent entries to return (default 100, max 500).",
+                },
+            },
+            "required": ["slug"],
+        },
+    )
+
+    # -- refresh_genui ---------------------------------------------------------
+    # Push a live reload of a genui to the browser — the frontend sees the tool
+    # result (same shape as render_visual) and re-fetches + remounts the page,
+    # which bakes the latest data bag into the HTML automatically.  Call this
+    # AFTER set_genui_data to show the user the updated content immediately.
+    async def _refresh_genui_wrapper(slug: str, **_extra):
+        from app.genui_store import get_genui_store
+        from app.genui_store.common import genui_url
+        store = get_genui_store()
+        pages = await store.list_genui(user_id)
+        page = next((p for p in pages if p.get("slug") == slug), None)
+        if page is None:
+            return json.dumps({"status": "error", "message": f"Gen UI '{slug}' not found."})
+        url_path = page.get("url", "")
+        if not url_path:
+            url_path = genui_url(user_id, slug)
+        return json.dumps({
+            "status": "ok",
+            "path": url_path,
+            "slug": slug,
+            "title": page.get("title", slug),
+            "refreshed": True,
+            "note": (
+                "The genui '{}' is being reloaded in the browser. Its data bag is "
+                "baked in at serve time, so any set_genui_data call before this "
+                "tool is now visible to the user."
+            ).format(slug),
+        })
+
+    tools["refresh_genui"] = ToolInfo(
+        name="refresh_genui",
+        handler=_refresh_genui_wrapper,
+        parameters={
+            "type": "object",
+            "properties": {
+                "slug": {
+                    "type": "string",
+                    "description": "Slug of the genui to refresh in the browser (e.g. 'home', 'dashboard', 'production-readiness').",
                 },
             },
             "required": ["slug"],

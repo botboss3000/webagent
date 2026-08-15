@@ -1,0 +1,188 @@
+warning: in the working copy of 'ui/shared/css/app1.css', CRLF will be replaced by LF the next time Git touches it
+diff --git a/ui/shared/css/app1.css b/ui/shared/css/app1.css
+index 04971a52..29523a3a 100644
+--- a/ui/shared/css/app1.css
++++ b/ui/shared/css/app1.css
+@@ -842,6 +842,23 @@ body.light-mode #chat-sub-header .chip-sep { background: var(--border); }
+     min-height: 0;
+     /* Smooth transition for idle ↔ active footer mode switches */
+     transition: padding 0.3s ease, gap 0.3s ease, bottom 0.3s ease;
++    /* PASS-THROUGH FOOTER (PILL-PANEL-LAYOUT): the input area is an absolute
++       overlay on top of the transcript scroller. pointer-events:none lets
++       wheel / drag / click over the empty band above the pill (and any
++       transparent gaps between controls) fall through to the transcript
++       behind it; every interactive child re-enables events below. */
++    pointer-events: none;
++  }
++  /* Re-enable pointer events on exactly the interactive children of the
++     pass-through footer. The pill, footer row, suggestion chips, billing
++     card, and every zone-built control keep working; empty space scrolls
++     the transcript. */
++  #chat-input-area #chat-input-row,
++  #chat-input-area #chat-footer-row,
++  #chat-input-area .chat-suggest-chip,
++  #chat-input-area .billing-panel-card,
++  #chat-input-area [data-header-control] {
++    pointer-events: auto;
+   }
+ 
+   /* ── Idle footer mode (CSS-driven, no DOM rebuild) ──
+@@ -2437,43 +2454,93 @@ body.light-mode .chat-mode-btn:hover { border-color: rgba(var(--brand-rgb), 0.45
+     width: 32px;
+     height: 32px;
+     border-radius: 50%;
+-    border: var(--border-width) solid var(--accent-line);
+-    background: var(--accent-mid);
+-    color: var(--accent);
++    border: none;
++    background: none;
++    color: var(--fg-3);
+     cursor: pointer;
+     display: flex;
+     align-items: center;
+     justify-content: center;
+-    transition: opacity 0.2s, background 0.2s, color 0.2s, border-color 0.2s;
++    transition: opacity 0.2s, background 0.2s, color 0.2s, visibility 0s 0.2s;
+     opacity: 0;
++    /* Hidden FABs must not keep (or accept) focus — an opacity-0 button still
++       holds focus after a click, so when it reappears the browser re-paints
++       its focus ring. visibility:hidden makes it unfocusable and drops it out
++       of the tab order; the 0.2s transition delay keeps the fade-out smooth. */
++    visibility: hidden;
+     pointer-events: none;
+-    box-shadow: 0 2px 8px rgba(var(--shadow-rgb), 0.3);
+-    -webkit-backdrop-filter: blur(6px);
+-    backdrop-filter: blur(6px);
++    outline: none;
++    -webkit-tap-highlight-color: transparent;
+   }
+   .chat-nav-fab.visible {
+     opacity: 1;
++    visibility: visible;
+     pointer-events: auto;
++    /* Show flips visibility instantly (no delay) so the FAB isn't invisible
++       for the first 0.2s of its fade-in. */
++    transition: opacity 0.2s, background 0.2s, color 0.2s, visibility 0s;
+   }
+   .chat-nav-fab:hover {
+-    background: var(--accent-line);
+-    border-color: var(--accent);
+-    color: var(--accent);
++    color: var(--brand);
++  }
++  /* No focus/active ring or border of any kind — the busy spinner is the only
++     notifier. All chevrons (up + down) share this flat look, matching the
++     header icon buttons. */
++  .chat-nav-fab:focus,
++  .chat-nav-fab:focus-visible {
++    outline: none;
++    box-shadow: none;
++  }
++  .chat-nav-fab:active {
++    transform: scale(0.94);
++  }
++  /* Busy state — a DB-truthful jump (top-of-session / last-user / newest) is
++     fetching its window: the chevron swaps for a spinner while keeping the FAB
++     shape. Same accent family as the glyphs above, so it re-tints with the
++     palette. JS toggles `.busy` (chat-ui.js _setBtnBusy). */
++  .chat-nav-fab.busy {
++    pointer-events: none;
++    cursor: default;
++  }
++  .chat-nav-fab.busy svg {
++    display: none;
++  }
++  .chat-nav-fab.busy::after {
++    content: '';
++    width: 12px;
++    height: 12px;
++    border-radius: 50%;
++    border: 2px solid var(--accent-line);
++    border-top-color: var(--accent);
++    animation: chat-nav-fab-spin 0.6s linear infinite;
++    box-sizing: border-box;
++  }
++  @keyframes chat-nav-fab-spin {
++    from { transform: rotate(0deg); }
++    to { transform: rotate(360deg); }
+   }
+-  /* Scroll-to-bottom FAB — child of #chat-panel (position: relative), sharing
+-     the same coordinate space as #chat-header / #chat-top-nav.
+-     bottom = input-area height + 8px gap, so the button floats just above
+-     the pill regardless of footer expand/collapse (--chat-input-h is kept
+-     in sync by the ResizeObserver in chat-ui.js).
+-     right offset = centering margin (half the unused width beside the header's
+-     max-width) + 8px (header right padding 2px + top-nav padding-right 6px),
+-     clamped to at least 8px so it never slides off narrow viewports. */
++  /* Scroll-to-bottom FAB — child of #chat-input-row (the composer pill, which
++     is position: relative), NOT of #chat-panel. Anchoring it to the pill makes
++     the button hover DIRECTLY above the composer — the "footer" — with a fixed
++     8px gap, and stay glued there no matter what rows appear above the pill
++     (activity bar, suggestions, billing panel) or below it (stats carousel,
++     token/mode row). Those rows can push the pill around; the FAB tracks the
++     pill's own top edge instead of the whole input-area height, so it never
++     ends up floating above the other footer rows (the old --chat-input-h
++     anchoring did exactly that: bottom = full input-area height + 8px, which
++     lifted the button above the activity bar whenever one was visible).
++     right: 0 = the pill's right edge — the end of the footer rows — so the
++     button reads as INLINE with the topmost row above the composer instead of
++     taking extra space above the footer. It stays inside #chat-panel
++     (overflow: hidden) because it only ever sits just above the pill, near
++     the panel's bottom. Survives footer-mode pill rebuilds: applyChatPillLayout
++     rescues stable nodes and only rebuilds the .chat-pill-layout-rows child. */
+   #chat-scroll-bottom-btn {
+-                position: absolute;
+-                bottom: calc(var(--chat-input-h, 56px) + 8px);
+-                right: max(8px, calc((100% - var(--chat-header-max-width, var(--chat-surface-max-width, 1000px))) / 2 + 8px));
+-                z-index: 10;
+-              }
++    position: absolute;
++    bottom: calc(100% + 8px);
++    right: 0;
++    z-index: 10;
++  }
+   /* Session-switch loading spinner — shown in the chat area while messages
+    are being fetched from the server after selecting a different session. */
+ .chat-loading-wrap {
+@@ -6137,9 +6204,9 @@ body.light-mode .session-dropdown-menu::-webkit-scrollbar-thumb {
+ .session-dropdown-loading-row {
+     display: flex;
+     align-items: center;
+-    gap: 10px;
+-    min-height: 44px;
+-    padding: 7px 10px;
++    gap: 6px;
++    min-height: 28px;
++    padding: 6px 8px;
+     box-sizing: border-box;
+ }
+ .session-dropdown-loading-icon,
+@@ -6149,23 +6216,16 @@ body.light-mode .session-dropdown-menu::-webkit-scrollbar-thumb {
+     animation: sessionDropdownSkeletonShimmer 1.2s ease-in-out infinite;
+ }
+ .session-dropdown-loading-icon {
+-    width: 22px;
+-    height: 22px;
+-    border-radius: 6px;
++    width: 14px;
++    height: 14px;
++    border-radius: 4px;
+     flex: 0 0 auto;
+ }
+-.session-dropdown-loading-lines {
+-    display: flex;
+-    flex: 1;
+-    flex-direction: column;
+-    gap: 6px;
+-}
+ .session-dropdown-loading-line {
+-    width: min(68%, 230px);
+-    height: 7px;
++    flex: 1;
++    height: 8px;
+     border-radius: 999px;
+ }
+-.session-dropdown-loading-line.short { width: min(38%, 130px); }
+ @keyframes sessionDropdownSkeletonShimmer {
+     from { background-position: 100% 0; }
+     to { background-position: 0 0; }

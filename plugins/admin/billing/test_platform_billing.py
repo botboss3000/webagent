@@ -113,6 +113,42 @@ def test_validate_rejects_disallowed_strategy():
         os.remove(path)
 
 
+def test_validate_accepts_allowed_strategy_combination():
+    db, path = _fresh_db()
+    try:
+        store.upsert_platform_config(
+            db,
+            {"allowed_strategies": json.dumps(["trial", "credits"])},
+            "admin",
+        )
+        _run(ext.apply_agent_config_validation(
+            db, "a1", {"strategy": "trial,credits"}
+        ))
+    finally:
+        os.remove(path)
+
+
+def test_validate_rejects_one_disallowed_strategy_in_combination():
+    db, path = _fresh_db()
+    try:
+        store.upsert_platform_config(
+            db,
+            {"allowed_strategies": json.dumps(["trial", "credits"])},
+            "admin",
+        )
+        try:
+            _run(ext.apply_agent_config_validation(
+                db, "a1", {"strategy": "trial,subscription"}
+            ))
+            assert False, "should have rejected 'subscription'"
+        except AssertionError:
+            raise
+        except Exception as e:
+            assert getattr(e, "status_code", None) == 400
+    finally:
+        os.remove(path)
+
+
 def test_subscription_params_returns_fee():
     db, path = _fresh_db()
     try:

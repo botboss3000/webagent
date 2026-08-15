@@ -39,11 +39,16 @@ _CONFIG_FILE = os.path.join(_APP_DIR, "db_encryption.json")
 
 # The databases that can be encrypted, in a stable order. Each is a separate
 # SQLite file with its own connection site.
-DB_IDS: Tuple[str, ...] = ("local", "vault", "logs", "recordings", "wiki")
+DB_IDS: Tuple[str, ...] = ("app", "local", "vault", "app_secrets", "agent_secrets", "user_secrets",
+                            "logs", "recordings", "wiki")
 
 DB_LABELS: Dict[str, str] = {
+    "app": "App control plane (accounts, catalog, billing, coordination)",
     "local": "Main database (chat, sessions, memories, agents)",
-    "vault": "Credentials vault (integration tokens & secrets)",
+    "vault": "Legacy credentials vault (migrated to app/agent/user secrets)",
+    "app_secrets": "App secrets (deploy keys, LLM fallback, OAuth app creds, DNS keys)",
+    "agent_secrets": "Agent secrets (OAuth tokens, ability creds, per-user LLM overrides)",
+    "user_secrets": "User secrets (genui vault keys, browser cookies, user ability creds)",
     "logs": "Diagnostics & tool-metrics logs",
     "recordings": "Browser render recordings",
     "wiki": "Wiki articles (note: served as public pages)",
@@ -125,12 +130,24 @@ def set_enabled(db_id: str, on: bool) -> None:
 def db_path(db_id: str) -> Optional[str]:
     """Resolve the on-disk file for a database id (lazy imports avoid cycles)."""
     try:
+        if db_id == "app":
+            from app.db.storage_layout import APP_DB_PATH
+            return str(APP_DB_PATH)
         if db_id == "local":
             from app.db.local import DEFAULT_DB_PATH
             return DEFAULT_DB_PATH
         if db_id == "vault":
             from app.db.local import DEFAULT_DB_PATH, _vault_path_for
             return _vault_path_for(DEFAULT_DB_PATH)
+        if db_id == "app_secrets":
+            from app.db.local import DEFAULT_DB_PATH, _app_vault_path
+            return _app_vault_path(DEFAULT_DB_PATH)
+        if db_id == "agent_secrets":
+            from app.db.local import DEFAULT_DB_PATH, _agent_vault_path
+            return _agent_vault_path(DEFAULT_DB_PATH)
+        if db_id == "user_secrets":
+            from app.db.local import DEFAULT_DB_PATH, _user_vault_path
+            return _user_vault_path(DEFAULT_DB_PATH)
         if db_id == "logs":
             from app.db.logs_store import LOGS_DB_PATH
             return LOGS_DB_PATH

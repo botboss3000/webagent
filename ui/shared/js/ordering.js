@@ -13,12 +13,14 @@
  *      Both the dropdown and the Agents page call it, so they match exactly.
  *
  *   2. Drag-to-reorder. `makeRowsReorderable` wires a pointer-based (mouse +
- *      touch) drag from a grip handle on each row, then hands the resulting
- *      top-to-bottom id list back to the caller, which persists it to the DB.
+ *      touch) drag from a handle on each row (either a dedicated grip element or
+ *      the row itself for full-row drag), then hands the resulting top-to-bottom
+ *      id list back to the caller, which persists it to the DB.
  *
  * The persisted order is account-level (DB), so it follows the user across
- * devices: agents via POST /api/v1/agents/reorder, sessions via
- * POST /api/v1/db/sessions/reorder.
+ * devices: agents via POST /api/v1/agents/reorder. For sessions, only pinned
+ * rows are manually reorderable; unpinned rows always follow recent activity.
+ * Pinned order persists via POST /api/v1/db/sessions/reorder.
  */
 
 import { apiPath } from './config.js';
@@ -86,16 +88,18 @@ async function persistAgentOrder(userId, orderedIds) {
 }
 
 export async function persistSessionOrder(userId, orderedIds) {
-  if (!userId || !Array.isArray(orderedIds) || !orderedIds.length) return;
-  try {
-    await fetch(apiPath('/api/v1/db/sessions/reorder?db=local.db'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ user_id: userId, order: orderedIds }),
-    });
-  } catch (e) {
-    console.warn('Failed to persist session order:', e);
+  if (!userId || !Array.isArray(orderedIds) || !orderedIds.length) return true;
+  const res = await fetch(apiPath('/api/v1/db/sessions/reorder?db=user.db'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ user_id: userId, order: orderedIds }),
+  });
+  if (!res.ok) throw new Error(`Session reorder failed (HTTP ${res.status})`);
+  const data = await res.json();
+  if (!data.success || data.updated !== orderedIds.length) {
+    throw new Error(`Session reorder saved ${data.updated || 0} of ${orderedIds.length} rows`);
   }
+  return true;
 }
 
 // ── Pointer-based drag-to-reorder ──────────────────────────────────────────────
@@ -206,7 +210,15 @@ export function attachRowLongPress(container, opts) {
  * @param {HTMLElement} container  The scrollable menu element (rows live inside).
  * @param {Object} opts
  * @param {string} opts.rowSelector     CSS selector matching each reorderable row.
- * @param {string} opts.handleSelector  CSS selector for the drag grip inside a row.
+ * @param {string} opts.handleSelector  CSS selector for the drag trigger. Can be the
+ *        row itself (for full-row drag) or a child handle element. When matching the
+ *        row, plain taps still select; drags fire onReorder. Pass ignoreSelector to
+ *        exclude interactive children from initiating a drag.
+ * @param {string} [opts.ignoreSelector] CSS selector for interactive elements that
+ *        should NOT initiate a drag (kebab, delete, input, etc.). Pointer events on
+ *        these are ignored.
+ * @param {HTMLElement} [opts.dropBefore] Fixed child that dragged rows must stay
+ *        before (for example, a footer following a reorderable list).
  * @param {(orderedIds: string[]) => void} opts.onReorder  Called on drop with the
  *        new top-to-bottom list of row `data-id` values.
  * @param {(rowId: string) => void} [opts.onHandleLongPress]  Called when the grip
@@ -223,6 +235,8 @@ export function makeRowsReorderable(container, opts) {
     handleSelector,
     onReorder,
     onHandleLongPress,
+    ignoreSelector,
+    dropBefore,
     longPressMs = _LONG_PRESS_MS,
   } = opts;
   let dragRow = null;     // the row being dragged
@@ -261,7 +275,10 @@ export function makeRowsReorderable(container, opts) {
         break;
       }
     }
-    if (!inserted) container.appendChild(dragRow);
+    if (!inserted) {
+      if (dropBefore && container.contains(dropBefore)) container.insertBefore(dragRow, dropBefore);
+      else container.appendChild(dragRow);
+    }
   }
 
   function onMove(e) {
@@ -297,10 +314,14 @@ export function makeRowsReorderable(container, opts) {
     lpFired = false;
     // The long-press already pinned + suppressed its own click — nothing else.
     if (wasLongPress) return;
-    // Otherwise suppress the trailing click (tap on handle, or drop on a row).
-    _suppressNextClick(container);
-    if (wasArmed && row && typeof onReorder === 'function') {
-      onReorder(rowIdList());
+    // If a drag actually happened, suppress the trailing click and fire the
+    // reorder callback. For a plain tap (no drag), let the click through so it
+    // can select/switch the row.
+    if (wasArmed) {
+      _suppressNextClick(container);
+      if (typeof onReorder === 'function') {
+        onReorder(rowIdList());
+      }
     }
   }
 
@@ -309,8 +330,18 @@ export function makeRowsReorderable(container, opts) {
     if (!handle || !container.contains(handle)) return;
     const row = handle.closest(rowSelector);
     if (!row) return;
-    e.preventDefault();
-    e.stopPropagation();
+    // If ignoreSelector is set, check the pointer didn't land on an interactive
+    // element (kebab, delete, title input, etc.) — these have their own gestures.
+    if (ignoreSelector && e.target.closest(ignoreSelector)) return;
+    const isRowHandle = handle.matches(rowSelector);
+    // Classic handle-based drag: steal the pointer event immediately so the
+    // handle tap doesn't also trigger the row's click handler.
+    // Full-row drag: let the click through naturally; suppress it only if the
+    // user actually drags (see onEnd).
+    if (!isRowHandle) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     dragRow = row;
     armed = false;
     lpFired = false;

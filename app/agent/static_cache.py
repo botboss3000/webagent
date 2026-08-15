@@ -3,7 +3,7 @@
 Some hot-path work is re-derived from the database on EVERY message even though
 its inputs don't change between messages in a conversation — most expensively the
 agent's tool set (``load_tools`` makes dozens of DB round-trips). On a remote
-Postgres/Supabase that re-derivation costs many seconds per message.
+Postgres that re-derivation costs many seconds per message.
 
 This is a tiny TTL + version-keyed memo. Entries are keyed by a caller-supplied
 string and validated against a ``version`` token (the agent's ``updated_at``):

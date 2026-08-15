@@ -269,7 +269,7 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
     async def _read_source(path: str, offset: int = 1, limit: int = 2000) -> str:
         """Read file contents from disk. Supports line-range slicing for large files.
 
-        offset is 1-indexed (line numbers shown in cat -n format).
+        offset is 1-indexed (line numbers shown in cat -n format). NOT named 'start'.
         Default limit is 2000 lines; the response includes a truncation hint
         when the file extends beyond the returned slice."""
         safe = _safe_path(path)
@@ -316,7 +316,7 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Path to the file (relative to project root or absolute)"},
-                "offset": {"type": "integer", "description": "First line to return (1-indexed). Default 1.", "default": 1},
+                "offset": {"type": "integer", "description": "1-indexed line to start from. Use 'offset' NOT 'start'. Default 1.", "default": 1},
                 "limit": {"type": "integer", "description": "Max lines to return. Default 2000.", "default": 2000},
             },
             "required": ["path"],
@@ -546,7 +546,7 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
         parameters={
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "Shell command to execute"},
+                "command": {"type": "string", "description": "Shell command to execute. Commands run via cmd.exe on Windows (not bash). Important: '%' is a special character in cmd — for curl -w format strings, double every '%' to '%%' (e.g. -w '%%{http_code}'). For complex commands, use powershell -Command \"...\" instead."},
                 "timeout": {"type": "integer", "description": "Timeout in seconds (default 30)", "default": 30},
             },
             "required": ["command"],
@@ -602,14 +602,25 @@ def inject_source_tools(tools: dict, user_id: str) -> None:
 
     # ── restart_server: always needs confirmation ──
     async def _restart_server() -> str:
-        """Restart the web agent server. Ask the user before calling."""
+        """Restart the web agent server. Ask the user before calling.
+
+        The endpoint delegates to ``app.relauncher``: WebAgent.bat's loop
+        restarts batch-launched servers, and the detached fallback revives a
+        server launched directly with run.py.
+        """
         import httpx
         async with httpx.AsyncClient(base_url=BASE, timeout=5) as c:
             try:
                 resp = await c.post("/api/v1/restart")
-                return f"Server restarting: {resp.json().get('message', 'ok')}"
+                resp.raise_for_status()
+                result = resp.json()
+                if not result.get("auto_restart"):
+                    return "Server restart unavailable: " + str(
+                        result.get("reason") or "no restart launcher is available"
+                    )
+                return f"Server restarting: {result.get('message', 'ok')}"
             except Exception as e:
-                return f"Restart signal sent: {e}"
+                return f"Could not request server restart: {e}"
 
     tools["restart_server"] = ToolInfo(
         name="restart_server",

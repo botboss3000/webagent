@@ -1,0 +1,24 @@
+=== directChat ===
+function directChat(msg,label){
+  // Bypass the genui dispatch pipeline entirely — no buildTaggedGenuiPrompt,
+  // no agent_context injection. The message sent is exactly what the caller
+  // builds. Used for quick notes where the prompt in data.json is complete.
+  // Reads identity from localStorage (auth_token / auth_user_id) because the
+  // genui page's scripts cannot see the app module's `app` object. Mirrors
+  // ui/shared/js/config.js apiPath() so it works under a subdirectory base.
+  try{
+    var sid=newId();
+    var tok=localStorage.getItem('auth_token')||'';
+    var uid=localStorage.getItem('auth_user_id')||'';
+    if(!uid||!tok)return '';
+    var p=window.location.pathname||'/';
+    p=p.replace(/\/index\.html?$/i,'');
+    if(p.length>1&&p.endsWith('/'))p=p.slice(0,-1);
+    if(/^\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p))p='';
+    else if(['/app','/setup','/setup.html'].indexOf(p.toLowerCase())>=0)p='';
+    else if(p==='/')p='';
+    var body={user_id:uid,session_id:sid,message:msg,execution_mode:'auto'};
+    // Friendly label so the chat panel shows a green notice instead of the raw
+    // prompt as a "You" bubble (the raw prompt still reaches the agent).
+    
+

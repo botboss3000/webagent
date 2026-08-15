@@ -13,7 +13,7 @@ Usage (programmatic):
     cfg = DBConnectionConfig(provider="postgres", host="localhost", port=5432,
                              database="webagent", username="webagent")
     build_postgres_backend(cfg, password="...", seed=False)   # ensure schema exists
-    report = migrate("data/db/local.db", make_conninfo(cfg, "..."))
+    report = migrate("data/db/app.db", make_conninfo(cfg, "..."))
 """
 
 from __future__ import annotations
@@ -146,7 +146,12 @@ def _main():
     from app.db.connection_config import DBConnectionConfig
     from app.db.postgres_backend import build_postgres_backend, make_conninfo
 
-    sqlite_path = sys.argv[1] if len(sys.argv) > 1 else "data/db/local.db"
+    if len(sys.argv) <= 1:
+        raise SystemExit(
+            "Pass an explicit authority database path (app, user, or agent); "
+            "there is no combined SQLite database after layout v2"
+        )
+    sqlite_path = sys.argv[1]
     cfg = DBConnectionConfig(
         provider="postgres",
         host=os.environ.get("WEBAGENT_DB_HOST", "localhost"),

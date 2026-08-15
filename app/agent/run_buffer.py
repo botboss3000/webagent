@@ -106,6 +106,10 @@ class RunBuffer:
                 self.session_id, MAX_EVENTS_PER_BUFFER,
             )
         ss, ts = self.next_seq()
+        # ``event_seq`` is the transport/replay cursor. Keep ``session_seq`` as
+        # a compatibility alias for older clients; transcript placement uses
+        # the explicit ``interaction_seq`` attached to persisted-row events.
+        event["event_seq"] = ss
         event["session_seq"] = ss
         event["turn_id"] = self.turn_id
         event["turn_seq"] = ts
@@ -169,12 +173,34 @@ class RunBufferRegistry:
     def get(self, session_id: str) -> Optional[RunBuffer]:
         return self._buffers.get(session_id)
 
-    async def end_turn(self, session_id: str) -> None:
-        """Mark the active buffer for session as completed (starts retention timer)."""
+    async def end_turn(self, session_id: str, db: Any = None) -> None:
+        """Mark the active buffer for session as completed (starts retention timer).
+
+        When ``db`` is supplied, also persists the buffer's high-water mark into
+        session_manifests so the manifest never goes stale, AND stamps the durable
+        run-state's ``latest_session_seq`` so a reloaded / cold-device WS resume
+        cursor is accurate.  Without this a server restart (or buffer sweep) can
+        cause ``next_session_seq`` to re-issue already-used numbers, producing
+        duplicated messages.
+        """
         async with self._lock:
             buf = self._buffers.get(session_id)
             if buf:
                 buf.mark_completed()
+                if db is not None:
+                    high_water = buf._session_seq
+                    try:
+                        await db.persist_session_manifest_seq(
+                            session_id, high_water)
+                    except Exception:
+                        pass
+                    # Also close the run-state's seq cursor — it drifts behind the
+                    # manifest when the throttled per-event update (chat.py L2573)
+                    # fires less recently than the last few events of the turn.
+                    try:
+                        await db.run_state_update_seq(session_id, high_water)
+                    except Exception:
+                        pass
 
     def _ensure_sweeper(self) -> None:
         if self._sweeper_task and not self._sweeper_task.done():

@@ -118,7 +118,7 @@ async def app_get_auth_keys(ctx: ToolContext) -> str:
 async def app_set_auth_keys(ctx: ToolContext, api_key: str = "", provider: str = "",
                             base_url: str = "", model: str = "") -> str:
     """Set the app's LLM auth key / provider / base URL / model (writes the DB
-    auth_elements row + provider.json). Only the fields you pass are changed; the
+    auth_elements row). Only the fields you pass are changed; the
     api_key is never echoed back. Mutating — confirm with the user first."""
     if not ctx.writes_enabled:
         return WRITES_DISABLED_MSG

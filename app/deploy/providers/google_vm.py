@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import secrets as _secrets
 import time
 from typing import Any, AsyncIterator, Dict, Tuple
@@ -183,8 +184,8 @@ class GoogleVMProvider(BaseDeployProvider):
                      "page. No project yet? Create one there first — creating a "
                      "project is free.",
              "images": [
-                 "/ui/admin-tools/app-config/data-settings/img/gcp-project-welcome.png",
-                 "/ui/admin-tools/app-config/data-settings/img/gcp-project-picker.png",
+                 "/ui/admin-tools/instances/app-config/data-settings/img/gcp-project-welcome.png",
+                 "/ui/admin-tools/instances/app-config/data-settings/img/gcp-project-picker.png",
              ],
          }},
         # A dropdown of common worldwide zones (pick by where your users are), plus
@@ -316,8 +317,8 @@ class GoogleVMProvider(BaseDeployProvider):
                              "serviceaccounts/create?authuser=2&project={project_id}",
                       "label": "Create a service account for “{project_id}” ↗"},
              "images": [
-                 "/ui/admin-tools/app-config/data-settings/img/gcp-sa-create-role.png",
-                 "/ui/admin-tools/app-config/data-settings/img/gcp-sa-keys-addkey.png",
+                 "/ui/admin-tools/instances/app-config/data-settings/img/gcp-sa-create-role.png",
+                 "/ui/admin-tools/instances/app-config/data-settings/img/gcp-sa-keys-addkey.png",
              ],
          }},
         # OPTIONAL GitHub access token for a PRIVATE repository. Supplied by the shared
@@ -373,7 +374,14 @@ class GoogleVMProvider(BaseDeployProvider):
 
     # ── helpers ──
     async def _ensure_firewall(self, client: httpx.AsyncClient, project: str, token: str) -> None:
-        """Create the HTTP/HTTPS ingress rule if it isn't there (409 = exists)."""
+        """Make sure the HTTP/HTTPS ingress rule exists AND matches what we need.
+
+        Creates the rule if missing; if a rule with our name already exists
+        (previous deploy, or a 409), GETs it and PUTs a corrected version when
+        its ports / target tag / source ranges differ — so a stale or hand-edited
+        rule can never silently keep HTTP/HTTPS closed. Failures are logged but
+        never fatal (the app is still reachable on hosts where the network layer
+        already permits 80/443)."""
         url = f"{_COMPUTE}/projects/{project}/global/firewalls"
         body = {
             "name": _FW_NAME,
@@ -383,11 +391,37 @@ class GoogleVMProvider(BaseDeployProvider):
             "sourceRanges": ["0.0.0.0/0"],
             "targetTags": [_NET_TAG],
         }
-        r = await client.post(url, headers={"Authorization": f"Bearer {token}",
-                                            "Content-Type": "application/json"}, json=body)
-        if r.status_code not in (200, 201, 409):
-            # 409 = already exists; anything else is worth surfacing but not fatal.
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        r = await client.post(url, headers=headers, json=body)
+        if r.status_code in (200, 201):
+            return
+        if r.status_code != 409:
+            # Anything else is worth surfacing but not fatal.
             logger.info("firewall ensure returned %s: %s", r.status_code, r.text[:200])
+            return
+        # Rule already exists — verify it still opens 80/443 for our tag.
+        try:
+            g = await client.get(f"{url}/{_FW_NAME}", headers=headers)
+            if g.status_code != 200:
+                logger.info("firewall verify GET returned %s: %s", g.status_code, g.text[:200])
+                return
+            existing = g.json()
+            got_ports = sorted(
+                p for a in existing.get("allowed", []) if a.get("IPProtocol") == "tcp"
+                for p in a.get("ports", []))
+            got_tags = sorted(existing.get("targetTags", []))
+            got_ranges = sorted(existing.get("sourceRanges", []))
+            want_ports = sorted(body["allowed"][0]["ports"])
+            if got_ports == want_ports and got_tags == sorted([_NET_TAG]) \
+                    and got_ranges == sorted(["0.0.0.0/0"]):
+                return
+            logger.info("firewall rule %s differs (%s ports, %s tags, %s ranges) — updating",
+                        _FW_NAME, got_ports, got_tags, got_ranges)
+            u = await client.put(f"{url}/{_FW_NAME}", headers=headers, json=body)
+            if u.status_code not in (200, 201):
+                logger.info("firewall update returned %s: %s", u.status_code, u.text[:200])
+        except Exception:
+            logger.exception("firewall verify/update failed")
 
     async def _poll_zone_op(self, client: httpx.AsyncClient, project: str, zone: str,
                             op_name: str, token: str, *, tries: int = 60) -> Dict[str, Any]:
@@ -443,6 +477,19 @@ class GoogleVMProvider(BaseDeployProvider):
         repo = (config.get("repo_url") or DEFAULT_REPO_URL).strip() or DEFAULT_REPO_URL
         branch = (config.get("branch") or DEFAULT_BRANCH).strip() or DEFAULT_BRANCH
         domain = (config.get("domain") or "").strip()
+        requested_name = str(config.get("instance_name") or "").strip()
+
+        if requested_name and not re.fullmatch(
+            r"[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?", requested_name
+        ):
+            yield done({
+                "ok": False,
+                "message": (
+                    "Instance name must use 1–63 lowercase letters, numbers or "
+                    "hyphens, start with a letter and end with a letter or number."
+                ),
+            })
+            return
 
         # Resolve the clone URL from the shared repo details. For a PRIVATE repo the
         # access token is embedded (https://TOKEN@host/…) so the new VM can fetch it;
@@ -477,7 +524,7 @@ class GoogleVMProvider(BaseDeployProvider):
             yield done({"ok": False, "message": f"Could not authenticate: {e}"})
             return
 
-        name = f"webagent-{int(time.time())}-{_secrets.token_hex(2)}"
+        name = requested_name or f"webagent-{int(time.time())}-{_secrets.token_hex(2)}"
         startup = build_install_script(
             repo_url=clone_url, origin_url=origin_url, branch=branch, domain=domain, port=8080,
             admin_password=admin_password,
@@ -587,6 +634,9 @@ class GoogleVMProvider(BaseDeployProvider):
             yield ev(f"Point your domain {domain} at {ip or 'the server IP'} so HTTPS can be issued.", phase="dns", level="warn")
         if admin_password:
             yield ev("Admin account will be created automatically on first boot from the password you set.",
+                     phase="claim", level="ok")
+        elif "database" in (config.get("embed_sections") or []):
+            yield ev("Admin login is carried from this app's shared database — no password to pre-set.",
                      phase="claim", level="ok")
         else:
             where = public_url or "the server's address"

@@ -19,7 +19,7 @@ class _AsyncOpenAICompat:
     def __init__(self, base_url: str = "", api_key: str = "", timeout: float = 60.0):
         import httpx
 
-        self.base_url = base_url or os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        self.base_url = base_url or os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL") or ""
         self.api_key = api_key or os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
         self.timeout = timeout
         self._client = httpx.AsyncClient(timeout=timeout)
@@ -95,9 +95,13 @@ class _AsyncOpenAICompat:
                     try:
                         data = json.loads(data_str)
                         choices = data.get("choices", [])
+                        # The final SSE usage frame deliberately has no choices.
+                        # Preserve it so callers can account for the completed call.
+                        if not choices and data.get("usage") is not None:
+                            yield _Chunk({}, data.get("usage"))
                         for choice in choices:
                             delta = choice.get("delta", {})
-                            yield _Chunk(delta)
+                            yield _Chunk(delta, data.get("usage"))
                     except json.JSONDecodeError:
                         continue
 
@@ -107,6 +111,10 @@ class _Usage:
         self.prompt_tokens = data.get("prompt_tokens", 0)
         self.completion_tokens = data.get("completion_tokens", 0)
         self.total_tokens = data.get("total_tokens", 0)
+        self.cost = data.get("cost")
+        self.prompt_tokens_details = data.get("prompt_tokens_details") or {}
+        self.completion_tokens_details = data.get("completion_tokens_details") or {}
+        self.model_extra = data
 
 
 class _Completion:
@@ -131,9 +139,10 @@ class _Choice:
 class _Chunk:
     """Streaming chunk."""
 
-    def __init__(self, delta: dict):
+    def __init__(self, delta: dict, usage: Optional[dict] = None):
         self.delta = _Delta(delta)
         self.choices = [_Choice({"delta": delta})]
+        self.usage = _Usage(usage) if usage else None
 
 
 class _Delta:

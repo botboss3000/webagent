@@ -4,6 +4,10 @@ import json
 from datetime import datetime, timezone
 
 from app.integrations.oauth_helper import oauth_api_call, not_connected_payload
+from app.tools.provider_idempotency import (
+    google_calendar_create,
+    microsoft_calendar_create,
+)
 
 
 # ── Google Calendar ───────────────────────────────────────────────────────
@@ -65,6 +69,11 @@ async def gcal_create_event(
         "start": _time_field(start),
         "end":   _time_field(end),
     }
+    provider_op = google_calendar_create()
+    if provider_op:
+        # Google documents client-supplied event IDs as the duplicate-prevention
+        # primitive for a timed-out events.insert request.
+        body["id"] = provider_op.resource_id
     if description:
         body["description"] = description
     if location:
@@ -77,6 +86,28 @@ async def gcal_create_event(
         f"{_GCAL_BASE}/calendars/{calendar_id}/events",
         json_body=body, ability="google.calendar_write",
     )
+    if (
+        provider_op
+        and result.get("status") == "error"
+        and int(result.get("http_status") or 0) == 409
+    ):
+        # A previous worker may have completed the deterministic insert before
+        # losing its lease. Google reports the repeated insert as a conflict, so
+        # reconcile by reading the exact provider resource rather than turning a
+        # successfully-created event into a durable tool error.
+        existing = await oauth_api_call(
+            user_id,
+            agent_id,
+            "google",
+            "GET",
+            (
+                f"{_GCAL_BASE}/calendars/{calendar_id}/events/"
+                f"{provider_op.resource_id}"
+            ),
+            ability="google.calendar_write",
+        )
+        if existing.get("status") == "ok":
+            result = {**existing, "reconciled": True}
     if result.get("status") == "not_connected":
         return not_connected_payload("google", ability=result.get("ability") or "google.calendar_write")
     return json.dumps(result)
@@ -149,6 +180,10 @@ async def outlook_calendar_create_event(
         "start": {"dateTime": start, "timeZone": timezone_str},
         "end":   {"dateTime": end,   "timeZone": timezone_str},
     }
+    provider_op = microsoft_calendar_create()
+    if provider_op:
+        # Graph's transactionId tells the service to avoid a redundant POST.
+        body["transactionId"] = provider_op.resource_id
     if description:
         body["body"] = {"contentType": "HTML" if html_body else "Text", "content": description}
     if location:

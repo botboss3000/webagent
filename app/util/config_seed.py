@@ -99,8 +99,8 @@ _AUTO_MANAGED: List[Dict[str, str]] = [
     },
     {
         "name": "provider.json",
-        "title": "LLM provider + API keys",
-        "reason": "holds secrets — set it via the Models settings UI",
+        "title": "Shared GitHub token",
+        "reason": "holds a shared deploy token — set it via the Git settings UI",
     },
     {
         "name": "model_catalog.json",

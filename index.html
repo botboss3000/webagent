@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
 <title>WebAgent</title>
 <!-- SEO / social-preview meta (description, canonical, Open Graph, Twitter card)
      is injected RIGHT HERE server-side by app/main.py `_render_app_shell`, and the
@@ -28,10 +28,10 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="WebAgent">
 <link rel="apple-touch-icon" href="./ui/icons/icon-512x512.png">
-<!-- Fonts: Inter (sans) + JetBrains Mono (mono) -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<!-- Fonts: Inter (sans) + JetBrains Mono (mono) — self-hosted for full offline
+     support. Vendored from @fontsource under ui/vendor/fonts/ so no request ever
+     goes to fonts.googleapis.com / fonts.gstatic.com. -->
+<link rel="stylesheet" href="./ui/vendor/fonts/fonts.css">
 <!-- ── Early JS-error capture (classic, pre-module) ─────────────────────────────
      Registered BEFORE any ES module loads so it survives the one failure the
      module-level handler in ui/shared/js/main.js cannot catch: a module *link*
@@ -104,7 +104,20 @@
   // (the latter dispatch a window 'error' event, not a rejection).
   window.addEventListener('error', function (e) {
     var msg = e.message || (e.error && e.error.message);
-    if (!msg) return;   // ignore resource-load (404) error events — no message
+    // Resource-load errors (404 scripts, stylesheets, images, etc.) have no
+    // .message — extract the failed URL from e.target so the in-app debug
+    // console can show them (the browser's own console shows them, but they
+    // never pass through console.* without this explicit call).
+    if (!msg) {
+      var target = e.target;
+      if (target) {
+        var failedUrl = target.src || target.href || target.data || '';
+        var tagName = (target.tagName || 'RESOURCE').toLowerCase();
+        var desc = 'Failed to load ' + tagName + ': ' + (failedUrl || '(unknown)');
+        console.error(desc);
+      }
+      return;
+    }
     if (_isBenign(msg)) return;   // benign browser noise — no banner, no title flag
     var src = e.filename ? (e.filename.split('/').pop() + ':' + e.lineno) : 'error';
     window.__reportJsError({ message: msg, source: src, stack: e.error && e.error.stack });
@@ -117,7 +130,65 @@
     var r = e.reason;
     var msg = (r && r.message) ? r.message : String(r);
     window.__reportJsError({ message: msg, source: 'unhandledrejection', stack: r && r.stack });
+    // Also emit via console.error so the early console capture (and thus the
+    // in-app debug console panel) displays it — the debug console intercepts
+    // console.* calls, not window events directly.
+    console.error('[unhandledrejection] ' + msg);
   });
+})();
+</script>
+<!-- ── Early console capture (pre-module) ──────────────────────────────────
+     Installed BEFORE any ES module loads so console.log/warn/error/debug calls
+     produced by main.js and its dependencies during boot are NOT lost. Buffers
+     into window.__earlyConsoleBuffer; debugConsole.js drains it on init and
+     replaces the interceptors with its own richer ones (stack traces, server
+     forwarding). The original console always sees the call, so F12 DevTools
+     show everything regardless of this capture. -->
+<script>
+(function () {
+  if (window.__earlyConsoleCaptureReady) return;
+  var buffer = [];
+  var levels = ['log', 'warn', 'error', 'debug'];
+  var fns = {};
+  levels.forEach(function (level) {
+    fns[level] = console[level];
+    console[level] = function () {
+      // Forward to the real console (always — F12 keeps working)
+      fns[level].apply(console, arguments);
+      // Buffer for the debug console panel (stop once debugConsole.js drains it)
+      if (window.__earlyConsoleBuffer !== null) {
+        try {
+          var args = Array.prototype.slice.call(arguments);
+          var text = args.map(function (a) {
+            if (typeof a === 'string') return a;
+            if (a === null) return 'null';
+            if (a === undefined) return 'undefined';
+            try { return JSON.stringify(a, null, 2); } catch (_) { return String(a); }
+          }).join(' ');
+          buffer.push({ level: level, text: text, ts: Date.now() });
+          if (buffer.length > 1000) buffer.shift();
+        } catch (_) {}
+      }
+    };
+  });
+  // Forward errors to the server diagnostic log (mirrors what debugConsole.js
+  // does post-init, so we don't miss errors during the boot window).
+  var _origError = console.error;
+  console.error = function () {
+    _origError.apply(console, arguments);
+    try {
+      var args = Array.prototype.slice.call(arguments);
+      var text = args.map(function (a) {
+        if (typeof a === 'string') return a;
+        try { return JSON.stringify(a); } catch (_) { return String(a); }
+      }).join(' ');
+      if (text && text.indexOf('[WebAgent JS error]') !== 0 && typeof window.__reportJsError === 'function') {
+        window.__reportJsError({ message: text, source: 'console.error(boot)', level: 'error' });
+      }
+    } catch (_) {}
+  };
+  window.__earlyConsoleBuffer = buffer;
+  window.__earlyConsoleCaptureReady = true;
 })();
 </script>
 <!-- crypto.randomUUID polyfill for insecure contexts (plain HTTP / IP access) -->
@@ -136,31 +207,32 @@
 <!-- Warm the TLS/DNS connection to the script CDNs the head loads from, so those
      render-affecting fetches don't each pay a fresh handshake. (The Google Fonts
      origins are already preconnected near the top of <head>.) -->
-<link rel="preconnect" href="https://unpkg.com" crossorigin>
-<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<!-- Front-end libraries — self-hosted under ui/vendor/ for full offline support
+     (previously loaded from unpkg / cdn.jsdelivr.net, which broke the UI with no
+     network). Versions are pinned to what the CDN used to serve. -->
 <!-- Lucide icons (UMD — same version as UI kit) -->
-<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<script src="./ui/vendor/lucide/lucide.min.js"></script>
 <!-- Markdown rendering + syntax highlighting + HTML sanitiser. Used by the
      Files page (markdown preview) AND the chat (agent replies render as
      sanitized Markdown). Loaded sync so they're available when the UI inits. -->
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.9/dist/purify.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script src="./ui/vendor/marked/marked.min.js"></script>
+<script src="./ui/vendor/dompurify/purify.min.js"></script>
+<script src="./ui/vendor/prismjs/prism-core.min.js"></script>
+<script src="./ui/vendor/prismjs/prism-autoloader.min.js"></script>
 <script>
-  // Lock the autoloader to the same CDN/version so missing grammars
-  // resolve to a known URL instead of relying on script-src inference.
+  // Point the autoloader at the LOCAL grammar folder so missing languages
+  // resolve offline instead of hitting a CDN. All 290+ Prism components are
+  // vendored under ui/vendor/prismjs/components/.
   if (window.Prism && window.Prism.plugins && window.Prism.plugins.autoloader) {
-    window.Prism.plugins.autoloader.languages_path =
-      'https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/';
+    window.Prism.plugins.autoloader.languages_path = './ui/vendor/prismjs/components/';
   }
-  // Surface CDN failures in the console so they're easy to spot rather
+  // Surface load failures in the console so they're easy to spot rather
   // than silently degrading to plain-text rendering.
   if (!window.Prism)     console.warn('[UI] Prism failed to load — syntax highlighting unavailable.');
   if (!window.marked)    console.warn('[UI] marked failed to load — markdown rendering unavailable.');
   if (!window.DOMPurify) console.warn('[UI] DOMPurify failed to load — chat falls back to plain text (no HTML).');
 </script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm/css/xterm.css">
+<link rel="stylesheet" href="./ui/vendor/xterm/xterm.css">
 <link rel="stylesheet" href="./ui/shared/css/app1.css">
 <link rel="stylesheet" href="./ui/shared/css/app2.css">
 <link rel="stylesheet" href="./ui/shared/css/app3.css">
@@ -446,7 +518,7 @@
       // section name -> the exact URL the corresponding module fetches. MUST
       // match the module's URL construction (see the boot fetches across ui/*),
       // because normKey(theseUrls) is how a later module fetch finds its payload.
-      function _bootUrlMap(uid, defaultAgentId) {
+      function _bootUrlMap(uid, defaultAgentId, sid) {
         var m = {
           access_mode:        '/api/v1/auth/access-mode',
           ui_config:          '/api/v1/auth/ui-config',
@@ -465,6 +537,14 @@
           if (defaultAgentId) {
             m.agent_abilities = '/api/v1/agents/' + encodeURIComponent(defaultAgentId)
               + '/abilities?user_id=' + u;
+          }
+          // First transcript page of the session being opened — matches the
+          // common-case open in session-load.js (_OPEN_NEWEST_LIMIT=40, light).
+          // A scrolled-up session opens with an around_id key instead, which is
+          // deliberately NOT primed (it falls through to a normal fetch).
+          if (sid) {
+            m.session_messages = '/api/v1/db/session-messages?db=local.db&session_id='
+              + encodeURIComponent(sid) + '&limit=40&light=1';
           }
         }
         return m;
@@ -549,13 +629,14 @@
           var _uid = '', _tok = '', _sid = '';
           try { _uid = localStorage.getItem('auth_user_id') || ''; } catch (_) {}
           try { _tok = localStorage.getItem('auth_token') || ''; } catch (_) {}
-          // The session the UI will open — lets /boot prime the abilities of THAT
-          // session's bound agent (the chained ~10s tail), not a guessed default.
+          // The session the UI will open — lets /boot prime BOTH that session's
+          // first transcript page AND its bound agent's abilities (the chained
+          // ~10s tail), instead of guessing a default agent.
           try { _sid = localStorage.getItem('terminalSessionId') || ''; } catch (_) {}
           // Pre-register every key we can compute now (all but agent_abilities,
           // whose id arrives in the /boot response) so early module fetches gate
           // on the in-flight /boot instead of opening their own socket.
-          var _pre = _bootUrlMap(_uid, null);
+          var _pre = _bootUrlMap(_uid, null, _sid);
           for (var _k in _pre) {
             if (_pre.hasOwnProperty(_k)) { try { expected.add(normKey(_pre[_k])); } catch (_) {} }
           }
@@ -566,7 +647,7 @@
             .then(function (r) { return (r && r.ok) ? r.json() : null; })
             .then(function (data) {
               if (data && data.sections) {
-                var urls = _bootUrlMap(_uid, data.default_agent_id);
+                var urls = _bootUrlMap(_uid, data.default_agent_id, _sid);
                 var secs = data.sections;
                 for (var name in secs) {
                   if (!secs.hasOwnProperty(name)) continue;
@@ -603,18 +684,28 @@
     // wrong panel never flashes during initial render.
     try {
       var isMobile = window.innerWidth <= 800;
-      var key = isMobile ? 'chatPanelVisibleMobile' : 'chatPanelVisible';
-      var stored = localStorage.getItem(key);
-      // First-visit default: mobile always starts hidden; desktop follows the
-      // admin's "chat at startup" setting (cached by appearance.js under
-      // `wa_appearance`, served via ui-config). Defaults to visible.
-      var adminDefault = true;
-      try {
-        var rawAp = localStorage.getItem('wa_appearance');
-        if (rawAp && String(JSON.parse(rawAp).chat_default_visible).toLowerCase() === 'hidden') adminDefault = false;
-      } catch (_) {}
-      var defaultVisible = isMobile ? false : adminDefault;
-      var visible = stored === null ? defaultVisible : stored !== 'false';
+      var visible;
+      if (isMobile) {
+        // chatPanelVisibleMobile is the canonical saved mobile view. Fall back
+        // to the short-lived mobileActiveView key so existing browsers migrate
+        // without losing their last selection.
+        var mobileSaved = localStorage.getItem('chatPanelVisibleMobile');
+        if (mobileSaved === null) {
+          var legacyMobileView = localStorage.getItem('mobileActiveView');
+          mobileSaved = legacyMobileView === 'chat' ? 'true'
+            : legacyMobileView === 'main' ? 'false' : null;
+        }
+        visible = mobileSaved === 'true';
+      } else {
+        // Desktop: use chatPanelVisible, with admin pref as fallback.
+        var adminDefault = true;
+        try {
+          var rawAp = localStorage.getItem('wa_appearance');
+          if (rawAp && String(JSON.parse(rawAp).chat_default_visible).toLowerCase() === 'hidden') adminDefault = false;
+        } catch (_) {}
+        var stored = localStorage.getItem('chatPanelVisible');
+        visible = stored === null ? adminDefault : stored !== 'false';
+      }
       document.body.classList.toggle('chat-visible', visible);
       document.body.classList.toggle('chat-hidden', !visible);
     } catch (_) {}
@@ -695,6 +786,18 @@
       // Keyboards are ~250px+; a 120px floor clears browser-chrome jitter.
       var open = isMobile && editable && (window.innerHeight - vvh) > 120;
       document.body.classList.toggle('kb-open', open);
+      // hide-header-on-keyboard threshold check. When the toggle is ON and
+      // threshold=0 we always show the hidden state; with a positive threshold
+      // we only hide when the remaining viewport height is below it.
+      if (document.body.classList.contains('hide-header-kb')) {
+        var raw = document.body.dataset.hhkThreshold;
+        var thresh = parseInt(raw, 10);
+        if (isNaN(thresh) || thresh < 0) thresh = 200;
+        var below = thresh === 0 ? open : (open && vvh < thresh);
+        document.body.classList.toggle('hhk-active', below);
+      } else {
+        document.body.classList.remove('hhk-active');
+      }
     }
     function applyAll() { apply(); applyKb(); }
     window.__appHeightApply = apply;
@@ -707,18 +810,157 @@
     window.addEventListener('orientationchange', function () {
       setTimeout(applyAll, 120);
     });
-    // Focus changes flip the editable-field gate before/after the viewport
-    // resize fires (and catch field-to-field moves while the keyboard stays up).
-    document.addEventListener('focusin', applyKb);
+    // rAF scroll-lock: fights iOS Safari auto-scroll during keyboard open.
+    // On focus, forces scrollTo(0,0) every frame for 400ms — the keyboard
+    // animation duration — so iOS can't overshoot the pill.
+    var scrollLockRaf = null;
+    function scrollLock() { window.scrollTo(0, 0); }
+    function rAFScrollLock() {
+      var start = Date.now();
+      scrollLock();
+      if (scrollLockRaf) cancelAnimationFrame(scrollLockRaf);
+      function loop() {
+        scrollLock();
+        if (Date.now() - start < 400) {
+          scrollLockRaf = requestAnimationFrame(loop);
+        }
+      }
+      scrollLockRaf = requestAnimationFrame(loop);
+    }
+    function needsMobileKeyboardLock(target) {
+      if (window.innerWidth > 800 || !target) return false;
+      return target.tagName === 'INPUT'
+        || target.tagName === 'TEXTAREA'
+        || target.isContentEditable;
+    }
+    document.addEventListener('focusin', function (event) {
+      apply();       // update --app-height NOW so iOS Safari's auto-scroll
+      applyKb();     // doesn't overshoot before the rAF loop kicks in
+      // This lock exists only for a mobile soft keyboard. Running it for every
+      // desktop button focus starts a 400 ms scroll loop between mousedown and
+      // click, which makes controls across the app appear to need two clicks.
+      if (needsMobileKeyboardLock(event.target)) rAFScrollLock();
+    });
     document.addEventListener('focusout', function () { setTimeout(applyKb, 0); });
   })();
 </script>
 <script>
   // Chat toggle — global function + event delegation. Works regardless of
   // module load timing, browser cache state, or DOM mutation observers.
+  // Desktop mouse clicks can be dropped when a live UI rebuild moves a button
+  // between pointerdown and pointerup. The chat footer changes rows as focus
+  // moves, and configurable headers can refresh in the same gesture; Chromium
+  // and Firefox then omit the trailing native `click`. Touch activation follows
+  // a different path, which is why device emulation does not reproduce it.
+  //
+  // Observe (but never cancel) primary-button mouse gestures. If the browser
+  // delivers its click this is a no-op. If no click arrives by the next task,
+  // complete the activation once. Dragging, long presses, and disabled controls
+  // are deliberately excluded.
+  (function installDesktopClickCompletion() {
+    var press = null;
+    var MAX_MOVE = 3;
+    var MAX_PRESS_MS = 400;
+
+    function buttonFrom(target) {
+      if (!target || typeof target.closest !== 'function') return null;
+      return target.closest('button, input[type="button"], input[type="submit"], input[type="reset"]');
+    }
+
+    function sameControl(a, b) {
+      if (!a || !b) return false;
+      if (a === b) return true;
+      return !!(a.id && b.id && a.id === b.id);
+    }
+
+    function currentControl(original) {
+      if (!original) return null;
+      if (original.isConnected) return original;
+      if (original.id) return document.getElementById(original.id);
+      return null;
+    }
+
+    document.addEventListener('pointerdown', function (event) {
+      if (event.pointerType !== 'mouse' || event.button !== 0) {
+        press = null;
+        return;
+      }
+      var button = buttonFrom(event.target);
+      if (!button || button.disabled || button.closest('[data-has-long-press], [draggable="true"]')) {
+        press = null;
+        return;
+      }
+      press = {
+        pointerId: event.pointerId,
+        button: button,
+        x: event.clientX,
+        y: event.clientY,
+        started: performance.now(),
+        moved: false,
+        clicked: false
+      };
+    }, true);
+
+    document.addEventListener('pointermove', function (event) {
+      if (!press || event.pointerId !== press.pointerId) return;
+      if (Math.abs(event.clientX - press.x) > MAX_MOVE ||
+          Math.abs(event.clientY - press.y) > MAX_MOVE) press.moved = true;
+    }, true);
+
+    // Capture sees the native click even when an app listener later stops it.
+    document.addEventListener('click', function (event) {
+      if (!press) return;
+      var clicked = buttonFrom(event.target);
+      if (sameControl(press.button, clicked)) press.clicked = true;
+    }, true);
+
+    document.addEventListener('pointerup', function (event) {
+      if (!press || event.pointerId !== press.pointerId) return;
+      var completed = press;
+      if (completed.moved || performance.now() - completed.started > MAX_PRESS_MS) {
+        press = null;
+        return;
+      }
+
+      setTimeout(function () {
+        if (press === completed) press = null;
+        if (completed.clicked) return;
+        var button = currentControl(completed.button);
+        if (!button || button.disabled) return;
+        // Do not resurrect an action hidden by a legitimate state transition.
+        if (button.hidden || getComputedStyle(button).pointerEvents === 'none') return;
+        console.warn('[UI] Completed a desktop button click dropped during a UI rebuild:', button.id || button.className);
+        button.click();
+      }, 0);
+    }, true);
+
+    document.addEventListener('pointercancel', function () { press = null; }, true);
+  })();
+
   window.__isMobileChatLayout = function () { return window.innerWidth <= 800; };
   window.__chatVisibilityKey = function () {
     return window.__isMobileChatLayout() ? 'chatPanelVisibleMobile' : 'chatPanelVisible';
+  };
+  // Separate key for remembering which view was active on mobile (chat vs main-panel).
+  // This is independent of chat visibility - it tracks the user's last active view.
+  window.__mobileViewKey = function () { return 'mobileActiveView'; };
+  window.__getMobileActiveView = function () {
+    try {
+      // Prefer the visibility key written by every real mobile transition.
+      // Older tab-sync code could incorrectly reset mobileActiveView to "main"
+      // during initialization even while chatPanelVisibleMobile stayed true.
+      var visible = localStorage.getItem('chatPanelVisibleMobile');
+      if (visible !== null) return visible === 'true' ? 'chat' : 'main';
+      return localStorage.getItem(window.__mobileViewKey()) === 'chat'
+        ? 'chat' : 'main';
+    } catch (_) { return 'main'; }
+  };
+  window.__setMobileActiveView = function (view) {
+    try {
+      var normalized = view === 'chat' ? 'chat' : 'main';
+      localStorage.setItem('chatPanelVisibleMobile', normalized === 'chat' ? 'true' : 'false');
+      localStorage.setItem(window.__mobileViewKey(), normalized);
+    } catch (_) {}
   };
   // The admin's app-wide "chat at startup" default (App Settings → Chat panel),
   // served via /api/v1/auth/ui-config and cached by appearance.js under
@@ -739,12 +981,15 @@
   };
   window.__getChatVisible = function () {
     try {
+      if (window.__isMobileChatLayout && window.__isMobileChatLayout()) {
+        return window.__getMobileActiveView() === 'chat';
+      }
       var v = localStorage.getItem(window.__chatVisibilityKey());
       if (v === null) return window.__chatVisibilityDefault();
       return v !== 'false';
     } catch (_) { return window.__chatVisibilityDefault(); }
   };
-  window.__applyChatVisible = function (visible) {
+  window.__applyChatVisible = function (visible, persist) {
     var chatPanel = document.getElementById('chat-panel');
     var handle = document.getElementById('chat-resize-handle');
     var btn = document.getElementById('chat-toggle-btn');
@@ -767,7 +1012,15 @@
       if (mainPanel) mainPanel.style.display = '';
     }
     if (btn) btn.classList.toggle('active', visible);
-    try { localStorage.setItem(window.__chatVisibilityKey(), String(visible)); } catch (_) {}
+    if (persist !== false) {
+      try { localStorage.setItem(window.__chatVisibilityKey(), String(visible)); } catch (_) {}
+    }
+    // Track the mutually-exclusive mobile view so a refresh restores it. Desktop
+    // chat visibility is an independent preference and must not overwrite the
+    // last mobile view when the viewport crosses the breakpoint.
+    if (isMobile && persist !== false) {
+      window.__setMobileActiveView(visible ? 'chat' : 'main');
+    }
     // When showing the chat panel (especially on mobile), focus the input
     // so the user can start typing without an extra tap.
     if (visible) {
@@ -841,7 +1094,13 @@
   }, true);
   // Apply visibility once DOM is ready
   function _initChatVisibility() {
-    window.__applyChatVisible(window.__getChatVisible());
+    var savedVisible = window.__getChatVisible();
+    // Restoration is not a user transition; leave localStorage untouched.
+    window.__applyChatVisible(savedVisible, false);
+    // Re-assert after synchronous boot work such as tabs.js activation.
+    setTimeout(function () {
+      window.__applyChatVisible(savedVisible, false);
+    }, 0);
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', _initChatVisibility);
@@ -872,10 +1131,30 @@
     <option value="account">Manage Account</option>
   </select>
 
+  <!-- Compact navigation, enabled by mobile_mode in app-settings.json. -->
+  <button type="button" id="mobile-nav-toggle" class="mobile-nav-toggle" aria-label="Open navigation" aria-controls="mobile-nav-menu" aria-expanded="false" hidden>
+    <i data-lucide="menu" class="lucide-icon"></i>
+  </button>
+
   <!-- Horizontal tab strip with chevron-scroll carousel -->
   <div id="main-tabs-wrap">
     <button type="button" id="main-tabs-chev-left" class="main-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button>
     <div id="main-tabs" role="tablist">
+      <!-- Static header diagnostic control. It stays separate from the
+           generated, admin-only tools group so header rebuilds and admin
+           visibility rules never remove it. -->
+      <button id="debug-console-toggle" class="debug-console-toggle-btn" type="button" title="Toggle console log panel" aria-label="Toggle console log panel">
+        <i data-lucide="bug" style="width:14px;height:14px;"></i>
+      </button>
+
+      <!-- Update-available notifier: admin-only, hidden until the configured
+           upstream has new commits/releases (ui/shared/js/update-notifier.js).
+           Static like the debug toggle so header rebuilds never remove it. -->
+      <button id="update-available-btn" class="update-available-btn" type="button" title="Update available" aria-label="Update available" hidden>
+        <i data-lucide="cloud-download" style="width:14px;height:14px;"></i>
+        <span id="update-available-badge" class="update-available-badge" hidden></span>
+      </button>
+
       <!-- User avatar: trigger lives inside the carousel.
            The menu (#user-dropdown-menu) is a body-level portal so the CSS mask
            applied to this element when chevrons are visible cannot trap the
@@ -891,15 +1170,6 @@
         </button>
       </div>
 
-      <!-- Debug console toggle — relocated by header-build.js (__buildHeader)
-           INTO the Admin Tools group, immediately right of the server health
-           dot. It stays a standalone <button> so clicking the bug never
-           triggers the Admin Tools tab switch. Defined here (not generated) so
-           debugConsole.js can wire it on boot regardless of catalog timing. -->
-      <button id="debug-console-toggle" class="debug-console-toggle-btn" title="Toggle console log panel" style="flex-shrink:0;">
-        <i data-lucide="bug" style="width:14px;height:14px;"></i>
-      </button>
-
       <!-- Header tab buttons are generated from the page catalog by
            header-build.js (__buildHeader): pre-painted synchronously from the
            cache below, then reconciled against the live catalog by
@@ -907,6 +1177,13 @@
     </div>
     <button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button>
   </div>
+
+  <!-- The tab list scrolls independently; the account avatar stays pinned in
+       the footer so it is always reachable even when the page list is long. -->
+  <aside id="mobile-nav-menu" class="mobile-nav-menu" aria-label="App navigation" hidden>
+    <nav id="mobile-nav-items" class="mobile-nav-items"></nav>
+    <footer id="mobile-nav-footer" class="mobile-nav-footer"></footer>
+  </aside>
 
 <!-- ── User dropdown menu portal ──────────────────────────────────────────────
      Intentionally placed as a direct child of <body>, outside #main-tabs.
@@ -1055,13 +1332,13 @@
     <!-- Click toggles the chat panel; LONG-PRESS starts a fresh session with the
          default agent (long-press logic + click-suppression in the chat-toggle
          script block above; new-session action = window.__startNewSessionDefault,
-         exposed by ui/chat-side-panel/js/session-init.js). -->
+         exposed by ui/chat/js/session-init.js). -->
     <button id="chat-toggle-btn" class="chat-toggle-btn active" title="Toggle chat panel (long-press for a new session)">
       <i data-lucide="message-square" class="lucide-icon" style="width:16px;height:16px;"></i>
       <span>Chat</span>
     </button>
     <!-- The new-session (+) button moved into the chat panel header
-         (ui/chat-side-panel/chat-side-panel.html → .header-actions). -->
+         (ui/chat/chat-side-panel.html → .header-actions). -->
   </span>
 
 </div>
@@ -1082,24 +1359,13 @@
   <div id="chat-resize-handle"></div>
 
   <!-- Chat panel -->
-  <div id="chat-panel"></div>
+  <div id="chat-panel" class="chat-surface"></div>
 
   <!-- App-wide Restricted Access gate.
        Shown (via body.app-restricted, toggled in ui/shared/js/main.js) when the
-       visitor isn't signed in / authorized to use this instance. It fills the
-       whole #stage so NO page or chat is visible behind it — the same lock
-       treatment the Admin Tools tab uses for non-admins, applied app-wide. The
-       header stays visible above #stage so the account/sign-in menu is reachable;
-       the button below opens it directly. Sign-in reloads the page, which
-       re-runs the gate and reveals the app once authorized. -->
-  <div id="app-restricted-overlay" style="display:none;">
-    <div class="app-restricted-card">
-      <div class="app-restricted-icon"><i data-lucide="lock" style="width:32px;height:32px;"></i></div>
-      <div class="app-restricted-title">Restricted Access</div>
-      <div class="app-restricted-desc" id="app-restricted-desc">Sign in to use this app.</div>
-      <button id="app-restricted-signin" class="app-restricted-btn">Sign in</button>
-    </div>
-  </div>
+       visitor isn't signed in / authorized to use this instance. The header
+       stays visible so the account/sign-in menu is reachable. -->
+  <div id="app-restricted-overlay" style="display:none;"></div>
 
 </div><!-- /#stage -->
 
@@ -1119,10 +1385,11 @@
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm/lib/xterm.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit/lib/addon-fit.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links/lib/addon-web-links.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-search/lib/addon-search.js"></script>
+<!-- xterm.js terminal + addons — self-hosted under ui/vendor/ for offline use. -->
+<script src="./ui/vendor/xterm/xterm.js"></script>
+<script src="./ui/vendor/xterm/addon-fit.js"></script>
+<script src="./ui/vendor/xterm/addon-web-links.js"></script>
+<script src="./ui/vendor/xterm/addon-search.js"></script>
 <script src="./ui/shared/js/db-select.js"></script>
 <!-- Shared "target device" picker (multi-device fleet). Classic script so
      window.DevicePicker is available to the chat pill, the automations "Run on"
@@ -1287,21 +1554,144 @@ console.warn('[PWA] Service worker registration failed:', err);
     window.addEventListener('resize', updateChevrons);
   }
 
+  // ── Rubber-band overscroll for the tab carousel ──
+  // Matches the footer handle's spring curve. Intercepts wheel + touch at
+  // scroll boundaries and applies a diminishing translateX that snaps back
+  // on release. CSS overscroll-behavior-x: none prevents native bounce from
+  // competing on macOS trackpad.
+  (function () {
+    var _rbX = 0, _rbTimer = null;
+    var MAX_PULL = 60, RESIST = 0.35;
+    var SPRING = 'cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+    var _touchLastX = 0, _touchActive = false;
+    var _snapping = false;
+    var _snapTimeout = null;
+
+    function _snap() {
+      if (Math.abs(_rbX) < 0.5) return;
+      _snapping = true;
+      tabBar.style.transition = 'transform 0.45s ' + SPRING;
+      _rbX = 0;
+      tabBar.style.transform = '';
+      clearTimeout(_rbTimer);
+      _rbTimer = setTimeout(function () {
+        tabBar.style.transition = '';
+      }, 500);
+      // Windows precision trackpad momentum can last 2+ s — keep ALL
+      // wheel events suppressed for long enough that the tail is gone
+      // before the rubber band re-arms. Otherwise residual momentum
+      // triggers a second, weaker band after the first snap ends.
+      clearTimeout(_snapTimeout);
+      _snapTimeout = setTimeout(function () { _snapping = false; }, 2500);
+    }
+
+    function _pull(dx) {
+      if (_snapping) return false;
+      clearTimeout(_rbTimer);
+      tabBar.style.transition = 'none';
+      var maxS = tabBar.scrollWidth - tabBar.clientWidth;
+      var atL = tabBar.scrollLeft <= 0 && dx < 0;
+      var atR = tabBar.scrollLeft >= maxS - 0.5 && dx > 0;
+      if (!atL && !atR) {
+        if (Math.abs(_rbX) > 0.5) _snap();
+        return false;
+      }
+      _rbX -= dx * RESIST;
+      _rbX = Math.max(-MAX_PULL, Math.min(MAX_PULL, _rbX));
+      tabBar.style.transform = 'translateX(' + _rbX + 'px)';
+      _rbTimer = setTimeout(_snap, 120);
+      return true;
+    }
+
+    // Wheel / trackpad — uses the dominant axis so a mouse wheel (which
+    // produces deltaY, not deltaX) also scrolls the tab strip horizontally.
+    // Boundary rubber band still fires; mid-strip, manual scrollLeft keeps
+    // the page from scrolling vertically.
+    tabBar.addEventListener('wheel', function (e) {
+      // Pick the axis with the larger magnitude — trackpad → deltaX,
+      // mouse wheel → deltaY.
+      var dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!dx) return;
+      var maxS = tabBar.scrollWidth - tabBar.clientWidth;
+      if (_snapping) {
+        if ((tabBar.scrollLeft <= 0 && dx < 0) || (tabBar.scrollLeft >= maxS - 0.5 && dx > 0)) {
+          e.preventDefault();
+        }
+        return;
+      }
+      if (_pull(dx)) { e.preventDefault(); return; }
+      // Not at a boundary — scroll the strip ourselves so deltaY from a
+      // physical wheel doesn't scroll the page instead.
+      tabBar.scrollLeft += dx;
+      e.preventDefault();
+    }, { passive: false });
+
+    // Touch — track inter-frame delta past the boundary
+    tabBar.addEventListener('touchstart', function (e) {
+      var t = e.touches[0];
+      if (!t) return;
+      _touchLastX = t.clientX;
+      _touchActive = true;
+    }, { passive: true });
+
+    tabBar.addEventListener('touchmove', function (e) {
+      if (!_touchActive) return;
+      var t = e.touches[0];
+      if (!t) return;
+      var dx = _touchLastX - t.clientX;  // positive = swipe left
+      _touchLastX = t.clientX;
+      var maxS = tabBar.scrollWidth - tabBar.clientWidth;
+      var atL = tabBar.scrollLeft <= 0 && dx < 0;
+      var atR = tabBar.scrollLeft >= maxS - 0.5 && dx > 0;
+      if (atL || atR) {
+        clearTimeout(_rbTimer);
+        tabBar.style.transition = 'none';
+        _rbX -= dx * RESIST;
+        _rbX = Math.max(-MAX_PULL, Math.min(MAX_PULL, _rbX));
+        tabBar.style.transform = 'translateX(' + _rbX + 'px)';
+        _rbTimer = setTimeout(_snap, 120);
+        e.preventDefault();  // suppress native overscroll
+      } else if (Math.abs(_rbX) > 0.5) {
+        _snap();
+      }
+    }, { passive: false });
+
+    function _touchEnd() {
+      _touchActive = false;
+      if (Math.abs(_rbX) > 0.5) _snap();
+    }
+    tabBar.addEventListener('touchend', _touchEnd, { passive: true });
+    tabBar.addEventListener('touchcancel', _touchEnd, { passive: true });
+  })();
+
   // MutationObserver: sync when tabs.js (or config menu) switches tab externally.
   // Observe the #main-panel subtree (not each .tab-content node) so it also
   // covers content mounts generated from the catalog after this script runs.
+  // GUARD: lastSyncedTab means cosmetic class churn inside the panel (e.g.
+  // cursor-effects.js toggling .spot-active on every pointermove) can no longer
+  // re-trigger syncActive() — which re-centers the strip on the active tab via
+  // scrollIntoView and would yank the carousel back from wherever the user
+  // swiped. Only a REAL tab change syncs now.
   var mainPanel = document.getElementById('main-panel');
+  var lastSyncedTab = '';
   if (mainPanel) {
     var observer = new MutationObserver(function () {
       var active = document.querySelector('.tab-content.active');
-      if (active) syncActive(active.id.replace('tab-', ''));
+      if (!active) return;
+      var id = active.id.replace('tab-', '');
+      if (id === lastSyncedTab) return;
+      lastSyncedTab = id;
+      syncActive(id);
     });
     observer.observe(mainPanel, { subtree: true, attributes: true, attributeFilter: ['class'] });
   }
 
   // Sync to whatever tab is currently active on load
   var initActive = document.querySelector('.tab-content.active');
-  if (initActive) syncActive(initActive.id.replace('tab-', ''));
+  if (initActive) {
+    lastSyncedTab = initActive.id.replace('tab-', '');
+    syncActive(lastSyncedTab);
+  }
 
 })();
 </script>
@@ -1315,27 +1705,52 @@ console.warn('[PWA] Service worker registration failed:', err);
 
 <!-- ── Debug Console Log Panel (floating overlay) ── -->
 <div id="debug-console-panel" class="debug-console-panel">
+  <div id="debug-console-drag-handle" class="debug-console-drag-handle" title="Drag to resize">
+    <div class="debug-console-drag-line"></div>
+  </div>
   <div class="debug-console-header">
-    <span class="debug-console-title"><i data-lucide="terminal" style="width:14px;height:14px;"></i> Console Log</span>
-    <div class="debug-console-header-actions">
-      <button id="debug-console-filter-log" class="debug-console-filter-btn active" data-level="log" title="Show console.log">log</button>
-      <button id="debug-console-filter-warn" class="debug-console-filter-btn active" data-level="warn" title="Show console.warn">warn</button>
-      <button id="debug-console-filter-error" class="debug-console-filter-btn active" data-level="error" title="Show console.error">error</button>
-      <button id="debug-console-filter-debug" class="debug-console-filter-btn" data-level="debug" title="Show console.debug">debug</button>
-      <button id="debug-console-clear" class="debug-console-clear-btn" title="Clear log">✕</button>
-      <button id="debug-console-close" class="debug-console-close-btn" title="Close panel">—</button>
+    <span class="debug-console-title"><i data-lucide="terminal" style="width:14px;height:14px;"></i></span>
+    <div class="debug-console-header-actions-wrap">
+      <button class="debug-console-chev debug-console-chev-left" title="Scroll left">‹</button>
+      <div class="debug-console-header-actions">
+        <button id="debug-console-commit-push" class="debug-console-commit-btn" title="Commit &amp; push all changes"><i data-lucide="star" class="lucide-icon" style="width:12px;height:12px;display:block;"></i></button>
+        <button id="debug-console-restart" class="debug-console-restart-btn" title="Restart server"><i data-lucide="rotate-ccw" class="lucide-icon" style="width:12px;height:12px;display:block;"></i></button>
+        <button id="debug-console-filter-toggle" class="debug-console-filter-toggle-btn" title="Filter log levels">Filter</button>
+        <div id="debug-console-filter-popover" class="debug-console-filter-popover">
+          <button id="debug-console-filter-log" class="debug-console-filter-btn active" data-level="log" title="Show console.log">log</button>
+          <button id="debug-console-filter-warn" class="debug-console-filter-btn active" data-level="warn" title="Show console.warn">warn</button>
+          <button id="debug-console-filter-error" class="debug-console-filter-btn active" data-level="error" title="Show console.error">error</button>
+          <button id="debug-console-filter-debug" class="debug-console-filter-btn" data-level="debug" title="Show console.debug">debug</button>
+        </div>
+        <button id="debug-console-clear" class="debug-console-clear-btn" title="Clear log">Clear</button>
+        <button id="debug-console-copy-all" class="debug-console-copy-all-btn" title="Copy all log output"><i data-lucide="copy" style="width:13px;height:13px;display:block;"></i></button>
+        <button id="debug-console-close" class="debug-console-close-btn" title="Close panel">—</button>
+      </div>
+      <button class="debug-console-chev debug-console-chev-right" title="Scroll right">›</button>
     </div>
   </div>
   <div id="debug-console-content" class="debug-console-content">
     <div class="debug-console-empty">Console log output will appear here.</div>
   </div>
+
+  <!-- Command input bar — REPL for JavaScript expressions -->
+  <div class="debug-console-command">
+    <span class="dc-command-prompt">&rsaquo;</span>
+    <input type="text" id="debug-console-input" placeholder="Evaluate JavaScript expression…" spellcheck="false" autocomplete="off" />
+    <button id="debug-console-run-btn" class="debug-console-run-btn" title="Run (Enter)">Run</button>
+  </div>
+
   <div class="debug-console-footer">
-    <label class="debug-console-preserve">
-      <input type="checkbox" id="debug-console-preserve" checked /> Preserve on refresh
-    </label>
+    <div class="dc-footer-left">
+      <span id="debug-console-sw-version" class="dc-sw-version" title="Click to clear cache &amp; service worker">SW: —</span>
+      <span id="debug-console-clear-sw" class="dc-clear-sw" style="display:none">→ Clear cache &amp; SW? <button class="dc-clear-sw-btn">Clear &amp; reload</button></span>
+    </div>
     <span id="debug-console-count" class="debug-console-count">0 entries</span>
   </div>
 </div>
+<!-- Initialise independently of main.js: the console is the diagnostic escape
+     hatch when the normal app boot cannot complete. -->
+<script type="module" src="./ui/shared/js/debugConsole.js"></script>
 
 <!-- ── Feedback sub-view inside the user dropdown (toggled by ui/js/feedback.js) ── -->
 <!--
@@ -1347,17 +1762,18 @@ console.warn('[PWA] Service worker registration failed:', err);
 
 
 <script type="module" src="./ui/shared/js/feedback.js"></script>
-<!-- ── Pull-to-refresh: touch-drag from the header to reload ── -->
+<script type="module" src="./ui/shared/js/update-notifier.js"></script>
+<!-- ── Pull-to-refresh: touch-drag from the top zone to reload ── -->
 <script>
 (() => {
-  const header = document.getElementById('main-header');
   const indicator = document.getElementById('ptr-indicator');
   const blueFill = document.getElementById('ptr-blue');
   const redFill = document.getElementById('ptr-red');
   const hint = document.getElementById('ptr-hint');
-  if (!header || !indicator || !blueFill || !redFill || !hint) return;
+  if (!indicator || !blueFill || !redFill || !hint) return;
 
   const FULL_DASH = 98;
+  const PULL_ZONE_PX = 50;   // only touches starting in the top N px trigger pull-to-refresh
   // Raw drag distance as fraction of screen height
   const NORMAL_AT = 0.50;   // 50% → fires normal reload
   const HARD_AT   = 0.85;   // 85% → fires hard refresh
@@ -1375,10 +1791,11 @@ console.warn('[PWA] Service worker registration failed:', err);
     else if (s === 2) window.location.href = window.location.pathname + '?_=' + Date.now();
   }
 
-  header.addEventListener('touchstart', (e) => {
+  document.addEventListener('touchstart', (e) => {
     if (window.scrollY > 5) return;
     const touch = e.touches[0];
     if (!touch) return;
+    if (touch.clientY > PULL_ZONE_PX) return;
     dragging = true;
     startY = touch.clientY;
     stage = 0;
@@ -1392,7 +1809,7 @@ console.warn('[PWA] Service worker registration failed:', err);
     hint.className = 'ptr-label-hint';
   }, { passive: true });
 
-  header.addEventListener('touchmove', (e) => {
+  document.addEventListener('touchmove', (e) => {
     if (!dragging) return;
     const touch = e.touches[0];
     if (!touch) return;
@@ -1442,8 +1859,8 @@ console.warn('[PWA] Service worker registration failed:', err);
     }
   }, { passive: true });
 
-  header.addEventListener('touchend', ptrEnd, { passive: true });
-  header.addEventListener('touchcancel', ptrEnd, { passive: true });
+  document.addEventListener('touchend', ptrEnd, { passive: true });
+  document.addEventListener('touchcancel', ptrEnd, { passive: true });
 })();
 </script>
 

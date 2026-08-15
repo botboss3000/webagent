@@ -10,6 +10,7 @@ the app holds no standing cloud access.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, AsyncIterator, Dict
 
@@ -118,7 +119,6 @@ async def build_catalog() -> Dict[str, Any]:
     shared_repo = dict(store.get_config("_repo") or {})
     if not str(shared_repo.get("github_url") or "").strip():
         try:
-            from app.deploy import credentials
             vurl = await credentials.get_github_repo_url()
             if vurl:
                 shared_repo["github_url"] = vurl
@@ -320,6 +320,7 @@ async def run_deploy(provider_id: str) -> AsyncIterator[Dict[str, Any]]:
             "server": final.get("server", ""),
             "ip": final.get("ip", ""),
             "zone": final.get("zone", ""),
+            "region": final.get("region", ""),
             "project": final.get("project", ""),
             "public_url": final.get("public_url", ""),
             "state": final.get("state", "running"),
@@ -335,6 +336,46 @@ async def run_deploy(provider_id: str) -> AsyncIterator[Dict[str, Any]]:
         if config.get("forget_keys", True) and p.credential_fields:
             await credentials.forget(provider_id)
             yield ev("Cloud key discarded from the vault.", phase="forgot", level="ok")
+
+
+async def run_cloud_run_rebuild(target: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
+    """Build and deploy the repo recorded by a Cloud Run device heartbeat.
+
+    This runs from the admin/control instance, not inside the ephemeral target.
+    The provider's rebuild path updates only the service image, so the existing
+    Cloud Run template settings remain intact.
+    """
+    provider_id = "google_cloud_run"
+    p = get_provider(provider_id)
+    if not p or not callable(getattr(p, "rebuild", None)):
+        yield done({"ok": False, "message": "Google Cloud Run deployment is unavailable."})
+        return
+
+    config = await _load_config(p)
+    config.update({
+        "project_id": str(target.get("project") or "").strip(),
+        "region": str(target.get("region") or "").strip(),
+        "service_name": str(target.get("service") or "").strip(),
+        "repo_url": str(target.get("repo") or "").strip(),
+        "branch": str(target.get("branch") or "").strip(),
+    })
+    creds = await credentials.read(provider_id, p.credential_fields)
+    if not str(creds.get("service_account_json") or "").strip():
+        yield done({
+            "ok": False,
+            "message": (
+                "The Google Cloud key is not stored. Re-enter it in New Deployment "
+                "and turn off “Forget my Google Cloud key after deploy” to use Build & Deploy."
+            ),
+        })
+        return
+
+    try:
+        async for event in p.rebuild(config, creds):
+            yield event
+    except Exception as exc:
+        logger.exception("Cloud Run rebuild crashed")
+        yield done({"ok": False, "message": str(exc) or "Cloud Run rebuild crashed."})
 
 
 async def run_destroy(provider_id: str) -> AsyncIterator[Dict[str, Any]]:
@@ -477,11 +518,27 @@ async def save_connection(provider_id: str, values: Dict[str, Any]) -> Dict[str,
     (e.g. project) into deploy.json, and the secret 'key' into the SAME encrypted
     vault entry the Deploy card uses. A BLANK secret leaves the stored key
     untouched (so 'change account' can change just the id). Non-secret/unknown
-    keys are ignored. Returns ``{ok, detail}``."""
+    keys are ignored. Returns ``{ok, detail}``.
+
+    A Google service-account JSON already contains the project id, so when the
+    form submits ONLY the key (no project field), the project is extracted here
+    rather than asking the user to type it twice."""
     p = get_provider(provider_id)
     if not p:
         return {"ok": False, "detail": "Unknown cloud target."}
-    values = values or {}
+    values = dict(values or {})
+
+    # Google-style JSON keys embed the project id — pull it out when the form
+    # didn't submit one (the HTTPS / device-connect panel asks for the key only).
+    raw_json = str(values.get("service_account_json") or "").strip()
+    if raw_json and not str(values.get("project_id") or "").strip():
+        try:
+            parsed = json.loads(raw_json)
+            pid = str((parsed or {}).get("project_id") or "").strip()
+            if pid:
+                values["project_id"] = pid
+        except Exception:
+            pass  # leave the invalid JSON for the credential store to report
 
     # Split the submitted values: config-field keys → deploy.json (merged over
     # whatever the Deploy card already saved, so machine size / repo survive);

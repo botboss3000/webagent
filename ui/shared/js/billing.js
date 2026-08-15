@@ -16,12 +16,10 @@ import { app } from './state.js';
 import { authHeaders } from './left-login.js';
 
 export const STRATEGIES = [
-  { value: 'free',         label: 'Free' },
-  { value: 'credits',      label: 'Prepaid credits' },
-  { value: 'per_message',  label: 'Per message' },
-  { value: 'per_token',    label: 'Per token' },
-  { value: 'subscription', label: 'Monthly subscription' },
-  { value: 'trial',        label: 'Trial only' },
+  { value: 'free',          label: 'Free' },
+  { value: 'credits',       label: 'Credits' },
+  { value: 'trial',         label: 'Trial' },
+  { value: 'trial,credits', label: 'Trial + credits' },
 ];
 
 const _CACHE = { processors: null };
@@ -89,21 +87,21 @@ export async function _loadProcessors() {
 
 // ── Shared form builders (used by both panels) ─────────────────────────────
 
-export function _buildRateCard(values, label) {
+// Cost-based pricing knobs: credits are consumed as the platform's real
+// provider cost × a multiplier (inherited models only). The image estimate
+// covers providers that report no usage (OpenAI /images, Stability, …).
+export function _buildCostFields(values) {
   const wrap = _el('div', {});
-  wrap.appendChild(_el('div', { style: { fontSize: '11px', fontWeight: '600', color: 'var(--fg-2)', marginBottom: '6px' } }, label));
+  wrap.appendChild(_el('div', {
+    style: { fontSize: '11px', fontWeight: '600', color: 'var(--fg-2)', marginBottom: '6px', lineHeight: '1.4' },
+  }, 'Credits are spent on inherited (platform-key) models as provider cost × multiplier. Users with their own LLM key are free.'));
   const inputs = {};
-  for (const [key, lbl, defaultVal] of [
-    ['per_message_cents', 'Per msg (¢)', 0],
-    ['per_1k_input_token_cents', 'Per 1k in tok (¢)', 0],
-    ['per_1k_output_token_cents', 'Per 1k out tok (¢)', 0],
-    ['credits_per_message_cents', 'Credits/msg (¢)', 0],
-    ['credits_per_1k_input_tokens', 'Credits/1k in (¢)', 0],
-    ['credits_per_1k_output_tokens', 'Credits/1k out (¢)', 0],
-    ['llm_markup_pct', 'LLM markup %', 0],
-    ['min_charge_cents', 'Min charge (¢)', 1],
+  for (const [key, lbl, defaultVal, step, min] of [
+    ['cost_multiplier', 'Cost multiplier ×', 1.0, '0.1', '0'],
+    ['min_charge_cents', 'Min charge (¢)', 1, '1', '0'],
+    ['flat_image_cost_usd', 'Per-image estimate ($)', 0.01, '0.01', '0'],
   ]) {
-    const i = _el('input', { type: 'number', min: '0', step: '0.1',
+    const i = _el('input', { type: 'number', min, step,
                                value: String(values[key] ?? defaultVal), style: _inputStyle() });
     inputs[key] = i;
     wrap.appendChild(_labelled(lbl, i, { compact: true }));
@@ -135,6 +133,20 @@ export function _selectStyle() {
   return { ..._inputStyle(), padding: '6px 8px' };
 }
 
+// Re-evaluate billing access for a (user, agent) via the read-only /access
+// endpoint (never raises). Returns the AccessDecision shape. Used by the
+// trial-ended panel's "Check again" button after the user buys credits or
+// connects their own LLM key.
+export async function _checkAccess(agentId) {
+  const uid = _userId();
+  if (!uid || !agentId) return { allow: true, reason: 'allow', detail: 'no-context' };
+  try {
+    return await _api(`/api/v1/billing/access?${_qs({ user_id: uid, agent_id: agentId })}`);
+  } catch (e) {
+    return { allow: false, reason: 'check_failed', detail: String(e.message || e) };
+  }
+}
+
 // ── Header pill: live credit balance ────────────────────────────────────
 
 async function _refreshBalancePill() {
@@ -148,6 +160,12 @@ async function _refreshBalancePill() {
     pill.style.display = '';
     pill.textContent = `${_fmt(avail)} credit`;
     pill.title = `Available: ${_fmt(avail)}   Held: ${_fmt(data?.hold_cents || 0)}`;
+    // A positive balance means a trial-expired gate no longer applies — clear
+    // the block so the composer re-enables after the user buys credits.
+    if (avail > 0 && app._billingBlocked && app._billingBlocked.reason === 'trial_expired') {
+      app._billingBlocked = null;
+      if (typeof app.applyChatGate === 'function') app.applyChatGate();
+    }
   } catch (e) {
     pill.style.display = 'none';
   }
@@ -229,9 +247,12 @@ async function _openBuyCreditsModal({ agentId = null, reason = null, accepted = 
 
   if (reason === 'needs_subscription' && agentId) {
     // Subscription flow — one click per processor.
+    const subscriptionProcessors = filtered.filter(p => p.features?.subscriptions);
     card.appendChild(_el('p', { style: { color: 'var(--fg-2)', margin: '0 0 12px' } },
-      'Pick a payment method to subscribe:'));
-    for (const p of filtered) {
+      subscriptionProcessors.length === 0
+        ? 'No enabled payment service supports recurring subscriptions.'
+        : 'Pick a payment method to subscribe:'));
+    for (const p of subscriptionProcessors) {
       card.appendChild(_el('button', {
         class: 'billing-btn',
         style: { width: '100%', margin: '6px 0', padding: '10px' },
@@ -246,9 +267,12 @@ async function _openBuyCreditsModal({ agentId = null, reason = null, accepted = 
       }, `Subscribe with ${p.display_name}`));
     }
   } else {
-    // Credit-pack flow
+    // Credit-pack flow (also used for an expired trial — buy credits to keep
+    // chatting; the accepted processors, Bitcoin here, decide the pay buttons).
     card.appendChild(_el('p', { style: { color: 'var(--fg-2)', margin: '0 0 12px' } },
-      'Buy credits to spend on agents.'));
+      reason === 'trial_expired'
+        ? 'Your trial has ended. Buy credits to keep chatting with this agent.'
+        : 'Buy credits to spend on agents.'));
 
     const amountRow = _el('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' } });
     let selected = 1000;
@@ -321,11 +345,18 @@ function _install402Interceptor() {
         const cloned = resp.clone();
         const j = await cloned.json();
         const d = j && j.detail ? j.detail : j;
-        _openBuyCreditsModal({
+        const detail = {
           agentId: d.agent_id || null,
           reason: d.reason || 'needs_payment',
           accepted: d.accepted_processors || null,
-        });
+        };
+        window.dispatchEvent(new CustomEvent('webagent-billing-blocked', { detail }));
+        // An exhausted trial is a terminal composer state, not a modal loop.
+        // The chat runtime disables the matching agent's input and explains how
+        // to regain access in its placeholder.
+        if (detail.reason !== 'trial_expired') {
+          _openBuyCreditsModal(detail);
+        }
       } catch (_) {
         _openBuyCreditsModal();
       }
@@ -374,4 +405,5 @@ export function stopBilling() {
 window.AppBilling = {
   refreshBalance: _refreshBalancePill,
   openBuyCreditsModal: _openBuyCreditsModal,
+  checkAccess: _checkAccess,
 };

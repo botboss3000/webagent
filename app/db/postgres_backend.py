@@ -1,19 +1,10 @@
 """
 Raw Postgres backend (asyncpg).
 
-CURRENT SCOPE: connection testing + schema bootstrap only. Used by the
-Storage UI's "Test Connection" and "Auto-Create Tables" buttons so that an
-admin can validate creds + create the schema on a remote Postgres BEFORE
-attempting to activate it as the live backend.
-
-NOT YET IMPLEMENTED: the full StorageBackend interface (60+ methods). When
-the admin clicks "Activate" the API will refuse with a clear message until
-this backend is finished. The data-method port follows the same pattern as
-the existing SupabaseBackend, just translated from REST-builder calls to
-asyncpg `execute()` / `fetch()`.
-
-Supported providers via this backend: postgres, gcp_cloud_sql, neon.
-(Supabase keeps using SupabaseBackend until the port lands.)
+The live Postgres backend for all providers whose dialect is "postgres"
+(postgres, aws_rds, gcp_cloud_sql, azure_postgres, neon). Subclasses
+LocalBackend and overrides connection + schema bootstrap; every data method
+is inherited and runs through the PgPortableConnection translation layer.
 """
 
 import asyncio
@@ -249,7 +240,7 @@ def _make_postgres_backend_class():
             import psycopg
             try:
                 # prepare_threshold=None disables server-side prepared statements:
-                # REQUIRED on Supabase's TRANSACTION-mode pooler (6543), which
+                # REQUIRED on a pgBouncer-style transaction-mode pooler (port 6543), which
                 # multiplexes client connections across shared backends. Without it
                 # psycopg auto-prepares a statement (e.g. "_pg3_0") that lingers on a
                 # backend and collides on the next client ("prepared statement already
@@ -272,7 +263,7 @@ def _make_postgres_backend_class():
                 except Exception as e:  # pragma: no cover
                     logger.warning("pgvector register failed on pooled conn: %s", e)
 
-            # Pool sizing — IMPORTANT with Supabase's SESSION-mode pooler (port
+            # Pool sizing — IMPORTANT with a SESSION-mode pooler (port
             # 5432), which caps TOTAL client connections (default 15) and holds
             # one server connection per pooled client for its whole life. Each
             # running instance keeps min_size connections open permanently, so a
@@ -308,7 +299,7 @@ def _make_postgres_backend_class():
                 open=True,
                 configure=_configure,
                 # prepare_threshold=None disables server-side prepared statements:
-                # required for Supabase's TRANSACTION-mode pooler (6543) and
+                # required for a pgBouncer-style transaction-mode pooler and
                 # harmless on session mode / direct, so a user can switch the
                 # connection to the faster multiplexing pooler with no code change.
                 kwargs={"autocommit": False, "prepare_threshold": None},
@@ -349,6 +340,7 @@ def _make_postgres_backend_class():
 
         def _bootstrap_pg_schema(self) -> None:
             import psycopg
+            from app.db.session_manifest import install_postgres_manifest_maintenance
             ddl = render_postgres()
             # prepare_threshold=None: see _ensure_extension — no server-side prepared
             # statements on the transaction pooler.
@@ -363,6 +355,10 @@ def _make_postgres_backend_class():
                         conn.execute(stmt)
                     except Exception as e:
                         logger.warning("DDL statement failed: %s :: %s", e, stmt[:100])
+                try:
+                    install_postgres_manifest_maintenance(conn)
+                except Exception as e:
+                    logger.warning("Session manifest trigger bootstrap failed: %s", e)
 
         def _reconcile_columns(self) -> None:
             """Add any columns present in the reference SQLite schema but missing
@@ -414,6 +410,7 @@ def _make_postgres_backend_class():
             import hashlib
             import json as _json
             from app.db.schema import render_postgres
+            from app.db.session_manifest import POSTGRES_MANIFEST_DDL
             ddl = render_postgres()
             try:
                 ref = _reference_sqlite_columns()
@@ -424,6 +421,8 @@ def _make_postgres_backend_class():
             h.update(ddl.encode("utf-8", "replace"))
             h.update(b"\x00")
             h.update(ref_blob.encode("utf-8", "replace"))
+            h.update(b"\x00")
+            h.update(POSTGRES_MANIFEST_DDL.encode("utf-8", "replace"))
             return h.hexdigest()
 
         def _schema_is_current(self) -> bool:

@@ -206,7 +206,39 @@ async def collect_ability_skills(agent_id: str, user_id: Optional[str] = None) -
         except Exception as e:
             logger.debug("host-ability skill collection failed: %s", e)
 
-        # ── 3. Always-on VIRTUAL abilities (e.g. Core ▸ Base) ──
+        # ── 3. Per-agent database-backed soft abilities ──
+        try:
+            from app.db import get_db
+            rows = await get_db().get_agent_soft_abilities(agent_id, enabled_only=True)
+            for row in rows:
+                handle = f"soft_{row['id']}"
+                if handle in seen or not (row.get("skill_body") or "").strip():
+                    continue
+                seen.add(handle)
+                allowed = row.get("allowed_tools") or []
+                body = (row.get("skill_body") or "").strip()
+                body += ("\n\nExecute the saved workflow with `run_soft_ability` using ability id "
+                         f"`{row['id']}` (or slug `{row.get('slug', '')}`). Pass user-supplied "
+                         "workflow values in its `inputs` object. Do not imitate the workflow "
+                         "manually when it is available.")
+                if allowed:
+                    body += "\n\nAllowed existing tools for this ability: " + ", ".join(allowed)
+                out.append({
+                    "name": handle,
+                    "handle": handle,
+                    "display_name": row.get("display_name") or row.get("slug"),
+                    "description": (row.get("skill_summary") or row.get("description") or "").strip(),
+                    "body": body,
+                    "mode": "selectable",
+                    "enabled": True,
+                    "source": "Custom ability",
+                    "_ability": True,
+                    "soft_ability_id": row["id"],
+                })
+        except Exception as e:
+            logger.debug("soft-ability skill collection failed: %s", e)
+
+        # ── 4. Always-on VIRTUAL abilities (e.g. Core ▸ Base) ──
         # A virtual ability is wired into every agent and owns no agent_connections
         # row, so it never appears in `providers` — yet its bundled skill (the
         # self-improvement guide on Base) should reach every agent. Pull each

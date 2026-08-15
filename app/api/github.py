@@ -22,15 +22,17 @@ import base64
 import logging
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
 import json
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from app.auth.identity import request_user_id
+from app.db import get_db
 from app import production_mirror
 from app import git_repos
 
@@ -172,6 +174,10 @@ async def _save_shared_token(token: str) -> None:
 
 # ── Token cache (set before sync git calls) ──
 _TOKEN_CACHE: str = ""
+# Git user identity for the active repo — injected as -c args so commits
+# work without a global git config (fixes "Author identity unknown" errors).
+_GIT_USER_NAME: str = ""
+_GIT_USER_EMAIL: str = ""
 
 
 def _cache_token(token: str) -> None:
@@ -188,34 +194,108 @@ def _cache_token(token: str) -> None:
 # page's selection. Same single-process global convention as `_TOKEN_CACHE`.
 _ACTIVE_REPO: Path = _PROJECT_ROOT
 
+# Source Control status/graph requests poll concurrently, and several nominally
+# read-only Git commands briefly take Git's optional index lock. Serialize every
+# Git subprocess in this server so a commit's `git add` can never race one of
+# those refreshes. RLock is intentional: helpers such as _git_push call _run_git
+# more than once on the same worker thread.
+_GIT_COMMAND_LOCK = threading.RLock()
+
 
 def _use_active_repo() -> None:
-    """Point subsequent git calls at the user's currently selected repo + key.
-    Call at the top of each UI endpoint (replaces the old `_cache_token` line).
+    """Point subsequent git calls at the user's currently selected repo + key + git
+    user identity. Call at the top of each UI endpoint.
     Falls back to this app's repo + shared token on any error so the page never
     breaks if the registry is missing or a folder went away."""
-    global _ACTIVE_REPO
+    global _ACTIVE_REPO, _GIT_USER_NAME, _GIT_USER_EMAIL
     try:
         root, token = git_repos.resolve_active()
         _ACTIVE_REPO = root if (root and root.exists()) else _PROJECT_ROOT
         _cache_token(token or _get_token())
+        # Cache git user identity from the active repo entry
+        full = git_repos.get_active_full()
+        _GIT_USER_NAME = full.get("git_user_name", "")
+        _GIT_USER_EMAIL = full.get("git_user_email", "")
     except Exception:  # noqa: BLE001
         _ACTIVE_REPO = _PROJECT_ROOT
         _cache_token(git_repos.builtin_token() or _get_token())
+        _GIT_USER_NAME = ""
+        _GIT_USER_EMAIL = ""
 
 
 def _pin_to_project_root() -> None:
     """Force subsequent git calls back to this app's own repo + shared key. Used by
     the agent Git Control ability so agent git is never re-pointed by whatever repo
     the user has selected on the Source Control page."""
-    global _ACTIVE_REPO
+    global _ACTIVE_REPO, _GIT_USER_NAME, _GIT_USER_EMAIL
     _ACTIVE_REPO = _PROJECT_ROOT
     # Prefer the vault-primed shared token (set at startup / before remote ops);
     # fall back to the provider.json mirror if it hasn't been primed yet.
     _cache_token(git_repos.builtin_token() or _get_token())
+    # Clear identity so _run_git reads the repo's actual config (not a stale -c override)
+    _GIT_USER_NAME, _GIT_USER_EMAIL = "", ""
+    name_out, _, _ = _run_git(["config", "user.name"], timeout=5)
+    email_out, _, _ = _run_git(["config", "user.email"], timeout=5)
+    _GIT_USER_NAME = name_out.strip()
+    _GIT_USER_EMAIL = email_out.strip()
+
+
+def _index_lock_signature() -> tuple[int, int, int, int] | None:
+    """Return an identity for the active repo's index lock, if one exists."""
+    try:
+        stat = (_ACTIVE_REPO / ".git" / "index.lock").stat()
+        return stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return None
+
+
+def _terminate_git_process_tree(proc: subprocess.Popen) -> None:
+    """Stop a timed-out Git command and every helper/child it spawned.
+
+    ``subprocess.run(..., timeout=...)`` kills only the process it started. On
+    Windows, Git commonly delegates work to another ``git.exe``; that child can
+    survive the timeout and keep ``.git/index.lock`` open (or strand it when it
+    exits). Start Git in its own process group and tear down the complete tree.
+    """
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def _cleanup_timed_out_index_lock(
+        args: list[str], before: tuple[int, int, int, int] | None) -> None:
+    """Remove only an index lock created or changed by our timed-out command."""
+    lock_path = _ACTIVE_REPO / ".git" / "index.lock"
+    after = _index_lock_signature()
+    if after is None or after == before:
+        return
+    try:
+        lock_path.unlink()
+        command = args[0] if args else "command"
+        logger.warning("Removed index lock stranded by timed-out git %s", command)
+    except OSError as exc:
+        logger.warning("Could not remove timed-out git index lock: %s", exc)
 
 
 def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
+    """Run one Git subprocess without overlapping another WebAgent Git call."""
+    with _GIT_COMMAND_LOCK:
+        return _run_git_locked(args, timeout)
+
+
+def _run_git_locked(args: list[str], timeout: int) -> tuple[str, str, int]:
     """Run a git command in the active repo (the project root by default).
     Returns (stdout, stderr, returncode).
 
@@ -234,7 +314,19 @@ def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
     """
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
+    # Read-only commands such as `git status` normally refresh cached stat data
+    # in the index. The Source Control page polls those commands, so a cancelled
+    # or timed-out poll could strand index.lock before a commit even started.
+    # Required index writers (add/commit/etc.) still lock normally; this disables
+    # only Git's optional background refresh writes.
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     config_args: list[str] = []
+    # Inject git user identity so commits never fail with "Author identity unknown"
+    # even when no global/user git config is set on the host.
+    if _GIT_USER_NAME:
+        config_args += ["-c", f"user.name={_GIT_USER_NAME}"]
+    if _GIT_USER_EMAIL:
+        config_args += ["-c", f"user.email={_GIT_USER_EMAIL}"]
     token = _TOKEN_CACHE or _get_token()
     if token:
         # An empty credential.helper value is git's documented way to reset the
@@ -245,17 +337,35 @@ def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
             "-c", "credential.helper=",
             "-c", f"http.extraHeader=Authorization: Basic {basic}",
         ]
+    lock_before = _index_lock_signature()
+    popen_kwargs = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             ["git"] + config_args + args,
             cwd=str(_ACTIVE_REPO),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             env=env,
-            timeout=timeout,
+            **popen_kwargs,
         )
-        return proc.stdout, proc.stderr, proc.returncode
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return stdout, stderr, proc.returncode
     except subprocess.TimeoutExpired:
+        _terminate_git_process_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                proc.kill()
+                proc.communicate(timeout=5)
+            except (subprocess.SubprocessError, OSError):
+                pass
+        _cleanup_timed_out_index_lock(args, lock_before)
         return "", "git command timed out", -1
     except FileNotFoundError:
         return "", "git not found on this system", -1
@@ -326,8 +436,9 @@ def _push_failure_hint(stderr: str, stdout: str) -> str:
         hint = ("No GitHub token is set for this repository. Add one in the "
                 "source-control sidebar, then try again.")
     elif "timed out" in low:
-        hint = ("Couldn't reach GitHub in time. Check your connection and that "
-                "the GitHub token in the source-control sidebar is still valid.")
+        hint = ("The push didn't finish in time — the machine is usually busy "
+                "or the connection to GitHub is slow. Check your connection "
+                "and try again; the stored token is still configured.")
     elif ("write access" in low or "not granted" in low or "403" in low
           or ("permission" in low and "denied" in low)):
         hint = ("Your saved GitHub token doesn't have WRITE access to this "
@@ -417,6 +528,11 @@ class ProdExcludeRequest(BaseModel):
     excluded: bool = True
 
 
+class GitIgnoreRequest(BaseModel):
+    path: str = Field(..., min_length=1, max_length=1000)
+    tracked: bool = True
+
+
 class ProdExcludeBulkRequest(BaseModel):
     add: list[str] = Field(default_factory=list, max_length=5000)
     remove: list[str] = Field(default_factory=list, max_length=5000)
@@ -444,6 +560,8 @@ class RepoAddRequest(BaseModel):
     folder: str = Field(..., min_length=1, max_length=1000)
     remote_url: str = Field("", max_length=500)
     token: str = Field("", max_length=500)
+    git_user_name: str = Field("", max_length=200)
+    git_user_email: str = Field("", max_length=200)
 
 
 class RepoUpdateRequest(BaseModel):
@@ -451,10 +569,19 @@ class RepoUpdateRequest(BaseModel):
     folder: str | None = Field(None, max_length=1000)
     remote_url: str | None = Field(None, max_length=500)
     token: str | None = Field(None, max_length=500)
+    git_user_name: str | None = Field(None, max_length=200)
+    git_user_email: str | None = Field(None, max_length=200)
 
 
 class RepoSelectRequest(BaseModel):
     id: str = Field(..., min_length=1, max_length=64)
+
+
+class PathScopedChangesRequest(BaseModel):
+    """A deliberately small, chat-panel scoped set of repository paths."""
+    session_id: str = Field(..., min_length=1, max_length=200)
+    paths: list[str] = Field(..., min_length=1, max_length=500)
+    message: str = Field("", max_length=2000)
 
 
 # ── Endpoints ──
@@ -507,7 +634,9 @@ def _status_payload(fetch: bool) -> dict:
     remote_url = remote_out.strip()
 
     # 3. Git status (short format)
-    status_out, _, _ = _run_git(["status", "--short"])
+    exclude_runtime = _ACTIVE_REPO.resolve() == _PROJECT_ROOT.resolve()
+    source_pathspec = ["--", ".", *_RUNTIME_PATHSPECS] if exclude_runtime else []
+    status_out, _, _ = _run_git(["status", "--short", *source_pathspec])
     status_lines = [line.rstrip() for line in status_out.split("\n") if line.strip()]
 
     # 4. Parse status into staged / unstaged / untracked
@@ -612,6 +741,15 @@ def _status_payload(fetch: bool) -> dict:
     # 9. File count total
     file_count = len(staged) + len(unstaged) + len(untracked)
 
+    # Match the Explorer's +/- badges while respecting Source Control's active
+    # repository selection (which may point somewhere other than this project).
+    line_stats = _working_tree_line_stats(exclude_runtime=exclude_runtime)
+    for files in (staged, unstaged, untracked):
+        for file in files:
+            stat = line_stats.get(file["path"])
+            if stat:
+                file.update(stat)
+
     return {
         "branch": branch,
         "remote_url": remote_url,
@@ -625,6 +763,183 @@ def _status_payload(fetch: bool) -> dict:
         "commits": commits,
         "last_commit": last_commit,
     }
+
+
+def _safe_changed_paths(paths: list[str]) -> list[str]:
+    """Validate repo-relative paths supplied by the chat change panel."""
+    clean: list[str] = []
+    seen: set[str] = set()
+    root = _ACTIVE_REPO.resolve()
+    for raw in paths:
+        path = (raw or "").replace("\\", "/").strip().lstrip("/")
+        if not path or path in seen:
+            continue
+        candidate = (root / path).resolve()
+        if candidate != root and root not in candidate.parents:
+            raise HTTPException(status_code=400, detail=f"Invalid repository path: {raw}")
+        clean.append(path)
+        seen.add(path)
+    if not clean:
+        raise HTTPException(status_code=400, detail="Select at least one changed file.")
+    return clean
+
+
+def _chat_changes_payload(allowed_paths: set[str] | None = None) -> dict:
+    """Working-tree files and line counts, always for this WebAgent checkout."""
+    _pin_to_project_root()
+    status_out, status_err, rc = _run_git(
+        ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all"],
+        timeout=20,
+    )
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=status_err.strip() or "git status failed")
+    stats = _working_tree_line_stats()
+    files = []
+    for line in status_out.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].strip().strip('"')
+        if not path:
+            continue
+        # Porcelain renames are `old -> new`; the new path is the one the user sees.
+        if " -> " in path:
+            path = path.rsplit(" -> ", 1)[-1]
+        if allowed_paths is not None and path not in allowed_paths:
+            continue
+        stat = stats.get(path, {})
+        files.append({"path": path, "status": line[:2],
+                      "added": stat.get("added", 0), "removed": stat.get("removed", 0)})
+    return {"files": files}
+
+
+@router.get("/chat-changes")
+async def get_chat_changes(
+    request: Request,
+    session_id: str = Query(..., min_length=1, max_length=200),
+):
+    """Dirty paths attributed to one chat session."""
+    _require_admin(request)
+    user_id = _get_user_id_from_request(request)
+    db = get_db()
+    try:
+        await db.assert_session_owned(user_id, session_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    claims = set(await db.get_session_change_claims(session_id))
+    payload = await asyncio.to_thread(_chat_changes_payload, claims)
+    dirty = {file["path"] for file in payload["files"]}
+    stale = sorted(claims - dirty)
+    if stale:
+        await db.clear_session_change_claims(session_id, stale)
+    owners = await db.get_session_change_owners(sorted(dirty))
+    for file in payload["files"]:
+        other_sessions = [
+            owner for owner in owners.get(file["path"], [])
+            if owner != session_id
+        ]
+        file["conflict"] = bool(other_sessions)
+        file["other_sessions"] = other_sessions
+    return payload
+
+
+async def _owned_action_paths(
+    req: PathScopedChangesRequest, request: Request
+) -> tuple[object, list[str]]:
+    user_id = _get_user_id_from_request(request)
+    db = get_db()
+    try:
+        await db.assert_session_owned(user_id, req.session_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    paths = _safe_changed_paths(req.paths)
+    owned = set(await db.get_session_change_claims(req.session_id))
+    foreign = [path for path in paths if path not in owned]
+    if foreign:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Paths are not owned by this chat session: {', '.join(foreign)}",
+        )
+    owners = await db.get_session_change_owners(paths)
+    conflicted = [
+        path for path in paths
+        if any(owner != req.session_id for owner in owners.get(path, []))
+    ]
+    if conflicted:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Paths were also changed by another session: {', '.join(conflicted)}",
+        )
+    return db, paths
+
+
+@router.post("/chat-changes/undo")
+async def undo_chat_changes(req: PathScopedChangesRequest, request: Request):
+    """Discard exactly the paths the current chat session marked as its changes."""
+    _require_admin(request)
+    db, paths = await _owned_action_paths(req, request)
+    def _undo():
+        _pin_to_project_root()
+        porcelain, _, _ = _run_git(["status", "--porcelain", "--untracked-files=all", "--"] + paths, timeout=20)
+        untracked = {
+            line[3:].strip().strip('"') for line in porcelain.splitlines()
+            if line.startswith("?? ") and len(line) > 3
+        }
+        tracked = [path for path in paths if path not in untracked]
+        # Restore tracked files (index and working tree). Missing paths are fine:
+        # they are untracked files and are removed in the second pass.
+        if tracked:
+            out, err, restore_rc = _run_git(["restore", "--staged", "--worktree", "--"] + tracked, timeout=30)
+            if restore_rc != 0:
+                raise HTTPException(status_code=500, detail=err.strip() or out.strip() or "git restore failed")
+        for path in untracked:
+            candidate = _ACTIVE_REPO / path
+            if candidate.exists() and not (candidate / ".git").exists():
+                if candidate.is_dir():
+                    import shutil
+                    shutil.rmtree(candidate)
+                else:
+                    candidate.unlink()
+        return {"status": "undone", "paths": paths}
+    result = await asyncio.to_thread(_undo)
+    await db.clear_session_change_claims(req.session_id, paths)
+    return result
+
+
+@router.post("/chat-changes/commit")
+async def commit_chat_changes(req: PathScopedChangesRequest, request: Request):
+    """Commit only the supplied chat-session paths; unrelated index entries stay out."""
+    _require_admin(request)
+    db, paths = await _owned_action_paths(req, request)
+    def _commit():
+        _pin_to_project_root()
+        status_out, status_err, status_rc = _run_git(["status", "--porcelain", "--"] + paths, timeout=20)
+        if status_rc != 0:
+            raise HTTPException(status_code=500, detail=status_err.strip() or "git status failed")
+        if not status_out.strip():
+            return {"status": "nothing_to_commit", "message": "Those files no longer have changes."}
+        diff_out, _, _ = _run_git(["diff", "HEAD", "--"] + paths, timeout=30)
+        for pattern, label in _SECRET_PATTERNS:
+            if re.search(pattern, diff_out or ""):
+                raise HTTPException(status_code=400, detail=f"Possible {label} found in the selected changes.")
+        _, add_err, add_rc = _run_git(["add", "--"] + paths, timeout=30)
+        if add_rc != 0:
+            raise HTTPException(status_code=500, detail=add_err.strip() or "git add failed")
+        message = req.message.strip() or _fallback_commit_message("", paths)
+        msg_file = _PROJECT_ROOT / "data" / "tmp" / "_chat_commit_msg.txt"
+        msg_file.parent.mkdir(parents=True, exist_ok=True)
+        msg_file.write_text(message, encoding="utf-8")
+        try:
+            _, commit_err, commit_rc = _run_git(["commit", "--only", "-F", str(msg_file), "--"] + paths, timeout=45)
+        finally:
+            try: msg_file.unlink()
+            except OSError: pass
+        if commit_rc != 0:
+            raise HTTPException(status_code=500, detail=commit_err.strip() or "git commit failed")
+        head, _, _ = _run_git(["rev-parse", "--short", "HEAD"], timeout=10)
+        return {"status": "committed", "paths": paths, "hash": head.strip(), "title": message.splitlines()[0]}
+    result = await asyncio.to_thread(_commit)
+    await db.clear_session_change_claims(req.session_id, paths)
+    return result
 
 
 @router.get("/log-graph")
@@ -951,6 +1266,112 @@ def _count_new_file_lines(path: Path, max_bytes: int = 2_000_000) -> int | None:
     return data.count(b"\n") + (0 if data.endswith(b"\n") else 1)
 
 
+def _working_tree_line_stats(*, exclude_runtime: bool = False) -> dict[str, dict[str, int]]:
+    """Return per-file +/- counts for the repository selected for git commands."""
+    stats: dict[str, dict[str, int]] = {}
+    pathspec = ["--", ".", *_RUNTIME_PATHSPECS] if exclude_runtime else []
+    out, _, rc = _run_git(
+        ["-c", "core.quotePath=false", "diff", "--numstat", "--no-renames", "HEAD", *pathspec],
+        timeout=20,
+    )
+    if rc == 0:
+        for line in out.split("\n"):
+            cols = line.rstrip("\n").split("\t")
+            if len(cols) < 3:
+                continue
+            added, removed, path = cols[0], cols[1], cols[2]
+            if added == "-" and removed == "-":
+                continue
+            stats[path] = {
+                "added": int(added) if added.isdigit() else 0,
+                "removed": int(removed) if removed.isdigit() else 0,
+            }
+
+    st_out, _, _ = _run_git(
+        ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all", *pathspec],
+        timeout=20,
+    )
+    for processed, line in enumerate(st_out.split("\n")):
+        if processed >= 4000:
+            break
+        if not line.startswith("?? "):
+            continue
+        rel = line[3:].strip().strip('"')
+        if not rel:
+            continue
+        added = _count_new_file_lines(_ACTIVE_REPO / rel)
+        if added is not None:
+            stats[rel] = {"added": added, "removed": 0}
+    return stats
+
+
+_LINE_STATS_CACHE_TTL_SECONDS = 10.0
+_line_stats_cache_lock = threading.Lock()
+_line_stats_cache_at = 0.0
+_line_stats_cache: dict | None = None
+_RUNTIME_PATHSPECS = (
+    ":(exclude)data/agent_data/**",
+    ":(exclude)data/user_data/**",
+    ":(exclude)logs/**",
+    ":(exclude).ast-index/**",
+    ":(exclude,glob)**/*.db",
+    ":(exclude,glob)**/*.db-wal",
+    ":(exclude,glob)**/*.db-shm",
+)
+
+
+def _project_line_stats_payload() -> dict:
+    """Compute Explorer badges without blocking the server event loop."""
+    global _line_stats_cache, _line_stats_cache_at
+    now = time.monotonic()
+    if _line_stats_cache is not None and now - _line_stats_cache_at < _LINE_STATS_CACHE_TTL_SECONDS:
+        return _line_stats_cache
+
+    with _line_stats_cache_lock:
+        now = time.monotonic()
+        if _line_stats_cache is not None and now - _line_stats_cache_at < _LINE_STATS_CACHE_TTL_SECONDS:
+            return _line_stats_cache
+
+        stats: dict[str, dict[str, int]] = {}
+        diff = subprocess.run(
+            ["git", "-c", "core.quotePath=false", "diff", "--numstat", "--no-renames",
+             "HEAD", "--", ".", *_RUNTIME_PATHSPECS],
+            cwd=str(_PROJECT_ROOT), capture_output=True, text=True, timeout=20,
+        )
+        if diff.returncode == 0:
+            for line in diff.stdout.splitlines():
+                cols = line.split("\t")
+                if len(cols) < 3 or (cols[0] == "-" and cols[1] == "-"):
+                    continue
+                stats[cols[2]] = {
+                    "added": int(cols[0]) if cols[0].isdigit() else 0,
+                    "removed": int(cols[1]) if cols[1].isdigit() else 0,
+                }
+
+        status = subprocess.run(
+            ["git", "-c", "core.quotePath=false", "status", "--porcelain",
+             "--untracked-files=all", "--", ".", *_RUNTIME_PATHSPECS],
+            cwd=str(_PROJECT_ROOT), capture_output=True, text=True, timeout=20,
+        )
+        for processed, line in enumerate(status.stdout.splitlines()):
+            if processed >= 4000:
+                break
+            if not line.startswith("?? "):
+                continue
+            rel = line[3:].strip().strip('"')
+            added = _count_new_file_lines(_PROJECT_ROOT / rel) if rel else None
+            if added is not None:
+                stats[rel] = {"added": added, "removed": 0}
+
+        payload = {
+            "project_root": str(_PROJECT_ROOT).replace("\\", "/"),
+            "stats": stats,
+        }
+        _line_stats_cache = payload
+        _line_stats_cache_at = time.monotonic()
+        return payload
+
+
 @router.get("/line-stats")
 async def get_line_stats(request: Request):
     """Per-file +/- line counts for everything changed since the last commit.
@@ -968,7 +1389,7 @@ async def get_line_stats(request: Request):
     Pinned to THIS app's own repo (the file tree's root) so the counts always
     line up with the tree even when Source Control has another repo selected.
     Read-only — the Files page is already admin-gated."""
-    _pin_to_project_root()
+    return await asyncio.to_thread(_project_line_stats_payload)
 
     stats: dict[str, dict[str, int]] = {}
 
@@ -1019,6 +1440,252 @@ async def get_line_stats(request: Request):
     return {"project_root": str(root).replace("\\", "/"), "stats": stats}
 
 
+def _git_status_sets() -> tuple[list[str], list[str], bool]:
+    """Run ls-files + status --ignored in the pinned repo and return
+    (tracked, ignored, is_repo) as repo-relative paths. Ignored dirs are
+    collapsed (status already emits the directory itself, not every file).
+
+    One nuance: a path untracked via `git rm --cached` shows as a staged
+    deletion ("D ") rather than an "!!" ignored entry until the deletion is
+    committed — even though .gitignore now matches it. Those paths (and any
+    ancestor folder whose rule makes them ignored) are folded into `ignored`
+    so the tree dims them immediately instead of after the next commit."""
+    tracked: list[str] = []
+    ignored: list[str] = []
+    is_repo = False
+
+    out, _, rc = _run_git(
+        ["-c", "core.quotePath=false", "ls-files"],
+        timeout=20,
+    )
+    if rc == 0:
+        is_repo = True
+        for line in out.splitlines():
+            rel = line.rstrip().strip('"')
+            if rel:
+                tracked.append(rel)
+
+    out, _, rc = _run_git(
+        ["-c", "core.quotePath=false", "status", "--porcelain", "--ignored"],
+        timeout=20,
+    )
+    if rc == 0:
+        is_repo = True
+        for line in out.splitlines():
+            if not line.startswith("!! "):
+                continue
+            rel = line[3:].strip().strip('"').rstrip("/")
+            if rel:
+                ignored.append(rel)
+
+        # Fold staged deletions that are now check-ignored into the ignored
+        # set (see the docstring). Capped so a huge rm --cached -r can't make
+        # this read hang; the untracked side of the fold still works per-file.
+        staged_del = []
+        for line in out.splitlines():
+            if line.startswith("D ") and len(line) > 3:
+                staged_del.append(line[3:].strip().strip('"'))
+        if staged_del and len(staged_del) <= 2000:
+            cands = set(staged_del)
+            for p in staged_del:
+                parts = p.split("/")
+                cands.update("/".join(parts[:i]) for i in range(1, len(parts)))
+            chk_out, _, _ = _run_git(
+                ["check-ignore", "--"] + sorted(cands),
+                timeout=20,
+            )
+            if chk_out:
+                ignored += [ln.strip() for ln in chk_out.splitlines() if ln.strip()]
+
+    return tracked, ignored, is_repo
+
+
+# ── Git tracked/ignored toggle (git-view checkboxes) ─────────────────────────
+# Checking/unchecking a box in the File Explorer's git view edits the ACTUAL
+# ignore rules and the git index, so the box state matches what git will do on
+# the next commit:
+#   • tracked=false → append an anchored rule to the root .gitignore, then
+#     `git rm --cached` (untrack but keep the working file — never deleted);
+#   • tracked=true  → drop exact .gitignore / info-exclude rules naming the
+#     path, re-include any ignored ancestor directories via negation, then
+#     `git add` (force-add as a backstop for patterns we can't rewrite).
+# Only .gitignore files, .git/info/exclude and the index are touched.
+
+def _repo_rel_safe(rel: str) -> str:
+    """Normalise a user-supplied repo-relative path and reject anything that
+    escapes the repo (`..`, absolute paths, drive letters)."""
+    rel = (rel or "").strip().replace("\\", "/").lstrip("/")
+    if not rel or rel in {".", ".."}:
+        raise ValueError("path must be a repo-relative file or folder")
+    if rel.startswith("/") or rel.startswith("../") or ".." in rel.split("/"):
+        raise ValueError("path must stay inside the repo")
+    if re.match(r"^[A-Za-z]:", rel):
+        raise ValueError("path must stay inside the repo")
+    return rel.rstrip("/")
+
+
+def _path_ancestors(rel: str) -> list[str]:
+    parts = rel.split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+
+def _gitignore_files_for(rel: str) -> list[Path]:
+    """Every .gitignore that can match the path: the repo root's plus one in
+    each ancestor directory (a nested .gitignore can hold a matching rule)."""
+    files = [_ACTIVE_REPO / ".gitignore"]
+    cur = _ACTIVE_REPO
+    for part in rel.split("/")[:-1]:
+        cur = cur / part
+        files.append(cur / ".gitignore")
+    return files
+
+
+def _info_exclude() -> Path:
+    return _ACTIVE_REPO / ".git" / "info" / "exclude"
+
+
+def _remove_ignore_rules(rel: str, is_dir: bool) -> None:
+    """Delete exact .gitignore / info-exclude patterns naming this path (with
+    or without a leading `!`, `rel`, `/rel`, and `rel/` variants). Glob rules
+    like `*.log` are left alone — those get overridden by a negation instead."""
+    pats = {rel, "/" + rel, "!" + rel, "!/" + rel}
+    if is_dir:
+        pats |= {rel + "/", "/" + rel + "/", "!" + rel + "/", "!/" + rel + "/"}
+    for gf in _gitignore_files_for(rel) + [_info_exclude()]:
+        if not gf.is_file():
+            continue
+        try:
+            lines = gf.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        kept = [ln for ln in lines if ln.strip() not in pats]
+        if len(kept) != len(lines):
+            try:
+                gf.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+            except OSError:
+                pass
+
+
+def _append_gitignore(gf: Path, lines: list[str]) -> None:
+    """Append patterns to an ignore file, creating it if needed and skipping
+    lines that are already present (idempotent)."""
+    try:
+        gf.parent.mkdir(parents=True, exist_ok=True)
+        existing = gf.read_text(encoding="utf-8") if gf.is_file() else ""
+        have = {ln.strip() for ln in existing.splitlines() if ln.strip()}
+        add = [ln for ln in lines if ln not in have]
+        if not add:
+            return
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        gf.write_text(existing + "\n".join(add) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _nearest_gitignore(rel: str) -> Path:
+    """The deepest existing .gitignore in the path's ancestor chain (a
+    negation must live there to override a nested rule), else the root one."""
+    files = _gitignore_files_for(rel)
+    for gf in reversed(files):
+        if gf.is_file():
+            return gf
+    return files[0]
+
+
+def _make_tracked(rel: str, is_dir: bool) -> None:
+    """Un-ignore + stage a path (or a whole folder subtree)."""
+    target = rel + ("/" if is_dir else "")
+    _remove_ignore_rules(rel, is_dir)
+    # Re-check after removal: only add negations when a rule still matches
+    # (a glob in another source, or an ignored ancestor directory).
+    _, ignored_now, _ = _git_status_sets()
+    ignored_set = set(ignored_now)
+    if target.rstrip("/") in ignored_set or any(a in ignored_set for a in _path_ancestors(rel)):
+        lines = ["!" + a + "/" for a in _path_ancestors(rel) if a in ignored_set]
+        lines.append("!" + target)
+        _append_gitignore(_nearest_gitignore(rel), lines)
+    out, err, rc = _run_git(["add", "--", target], timeout=20)
+    if rc != 0:
+        # Backstop: force-add when some pattern we couldn't rewrite still
+        # matches (e.g. a rule in core.excludesFile or a glob elsewhere).
+        _run_git(["add", "-f", "--", target], timeout=20)
+
+
+def _make_ignored(rel: str, is_dir: bool) -> None:
+    """Add an ignore rule + untrack a path (or a whole folder subtree)."""
+    _append_gitignore(_ACTIVE_REPO / ".gitignore",
+                      ["/" + rel + ("/" if is_dir else "")])
+    target = rel + ("/" if is_dir else "")
+    _run_git(["rm", "--cached", "-r", "--", target], timeout=20)
+
+
+@router.get("/git-status")
+async def get_git_status(request: Request):
+    """Tracked vs ignored paths for the File Explorer's git view.
+
+    Returns two repo-relative path sets for the app's own repo (pinned like
+    /line-stats so the marks always line up with the tree even when Source
+    Control has another repo selected):
+
+      • tracked — every path git tracks (`git ls-files`);
+      • ignored — every path git ignores (`git status --porcelain --ignored`),
+        with whole ignored directories collapsed to the directory itself so a
+        huge ignored folder (node_modules, .venv, …) stays a single entry.
+
+    Read-only — the Files page is already admin-gated."""
+    _pin_to_project_root()
+    tracked, ignored, is_repo = _git_status_sets()
+    return {
+        "repo_root": str(_ACTIVE_REPO).replace("\\", "/"),
+        "is_repo": is_repo,
+        "tracked": tracked,
+        "ignored": ignored,
+    }
+
+
+@router.post("/git-ignore")
+async def set_git_ignore(req: GitIgnoreRequest, request: Request):
+    """Flip one path's tracked/ignored state in the File Explorer's git view.
+
+    `tracked=true`  → un-ignore + stage the path (remove exact .gitignore /
+                      info-exclude rules, negate ignored ancestors, `git add`).
+    `tracked=false` → append an anchored rule to the root .gitignore and
+                      `git rm --cached` it (the working file is never deleted).
+
+    Folders are whole-subtree: ignoring a folder adds `folder/` and untracks it
+    recursively; tracking a folder stages everything under it that isn't
+    matched by some other rule. Returns the fresh tracked/ignored sets so the
+    tree can repaint without a reload.
+
+    Read/write — the Files page is already admin-gated; only .gitignore files,
+    .git/info/exclude and the git index are touched, never working-tree files.
+    """
+    _require_admin(request)
+    _pin_to_project_root()
+    try:
+        rel = _repo_rel_safe(req.path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    is_dir = (_ACTIVE_REPO / rel).is_dir()
+    try:
+        if req.tracked:
+            _make_tracked(rel, is_dir)
+        else:
+            _make_ignored(rel, is_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("git-ignore toggle failed for %s: %s", rel, e)
+        raise HTTPException(status_code=500,
+                            detail=f"Could not update git ignore state: {e}")
+    tracked, ignored, _ = _git_status_sets()
+    return {
+        "status": "ok",
+        "repo_root": str(_ACTIVE_REPO).replace("\\", "/"),
+        "tracked": tracked,
+        "ignored": ignored,
+    }
+
+
 @router.post("/push")
 async def push_to_remote(request: Request):
     """Push commits to the remote."""
@@ -1026,7 +1693,12 @@ async def push_to_remote(request: Request):
     await _prime_shared_token_from_vault()   # refresh the shared key from the vault
     _use_active_repo()
 
-    stdout, stderr, rc = _git_push(timeout=30)
+    # Run the push OFF the event loop with the same generous budget as
+    # /commit-and-push (120s). On a busy machine (concurrent agent streams,
+    # git subprocesses starved for CPU) a plain `git push` can take far longer
+    # than the old 30s cap, and the old synchronous call blocked the entire
+    # event loop for that duration — stalling every other request while it ran.
+    stdout, stderr, rc = await asyncio.to_thread(_git_push, 120)
     if rc != 0:
         raise HTTPException(status_code=500, detail=_push_failure_hint(stderr, stdout))
 
@@ -1075,7 +1747,7 @@ def _commit_llm_client():
     base_url = (
         os.environ.get("LLM_BASE_URL")
         or os.environ.get("OPENROUTER_BASE_URL")
-        or "https://openrouter.ai/api/v1"
+        or ""
     )
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or ""
     try:
@@ -1217,7 +1889,7 @@ async def _generate_commit_message(stat_out: str, full_diff: str,
     model = (
         os.environ.get("LLM_MODEL")
         or os.environ.get("OPENROUTER_MODEL")
-        or "deepseek/deepseek-v4-flash"
+        or ""
     )
     stat_window = _bound_stat(stat_out)
     diff_window = full_diff[:6000] if full_diff else "(no diff)"
@@ -1374,7 +2046,10 @@ async def _commit_and_push_events(message: str = "", *, skip_push: bool = False,
     # 5. Stage.
     yield {"phase": "committing"}
     await asyncio.sleep(0)
-    _, add_err, add_code = await _git(["add", "-A" if include_untracked else "-u"], timeout=30)
+    # Large working trees (especially runtime DB/screenshot folders) can take
+    # substantially longer than a status/diff read. Cutting this off at 30s was
+    # the source of orphaned Windows git children and recurring index.lock errors.
+    _, add_err, add_code = await _git(["add", "-A" if include_untracked else "-u"], timeout=120)
     if add_code != 0:
         yield {"phase": "done", "result": {
             "status": "error", "message": f"git add failed: {add_err.strip()}"}}
@@ -1384,11 +2059,21 @@ async def _commit_and_push_events(message: str = "", *, skip_push: bool = False,
     msg_file = _PROJECT_ROOT / "data" / "tmp" / "_commit_msg.txt"
     msg_file.parent.mkdir(parents=True, exist_ok=True)
     msg_file.write_text(commit_msg, encoding="utf-8")
-    _, commit_err, commit_code = await _git(["commit", "-F", str(msg_file)], timeout=30)
+    # Hooks are part of `git commit` and may legitimately take a while. Give them
+    # the same budget as a network push. A subprocess timeout can also race with
+    # commit completion, so remember HEAD and reconcile it before reporting an
+    # error; otherwise a completed commit gets stranded without its push.
+    before_head, _, _ = await _git(["rev-parse", "HEAD"], timeout=10)
+    _, commit_err, commit_code = await _git(
+        ["commit", "-F", str(msg_file)], timeout=120)
     try:
         msg_file.unlink()
     except OSError:
         pass
+    if commit_code == -1 and commit_err.strip() == "git command timed out":
+        after_head, _, after_code = await _git(["rev-parse", "HEAD"], timeout=10)
+        if after_code == 0 and after_head.strip() != before_head.strip():
+            commit_code = 0
     if commit_code != 0:
         yield {"phase": "done", "result": {
             "status": "error", "message": f"git commit failed: {commit_err.strip()}"}}
@@ -1505,7 +2190,7 @@ def _is_backend_file(path: str) -> bool:
     if not path:
         return False
     p = path.strip()
-    backend_dirs = ("app/", "data/", "scripts/", "migrations/", "supabase/", "tests/")
+    backend_dirs = ("app/", "data/", "scripts/", "migrations/", "tests/")
     if p.startswith(backend_dirs):
         return True
     backend_root_files = (
@@ -1842,6 +2527,8 @@ async def add_git_repo(req: RepoAddRequest, request: Request):
         entry = git_repos.add_repo(
             label=req.label, folder=req.folder,
             remote_url=req.remote_url, token=req.token,
+            git_user_name=req.git_user_name,
+            git_user_email=req.git_user_email,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1891,12 +2578,21 @@ async def update_git_repo(repo_id: str, req: RepoUpdateRequest, request: Request
         # Save the shared GitHub key to the vault (blank = keep the existing one).
         if req.token:
             await _save_shared_token(req.token)
+        # Set git user name/email on the built-in repo so commits don't fail.
+        if req.git_user_name is not None and req.git_user_name.strip():
+            _pin_to_project_root()
+            _run_git(["config", "user.name", req.git_user_name.strip()], timeout=10)
+        if req.git_user_email is not None and req.git_user_email.strip():
+            _pin_to_project_root()
+            _run_git(["config", "user.email", req.git_user_email.strip()], timeout=10)
         _use_active_repo()
         return {"status": "ok", "repos": git_repos.list_repos()}
     try:
         entry = git_repos.update_repo(
             repo_id, label=req.label, folder=req.folder,
             remote_url=req.remote_url, token=req.token,
+            git_user_name=req.git_user_name,
+            git_user_email=req.git_user_email,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

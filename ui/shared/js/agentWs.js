@@ -14,8 +14,45 @@ import { handleAttachmentEvent } from './attachments.js';
 
 let reconnectTimer = null;
 let reconnectAttempts = 0;
+let _connectionLostTimer = null;    // 5-min timer for user-facing "Connection lost" message
+let _connLostShown = false;         // whether the user-facing bubble was already emitted
 const MAX_RECONNECT_DELAY = 30000;
 const INITIAL_RECONNECT_DELAY = 500;
+/** How long (ms) before showing a user-facing connection-lost message. */
+const CONNECTION_LOST_TIMEOUT = 300000; // 5 minutes
+
+// Pipeline telemetry arrives in bursts around every LLM and tool transition.
+// Preserve every event and its order, but render the burst once per animation
+// frame. Streamed assistant text remains on the immediate path below.
+let _pipelineRenderQueue = [];
+let _pipelineRenderFrame = 0;
+
+function _renderObservers(event, forCurrent) {
+  try { logTool(event); } catch (_) { /* not mounted */ }
+  if (forCurrent && app._loopHandler) {
+    try { app._loopHandler(event); } catch (_) { /* ignore */ }
+  }
+  if (forCurrent && app._loopVisualHandler) {
+    try { app._loopVisualHandler(event); } catch (_) { /* ignore */ }
+  }
+  if (app._genuiHandler) {
+    try { app._genuiHandler(event); } catch (_) { /* ignore */ }
+  }
+  if (forCurrent && app._chatActivityHandler) {
+    try { app._chatActivityHandler(event); } catch (_) { /* ignore */ }
+  }
+}
+
+function _queuePipelineRender(event, forCurrent) {
+  _pipelineRenderQueue.push({ event, forCurrent });
+  if (_pipelineRenderFrame) return;
+  _pipelineRenderFrame = requestAnimationFrame(() => {
+    _pipelineRenderFrame = 0;
+    const batch = _pipelineRenderQueue;
+    _pipelineRenderQueue = [];
+    for (const item of batch) _renderObservers(item.event, item.forCurrent);
+  });
+}
 
 // ── Pending replay buffer ──
 // When the WS reconnects (or a fresh page load completes its handshake) the
@@ -79,6 +116,28 @@ function cancelAgentReconnect() {
     reconnectTimer = null;
   }
   reconnectAttempts = 0;
+}
+
+function _cancelConnectionLostTimer() {
+  if (_connectionLostTimer) {
+    clearTimeout(_connectionLostTimer);
+    _connectionLostTimer = null;
+  }
+  _connLostShown = false;
+}
+
+function _showConnectionLost() {
+  if (_connLostShown) return;
+  _connLostShown = true;
+  if (!app.chatMessages) return;
+  // Don't show if we're already back online
+  if (app.agentWs && app.agentWs.readyState === WebSocket.OPEN) return;
+  // Show a simple separate bubble for everyone
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble agent connection-lost-global';
+  bubble.textContent = 'Connection lost. Trying to reconnect\u2026';
+  app.chatMessages.appendChild(bubble);
+  bubble.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function scheduleAgentReconnect() {
@@ -148,6 +207,11 @@ export function connectAgent() {
     if (event.type === 'subscribed') {
       setAgentStatus('green');
       reconnectAttempts = 0;
+      // Cancel the 5-min connection-lost timer and clean up any shown bubble
+      _cancelConnectionLostTimer();
+      if (app.chatMessages) {
+        app.chatMessages.querySelectorAll('.connection-lost-global').forEach(el => el.remove());
+      }
       // Lightweight refresh on WS (re)connect — don't re-fetch agents/sessions,
       // initSessions() already loaded them eagerly. Just update the user avatar
       // in case the account changed in another tab.
@@ -167,6 +231,13 @@ export function connectAgent() {
           try { app.onActiveServerSessions(event.active_sessions); } catch(_) {}
         }
       }
+      return;
+    }
+
+    if (event.type === 'device_revoked') {
+      import('./device-purge.js')
+        .then(({ handleRemoteDeviceRevocation }) => handleRemoteDeviceRevocation(event))
+        .catch(() => {});
       return;
     }
 
@@ -206,21 +277,25 @@ export function connectAgent() {
     const _forCurrent = !_sid || _sid === app.currentSessionId;
 
     // Forward to tool log panel (global — intentionally shows all tool activity)
-    try { logTool(event); } catch(e) { /* not mounted */ }
+    if (event.type === 'pipeline') {
+      _queuePipelineRender(event, _forCurrent);
+    } else {
+      try { logTool(event); } catch(e) { /* not mounted */ }
+    }
 
     // Forward to stream/loop/flow debug panels (handles ALL event types)
-    if (_forCurrent && app._loopHandler) {
+    if (event.type !== 'pipeline' && _forCurrent && app._loopHandler) {
       try { app._loopHandler(event); } catch(e) { /* ignore */ }
     }
-    if (_forCurrent && app._loopVisualHandler) {
+    if (event.type !== 'pipeline' && _forCurrent && app._loopVisualHandler) {
       try { app._loopVisualHandler(event); } catch(e) { /* ignore */ }
     }
     // Gen UI has its own per-visualizer-session logic — leave unguarded.
-    if (app._genuiHandler) {
+    if (event.type !== 'pipeline' && app._genuiHandler) {
       try { app._genuiHandler(event); } catch(e) { /* ignore */ }
     }
     // Drive the chat pill "thinking" glow + activity-note ticker (current session).
-    if (_forCurrent && app._chatActivityHandler) {
+    if (event.type !== 'pipeline' && _forCurrent && app._chatActivityHandler) {
       try { app._chatActivityHandler(event); } catch(e) { /* ignore */ }
     }
 
@@ -245,11 +320,24 @@ export function connectAgent() {
     // loader can drain them when the user navigates in.
 
     const eventSessionId = event.session_id || event.sessionId || '';
+    const _eventInteractionId = event.asst_id || event.id || '';
+    const _interactionAnchor = _eventInteractionId && app._interactionAnchors
+      ? app._interactionAnchors.get(String(_eventInteractionId)) : null;
+    const _interactionSeq = event.interaction_seq != null
+      ? Number(event.interaction_seq)
+      : (_interactionAnchor ? _interactionAnchor.interactionSeq : NaN);
+    const _ownerTurnId = event.turn_id
+      || (_interactionAnchor && _interactionAnchor.turnId)
+      || '';
 
     switch (event.type) {
       case 'error':
         if (eventSessionId && eventSessionId !== app.currentSessionId) break;
-        app.updateLastBubble('Error: ' + event.message, 'error');
+        // Only surface internal agent-loop errors in debug mode; they
+        // auto-recover and showing them to the user is just noise.
+        if (app.isDebug) {
+          app.updateLastBubble('Error: ' + event.message, 'error');
+        }
         app.agentBuffer = '';
         app.isProcessing = false;
         if (app.chatSend) app.chatSend.disabled = false;
@@ -264,7 +352,14 @@ export function connectAgent() {
           break;
         }
         if (typeof app.markAgentInterrupted === 'function') {
-          try { app.markAgentInterrupted(event.asst_id); } catch(_) {}
+          try {
+            app.markAgentInterrupted(
+              event.asst_id,
+              event.created_at || event.emit_time,
+              _interactionSeq,
+              _ownerTurnId,
+            );
+          } catch(_) {}
         } else {
           app.updateLastBubble('(interrupted)', 'interrupted');
           app.isProcessing = false;
@@ -281,6 +376,10 @@ export function connectAgent() {
           if (event.replayed) _stashReplay(eventSessionId, event);
           break;
         }
+        // The recovery notice is now persisted as a role='system' interaction
+        // and rendered by the reconcile loop + session-load — no need for an
+        // ephemeral WS-only DOM element that vanishes on refresh.
+        app._stopPending = false; // any prior stop request is obsolete
         app.isProcessing = true;
         if (app.chatSend) app.chatSend.disabled = true;
         break;
@@ -296,9 +395,53 @@ export function connectAgent() {
         if (!app.chatMessages) break;
         const mid = event.id || event.interaction_id || '';
         const cont = event.content || '';
+        // Most user events are emitted before their durable row sequence is
+        // assigned. Keep a provisional timestamp so mixed live/saved nodes can
+        // still be placed sensibly until the active DB-tail poll stamps the seq.
+        const createdAt = event.created_at || event.emit_time || new Date().toISOString();
+        // GenUI-originated page sends (field/button prompts) carry a friendly
+        // label — render a green notice instead of a "You" bubble; the raw
+        // prompt only surfaces under the debug toggle.
+        const genuiLabel = (event.genui_label || '').trim();
+        if (typeof app._cacheAppendMessage === 'function') {
+          app._cacheAppendMessage(eventSessionId || app.currentSessionId, {
+            role: 'user', content: cont, id: mid || undefined,
+            created_at: createdAt,
+            ...(genuiLabel ? { genui: true, genui_label: genuiLabel } : {}),
+          });
+        }
         // Already shown (by interaction id)? Dedup.
-        if (mid && app.chatMessages.querySelector(
-              `.chat-bubble.user[data-msg-id="${CSS.escape(String(mid))}"]`)) break;
+        if (mid) {
+          const sel = genuiLabel
+            ? `.chat-bubble.info.system-genui[data-msg-id="${CSS.escape(String(mid))}"]`
+            : `.chat-bubble.user[data-msg-id="${CSS.escape(String(mid))}"]`;
+          if (app.chatMessages.querySelector(sel)) break;
+        }
+        if (genuiLabel) {
+          if (typeof app.addChatBubble === 'function') {
+            // Adopt the sender's own optimistic label notice (rendered locally
+            // before the id was known) by matching text on an untagged one.
+            if (mid) {
+              const cands = app.chatMessages.querySelectorAll('.chat-bubble.info.system-genui:not([data-msg-id])');
+              for (let i = cands.length - 1; i >= 0; i--) {
+                const b = cands[i];
+                const t = (b.querySelector('.bubble-body')?.textContent || '').trim();
+                if (t === genuiLabel) {
+                  b.setAttribute('data-msg-id', String(mid));
+                  if (typeof app._setBubbleCreatedAt === 'function') app._setBubbleCreatedAt(b, createdAt);
+                  break;
+                }
+              }
+              if (app.chatMessages.querySelector(
+                    `.chat-bubble.info.system-genui[data-msg-id="${CSS.escape(String(mid))}"]`)) break;
+            }
+            app.addChatBubble('info', genuiLabel, 'system-genui', undefined, undefined, mid || undefined, createdAt);
+            if (app.isDebug && (cont || '').trim()) {
+              app.addChatBubble('info', 'Raw prompt:\n' + cont, 'system-debug');
+            }
+          }
+          break;
+        }
         // Adopt the sender's own optimistic bubble (rendered locally before the
         // id was known) so we don't double it. Match by text on an untagged
         // user bubble; tag it with the id instead of adding a new one.
@@ -307,14 +450,18 @@ export function connectAgent() {
           for (let i = candidates.length - 1; i >= 0; i--) {
             const b = candidates[i];
             const t = (b.querySelector('.bubble-body')?.textContent || '').trim();
-            if (t === cont.trim()) { b.setAttribute('data-msg-id', String(mid)); break; }
+            if (t === cont.trim()) {
+              b.setAttribute('data-msg-id', String(mid));
+              if (typeof app._setBubbleCreatedAt === 'function') app._setBubbleCreatedAt(b, createdAt);
+              break;
+            }
           }
           if (app.chatMessages.querySelector(
                 `.chat-bubble.user[data-msg-id="${CSS.escape(String(mid))}"]`)) break;
         }
         if (typeof app.addChatBubble === 'function') {
           const cls = event.source === 'event_trigger' ? 'event-trigger' : undefined;
-          app.addChatBubble('user', cont, cls, undefined, undefined, mid || undefined);
+          app.addChatBubble('user', cont, cls, undefined, undefined, mid || undefined, createdAt);
         }
         break;
       }
@@ -327,12 +474,16 @@ export function connectAgent() {
         // to an in-flight run.
         if (eventSessionId && eventSessionId !== app.currentSessionId) {
           if (event.replayed) _stashReplay(eventSessionId, event);
-          console.debug('DEBUG-TAG:agentWs-stream-skipped', { eventSessionId, currentSessionId: app.currentSessionId, replayed: event.replayed });
           break;
         }
-        console.debug('DEBUG-TAG:agentWs-stream-render', { content: (event.content || '').slice(0, 40), asst_id: event.asst_id, turn_id: event.turn_id, hasAppender: typeof app.appendStreamToActiveBubble });
         if (typeof app.appendStreamToActiveBubble === 'function') {
-          try { app.appendStreamToActiveBubble(event.content || '', event.asst_id || event.turn_id); } catch(_) {}
+          try {
+            app.appendStreamToActiveBubble(
+              event.content || '',
+              event.asst_id || event.turn_id,
+              event.created_at || event.emit_time,
+            );
+          } catch(_) {}
         } else {
           console.warn('DEBUG-TAG:agentWs-stream-no-appender');
         }
@@ -346,7 +497,14 @@ export function connectAgent() {
           break;
         }
         if (typeof app.finalizeAgentStep === 'function') {
-          try { app.finalizeAgentStep(event.content || '', event.asst_id || event.turn_id); } catch(_) {}
+          try {
+            app.finalizeAgentStep(
+              event.content || '', event.asst_id || event.turn_id,
+              event.created_at || event.emit_time,
+              _ownerTurnId,
+              _interactionSeq,
+            );
+          } catch(_) {}
         }
         break;
 
@@ -359,9 +517,15 @@ export function connectAgent() {
           console.debug('DEBUG-TAG:agentWs-response-skipped', { eventSessionId, currentSessionId: app.currentSessionId, replayed: event.replayed });
           break;
         }
-        console.debug('DEBUG-TAG:agentWs-response-render', { content: (event.content || '').slice(0, 40), asst_id: event.asst_id, turn_id: event.turn_id, hasFinalizer: typeof app.finalizeAgentResponse });
         if (typeof app.finalizeAgentResponse === 'function') {
-          try { app.finalizeAgentResponse(event.content || '', event.asst_id || event.turn_id, !!event.replayed); } catch(_) {}
+          try {
+            app.finalizeAgentResponse(
+              event.content || '', event.asst_id || event.turn_id,
+              !!event.replayed, event.created_at || event.emit_time,
+              _ownerTurnId,
+              _interactionSeq,
+            );
+          } catch(_) {}
         } else if (typeof app.addChatBubble === 'function') {
           app.addChatBubble('agent', event.content || '');
         } else {
@@ -407,6 +571,32 @@ export function connectAgent() {
       case 'agent_deleted':
       case 'agent_restored':
       case 'agent_status':
+        // An agent started/stopped a run, or a session entered the gate queue.
+        if (event.status === 'queued' && event.session_id) {
+          // Session cap reached — this session waits in the FIFO queue.
+          // Mark the user's bubble in the CURRENT view only (a bubble can only
+          // exist for the session being viewed); refresh the dropdown always.
+          if (event.session_id === app.currentSessionId
+              && typeof app.markBubbleQueued === 'function') {
+            try { app.markBubbleQueued(event.turn_id, event.queue_position, event.session_id); } catch (_) { /* ignore */ }
+          }
+          if (typeof app.onSessionGateQueue === 'function') {
+            try { app.onSessionGateQueue(event); } catch (_) { /* ignore */ }
+          }
+          break;
+        }
+        if (event.status === 'running' && event.session_id) {
+          // Run started — clear any queued styling from the bubble in the
+          // current view (only relevant when this session IS the current one).
+          if (event.session_id === app.currentSessionId
+              && typeof app.clearBubbleQueued === 'function') {
+            try { app.clearBubbleQueued(event.turn_id, event.session_id); } catch (_) { /* ignore */ }
+          }
+          if (typeof app.onSessionGateRunning === 'function') {
+            try { app.onSessionGateRunning(event); } catch (_) { /* ignore */ }
+          }
+          // Fall through to onAgentLifecycleEvent for the agents-grid status dot.
+        }
         // An agent was created / trashed / permanently deleted / restored in
         // another tab or device, or one started/stopped a run. Let the Agents
         // page sync its grid (and per-card status dot) without a manual refresh.
@@ -470,8 +660,8 @@ export function connectAgent() {
       }
 
       case 'session_title': {
-        // Auto-generated session name (Session Namer ability,
-        // plugins/abilities/Core/session_titler/). status
+        // Auto-generated session name (Session Namer app function,
+        // plugins/app_functions/session_titler/). status
         // 'generating' lights the header spinner; 'done' swaps in the new name.
         // Not gated on the active session — the cache is updated for any session
         // so the sidebar reflects the new name on its next render too.
@@ -507,12 +697,30 @@ export function connectAgent() {
 
   app.agentWs.onclose = () => {
     setAgentStatus('red');
-    if (app.isProcessing) {
+    // Debug mode: show immediate "Connection lost." on the last bubble
+    if (app.isDebug && app.isProcessing) {
       if (app.updateLastBubble) {
         app.updateLastBubble('Connection lost.', 'error');
       }
       app.isProcessing = false;
       if (app.chatSend) app.chatSend.disabled = false;
+    }
+    // Start 5-min timer for a user-facing connection-lost message (all modes).
+    // The timer is cancelled on reconnect.
+    _cancelConnectionLostTimer();
+    if (app.isProcessing) {
+      _connectionLostTimer = setTimeout(() => {
+        if (!app.isProcessing) { _connectionLostTimer = null; return; }
+        _showConnectionLost();
+        _connectionLostTimer = null;
+      }, CONNECTION_LOST_TIMEOUT);
+    } else {
+      // Even when nothing is processing, start the timer so a mid-session
+      // disconnect still notifies after 5 minutes.
+      _connectionLostTimer = setTimeout(() => {
+        _showConnectionLost();
+        _connectionLostTimer = null;
+      }, CONNECTION_LOST_TIMEOUT);
     }
     // Drop the thinking glow — a live turn (if any) keeps running server-side
     // and re-lights via replay on reconnect.

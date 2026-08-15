@@ -50,6 +50,7 @@ and ``get_db()`` returns the plain local backend as before.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -89,8 +90,10 @@ def load_local_payloads_sync(ids) -> Dict[str, dict]:
         return {}
     try:
         from app.db import db_crypto
-        from app.db.local import DEFAULT_DB_PATH
-        conn = db_crypto.connect(DEFAULT_DB_PATH, "local")
+        from app.db.local import get_db_user_context
+        from app.db.user_store import _user_db_path
+        user_id = get_db_user_context()
+        conn = db_crypto.connect(_user_db_path(user_id), "_local_custom")
     except Exception:
         return {}
     out: Dict[str, dict] = {}
@@ -205,6 +208,56 @@ class HybridBackend:
         queried through the typed methods, which route to ``local``.)"""
         return self._remote.get_raw_client()
 
+    async def refresh_session_metadata(self, user_id: str) -> List[str]:
+        """Bring newer shared session metadata into this device's SQLite mirror.
+
+        This is intentionally narrower than a transcript resync: opening the
+        chat-panel session picker needs titles, pins, visibility and ordering to
+        converge promptly, but must not download interaction payloads.  A remote
+        row is applied only when its ``updated_at`` is newer than the local copy,
+        so an edit that is still waiting in this device's outbox is never
+        overwritten by an older authority snapshot.
+        """
+        return await asyncio.to_thread(self._refresh_session_metadata_sync, user_id)
+
+    def _refresh_session_metadata_sync(self, user_id: str) -> List[str]:
+        remote_rows = (self._remote.get_raw_client().table("sessions").select("*")
+                       .eq("user_id", user_id).execute().data or [])
+        if not remote_rows:
+            return []
+        local_rows = (self._local.get_raw_client().table("sessions").select("*")
+                      .eq("user_id", user_id).execute().data or [])
+        local_by_id = {str(row.get("id")): row for row in local_rows if row.get("id")}
+
+        def _stamp(value) -> float:
+            if not value:
+                return 0.0
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                # SQLite's CURRENT_TIMESTAMP is UTC but has no offset.
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.timestamp()
+            except (TypeError, ValueError):
+                return 0.0
+
+        changed: List[str] = []
+        for remote_row in remote_rows:
+            sid = str(remote_row.get("id") or "")
+            if not sid:
+                continue
+            local_row = local_by_id.get(sid)
+            remote_updated = _stamp(remote_row.get("updated_at"))
+            local_updated = _stamp((local_row or {}).get("updated_at"))
+            # Last-writer-wins: do not replace this device's newer unsynced edit.
+            if local_row is not None and remote_updated <= local_updated:
+                continue
+            clean = {key: value for key, value in remote_row.items() if value is not None}
+            self._local.get_raw_client().table("sessions").upsert(
+                clean, on_conflict="id").execute()
+            changed.append(sid)
+        return changed
+
     # ══════════════════════════════════════════════════════════════════════════
     # Stage 2 — local-first transcript, background push
     #
@@ -273,9 +326,31 @@ class HybridBackend:
             # NULL would violate the local NOT NULL constraint.
             srow = {k: v for k, v in srows[0].items() if v is not None}
             self._local.get_raw_client().table("sessions").upsert(srow, on_conflict="id").execute()
-            irows = rraw.table("interactions").select("*").eq("session_id", session_id).execute().data or []
+            # After the initial hydrate, fetch only rows newer than the local
+            # per-session sequence watermark. This avoids re-downloading a whole
+            # conversation on every periodic freshness check.
+            local_conn = self._local._get_conn()
+            try:
+                local_max = local_conn.execute(
+                    "SELECT MAX(session_seq) FROM interactions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                local_seq = local_max[0] if local_max and local_max[0] is not None else None
+            finally:
+                local_conn.close()
+            interaction_query = rraw.table("interactions").select("*").eq("session_id", session_id)
+            if local_seq is not None:
+                interaction_query = interaction_query.gt("session_seq", local_seq)
+            irows = interaction_query.order("session_seq", desc=False).execute().data or []
             if irows:
-                cols = list(irows[0].keys())
+                # The remote authority can outlive a local app upgrade (or carry
+                # a retired column from a previous schema).  Never let such an
+                # extra field make the whole local transcript mirror fail.  In
+                # particular, old Postgres installs had ``interactions.input``;
+                # SQLite has never used that column.
+                cols = [c for c in (*self._ICOLS, "created_at") if c in irows[0]]
+                if not cols:
+                    return
                 col_sql = ",".join(cols)
                 placeholders = ",".join("?" * len(cols))
                 values = [tuple(r.get(c) for c in cols) for r in irows]
@@ -313,7 +388,12 @@ class HybridBackend:
         await self._ensure_local_session(user_id, session_id)
 
     async def _local_write_full(self, row: Dict[str, Any]) -> None:
-        """Upsert one FULL interaction row into the local store (all columns)."""
+        """Durably write one interaction and its remote-push marker.
+
+        An interaction id becomes a parent key as soon as this method returns.
+        Never acknowledge it unless both the SQLite row and its durable outbox
+        marker committed together.
+        """
         cols = [c for c in self._ICOLS if c in row]
         col_sql = ",".join(cols)
         placeholders = ",".join("?" * len(cols))
@@ -327,26 +407,61 @@ class HybridBackend:
                     f"ON CONFLICT(id) DO UPDATE SET {set_sql}",
                     vals,
                 )
+                # The outbox is part of the write's durability contract. A crash
+                # between two independent commits otherwise leaves a local-only
+                # transcript row that can never reach the shared authority.
+                from app.db.sync.outbox import _TABLE, _now_iso
+                conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {_TABLE} ("
+                    "seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "table_name TEXT NOT NULL, row_id TEXT NOT NULL, "
+                    "op TEXT NOT NULL DEFAULT 'upsert', created_at TEXT NOT NULL)"
+                )
+                conn.execute(
+                    f"INSERT INTO {_TABLE} (table_name, row_id, op, created_at) VALUES (?, ?, ?, ?)",
+                    ("interactions", row["id"], "upsert", _now_iso()),
+                )
                 conn.commit()
             except Exception as e:
+                conn.rollback()
                 logger.warning("hybrid: local full-row write failed for %s: %s", row.get("id"), e)
+                raise
             finally:
                 conn.close()
 
-    async def _local_update(self, interaction_id: str, fields: Dict[str, Any]) -> None:
-        """Patch selected columns of a local interaction row (streaming finalize)."""
+    async def _local_update(self, interaction_id: str, fields: Dict[str, Any]) -> bool:
+        """Patch an interaction and enqueue its update atomically.
+
+        A missing row is an integrity failure, not a successful stream checkpoint.
+        """
         fields = {k: v for k, v in fields.items() if v is not None}
         if not fields:
-            return
+            return False
         sets = ",".join(f"{k}=?" for k in fields)
         vals = list(fields.values()) + [interaction_id]
         async with self._local._write_lock:
             conn = self._local._get_conn()
             try:
-                conn.execute(f"UPDATE interactions SET {sets} WHERE id=?", vals)
+                cur = conn.execute(f"UPDATE interactions SET {sets} WHERE id=?", vals)
+                if cur.rowcount != 1:
+                    raise RuntimeError(f"interaction {interaction_id} was not found during local update")
+                from app.db.sync.outbox import _TABLE, _now_iso
+                conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {_TABLE} ("
+                    "seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "table_name TEXT NOT NULL, row_id TEXT NOT NULL, "
+                    "op TEXT NOT NULL DEFAULT 'upsert', created_at TEXT NOT NULL)"
+                )
+                conn.execute(
+                    f"INSERT INTO {_TABLE} (table_name, row_id, op, created_at) VALUES (?, ?, ?, ?)",
+                    ("interactions", interaction_id, "upsert", _now_iso()),
+                )
                 conn.commit()
+                return True
             except Exception as e:
+                conn.rollback()
                 logger.warning("hybrid: local update failed for %s: %s", interaction_id, e)
+                raise
             finally:
                 conn.close()
 
@@ -371,7 +486,29 @@ class HybridBackend:
         if turn_seq is not None:
             fields["turn_seq"] = turn_seq
         await self._local_update(interaction_id, fields)
-        await self._enqueue("interactions", interaction_id)
+
+    async def publish_interaction_now(self, interaction_id: str) -> None:
+        """Push one local interaction to the shared authority immediately.
+
+        Remote-control dispatch has a strict ordering requirement: the target's
+        shared ``device_jobs`` row must not become claimable before its user turn
+        is visible on the shared transcript.  The normal outbox is deliberately
+        asynchronous, so it cannot provide that guarantee.  This publishes the
+        exact current row through the same skeletonizer the sync engine uses;
+        the outbox marker remains in place as harmless retry protection.
+        """
+        from app.db.sync.engine import SYNCED_SPECS, SyncEngine
+
+        rows = await asyncio.to_thread(
+            lambda: self._local.get_raw_client().table("interactions").select("*")
+            .eq("id", interaction_id).execute().data or []
+        )
+        if not rows:
+            raise RuntimeError(f"local interaction {interaction_id} is missing")
+        engine = SyncEngine(self)
+        await asyncio.to_thread(
+            engine._push_row, "interactions", SYNCED_SPECS["interactions"], rows[0]
+        )
 
     async def next_session_seq(self, session_id: str, count: int = 1) -> int:
         """Allocate the next ordering number from the LOCAL store.
@@ -383,6 +520,12 @@ class HybridBackend:
         default) would under-count whenever local rows haven't pushed yet and hand
         back a colliding number."""
         return await self._local.next_session_seq(session_id, count)
+
+    async def persist_session_manifest_seq(self, session_id: str, high_water: int) -> None:
+        """Persist the in-memory RunBuffer counter into the LOCAL manifest
+        (the remote manifest is a downstream mirror and shouldn't be driven
+        directly from the in-memory state)."""
+        return await self._local.persist_session_manifest_seq(session_id, high_water)
 
     def _outbox(self):
         """Lazily-built local outbox — the durable queue the background SyncEngine
@@ -515,15 +658,27 @@ class HybridBackend:
         # network on the write path.
         rid = str(uuid.uuid4())
         await self._ensure_local_session(user_id, session_id)
-        await self._local_write_full({
+        row = {
             "id": rid, "session_id": session_id, "parent_id": parent_id, "role": role,
             "content": content, "tool_name": tool_name, "tool_call_id": tool_call_id,
             "channel": channel, "metadata": metadata,
             "output": output_data, "source": source or "user", "from_id": sender_id,
             "to_id": receiver_id, "session_seq": session_seq, "turn_id": turn_id,
             "turn_seq": turn_seq, "status": status,
-        })
-        await self._enqueue("interactions", rid)
+        }
+        try:
+            await self._local_write_full(row)
+        except Exception:
+            logger.warning(
+                "hybrid: insert_interaction failed for %s (session %s) — "
+                "re-pulling session from remote and retrying once",
+                rid, session_id,
+            )
+            seen = getattr(self, "_mirror_at", None)
+            if seen is not None:
+                seen.pop(session_id, None)
+            await self._ensure_local_session(user_id, session_id, refresh=True)
+            await self._local_write_full(row)
         return rid
 
     async def insert_interactions_batch(self, rows: List[Dict[str, Any]]) -> List[str]:
@@ -550,10 +705,6 @@ class HybridBackend:
                 "turn_id": r.get("turn_id"), "turn_seq": r.get("turn_seq"),
                 "status": r.get("status", "complete"),
             })
-        try:
-            await self._outbox().enqueue_many([("interactions", i, "upsert") for i in ids])
-        except Exception as e:
-            logger.warning("hybrid: batch outbox enqueue failed: %s", e)
         return ids
 
     async def update_interaction(
@@ -567,11 +718,9 @@ class HybridBackend:
     ) -> bool:
         # Local-first: patch the full row in SQLite (keeps the fat output), then
         # enqueue so the background push refreshes the remote skeleton.
-        await self._local_update(interaction_id, {
+        return await self._local_update(interaction_id, {
             "content": content, "status": status, "output": output_data, "metadata": metadata,
         })
-        await self._enqueue("interactions", interaction_id)
-        return True
 
     async def fetch_interactions(self, user_id: str, session_id: str):
         # Warm the local copy on first touch, then read the transcript LOCALLY.
@@ -584,6 +733,24 @@ class HybridBackend:
         except PermissionError:
             logger.warning("hybrid: local session %s absent — reading from remote", session_id)
             return await self._remote.fetch_interactions(user_id, session_id)
+
+    async def count_interactions(self, user_id: str, session_id: str) -> int:
+        await self._ensure_local_session(user_id, session_id, refresh=True)
+        try:
+            return await self._local.count_interactions(user_id, session_id)
+        except PermissionError:
+            return await self._remote.count_interactions(user_id, session_id)
+
+    async def fetch_interactions_from_offset(
+        self, user_id: str, session_id: str, offset: int
+    ):
+        await self._ensure_local_session(user_id, session_id, refresh=True)
+        try:
+            return await self._local.fetch_interactions_from_offset(
+                user_id, session_id, offset)
+        except PermissionError:
+            return await self._remote.fetch_interactions_from_offset(
+                user_id, session_id, offset)
 
     async def fetch_first_user_messages(self, user_id: str, session_id: str, limit: int = 3):
         await self._ensure_local_session(user_id, session_id, refresh=True)
@@ -647,11 +814,33 @@ class HybridBackend:
                 return False
             arow = {k: v for k, v in arows[0].items() if v is not None}
             prows = rraw.table("agent_prompts").select("*").eq("agent_id", agent_id).execute().data or []
+            ads_rows = (rraw.table("agent_data_sources").select("*")
+                        .eq("agent_id", agent_id).execute().data or [])
+            source_ids = [r.get("data_source_id") for r in ads_rows if r.get("data_source_id")]
+            source_rows = []
+            if source_ids:
+                source_rows = (rraw.table("data_sources").select("*")
+                               .in_("id", source_ids).execute().data or [])
             acols = list(arow.keys())
             a_set = ",".join(f"{c}=excluded.{c}" for c in acols if c != "id")
             async with self._local._write_lock:
                 conn = self._local._get_conn()
                 try:
+                    def _upsert_rows(table: str, rows: List[dict]) -> None:
+                        if not rows:
+                            return
+                        valid = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                        for raw in rows:
+                            row = {k: v for k, v in raw.items() if k in valid and v is not None}
+                            if not row or "id" not in row:
+                                continue
+                            cols = list(row)
+                            updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "id")
+                            conflict = f" ON CONFLICT(id) DO UPDATE SET {updates}" if updates else " ON CONFLICT(id) DO NOTHING"
+                            conn.execute(
+                                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join('?' * len(cols))}){conflict}",
+                                tuple(row[c] for c in cols),
+                            )
                     conn.execute(
                         f"INSERT INTO agents ({','.join(acols)}) "
                         f"VALUES ({','.join('?' * len(acols))}) "
@@ -667,6 +856,13 @@ class HybridBackend:
                             f"VALUES ({','.join('?' * len(pcols))})",
                             tuple(prow.get(c) for c in pcols),
                         )
+                    # These rows drive the attached-data-source tool bundle at
+                    # chat start. Keep their compact configuration local; the
+                    # actual remote source remains authoritative if a cold or
+                    # stale mirror cannot be used.
+                    conn.execute("DELETE FROM agent_data_sources WHERE agent_id = ?", (agent_id,))
+                    _upsert_rows("data_sources", source_rows)
+                    _upsert_rows("agent_data_sources", ads_rows)
                     conn.commit()
                 finally:
                     conn.close()
@@ -736,6 +932,16 @@ class HybridBackend:
             except Exception as e:
                 logger.debug("hybrid: local assemble_prompt fell back: %s", e)
         return await self._remote.assemble_prompt(agent_id, user_id=user_id)
+
+    async def agent_data_source_list(self, agent_id: str, enabled_only: bool = False):
+        """Serve attached source configuration from the local chat-start bundle
+        after the normal remote freshness stamp validates it."""
+        if await self._ensure_local_agent(agent_id):
+            try:
+                return await self._local.agent_data_source_list(agent_id, enabled_only=enabled_only)
+            except Exception as e:
+                logger.debug("hybrid: local agent data sources fell back: %s", e)
+        return await self._remote.agent_data_source_list(agent_id, enabled_only=enabled_only)
 
     async def list_agents_for_user(self, user_id, include_admin=False, view="active"):
         """Serve the agents ROSTER (dropdown + Agents page) from the local mirror.

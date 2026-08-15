@@ -8,13 +8,25 @@ Endpoints:
   GET    /api/v1/genui/{user_id}/{slug}/html      — serve a genui's HTML
   POST   /api/v1/genui/{user_id}/{slug}/logs      — record a genui's own console output
   GET    /api/v1/genui/{user_id}/{slug}/logs      — read back a genui's console output
+  GET    /api/v1/genui/{slug}/widget              — read a genui's widget config
+  PATCH  /api/v1/genui/{slug}/widget              — write a genui's widget config
 
 The HTML is fetched as text by the Gen UI tab (ui/main-panel/genui/js/genui.js)
 and grafted into the app inside a shadow root (first-class rendering) — it is no
 longer loaded into a sandboxed iframe.
+
+Split-file convention (see _inline_genui_assets): a genui folder may keep its
+source in small files — index.html (markup) + styles.css (styling) + app.js
+(logic) + data.json (content). For larger scripts the single app.js may instead
+be split into ordered parts app.<nn>-<name>.js (e.g. app.01-icons.js, app.02-data.js)
+that the serve route concatenates inside one IIFE. The serve route below inlines
+styles.css into <head> and the script(s) before </body>, so authors edit small
+files while the browser still receives one document. Genui without those files
+serve exactly as stored.
 """
 import ipaddress
 import json
+import os
 import socket
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
@@ -30,10 +42,14 @@ from app.visualizer.genui import (
     rename_genui,
     get_genui_html,
     get_genui_data,
+    save_genui_data,
+    get_genui_widget,
+    save_genui_widget,
     append_genui_logs,
     read_genui_logs,
 )
 from app.auth.identity import caller_may_access_page, assert_caller_is
+from app.genui_store.common import genui_dir
 
 router = APIRouter(prefix="/api/v1/genui", tags=["genui"])
 
@@ -117,16 +133,145 @@ def _inject_genui_data(html: str, data: Optional[dict]) -> str:
     return block + html
 
 
+def _inject_genui_widget(html: str, widget: Optional[dict]) -> str:
+    """Bake a genui's widget config into the served page as
+    ``window.__GENUI_WIDGET``.
+
+    Mirrors _inject_genui_data for the page's launcher/widget config (the
+    per-page widget.json: which agent the page's chat launcher opens, icon,
+    corner buttons, widget options). The Gen UI tab's loader reads it after
+    mount and mounts the page's chat launcher from it — no second fetch. A page
+    with no widget config gets ``null`` (the tab mounts no page launcher)."""
+    if not html:
+        return html
+    payload = json.dumps(widget if isinstance(widget, dict) else None).replace("<", "\\u003c")
+    block = '<script id="webagent-genui-widget">window.__GENUI_WIDGET=' + payload + ';</script>'
+    lower = html.lower()
+    idx = lower.find("<head>")
+    if idx != -1:
+        insert_at = idx + len("<head>")
+        return html[:insert_at] + block + html[insert_at:]
+    return block + html
+
+
+def _inline_genui_assets(user_id: str, slug: str, html: str) -> str:
+    """Inline a genui's sibling ``styles.css`` / ``app.js`` into the served page.
+
+    Split-file convention (filesystem store): a genui folder may keep its source
+    in small files — ``index.html`` (markup only), ``styles.css`` (all styling),
+    ``app.js`` (all logic) — beside the existing ``data.json`` / ``page.json``.
+    This injects ``styles.css`` into <head> and ``app.js`` before </body> so the
+    browser still receives ONE document (first-class shadow-root rendering has no
+    per-file fetch), while authors keep tidy, small files. Optional: a genui
+    without them serves index.html exactly as stored (prior behaviour preserved)."""
+    if not html:
+        return html
+    folder = genui_dir(user_id, slug)
+    out = html
+    css_path = os.path.join(folder, "styles.css")
+    if os.path.isfile(css_path):
+        with open(css_path, "r", encoding="utf-8") as f:
+            css = f.read()
+        style = '\n<style id="webagent-genui-styles">\n' + css + "\n</style>"
+        # rfind: the REAL closing head tag is the last occurrence — an HTML
+        # comment above it may legitimately mention the tag name in prose.
+        idx = out.lower().rfind("</head>")
+        if idx != -1:
+            out = out[:idx] + style + "\n" + out[idx:]
+        else:
+            out += style
+    # JavaScript: a single `app.js` (inlined verbatim — it may be a standalone
+    # script, e.g. its own IIFE) OR ordered parts `app.<nn>-<name>.js`
+    # (concatenated in filename order inside ONE IIFE so every part shares a
+    # single scope without leaking globals onto the host page — genui scripts
+    # run in the app's global scope). `app.js` takes precedence when both exist,
+    # so dropping a monolith back into place is the escape hatch.
+    js_path = os.path.join(folder, "app.js")
+    js_parts = []
+    if os.path.isfile(js_path):
+        js_parts = [js_path]
+    else:
+        try:
+            js_parts = sorted(
+                os.path.join(folder, name)
+                for name in os.listdir(folder)
+                if name.startswith("app.") and name.endswith(".js")
+            )
+        except OSError:
+            js_parts = []
+    if js_parts:
+        if len(js_parts) == 1 and os.path.basename(js_parts[0]) == "app.js":
+            with open(js_parts[0], "r", encoding="utf-8") as f:
+                js = f.read()
+            script = '\n<script id="webagent-genui-app">\n' + js + "\n</script>"
+        else:
+            bodies = []
+            for p in js_parts:
+                with open(p, "r", encoding="utf-8") as f:
+                    bodies.append(f.read())
+            script = ('\n<script id="webagent-genui-app">\n(function(){\n'
+                      "'use strict';\n" + "\n".join(bodies) + "\n})();\n</script>")
+        idx = out.lower().rfind("</body>")
+        if idx != -1:
+            out = out[:idx] + script + "\n" + out[idx:]
+        else:
+            out += script
+    return out
+
+
 class CreateGenuiRequest(BaseModel):
     user_id: str
     slug: str
     title: str
     agent_context: Optional[str] = ""
     initial_html: Optional[str] = ""
+    # ── REQUIRED session contract (see _build_session_config for rules) ──
+    # Every genui must declare how its actions/chat target agent sessions:
+    # the deployed session's title + the new-session behaviour. This is
+    # enforced at create time so the page never dispatches into an unnamed
+    # auto-titled session.
+    session_target_name: str
+    session_mode: str  # "new_reuse" | "new_each" | "existing"
+    session_id: Optional[str] = None  # required iff session_mode == "existing"
 
 
 class RenameGenuiRequest(BaseModel):
     title: str
+    # Optional session-contract update (PATCH may change title, config, or both).
+    session_target_name: Optional[str] = None
+    session_mode: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+_SESSION_MODES = ("new_reuse", "new_each", "existing")
+
+
+def _build_session_config(target_name: Optional[str], mode: Optional[str],
+                          session_id: Optional[str]) -> Optional[dict]:
+    """Validate + assemble the genui session contract.
+
+    Rules (mirrored by the create_genui agent tool):
+      - target_name is REQUIRED — the deployed session's title. Missing or
+        blank raises ValueError (this is the anti-confusing-names gate).
+      - mode is REQUIRED and must be one of new_reuse / new_each / existing.
+      - session_id is REQUIRED iff mode == "existing".
+    Returns the config dict, or None when nothing was supplied (PATCH with no
+    session fields).
+    """
+    if target_name is None and mode is None and session_id is None:
+        return None
+    name = (target_name or "").strip()
+    if not name:
+        raise ValueError("session_target_name is required — the deployed session must have a title.")
+    if not mode or mode not in _SESSION_MODES:
+        raise ValueError("session_mode is required and must be one of: new_reuse, new_each, existing.")
+    cfg: dict = {"target_name": name, "mode": mode}
+    if mode == "existing":
+        sid = (session_id or "").strip()
+        if not sid:
+            raise ValueError("session_id is required when session_mode is 'existing'.")
+        cfg["session_id"] = sid
+    return cfg
 
 
 @router.get("")
@@ -141,6 +286,14 @@ async def api_list_genui(request: Request, user_id: str = Query(..., description
 async def api_create_genui(request: Request, body: CreateGenuiRequest):
     """Create a new genui for the user."""
     await _require_genui_access(request, body.user_id)
+    # REQUIRED session contract — a genui cannot be created without declaring
+    # its session target name + new-session behaviour (see _build_session_config).
+    try:
+        session_config = _build_session_config(
+            body.session_target_name, body.session_mode, body.session_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     try:
         entry = await create_genui(
             user_id=body.user_id,
@@ -148,6 +301,7 @@ async def api_create_genui(request: Request, body: CreateGenuiRequest):
             title=body.title,
             agent_context=body.agent_context or "",
             initial_html=body.initial_html or "",
+            session_config=session_config,
         )
         return {"status": "ok", "genui": entry}
     except ValueError as e:
@@ -173,15 +327,100 @@ async def api_rename_genui(
     body: RenameGenuiRequest,
     user_id: str = Query(..., description="User ID"),
 ):
-    """Rename a page's display title. The slug (URL) is preserved."""
+    """Rename a page's display title and/or update its session contract.
+    The slug (URL) is preserved."""
     await _require_genui_access(request, user_id)
     new_title = (body.title or "").strip()
     if not new_title:
         raise HTTPException(status_code=400, detail="Title cannot be empty.")
-    ok = await rename_genui(user_id=user_id, slug=slug, new_title=new_title)
+    try:
+        session_config = _build_session_config(
+            body.session_target_name, body.session_mode, body.session_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    ok = await rename_genui(user_id=user_id, slug=slug, new_title=new_title,
+                            session_config=session_config)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Gen UI '{slug}' not found.")
-    return {"status": "ok", "title": new_title}
+    return {"status": "ok", "title": new_title, "session_config": session_config}
+
+
+class SaveGenuiWidgetRequest(BaseModel):
+    widget: dict
+
+
+@router.get("/{slug}/widget")
+async def api_get_genui_widget(
+    request: Request,
+    slug: str,
+    user_id: str = Query(..., description="User ID"),
+):
+    """Read a genui's widget config (the page's launcher/widget.json options:
+    which agent the page's chat launcher opens, icon, corner buttons, widget
+    options). Returns ``null`` when the page has no widget config. Gated like
+    every genui endpoint (visibility + ownership)."""
+    await _require_genui_access(request, user_id)
+    if slug == "home":
+        await list_genui(user_id)
+    return {"status": "ok", "slug": slug, "widget": await get_genui_widget(user_id, slug)}
+
+
+@router.patch("/{slug}/widget")
+async def api_save_genui_widget(
+    request: Request,
+    slug: str,
+    body: SaveGenuiWidgetRequest,
+    user_id: str = Query(..., description="User ID"),
+):
+    """Write a genui's widget config (the page's launcher/widget.json options).
+    The Gen UI tab reads it on next load (baked into the served HTML as
+    window.__GENUI_WIDGET) and mounts the page's chat launcher from it — so the
+    design agent edits the page's launcher with no index.html rewrite. To
+    REMOVE a page's launcher, PATCH with an empty object ``{}``."""
+    await _require_genui_access(request, user_id)
+    widget = body.widget if isinstance(body.widget, dict) else {}
+    await save_genui_widget(user_id=user_id, slug=slug, widget=widget)
+    return {"status": "ok", "slug": slug, "widget": widget}
+
+
+class SaveGenuiDataRequest(BaseModel):
+    """A genui page POSTing its own data bag for persistence."""
+    data: dict
+
+
+@router.post("/{slug}/data")
+async def api_save_genui_data(
+    request: Request,
+    slug: str,
+    body: SaveGenuiDataRequest,
+    user_id: str = Query(..., description="User ID"),
+):
+    """Persist a genui page's in-memory state to its data.json.
+
+    The page calls this to keep QA status, plan state, and other interactive
+    state durable across refreshes. The agent also writes through the visualizer
+    tool set_genui_data — both paths converge on the same backing file."""
+    await _require_genui_access(request, user_id)
+    data = body.data if isinstance(body.data, dict) else {}
+    await save_genui_data(user_id=user_id, slug=slug, data=data)
+    return {"status": "ok", "slug": slug}
+
+
+@router.get("/{slug}/data")
+async def api_get_genui_data(
+    request: Request,
+    slug: str,
+    user_id: str = Query(..., description="User ID"),
+):
+    """Read a genui page's data bag so it can poll for live updates.
+
+    The page calls this to see fresh QA status, plan state, and other
+    interactive state written by an agent or by another browser tab.
+    Returns {} when the genui has no data file yet."""
+    await _require_genui_access(request, user_id)
+    data = await get_genui_data(user_id=user_id, slug=slug)
+    return {"status": "ok", "slug": slug, "data": data or {}}
 
 
 @router.get("/{user_id}/{slug}/html", response_class=HTMLResponse)
@@ -199,8 +438,11 @@ async def api_get_genui_html(request: Request, user_id: str, slug: str):
     html = await get_genui_html(user_id, slug)
     if html is None:
         raise HTTPException(status_code=404, detail=f"Gen UI '{slug}' not found.")
+    html = _inline_genui_assets(user_id, slug, html)
     data = await get_genui_data(user_id, slug)
-    return HTMLResponse(content=_inject_genui_data(_inject_scrollbar_style(html), data))
+    widget = await get_genui_widget(user_id, slug)
+    return HTMLResponse(content=_inject_genui_widget(
+        _inject_genui_data(_inject_scrollbar_style(html), data), widget))
 
 
 @router.post("/{user_id}/{slug}/logs")

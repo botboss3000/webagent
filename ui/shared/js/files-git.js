@@ -20,6 +20,7 @@
 import { apiPath } from './config.js';
 import { authHeaders } from './left-login.js';
 import { _esc } from './dom-utils.js';
+import { copyText } from './clipboard.js';
 
 // ── DOM building blocks ────────────────────────────────────────────
 
@@ -159,6 +160,7 @@ async function loadRepos() {
 // has landed. Keyed by element id so independent lines don't clobber each other.
 const _stickyResults = new Map();   // id → { msg, tone, opts }
 let _workingBtnId = null;           // selector of the button to keep spinning, or null
+let _commitAbortController = null;  // owns the currently streamed commit request
 
 function setStickyResult(rootEl, id, msg, tone, opts = {}) {
   _stickyResults.set(id, { msg, tone, opts });
@@ -240,10 +242,9 @@ function renderGitSkeleton(rootEl) {
   if (!body) return;
   body.innerHTML =
     renderRepoSelector() +
+    renderSyncSection({ file_count: 1, ahead: 0, has_remote: true }) +            // Pull / Push / Merge / Release / Refresh clickable now
+    renderActionResults() +
     renderChangesSkeleton() +
-    renderCommitSection({ file_count: 1, ahead: 0 }) +   // buttons live + enabled from frame 1
-    renderSyncSection({ has_remote: true }) +            // Pull / Push / Merge / Refresh clickable now
-    renderProductionSection({}) +                        // shows its own Loading card (or hides when not builtin)
     renderGraphSkeleton();
   wireEvents(rootEl, null, null);
   if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
@@ -262,7 +263,7 @@ function renderGitPanel(rootEl) {
   // when the selected one errors (bad folder, missing key, etc.).
   if (_state.err && !_state.status) {
     body.innerHTML = renderRepoSelector() +
-      `<div class="fg-error">${_esc(_state.err)}</div>
+      `<div class="fg-error fg-click-copy">${_esc(_state.err)}</div>
       <button class="fg-btn" data-act="retry">Retry</button>`;
     const r = body.querySelector('[data-act="retry"]');
     if (r) r.addEventListener('click', () => refreshGit(rootEl));
@@ -279,10 +280,9 @@ function renderGitPanel(rootEl) {
     return;
   }
   body.innerHTML = renderRepoSelector() +
-                   renderChangesSection(s) +
-                   renderCommitSection(s) +
                    renderSyncSection(s) +
-                   renderProductionSection(s) +
+                   renderActionResults() +
+                   renderChangesSection(s) +
                    renderGraphSection(s, g, _state.graphErr);
   wireEvents(rootEl, s, g);
   if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
@@ -365,6 +365,8 @@ function renderRepoForm() {
   const label = _esc(r ? r.label : '');
   const folder = _esc(r ? r.folder : '');
   const remote = _esc(r ? r.remote_url : '');
+  const gitUserName = _esc(r ? (r.git_user_name || '') : '');
+  const gitUserEmail = _esc(r ? (r.git_user_email || '') : '');
   const tokPlaceholder = (editing && r && r.has_token)
     ? 'GitHub key saved — leave blank to keep it'
     : 'GitHub key for this repo…';
@@ -410,6 +412,9 @@ function renderRepoForm() {
           <li>Generate, copy it, and paste it above</li>
         </ol>
       </div>
+      <div class="fg-repo-form-section-title">Git author identity</div>
+      <input type="text" id="fg-repo-f-user-name" class="fg-input" placeholder="Git user name (e.g. Your Name)" value="${gitUserName}" autocomplete="off" data-lpignore="true">
+      <input type="text" id="fg-repo-f-user-email" class="fg-input" placeholder="Git user email (e.g. you@example.com)" value="${gitUserEmail}" autocomplete="off" data-lpignore="true">
       <div class="fg-repo-form-actions">
         <button type="button" class="fg-btn fg-btn-primary" id="fg-repo-save-btn">${saveLbl}</button>
         <button type="button" class="fg-btn" id="fg-repo-cancel-btn">Cancel</button>
@@ -530,6 +535,8 @@ async function submitRepoForm(rootEl) {
   const folder = val('#fg-repo-f-folder');
   const remote = val('#fg-repo-f-remote');
   const token = val('#fg-repo-f-token');
+  const gitUserName = val('#fg-repo-f-user-name');
+  const gitUserEmail = val('#fg-repo-f-user-email');
   const resultEl = body.querySelector('#fg-repo-form-result');
   const editing = _repoFormMode && _repoFormMode !== 'add';
   const saveBtn = body.querySelector('#fg-repo-save-btn');
@@ -537,16 +544,18 @@ async function submitRepoForm(rootEl) {
   try {
     let r;
     if (editing) {
-      const payload = { label, folder, remote_url: remote };
+      const payload = { label, folder, remote_url: remote, git_user_name: gitUserName, git_user_email: gitUserEmail };
       if (token) payload.token = token;     // blank keeps the existing key
       r = await ghFetch('/api/v1/github/repos/' + encodeURIComponent(_repoFormMode), { method: 'POST', body: JSON.stringify(payload) });
     } else {
-      r = await ghFetch('/api/v1/github/repos', { method: 'POST', body: JSON.stringify({ label, folder, remote_url: remote, token }) });
+      r = await ghFetch('/api/v1/github/repos', { method: 'POST', body: JSON.stringify({ label, folder, remote_url: remote, token, git_user_name: gitUserName, git_user_email: gitUserEmail }) });
     }
     _repos = (r && r.repos) || _repos;
     _repoFormMode = null;
     _repoBrowsePath = '';
-    renderGitPanel(rootEl);
+    // Re-fetch status + commit graph so the panel reflects the (possibly new)
+    // remote URL/token immediately, instead of showing stale cached data.
+    await refreshGit(rootEl, { remote: true });
   } catch (e) {
     if (saveBtn) { saveBtn.disabled = false; saveBtn.classList.remove('is-working'); }
     if (resultEl) {
@@ -695,11 +704,13 @@ function renderChangesSection(s) {
   ];
   const count = items.length;
   const list = count === 0
-    ? '<div class="fg-clean">✓ Working tree clean</div>'
+    ? '<div class="fg-clean">No local changes</div>'
     : items.map(f => `
         <div class="fg-file" title="${_esc(f.path)}">
           <span class="fg-file-flag ${flagClass(f.flag)}" title="${_esc(flagLabel(f.flag))}">${_esc(f.flag)}</span>
           <span class="fg-file-path">${_esc(f.path)}</span>
+          ${Number.isFinite(f.added) && f.added > 0 ? `<span class="fg-file-stat fg-file-stat-add">+${f.added}</span>` : ''}
+          ${Number.isFinite(f.removed) && f.removed > 0 ? `<span class="fg-file-stat fg-file-stat-del">-${f.removed}</span>` : ''}
         </div>
       `).join('');
   return `
@@ -710,43 +721,33 @@ function renderChangesSection(s) {
   `;
 }
 
-function renderCommitSection(s) {
+function renderCommitButtons(s) {
   const enabled = s.file_count > 0;
-  // The ⭐ runs an INSTANT one-shot commit+push directly on the server — it
-  // stages everything, auto-writes a commit note from the diff (unless the user
-  // typed one in the box), runs a secret-scan safety check, then commits and
-  // pushes — all in a single request (POST /api/v1/github/commit-and-push). No
-  // chat agent, no waiting through turns. Enabled whenever there's something to
-  // do — uncommitted changes OR unpushed local commits. See handoffToSourceController().
   const starEnabled = s.file_count > 0 || (s.ahead || 0) > 0;
   const starTitle = starEnabled
     ? 'Commit & push now — auto-writes the note, safety-checks, commits & pushes instantly'
     : 'Nothing to commit or push';
   return `
-    <div class="fg-section fg-commit">
-      <input type="text" id="fg-commit-msg" class="fg-input" placeholder="${enabled ? 'Commit message (optional — auto-written if blank)…' : 'No changes to commit'}" ${enabled ? '' : 'disabled'}>
-      <div class="fg-commit-actions">
-        <button class="fg-btn fg-btn-primary" id="fg-commit-btn" ${enabled ? '' : 'disabled'} title="Save changes locally — commits everything, no push (auto-writes the note if you left the box blank)">
-          <i data-lucide="check" class="lucide-icon"></i> Commit
-        </button>
-        <button class="fg-btn fg-star-btn" id="fg-sc-star-btn" ${starEnabled ? '' : 'disabled'} title="${starTitle}" aria-label="Commit and push now">
-          <i data-lucide="star" class="lucide-icon"></i> Commit &amp; Push
-        </button>
-      </div>
-      <div id="fg-commit-result" class="fg-result" hidden></div>
-    </div>
+    <button class="fg-btn" id="fg-commit-btn" ${enabled ? '' : 'disabled'} title="Save changes locally — commits everything, auto-writes the note, and does not push">
+      <i data-lucide="check" class="lucide-icon"></i> Commit
+    </button>
+    <button class="fg-btn" id="fg-sc-star-btn" ${starEnabled ? '' : 'disabled'} title="${starTitle}" aria-label="Commit and push now">
+      <i data-lucide="star" class="lucide-icon"></i> Commit &amp; Push
+    </button>
   `;
 }
 
 function renderSyncSection(s) {
-  if (!s.has_remote) return '';
   return `
     <div class="fg-section fg-sync">
-      <button class="fg-btn" id="fg-pull-btn" title="Pull current branch"><i data-lucide="arrow-up" class="lucide-icon"></i> Pull</button>
-      <button class="fg-btn" id="fg-push-btn" title="Push current branch"><i data-lucide="arrow-down" class="lucide-icon"></i> Push</button>
-      <button class="fg-btn" id="fg-merge-btn" title="Merge another branch into the current branch"><i data-lucide="git-merge" class="lucide-icon"></i> Merge…</button>
+      ${renderCommitButtons(s)}
+      ${s.has_remote ? `
+        <button class="fg-btn" id="fg-pull-btn" title="Pull current branch"><i data-lucide="arrow-up" class="lucide-icon"></i> Pull</button>
+        <button class="fg-btn" id="fg-push-btn" title="Push current branch"><i data-lucide="arrow-down" class="lucide-icon"></i> Push</button>
+        <button class="fg-btn" id="fg-merge-btn" title="Merge another branch into the current branch"><i data-lucide="git-merge" class="lucide-icon"></i> Merge…</button>
+        ${renderReleaseButton()}
+      ` : ''}
       <button class="fg-btn fg-refresh-btn" id="fg-refresh-btn" title="Refresh source control — re-check recent changes and reload the commit graph" aria-label="Refresh source control"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
-      <div id="fg-sync-result" class="fg-result" hidden></div>
       <div class="fg-merge-menu" id="fg-merge-menu" hidden role="listbox" aria-label="Pick branch to merge in">
         <div class="fg-branch-menu-loading">Loading branches…</div>
       </div>
@@ -754,77 +755,33 @@ function renderSyncSection(s) {
   `;
 }
 
-// ── Production (trimmed) section ────────────────────────────────────
-// Publishes a TRIMMED copy of this dev repo — everything except the folders and
-// files marked dev-only in the File Explorer — to a SEPARATE production repo with its
-// own GitHub remote. Git can't push "everything except folder X", so production
-// is its own repo (own history), regenerated on demand by the Release button.
-// State comes from GET /api/v1/github/production/status (cached in _prodState).
-function renderProductionSection(s) {
-  // Production (trimmed mirror) publishes THIS app's repo, so it's WebAgent-only —
-  // hide it when a different repo is selected.
-  if (!_isActiveBuiltin()) return '';
-  const p = _prodState;
-  if (!p) {
-    return `<div class="fg-section fg-prod">
-      <div class="fg-section-title">Production <span class="fg-graph-hint">(trimmed mirror)</span></div>
-      <div class="fg-loading">Loading…</div>
-    </div>`;
-  }
-  const remote = _esc(p.prod_remote_url || '');
-  const folder = _esc(p.prod_folder || '');
-  const exCount = p.exclude_count || 0;
-
-  let badge;
-  if (!p.configured) badge = '<span class="fg-prod-badge warn">set a repo URL</span>';
-  else if (p.has_changes) badge = '<span class="fg-prod-badge changes">changes to release</span>';
-  else badge = '<span class="fg-prod-badge clean">up to date</span>';
-
-  let lastTxt = 'never released';
-  if (p.last_release && p.last_release.at) {
-    const rel = shortRelativeTime(p.last_release.at, '');
-    lastTxt = 'released ' + (rel ? rel + ' ago' : '') +
-      (p.last_release.dev_commit ? ' · dev ' + _esc(p.last_release.dev_commit) : '');
-  }
-  const exTxt = exCount === 1 ? '1 path excluded' : `${exCount} paths excluded`;
-  const relEnabled = !!p.configured;
-  const relTitle = relEnabled
-    ? 'Build the trimmed copy, commit it, and push to the production repo'
-    : 'Set a production repo URL first (double-click the Repo line)';
-
+// One shared feedback area follows every commit/sync/release action. Keeping both
+// stable result ids here preserves the independent async flows while ensuring all
+// progress and errors appear in the same place above the branch picker.
+function renderActionResults() {
   return `
-    <div class="fg-section fg-prod">
-      <div class="fg-section-title fg-prod-title">
-        <i data-lucide="package" class="lucide-icon"></i>
-        <span>Production</span>
-        <span class="fg-graph-hint">(trimmed mirror)</span>
-        <span class="fg-prod-status">${badge}</span>
-      </div>
-      <div class="fg-prod-row">
-        <span class="fg-prod-label">Repo</span>
-        <div class="fg-remote-row fg-prod-display" id="fg-prod-remote-display" data-value="${remote}"
-             title="The production repo's GitHub URL — double-click to change it">${remote || '<span class="fg-prod-empty">double-click to set the production repo URL…</span>'}</div>
-        <input type="text" id="fg-prod-remote-input" class="fg-input fg-remote-input-inline" value="${remote}" hidden
-               placeholder="https://github.com/you/your-production-repo.git" spellcheck="false" autocomplete="off">
-      </div>
-      <div class="fg-prod-row">
-        <span class="fg-prod-label">Folder</span>
-        <div class="fg-remote-row fg-prod-display" id="fg-prod-folder-display" data-value="${folder}"
-             title="Local folder where the trimmed copy is generated — double-click to change it">${folder}</div>
-        <input type="text" id="fg-prod-folder-input" class="fg-input fg-remote-input-inline" value="${folder}" hidden
-               placeholder="C:/path/to/webagent-production" spellcheck="false" autocomplete="off">
-      </div>
-      <div class="fg-prod-meta">${exTxt} · ${lastTxt}</div>
-      <input type="text" id="fg-prod-msg" class="fg-input" placeholder="Release note (optional — auto-written if blank)…">
-      <div class="fg-prod-actions">
-        <button class="fg-btn fg-btn-primary" id="fg-prod-release-btn" ${relEnabled ? '' : 'disabled'} title="${relTitle}">
-          <i data-lucide="cloud-upload" class="lucide-icon"></i> Release to production
-        </button>
-        <button class="fg-btn fg-refresh-btn" id="fg-prod-refresh-btn" title="Refresh production status" aria-label="Refresh production status"><i data-lucide="refresh-cw" class="lucide-icon"></i></button>
-      </div>
-      <div id="fg-prod-result" class="fg-result" hidden></div>
+    <div class="fg-action-results" aria-live="polite">
+      <div id="fg-commit-result" class="fg-result" hidden></div>
+      <div id="fg-sync-result" class="fg-result" hidden></div>
     </div>
   `;
+}
+
+// The "Release to production" button now lives in the sync row next to Merge —
+// the old standalone Production section was removed, so the button alone drives a
+// release (trim → copy → commit → push to the production repo). It's a WebAgent-only
+// action (production mirrors THIS app's repo), so it hides when another repo is
+// active. Its enabled state tracks _prodState.configured once that has loaded; we
+// keep it enabled while _prodState is still null (open / first paint) so it's never
+// stuck disabled, and the release flow itself reports if no production repo is set.
+function renderReleaseButton() {
+  if (!_isActiveBuiltin()) return '';
+  const p = _prodState;
+  const relEnabled = !p || !!p.configured;
+  const relTitle = relEnabled
+    ? 'Build the trimmed copy, commit it, and push to the production repo'
+    : 'Set a production repo URL first (in the File Explorer’s production settings)';
+  return `<button class="fg-btn fg-release-btn" id="fg-prod-release-btn" ${relEnabled ? '' : 'disabled'} title="${relTitle}"><i data-lucide="cloud-upload" class="lucide-icon"></i> Release to production</button>`;
 }
 
 function renderGraphSection(s, g, graphErr) {
@@ -835,7 +792,7 @@ function renderGraphSection(s, g, graphErr) {
       ${branchBar}
       <div class="fg-section-title">Commit graph <span class="fg-graph-hint">(all branches)</span></div>
       <div class="fg-graph-list">
-        <div class="fg-error">${_esc(graphErr)} <button class="fg-btn" data-act="retry-graph">Retry</button></div>
+        <div class="fg-error fg-click-copy">${_esc(graphErr)} <button class="fg-btn" data-act="retry-graph">Retry</button></div>
       </div>
     </div>`;
   }
@@ -874,9 +831,11 @@ function renderGraphRow(c, idx, g) {
         ? '<span class="fg-graph-badge unpulled" title="On origin/' + _esc(g.current_branch || 'current branch') + ' but not yet pulled — click Pull to bring it in">↓</span>'
         : '');
   // Branch tip labels — show every branch whose tip is this commit.
+  // Skip bare "main" and "origin" since "origin/main" already covers both.
   const branchLabels = (g.branches && Object.keys(g.branches).length)
     ? Object.entries(g.branches)
         .filter(([_, h]) => h === c.hash)
+        .filter(([name]) => name !== 'main' && name !== 'origin')
         .map(([name]) => `<span class="fg-branch-tag" title="branch tip">${_esc(name)}</span>`)
         .join('')
     : '';
@@ -911,7 +870,10 @@ function renderGraphRow(c, idx, g) {
 
 function drawGraph(rootEl, g) {
   if (!g) return;
-  const list = rootEl.querySelector('#fg-graph-list');
+  // The Instances page ("Local changes" card) draws the same graph in a second
+  // location, where the list carries the same class but a different id — match
+  // either so both call sites share one painter.
+  const list = rootEl.querySelector('#fg-graph-list, .fg-graph-list');
   if (!list) return;
   const rows = list.querySelectorAll('.fg-graph-row');
   const commits = g.commits || [];
@@ -923,6 +885,12 @@ function drawGraph(rootEl, g) {
     paintRow(svg, c, g.max_lane || 1);
   });
 }
+
+// Reused by the Instances page's "Local changes" card (This device Overview) to
+// render the commit graph in a second location — see ui/admin-tools/instances/
+// instances.js (_gitGraphSectionHtml / _wireGitGraph). Keep these in sync when
+// the graph renderer changes.
+export { renderGraphRow, drawGraph, GRAPH_LANE_W, GRAPH_ROW_H };
 
 function laneX(i) { return i * GRAPH_LANE_W + GRAPH_LANE_W / 2; }
 
@@ -1047,11 +1015,7 @@ function wireEvents(rootEl, s, g) {
   wireRepoSelector(rootEl);
 
   const commitBtn = body.querySelector('#fg-commit-btn');
-  const commitMsg = body.querySelector('#fg-commit-msg');
   if (commitBtn) commitBtn.addEventListener('click', () => doCommit(rootEl));
-  if (commitMsg) commitMsg.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doCommit(rootEl); }
-  });
 
   const scStarBtn = body.querySelector('#fg-sc-star-btn');
   if (scStarBtn) scStarBtn.addEventListener('click', () => handoffToSourceController(rootEl));
@@ -1081,23 +1045,9 @@ function wireEvents(rootEl, s, g) {
     refreshGit(rootEl, { remote: false });
   });
 
-  // ── Production (trimmed) section ──
-  wireInlineEdit(body, 'fg-prod-remote-display', 'fg-prod-remote-input', async (val) => {
-    await ghFetch('/api/v1/github/production/config', { method: 'POST', body: JSON.stringify({ prod_remote_url: val }) });
-    await loadProdState(rootEl);
-  });
-  wireInlineEdit(body, 'fg-prod-folder-display', 'fg-prod-folder-input', async (val) => {
-    await ghFetch('/api/v1/github/production/config', { method: 'POST', body: JSON.stringify({ prod_folder: val }) });
-    await loadProdState(rootEl);
-  });
+  // ── Release to production (sync row, next to Merge) ──
   const prodReleaseBtn = body.querySelector('#fg-prod-release-btn');
   if (prodReleaseBtn) prodReleaseBtn.addEventListener('click', () => doReleaseToProduction(rootEl));
-  const prodRefreshBtn = body.querySelector('#fg-prod-refresh-btn');
-  if (prodRefreshBtn) prodRefreshBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    prodRefreshBtn.classList.add('is-spinning');
-    loadProdState(rootEl);
-  });
 
   // Retry graph button — refetches only the graph, preserving status
   const retryGraphBtn = body.querySelector('[data-act="retry-graph"]');
@@ -1152,6 +1102,29 @@ function wireEvents(rootEl, s, g) {
     row.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); }
     });
+  });
+
+  // Click a commit hash to copy it to clipboard.
+  body.querySelectorAll('.fg-hash').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const text = el.textContent.trim();
+      copyText(text).catch(() => {});
+    });
+  });
+
+  // Click an error/warning result line to copy its text to clipboard.
+  body.addEventListener('click', (e) => {
+    const copyEl = e.target.closest('.fg-click-copy');
+    if (!copyEl) return;
+    const text = copyEl.textContent.trim();
+    if (text) {
+      copyText(text).catch(() => {});
+      // Brief visual feedback — dim flash
+      copyEl.style.transition = 'opacity 0.15s';
+      copyEl.style.opacity = '0.5';
+      setTimeout(() => { try { copyEl.style.opacity = ''; } catch (_) {} }, 200);
+    }
   });
 
   // (The remote-URL and GitHub-token rows that used to live here were removed —
@@ -1278,6 +1251,9 @@ function showResult(el, msg, type, opts = {}) {
     : type === 'success' ? 'ok'
     : type === 'warning' ? 'warn'
     : 'info');
+  // Make error/warning messages clickable to copy to clipboard
+  const isCopyable = type === 'error' || type === 'warning' || type === 'success';
+  el.classList.toggle('fg-click-copy', isCopyable);
   // Rebuild the content so an optional leading spinner can sit before the text
   // (the live commit/push step line). textContent for the message keeps it
   // injection-safe.
@@ -1288,6 +1264,15 @@ function showResult(el, msg, type, opts = {}) {
     el.appendChild(s);
   }
   el.appendChild(document.createTextNode(msg));
+  if (opts.onCancel) {
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'fg-result-cancel';
+    cancel.textContent = 'Cancel';
+    cancel.setAttribute('aria-label', 'Cancel commit');
+    cancel.addEventListener('click', opts.onCancel, { once: true });
+    el.appendChild(cancel);
+  }
 }
 
 // ── Live commit/push progress (⭐ and Commit buttons) ──────────────
@@ -1311,11 +1296,12 @@ const _COMMIT_PHASE_LABELS = {
 // Degrades gracefully: a backend that ignores `stream` (e.g. not yet restarted)
 // answers with a single JSON object, which we deliver as one
 // {phase:'done', result:<obj>} so callers see one consistent shape either way.
-async function streamCommitPush(payload, onEvent) {
+async function streamCommitPush(payload, onEvent, signal) {
   const res = await fetch(apiPath('/api/v1/github/commit-and-push'), {
     method: 'POST',
     headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
     body: JSON.stringify(Object.assign({ stream: true }, payload)),
+    signal,
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -1355,25 +1341,25 @@ async function streamCommitPush(payload, onEvent) {
 // Render one streamed phase event into the status line. Goes through the sticky
 // helper so the step label survives any repaint that happens mid-stream (e.g. the
 // instant local graph redraw fired when the commit lands and the push begins).
-function onCommitPhase(rootEl, ev) {
+function onCommitPhase(rootEl, ev, progressOpts = { spin: true }) {
   const phase = ev.phase;
-  const set = (msg, tone, opts) => setStickyResult(rootEl, 'fg-commit-result', msg, tone, opts);
+  const set = (msg, tone) => setStickyResult(rootEl, 'fg-commit-result', msg, tone, progressOpts);
   if (phase === 'message') {
-    set(ev.source === 'user' ? 'Using your message...' : 'Writing a commit message...', 'info', { spin: true });
+    set(ev.source === 'user' ? 'Using your message...' : 'Writing a commit message...', 'info');
     return;
   }
   if (phase === 'message_ready') {
-    set(ev.title ? `Message: "${ev.title}"` : 'Message ready', 'info', { spin: true });
+    set(ev.title ? `Message: "${ev.title}"` : 'Message ready', 'info');
     return;
   }
   if (phase === 'message_fallback') {
     // Non-fatal: the AI auto-writer was unavailable, so a deterministic file-list
     // summary was used instead — surfaced so the user knows why the note is plain.
-    set('AI message writer unavailable - using a file-list summary', 'warning', { spin: true });
+    set('AI message writer unavailable - using a file-list summary', 'warning');
     return;
   }
   const label = _COMMIT_PHASE_LABELS[phase];
-  if (label) set(label, 'info', { spin: true });
+  if (label) set(label, 'info');
 }
 
 // Flash the success check on the (freshly repainted) action button, then clear.
@@ -1385,46 +1371,7 @@ function flashBtnDone(rootEl, btnId) {
   setTimeout(() => { try { btn.classList.remove('is-done'); } catch (_) {} }, 1600);
 }
 
-// ── Production mirror: inline edit + release ────────────────────────
-
-// Generic inline editor: double-click (or long-press) a display element to
-// reveal its sibling input; Enter or blur saves via onSave(value), Esc reverts.
-// The display carries the canonical value in data-value so we can compare/revert.
-function wireInlineEdit(body, displayId, inputId, onSave) {
-  if (!body) return;
-  const display = body.querySelector('#' + displayId);
-  const input = body.querySelector('#' + inputId);
-  if (!display || !input) return;
-  let saving = false;
-  const open = () => { input.hidden = false; display.hidden = true; input.focus(); input.select(); };
-  const revert = () => {
-    input.hidden = true; display.hidden = false;
-    input.value = (display.getAttribute('data-value') || '').trim();
-  };
-  const commit = async () => {
-    if (saving) return;
-    const val = (input.value || '').trim();
-    const cur = (display.getAttribute('data-value') || '').trim();
-    if (!val || val === cur) { revert(); return; }
-    saving = true;
-    try {
-      await onSave(val);   // loadProdState repaints, so this element is replaced
-    } catch (e) {
-      saving = false;
-      revert();
-      alert('Could not save: ' + (e.message || 'failed'));
-    }
-  };
-  display.addEventListener('dblclick', (e) => { e.preventDefault(); open(); });
-  let lp = null;
-  display.addEventListener('touchstart', () => { lp = setTimeout(open, 500); }, { passive: true });
-  display.addEventListener('touchend', () => { if (lp) clearTimeout(lp); });
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    else if (e.key === 'Escape') { e.preventDefault(); revert(); }
-  });
-  input.addEventListener('blur', () => { if (!saving) commit(); });
-}
+// ── Production mirror: release ──────────────────────────────────────
 
 // phase key → user-facing step label for the production streams.
 // Exported so the File Explorer's production menu (Copy / Push) can label the
@@ -1521,27 +1468,28 @@ async function doReleaseToProduction(rootEl) {
   const btnId = '#fg-prod-release-btn';
   const btn = body ? body.querySelector(btnId) : null;
   if (btn && btn.disabled) return;
-  const msgInput = body ? body.querySelector('#fg-prod-msg') : null;
-  const note = ((msgInput || {}).value || '').trim();
 
   if (!confirm('Release a trimmed copy to the production repo and push it to GitHub now?')) return;
 
   _workingBtnId = btnId;
   if (btn) { btn.disabled = true; btn.classList.add('is-working'); }
-  setStickyResult(rootEl, 'fg-prod-result', 'Starting release…', 'info', { spin: true });
+  // The release note field went away with the Production section, so the note is
+  // always auto-written from the diff. Progress + outcome show on the shared sync
+  // result line (the release button lives in the sync row now).
+  setStickyResult(rootEl, 'fg-sync-result', 'Starting release…', 'info', { spin: true });
 
   let result = null;
   try {
-    await streamRelease({ message: note }, (ev) => {
+    await streamRelease({ message: '' }, (ev) => {
       if (ev.phase === 'done') { result = ev.result || {}; return; }
       if (ev.phase === 'message_ready') {
         // Show the AI-written title (mirrors the ⭐ commit&push step display).
-        setStickyResult(rootEl, 'fg-prod-result',
+        setStickyResult(rootEl, 'fg-sync-result',
           ev.title ? `Message: "${ev.title}"` : 'Message ready', 'info', { spin: true });
         return;
       }
       const label = _RELEASE_PHASE_LABELS[ev.phase];
-      if (label) setStickyResult(rootEl, 'fg-prod-result', label, 'info', { spin: true });
+      if (label) setStickyResult(rootEl, 'fg-sync-result', label, 'info', { spin: true });
     });
   } catch (e) {
     result = { status: 'error', message: e.message || 'release failed' };
@@ -1552,8 +1500,8 @@ async function doReleaseToProduction(rootEl) {
   const tone = r.status === 'released' ? 'success'
     : r.status === 'nothing' ? 'info'
     : (r.status === 'blocked' || r.status === 'error') ? 'error' : 'info';
-  setStickyResult(rootEl, 'fg-prod-result', r.message || r.status || 'done', tone);
-  setTimeout(() => clearStickyResult('fg-prod-result'), 8000);
+  setStickyResult(rootEl, 'fg-sync-result', r.message || r.status || 'done', tone);
+  setTimeout(() => clearStickyResult('fg-sync-result'), 8000);
 
   const liveBtn = rootEl.querySelector(btnId);
   if (liveBtn) { liveBtn.classList.remove('is-working'); liveBtn.disabled = false; }
@@ -1570,20 +1518,25 @@ async function runCommitFlow(rootEl, { skipPush } = {}) {
   const btn = body ? body.querySelector(btnId) : null;
   const msgInput = body ? body.querySelector('#fg-commit-msg') : null;
   const typedNote = ((msgInput || {}).value || '').trim();
+  if (_commitAbortController) return;
+
+  const controller = new AbortController();
+  _commitAbortController = controller;
+  const progressOpts = { spin: true, onCancel: () => controller.abort() };
 
   // Pin the button's working state and the status line so neither blanks out when
   // the panel repaints mid-flow (the mid-push local graph redraw, the auto-poll, or
   // the final refresh). Both are released once everything has settled below.
   _workingBtnId = btnId;
   if (btn) { btn.disabled = true; btn.classList.add('is-working'); }
-  setStickyResult(rootEl, 'fg-commit-result', 'Starting...', 'info', { spin: true });
+  setStickyResult(rootEl, 'fg-commit-result', 'Starting...', 'info', progressOpts);
 
   let final = null, usedFallback = false, localShown = false;
   try {
     await streamCommitPush({ message: typedNote, skip_push: !!skipPush }, (ev) => {
       if (ev.phase === 'done') { final = ev.result || null; return; }
       if (ev.phase === 'message_fallback') usedFallback = true;
-      onCommitPhase(rootEl, ev);
+      onCommitPhase(rootEl, ev, progressOpts);
       // The commit has ALREADY landed by the time the server reports it's pushing —
       // so repaint the graph from a fast local read now: the new commit appears
       // immediately (unpushed / ahead of the remote) while the push runs, instead
@@ -1594,13 +1547,20 @@ async function runCommitFlow(rootEl, { skipPush } = {}) {
         localShown = true;
         refreshGit(rootEl, { localOnly: true }).catch(() => {});
       }
-    });
+    }, controller.signal);
   } catch (e) {
+    _commitAbortController = null;
     _workingBtnId = null;
-    setStickyResult(rootEl, 'fg-commit-result', `Error: ${e.message}`, 'error');
-    if (btn) { btn.disabled = false; btn.classList.remove('is-working'); }
+    const cancelled = controller.signal.aborted;
+    setStickyResult(rootEl, 'fg-commit-result',
+      cancelled ? 'Commit cancelled.' : `Error: ${e.message}`,
+      cancelled ? 'info' : 'error');
+    const liveBtn = rootEl.querySelector(btnId);
+    if (liveBtn) { liveBtn.disabled = false; liveBtn.classList.remove('is-working'); }
     return;
   }
+
+  _commitAbortController = null;
 
   if (!final) {
     _workingBtnId = null;
@@ -1912,8 +1872,8 @@ let _autoTimer = null;
 let _autoRootEl = null;
 let _autoTickCount = 0;
 let _autoSig = '';
-const AUTO_REFRESH_MS = 5000;
-const REMOTE_EVERY = 12;   // ~ every 60s do a live fetch for ahead/behind
+const AUTO_REFRESH_MS = 15000;
+const REMOTE_EVERY = 4;   // ~ every 60s do a live fetch for ahead/behind
 
 // A compact fingerprint of the bits we render — branch, sync counts, the
 // change list, the commit graph head + branch tips. Identical fingerprints
@@ -1959,7 +1919,7 @@ async function _autoTick() {
   if (!rootEl) return;
   if (document.hidden) return;                        // paused while tab hidden
   const sidebar = document.getElementById('files-sidebar');
-  if (sidebar && sidebar.dataset.view !== 'git') return;
+  if (!sidebar || sidebar.offsetParent === null || sidebar.dataset.view !== 'git') return;
   if (_state.loading) return;                         // a manual refresh is busy
 
   _autoTickCount++;
@@ -2120,7 +2080,7 @@ async function _gmRenderCommit(body, payload) {
     body.innerHTML = renderOverviewStrip() + `<div class="fg-main-commit">${renderCommitDetail(d)}</div>`;
     if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
   } catch (e) {
-    body.innerHTML = renderOverviewStrip() + `<div class="fg-error">${_esc(e.message || e)}</div>`;
+    body.innerHTML = renderOverviewStrip() + `<div class="fg-error fg-click-copy">${_esc(e.message || e)}</div>`;
     if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
   }
 }

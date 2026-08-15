@@ -4,6 +4,7 @@
   "icon": "activity",
   "color": "#e0af68",
   "description": "Lets the agent read the in-app flight recorder to diagnose the running app. On by default; switch off to remove it platform-wide.",
+  "skill_summary": "The recipe for diagnosing any chat session, run failure, or tool error in one or two calls. Load before investigating a misbehaving session, a stuck run, a resume question, or a vague error.",
   "note": null,
   "simple": true,
   "placeholder": false,

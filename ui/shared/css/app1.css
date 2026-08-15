@@ -73,15 +73,56 @@ body {
     background: color-mix(in oklab, currentColor 18%, transparent);
     transition: background 0.15s, height 0.15s;
     pointer-events: none;
+    z-index: 2; /* above the glow layer */
   }
-#chat-resize-handle:hover,
-#chat-resize-handle.resizing {
-    background: rgba(var(--brand-rgb), 0.13);
+  /* Suppress .spot::before defaults that would clash with our grip line.
+     NOTE: no `inset` reset here — the base #chat-resize-handle::before rule's
+     top/left (50%) must keep centering the grip line. `inset: auto` used to
+     zero those out, parking the grip at the handle's top-left corner. */
+  #chat-resize-handle.spot::before {
+    background: color-mix(in oklab, currentColor 18%, transparent);
+    opacity: 1;
+    z-index: 2;
   }
 #chat-resize-handle:hover::before,
 #chat-resize-handle.resizing::before {
     background: rgba(var(--brand-rgb), 0.67);
     height: 56px;
+  }
+  /* Cursor-follow glow using ::after — a ~100px-tall spot (50px each side of
+     the cursor) with softer/gradated fade at the top and bottom edges so it
+     doesn't abruptly clip when the pointer nears the bar's extremes. */
+  #chat-resize-handle::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    background: radial-gradient(
+      100px circle at 50% var(--my, -100%),
+      rgba(var(--brand-rgb), 0.22) 0%,
+      transparent 50%
+    );
+    opacity: 0;
+    transition: opacity 0.35s ease;
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 10%,
+      black 25%,
+      black 75%,
+      transparent 90%
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent 10%,
+      black 25%,
+      black 75%,
+      transparent 90%
+    );
+  }
+  #chat-resize-handle.spot-active::after,
+  #chat-resize-handle.resizing::after {
+    opacity: 1;
   }
   @media (max-width: 800px) {
 #chat-resize-handle { display: none; }
@@ -99,36 +140,312 @@ body {
     position: relative;
   }
 
-/* TWO GENUINE ROWS — #chat-header is a flex COLUMN of two full-width rows
-   (.chat-header-row), NOT a row of two stacked columns. Each row pins its own
-   controls right independently, so row 2 reserves only the delete button on the
-   right and the session dropdown flex-fills up to just-left-of it. */
+/* ZONE-BASED HEADER — #chat-header is a flex COLUMN of rows built dynamically
+   by chat-header-config.js from chat_ui.json. Each row has three zone containers
+   (left/center/right) that position controls per the config. */
 #chat-header {
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    padding: 10px 14px;
-    border-bottom: var(--border-width) solid var(--border);
+    padding: 4px 2px 0;
+    border-bottom: none;
+    background: transparent;
     font-size: 15px;
     font-weight: 600;
     color: var(--fg-1);
     flex-shrink: 0;
-    gap: 2px;
+    gap: 4px;
+    z-index: 1000;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    max-width: var(--chat-header-max-width, var(--chat-surface-max-width, 1000px));
+    margin-inline: auto;
   }
-/* One header row — a flex row of in-flow controls; the single right-pinned control
-   (row 1 = new (+); row 2 has none — its chevron is the dropdown's own right edge) is
-   pushed over with margin-left:auto. */
-.chat-header-row { display: flex; flex-direction: row; align-items: center; gap: 6px; width: 100%; min-width: 0; }
-/* Session line (row 2 left) — prev/next arrows + the session dropdown, side by side;
-   flex-fills the row so the dropdown's chevron reaches just-left-of the delete button. */
-.header-session-line { display: flex; flex-direction: row; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; }
-/* Agent-name row (row 1) — the agent's name + the refresh button, sized to CONTENT
-   (flex 0 1 auto) so refresh sits snug to the RIGHT of the name instead of being pushed
-   to the far edge; the name shrinks with an ellipsis (min-width:0) when space is tight.
-   Sits between the far-left more (⋯) and the right-pinned new (+) button. */
+/* One header row — has three zone children (left/center/right). */
+/* The chat partial initially supplies a flat pool of header controls. The
+   control builder reparents that pool into horizontal rows, but before then
+   #chat-header is a column and the raw icons would visibly stack. Keep only
+   those direct, unbuilt controls out of layout. Once a control is in its row
+   it is no longer a direct child, so it renders normally. This also protects
+   the boot-curtain safety net from exposing an intermediate layout. */
+#chat-header > [data-header-control] { display: none !important; }
+
+.chat-header-row { display: flex; flex-direction: row; align-items: stretch; gap: 2px; width: 100%; min-width: 0; }
+/* ── Carousel header row — scrollable strip with chevron buttons ── */
+.chat-header-carousel {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  position: relative;
+  gap: 0 !important;
+  min-width: 0;
+  --chc-fade: 24px;
+}
+.chat-header-carousel-strip {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior-x: none;
+}
+.chat-header-carousel-strip::-webkit-scrollbar { display: none; }
+/* Chevron buttons — absolutely positioned over the strip edges, transparent bg. */
+.chat-header-chev {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 24px;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 3px;
+  z-index: 2;
+  flex-shrink: 0;
+}
+.chat-header-chev.left  { left: 0;  justify-content: flex-start; }
+.chat-header-chev.right { right: 0; justify-content: flex-end; }
+.chat-header-chev.visible { display: flex; }
+.chat-header-chev:hover { color: var(--fg-1); }
+/* Edge-fade mask — same pattern as #main-tabs-wrap (mask, no colour). */
+.chat-header-carousel:has(.chat-header-chev.left.visible) .chat-header-carousel-strip {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--chc-fade));
+          mask-image: linear-gradient(to right, transparent 0, #000 var(--chc-fade));
+}
+.chat-header-carousel:has(.chat-header-chev.right.visible) .chat-header-carousel-strip {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--chc-fade));
+          mask-image: linear-gradient(to left, transparent 0, #000 var(--chc-fade));
+}
+.chat-header-carousel:has(.chat-header-chev.left.visible):has(.chat-header-chev.right.visible) .chat-header-carousel-strip {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--chc-fade), #000 calc(100% - var(--chc-fade)), transparent 100%);
+          mask-image: linear-gradient(to right, transparent 0, #000 var(--chc-fade), #000 calc(100% - var(--chc-fade)), transparent 100%);
+}
+/* The strip needs some padding so first/last items aren't under chevrons when visible. */
+.chat-header-carousel.has-overflow .chat-header-carousel-strip { padding: 0 2px; }
+/* Zone containers — each holds its assigned controls. */
+.chat-header-zone { display: flex; flex-direction: row; align-items: center; gap: 2px; }
+.chat-header-zone:empty { display: none; }
+.chat-header-zone-left   { flex: 0 0 auto; justify-content: flex-start; }
+.chat-header-zone-center { flex: 1 1 auto; min-width: 0; overflow: visible; justify-content: center; }
+.chat-header-zone-right  { margin-left: auto; flex: 0 0 auto; justify-content: flex-end; }
+
+/* ── Zone-level carousel (carousel strip inside a single zone) ── */
+.chat-header-zone-carousel {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 0 !important;
+  min-width: 0;
+  overflow: hidden;
+  --chc-fade: 16px;
+}
+/* Strip wrapper chip appearance — not needed; the zone builder handles layout. */
+/* .chat-header-zone / .chat-pill-zone children are styled by the zone system. */
+.chat-header-zone-carousel-strip {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior-x: none;
+}
+.chat-header-zone-carousel-strip::-webkit-scrollbar { display: none; }
+/* Zone carousel chevrons — narrower than row-level ones */
+.chat-header-zone-chev {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 16px;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 2px;
+  z-index: 2;
+  flex-shrink: 0;
+}
+.chat-header-zone-chev.left  { left: 0;  justify-content: flex-start; }
+.chat-header-zone-chev.right { right: 0; justify-content: flex-end; }
+.chat-header-zone-chev.visible { display: flex; }
+.chat-header-zone-chev:hover { color: var(--fg-1); }
+/* Edge-fade mask for zone carousel */
+.chat-header-zone-carousel:has(.chat-header-zone-chev.left.visible) .chat-header-zone-carousel-strip {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--chc-fade));
+          mask-image: linear-gradient(to right, transparent 0, #000 var(--chc-fade));
+}
+.chat-header-zone-carousel:has(.chat-header-zone-chev.right.visible) .chat-header-zone-carousel-strip {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--chc-fade));
+          mask-image: linear-gradient(to left, transparent 0, #000 var(--chc-fade));
+}
+.chat-header-zone-carousel:has(.chat-header-zone-chev.left.visible):has(.chat-header-zone-chev.right.visible) .chat-header-zone-carousel-strip {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--chc-fade), #000 calc(100% - var(--chc-fade)), transparent 100%);
+          mask-image: linear-gradient(to right, transparent 0, #000 var(--chc-fade), #000 calc(100% - var(--chc-fade)), transparent 100%);
+}
+.chat-header-zone-carousel.has-overflow .chat-header-zone-carousel-strip { padding: 0; }
+
+/* Glass chip styling for every header control placed inside a zone —
+   each control becomes a floating glass pill, matching the footer
+   ability/mode and stop/continue buttons. Messages pass 'behind' the
+   header since the header itself has a transparent background and no border.
+   !important on glass properties to override #chat-header button defaults. */
+.chat-header-zone > [data-header-control] {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent)) !important;
+    border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent) !important;
+    backdrop-filter: blur(12px) saturate(140%) !important;
+    -webkit-backdrop-filter: blur(12px) saturate(140%) !important;
+    border-radius: 14px !important;
+    padding: 2px 10px !important;
+    min-height: 32px !important;
+    box-sizing: border-box !important;
+    transition: background 0.15s, border-color 0.15s !important;
+    /* Allow absolutely-positioned children (dropdown menus) to pop out */
+    position: relative;
+    color: var(--fg-3);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+body.light-mode .chat-header-zone > [data-header-control] {
+    background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 85%, transparent)) !important;
+  }
+.chat-header-zone > [data-header-control]:hover {
+    border-color: color-mix(in oklab, var(--accent) 45%, transparent) !important;
+  }
+/* Content-bearing controls — agent name, session dropdown, title — stretch
+   to fill their zone and shrink with ellipsis, matching the mode button look.
+   overflow: visible so their absolutely-positioned dropdown menus pop out. */
+.chat-header-zone > [data-header-control="agent_name"],
+.chat-header-zone > [data-header-control="session_dropdown"],
+.chat-header-zone > [data-header-control="title"] {
+    flex: 1 1 auto !important;
+    flex-shrink: 1 !important;
+    min-width: 0 !important;
+    overflow: visible !important;
+  }
+/* Icon-only header controls (square chip) — buttons with no text label
+   get a compact square chip, the same style as footer icon buttons. */
+.chat-header-zone > [data-header-control]:has(> svg:only-child),
+.chat-header-zone > [data-header-control]:has(> i:only-child) {
+    padding: 2px !important;
+    width: 32px !important;
+    height: 32px !important;
+    justify-content: center !important;
+    flex-shrink: 0 !important;
+  }
+/* Size SVGs inside header controls — broad rule that catches ALL controls
+   in zones, including ones with badges/labels (changes, abilities, target).
+   The 20px fills a 28px container with 2px padding nicely. Controls that
+   have explicit element_size via JS config override this with !important. */
+.chat-header-zone > [data-header-control] svg {
+    width: 20px !important;
+    height: 20px !important;
+  }
+/* Icon-only controls in the carousel strip — same square treatment.
+   Named explicitly because :has(svg:only-child) also matches icon+text
+   buttons like "Stop" (the text node isn't an element child). */
+.chat-header-carousel-strip > [data-header-control="new_session"],
+.chat-header-carousel-strip > [data-header-control="session_prev"],
+.chat-header-carousel-strip > [data-header-control="session_next"],
+.chat-header-carousel-strip > [data-header-control="refresh"],
+.chat-header-carousel-strip > [data-header-control="delete_session"],
+.chat-header-carousel-strip > [data-header-control="close"],
+.chat-header-carousel-strip > [data-header-control="attach"],
+.chat-header-carousel-strip > [data-header-control="send"],
+.chat-header-carousel-strip > [data-header-control="voice"],
+.chat-header-carousel-strip > [data-header-control="minimize"] {
+    padding: 2px !important;
+    width: 32px !important;
+    height: 32px !important;
+    justify-content: center !important;
+    flex-shrink: 0 !important;
+  }
+/* Size SVGs inside carousel icon-only controls — broad rule that catches
+   ALL controls in the carousel strip, including ones with badges. */
+.chat-header-carousel-strip > [data-header-control] svg {
+    width: 20px !important;
+    height: 20px !important;
+  }
+    /* The "more" (⋯) kebab is a wrapper span containing a button + menu, so
+   :has(svg:only-child) doesn't match. Give it the same compact icon-only
+   treatment so it sits flush with the edge like other icon buttons. */
+.chat-header-zone > [data-header-control="more"],
+.chat-header-carousel-strip > [data-header-control="more"] {
+    padding: 2px !important;
+    width: 32px !important;
+    height: 32px !important;
+    justify-content: center !important;
+    flex-shrink: 0 !important;
+  }
+/* Size the "more" kebab icon inside the button within the wrapper. */
+.chat-header-zone > [data-header-control="more"] svg,
+.chat-header-carousel-strip > [data-header-control="more"] svg {
+    width: 20px !important;
+    height: 20px !important;
+  }
+/* Session-dropdown inside a chip: the trigger (now a full session-row)
+   sits inside the glass chip normally, but the dropdown menu (position: absolute)
+   needs to pop out visually — reset the overflow on its parent to allow this. */
+.chat-header-zone > .session-dropdown[data-header-control],
+.chat-header-zone > .agent-dropdown[data-header-control] {
+    overflow: visible !important;
+  }
+/* Mobile browsers: the trigger is now a div.session-row. Keep the chip's
+   fixed cross-size so opening the menu cannot make the pill taller. */
+@media (max-width: 800px) {
+  .chat-header-zone > [data-header-control="session_dropdown"] {
+    display: flex !important;
+    justify-content: flex-start !important;
+    height: 32px !important;
+    min-height: 32px !important;
+    max-height: 32px !important;
+    padding: 2px 12px !important;
+    margin: 0 4px !important;
+  }
+  #chat-header .session-dropdown-trigger {
+    align-self: stretch;
+    min-height: 0;
+    margin: 0;
+    min-width: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border: 0;
+    outline: 0;
+    box-sizing: border-box;
+  }
+}
+@media (max-width: 800px) and (hover: none) and (pointer: coarse) {
+  .chat-header-zone > [data-header-control="session_dropdown"]:hover {
+    border-color: color-mix(in oklab, currentColor 12%, transparent) !important;
+  }
+}
+/* Agent-name wrapper (inside any zone) — sized to content, shrinks with ellipsis. */
 .chat-header-name-row { display: flex; flex-direction: row; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; }
 .chat-header-agent-name {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--fg-2);
   letter-spacing: 0.01em;
@@ -158,8 +475,9 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Transcript-refresh button — sits beside the agent name; resets ONLY the chat
-   transcript (session-init.js → session-load.js refreshTranscript), never the
+/* Transcript-refresh button — sits on the session row just after the session
+   dropdown (beside the status icons); resets ONLY the chat transcript
+   (session-init.js → session-load.js refreshTranscript), never the
    whole page. Colour/hover come from the generic #chat-header button rules. */
 .chat-refresh-btn {
   background: none;
@@ -188,7 +506,7 @@ body {
    refresh button (more (⋯) · name · refresh · new (+)), so it's no longer pinned to the
    far edge. Shares the compact transparent icon-button look of its neighbours (refresh /
    more); its 18px glyph matches them. Single-click → new session / agent picker,
-   middle-click → new browser tab, both wired in ui/chat-side-panel/js/session-init.js. */
+   middle-click → new browser tab, both wired in ui/chat/js/session-init.js. */
 #chat-header .session-new-header-btn {
   background: none;
   border: none;
@@ -206,141 +524,129 @@ body {
      transition and snap instantly, so this matches them. */
   transition: background 0.15s;
 }
+
+/* Per-chat working-tree change drawer. It intentionally sits under the header:
+   the transcript keeps its full height unless the user explicitly opens it. */
+#chat-header .chat-changes-toggle { position: relative; }
+.chat-changes-count { position: absolute; top: -5px; right: -6px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 8px; background: var(--brand); color: var(--bg-0); font-size: 9px; line-height: 14px; text-align: center; }
+.chat-changes-panel { flex: 0 0 auto; border-bottom: var(--border-width) solid var(--border); padding: 8px 14px 10px; background: var(--bg-1); position: absolute; left: 0; right: 0; z-index: 998; }
+.chat-changes-heading { display: flex; justify-content: space-between; align-items: center; color: var(--fg-2); font-size: 12px; font-weight: 650; margin-bottom: 6px; }
+.chat-changes-heading button { border: 0; background: transparent; color: var(--fg-3); cursor: pointer; display: inline-flex; padding: 2px; }
+.chat-changes-heading button:hover { color: var(--brand); }
+.chat-changes-list { max-height: 126px; overflow: auto; font-family: var(--font-mono, monospace); font-size: 11px; }
+.chat-change-row { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
+.chat-change-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); flex: 1; }
+.chat-change-stat { color: var(--success); white-space: nowrap; }
+.chat-change-stat .chat-change-stat-del { color: var(--danger); }
+.chat-change-row.conflict .chat-change-path, .chat-change-row.conflict .chat-change-stat { color: var(--warning, #d9a441); }
+.chat-changes-empty { color: var(--fg-3); font-size: 12px; }
+.chat-changes-message { width: 100%; margin-top: 8px; padding: 6px 8px; border: var(--border-width) solid var(--border); border-radius: var(--r-sm); background: var(--bg-0); color: var(--fg-1); font: inherit; font-size: 12px; }
+.chat-changes-actions { display: flex; gap: 6px; margin-top: 7px; }
+.chat-changes-actions button { border: 0; border-radius: var(--r-sm); padding: 5px 8px; cursor: pointer; font-size: 11px; color: var(--fg-1); background: var(--bg-tint); }
+.chat-changes-actions button:disabled { opacity: .5; cursor: default; }
+.chat-changes-actions .chat-changes-commit { background: var(--brand); color: var(--bg-0); }
+.chat-changes-result { min-height: 14px; margin-top: 5px; color: var(--success); font-size: 11px; }
+.chat-changes-result.error { color: var(--danger); }
 #chat-header .session-new-header-btn > * { pointer-events: none; }
 #chat-header .session-new-header-btn:hover { color: var(--brand); }
 #chat-header .session-new-header-btn:active { background: rgba(var(--brand-rgb),0.15); }
-
-/* ── Header "more" (⋯) button + its dropdown menu ─────────────────────────────
-   Kebab button beside refresh / new-session; shares their compact transparent
-   icon look. Opens #chat-header-more-menu, anchored under it (chrome mirrors
-   .session-dropdown-menu). ADMIN-ONLY: the wrapper stays hidden until the
-   `is-admin` body class lands (ui/shared/js/main.js), since its only content
-   today is the Agent/Session debug row. Wiring: ui/chat-side-panel/js/
-   session-init.js (_wireHeaderMoreMenu). */
-#chat-header .chat-header-more {
-  position: relative;
-  display: none;            /* revealed for admins only — see body.is-admin rule */
-  align-items: center;
-  flex-shrink: 0;
-}
-body.is-admin #chat-header .chat-header-more { display: inline-flex; }
-#chat-header .chat-header-more-btn {
-  background: none;
-  border: none;
-  color: var(--fg-3);
-  cursor: pointer;
-  padding: 1px 3px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  border-radius: var(--r-sm);
-  transition: background 0.15s;
-}
-#chat-header .chat-header-more-btn > * { pointer-events: none; }
-#chat-header .chat-header-more-btn:hover,
-#chat-header .chat-header-more.open .chat-header-more-btn { color: var(--brand); }
-#chat-header .chat-header-more-btn:active { background: rgba(var(--brand-rgb),0.15); }
-#chat-header .chat-header-more.open .chat-header-more-btn { background: rgba(var(--brand-rgb),0.12); }
-
-/* The dropdown panel — the kebab sits at the FAR LEFT of the header, so anchor
-   the menu to the kebab's LEFT edge and open it down-and-RIGHT, into the panel
-   interior. (Opening leftward ran the 248px menu off the panel's left edge,
-   where #chat-panel's `overflow:hidden` clipped it behind the main panel.) The
-   menu width (248px) fits inside the 280px min chat-panel width — see
-   chatResize.js MIN_WIDTH — so it never overflows the right edge either. */
-.chat-header-more-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 248px;
-  max-width: min(320px, 80vw);
-  background: var(--bg-elev);
-  border: var(--border-width) solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(var(--shadow-rgb),0.4);
-  z-index: 1000;
-  padding: 8px;
-  box-sizing: border-box;
-}
-body.light-mode .chat-header-more-menu {
-  background: var(--bg-0);
-  box-shadow: 0 8px 24px rgba(var(--shadow-rgb),0.1);
-}
-.chat-header-more-menu[hidden] { display: none; }
-
-/* Debug section inside the menu: a title + copy button on one row, then the
-   Agent / Session id rows below (monospace, selectable). */
-.chm-section { display: flex; flex-direction: column; gap: 7px; }
-.chm-section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.chm-section-title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-}
-.chm-copy {
-  background: none;
-  border: none;
-  color: var(--fg-3);
-  cursor: pointer;
-  padding: 2px 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--r-sm);
-  transition: color 0.12s, background 0.12s;
-}
-.chm-copy > * { pointer-events: none; }
-.chm-copy:hover { color: var(--brand); background: rgba(var(--brand-rgb),0.12); }
-.chm-copy.copied { color: var(--success); }
-.chm-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 11px;
-}
-.chm-key {
-  flex: 0 0 auto;
-  width: 52px;
-  color: var(--fg-3);
-}
-.chm-val {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-family: var(--font-mono, monospace);
-  color: var(--fg-2);
-  word-break: break-all;
-  user-select: text;
-}
 
 /* ── Chat sub-header: related spawns & browser tabs ── */
 #chat-sub-header {
   display: flex;
   align-items: center;
-  gap: 1px;            /* uniform 1px between Main · spawns · browser groups */
-  padding: 2px 14px 4px;
+  gap: 0;
+  padding: 2px 0 4px;
   border-bottom: var(--border-width) solid var(--border);
   flex-shrink: 0;
-  flex-wrap: wrap;
   min-height: 0;
   font-size: 12px;
+  position: relative;
+  width: 100%;
+  z-index: 999;
 }
-/* The three chip groups lay their own chips out as a 1px-gap tab strip (the
-   spawn chips would otherwise sit flush against each other). */
-#chat-sub-header #chat-sub-parent,
-#chat-sub-header #chat-sub-spawns,
-#chat-sub-header #chat-sub-browsers {
+/* When reparented into a header zone (third row via sub_agent_tabs control),
+   it becomes part of the flex flow and must not be absolutely positioned.
+   Also strip the glass-chip pill styling that .chat-header-zone > [data-header-control]
+   applies — this is a full-width carousel container, not a button.
+   Top-align it so short chips sit flush with the top when a taller control
+   (top_nav) shares the same row. */
+#chat-header .chat-header-zone:has(#chat-sub-header) {
+  align-items: flex-start;
+}
+#chat-header .chat-header-zone #chat-sub-header {
+  position: relative;
+  top: auto;
+  left: auto;
+  right: auto;
+  z-index: auto;
+  border-bottom: none;
+  width: 100% !important;
+  padding: 0 !important;
+  /* Reset glass-chip pill styling — this is a container, not a button */
+  background: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  min-height: 0 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 0 !important;
+  flex-shrink: 0 !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+}
+/* Collapse the entire row when the sub-header inside it is hidden
+   (no sub-agents/browsers to show for this session). */
+.chat-header-row:has(#chat-sub-header[style*="display: none"]) {
+  display: none !important;
+}
+
+/* top_nav — canonical source: ui/chat/elements/top-nav/index.css */
+/* ── Backward-compat: flex child of #chat-header, right-aligned ── */
+#chat-header #chat-top-nav {
+  display: none;
+  flex-direction: row;
+  gap: 4px;
+  margin-left: auto;
+  padding-right: 6px;
+  flex-shrink: 0;
+  order: 9999;
+}
+#chat-header #chat-top-nav.visible {
+  display: flex;
+}
+#chat-header #chat-top-nav .chat-nav-fab {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* The scroll wrap — holds the chip groups in a single nowrap row with overflow-x
+   auto. The chevrons overlay the edges; the edge-fade mask blends the overflow
+   into the background without a scrollbar cluttering the header. */
+#chat-sub-header #chat-sub-scroll-wrap {
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 26px;
+  padding: 0 14px;
+  gap: 1px;
+  -webkit-overflow-scrolling: touch;
+  -webkit-tap-highlight-color: transparent;
+}
+#chat-sub-header #chat-sub-scroll-wrap::-webkit-scrollbar { display: none; }
+/* The chips inside the scroll-wrap are buttons; each is its own interactive
+   element with independent tap-highlight, like other header controls. */
+#chat-sub-header #chat-sub-scroll-wrap > .sub-chip {
   display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 1px;
+  flex-shrink: 0;
 }
 #chat-sub-header .sub-label {
   color: var(--fg-3);
@@ -349,26 +655,40 @@ body.light-mode .chat-header-more-menu {
   margin-right: 2px;
 }
 #chat-sub-header .sub-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 7px;
-  height: 20px;
-  border-radius: 10px;
-  background: var(--bg-tint);
-  color: var(--fg-2);
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-#chat-sub-header .sub-chip:hover {
-  background: var(--bg-tint-2);
-  color: var(--fg-1);
-}
-#chat-sub-header .sub-chip .chip-status {
+      display: inline-flex;
+      align-items: stretch;
+      gap: 4px;
+      padding: 2px 10px;
+      min-height: 26px;
+      border-radius: 14px;
+      background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent));
+      border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent);
+      backdrop-filter: blur(12px) saturate(140%);
+      -webkit-backdrop-filter: blur(12px) saturate(140%);
+      color: var(--fg-3);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+      flex-shrink: 0;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      outline: none;
+    }
+    #chat-sub-header .sub-chip:hover {
+          background: color-mix(in oklab, var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent)) 82%, var(--fg-1));
+          color: var(--fg-1);
+          border-color: color-mix(in oklab, currentColor 18%, transparent);
+        }
+    #chat-sub-header .sub-chip:active {
+          background: rgba(var(--brand-rgb), 0.12);
+          border-color: rgba(var(--brand-rgb), 0.40);
+          transition: none;
+        }
+    #chat-sub-header .sub-chip .chip-status {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
@@ -377,24 +697,96 @@ body.light-mode .chat-header-more-menu {
   width: 10px;
   height: 10px;
 }
+/* Chip × close button — right side of member/browser chips. Recycles the
+   session (spawn tabs) or closes the browser instance (browser tabs). The
+   root "Main" chip carries no close button. */
+#chat-sub-header .sub-chip .chip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 3px;
+  margin-right: -6px;
+  border-radius: 50%;
+  color: var(--fg-3);
+  cursor: pointer;
+  opacity: 0.75;
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+}
+#chat-sub-header .sub-chip .chip-close:hover {
+  background: rgba(var(--danger-rgb), 0.16);
+  color: var(--danger);
+  opacity: 1;
+}
+#chat-sub-header .sub-chip .chip-close:active {
+  background: rgba(var(--danger-rgb), 0.28);
+}
 #chat-sub-header .sub-chip.chip-main .chip-status { color: var(--brand); }
 #chat-sub-header .sub-chip.chip-running .chip-status { color: var(--brand); }
 #chat-sub-header .sub-chip.chip-done .chip-status { color: var(--success); }
 #chat-sub-header .sub-chip.chip-error .chip-status { color: var(--danger); }
 #chat-sub-header .sub-chip.chip-browser { color: var(--brand); }
 #chat-sub-header .sub-chip.chip-private { opacity: 0.6; }
-/* Active tab — the session currently open in the panel. A filled accent tint +
-   inset ring marks it as "you are here"; it stays put on hover (no pointer). */
+/* Completed time in green (sub-agent / family tab chips) — mirrors .session-status-completed */
+#chat-sub-header .sub-chip .chip-time {
+  color: var(--success);
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+  margin-left: 3px;
+}
+/* Active tab — the session currently open in the panel. Accent tint background +
+       accent border marks it as "you are here"; it stays put on hover (no pointer). */
 #chat-sub-header .sub-chip.chip-active {
-  background: rgba(var(--brand-rgb), 0.16);
-  color: var(--fg-1);
-  box-shadow: inset 0 0 0 1px rgba(var(--brand-rgb), 0.55);
-  cursor: default;
+      background: rgba(var(--brand-rgb), 0.16);
+      color: var(--fg-1);
+      border-color: rgba(var(--brand-rgb), 0.55);
+      cursor: default;
+    }
+    #chat-sub-header .sub-chip.chip-active:hover {
+      background: rgba(var(--brand-rgb), 0.16);
+      color: var(--fg-1);
+      border-color: rgba(var(--brand-rgb), 0.55);
+    }
+/* ── Sub-header carousel chevrons + edge fades ──
+   Mirrors the Agents-page carousel pattern (see .agents-carousel-chev in
+   ui/main-panel/agents/agents.css). Chevrons overlay the scrollable area and
+   are shown/hidden by .can-scroll-* classes on the wrap. The scroller gets a
+   right-edge gradient mask when there's content to scroll toward. */
+.sub-carousel-chev {
+  position: relative;
+  top: auto;
+  bottom: auto;
+  width: 28px;
+  flex-shrink: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--fg-3);
+  font-size: 14px;
+  line-height: 1;
 }
-#chat-sub-header .sub-chip.chip-active:hover {
-  background: rgba(var(--brand-rgb), 0.16);
-  color: var(--fg-1);
+.sub-carousel-chev:hover { color: var(--fg-1); }
+.sub-carousel-chev.left  { left: auto; }
+.sub-carousel-chev.right { right: auto; }
+#chat-sub-scroll-wrap.can-scroll-right {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent 100%);
+          mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent 100%);
 }
+#chat-sub-scroll-wrap.can-scroll-left {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 40px);
+          mask-image: linear-gradient(to right, transparent 0, #000 40px);
+}
+#chat-sub-scroll-wrap.can-scroll-left.can-scroll-right {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%);
+          mask-image: linear-gradient(to right, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%);
+}
+
 #chat-sub-header .chip-sep {
   display: inline-block;
   width: 1px;
@@ -435,19 +827,121 @@ body.light-mode #chat-sub-header .chip-sep { background: var(--border); }
    without touching the other panels. (Pill skin/geometry is separately
    commonized; see the CHAT-PILL-SYNC block lower in this file.) */
   #chat-input-area {
-    display: flex;
-    flex-direction: column;
-    padding: 6px 12px 0;
-    border-top: none;
-    background: transparent;
-    gap: 6px;
+              display: flex;
+              flex-direction: column;
+              padding: 2px 12px 8px;
+              border-top: none;
+              background: transparent;
+              gap: 0;
     flex-shrink: 0;
     position: absolute;
     left: 0;
     right: 0;
-    bottom: 8px;
+    bottom: 0px;
     z-index: 5;
     min-height: 0;
+    /* Smooth transition for idle ↔ active footer mode switches */
+    transition: padding 0.3s ease, gap 0.3s ease, bottom 0.3s ease;
+    /* PASS-THROUGH FOOTER (PILL-PANEL-LAYOUT): the input area is an absolute
+       overlay on top of the transcript scroller. pointer-events:none lets
+       wheel / drag / click over the empty band above the pill (and any
+       transparent gaps between controls) fall through to the transcript
+       behind it; every interactive child re-enables events below. */
+    pointer-events: none;
+  }
+  /* Re-enable pointer events on exactly the interactive children of the
+     pass-through footer. The pill, footer row, suggestion chips, billing
+     card, and every zone-built control keep working; empty space scrolls
+     the transcript. */
+  #chat-input-area #chat-input-row,
+  #chat-input-area #chat-footer-row,
+  #chat-input-area .chat-suggest-chip,
+  #chat-input-area .billing-panel-card,
+  #chat-input-area [data-header-control] {
+    pointer-events: auto;
+  }
+
+  /* ── Idle footer mode (CSS-driven, no DOM rebuild) ──
+     When the textarea is empty and unfocused, .footer-mode-idle collapses
+     every element that isn't part of the ~single-row~ simplified idle pill.
+     The active layout always exists in the DOM; this class just hides parts. */
+  #chat-input-area.footer-mode-idle {
+    bottom: var(--idle-margin-bottom, 24px);
+    /* Reduce and center padding — the active 2px/8px top/bottom pushes the
+       single idle row off-center and hides text. Symmetric keeps the pill
+       vertically centered in its small idle footprint. */
+    padding: 4px 12px;
+  }
+
+  /* Pill width in idle mode — JS sets --idle-pill-width; fallback matches
+     chat_ui.json idle_footer.chat_pill.pill_width (500px, same as active). */
+  #chat-input-area.footer-mode-idle #chat-input-row {
+    width: var(--idle-pill-width, 500px);
+  }
+  #chat-input-area.footer-mode-idle #chat-input-row {
+    --chat-pill-current-width: var(--idle-pill-width, 500px);
+  }
+
+  /* Idle textarea — padding, font-size, and min/max-height are driven
+     by data/config/chat_ui.json (idle_footer → controls → textarea).
+     Only line-height:1 stays here (CSS default is 22px, too tall).
+     Also remove the center-zone left margin so the textarea sits snug
+     next to attach. */
+  #chat-input-area.footer-mode-idle .chat-pill-input {
+    line-height: 1;
+    align-self: center !important;
+  }
+  #chat-input-area.footer-mode-idle .chat-pill-layout-zone-center {
+    margin-left: 0;
+  }
+  #chat-input-area.footer-mode-idle .chat-pill-layout-row {
+    column-gap: 0;
+  }
+
+  /* Collapse above-pill */
+  #chat-input-area.footer-mode-idle .chat-above-pill {
+    max-height: 0;
+    opacity: 0;
+    margin: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  /* But keep the above-pill visible when it has the activity bar (all builds do) */
+  #chat-input-area.footer-mode-idle .chat-above-pill:has(#chat-activity-bar) {
+    max-height: none;
+    opacity: 1;
+    margin-bottom: 2px;
+    margin-inline: auto;
+    overflow: visible;
+    pointer-events: none;
+  }
+  /* Multi-row plan: in idle mode only the activity row stays — extra rows
+     collapse so the idle footer stays minimal (mirrors the idle-collapsed
+     class rule in the .chat-above-pill block). */
+  #chat-input-area.footer-mode-idle .chat-above-pill .chat-header-row:not(:has(#chat-activity-bar)) {
+    display: none;
+  }
+  #chat-input-area.footer-mode-idle .chat-above-pill #chat-activity-bar,
+  #chat-input-area.footer-mode-idle .chat-above-pill #chat-activity-panel {
+    pointer-events: auto;
+  }
+
+  /* Collapse footer row */
+  #chat-input-area.footer-mode-idle .chat-footer-row {
+    max-height: 0;
+    opacity: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+  }
+
+  /* Collapse only the stats carousel in idle — keep buttons (attach/stop/etc) visible */
+  #chat-input-area.footer-mode-idle .chat-pill-layout-row[data-pill-row="1"] .chat-pill-layout-zone-center {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+    pointer-events: none;
   }
 
 /* ── Chat footer row (token bar + mode button) ───────────────────────────
@@ -455,62 +949,478 @@ body.light-mode #chat-sub-header .chip-sep { background: var(--border); }
    and the execution-mode button on the right. */
 /* CHAT-PILL-ALIGN: the rows that sit around the composer (suggestions, the
    Stop/Continue actions, and this footer of token-bar + abilities/model/mode
-   buttons) are capped to the SAME width as the pill (--chat-pill-max-width) and
+   buttons) use the SAME live width as the pill (--chat-pill-current-width) and
    centred, so every control lines up with the composer's left/right edges
    instead of stretching across a wide panel. They share the pill's width knob,
    so widening the pill widens this band with it. */
+/* The footer row is born hidden in the HTML — it stays invisible until
+   chat-controls-config removes the hidden attribute after the full layout
+   is built. The !important beats any class (e.g. .expanded) applied
+   during initChat before the config system has had a chance to run. */
+#chat-footer-row[hidden] { display: none !important; }
 .chat-footer-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    /* No horizontal padding: the left token pill and the right
-       model/abilities/mode buttons sit FLUSH with the composer's left/right
-       edges, matching the Stop/Continue action row above (which is also
-       padding-free). Per CHAT-PILL-ALIGN these satellite rows line up with the
-       pill's edges — an inset here would push these controls in past Continue. */
+    justify-content: flex-end;
+    /* No horizontal padding: the abilities/mode buttons sit FLUSH with the
+       composer's right edge. Per CHAT-PILL-ALIGN these satellite rows line up
+       with the pill's edges — an inset here would push these controls inward. */
     padding: 0;
+    gap: 2px;
     min-height: 0;
-    width: 100%;
-    max-width: var(--chat-pill-max-width, 500px);
+    width: var(--chat-pill-current-width, var(--chat-pill-width, 500px));
+    max-width: 100%;
     margin-inline: auto;
+    /* Collapsed by default — expand via .expanded class */
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height 0.25s ease, opacity 0.2s ease, margin 0.25s ease;
+    margin-top: 0;
+    margin-bottom: 0;
+    position: relative;
+    z-index: 1;
   }
-/* FOOTER-STATS-FIT: the left stats pill (token bar + ctx + cost) sheds content
-   in priority order when the space the right-side buttons leave it runs short.
+.chat-footer-row.expanded {
+    max-height: 40px;
+    opacity: 1;
+    margin-top: 2px;
+    margin-bottom: 2px;
+  }
+  .chat-footer-row.idle-collapsed {
+    max-height: 0;
+    opacity: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+  }
+
+/* ── Model changer — canonical source: ui/chat/elements/model-changer/index.css ── */
+/* ── The rules below are a TEMPORARY backward-compat copy for static DOM elements.
+     When all controls load dynamically from the manifest, remove this block. */
+.chat-model-changer {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 4px;
+    border: none;
+    background: transparent;
+    color: var(--fg-3);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+    position: relative;
+    user-select: none;
+    -webkit-user-select: none;
+    transition: color 0.15s;
+  }
+.chat-model-changer:hover { color: var(--fg-1); }
+.chat-model-changer .cmc-chev {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    opacity: 0.5;
+    pointer-events: all; /* override SVG default visiblePainted so the whole 14×14 box is clickable */
+    transition: opacity 0.15s, transform 0.12s;
+  }
+.chat-model-changer:hover .cmc-chev { opacity: 0.9; }
+.chat-model-changer .cmc-chev-left:active { transform: translateX(-1px); }
+.chat-model-changer .cmc-chev-right:active { transform: translateX(1px); }
+.chat-model-changer .cmc-name {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1;
+  }
+
+/* ── Saving / checked feedback ── */
+.chat-model-changer .cmc-status {
+    display: none;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+.chat-model-changer.saving .cmc-chev {
+    opacity: 0.15;
+    pointer-events: none;
+  }
+.chat-model-changer.saving .cmc-name { display: none; }
+.chat-model-changer.saving .cmc-status {
+    display: block;
+    border: 2px solid var(--fg-4);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: cmc-spin 0.6s linear infinite;
+  }
+.chat-model-changer.checked .cmc-chev {
+    opacity: 0.15;
+    pointer-events: none;
+  }
+.chat-model-changer.checked .cmc-name { display: none; }
+.chat-model-changer.checked .cmc-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--success);
+    border: none;
+    animation: none;
+  }
+.chat-model-changer.checked .cmc-status::after {
+    content: '✓';
+  }
+
+@keyframes cmc-spin {
+    to { transform: rotate(360deg); }
+  }
+
+.cmc-toast {
+    position: fixed;
+    z-index: 1001;
+    pointer-events: none;
+    background: var(--bg-elev);
+    border: var(--border-width) solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--fg-1);
+    box-shadow: var(--shadow-float);
+    white-space: nowrap;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    opacity: 0;
+    transform: translateY(6px) scale(0.95);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+.cmc-toast.visible { opacity: 1; transform: translateY(0) scale(1); }
+.cmc-toast.hiding { opacity: 0; transform: translateY(-4px) scale(0.95); transition: opacity 0.2s ease, transform 0.2s ease; }
+
+/* ── Footer drag handle ───────────────────────────────────────────────────
+   A horizontal line just below the pill's bottom edge. Drag up to reveal
+   the abilities/device/mode chips, drag down to hide. The line follows the
+   pointer during drag and springs back on release. */
+.chat-footer-handle {
+    position: absolute;
+    bottom: -14px;
+    left: 50%;
+    /* --handle-drag-y is set inline by JS during drag; spring-back
+       transition animates it back to 0 on release */
+    transform: translateX(-50%) translateY(calc(var(--handle-drag-y, 0px)));
+    width: 48px;
+    height: 20px;
+    margin: 0;
+    padding: 0;
+    background: none;
+    border: none;
+    cursor: ns-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    z-index: 10;
+    transition: bottom 0.25s ease;
+  }
+  /* When the footer is expanded, the handle line sits above the pill's
+     bottom edge (handle bottom at -6px with height 20px → line center
+     at 4px above the edge). */
+  .chat-footer-handle.expanded {
+    bottom: -6px;
+  }
+  /* Pill-level drag offset — the pill edge itself moves during drag so the
+     rubber-band is visible on the pill's bottom border, not just the handle. */
+  #chat-input-row {
+    transform: translateY(calc(var(--pill-drag-y, 0px)));
+    position: relative;
+    z-index: 2;
+    /* Smooth transition for idle ↔ active footer pill changes */
+    transition: width 0.3s ease, max-width 0.3s ease, opacity 0.25s ease;
+  }
+  /* After an idle→active transition, block clicks on newly-appeared
+     buttons for a brief window so the user's finger can't hit them. */
+  /* Stop / continue buttons are already visible in idle mode and don't
+     need click protection — they'd eat a natural double-click otherwise. */
+  #chat-input-row.pill-no-clicks button:not(.chat-pill-stop):not(.chat-pill-continue),
+  #chat-input-row.pill-no-clicks [role="button"]:not(.chat-pill-stop):not(.chat-pill-continue) {
+    pointer-events: none;
+  }
+  #chat-input-row.spring-back {
+    transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  /* Slower overshoot for click-triggered toggles */
+  #chat-input-row.spring-back-click {
+    transition: transform 0.75s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .chat-footer-handle.spring-back-click {
+    transition: transform 0.75s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+.chat-footer-handle-line {
+    width: 32px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--fg-4);
+    opacity: 0.35;
+    transition: opacity 0.15s ease, width 0.2s ease, background 0.15s ease;
+  }
+.chat-footer-handle:hover .chat-footer-handle-line,
+.chat-footer-handle:focus-visible .chat-footer-handle-line {
+    opacity: 0.75;
+    width: 40px;
+    background: var(--fg-2);
+  }
+/* Pulse hint — subtle breathe when footer is closed */
+@keyframes footerHandlePulse {
+    0%, 100% { opacity: 0.25; }
+    50% { opacity: 0.55; }
+  }
+.chat-footer-handle:not(.expanded) .chat-footer-handle-line {
+    animation: footerHandlePulse 3s ease-in-out infinite;
+  }
+@media (prefers-reduced-motion: reduce) {
+    .chat-footer-handle:not(.expanded) .chat-footer-handle-line {
+      animation: none;
+    }
+  }
+/* Spring-back transition — applied after drag release */
+.chat-footer-handle.spring-back {
+    transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+/* ── Pill zone rows (rows inside the pill, same model as header) ── */
+/* Canonical two-row pill layout. Empty zones collapse, center owns all
+   remaining width, and right is exactly as wide as its controls. */
+.chat-pill.chat-pill-row-layout,
+#chat-input-row.chat-pill.chat-pill-row-layout {
+  display: block;
+}
+.chat-pill-layout-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  min-width: 0;
+}
+.chat-pill-layout-row {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  column-gap: 6px;
+  width: 100%;
+  min-width: 0;
+  /* Smooth collapse for idle footer mode */
+  transition: max-height 0.25s ease, opacity 0.2s ease, margin 0.25s ease, padding 0.25s ease;
+}
+.chat-pill-layout-row[data-pill-row="0"] {
+  overflow: hidden;
+  /* Fade mask on the stationary row — text rubberbands behind it */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--chat-pill-fade-top, 8px),
+    #000 calc(100% - var(--chat-pill-fade-bottom, 10px) - var(--chat-pill-fade-bottom-offset, 0px)),
+    transparent calc(100% - var(--chat-pill-fade-bottom-offset, 0px))
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--chat-pill-fade-top, 8px),
+    #000 calc(100% - var(--chat-pill-fade-bottom, 10px) - var(--chat-pill-fade-bottom-offset, 0px)),
+    transparent calc(100% - var(--chat-pill-fade-bottom-offset, 0px))
+  );
+}
+.chat-pill-layout-zone {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+/* Buttons inside zones inherit the zone's vertical alignment instead of
+   their legacy grid align-self values (which differ left vs right). */
+.chat-pill-layout-zone > .chat-pill-attach,
+.chat-pill-layout-zone > .chat-pill-send,
+.chat-pill-layout-zone > .chat-pill-voice { align-self: unset; }
+.chat-pill-layout-zone:empty { display: none; }
+.chat-pill-layout-zone-left { flex: 0 0 auto; justify-content: flex-start; }
+.chat-pill-layout-zone-center { flex: 1 1 auto; margin-left: 10px; justify-content: center; }
+.chat-pill-layout-zone-right {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+.chat-pill-layout-zone-center > .chat-pill-input,
+.chat-pill-layout-zone-center > .chat-pill-stats-row,
+.chat-pill-layout-zone-center > .chat-pill-stats {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  align-self: stretch;
+}
+
+/* Version 2 pill-row classes remain styled during the compatibility window. */
+.chat-pill-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  margin-top: 2px;
+}
+.chat-pill-zone-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+}
+.chat-pill-zone {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+}
+.chat-pill-zone:empty { display: none; }
+.chat-pill-zone-left   { flex: 0 0 auto; justify-content: flex-start; }
+.chat-pill-zone-center { flex: 1 1 auto; min-width: 0; overflow: visible; margin-left: 10px; justify-content: center; }
+.chat-pill-zone-right  { flex: 0 0 auto; justify-content: flex-end; }
+/* Reuse glass-chip styling for pill zone controls */
+.chat-pill-zone > [data-header-control] {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent)) !important;
+    border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent) !important;
+    backdrop-filter: blur(12px) saturate(140%) !important;
+    -webkit-backdrop-filter: blur(12px) saturate(140%) !important;
+    border-radius: 14px !important;
+    padding: 2px 10px !important;
+    min-height: 28px !important;
+    box-sizing: border-box !important;
+    flex-shrink: 0 !important;
+    position: relative !important;
+    color: var(--fg-3) !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+  }
+.chat-pill-zone > [data-header-control]:hover {
+    background: var(--chat-pill-bg-hover, var(--bg-elev)) !important;
+    color: var(--fg-1) !important;
+  }
+.chat-pill-zone > [data-header-control]:active {
+    background: var(--bg-elev) !important;
+  }
+.chat-pill-zone > [data-header-control] svg {
+    width: 16px !important;
+    height: 16px !important;
+    flex-shrink: 0;
+  }
+/* Zone-level carousel strip inside pill rows */
+.chat-pill-layout-zone.chat-pill-zone-carousel {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+  min-height: 28px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+.chat-pill-zone-carousel-strip {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 2px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.chat-pill-zone-carousel-strip::-webkit-scrollbar { display: none; }
+.chat-pill-zone-chev {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 20px;
+  align-items: center;
+  border: none;
+  background: none;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  z-index: 1;
+}
+.chat-pill-zone-chev.left  { left: 0;  justify-content: flex-start; }
+.chat-pill-zone-chev.right { right: 0; justify-content: flex-end; }
+.chat-pill-zone-chev.visible { display: flex; }
+.chat-pill-zone-chev:hover { color: var(--fg-1); }
+
+.chat-pill-layout-zone.chat-pill-zone-carousel:has(.chat-pill-zone-chev.left.visible) .chat-pill-zone-carousel-strip {
+  margin-left: 20px;
+}
+.chat-pill-layout-zone.chat-pill-zone-carousel:has(.chat-pill-zone-chev.right.visible) .chat-pill-zone-carousel-strip {
+  margin-right: 20px;
+}
+.chat-pill-layout-zone.chat-pill-zone-carousel:has(.chat-pill-zone-chev.left.visible):has(.chat-pill-zone-chev.right.visible) .chat-pill-zone-carousel-strip {
+  margin-left: 20px;
+  margin-right: 20px;
+}
+.chat-pill-layout-zone.chat-pill-zone-carousel.has-overflow .chat-pill-zone-carousel-strip { padding: 0; }
+
+.chat-pill-zone .chat-header-zone-carousel {
+  min-height: 28px;
+}
+.chat-pill-zone .chat-header-zone-carousel-strip {
+  gap: 2px;
+}
+
+/* FOOTER-STATS-FIT: the stats row inside the pill (cell 2,2) sheds content
+   in priority order when the available space runs short. The fit logic is the
+   same as before — the only difference is that the stats now live inside the
+   pill rather than in a separate footer-left pill. The pill's max-width
+   constraint naturally limits the stats row's width.
    This is driven by JS (_fitFooterStats in chat-activity.js), NOT @container
-   queries: the old container rules keyed off the WHOLE row width, but the stats
-   only ever get `row − right buttons (~100px)` of usable space, so the cost was
-   clipping ~100px before its breakpoint ever fired. JS measures the real
-   rendered widths (locale-formatted numbers, the live font) and toggles the
-   classes below, so an element is always either fully shown or fully hidden —
-   never half-cut under the buttons.
+   queries.
    Shed order = least → most useful, so the context window survives longest:
      Step 1 (.fs-hide-tok-labels): drop the "in" / "out" labels.
      Step 2 (.fs-hide-ctx-label):  drop the "ctx" label.
      Step 3 (.fs-hide-cost):       drop the session cost.
      Step 4 (.fs-hide-tokbar):     drop the in/out token bar.
      Step 5 (.fs-hide-ctx):        drop the ctx readout + the now-empty pill.
-   To change the priority, reorder the _FOOTER_SHED array in chat-activity.js. */
-.chat-footer-row.fs-hide-tok-labels #chat-token-bar .chat-token-label {
-      display: none;
-    }
-.chat-footer-row.fs-hide-ctx-label #chat-model-ctx .chat-token-label {
-      display: none;
-    }
-.chat-footer-row.fs-hide-cost #chat-cost {
-      display: none !important;
-    }
-.chat-footer-row.fs-hide-tokbar #chat-token-bar {
-      display: none;
-    }
-.chat-footer-row.fs-hide-ctx #chat-model-ctx {
-      display: none !important;
-    }
-  /* Nothing left to show — hide the whole pill so no empty button remains.
-     !important: the base .chat-footer-left rule is declared later in the file
-     and would otherwise win on equal specificity. */
-.chat-footer-row.fs-hide-ctx .chat-footer-left {
-      display: none !important;
-    }
+            To change the priority, reorder the _FOOTER_SHED array in chat-activity.js. */
+         #chat-pill-stats.fs-hide-tok-labels .chat-token-bar .chat-token-label {
+               display: none;
+             }
+         #chat-pill-stats.fs-hide-ctx-label #chat-model-ctx .chat-token-label {
+               display: none;
+             }
+         #chat-pill-stats.fs-hide-cost #chat-cost {
+               display: none !important;
+             }
+         #chat-pill-stats.fs-hide-tokbar .chat-token-bar {
+               display: none;
+             }
+         #chat-pill-stats.fs-hide-ctx #chat-model-ctx {
+               display: none !important;
+             }
+           /* Nothing left to show — hide the whole stats row so no empty space remains. */
+         #chat-pill-stats.fs-hide-ctx {
+               display: none !important;
+             }
 
 /* ── Chat token bar ──────────────────────────────────────────────────────
    Sits below the chat pill, left-aligned. Shows tokens-in, a spinning shape
@@ -673,11 +1583,12 @@ body.light-mode .chat-activity-bar {
     100% { transform: rotate(-315deg); }
   }
 
-/* ── Footer model picker (click the token/ctx footer to switch model) ─────
+/* ── Footer context panel (click the token/ctx footer) ────────────────────
    A floating panel anchored to the LEFT edge of the chat pill footer, sitting
-   just above the context-details line. Lists the curated models (App Config saved
-   models + the agent's own model), with a detail footer (description + cost)
-   for the focused row. Themed entirely via design-system vars (dark + light).
+   just above the context-details line. Carries only per-chat context management
+   (compaction sliders + "Compact now"); model selection/info live in the
+   model-changer panel (#chat-model-changer). Themed entirely via design-system
+   vars (dark + light).
    PANEL-SYNC-FOOTER: keep .chat-model-picker and .chat-skill-picker in sync —
    if you change max-height, border-radius, padding, shadow, z-index, or
    background on one, mirror it on the other. */
@@ -858,14 +1769,12 @@ body.light-mode .chat-activity-bar {
 .chat-model-picker .cmp-cost-chip.cmp-cost-free { background: var(--success-soft); color: var(--success); }
 .chat-model-picker .cmp-detail-muted { color: var(--fg-3); font-style: italic; }
 
-/* ── Context-compaction section (bottom of the model picker) ────────────────
+/* ── Context-compaction section (the panel's only content) ─────────────────
    Two sliders ("compact at %" / "keep verbatim %") tune this chat's compaction,
    plus a "Compact now" button that folds the conversation immediately. Saved as a
    per-session override (POST /api/v1/chat/session-compaction). */
 .chat-model-picker .cmp-compact {
-    margin-top: 6px;
-    padding-top: 8px;
-    border-top: var(--border-width) solid var(--border-soft);
+    padding-top: 2px;
   }
 .chat-model-picker .cmp-cc-head {
     font-size: 10px;
@@ -979,6 +1888,10 @@ body.light-mode .chat-activity-bar {
 .chat-claude-panel .ccp-m-main { display: flex; flex-direction: column; gap: 1px; }
 .chat-claude-panel .ccp-m-label { font-size: 13px; color: var(--fg-1); }
 .chat-claude-panel .ccp-m-sub { font-size: 10px; color: var(--fg-3); }
+/* Effort row under the engine model list — the buttons themselves reuse the
+   .chat-model-picker .cmp-eff-btn styles; only the container needs layout. */
+.chat-claude-panel .ccp-effort { display: flex; gap: 3px; margin-top: 2px; flex-wrap: wrap; }
+.chat-claude-panel .ccp-effort .cmp-eff-btn { flex: 1 1 0; min-width: 42px; }
 
 /* ── Footer skill-selector panel (right-aligned, mirrors model picker) ─────
    A floating panel anchored to the RIGHT edge of the chat pill footer, sitting
@@ -1078,21 +1991,164 @@ body.light-mode .chat-activity-bar {
     text-align: center;
   }
 
-/* ── Skill toggle button in footer (counter badge) ────────────────────────
-   Sits in the footer row, right side next to the mode button. Shows the
-   Blocks icon and a badge with the number of active skills. PANEL-SYNC-FOOTER:
-   keep visual style aligned with .chat-mode-btn. */
+/* ── Model list panel (click the model changer button) ─────────────────
+   Reuses .chat-skill-picker base (position, border, shadow, max-height),
+   overrides width and adds role-highlighted rows. Each row shows the
+   model's position number, truncated name, and a role badge.
+   Role colours: active = neutral accent, premium = warm amber,
+   image = cool blue, multi (premium+image) = deeper amber. */
+.chat-model-list-panel {
+    min-width: 240px;
+    max-width: 320px;
+  }
+.chat-model-list-panel .cml-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--fg-1);
+    transition: background 0.1s;
+    border-left: 3px solid transparent;
+  }
+.chat-model-list-panel .cml-item:hover { filter: brightness(1.3); }
+/* Active (currently selected model) — neutral accent */
+.chat-model-list-panel .cml-active {
+    background: var(--accent-soft);
+    border-left-color: var(--accent);
+  }
+/* Premium (high_effort_capable) — warm amber */
+.chat-model-list-panel .cml-premium {
+    background: rgba(192, 124, 47, 0.25);
+    border-left-color: #c07c2f;
+  }
+/* Image (image_in/out capable) — cool blue */
+.chat-model-list-panel .cml-image {
+    background: rgba(91, 135, 224, 0.25);
+    border-left-color: #5b87e0;
+  }
+/* Multi (premium + image) — deeper amber */
+.chat-model-list-panel .cml-multi {
+    background: rgba(192, 124, 47, 0.40);
+    border-left-color: #a06520;
+  }
+.chat-model-list-panel .cml-item.csp-active { background: var(--accent-mid); }
+.chat-model-list-panel .cml-num {
+    font-weight: 600;
+    color: var(--fg-3);
+    flex-shrink: 0;
+    min-width: 22px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+.chat-model-list-panel .cml-name {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+.chat-model-list-panel .cml-badge {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    line-height: 1.4;
+  }
+.chat-model-list-panel .cml-badge-active {
+    background: rgba(var(--brand-rgb), 0.25);
+    color: var(--brand);
+  }
+.chat-model-list-panel .cml-badge-premium {
+    background: rgba(192, 124, 47, 0.4);
+    color: #e8a84c;
+  }
+.chat-model-list-panel .cml-badge-image {
+    background: rgba(91, 135, 224, 0.4);
+    color: #7aa3f0;
+  }
+.chat-model-list-panel .cml-badge-multi {
+    background: rgba(192, 124, 47, 0.55);
+    color: #d4963a;
+  }
+
+/* ── Light-mode overrides for model list panel ───────────────────── */
+body.light-mode .chat-model-list-panel .cml-premium {
+    background: rgba(192, 124, 47, 0.15);
+    border-left-color: #c07c2f;
+  }
+body.light-mode .chat-model-list-panel .cml-image {
+    background: rgba(91, 135, 224, 0.15);
+    border-left-color: #5b87e0;
+  }
+body.light-mode .chat-model-list-panel .cml-multi {
+    background: rgba(192, 124, 47, 0.25);
+    border-left-color: #a06520;
+  }
+body.light-mode .chat-model-list-panel .cml-badge-premium {
+    background: rgba(192, 124, 47, 0.25);
+    color: #a86d20;
+  }
+body.light-mode .chat-model-list-panel .cml-badge-image {
+    background: rgba(91, 135, 224, 0.25);
+    color: #3a6bc0;
+  }
+body.light-mode .chat-model-list-panel .cml-badge-multi {
+    background: rgba(192, 124, 47, 0.35);
+    color: #8a5918;
+  }
+
+/* ── Effort row (expands below a model row in the list panel) ────────────
+   Four compact effort buttons: minimal / low / medium / high.
+   Mirrors the .cmp-effort pattern from the legacy model picker.           */
+.chat-model-list-panel .cml-effort {
+    display: flex;
+    gap: 3px;
+    padding: 4px 8px 6px 30px;  /* indented to align with model name, not number */
+    border-bottom: var(--border-width) solid var(--border-soft);
+    margin-bottom: 2px;
+  }
+.chat-model-list-panel .cml-eff-btn {
+    flex: 1;
+    padding: 2px 0;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--fg-3);
+    background: var(--bg-2);
+    border: var(--border-width) solid var(--border-soft);
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+.chat-model-list-panel .cml-eff-btn:hover {
+    color: var(--fg-1);
+    border-color: var(--accent-line);
+  }
+.chat-model-list-panel .cml-eff-btn.cml-eff-on {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent-line);
+  }
+
+/* ── Skill toggle button — canonical source: ui/chat/elements/abilities/index.css ── */
+/* ── TEMPORARY backward-compat copy for static DOM elements ── */
 .chat-skills-btn {
     position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
-    /* CHAT-PILL-SYNC: same glass skin as the pill (see .chat-continue-btn) so the
-       abilities button matches the pill instead of being a see-through icon. */
+    width: 28px;
+    height: 28px;
     border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent);
-    border-radius: 8px;
+    border-radius: 14px;
     background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent));
     backdrop-filter: blur(12px) saturate(140%);
     -webkit-backdrop-filter: blur(12px) saturate(140%);
@@ -1101,16 +2157,8 @@ body.light-mode .chat-activity-bar {
     transition: background 0.15s, color 0.15s, border-color 0.15s;
     flex-shrink: 0;
   }
-.chat-skills-btn svg {
-    width: 20px;
-    height: 20px;
-  }
-/* Lucide SVG inside button must not swallow clicks (lucide SVG quirk). On touch
-   devices a tap that lands on the inner <svg>/badge never fires the button's
-   click handler, so the abilities panel wouldn't open on mobile — the icon fills
-   nearly the whole button, so on a phone every tap lands on it. Mirrors the same
-   fix on the other icon buttons (#chat-toggle-btn > *, .chat-header-more-btn > *). */
-  .chat-skills-btn > * { pointer-events: none; }
+.chat-skills-btn svg { width: 20px; height: 20px; }
+.chat-skills-btn > * { pointer-events: none; }
 body.light-mode .chat-skills-btn {
     background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 85%, transparent));
   }
@@ -1146,13 +2194,12 @@ body.light-mode .chat-skills-btn {
    and is injected only when a Terminal Chat session mounts, so the core carries none
    of it (nor the .chat-term-keys-btn / .chat-term-keypad / .ctk-chip rules). */
 
-/* ── Execution mode button (single cycle: Read → Ask → Auto → Read) ─────
-   Sits above the chat pill, right-aligned alongside continue/stop buttons.
-   Styled identically to .chat-continue-btn for visual consistency. */
+/* ── Mode button — canonical source: ui/chat/elements/mode/index.css ── */
+/* ── TEMPORARY backward-compat copy for static DOM elements ── */
 .chat-mode-btn {
     display: inline-flex;
+    align-items: center;
     align-self: center;
-    /* CHAT-PILL-SYNC: same glass skin as the pill (see .chat-continue-btn). */
     background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent));
     border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent);
     backdrop-filter: blur(12px) saturate(140%);
@@ -1161,6 +2208,7 @@ body.light-mode .chat-skills-btn {
     font-size: 13px;
     font-weight: 600;
     padding: 5px 16px;
+    height: 28px;
     border-radius: 14px;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
@@ -1169,43 +2217,36 @@ body.light-mode .chat-skills-btn {
     -webkit-user-select: none;
     font-family: inherit;
   }
-.chat-mode-btn:hover {
-    border-color: rgba(var(--brand-rgb), 0.45);
-  }
-.chat-mode-btn:active {
-    border-color: rgba(var(--brand-rgb), 0.6);
-  }
+.chat-mode-btn:hover { border-color: rgba(var(--brand-rgb), 0.45); }
+.chat-mode-btn:active { border-color: rgba(var(--brand-rgb), 0.6); }
 body.light-mode .chat-mode-btn {
     background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 85%, transparent));
     color: var(--brand);
   }
-body.light-mode .chat-mode-btn:hover {
-    border-color: rgba(var(--brand-rgb), 0.45);
-  }
+body.light-mode .chat-mode-btn:hover { border-color: rgba(var(--brand-rgb), 0.45); }
 
-/* ── Chat target-device pill — sets which device runs the next turn ────────
-   Sibling of .chat-mode-btn; opens the shared DevicePicker. Resting = a subtle
-   monitor icon (runs locally on THIS device); active = brand-tinted with the
-   chosen device's label shown. See ui/chat-side-panel/js/chat-ui.js. */
+/* ── Chat target-device — canonical source: ui/chat/elements/target/index.css ── */
+/* ── TEMPORARY backward-compat copy for static DOM elements ── */
 .chat-target-btn {
-    display: inline-flex; align-items: center; gap: 6px; align-self: center;
+    display: inline-flex; align-items: center; justify-content: center; align-self: center;
     background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent));
     border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent);
     backdrop-filter: blur(12px) saturate(140%);
     -webkit-backdrop-filter: blur(12px) saturate(140%);
     color: var(--fg-3); font-size: 13px; font-weight: 600;
-    padding: 5px 12px; border-radius: 14px; cursor: pointer;
+    width: 28px; height: 28px; border-radius: 14px; cursor: pointer;
     transition: background .15s, border-color .15s, color .15s;
     line-height: 1.5; user-select: none; -webkit-user-select: none; font-family: inherit;
   }
 .chat-target-btn:hover { border-color: rgba(var(--brand-rgb), 0.45); color: var(--fg-1); }
-.chat-target-btn svg { width: 16px; height: 16px; }
+.chat-target-btn svg { width: 20px; height: 20px; }
 .chat-target-btn .chat-target-label {
     display: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 .chat-target-btn.targeting {
     color: var(--brand); border-color: rgba(var(--brand-rgb), 0.5);
     background: color-mix(in oklab, var(--brand) 12%, var(--chat-pill-bg, transparent));
+    width: auto; gap: 6px; padding: 5px 16px;
   }
 .chat-target-btn.targeting .chat-target-label { display: inline; }
 
@@ -1307,21 +2348,100 @@ body.light-mode .chat-mode-btn:hover {
     flex-direction: column;
     min-height: 0;
     position: relative;
-    overflow: hidden;
-  }
-#chat-messages-inner {
-    flex: 1;
-    overflow-y: auto;
+    overflow: hidden auto;
     overscroll-behavior-y: contain;
     -webkit-overflow-scrolling: touch;
     touch-action: pan-y;
-    padding: 12px 8px 40px 15px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--bg-tint) transparent;
+    /* Fade mask — sizes controlled by JS from chat_ui.json fade config */
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent 0,
+      #000 var(--chat-fade-top, 0px),
+      #000 calc(100% - var(--chat-fade-bottom, 0px)),
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0,
+      #000 var(--chat-fade-top, 0px),
+      #000 calc(100% - var(--chat-fade-bottom, 0px)),
+      transparent 100%
+    );
+    -webkit-mask-composite: content-box;
+    mask-composite: content-box;
+  }
+#chat-messages-inner {
+    flex: 1;
+    overflow-y: visible;
+    /* Bottom padding = tail clearance. The composer (#chat-input-area) is an
+       absolute overlay on the scroller's bottom (PILL-PANEL-LAYOUT), so the
+       transcript needs bottom padding for the last line to stop ABOVE the
+       pill instead of behind it. 100px floor (user-visible stop point); the
+       ResizeObserver in chat-ui.js raises it live to the pill's actual
+       height + gap. */
+    padding: 12px 8px 100px 15px;
     display: flex;
     flex-direction: column;
     gap: 12px;
-    scrollbar-width: thin;
-    scrollbar-color: var(--bg-tint) transparent;
   }
+
+  /* Pull-to-refresh spinner — sits above the messages, hidden until pulled. */
+  .chat-spinner-edge {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 0;
+    opacity: 0;
+    overflow: visible;
+    pointer-events: none;
+    transition: height 0.25s ease, opacity 0.25s ease;
+  }
+  .chat-spinner-edge.visible {
+    height: 40px;
+    opacity: 1;
+  }
+  /* The wheel is hidden during pull and release-armed states — only the
+     label text shows ("Pull to refresh" / "Release to refresh"). The wheel
+     appears, already spinning, only once the refresh actually fires. */
+  .chat-spinner-edge .chat-spinner-icon {
+    display: none;
+  }
+  .chat-spinner-edge.loading .chat-spinner-icon {
+    display: inline-block;
+    animation: chat-spin 0.6s linear infinite;
+  }
+  .chat-spinner-icon {
+    width: 18px;
+    height: 18px;
+    border: 2.5px solid var(--bg-tint, #ccc);
+    border-top-color: var(--accent, #555);
+    border-radius: 50%;
+  }
+  .chat-spinner-label {
+    font-size: 12px;
+    color: var(--fg-2);
+  }
+  @keyframes chat-spin { to { transform: rotate(360deg); } }
+
+  /* Bottom pull-to-refresh spinner — absolutely positioned inside #chat-panel
+     so it stays visible in the gap when the rubber-band pull translates the
+     scroller upward. The --chat-input-h variable is kept in sync by the
+     padding observer in chat-ui.js. */
+  .chat-spinner-edge.bottom {
+    position: absolute;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: calc(var(--chat-input-h, 56px) + 0px);
+    z-index: 4;
+  }
+
   /* Chat jump-nav FABs — the round chevron buttons that float over the chat
      scroller: the scroll-to-bottom button above the pill, and the two
      top-of-panel jump buttons (#chat-top-nav). All share ONE themed look so a
@@ -1334,59 +2454,94 @@ body.light-mode .chat-mode-btn:hover {
     width: 32px;
     height: 32px;
     border-radius: 50%;
-    border: var(--border-width) solid var(--accent-line);
-    background: var(--accent-mid);
-    color: var(--accent);
+    border: none;
+    background: none;
+    color: var(--fg-3);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: opacity 0.2s, background 0.2s, color 0.2s, border-color 0.2s;
+    transition: opacity 0.2s, background 0.2s, color 0.2s, visibility 0s 0.2s;
     opacity: 0;
+    /* Hidden FABs must not keep (or accept) focus — an opacity-0 button still
+       holds focus after a click, so when it reappears the browser re-paints
+       its focus ring. visibility:hidden makes it unfocusable and drops it out
+       of the tab order; the 0.2s transition delay keeps the fade-out smooth. */
+    visibility: hidden;
     pointer-events: none;
-    box-shadow: 0 2px 8px rgba(var(--shadow-rgb), 0.3);
-    -webkit-backdrop-filter: blur(6px);
-    backdrop-filter: blur(6px);
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
   }
   .chat-nav-fab.visible {
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
+    /* Show flips visibility instantly (no delay) so the FAB isn't invisible
+       for the first 0.2s of its fade-in. */
+    transition: opacity 0.2s, background 0.2s, color 0.2s, visibility 0s;
   }
   .chat-nav-fab:hover {
-    background: var(--accent-line);
-    border-color: var(--accent);
-    color: var(--accent);
+    color: var(--brand);
   }
-  /* Scroll-to-bottom FAB — floats centered above the chat pill, just below
-     the message fade mask. Shown when the user has scrolled up away from the
-     latest message. Clicking it scrolls to the bottom and re-engages
-     auto-scroll. (Visual look comes from the shared .chat-nav-fab above.) */
+  /* No focus/active ring or border of any kind — the busy spinner is the only
+     notifier. All chevrons (up + down) share this flat look, matching the
+     header icon buttons. */
+  .chat-nav-fab:focus,
+  .chat-nav-fab:focus-visible {
+    outline: none;
+    box-shadow: none;
+  }
+  .chat-nav-fab:active {
+    transform: scale(0.94);
+  }
+  /* Busy state — a DB-truthful jump (top-of-session / last-user / newest) is
+     fetching its window: the chevron swaps for a spinner while keeping the FAB
+     shape. Same accent family as the glyphs above, so it re-tints with the
+     palette. JS toggles `.busy` (chat-ui.js _setBtnBusy). */
+  .chat-nav-fab.busy {
+    pointer-events: none;
+    cursor: default;
+  }
+  .chat-nav-fab.busy svg {
+    display: none;
+  }
+  .chat-nav-fab.busy::after {
+    content: '';
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid var(--accent-line);
+    border-top-color: var(--accent);
+    animation: chat-nav-fab-spin 0.6s linear infinite;
+    box-sizing: border-box;
+  }
+  @keyframes chat-nav-fab-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  /* Scroll-to-bottom FAB — child of #chat-input-row (the composer pill, which
+     is position: relative), NOT of #chat-panel. Anchoring it to the pill makes
+     the button hover DIRECTLY above the composer — the "footer" — with a fixed
+     8px gap, and stay glued there no matter what rows appear above the pill
+     (activity bar, suggestions, billing panel) or below it (stats carousel,
+     token/mode row). Those rows can push the pill around; the FAB tracks the
+     pill's own top edge instead of the whole input-area height, so it never
+     ends up floating above the other footer rows (the old --chat-input-h
+     anchoring did exactly that: bottom = full input-area height + 8px, which
+     lifted the button above the activity bar whenever one was visible).
+     right: 0 = the pill's right edge — the end of the footer rows — so the
+     button reads as INLINE with the topmost row above the composer instead of
+     taking extra space above the footer. It stays inside #chat-panel
+     (overflow: hidden) because it only ever sits just above the pill, near
+     the panel's bottom. Survives footer-mode pill rebuilds: applyChatPillLayout
+     rescues stable nodes and only rebuilds the .chat-pill-layout-rows child. */
   #chat-scroll-bottom-btn {
     position: absolute;
-    /* Float above the pill's top edge, centered. The pill has position:relative
-       so 100% = pill's full height; bottom: 100% + gap puts it just above. */
-    bottom: calc(100% + 6px);
-    left: 50%;
-    transform: translateX(-50%);
+    bottom: calc(100% + 8px);
+    right: 0;
     z-index: 10;
   }
-  /* Top-of-panel jump nav — a side-by-side pair floating over the top edge of
-     the message scroller. Double chevron (left) → start of session; single
-     chevron (right) → step up one user message. The container is click-through
-     so the gaps never block scrolling; each visible button re-enables its own
-     clicks. */
-  #chat-top-nav {
-    position: absolute;
-    top: 8px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 10;
-    display: flex;
-    flex-direction: row;
-    gap: 6px;
-    pointer-events: none;
-  }
-/* Session-switch loading spinner — shown in the chat area while messages
+  /* Session-switch loading spinner — shown in the chat area while messages
    are being fetched from the server after selecting a different session. */
 .chat-loading-wrap {
   display: flex;
@@ -1398,6 +2553,18 @@ body.light-mode .chat-mode-btn:hover {
   padding: 48px 16px;
   color: var(--fg-3);
 }
+#chat-components-sticky{position:relative;z-index:4;display:flex;flex-direction:row;flex-wrap:nowrap;gap:10px;padding:0 14px 8px;pointer-events:none;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none}
+#chat-components-sticky::-webkit-scrollbar{display:none}
+#chat-components-sticky:empty{padding:0}
+.chat-component{pointer-events:auto;background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:14px;box-shadow:var(--shadow-rest);padding:12px 28px 12px 16px;color:var(--fg-1);max-width:260px;min-width:180px;flex:0 0 auto;white-space:normal}
+.chat-bubble .chat-component{margin-top:10px}.chat-component h3{margin:0 0 6px;font-size:12px;font-weight:600;letter-spacing:0.02em;text-transform:uppercase;color:var(--fg-3)}.chat-component p{margin:0;color:var(--fg-2);font-size:13px;line-height:1.45}.chat-component-list{display:flex;flex-direction:column;gap:6px}.chat-component-item{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--fg-2);cursor:pointer}.chat-component-item input{accent-color:var(--accent)}.chat-component-item input:checked+span{text-decoration:line-through;color:var(--fg-3)}
+/* status */ .chat-component-status-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}.chat-component-status-row{display:flex;justify-content:space-between;align-items:center;font-size:13px}.chat-component-status-label{color:var(--fg-3)}.chat-component-status-value{font-weight:600}.chat-component-status-value.status-good{color:var(--success)}.chat-component-status-value.status-warning{color:var(--warning)}.chat-component-status-value.status-danger{color:var(--danger)}
+/* choice */ .chat-component-choice-btn{display:block;width:100%;margin:4px 0;padding:8px 12px;background:var(--bg-tint);border:var(--border-width) solid var(--border);border-radius:10px;color:var(--fg-2);font-size:13px;cursor:pointer;transition:background .15s,border-color .15s,color .15s}.chat-component-choice-btn:hover{border-color:var(--border-strong);color:var(--fg-1)}.chat-component-choice-btn.active{background:var(--accent-soft);border-color:var(--accent-mid);color:var(--accent);font-weight:600}
+/* form */ .chat-component-form-field{margin:6px 0}.chat-component-form-field label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.03em;color:var(--fg-3);margin-bottom:3px}.chat-component-form-field input,.chat-component-form-field select,.chat-component-form-field textarea{width:100%;padding:7px 10px;background:var(--bg-2);border:var(--border-width) solid var(--border);border-radius:8px;color:var(--fg-1);font-size:13px;font-family:inherit;box-sizing:border-box}.chat-component-form-field input:focus,.chat-component-form-field select:focus,.chat-component-form-field textarea:focus{outline:none;border-color:var(--accent)}.chat-component-form-submit{margin-top:8px;padding:7px 18px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s}.chat-component-form-submit:hover{background:var(--accent-hover)}.chat-component-form-submit:disabled{opacity:.5;cursor:default}.chat-component-form-done{color:var(--success);font-weight:600}
+/* approval */ .chat-component-approval-actions{display:flex;gap:8px;margin-top:10px}.chat-component-approval-approve,.chat-component-approval-reject{padding:7px 18px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;transition:background .15s}.chat-component-approval-approve{background:var(--success);color:#fff}.chat-component-approval-approve:hover{filter:brightness(1.1)}.chat-component-approval-reject{background:var(--bg-tint);color:var(--fg-2);border:var(--border-width) solid var(--border)}.chat-component-approval-reject:hover{border-color:var(--danger);color:var(--danger)}.chat-component-approval-approve:disabled,.chat-component-approval-reject:disabled{opacity:.5;cursor:default}.chat-component-approval-result{font-weight:600}.chat-component-approval-result.approved{color:var(--success)}.chat-component-approval-result.rejected{color:var(--danger)}
+/* dismiss button — top-right × on every component */
+.chat-component-dismiss{position:absolute;top:6px;right:6px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;background:transparent;border:none;color:var(--fg-4);cursor:pointer;border-radius:6px;transition:color .15s,background .15s}.chat-component-dismiss:hover{color:var(--fg-1);background:var(--bg-tint)}.chat-component-dismiss:disabled{opacity:.3;cursor:default}
+.chat-component{position:relative}
 .chat-loading-spinner {
   animation: chat-loading-spin 1s linear infinite;
 }
@@ -1462,6 +2629,58 @@ body.light-mode .chat-loading-wrap {
   border-left: var(--border-width) solid var(--border);
 }
 
+/* ── Pin-swipe next panel — directional hint screen ──
+   A large thick arrow points the way the swipe is travelling, centred in the
+   panel. Beside it, "Session: <name>" reads top-to-bottom and hugs the edge
+   that becomes visible first: LEFT when the next session rides in from the
+   right, RIGHT when the previous session rides in from the left. */
+.chat-messages-next .pin-swipe-arrow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--fg-2);
+  opacity: 0.9;
+  pointer-events: none;
+}
+.chat-messages-next .pin-swipe-arrow svg {
+  display: block;
+  width: 56px;
+  height: 56px;
+}
+.chat-messages-next .pin-swipe-edge-hint {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: var(--fg-2);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-height: 72%;
+  pointer-events: none;
+}
+.chat-messages-next .pin-swipe-edge-hint[data-edge="left"] {
+  left: 10px;
+}
+.chat-messages-next .pin-swipe-edge-hint[data-edge="right"] {
+  right: 10px;
+}
+
+/* ── Swipe-committed transcript fade-in ──
+   After a swipe lands, the freshly loaded session fades in over the loading
+   spinner (class applied by session-load.js when the swipe flag is set). */
+.chat-messages-fadein {
+  animation: chat-messages-fadein 0.28s ease;
+}
+@keyframes chat-messages-fadein {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 .chat-bubble {
     padding: 10px 14px;
     border-radius: 12px;
@@ -1471,7 +2690,14 @@ body.light-mode .chat-loading-wrap {
     word-wrap: break-word;
     white-space: pre-wrap;
     flex-shrink: 0;
+    cursor: text; /* message text reads as selectable text, not clickable UI */
   }
+/* Links and collapsible notices inside bubbles keep working on click but
+   never advertise it with the link-finger cursor — hovering any chat text
+   shows the text caret instead. Real controls (action/gutter/component
+   buttons) keep their own explicit pointer cursors. */
+.chat-bubble a { cursor: text; }
+.chat-bubble.recovery-notice > summary { cursor: text; }
 
 /* Header row inside every chat bubble: timestamp on the left, role label on the right. */
 .bubble-header {
@@ -1539,6 +2765,47 @@ body.light-mode .chat-loading-wrap {
   flex-direction: column;
 }
 
+/* Premium model bubble — fire-like glow when the agent switches to a
+   high-effort model (set by the two-phase protocol). A warm ember pulse
+   that's distinct from the cool accent glow of the thinking indicator,
+   so the user sees a live visual cue the moment premium kicks in. */
+.chat-bubble.agent.premium {
+  animation: premiumGlow 2s ease-in-out infinite;
+  border-color: rgba(var(--brand-rgb), 0.45);
+}
+@keyframes premiumGlow {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(var(--brand-rgb), 0.25),
+      0 0 8px -2px rgba(var(--brand-rgb), 0.2),
+      0 0 16px -4px rgba(var(--brand-rgb), 0.08);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(var(--brand-rgb), 0.45),
+      0 0 14px -1px rgba(var(--brand-rgb), 0.35),
+      0 0 28px -4px rgba(var(--brand-rgb), 0.18);
+  }
+}
+/* In light mode the glow is punchier — deeper shadows, more saturated. */
+body.light-mode .chat-bubble.agent.premium {
+  animation: premiumGlowLight 2s ease-in-out infinite;
+}
+@keyframes premiumGlowLight {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(var(--brand-rgb), 0.35),
+      0 0 10px -2px rgba(var(--brand-rgb), 0.25),
+      0 0 22px -6px rgba(var(--brand-rgb), 0.12);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(var(--brand-rgb), 0.55),
+      0 0 18px -1px rgba(var(--brand-rgb), 0.4),
+      0 0 36px -6px rgba(var(--brand-rgb), 0.22);
+  }
+}
+
 /* Grouped agent bubbles — consecutive prose from one reply "joins up" into a
    single stack: the gap tightens and the touching corners square off so the run
    reads as one block, with the rounded tail surviving only at the very bottom.
@@ -1556,7 +2823,7 @@ body.light-mode .chat-loading-wrap {
 
 /* Task frames — a border drawn around every run of bubbles that belong to the
    same "task" (one request + the agent's work + the user's approval/feedback).
-   Drawn by ui/chat-side-panel/js/chat-task-frames.js as a non-reparenting
+   Drawn by ui/chat/js/chat-task-frames.js as a non-reparenting
    overlay: absolutely-positioned boxes behind the bubbles. Bubbles are lifted
    above the frame layer so the frame reads as an enclosing band in the gaps.
    Themed from the brand palette so it tracks any dark/light scheme swap. */
@@ -1676,6 +2943,16 @@ body.light-mode .chat-loading-wrap {
 .chat-bubble.agent.git-watch-notice {
     border-left: 3px solid var(--success);
   }
+/* Debug note for background operations (memory_search / memory_save) —
+   a subtle italic line in the transcript, not a full bubble. */
+.memory-debug-note {
+    font-size: 11px;
+    color: var(--fg-4);
+    font-style: italic;
+    padding: 0 16px 2px;
+    line-height: 1.4;
+    user-select: none;
+  }
 .chat-bubble .label {
     font-size: 12px;
     font-weight: 600;
@@ -1687,9 +2964,10 @@ body.light-mode .chat-loading-wrap {
 .chat-bubble.collapsed {
   padding-bottom: 0;
 }
-.chat-bubble.collapsed > :not(.bubble-actions):not(.label),
+.chat-bubble.collapsed > :not(.bubble-actions):not(.label):not(.turn-gutter),
 .chat-bubble.collapsed > .bubble-body,
-.chat-bubble.collapsed > .md-body {
+.chat-bubble.collapsed > .md-body,
+.chat-bubble.collapsed > .turn-section {
   display: none;
 }
 .chat-bubble.collapsed > .label {
@@ -1702,6 +2980,154 @@ body.light-mode .chat-loading-wrap {
   padding-top: 4px;
   padding-bottom: 4px;
 }
+/* When collapsed, force one gutter visible so actions are still reachable */
+.chat-bubble.collapsed .turn-gutter {
+  display: flex !important;
+  opacity: 1;
+  margin-top: 0;
+  border-top: none;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.chat-bubble.collapsed .turn-gutter[hidden] {
+  display: flex !important;
+}
+
+/* ── Turn sections — a single .chat-bubble.agent contains multiple sections ──
+   (LLM text blocks, tool-call blocks) that together form one agent turn.
+   Click an LLM section to reveal an inline gutter with time, model, and
+   action buttons between it and the next section. */
+
+.turn-section {
+  /* each section flows naturally inside the bubble */
+}
+
+.turn-section.llm-section {
+  cursor: text; /* text is selectable; gutter reveal still works on click */
+  border-radius: 6px;
+  padding: 4px 6px;
+  margin: -4px -6px; /* pull into the bubble padding so click-area covers edge-to-edge */
+  transition: background 0.12s ease;
+}
+.turn-section.llm-section:hover {
+  background: rgba(var(--ink-rgb), 0.03);
+}
+
+.turn-section.tool-section {
+  /* tool calls naturally follow their preceding LLM section */
+}
+
+.turn-section + .turn-section {
+  margin-top: 8px;
+}
+
+/* Gutter — the expandable strip between sections that shows time/model/actions.
+   Hidden by default; revealed when the LLM section above it is clicked.
+   position:relative + z-index lifts the strip (and its buttons) above any
+   following sibling — e.g. a grouped bubble pulled up by margin-top:-8px — so
+   footer clicks are never swallowed by the next bubble. */
+.turn-gutter {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0 2px;
+  margin: 4px 0 6px;
+  opacity: 0.65;
+  transition: opacity 0.15s ease;
+  user-select: none;
+}
+.turn-gutter:not([hidden]) {
+  /* when visible, normal flex flow */
+}
+.turn-gutter[hidden] {
+  display: none !important;
+}
+.turn-gutter:hover {
+  opacity: 1;
+}
+
+.turn-gutter-time {
+  font-size: 11px;
+  color: var(--fg-3);
+  opacity: 0.7;
+  line-height: 1;
+  align-self: center;
+  pointer-events: none;
+}
+
+.turn-gutter-model {
+  margin-right: auto;
+  font-size: 11px;
+  color: var(--fg-3);
+  opacity: 0.7;
+  line-height: 1;
+  align-self: center;
+  user-select: none;
+  max-width: 45%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+}
+.turn-gutter-model > bdi { unicode-bidi: isolate; }
+
+.turn-gutter-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 2px 5px;
+  cursor: pointer;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  font-size: 13px;
+}
+.turn-gutter-btn:hover {
+  background: rgba(var(--ink-rgb), 0.06);
+  border-color: rgba(var(--ink-rgb), 0.12);
+}
+
+/* ── Bubble-action confirmation notices ─────────────────────────────────────
+   Small floating pills ("Copied", "Session forked", "Turn deleted", …) shown
+   by chat-bubble-actions.js _showActionNotice after a footer action completes.
+   Purely informational: pointer-events none, stacked above the chat pill,
+   themed from design-system vars so they track dark/light. */
+.bubble-action-notice {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 80vw;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--bg-elev);
+  border: var(--border-width) solid var(--border);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  box-shadow: var(--shadow-rest);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bubble-action-notice.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+.bubble-action-notice.err {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+.bubble-action-notice i { flex: none; }
 
 .chat-bubble.interrupted {
     border: 1px solid var(--warning);
@@ -1709,6 +3135,46 @@ body.light-mode .chat-loading-wrap {
     align-self: flex-start;
     font-style: italic;
   }
+
+/* Recovery notices are intentionally operational UI, not an agent response.
+   The summary is always visible; native <details> gives the user a compact,
+   keyboard-accessible view of the cause and recovery record on demand. */
+.chat-bubble.recovery-notice {
+  align-self: flex-start;
+  border: 1px solid var(--success, #2da44e);
+  color: var(--fg-1);
+  background: color-mix(in srgb, var(--success, #2da44e) 8%, transparent);
+  font-style: normal;
+  cursor: pointer;
+}
+.chat-bubble.recovery-notice > summary {
+  color: var(--success, #2da44e);
+  font-weight: 600;
+  list-style: none;
+}
+.chat-bubble.recovery-notice > summary::-webkit-details-marker { display: none; }
+.chat-bubble.recovery-notice > summary::before { content: '✓ '; }
+.chat-bubble.recovery-notice > dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 10px;
+  margin: 10px 0 0;
+  font-size: 12px;
+  cursor: text;
+}
+.chat-bubble.recovery-notice > dl > dt { color: var(--fg-3); }
+.chat-bubble.recovery-notice > dl > dd { margin: 0; overflow-wrap: anywhere; }
+
+/* ── Connection lost (5-min timeout) — user-facing notice that the server
+     is unreachable, shown after 5 minutes of disconnection. */
+.chat-bubble.connection-lost-global {
+  align-self: flex-start;
+  border: 1px solid var(--danger, #cf222e);
+  color: var(--fg-1);
+  background: color-mix(in srgb, var(--danger, #cf222e) 8%, transparent);
+  font-style: italic;
+  font-size: 13px;
+}
 
 /* ── Pending (outbox) bubble — message queued locally because the server
      was unreachable. Retry and dismiss buttons appear in the action bar. */
@@ -1723,6 +3189,27 @@ body.light-mode .chat-loading-wrap {
   content: ' ⏳';
   font-size: 11px;
 }
+.chat-bubble.user.pending.save-error {
+  border-color: var(--danger);
+  background: rgba(var(--danger-rgb), 0.06);
+}
+.chat-bubble.user.pending.save-error .label { color: var(--danger); }
+.chat-bubble.user.pending.save-error .label::after { content: ' ⚠'; }
+.chat-bubble.user.saved { border-color: var(--success, #35b36b); }
+.chat-bubble.user.saved .label { color: var(--success, #35b36b); }
+.persistence-status { cursor: pointer; }
+.persistence-status:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.persistence-details {
+  display: none;
+  margin-top: 7px;
+  padding: 7px 9px;
+  border-left: 2px solid var(--fg-3);
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+.persistence-details.open { display: block; }
 .pending-actions {
   display: flex;
   gap: 6px;
@@ -1743,6 +3230,20 @@ body.light-mode .chat-loading-wrap {
 .bubble-action-btn.pending-dismiss:hover {
   color: var(--danger);
   background: rgba(var(--danger-rgb), 0.12);
+}
+/* Force-run button on a gate-queued bubble — amber like the queued state,
+   but visually distinct from the retry/dismiss pair. */
+.bubble-action-btn.force-run-btn {
+  color: var(--warning);
+  font-weight: 600;
+}
+.bubble-action-btn.force-run-btn:hover {
+  color: var(--warning);
+  background: rgba(var(--warning-rgb), 0.14);
+}
+.bubble-action-btn.force-run-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 /* Light mode adjustments — a stronger warm fill than the base 3% tint. */
 body.light-mode .chat-bubble.user.pending {
@@ -1765,7 +3266,7 @@ body.light-mode .chat-bubble.user.pending .label {
 
 /* ── Rendered Markdown inside agent bubbles ───────────────────────────────
    Agent replies render as Markdown into a `.md-body` (see
-   ui/chat-side-panel/js/chat-bubble.js _renderMarkdownBody). The bubble keeps
+   ui/chat/js/chat-bubble.js _renderMarkdownBody). The bubble keeps
    its own bg/text colour; these rules
    only lay out the block elements. Theme-safe by design: structural surfaces
    (code, tables, rules) use design-system tokens, while text inherits the
@@ -1846,45 +3347,158 @@ body.light-mode .chat-bubble.user.pending .label {
 .md-body tbody tr:nth-child(even) td { background: var(--bg-tint); }
 .md-body img { max-width: 100%; border-radius: 8px; }
 
-/* ── Stop + Continue action buttons (above the chat pill) ──────────────────
-   Both buttons are ALWAYS present, sitting in #chat-action-row at the pill's
-   right edge. Their *resting* state is quiet (dimmed, no glow); the one that's
-   relevant right now gets `.active` (full opacity + a breathing glow) from
-   ui/chat-side-panel/js/chat-ui.js. Stop is active while the agent processes; Continue is active
-   while the agent is idle and waiting. The row itself hides only when no agent
-   is selected. The glow uses currentColor in its box-shadow, so the single
-   keyframe adapts to each button's own colour and to light mode automatically. */
-/* CHAT-ABOVE-PILL: the band directly above the pill that holds BOTH the live
-   activity bar (the "Thinking…"/tool-call chip + chevron) and the Stop/Continue
-   actions on ONE row. The action row rides in normal flow on the right (defining
-   the band's height); #chat-activity is absolutely positioned to fill the band
-   from the left, baselined to the same row, at a LOWER z-index — so when the
-   activity note runs long it extends rightward and slides BEHIND the buttons
-   (which carry the pill's opaque glass) instead of wrapping or shoving them
-   off-row. The expandable tool-call panel grows upward as a floating overlay.
+/* ── Stop + Continue action buttons ─────────────────────────────────────────
+   MOVED: Stop/Continue now live INSIDE the chat pill (.chat-pill-controls) as
+   small icon-only circle buttons — red octagon (stop) and brand play triangle
+   (continue). Only one is visible at a time: stop while processing, continue
+   while idle. Both hidden when no agent is selected.
+   The old .chat-action-row and .chat-stop-btn / .chat-continue-btn styles are
+   kept below for the embed chat widget, which still uses the above-pill layout. */
+/* CHAT-ABOVE-PILL: the band directly above the pill that holds the
+   activity bar (the "Thinking…"/tool-call chip + chevron) and the
+   scroll-to-bottom button. #chat-activity is absolutely positioned to
+   fill the band from the left; the scroll button sits on the right edge.
    Capped to the pill width and centred per CHAT-PILL-ALIGN. pointer-events:none
-   lets the empty band pass clicks through to the messages behind; the buttons,
-   bar and panel each re-enable their own. */
+   lets the empty band pass clicks through to the messages behind; the
+   bar and panel each re-enable their own.
+   NOTE: Stop/Continue buttons have moved INSIDE the chat pill itself
+   (.chat-pill-controls) — see the block above for those styles. */
 .chat-above-pill {
     position: relative;
     display: flex;
-    align-items: flex-end;
-    justify-content: flex-end;      /* Stop/Continue hug the pill's right edge */
-    width: 100%;
-    max-width: var(--chat-pill-max-width, 500px);
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 2px;
+    width: var(--chat-pill-current-width, var(--chat-pill-width, 500px));
+    max-width: 100%;
     margin-inline: auto;
+    margin-bottom: 2px;
     z-index: 6;
     pointer-events: none;
+    /* Smooth transition for idle ↔ active footer mode switches */
+    transition: opacity 0.3s ease, max-height 0.3s ease, margin 0.3s ease;
+    overflow: hidden;
+    /* Room for up to five 28px rows (see above_pill.rows in chat_ui.json).
+       The expanded tool-call panel overrides this via #chat-above-pill.expanded. */
+    max-height: 200px;
+    opacity: 1;
   }
-/* Whole band collapses when no agent is selected. The action row is the only
-   in-flow child, so hiding it alone would otherwise leave a stray gap. */
-.chat-above-pill:has(.chat-action-row.hidden) { display: none; }
+  /* The expanded tool-call panel (up to 240px) must never be clipped by the
+     row cap — open it fully, mirroring the idle-mode exception below. */
+  #chat-above-pill.expanded {
+    max-height: none;
+    overflow: visible;
+  }
+  .chat-above-pill.idle-collapsed {
+    max-height: 0;
+    opacity: 0;
+    margin: 0;
+    pointer-events: none;
+  }
+  /* Keep the above-pill visible when it contains the activity bar */
+  .chat-above-pill.idle-collapsed:has(#chat-activity-bar) {
+    max-height: none;
+    opacity: 1;
+    pointer-events: none;
+  }
+  /* Multi-row plan: in idle mode only the activity row stays — any other
+     rows (extra chips) collapse so the idle footer stays minimal. */
+  .chat-above-pill.idle-collapsed .chat-header-row:not(:has(#chat-activity-bar)) {
+    display: none;
+  }
+  .chat-above-pill.idle-collapsed:has(#chat-activity-bar) #chat-activity-bar,
+  .chat-above-pill.idle-collapsed:has(#chat-activity-bar) #chat-activity-panel {
+    pointer-events: auto;
+  }
+/* Hide static controls not yet placed in a row by the builder (same pattern
+   as #chat-header > [data-header-control]). Once reparented into a row they
+   are no longer direct children, so they render normally. */
+.chat-above-pill > .chat-header-row { align-self: stretch; }
+.chat-above-pill > [data-header-control] { display: none !important; }
+/* Zone rows inherit pointer events; the empty container takes no space. */
+
+/* ── Trial-ended billing panel (chat) ────────────────────────────────────────
+   Shown above the composer pill when a user's trial has ended (rendered by
+   chat-send.js _syncBillingPanel). Mirrors the pill width so it sits neatly
+   above the composer; uses design-system variables for both themes. */
+#chat-billing-panel {
+  width: var(--chat-pill-current-width, var(--chat-pill-width, 500px));
+  max-width: 100%;
+  margin-inline: auto;
+  margin-bottom: 8px;
+}
+#chat-billing-panel[hidden] { display: none; }
+.billing-panel-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.18);
+}
+.billing-panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-1);
+  margin-bottom: 4px;
+}
+.billing-panel-desc {
+  font-size: 12px;
+  color: var(--fg-2);
+  line-height: 1.45;
+  margin-bottom: 12px;
+}
+.billing-panel-btn {
+  display: block;
+  width: 100%;
+  margin: 6px 0;
+  padding: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--fg-1);
+}
+.billing-panel-btn-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: white; /* contrast ink on accent fill */
+}
+.billing-panel-btn-ghost {
+  background: transparent;
+  font-weight: 500;
+  color: var(--fg-2);
+}
+.billing-panel-btn-ghost:hover { color: var(--fg-1); }
+.billing-panel-btn:disabled { opacity: 0.6; cursor: default; }
+.billing-panel-info {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-2);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+}
+.billing-panel-info[hidden] { display: none; }
+.billing-panel-info-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-1);
+  margin-bottom: 4px;
+}
+.billing-panel-info-text {
+  font-size: 12px;
+  color: var(--fg-2);
+  line-height: 1.5;
+}
 
 .chat-action-row {
+    align-self: stretch;
     display: flex;
     justify-content: flex-end;      /* Stop/Continue hug the pill's right edge */
     align-items: center;
-    gap: 6px;
+    gap: 2px;
     /* Rides ABOVE the activity bar (z-index) so a long activity note slides
        behind these buttons; re-enables pointer events the wrapper switched off. */
     position: relative;
@@ -1894,6 +3508,53 @@ body.light-mode .chat-bubble.user.pending .label {
 /* Hidden when no agent is selected (toggled by chat.js). */
 .chat-action-row.hidden { display: none; }
 
+/* ── In-pill stop / continue — small icon-only buttons that sit in the
+   pill's cell (2,2) alongside the stats row, right-aligned. Only the
+   relevant one is visible at a time: stop (red octagon) when the agent is
+   processing, continue (brand play triangle) when the agent is idle. */
+.chat-pill-controls {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+.chat-pill-stop,
+.chat-pill-continue {
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    color: var(--fg-3);
+    transition: color 0.15s, background 0.15s, opacity 0.15s;
+    flex-shrink: 0;
+  }
+.chat-pill-stop {
+    color: var(--danger);
+  }
+.chat-pill-stop:hover {
+    background: rgba(var(--danger-rgb), 0.12);
+    color: var(--danger);
+  }
+.chat-pill-continue {
+    color: var(--fg-3);
+  }
+.chat-pill-continue:hover {
+    background: rgba(var(--brand-rgb), 0.08);
+    color: var(--brand);
+  }
+/* Visible state: remove hidden attr so the grid cell occupies space */
+.chat-pill-stop:not([hidden]),
+.chat-pill-continue:not([hidden]) {
+    display: inline-flex;
+  }
+
+/* ── Old above-pill action row buttons — keep for embed widget compatibility ── */
 .chat-continue-btn,
 .chat-stop-btn {
     display: inline-flex;
@@ -1902,18 +3563,13 @@ body.light-mode .chat-bubble.user.pending .label {
     font-size: 13px;
     font-weight: 600;
     padding: 5px 16px;
+    height: 28px;
     border-radius: 14px;
     cursor: pointer;
     line-height: 1.5;
     user-select: none;
     -webkit-user-select: none;
     font-family: inherit;
-    /* CHAT-PILL-SYNC: wear the chat pill's exact glass skin — same background
-       (the customisable --chat-pill-bg, falling back to the panel-tint the pill
-       uses), same soft currentColor border and the same blur — so the controls
-       around the pill read as the same opaque material instead of see-through
-       tints. The relevant button is signalled by the active-glow below, not by
-       being dimmed, so they rest at full opacity. */
     opacity: 1;
     background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent));
     border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent);
@@ -1925,36 +3581,30 @@ body.light-mode .chat-continue-btn,
 body.light-mode .chat-stop-btn {
     background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 85%, transparent));
   }
-/* The relevant button: full strength + a breathing glow that matches the
-   chat pill's rhythm. currentColor keeps it tied to each button's own colour. */
 .chat-continue-btn.active,
 .chat-stop-btn.active {
     opacity: 1;
     box-shadow: 0 0 0 1px color-mix(in oklab, currentColor 50%, transparent),
                 0 0 10px -1px color-mix(in oklab, currentColor 60%, transparent);
   }
-
-/* Continue — clicking it sends a "continue" message. Background/border/blur come
-   from the shared glass rule above (matching the pill); only the brand text and
-   the hover/active border-strengthening live here. */
 .chat-continue-btn {
     color: var(--brand);
   }
 .chat-continue-btn:hover {
+    color: color-mix(in srgb, var(--brand) 45%, black);
     border-color: rgba(var(--brand-rgb), 0.45);
   }
 .chat-continue-btn:active {
+    color: color-mix(in srgb, var(--brand) 30%, black);
     border-color: rgba(var(--brand-rgb), 0.6);
   }
 body.light-mode .chat-continue-btn {
     color: var(--brand);
   }
 body.light-mode .chat-continue-btn:hover {
+    color: color-mix(in srgb, var(--brand) 30%, black);
     border-color: rgba(var(--brand-rgb), 0.45);
   }
-
-/* Stop — clicking it interrupts the run. Same shared pill glass; the red
-   identity stays in the text colour and the hover/active border. */
 .chat-stop-btn {
     color: var(--danger);
   }
@@ -1966,7 +3616,7 @@ body.light-mode .chat-continue-btn:hover {
   }
 
 /* ── Suggested-reply chips (above the chat pill) ────────────────────────────
-   Populated by ui/chat-side-panel/js/suggestions.js from the silent user-impersonator agent.
+   Populated by ui/chat/js/suggestions.js from the silent user-impersonator agent.
    Tapping a chip fills the pill. Theme-safe via design-system variables. */
 .chat-suggest-row {
     display: flex;
@@ -1975,8 +3625,8 @@ body.light-mode .chat-continue-btn:hover {
     align-self: stretch;
     margin-bottom: 4px;
     padding: 0 6px;
-    width: 100%;
-    max-width: var(--chat-pill-max-width, 500px);
+    width: var(--chat-pill-current-width, var(--chat-pill-width, 500px));
+    max-width: 100%;
     margin-inline: auto;
   }
 .chat-suggest-row:empty {
@@ -2069,27 +3719,36 @@ body.light-mode .chat-continue-btn:hover {
    rest; pills no longer compute a bottom offset to match each other.) */
 
 .chat-pill {
-    /* Grid layout: text fills the left column and spans every row; the
-       right column stacks send (or mic) on TOP and attach immediately
-       BELOW it, both anchored at the bottom of the pill via the 1fr
-       spacer row above them. Position: relative is for the ::before
-       scroll-position indicator that sits on the left edge. */
+    /* 3×2 grid layout:
+       (1,1) empty — future left-column buttons,
+       (1,2) textarea — stretches to fill,
+       (1,3) voice/send buttons — right column,
+       (2,1) empty — future left-column buttons,
+       (2,2) stat row (token/ctx/cost),
+       (2,3) attach button.
+       Columns 1 & 3 are auto-width (tight around content).
+       Column 2 is 1fr (stretched).
+       Empty columns collapse to 0 width naturally. */
     display: grid;
-    grid-template-columns: 1fr auto;
-    grid-template-rows: 1fr auto auto;
+    grid-template-columns: auto 1fr auto;
+    grid-template-rows: auto auto;
     column-gap: 6px;
     row-gap: 0;
-    align-items: stretch;
+    align-items: start;
     position: relative;
     width: 100%;
     background: var(--bg-0);
     border: var(--border-width) solid var(--border);
-    border-radius: var(--chat-pill-radius, 20px);
-    /* Extra left padding so the caret/text sits visually inside the pill
-       and leaves room for the scroll-position indicator on the left. */
-    padding: var(--chat-pill-padding, 4px 4px 4px 14px);
+    border-radius: var(--chat-pill-radius, 41px);
+    /* Symmetric padding — columns 1 & 3 get equal inset from the pill edge. */
+    padding: var(--chat-pill-padding, 4px 4px 0px 4px);
     transition: border-color 0.15s;
   }
+
+/* ── Boot-state pill: hidden entirely until chat-controls-config rebuilds it.
+   The static HTML carries style="display:none"; JS removes it at the end of
+   applyChatPillLayout so the pill never flashes the old 3×2 grid / 20px fallback. */
+
 /* CHAT-PILL-VARS: every geometry + button dimension of the TALL composer
    (#chat-input-row) is admin-configurable from app-settings.json. Each
    `chat_pill_*` key is injected app-wide as the matching `--chat-pill-*` CSS
@@ -2118,20 +3777,7 @@ body.light-mode .chat-continue-btn:hover {
    within an overflowed textarea. JS (chat.js _updateScrollIndicator)
    writes --scroll-pct (0..1) and --indicator-opacity (0 when content
    fits, 1 when it overflows) onto the pill element. */
-.chat-pill::before {
-    content: "";
-    position: absolute;
-    left: 4px;
-    /* Track runs between top and bottom padding minus the dot's height. */
-    top: calc(6px + (100% - 12px - 6px) * var(--scroll-pct, 0));
-    width: 2px;
-    height: 6px;
-    border-radius: 1px;
-    background: var(--brand);
-    opacity: var(--indicator-opacity, 0);
-    transition: opacity 0.15s;
-    pointer-events: none;
-  }
+.chat-pill::before { display: none; }
 .chat-pill:focus-within { border-color: var(--brand); }
 .chat-pill.drag-over {
     border-color: var(--brand);
@@ -2141,23 +3787,22 @@ body.light-mode .chat-continue-btn:hover {
   }
 
 .chat-pill-input {
-    /* Span all grid rows so the textarea fills the full pill height
-       while the attach/send icons stack in the right column. */
-    grid-column: 1;
-    grid-row: 1 / -1;
+        /* Cell (1,2) — first row, middle column (stretched) */
+        grid-column: 2;
+        grid-row: 1;
     min-width: 0;
     background: transparent;
     border: none;
     border-radius: 0;
-    padding: 14px 8px 14px 0;
+    padding: 8px 8px 2px 0;
     color: var(--fg-1);
     font-size: var(--chat-pill-font-size, 14px);
     font-weight: 400;
     /* Explicit line-height so the JS auto-resize and the min/max heights
        below all line up. 1 line of content = 18px. */
     line-height: 22px;
-    /* Default pill is a 2-row textarea: 22*2 content + 14+14 padding = 72px. */
-    min-height: var(--chat-pill-min-height, 96px);
+    /* Default pill is a 1-row textarea: 22*1 content + 8+2 padding = 32px. */
+    min-height: var(--chat-pill-min-height, 32px);
     /* 6 visible content lines: 22px * 6 = 132px, plus 14px+14px vertical
        padding = 160px. JS toggles overflow-y to 'auto' when content
        exceeds this. */
@@ -2178,12 +3823,210 @@ body.light-mode .chat-continue-btn:hover {
 .chat-pill-input:focus { border: none; outline: none; box-shadow: none; }
 .chat-pill-input::placeholder { color: var(--fg-4); font-size: var(--chat-pill-font-size, 14px); }
 
+/* ── Horizontal-expanding composer (#chat-input-row) ─────────────────────
+   The main chat pill starts at the configured resting width (--chat-pill-width,
+   default 500px) and grows WIDER as the user types, up to either the viewport
+   width or content_max_width from chat_ui.json. Within its
+   current width text wraps normally and the pill grows VERTICALLY too — so it's
+   a hybrid: widens to fit long lines, then wraps and grows tall once capped.
+   JS drives both width and height via _autoResizePill. */
+#chat-input-row.chat-pill {
+    /* Columns: empty · textarea (fills remaining) · buttons */
+    grid-template-columns: auto 1fr auto;
+    box-sizing: border-box;
+    padding: 0;
+    /* Match the footer/chevron/suggest rows exactly. JS updates their shared
+       live width and caps it at the configured surface content width. */
+    width: var(--chat-pill-current-width, var(--chat-pill-width, 500px));
+    max-width: 100%;
+    margin-inline: auto;
+    min-width: 0;
+    /* Smooth grow/shrink — width driven by JS inline style */
+    transition: width 0.15s ease;
+  }
+#chat-input-row .chat-pill-input {
+    /* No wrapping — text never wraps at the container edge. The JS toggles
+       pre-wrap only when the pill is already at its max width. This prevents
+       the text from jumping to line 2 before the pill has a chance to widen. */
+    white-space: pre;
+    /* overflow-wrap and word-break are set inline by JS when wrapping is on */
+    /* Height managed by JS, width auto-fills via 1fr grid column */
+    scrollbar-width: none;
+    /* Smooth grow/shrink — height driven by JS inline style */
+    transition: height 0.15s ease;
+    position: relative;
+    z-index: 2;
+  }
+#chat-input-row .chat-pill-input::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+
 /* Send / mic swap driven by .has-text on the row */
 .chat-pill .chat-pill-send  { display: none; }
 .chat-pill.has-text .chat-pill-send  { display: inline-flex; }
 .chat-pill.has-text .chat-pill-voice { display: none; }
 .chat-pill.no-voice .chat-pill-voice { display: none !important; }
 .chat-pill.no-voice .chat-pill-send  { display: inline-flex; }
+.chat-pill.dictating .chat-pill-voice { display: inline-flex !important; }
+.chat-pill.dictating .chat-pill-send  { display: none !important; }
+
+/* Configurable composer action modes. mic_send keeps the stateful swap above;
+   distinct mic/send controls stay side by side, while the single-action modes
+   keep their selected control visible regardless of input contents. */
+.chat-pill.chat-pill-distinct-buttons .chat-pill-voice,
+.chat-pill.chat-pill-distinct-buttons .chat-pill-send {
+    display: inline-flex !important;
+  }
+.chat-pill.chat-pill-mic-only .chat-pill-voice {
+    display: inline-flex !important;
+  }
+.chat-pill.chat-pill-mic-only .chat-pill-send,
+.chat-pill.chat-pill-send-only .chat-pill-voice,
+.chat-pill.chat-pill-no-action .chat-pill-voice,
+.chat-pill.chat-pill-no-action .chat-pill-send {
+    display: none !important;
+  }
+.chat-pill.chat-pill-send-only .chat-pill-send {
+    display: inline-flex !important;
+  }
+
+/* Cell (1,3) — buttons container: stacks voice/send vertically, top-aligned. */
+.chat-pill-buttons {
+    grid-column: 3;
+    grid-row: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-end;
+  }
+
+/* Cell (2,2) — row: stats on the left, stop/continue controls on the right. */
+.chat-pill-stats-row {
+    grid-column: 2;
+    grid-row: 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    align-self: end;
+    overflow: hidden;
+  }
+/* The stats content row itself — inline flex, with hover highlight. */
+.chat-pill-stats {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+    cursor: pointer;
+    transition: color 0.15s;
+    flex-shrink: 1;
+    position: relative;
+  }
+.chat-pill-stats:hover {
+    color: var(--brand);
+  }
+.chat-pill-stats-strip {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    scroll-behavior: smooth;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    overscroll-behavior-x: none;
+  }
+.chat-pill-stats-strip::-webkit-scrollbar { display: none; }
+.chat-stats-chev {
+    display: none;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 16px;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--fg-2);
+    cursor: pointer;
+    font-size: 10px;
+    padding: 0;
+    z-index: 2;
+    flex-shrink: 0;
+  }
+.chat-stats-chev.left { left: 0;  justify-content: flex-start; }
+.chat-stats-chev.right { right: 0; justify-content: flex-end; }
+.chat-stats-chev.visible { display: flex; background: none; }
+.chat-stats-chev:hover { color: var(--fg-1); }
+/* Edge-fade mask (same pattern as chat-header-carousel) */
+#chat-pill-stats:has(.chat-stats-chev.left.visible) .chat-pill-stats-strip {
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 16px);
+            mask-image: linear-gradient(to right, transparent 0, #000 16px);
+  }
+#chat-pill-stats:has(.chat-stats-chev.right.visible) .chat-pill-stats-strip {
+    -webkit-mask-image: linear-gradient(to left, transparent 0, #000 16px);
+            mask-image: linear-gradient(to left, transparent 0, #000 16px);
+  }
+#chat-pill-stats:has(.chat-stats-chev.left.visible):has(.chat-stats-chev.right.visible) .chat-pill-stats-strip {
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+            mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+  }
+.chat-pill-stats .chat-token-bar {
+    opacity: 0.6;
+    pointer-events: none;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--fg-3);
+    flex-shrink: 0;
+  }
+.chat-pill-stats .chat-token-bar.active {
+    opacity: 1;
+  }
+.chat-pill-stats .chat-token-label {
+    color: var(--fg-4);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 10px;
+  }
+.chat-pill-stats .chat-token-value {
+    color: var(--fg-3);
+    min-width: 24px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+.chat-pill-stats .chat-model-ctx {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--fg-3);
+    user-select: none;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+.chat-pill-stats .chat-cost {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--warning);
+    user-select: none;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
 
 /* Unified icon-button styling: attach, voice, AND send share the same
    transparent-circle look; only the icon glyph differentiates them. */
@@ -2218,23 +4061,33 @@ body.light-mode .chat-continue-btn:hover {
     justify-content: center;
     flex-shrink: 0;
   }
-/* Send (or mic) is the TOP of the right-side button stack; attach (+) sits
-   immediately BELOW. Both rows are auto-sized and the 1fr spacer row above
-   them pushes the whole stack to the bottom of the pill — so when the pill
-   grows the buttons stay anchored at the bottom-right rather than spreading
-   to the top/bottom corners. */
+/* Cell (1,3): voice/send buttons sit in the first row, third column,
+       anchored at the top-right so the textarea grows independently. */
 .chat-pill-voice,
 .chat-pill-send {
-    grid-column: 2;
-    grid-row: 2;
-    align-self: end;
+        grid-column: 3;
+        grid-row: 1;
+    align-self: start;
     justify-self: end;
   }
+/* Cell (2,3): attach button sits in the second row, third column,
+       aligned so it's centered under the send button above. Match the
+       send button's box size so both columns align perfectly. */
 .chat-pill-attach {
-    grid-column: 2;
-    grid-row: 3;
+        grid-column: 3;
+        grid-row: 2;
     align-self: end;
     justify-self: center;
+  }
+/* In the tall composer, match the attach button dimensions to the send button
+   so both cells in column 2 are visually aligned. */
+#chat-input-row .chat-pill-attach {
+    width: var(--chat-pill-attach-size, 38px);
+    height: var(--chat-pill-attach-size, 38px);
+  }
+#chat-input-row .chat-pill-attach svg {
+    width: var(--chat-pill-attach-icon, 24px) !important;
+    height: var(--chat-pill-attach-icon, 24px) !important;
   }
 .chat-pill-attach:hover,
 .chat-pill-voice:hover,
@@ -2262,6 +4115,13 @@ body.light-mode .chat-continue-btn:hover {
     color: var(--danger);
     background: rgba(var(--danger-rgb), 0.08);
     animation: pulse 1s infinite;
+  }
+.chat-pill-voice.transcribing {
+    opacity: 0.72;
+    cursor: wait;
+  }
+.chat-pill-voice.transcribing svg {
+    animation: chat-refresh-spin 0.7s linear infinite;
   }
 
 /* ── Compact single-line pill (.chat-pill-1line) ─────────────────────────────
@@ -2332,138 +4192,69 @@ body.light-mode .chat-continue-btn:hover {
     50%      { box-shadow: 0 0 0 1px var(--accent-mid),  0 0 22px 0   var(--accent-line); }
   }
 
-/* Container: CHAT-ABOVE-PILL — absolutely fills the .chat-above-pill band so the
-   live bar shares the SAME row as the Stop/Continue buttons (pinned to the bottom
-   edge, baselining with them), while the expandable tool-call panel grows upward
-   as a floating overlay. z-index BELOW the action row so a long note slides behind
-   the buttons. pointer-events:none here so the empty width passes clicks through
-   to the messages behind it; the bar + panel re-enable pointer events themselves. */
-.chat-activity {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
-    pointer-events: none;
-    opacity: 0;
-    transform: translateY(3px);
+/* chat-activity — canonical source: ui/chat/elements/activity/index.css */
+/* ── TEMPORARY backward-compat copy for static DOM elements ── */
+#chat-activity-bar {
+    opacity: 0; transform: translateY(3px);
     transition: opacity 0.2s ease, transform 0.2s ease;
   }
-.chat-activity.visible { opacity: 1; transform: translateY(0); }
-
-/* The live header chip — dot + ticking note + chevron. Clickable (when there
-   are tool calls) to toggle the panel below. Shrink-wraps; ellipsises long notes. */
-.chat-activity-bar {
+#chat-above-pill.visible #chat-activity-bar,
+#chat-above-pill.resting #chat-activity-bar {
+    opacity: 1; transform: translateY(0);
+  }
+.chat-header-zone > #chat-activity-bar,
+.chat-pill-zone > #chat-activity-bar {
+    position: relative !important;
+    left: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    opacity: 1;
+    transform: none;
     pointer-events: auto;
-    max-width: 100%;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin: 0;
-    /* Matches the continue/stop buttons' size so the row above the pill reads as
-       one set of same-sized controls (padding + radius below; text size on
-       .chat-activity-text). */
-    padding: 5px 16px;
-    border-radius: 14px;
-    /* Same faded glass as the chat pill (see index.html "#chat-panel .chat-pill"):
-       a 7% tint of the foreground over transparent, a 12% neutral hairline, and
-       the same blur+saturate — so the bubble reads as the same surface as the
-       pill instead of a separate accent-bordered chip. We use currentColor (the
-       pill's mechanism) and force `color: inherit` below so the bubble takes the
-       pill's foreground — the tint is then computed from the identical base in
-       every theme. (The ticking note keeps its muted colour via
-       .chat-activity-text below.) */
+    background: none !important;
+    border: none !important;
+    padding: 2px 10px !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    box-shadow: none !important;
+  }
+.chat-activity-bar {
+    pointer-events: auto; max-width: 100%;
+    display: inline-flex; align-items: center; gap: 6px; margin: 0;
+    padding: 5px 16px; border-radius: 14px;
     background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent));
     border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent);
     -webkit-backdrop-filter: blur(12px) saturate(140%);
             backdrop-filter: blur(12px) saturate(140%);
-    /* <button> carries a UA `color` (buttontext) that does NOT inherit; force it
-       to inherit so currentColor (the glass tint above) equals the pill's fg. */
-    color: inherit;
-    font: inherit;
-    /* SIBLING-BTN-COHESION: explicit size + line-height so the box math
-       matches the Continue/Stop buttons. font:inherit above would give us
-       the browser default ~16px, making this ~2px taller. */
-    font-size: 13px;
-    line-height: 1.5;
-    text-align: left;
-    user-select: none;
-    -webkit-user-select: none;
-    cursor: default;
-    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    color: inherit; font: inherit; font-size: 13px; line-height: 1.5;
+    text-align: left; user-select: none; -webkit-user-select: none;
+    cursor: default; transition: background 0.15s ease, border-color 0.15s ease;
   }
 .chat-activity-bar.has-tools { cursor: pointer; }
 .chat-activity-bar.has-tools:hover {
     background: color-mix(in oklab, currentColor 11%, transparent);
     border-color: color-mix(in oklab, var(--accent) 45%, transparent);
   }
-/* While the agent is thinking, the bubble glows in lockstep with the chat pill —
-   same accent, same 1.8s rhythm — so the chip and the pill read as one breathing
-   surface, not two separate controls. The pill animates box-shadow only (its
-   bg/border are locked by the glass override); we do the same here, scaled down
-   for the smaller chip. */
-.chat-pill.thinking .chat-activity-bar {
-    animation: chatBubbleGlow 1.8s ease-in-out infinite;
-  }
-@keyframes chatBubbleGlow {
-    0%, 100% { box-shadow: 0 0 0 1px var(--accent-soft), 0 0 7px -2px var(--accent-mid); }
-    50%      { box-shadow: 0 0 0 1px var(--accent-mid),  0 0 13px 0   var(--accent-line); }
-  }
-.chat-activity-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: currentColor;
-    opacity: .5;
-    flex-shrink: 0;
-  }
-/* Idle safety-net: when the agent isn't working there's no ticking note and
-   nothing to expand, so the bar must collapse entirely rather than linger as a
-   lone dot. Hides any bar that has an empty note AND no tool calls to inspect,
-   regardless of a stray `.visible` left on the container. */
 .chat-activity-bar:not(.has-tools):has(.chat-activity-text:empty) { display: none; }
-.chat-activity-text {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--fg-4);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    letter-spacing: 0.01em;
-  }
-.chat-activity-chevron {
-    flex: 0 0 auto;
-    font-size: 12px;
-    line-height: 1;
-    color: var(--fg-3);
-    transition: transform 0.18s ease;
-    display: none;            /* shown only when there are tool calls to expand */
-  }
+.chat-activity-text { font-size: 12px; font-weight: 500; color: var(--fg-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.01em; }
+.chat-activity-chevron { flex: 0 0 auto; font-size: 12px; line-height: 1; color: var(--fg-3); transition: transform 0.18s ease; display: none; }
 .chat-activity-bar.has-tools .chat-activity-chevron { display: inline-block; }
-.chat-activity.expanded .chat-activity-chevron { transform: rotate(90deg); }
-
-/* Expandable panel: the list of THIS turn's tool calls, stacked above the bar. */
+#chat-above-pill.expanded .chat-activity-chevron { transform: rotate(90deg); }
+.chat-pill.thinking .chat-activity-bar { animation: chatBubbleGlow 1.8s ease-in-out infinite; }
+@keyframes chatBubbleGlow { 0%,100%{box-shadow:0 0 0 1px var(--accent-soft),0 0 7px -2px var(--accent-mid)} 50%{box-shadow:0 0 0 1px var(--accent-mid),0 0 13px 0 var(--accent-line)} }
+.chat-activity-wrapper { display: contents; }
 .chat-activity-panel {
-    pointer-events: auto;
-    width: 100%;
-    box-sizing: border-box;
-    max-height: 240px;
-    overflow-y: auto;
-    padding: 4px;
-    border-radius: 11px;
+    align-self: stretch;
+    pointer-events: auto; width: 100%; box-sizing: border-box; max-height: 240px; overflow-y: auto;
+    /* Cap the gesture at the panel's edge — don't chain the swipe into the
+       chat transcript scroller when the panel hits top/bottom. */
+    overscroll-behavior: contain;
+    padding: 4px; border-radius: 11px;
     background: color-mix(in oklab, var(--bg-elev) 96%, transparent);
     border: var(--border-width) solid var(--border);
-    -webkit-backdrop-filter: blur(8px);
-            backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
     box-shadow: 0 8px 24px -12px rgba(var(--shadow-rgb), 0.35);
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    scrollbar-width: thin;
+    display: flex; flex-direction: column; gap: 2px; scrollbar-width: thin;
   }
 .chat-activity-panel[hidden] { display: none; }
 
@@ -2479,24 +4270,55 @@ body.light-mode .chat-continue-btn:hover {
 .bubble-tool-calls-head {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
-  border-radius: 8px;
-  background: color-mix(in oklab, currentColor 6%, transparent);
-  border: 1px solid color-mix(in oklab, currentColor 10%, transparent);
+  gap: 7px;
+  padding: 5px 7px;
+  background: none;
+  border: none;
   color: var(--fg-2);
   font: inherit;
-  font-size: 11px;
+  font-size: 11.5px;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
-  -webkit-backdrop-filter: blur(8px) saturate(120%);
-          backdrop-filter: blur(8px) saturate(120%);
 }
 .bubble-tool-calls-head:hover {
-  background: color-mix(in oklab, currentColor 10%, transparent);
-  border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+  color: var(--fg-1);
+}
+.bubble-tool-calls-delete {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 2px;
+  background: none;
+  border: none;
+  color: var(--fg-4);
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+.bubble-tool-calls-head:hover .bubble-tool-calls-delete,
+.bubble-tool-calls-delete.warning {
+  opacity: 1;
+}
+.bubble-tool-calls-delete:hover {
+  color: var(--danger);
+}
+.bubble-tool-calls-delete.warning {
+  color: var(--warning, #f0ad4e);
+}
+.bubble-tool-calls.deleted {
+  opacity: 0.5;
+  text-decoration: line-through;
+  text-decoration-color: var(--danger);
 }
 .bubble-tool-calls-icon {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 11px;
   line-height: 1;
   opacity: 0.7;
@@ -2516,18 +4338,147 @@ body.light-mode .chat-continue-btn:hover {
   background: transparent;
   border: none;
   padding: 0;
-  max-height: none;
-  overflow: visible;
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.7s ease;
+}
+.bubble-tool-calls-panel.open {
+  max-height: 250px;
+  overflow-y: auto;
+  /* Cap the gesture at the panel's edge — don't chain the swipe into the
+     chat transcript scroller when the panel hits top/bottom. */
+  overscroll-behavior: contain;
+  transition: max-height 1s ease;
 }
 .bubble-tool-calls-panel[hidden] { display: none; }
 
-/* When panel is open, hide the header chip */
-.bubble-tool-calls.open .bubble-tool-calls-head {
-  display: none;
+/* Row stagger: only opacity + transform; height is driven by the panel transition */
+@keyframes toolRowReveal {
+  0%   { opacity: 0; transform: translateY(-6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes toolRowHide {
+  0%   { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-6px); }
+}
+.bubble-tool-calls-panel .ca-tool-row {
+  overflow: hidden;
+  opacity: 0;
+  animation-fill-mode: forwards;
+  animation-duration: 0.28s;
+  animation-timing-function: ease-out;
+}
+.bubble-tool-calls-panel.opening .ca-tool-row {
+  animation-name: toolRowReveal;
+}
+.bubble-tool-calls-panel.closing .ca-tool-row {
+  animation-name: toolRowHide;
+}
+/* When not animating and panel is open, rows are fully visible */
+.bubble-tool-calls-panel.open:not(.opening):not(.closing):not([hidden]) .ca-tool-row {
+  opacity: 1;
+  transform: none;
 }
 
 /* One tool call (accordion row) */
 .ca-tool-row { border-radius: 8px; }
+.chat-bubble.agent.activity-group {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.ca-progress-row,
+.ca-terminal-row {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-2) 78%, transparent);
+}
+.ca-activity-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--fg-3);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .01em;
+}
+.ca-activity-entry-icon {
+  width: 14px;
+  text-align: center;
+  opacity: .75;
+}
+.ca-activity-entry-body {
+  margin-top: 5px;
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.ca-activity-entry-body .md-body > :first-child { margin-top: 0; }
+.ca-activity-entry-body .md-body > :last-child { margin-bottom: 0; }
+.ca-activity-entry-footer {
+  margin: 6px 0 0;
+  padding: 2px 0 0;
+}
+.ca-terminal-row {
+  border-color: color-mix(in srgb, var(--warning, #f0ad4e) 38%, var(--border));
+}
+
+/* Deleted state for chat bubbles and tool call rows (recycle bin — struck through, inert) */
+.chat-bubble.deleted,
+.ca-tool-row.deleted {
+  text-decoration: line-through;
+  text-decoration-color: var(--danger);
+  opacity: 0.5;
+  filter: grayscale(0.5);
+}
+/* Block interaction on non-button children of deleted rows */
+.chat-bubble.deleted .chat-bubble-text,
+.chat-bubble.deleted .md-body,
+.chat-bubble.deleted > .label,
+.ca-tool-row.deleted .ca-tool-name,
+.ca-tool-row.deleted .ca-tool-meta,
+.ca-tool-row.deleted .ca-tool-status {
+  pointer-events: none;
+}
+.chat-bubble.deleted > .bubble-actions:not(.deleted-actions) { display: none; }
+
+/* Deleted section within a merged agent turn — strike through just that section */
+.turn-section.llm-section.deleted {
+  text-decoration: line-through;
+  text-decoration-color: var(--danger);
+  opacity: 0.5;
+  filter: grayscale(0.5);
+}
+.turn-section.llm-section.deleted .chat-bubble-text,
+.turn-section.llm-section.deleted .md-body {
+  pointer-events: none;
+}
+
+/* Section-deleted gutter: hide original buttons, show restore/perm-delete */
+.turn-gutter.deleted > .turn-gutter-time,
+.turn-gutter.deleted > .turn-gutter-model,
+.turn-gutter.deleted > .turn-gutter-btn {
+  display: none;
+}
+.section-deleted-actions {
+  display: inline-flex !important;
+  gap: 3px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+.section-deleted-actions .restore-btn:hover {
+  color: var(--success);
+}
+
+/* Deleted-action row — restore + permanent delete buttons */
+.bubble-actions.deleted-actions {
+  display: flex !important;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.bubble-actions.deleted-actions .restore-btn:hover {
+  color: var(--success);
+}
+
 .ca-tool-head {
     width: 100%;
     display: flex;
@@ -2557,6 +4508,7 @@ body.light-mode .chat-continue-btn:hover {
   }
 .ca-status-done  { color: var(--success); }
 .ca-status-error { color: var(--danger); }
+.ca-status-deleted { color: var(--danger); opacity: 0.6; }
 .ca-status-running {
     box-sizing: border-box;
     border: 1.5px solid var(--accent-line);
@@ -2644,7 +4596,10 @@ body.light-mode .chat-continue-btn:hover {
   transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   font-family: inherit;
 }
-.ca-tool-head:hover .ca-tool-copy-btn,
+/* Always visible in the tool row head, hover-only inside the body pre-wrap */
+.ca-tool-head .ca-tool-copy-btn {
+  opacity: 1;
+}
 .ca-tool-pre-wrap:hover .ca-tool-copy-btn {
   opacity: 1;
 }
@@ -2655,6 +4610,39 @@ body.light-mode .chat-continue-btn:hover {
 .ca-tool-copy-btn.copied {
   color: var(--success);
   opacity: 1;
+}
+
+/* Tool-call delete button — shows on hover, two-click confirm with danger color */
+/* Tool-call delete button — always visible in the tool row head, turns red
+   on hover and in confirm state */
+.ca-tool-delete-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 4px;
+  cursor: pointer;
+  color: var(--fg-4);
+  opacity: 1;
+  transition: color 0.12s ease, border-color 0.12s ease;
+  line-height: 1;
+}
+.ca-tool-delete-btn:hover {
+  color: var(--danger);
+  border-color: var(--border-soft);
+}
+.ca-tool-delete-btn.warning {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.ca-tool-delete-btn.confirm {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 .ca-tool-pre-wrap {
   position: relative;
@@ -2679,10 +4667,9 @@ body.light-mode .chat-continue-btn:hover {
       box-shadow: 0 0 0 1px var(--accent-mid), 0 0 10px -2px var(--accent-mid);
     }
     .chat-activity-dot, .ca-status-running { animation: none; }
-    .chat-continue-btn.active, .chat-stop-btn.active {
+    .chat-pill-stop:not([hidden]),
+    .chat-pill-continue:not([hidden]) {
       animation: none;
-      box-shadow: 0 0 0 1px color-mix(in oklab, currentColor 60%, transparent),
-                  0 0 12px -2px color-mix(in oklab, currentColor 70%, transparent);
     }
   }
 
@@ -3486,7 +5473,7 @@ body.light-mode #chat-panel {
     border-left-color: var(--border);
   }
 body.light-mode #chat-header {
-    border-bottom-color: var(--border);
+    border-bottom: none;
     color: var(--fg-1);
   }
 body.light-mode #chat-header .sub { color: var(--fg-3); }
@@ -3820,12 +5807,12 @@ body.light-mode ::-webkit-scrollbar-thumb {
 body.light-mode #db-table-data::-webkit-scrollbar-thumb,
 body.light-mode #db-table-list::-webkit-scrollbar-thumb,
 body.light-mode #agents-grid::-webkit-scrollbar-thumb,
-body.light-mode #chat-messages-inner::-webkit-scrollbar-thumb,
+body.light-mode #chat-messages::-webkit-scrollbar-thumb,
 body.light-mode .agent-detail-body::-webkit-scrollbar-thumb {
     background: rgba(var(--brand-rgb), 0.35) !important;
   }
 body.light-mode #agents-grid,
-body.light-mode #chat-messages-inner,
+body.light-mode #chat-messages,
 body.light-mode .agent-detail-body {
     scrollbar-color: rgba(var(--brand-rgb), 0.35) transparent !important;
   }
@@ -3835,15 +5822,16 @@ body.light-mode .xterm-viewport {
 
 /* ── Chat header label rows: the dropdown flex-fills the row ── */
   #agent-label,
-#session-label { display: flex; align-items: center; flex: 1 1 auto; min-width: 0; gap: 4px; }
-#agent-label .agent-dropdown,
-#session-label .session-dropdown { flex: 1 1 auto; min-width: 0; }
-/* Row 2 dropdown is itself a flex ROW so the delete button + chevron can sit inside it,
-   after the label trigger: trigger flex-fills, then delete, then chevron at the right
-   edge — putting delete just LEFT of the chevron. Scoped to #session-dropdown so the
-   agent dropdown / sessions-page dropdowns (shared .session-dropdown class) are untouched. */
-#session-dropdown { display: flex; align-items: center; gap: 2px; }
-#session-dropdown #session-delete-header { margin-left: 0; }   /* trigger's flex-grow does the pushing, not an auto margin */
+/* Session dropdown — a flex row of chevron + trigger + menu. Can shrink so the label truncates.
+   ⚠️  HEADER/FOOTER CONTROL SIZING IS GOVERNED BY data/config/chat_ui.json — NOT THIS CSS.
+   The _sizeControl() JS in chat-header-config.js / chat-controls-config.js applies
+   min_width, max_width, container_size, and element_size from that file with !important.
+   This includes ALL controls placed in the header (rows), footer, above_pill, below_pill,
+   and pill zones — session_dropdown, agent_name, changes, new_session, buttons, etc.
+   To adjust any control's dimensions, edit its entry under chat_desktop.chat_header.controls
+   (or chat_mobile / chat_common) in chat_ui.json. CSS here only provides structural defaults
+   that JS overrides at runtime. */
+#session-dropdown { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
 .header-plus-btn {
     background: none;
     border: none;
@@ -3881,9 +5869,8 @@ body.light-mode .xterm-viewport {
     flex-shrink: 0;
 }
 
-/* Header delete button — right end of row 2, pinned via margin-left:auto so it
-   lands directly below the row-1 more (⋯) button, just-right of the dropdown
-   chevron. Padding matches the refresh / new-session buttons (1px 3px). */
+/* Header delete button — positioned by the zone system; padding matches
+   the refresh / new-session buttons (1px 3px). */
 .header-delete-btn {
     background: none;
     border: none;
@@ -3896,7 +5883,6 @@ body.light-mode .xterm-viewport {
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    margin-left: auto;
     border-radius: var(--r-sm);
   }
 .header-delete-btn:hover { color: var(--danger); }
@@ -3906,13 +5892,6 @@ body.light-mode .xterm-viewport {
 .header-delete-btn.warning:hover { color: var(--warning); }
 
 /* ── Session nav arrows (prev/next pinned session) ── */
-.header-session-nav {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 1px;
-  flex-shrink: 0;
-}
 .session-nav-btn {
   background: none;
   border: none;
@@ -3931,10 +5910,6 @@ body.light-mode .xterm-viewport {
   background: rgba(var(--ink-rgb),0.06);
 }
 body.light-mode .session-nav-btn { color: var(--fg-3); }
-/* Hide session nav arrows on mobile to save space for the session name */
-@media (max-width: 800px) {
-  .header-session-nav { display: none; }
-}
 
 /* Status icon inside the trigger buttons */
 .session-dropdown-status,
@@ -3945,12 +5920,48 @@ body.light-mode .session-nav-btn { color: var(--fg-3); }
     flex-shrink: 0;
     width: 16px;
     height: 16px;
-    margin-right: 4px;
+    margin-left: 4px;
   }
 .session-dropdown-status.session-status-running,
-.agent-dropdown-status.session-status-running {
-    color: var(--brand);
-    animation: session-status-spin 1s linear infinite;
+    .agent-dropdown-status.session-status-running {
+        color: var(--brand);
+        animation: session-radial-spin 0.8s linear infinite;
+      }
+/* Completed time status — green timestamp (header trigger) */
+.session-dropdown-status.session-status-completed {
+    color: var(--success);
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    width: auto;
+    height: auto;
+    min-width: 16px;
+  }
+/* Dropdown row completed time */
+.session-row-status.session-status-completed {
+    color: var(--success);
+    font-size: 10px;
+    font-weight: 500;
+    white-space: nowrap;
+    width: auto;
+    height: auto;
+    min-width: 16px;
+    margin-left: 4px;
+  }
+/* Dropdown row queued indicator (session gate) */
+.session-row-status.session-status-queued {
+    color: var(--warning);
+    font-size: 10px;
+    font-weight: 500;
+    white-space: nowrap;
+    width: auto;
+    height: auto;
+    min-width: 16px;
+    margin-left: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
 .session-dropdown-status.session-status-unread,
 .agent-dropdown-status.session-status-unread {
@@ -4004,16 +6015,19 @@ body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label 
 #session-dropdown:not([data-loaded="true"]) .session-dropdown-chevron,
 #session-dropdown[data-offline="true"] .session-dropdown-chevron { pointer-events: none; cursor: default; }
 .session-dropdown-chevron .session-chevron-arrow { display: none; }
-.session-dropdown-chevron .session-chevron-spinner {
-  animation: session-status-spin 1s linear infinite;
-}
+.session-dropdown-chevron .session-radial-loader,
+    .session-chevron-spinner.session-radial-loader {
+      animation: session-radial-spin 0.8s linear infinite;
+    }
+.session-dropdown[data-loaded="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-radial-loader,
 .session-dropdown[data-loaded="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-chevron-spinner { display: none; }
 .session-dropdown[data-loaded="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-chevron-arrow { display: inline-flex; }
-/* While the session is being auto-named (Session Namer ability,
-   plugins/abilities/Core/session_titler/), re-show
+/* While the session is being auto-named (Session Namer app function,
+   plugins/app_functions/session_titler/), re-show
    the flower spinner over the chevron — same indicator as initial load. Matches
    the data-loaded specificity (0,5,0) and comes later, so it wins. */
-.session-dropdown[data-titling="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-chevron-spinner { display: inline-flex; }
+.session-dropdown[data-titling="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-chevron-spinner,
+.session-dropdown[data-titling="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-radial-loader { display: inline-flex; }
 .session-dropdown[data-titling="true"]:not([data-offline="true"]) .session-dropdown-chevron .session-chevron-arrow { display: none; }
 
   /* ── Agent-name dropdown (chat header row 1) ──────────────────────────
@@ -4021,14 +6035,7 @@ body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label 
      session-dropdown affordance. */
   /* The agent dropdown menu — absolute below the name row, wide enough for
      agent names, styled like the session dropdown. */
-  .chat-header-name-row {
-    position: relative;
-  }
   .agent-dropdown-menu {
-    position: absolute;
-    top: calc(100% + 4px);
-    left: 0;
-    width: auto;
     min-width: 240px;
     max-width: 420px;
     max-height: min(400px, 50vh);
@@ -4039,7 +6046,7 @@ body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label 
     border: var(--border-width) solid var(--border);
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(var(--shadow-rgb),0.4);
-    z-index: 1001;
+    z-index: 10001;
     padding: 4px;
     box-sizing: border-box;
   }
@@ -4092,11 +6099,9 @@ body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label 
       display: inline-block;
       vertical-align: middle;
     }
-.session-dropdown-trigger,
 .agent-dropdown-trigger {
     display: inline-flex;
     align-items: center;
-    justify-content: space-between;
     gap: 8px;
     width: 100%;
     max-width: 100%;
@@ -4105,17 +6110,26 @@ body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label 
     font-family: inherit;
     font-size: 13px;
   }
-/* Chat-header session trigger has a transparent (pill-less) background, so the
-   .status-select 10px right padding is dead space that pushes the chevron away
-   from the delete button. Trim it to ~2px so the chevron sits snug to the delete,
-   mirroring the row-1 (+)→(⋯) spacing. Scoped to the chat header only. */
-#chat-header .session-dropdown-trigger { padding-right: 2px; }
-/* The chat-header trigger is now a flex CHILD of #session-dropdown (which holds the
-   trigger, the delete button, and the chevron). Let it flex-fill instead of forcing a
-   rigid width:100%, so the delete + chevron get their intrinsic width on the right. */
-#chat-header .session-dropdown-trigger { width: auto; flex: 1 1 auto; min-width: 0; }
+/* The session-dropdown trigger is a simple inline flex row inside the chip:
+   icon + title (left), status + kebab + delete (right). No table-row styling —
+   the glass-chip wrapper provides the pill background/border/radius. */
+#chat-header .session-dropdown-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 1 1 auto;
+    min-width: 0;
+    cursor: pointer;
+    font-size: 14px;
+  }
+/* Kebab / delete buttons inside the trigger — same look as menu rows but
+   no extra hover background (the whole row is clickable). */
+#session-dropdown-trigger .session-row-kebab,
+#session-dropdown-trigger .session-row-delete {
+    position: relative;
+    z-index: 1;  /* clickable above the row's own click target */
+  }
 /* Icons inside the trigger and row buttons must not swallow clicks (lucide SVG quirk). */
-  .session-dropdown-trigger > *,
 .agent-dropdown-trigger > *,
 .session-row-kebab > *,
 .agent-row-kebab > *,
@@ -4124,24 +6138,14 @@ body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label 
 .agent-row-config > * {
     pointer-events: none;
   }
-.session-dropdown-trigger #session-dropdown-label,
-.agent-dropdown-trigger #agent-dropdown-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1 1 auto;
-    min-width: 0;
-    text-align: left;
-  }
 .session-dropdown-menu {
     position: absolute;
     top: calc(100% + 4px);
     left: 0;
-    /* Match the trigger row width — the wrapping .session-dropdown /
-       .agent-dropdown stretches to fill its label row, so 100% lines the
-       menu up with the trigger above it. */
+    /* Wider than the trigger chip so session names are readable.
+       On narrow viewports it overflows right, which is fine. */
     width: 100%;
-    min-width: 0;
+    min-width: 420px;
     max-width: none;
     max-height: min(480px, 60vh);
     overflow-y: auto;
@@ -4151,9 +6155,26 @@ body.light-mode .agent-dropdown:not([data-loaded="true"]) #agent-dropdown-label 
     border: var(--border-width) solid var(--border);
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(var(--shadow-rgb),0.4);
-    z-index: 1000;
+    z-index: 1001;
     padding: 4px;
     box-sizing: border-box;
+    text-align: left;           /* prevent center inheritance from header zone */
+  }
+  /* On mobile the menu fills the screen width. */
+  @media (max-width: 800px) {
+    .session-dropdown-menu {
+      position: fixed;
+      left: 0;
+      right: 0;
+      width: auto;
+      top: 56px;
+      min-width: 0;
+      max-width: none;
+      max-height: calc(100vh - 64px);
+      border-radius: 0;
+      border-left: none;
+      border-right: none;
+    }
   }
 body.light-mode .session-dropdown-menu {
     background: var(--bg-0);
@@ -4174,6 +6195,115 @@ body.light-mode .session-dropdown-menu {
 body.light-mode .session-dropdown-menu::-webkit-scrollbar-thumb {
     background: var(--bg-tint);
 }
+
+/* Session list disclosure — mirrors the measured-height + staggered-row
+   expansion used by the "N tool calls" disclosure inside chat bubbles. */
+#session-dropdown-menu {
+    max-height: 0;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateY(-4px);
+    transform-origin: top center;
+    will-change: max-height, transform, opacity;
+    transition: max-height .32s ease, opacity .2s ease, transform .2s ease;
+}
+#session-dropdown-menu.flip-up {
+    transform: translateY(4px);
+    transform-origin: bottom center;
+}
+#session-dropdown-menu[data-state] { display: block; }
+#session-dropdown-menu[data-state="open"] {
+    max-height: var(--session-menu-open-height, min(480px, 60vh));
+    opacity: 1;
+    transform: translateY(0);
+    overflow-y: auto;
+    transition: max-height .38s ease, opacity .2s ease, transform .2s ease;
+    padding-bottom: 0;
+}
+#session-dropdown-menu[data-state="open"].opening { overflow: hidden; }
+#session-dropdown-menu[data-state="closing"] {
+    max-height: 0;
+    opacity: 0;
+    pointer-events: none;
+    overflow: hidden;
+    transition-duration: .32s, .2s, .2s;
+}
+#session-dropdown-menu > .session-row,
+#session-dropdown-menu > .session-dropdown-empty,
+#session-dropdown-menu > .session-dropdown-loading-row,
+#session-dropdown-menu > .session-manage-row {
+    opacity: 0;
+    animation-fill-mode: forwards;
+    animation-duration: .18s;
+    animation-timing-function: ease-out;
+}
+#session-dropdown-menu.opening > .session-row,
+#session-dropdown-menu.opening > .session-dropdown-empty,
+#session-dropdown-menu.opening > .session-dropdown-loading-row,
+#session-dropdown-menu.opening > .session-manage-row {
+    animation-name: sessionDropdownRowReveal;
+}
+#session-dropdown-menu.closing > .session-row,
+#session-dropdown-menu.closing > .session-dropdown-empty,
+#session-dropdown-menu.closing > .session-dropdown-loading-row,
+#session-dropdown-menu.closing > .session-manage-row {
+    animation-name: sessionDropdownRowHide;
+}
+#session-dropdown-menu[data-state="open"]:not(.opening):not(.closing) > * {
+    opacity: 1;
+    transform: none;
+}
+.session-dropdown-loading-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 6px 8px;
+    box-sizing: border-box;
+}
+.session-dropdown-loading-icon,
+.session-dropdown-loading-line {
+    background: linear-gradient(90deg, var(--bg-elev) 25%, var(--bg-elev-2) 37%, var(--bg-elev) 63%);
+    background-size: 400% 100%;
+    animation: sessionDropdownSkeletonShimmer 1.2s ease-in-out infinite;
+}
+.session-dropdown-loading-icon {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    flex: 0 0 auto;
+}
+.session-dropdown-loading-line {
+    flex: 1;
+    height: 8px;
+    border-radius: 999px;
+}
+@keyframes sessionDropdownSkeletonShimmer {
+    from { background-position: 100% 0; }
+    to { background-position: 0 0; }
+}
+@keyframes sessionDropdownRowReveal {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@keyframes sessionDropdownRowHide {
+    from { opacity: 1; transform: translateY(0); }
+    to { opacity: 0; transform: translateY(-6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+    #session-dropdown-menu { transition: none; }
+    .session-dropdown-loading-icon,
+    .session-dropdown-loading-line { animation: none; }
+    #session-dropdown-menu > .session-row,
+    #session-dropdown-menu > .session-dropdown-empty,
+    #session-dropdown-menu > .session-dropdown-loading-row,
+    #session-dropdown-menu > .session-manage-row {
+        animation: none;
+        opacity: 1;
+        transform: none;
+    }
+}
+
 /* New-session agent picker: a small floating menu anchored under the + button.
    Reuses .agent-dropdown-menu chrome but is body-mounted + fixed-positioned. */
 .new-session-agent-picker {
@@ -4201,6 +6331,7 @@ body.light-mode .session-dropdown-menu::-webkit-scrollbar-thumb {
     cursor: pointer;
     color: var(--fg-1);
     font-size: 12px;
+    text-align: left;           /* override any center inheritance */
   }
 body.light-mode .session-row,
 body.light-mode .agent-row-item { color: var(--fg-2); }
@@ -4224,13 +6355,61 @@ body.light-mode .agent-row-item { color: var(--fg-2); }
     height: 16px;
   }
 .session-status-running {
-    color: var(--brand);
-    animation: session-status-spin 1s linear infinite;
-  }
-@keyframes session-status-spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
+        color: var(--brand);
+        animation: session-radial-spin 0.8s linear infinite;
+      }
+    /* ── Radial loader — spinning radial lines (replaces spinner icons) ── */
+    .session-radial-loader {
+      display: inline-flex;
+      width: 22px;
+      height: 22px;
+      position: relative;
+    }
+    .session-radial-loader::before {
+      content: '';
+      display: block;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      background: conic-gradient(
+        from 0deg,
+        var(--brand) 0deg 22.5deg,
+        transparent 22.5deg 45deg,
+        var(--brand) 45deg 67.5deg,
+        transparent 67.5deg 90deg,
+        var(--brand) 90deg 112.5deg,
+        transparent 112.5deg 135deg,
+        var(--brand) 135deg 157.5deg,
+        transparent 157.5deg 180deg,
+        var(--brand) 180deg 202.5deg,
+        transparent 202.5deg 225deg,
+        var(--brand) 225deg 247.5deg,
+        transparent 247.5deg 270deg,
+        var(--brand) 270deg 292.5deg,
+        transparent 292.5deg 315deg,
+        var(--brand) 315deg 337.5deg,
+        transparent 337.5deg 360deg
+      );
+      -webkit-mask: radial-gradient(circle at center, transparent 36%, black 37%);
+      mask: radial-gradient(circle at center, transparent 36%, black 37%);
+    }
+    /* ── Small variant (12px — used in the status indicator) ── */
+    .session-radial-loader.sm {
+      width: 12px;
+      height: 12px;
+    }
+    .session-radial-loader.sm::before {
+      -webkit-mask: radial-gradient(circle at center, transparent 28%, black 29%);
+      mask: radial-gradient(circle at center, transparent 28%, black 29%);
+    }
+    @keyframes session-radial-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+    @keyframes session-status-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
 .session-status-unread {
     color: var(--success);
   }
@@ -4243,6 +6422,21 @@ body.light-mode .agent-row-item { color: var(--fg-2); }
     display: inline-flex;
     align-items: center;
     gap: 3px;
+  }
+/* Status icon inside a dropdown row title — sits after the label text and
+   stays visible even when the title text truncates (flex-shrink: 0). */
+.session-row-title .session-row-status,
+.session-row > .session-row-status {
+    flex-shrink: 0;
+    margin-left: 3px;
+  }
+/* Ephemeral delete-failed state: replaces the session name text with a short
+   error message. The danger hue is subtle enough in both themes (dark: dim red,
+   light: muted rust) and auto-reverts after 2.5s from JS. */
+.session-row-title.session-row-title-error {
+    color: var(--danger);
+    font-style: italic;
+    opacity: 0.85;
   }
 /* Muted agent-name prefix on each unified session row: "Agent — Title". */
 .session-row-agent { color: var(--fg-3); }
@@ -4332,23 +6526,9 @@ body.light-mode .agent-row-item { color: var(--fg-2); }
     color: var(--fg-3);
   }
 .session-child-loading [data-lucide] { animation: session-status-spin 1s linear infinite; }
-/* ── Drag-to-reorder grip (agent + session dropdown rows) ── */
-.row-drag-handle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    color: var(--fg-4);
-    cursor: grab;
-    opacity: 0.5;
-    border-radius: 4px;
-    /* Claim touch gestures so a drag on the handle reorders instead of
-       scrolling the menu. */
-    touch-action: none;
-  }
-.session-row:hover .row-drag-handle,
-.agent-row-item:hover .row-drag-handle { opacity: 1; color: var(--fg-3); }
-.row-drag-handle:active { cursor: grabbing; }
+/* ── Drag-to-reorder: pinned session rows are grabable across their full width ── */
+.session-row.pinned { cursor: grab; touch-action: none; }
+.session-row.pinned:active { cursor: grabbing; }
 .session-row.dragging,
 .agent-row-item.dragging {
     opacity: 0.9;
@@ -4369,6 +6549,7 @@ body.light-mode .agent-row-sep { background: var(--border); }
     border-radius: 4px;
     color: inherit;
     font: inherit;
+    
     padding: 2px 6px;
     outline: none;
   }
@@ -4393,7 +6574,7 @@ body.light-mode .agent-row-kebab:hover { color: var(--fg-2); }
 .session-row-delete,
 .session-row-visibility,
 .session-manage-eye,
-.session-manage-delete-all,
+.session-manage-delete-selected,
 .agent-row-delete,
 .agent-row-config {
     background: none;
@@ -4416,27 +6597,180 @@ body.light-mode .session-manage-eye:hover { color: var(--fg-2); }
    Scoped under #chat-header to outrank the generic `#chat-header button` colour. */
 #chat-header .session-manage-eye[data-state="on"] { color: var(--brand); }
 .session-row-delete:hover,
-.session-manage-delete-all:hover,
+.session-manage-delete-selected:hover,
 .agent-row-delete:hover { background: rgba(var(--danger-rgb), 0.12); color: var(--danger); }
 .session-row-delete.warning,
-.session-manage-delete-all.warning { color: var(--warning); }
+.session-manage-delete-selected.warning { color: var(--warning); }
 .session-row-delete.warning:hover,
-.session-manage-delete-all.warning:hover { background: rgba(var(--warning-rgb), 0.15); color: var(--warning); }
+.session-manage-delete-selected.warning:hover { background: rgba(var(--warning-rgb), 0.15); color: var(--warning); }
 /* ── Management footer row ── */
 .session-manage-row {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin-top: 4px;
+    padding: 6px 4px 6px;
+    border-top: var(--border-width) solid var(--border);
+    background: var(--bg-elev);
     display: flex;
     align-items: center;
-    margin-top: 4px;
-    padding: 6px 4px 2px;
-    border-top: var(--border-width) solid var(--border);
   }
-body.light-mode .session-manage-row { border-top-color: var(--border); }
+body.light-mode .session-manage-row { border-top-color: var(--border); background: var(--bg-0); }
 .session-manage-actions {
     display: inline-flex;
     align-items: center;
     gap: 4px;
     margin-left: auto;
   }
+/* Checkbox toggle button — always shows a square, highlights when active */
+.session-manage-checkbox-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 4px;
+    color: var(--fg-3);
+    transition: color .15s, background .15s;
+  }
+.session-manage-checkbox-toggle:hover { color: var(--fg-1); background: var(--bg-tint); }
+.session-manage-checkbox-toggle[data-state="on"] { color: var(--brand); }
+body.light-mode .session-manage-checkbox-toggle[data-state="on"] { color: var(--brand); }
+/* ── Dropdown search bar + recycle-bin toggle (footer) ── */
+.session-manage-search {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-right: 6px;
+    color: var(--fg-3);
+  }
+.session-manage-search > .ui-icon { flex-shrink: 0; }
+.session-manage-search-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: var(--bg-0);
+    border: var(--border-width) solid var(--border);
+    border-radius: 6px;
+    color: var(--fg-1);
+    font-size: 12px;
+    padding: 3px 6px;
+    outline: none;
+    transition: border-color .15s;
+  }
+body.light-mode .session-manage-search-input { background: var(--bg-2); }
+.session-manage-search-input:focus { border-color: var(--brand); }
+.session-manage-search-input::placeholder { color: var(--fg-3); }
+.session-manage-search-mode {
+    background: var(--bg-tint);
+    border: none;
+    border-radius: 999px;
+    color: var(--fg-2);
+    cursor: pointer;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 2px 7px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    transition: color .15s, background .15s;
+  }
+.session-manage-search-mode:hover { color: var(--fg-1); background: var(--bg-tint-2); }
+.session-manage-search-clear {
+    background: none;
+    border: none;
+    color: var(--fg-3);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    padding: 1px;
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+.session-manage-search-clear:hover { color: var(--fg-1); background: var(--bg-tint); }
+.session-manage-bin {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 4px;
+    color: var(--fg-3);
+    transition: color .15s, background .15s;
+  }
+.session-manage-bin:hover { color: var(--fg-1); background: var(--bg-tint); }
+#chat-header .session-manage-bin[data-state="on"] { color: var(--brand); }
+/* Recycled (bin) rows: dimmed, restore-only */
+.session-row.recycled .session-row-title { opacity: .72; }
+.session-row.recycled .session-row-pin-icon { opacity: .35; }
+.session-row-bin {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    flex-shrink: 0;
+    color: var(--danger);
+    background: var(--danger-soft, rgba(var(--danger-rgb), 0.08));
+    border: var(--border-width) solid var(--danger-mid, rgba(var(--danger-rgb), 0.25));
+    cursor: pointer;
+    transition: color .12s ease, background .12s ease, border-color .12s ease;
+  }
+.session-row-bin:hover {
+    color: var(--danger);
+    background: var(--danger-mid, rgba(var(--danger-rgb), 0.25));
+    border-color: var(--danger);
+  }
+.session-row-bin.armed,
+.session-row-bin.armed:hover {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+  }
+/* Message-content match chip (content search mode) */
+.session-row-msg-hit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 6px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    flex-shrink: 0;
+    color: var(--brand);
+    background: rgba(var(--brand-rgb), 0.1);
+    border: var(--border-width) solid rgba(var(--brand-rgb), 0.22);
+  }
+/* Row checkbox in checkbox mode */
+.session-row-checkbox {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 4px;
+    color: var(--fg-3);
+    flex-shrink: 0;
+    transition: color .15s, background .15s;
+  }
+.session-row-checkbox:hover { color: var(--fg-1); background: var(--bg-tint); }
+.session-row-checkbox[data-checked="1"] { color: var(--brand); }
+body.light-mode .session-row-checkbox[data-checked="1"] { color: var(--brand); }
 .session-row-actions,
 .agent-row-actions {
     position: fixed;
@@ -4447,6 +6781,7 @@ body.light-mode .session-manage-row { border-top-color: var(--border); }
     z-index: 2000;
     min-width: 140px;
     padding: 4px;
+    font-size: 12px;
   }
 body.light-mode .session-row-actions,
 body.light-mode .agent-row-actions {
@@ -4474,6 +6809,20 @@ body.light-mode .agent-row-actions {
 .agent-row-action.danger { color: var(--danger); }
 .session-row-action.danger:hover,
 .agent-row-action.danger:hover { background: rgba(var(--danger-rgb), 0.12); }
+.session-row-action.disabled,
+.agent-row-action.disabled {
+    color: var(--fg-4);
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+.session-row-action.disabled:hover,
+.agent-row-action.disabled:hover { background: none; }
+.session-row-action-tag {
+    margin-left: auto;
+    font-size: 10px;
+    font-style: italic;
+    opacity: 0.7;
+  }
 /* SHARED-DELETE-CONTROL — armed (hazard) hue when a danger menu row is using the
    two-click delete affordance (delete-control.js adds .warning). Specificity
    (0,3,0) beats the .danger rule above so it wins regardless of source order. */
@@ -4694,7 +7043,7 @@ body.light-mode #user-dropdown-menu.user-dropdown-menu {
     padding: 24px 32px 48px;
   }
 .account-tab-wrap {
-    max-width: 560px;
+    max-width: 760px;
     margin: 0 auto;
   }
 .account-header {
@@ -4876,6 +7225,85 @@ body.light-mode #user-dropdown-menu.user-dropdown-menu {
     color: var(--fg-3);
     line-height: 1.4;
   }
+  .account-device-table-frame {
+    height: 280px;
+    overflow: auto;
+    border: var(--border-width) solid var(--border);
+    border-radius: 7px;
+    background: var(--bg-0);
+  }
+  .account-device-table {
+    width: 100%;
+    min-width: 680px;
+    border-collapse: collapse;
+    table-layout: fixed;
+    color: var(--fg-2);
+    font-size: 12px;
+  }
+  .account-device-table th,
+  .account-device-table td {
+    padding: 9px 10px;
+    border-bottom: var(--border-width) solid var(--border);
+    text-align: left;
+    vertical-align: middle;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .account-device-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg-elev-2);
+    color: var(--fg-1);
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .account-device-table tbody tr {
+    cursor: pointer;
+  }
+  .account-device-table tbody tr:hover {
+    background: color-mix(in oklab, var(--brand) 8%, transparent);
+  }
+  .account-device-table th:nth-child(2) { width: 25%; }
+  .account-device-table th:nth-child(3) { width: 23%; }
+  .account-device-table th:nth-child(4) { width: 27%; }
+  .account-device-table .account-device-select {
+    width: 38px;
+    padding-left: 12px;
+    padding-right: 4px;
+  }
+  .account-device-table input[type="checkbox"] {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    cursor: pointer;
+  }
+  .account-device-action {
+    width: 150px;
+    text-align: right !important;
+  }
+  .account-device-purge-btn {
+    padding: 6px 10px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .account-device-primary,
+  .account-device-secondary {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .account-device-primary {
+    color: var(--fg-1);
+    font-weight: 600;
+  }
+  .account-device-secondary {
+    margin-top: 2px;
+    color: var(--fg-3);
+    font-size: 10px;
+  }
   body.light-mode .account-pref-title { color: var(--fg-1); }
   body.light-mode .account-pref-desc { color: var(--fg-3); }
 
@@ -4987,4 +7415,3 @@ body.light-mode .account-delete-ack { color: var(--fg-2); }
   from { transform: scale(0.4); opacity: 0.55; }
   to   { transform: scale(1.4); opacity: 0; }
 }
-

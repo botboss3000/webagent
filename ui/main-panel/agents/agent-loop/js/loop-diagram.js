@@ -20,7 +20,6 @@ export const TOGGLEABLE_NODES = new Set([
   'skill_track',     // Skip skill-execution DB writes — useful for lightweight agents
   'memory_search',   // Skip brain context lookup — useful for tool-only agents
   'memory_save',     // Skip post-chat memory upsert — useful for ephemeral agents
-  'fire_optimizer',  // Skip optimizer trigger after completion
   'copy_defaults',   // Skip copying default context docs on first use
   // permission_chk is configured via the Turn Counter node editor, not as a standalone node
 ]);
@@ -94,7 +93,6 @@ export const LOOP_NODES = [
   { id: 'final_response',  label: 'Final Response',   type: 'output',   cx: 1478, cy: 150, hw: 62, hh: 14 },
   { id: 'db_persist_final',label: 'Persist Final',    type: 'process',  cx: 1478, cy: 192, hw: 62, hh: 13 },
   { id: 'memory_save',     label: 'Memory Save',      type: 'process',  cx: 1478, cy: 226, hw: 62, hh: 13 },
-  { id: 'fire_optimizer',  label: 'Fire Optimizer',   type: 'process',  cx: 1478, cy: 260, hw: 62, hh: 13 },
 ];
 
 // ── Edges ─────────────────────────────────────────────────────────────────────
@@ -170,7 +168,6 @@ const LOOP_EDGES = [
   // OUTPUT chain
   { from: 'final_response',  to: 'db_persist_final', vertical: true                             },
   { from: 'db_persist_final',to: 'memory_save',      vertical: true                             },
-  { from: 'memory_save',     to: 'fire_optimizer',   vertical: true                             },
 ];
 
 // ── Horizontal layout — group bounding boxes in the 1560px baseline ──────────
@@ -192,7 +189,7 @@ const _H_GROUPS = [
     left: 1083, right: 1207 },
   { nodeIds: ['check_continue'],
     left: 1258, right: 1374 },
-  { nodeIds: ['final_response','db_persist_final','memory_save','fire_optimizer'],
+  { nodeIds: ['final_response','db_persist_final','memory_save'],
     left: 1416, right: 1540 },
 ];
 
@@ -287,7 +284,6 @@ function buildVerticalLayout(availableWidth) {
     { id: 'final_response',  label: 'Final Response',   type: 'output',   cx,        cy: 1566, hw: 62, hh: 14 },
     { id: 'db_persist_final',label: 'Persist Final',    type: 'process',  cx,        cy: 1608, hw: 62, hh: 13 },
     { id: 'memory_save',     label: 'Memory Save',      type: 'process',  cx,        cy: 1642, hw: 62, hh: 13 },
-    { id: 'fire_optimizer',  label: 'Fire Optimizer',   type: 'process',  cx,        cy: 1676, hw: 62, hh: 13 },
   ];
 
   const stages = [

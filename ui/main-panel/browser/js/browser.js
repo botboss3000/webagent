@@ -618,6 +618,7 @@ async function switchSession(bsId) {
   _activateSession(row);
 }
 window.__switchWebSession = switchSession;
+window.__closeWebSession = _deleteSession;
 
 async function ensureSessionById(bsId) {
   try {

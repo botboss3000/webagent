@@ -5,8 +5,7 @@ Persisted to `db_connection.json` (non-secret fields only). The password is
 fetched on demand from the active SecretsBackend using `password_secret_key`.
 
 Providers (case matches UI dropdown):
-  - sqlite             → uses LocalBackend, local.db file
-  - supabase           → SupabaseBackend (Supabase REST + service-role key)
+  - sqlite             → uses plane-routed LocalBackend authority files
   - postgres           → raw Postgres via asyncpg (PostgresBackend)
   - mysql              → MySQL (future PostgresBackend extension)
   - aws_rds            → managed Postgres on Amazon RDS / Aurora (postgres dialect)
@@ -14,9 +13,11 @@ Providers (case matches UI dropdown):
   - azure_postgres     → managed Postgres on Azure (Flexible Server, postgres dialect)
   - neon               → Neon serverless Postgres
 
-The managed-Postgres providers (aws_rds, gcp_cloud_sql, azure_postgres, neon)
-are all ordinary Postgres endpoints — they share the raw asyncpg backend and
-differ only in their UI label, default-field hints, and connection notes.
+All Postgres-family providers (postgres, aws_rds, gcp_cloud_sql, azure_postgres,
+neon) share the same raw asyncpg backend and differ only in their UI label,
+default-field hints, and connection notes. Use ``is_postgres_provider(name)`` as
+the single source of truth — any provider whose ``PROVIDER_META`` entry has
+``dialect: "postgres"`` is a Postgres endpoint with zero additional wiring.
 """
 
 from __future__ import annotations
@@ -36,7 +37,6 @@ _CONFIG_FILE = os.path.join(_AGENT_DIR, "db_connection.json")
 
 PROVIDERS = (
     "sqlite",
-    "supabase",
     "postgres",
     "mysql",
     "aws_rds",
@@ -48,7 +48,6 @@ PROVIDERS = (
 # Map provider → SQLAlchemy-style URL scheme + canonical dialect
 PROVIDER_META = {
     "sqlite":         {"dialect": "sqlite",   "needs_host": False, "default_port": None},
-    "supabase":       {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
     "postgres":       {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
     "mysql":          {"dialect": "mysql",    "needs_host": True,  "default_port": 3306},
     "aws_rds":        {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
@@ -56,6 +55,27 @@ PROVIDER_META = {
     "azure_postgres": {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
     "neon":           {"dialect": "postgres", "needs_host": True,  "default_port": 5432},
 }
+
+
+def is_postgres_provider(provider: str) -> bool:
+    """True when *provider* uses the raw Postgres backend (asyncpg / psycopg).
+
+    This is the single source of truth for "is this a Postgres endpoint?" —
+    every call site that currently hard-codes a provider tuple (``_PG_PROVIDERS``
+    in ``app/db/__init__.py``, ``app/util/reset_boot.py``, ``app/api/tenant_db.py``)
+    should call this instead. Adding a new Postgres-family provider requires only
+    one line in ``PROVIDER_META`` above; no other wiring changes."""
+    return PROVIDER_META.get(provider, {}).get("dialect") == "postgres"
+
+
+def pprint_provider(provider: str) -> str:
+    """Human-readable label for a provider id (e.g. ``aws_rds`` → ``AWS RDS``)."""
+    labels = {
+        "sqlite": "SQLite", "postgres": "PostgreSQL", "mysql": "MySQL",
+        "aws_rds": "AWS RDS", "gcp_cloud_sql": "Google Cloud SQL",
+        "azure_postgres": "Azure PostgreSQL", "neon": "Neon",
+    }
+    return labels.get(provider, provider)
 
 
 @dataclass
@@ -68,9 +88,6 @@ class DBConnectionConfig:
     password_secret_key: Optional[str] = None  # key in SecretsBackend (e.g. "db_password_postgres")
     ssl_mode: str = "require"      # postgres only: disable | require | verify-ca | verify-full
     schema: str = "public"         # postgres schema name
-    # Supabase-specific: REST URL + service role key (the supabase REST API path)
-    supabase_url: Optional[str] = None
-    supabase_service_key_secret: Optional[str] = None  # secret key for service-role JWT
     # Free-form per-provider tweaks (sslrootcert path, GCP instance connection name, etc.)
     options: dict = field(default_factory=dict)
 
@@ -96,7 +113,7 @@ class DBConnectionConfig:
         """
         prov = self.provider
         if prov == "sqlite":
-            # use shipped local.db location by default
+            # Use the app-plane database when no explicit SQLite path is set.
             from app.db.local import DEFAULT_DB_PATH
             db_path = self.database or DEFAULT_DB_PATH
             return f"sqlite+aiosqlite:///{db_path}"
@@ -126,11 +143,6 @@ class DBConnectionConfig:
         meta = PROVIDER_META.get(self.provider)
         if not meta:
             errs.append(f"Unknown provider: {self.provider}")
-            return errs
-        # Supabase uses its REST URL + service key; raw host/user/db not required.
-        if self.provider == "supabase":
-            if not self.supabase_url:
-                errs.append("supabase_url is required (the project REST URL)")
             return errs
         if meta["needs_host"]:
             if not self.host:
@@ -167,8 +179,6 @@ def load_config() -> DBConnectionConfig:
             username=os.environ.get("WEBAGENT_DB_USER") or None,
             password_secret_key=os.environ.get("WEBAGENT_DB_PASSWORD_KEY") or None,
             ssl_mode=os.environ.get("WEBAGENT_DB_SSLMODE", "require"),
-            supabase_url=os.environ.get("SUPABASE_URL") or None,
-            supabase_service_key_secret=os.environ.get("WEBAGENT_SUPABASE_KEY_SECRET") or None,
         )
         _cached = cfg
         return cfg
@@ -177,6 +187,25 @@ def load_config() -> DBConnectionConfig:
         try:
             with open(_CONFIG_FILE, "r") as f:
                 data = json.load(f)
+            # Self-heal: a config saved by an older version may carry
+            # provider="supabase". SupabaseBackend has been removed — flip to
+            # SQLite so the app boots cleanly and the admin can re-activate on
+            # a Postgres-family provider from the Database page.
+            if data.get("provider") == "supabase":
+                logger.warning(
+                    "db_connection.json has provider='supabase' which is no longer "
+                    "supported — switching to sqlite. Open the Database page to "
+                    "configure a Postgres connection."
+                )
+                data["provider"] = "sqlite"
+                try:
+                    from app.util.config_io import safe_write_json
+                    safe_write_json(_CONFIG_FILE, data)
+                except Exception:
+                    pass
+            # Strip legacy supabase fields so they don't accumulate in the config.
+            data.pop("supabase_url", None)
+            data.pop("supabase_service_key_secret", None)
             cfg = DBConnectionConfig.from_dict(data)
         except Exception as e:
             logger.warning("Failed to read db_connection.json: %s", e)

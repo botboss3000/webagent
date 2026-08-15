@@ -4,17 +4,21 @@
  *   - App shell (HTML, CSS, JS, icons): precache on install
  *   - API calls (/api/*): network-only (never cache stale data)
  *   - CDN assets: stale-while-revalidate
- *   - Static assets (JS/CSS/etc.): stale-while-revalidate — serve cached for an
- *     instant load, but always revalidate in the background so a code change
- *     shows up on the next reload (cache-first never revalidated, which left
- *     stale JS pinned until the cache name changed — a dev-workflow trap).
+ *   - Executable app assets (JS/CSS/JSON): network-first, cache fallback. ES
+ *     modules must come from one coherent checkout version; serving a cached
+ *     dependency beside a fresh importer can abort the whole module graph.
+ *   - Passive static assets (images/fonts): stale-while-revalidate.
  *   - Navigation: network-first, fall back to cached index.html
  *
  * Bump CACHE on each release so the activate handler drops the prior cache.
  */
 
-const CACHE = "webagent-v209";
+const CACHE = "webagent-v230";
 const STATIC_PATTERN = /\.(css|js|json|svg|png|ico|woff2?)$/;
+const CODE_PATTERN = /\.(css|js|json)$/;
+// Kept for defence-in-depth only: as of the offline-vendoring change the app
+// no longer requests anything from these CDNs (fonts + JS libs are self-hosted
+// under /ui/vendor/). Any stray CDN request still gets stale-while-revalidate.
 const CDN_PATTERN = /^(https?:)?\/\/(fonts\.googleapis|cdn\.jsdelivr|unpkg)\./;
 const API_PATTERN = /^\/api\//;
 const WS_PATTERN = /^\/api\/v1\/agent\/ws/;
@@ -59,6 +63,10 @@ const PRECACHE = [
   "/ui/shared/js/header-build.js",
   "/ui/shared/js/partial-loader.js",
   "/ui/shared/js/main.js",
+  "/ui/shared/js/debugConsole.js",
+  "/ui/shared/js/clipboard.js",
+  "/ui/shared/js/config.js",
+  "/ui/shared/js/left-login.js",
   "/ui/shared/js/db-select.js",
   "/ui/shared/js/device-picker.js",
   "/ui/main-panel/agents/agent-loop/loop.css",
@@ -67,6 +75,22 @@ const PRECACHE = [
   "/ui/main-panel/agents/agents.css",
   "/ui/main-panel/admin-tools/files.css",
   "/ui/tutorials/tutorial.css",
+  // Self-hosted third-party libs + fonts (were CDN-loaded before the offline
+  // change). Precaching the core ones means the shell renders fully — icons,
+  // markdown, terminal, fonts — even when the app is opened as an installed PWA
+  // with no server reachable. Prism grammar components (290+ files) are NOT
+  // listed here; they're runtime-cached on first use by staleWhileRevalidate.
+  "/ui/vendor/fonts/fonts.css",
+  "/ui/vendor/lucide/lucide.min.js",
+  "/ui/vendor/marked/marked.min.js",
+  "/ui/vendor/dompurify/purify.min.js",
+  "/ui/vendor/prismjs/prism-core.min.js",
+  "/ui/vendor/prismjs/prism-autoloader.min.js",
+  "/ui/vendor/xterm/xterm.css",
+  "/ui/vendor/xterm/xterm.js",
+  "/ui/vendor/xterm/addon-fit.js",
+  "/ui/vendor/xterm/addon-web-links.js",
+  "/ui/vendor/xterm/addon-search.js",
 ];
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -84,6 +108,10 @@ self.addEventListener("activate", (e) => {
       Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
     )
   );
+  // Tell all clients the current cache version so the debug console can show it
+  self.clients.matchAll().then((clients) => {
+    clients.forEach((c) => c.postMessage({ type: "sw-version", cache: CACHE }));
+  });
   self.clients.claim();
 });
 
@@ -109,7 +137,16 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // Static assets — stale-while-revalidate (fast load + picks up code changes)
+  // App code must be fetched as a coherent set while the server is reachable.
+  // A stale-while-revalidate module graph can combine a new importer with an
+  // old dependency (for example, importing an export that the cached module
+  // does not have), which aborts boot before the UI can recover.
+  if (url.origin === self.location.origin && CODE_PATTERN.test(url.pathname)) {
+    e.respondWith(networkFirstStatic(request));
+    return;
+  }
+
+  // Passive static assets — stale-while-revalidate.
   if (STATIC_PATTERN.test(url.pathname)) {
     e.respondWith(staleWhileRevalidate(request));
     return;
@@ -151,6 +188,15 @@ async function staleWhileRevalidate(request) {
   const fetchPromise = fetchAndCache(request)
     .catch(() => null);
   return cached || (await fetchPromise) || new Response("Offline", { status: 503 });
+}
+
+async function networkFirstStatic(request) {
+  try {
+    return await fetchAndCache(request);
+  } catch {
+    const cached = await caches.match(request);
+    return cached || new Response("Offline", { status: 503 });
+  }
 }
 
 async function networkFirstNavigation(request) {

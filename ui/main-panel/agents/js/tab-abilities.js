@@ -99,6 +99,137 @@ export async function _renderConnectionsTab(body, agent) {
       }
     },
   });
+
+  const customSection = document.createElement('div');
+  customSection.className = 'conn-section soft-abilities-section';
+  customSection.style.marginTop = '18px';
+  body.appendChild(customSection);
+  await _renderSoftAbilities(customSection, agent);
+}
+
+async function _renderSoftAbilities(container, agent) {
+  container.innerHTML = '<div class="conn-loading" style="padding:12px;color:var(--fg-3);">Loading custom abilities…</div>';
+  let abilities = [];
+  try {
+    const res = await fetch(`/api/v1/agents/${agent.id}/soft-abilities?user_id=${encodeURIComponent(app.currentUserId)}`, { headers: authHeaders() });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    abilities = (await res.json()).abilities || [];
+  } catch (err) {
+    container.innerHTML = '<div style="padding:12px;color:var(--danger);">Custom abilities could not be loaded.</div>';
+    return;
+  }
+
+  container.innerHTML = '';
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 2px;';
+  header.innerHTML = '<div><strong>Custom abilities</strong><div style="font-size:11px;color:var(--fg-3);margin-top:3px;">Per-agent skills and workflows built from existing tools.</div></div>';
+  const add = document.createElement('button');
+  add.type = 'button'; add.className = 'btn btn-sm'; add.textContent = '+ New ability';
+  header.appendChild(add);
+  container.appendChild(header);
+
+  const list = document.createElement('div');
+  list.className = 'conn-grid ac-list';
+  container.appendChild(list);
+
+  const renderRows = () => {
+    list.innerHTML = '';
+    if (!abilities.length) {
+      list.innerHTML = '<div style="padding:14px;color:var(--fg-3);font-size:12px;border:1px dashed var(--border);border-radius:8px;">No custom abilities yet. Create one to add a reusable skill to this agent.</div>';
+      return;
+    }
+    abilities.forEach(item => list.appendChild(_softAbilityRow(item, agent, async (saved, removed) => {
+      if (removed) abilities = abilities.filter(a => a.id !== item.id);
+      else {
+        const idx = abilities.findIndex(a => a.id === saved.id);
+        if (idx >= 0) abilities[idx] = saved; else abilities.push(saved);
+      }
+      renderRows();
+    })));
+  };
+  add.addEventListener('click', () => {
+    abilities.unshift({ id: null, slug: '', display_name: '', description: '', icon: 'sparkles', enabled: true, skill_summary: '', skill_body: '', allowed_tools: [], workflow: {}, credential_schema: [], policy: {}, status: 'ready' });
+    renderRows();
+    const first = list.firstElementChild;
+    if (first) first.classList.add('expanded');
+  });
+  renderRows();
+}
+
+function _softAbilityRow(item, agent, onChanged) {
+  const row = document.createElement('div');
+  row.className = 'ac-row ac-group';
+  const head = document.createElement('div');
+  head.className = 'ac-group-head';
+  head.style.cursor = 'pointer';
+  const title = document.createElement('div');
+  title.innerHTML = `<strong>${_esc(item.display_name || 'New custom ability')}</strong><div style="font-size:11px;color:var(--fg-3);">${_esc(item.description || item.skill_summary || 'Configure this ability')}</div>`;
+  const badge = document.createElement('span');
+  badge.style.cssText = 'font-size:10px;color:var(--fg-3);margin-left:auto;margin-right:10px;';
+  badge.textContent = item.id ? `Custom · v${item.version || 1}` : 'Unsaved';
+  head.append(title, badge);
+  row.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'ac-group-body';
+  body.style.padding = '12px';
+  const field = (label, value, multiline = false) => {
+    const wrap = document.createElement('label');
+    wrap.style.cssText = 'display:block;font-size:11px;color:var(--fg-3);margin-bottom:10px;';
+    wrap.append(document.createTextNode(label));
+    const input = document.createElement(multiline ? 'textarea' : 'input');
+    input.value = value || '';
+    input.style.cssText = 'display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--fg);font:inherit;';
+    if (multiline) input.rows = 6;
+    wrap.appendChild(input); body.appendChild(wrap); return input;
+  };
+  const name = field('Name', item.display_name);
+  const slug = field('Slug (lowercase letters, numbers, underscores)', item.slug);
+  const desc = field('Description', item.description);
+  const summary = field('When to use it', item.skill_summary);
+  const skill = field('Skill instructions', item.skill_body, true);
+  const tools = field('Allowed existing tools (comma separated)', (item.allowed_tools || []).join(', '));
+  const workflow = field('Workflow JSON (optional)', JSON.stringify(item.workflow || {}, null, 2), true);
+  workflow.rows = 4;
+  const credentials = field('Credential schema JSON (metadata only; secrets remain in the vault)', JSON.stringify(item.credential_schema || [], null, 2), true);
+  credentials.rows = 3;
+  const enabledWrap = document.createElement('label');
+  enabledWrap.style.cssText = 'display:flex;gap:7px;align-items:center;font-size:12px;margin-bottom:12px;';
+  const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = item.enabled !== false;
+  enabledWrap.append(enabled, document.createTextNode('Enabled and available to the agent'));
+  body.appendChild(enabledWrap);
+  const actions = document.createElement('div'); actions.style.cssText = 'display:flex;gap:8px;';
+  const save = document.createElement('button'); save.type = 'button'; save.className = 'btn btn-sm'; save.textContent = 'Save';
+  const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn btn-sm'; remove.textContent = item.id ? 'Delete' : 'Cancel';
+  actions.append(save, remove); body.appendChild(actions); row.appendChild(body);
+  head.addEventListener('click', () => row.classList.toggle('expanded'));
+
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    try {
+      const parsedWorkflow = JSON.parse(workflow.value || '{}');
+      const parsedCredentials = JSON.parse(credentials.value || '[]');
+      if (!parsedCredentials || !Array.isArray(parsedCredentials)) throw new Error('Credential schema must be a JSON array.');
+      const payload = { user_id: app.currentUserId, slug: slug.value.trim(), display_name: name.value.trim(), description: desc.value.trim(), icon: item.icon || 'sparkles', enabled: enabled.checked, skill_summary: summary.value.trim(), skill_body: skill.value.trim(), workflow: parsedWorkflow, allowed_tools: tools.value.split(',').map(v => v.trim()).filter(Boolean), credential_schema: parsedCredentials, policy: item.policy || {}, status: 'ready' };
+      const url = `/api/v1/agents/${agent.id}/soft-abilities${item.id ? '/' + encodeURIComponent(item.id) : ''}`;
+      const res = await fetch(url, { method: item.id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = data.detail && data.detail.errors ? data.detail.errors.join(' ') : (data.detail || `HTTP ${res.status}`);
+        throw new Error(detail);
+      }
+      _showAbilitiesNotice(agent, `${payload.display_name} saved`);
+      await onChanged(data.ability, false);
+    } catch (err) { _showAbilitiesNotice(agent, err.message || 'Save failed'); }
+    finally { save.disabled = false; }
+  });
+  remove.addEventListener('click', async () => {
+    if (!item.id) return onChanged(null, true);
+    if (!window.confirm(`Delete custom ability “${item.display_name}”?`)) return;
+    const res = await fetch(`/api/v1/agents/${agent.id}/soft-abilities/${encodeURIComponent(item.id)}?user_id=${encodeURIComponent(app.currentUserId)}`, { method: 'DELETE', headers: authHeaders() });
+    if (res.ok) onChanged(null, true); else _showAbilitiesNotice(agent, 'Delete failed');
+  });
+  return row;
 }
 
 function _showAbilitiesNotice(agent, text) {

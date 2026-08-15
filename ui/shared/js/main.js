@@ -7,9 +7,10 @@
 
 import { app, bindDom } from './state.js';
 import { initStorageUi } from './storage.js';
-import { initChat } from '../../chat-side-panel/js/chat-ui.js';
-import { initSuggestions } from '../../chat-side-panel/js/suggestions.js';
-import { initAbilities } from '../../chat-side-panel/js/abilities.js';
+import { initChat } from '../../chat/js/chat-ui.js';
+import { initSuggestions } from '../../chat/js/suggestions.js';
+import { initSessionChanges } from '../../chat/js/chat-session-changes.js';
+import { initAbilities } from '../../chat/js/abilities.js';
 import { initChatActivity } from './chat-activity.js';
 import { initReconnect } from './reconnect.js';
 import { ensureAttachmentsInit } from './attachments.js';
@@ -17,7 +18,7 @@ import { connectAgent } from './agentWs.js';
 import { initTabs } from './tabs.js';
 import { initLoop } from '../../main-panel/agents/agent-loop/js/loop.js';
 import { initLoopVisual } from '../../main-panel/agents/agent-loop/js/loop-logic.js';
-import { registerSessionApi, initSessions } from '../../chat-side-panel/js/session-init.js';
+import { registerSessionApi, initSessions } from '../../chat/js/session-init.js';
 import { initGenui } from '../../main-panel/genui/js/genui.js';
 import { initBilling } from './billing.js';
 import { initAccount } from './account.js';
@@ -28,8 +29,10 @@ import { relocateAdminToolsContainers } from './files.js';
 // the sub-panels via _ensureAdminInit() in tabs.js. None run at boot. initAgents
 // runs via startAgents() on Agents-tab activation.
 import { initChatResize } from './chatResize.js';
-import { initRecorder } from '../../chat-side-panel/js/recorder.js';
-import { initDebugConsole } from './debugConsole.js';
+import { initRecorder } from '../../chat/js/recorder.js';
+import { applyChatControlsConfig } from '../../chat-controls/chat-controls-config.js';
+import { applyChatFooterConfig } from '../../chat/js/chat-footer-config.js';
+import { applyChatHeaderConfig } from '../../chat/js/chat-header-config.js';
 import { initTutorial, startTutorial } from '../../tutorials/js/tutorial.js';
 import { fetchAdminStatus, isAdmin, fetchAccessMode, getAccessMode, isAuthenticated, isAnonGuest, showLeftOverlay, authHeaders } from './left-login.js';
 import { installAuthRefresh, ensureFreshToken, startTokenAutoRefresh } from './auth-refresh.js';
@@ -37,15 +40,22 @@ import { getActive, removeAccount } from './accounts.js';
 import './icons.js'; // auto-renders Lucide icons on DOM mutations
 import { randomUUID } from './uuid.js';
 import { initClipboard } from './clipboard.js';
+import { initWakeLock, enableWakeLock } from './screen-wake.js';
+import { apiPath } from './config.js';
 import { loadUiMessages } from './app-prompts.js';
 import { initAppControlPoint } from './app-control-point.js';
 import { initBrowserPopup } from '../../browser-popup/js/browser-popup.js';
-import { mountSignInForm } from './page-access-gate.js';
+import { initWebagentLauncher } from '../../chat-widget/js/webagent-launcher.js';
+import { initMobileNavigation } from './mobile-navigation.js';
 
 bindDom();
 
+// Mount after authenticated boot has revealed the shell; the initializer is a
+// no-op for signed-out/public visitors.
+window.addEventListener('webagent-app-ready', initWebagentLauncher, { once: true });
+
 // Pull the editable chat UI strings (welcome bubble, system bubbles, composer
-// placeholders) from app/defaults/app-prompts.json as early as possible so they
+// placeholders) from data/config/chat_ui.json as early as possible so they
 // drive the first chat render. Fire now; the boot path awaits it below. Has its
 // own fallbacks, so this can never blank a string or stall boot. See app-prompts.js.
 const _uiMessagesReady = loadUiMessages();
@@ -67,6 +77,30 @@ initClipboard();
 // keeps the token valid proactively (timer + on focus). See auth-refresh.js.
 installAuthRefresh();
 startTokenAutoRefresh();
+
+// Screen wake lock — wires the visibilitychange re-acquire listener so a
+// later enableWakeLock() (chat control, genui pages) survives tab hide/show.
+// See screen-wake.js.
+initWakeLock();
+
+// App-wide "Always-on display" (App Settings → App Functions) — when the
+// admin has switched it on, keep the device screen awake while the app tab
+// is visible, using the SAME Screen Wake Lock operation as the chat
+// wake_lock control. Best-effort read of the public ui-config at boot; any
+// failure just leaves the screen sleeping (fail-off — the default).
+(function _applyAlwaysOnDisplay() {
+  let headers = {};
+  try {
+    const t = localStorage.getItem('auth_token');
+    if (t) headers = { Authorization: 'Bearer ' + t };
+  } catch (_) { /* private mode — non-fatal */ }
+  fetch(apiPath('/api/v1/auth/ui-config'), { headers })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((cfg) => {
+      if (cfg && cfg.always_on_display === true) enableWakeLock();
+    })
+    .catch(() => { /* keep the screen sleeping */ });
+})();
 
 // ── Anonymous session ─────────────────────────────────────────────────────
 // Resolve a boot-time identity when no auth token exists yet. The behaviour
@@ -230,22 +264,8 @@ async function _initBootAuth() {
 //
 // Public agent URLs (/{agentId}) run their OWN per-agent anonymous access flow,
 // so they are intentionally never gated here.
-let _restrictedFormMounted = false;
 function _applyAppRestricted(restricted) {
   if (document.body) document.body.classList.toggle('app-restricted', restricted);
-  // When the whole-app lock fires (Private mode, no token), swap the static lock
-  // card for the real login form so the visitor signs in right here instead of
-  // hunting for the corner-avatar dropdown. Mounted once, the first time we lock.
-  if (restricted && !_restrictedFormMounted) {
-    const overlay = document.getElementById('app-restricted-overlay');
-    if (overlay) {
-      mountSignInForm(overlay, {
-        title: 'Sign in to continue',
-        subtext: 'This app is private. Sign in with your account to continue.',
-      });
-      _restrictedFormMounted = true;
-    }
-  }
 }
 function _evaluateAppAccess() {
   if (window.__agentId) { _applyAppRestricted(false); return; }
@@ -261,21 +281,7 @@ function _evaluateAppAccess() {
   // session) belongs to a non-approved identity, so it must NOT unlock the app.
   _applyAppRestricted(!(isAuthenticated() && !isAnonGuest()));
 }
-// Fallback wiring for the static lock card's Sign-in button → opens the corner
-// account menu. Normally unused: _applyAppRestricted swaps that card for the
-// inline login form (page-access-gate.mountSignInForm) the moment the lock fires,
-// removing this button. It still wires here so a pre-JS / unmounted card stays
-// functional (the header avatar stays visible in the restricted layout).
-(function _initAppRestrictedControls() {
-  const btn = document.getElementById('app-restricted-signin');
-  if (btn) btn.addEventListener('click', (e) => {
-    // Stop this click from reaching the account menu's outside-click handler,
-    // and open on the next tick — otherwise the same click that opens the menu
-    // immediately registers as a click-outside and closes it again.
-    e.stopPropagation();
-    setTimeout(() => { try { showLeftOverlay(); } catch (_) {} }, 0);
-  });
-})();
+
 
 // Run boot auth, then continue init. For visitors who must sign in this resolves immediately.
 const _anonReady = _initBootAuth();
@@ -296,9 +302,11 @@ const _bootReady = _anonReady.then(() => Promise.race([
 ]));
 
 // ── JS error debugging ────────────────────────────────────────────────────
-// Catches unhandled JS errors and module load failures. Shows a visible
-// red banner so the issue is obvious even without DevTools open, and also
-// surfaces in the page title so it's visible in the browser tab.
+// Catches unhandled JS errors and module load failures. Each error is emitted
+// via console.error, which the in-app debug console panel captures and shows;
+// the header bug-toggle turns red while the panel holds an error entry (see
+// debugConsole.js), so a problem is visible without opening the panel or
+// DevTools. The page title is flagged too, so it shows in the browser tab.
 //
 // Yellow status dots in the header mean the WebSocket is trying to connect
 // (state: "Connecting…"). They turn green once connected, red if the server
@@ -359,48 +367,36 @@ function _showJsErrorBanner(msg, source, errorEvent) {
   // Title prefix — immediately visible in the browser tab
   document.title = '[JS ERR] ' + document.title.replace(/^\[JS ERR\] /, '');
 
-  // Persistent red banner fixed to top of page — create once, stack messages.
-  // KEEP (intentional): hard-coded alarm-red / white here, NOT design-system
-  // tokens. This banner surfaces catastrophic JS errors and must render loud and
-  // legible even when the stylesheet/theme pipeline failed to load (often the very
-  // cause of the error), so it deliberately does not depend on theme variables.
-  let banner = document.getElementById('js-error-debug-banner');
-  if (!banner) {
-    banner = document.createElement('div');
-    banner.id = 'js-error-debug-banner';
-    banner.style.cssText = [
-      'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:99999',
-      'background:rgba(247,36,36,0.92)', 'color:#fff',
-      'font-size:12px', 'font-family:monospace',
-      'padding:6px 48px 6px 12px',
-      'border-bottom:2px solid #c00',
-      'display:flex', 'flex-direction:column', 'gap:2px',
-    ].join(';');
-    const x = document.createElement('button');
-    x.textContent = '✕ dismiss';
-    x.style.cssText = [
-      'position:absolute', 'right:8px', 'top:50%', 'transform:translateY(-50%)',
-      'background:none', 'border:1px solid rgba(255,255,255,0.5)', 'color:#fff',
-      'cursor:pointer', 'padding:2px 6px', 'border-radius:3px', 'font-size:11px',
-    ].join(';');
-    x.addEventListener('click', () => banner.remove());
-    banner.appendChild(x);
-    document.body.appendChild(banner);
-  }
-
-  const row = document.createElement('div');
-  row.textContent = '⚠ ' + source + ': ' + msg;
-  banner.insertBefore(row, banner.firstChild);
+  // The old fixed top-of-page red banner is gone. Every error routed through
+  // here also emits console.error(...) below, which the debug console panel
+  // captures (debugConsole.js); its header bug-toggle turns red (`.has-errors`)
+  // while the log holds an error entry, so problems stay visible without
+  // opening the panel — and the panel is a strict superset of the banner
+  // (it also shows app-level console.error/warn calls), so the banner was
+  // redundant.
 
   // Structured console output for DevTools inspection
   console.error('[WebAgent JS error]', { msg, source, allErrors: _JS_ERRORS });
 }
 
 // Catches synchronous errors thrown by scripts (including missing variables,
-// type errors, etc.)
+// type errors, etc.). Also catches resource-load errors (404 scripts,
+// stylesheets, images, etc.) which have no .message — extract the failed URL
+// from e.target so the debug console panel shows something useful.
 window.addEventListener('error', (e) => {
+  const msg = e.message || (e.error && e.error.message);
+  if (!msg) {
+    // Resource-load error — build a description from the failed element
+    const target = e.target;
+    if (target) {
+      const failedUrl = target.src || target.href || target.data || '';
+      const tagName = (target.tagName || 'RESOURCE').toLowerCase();
+      _showJsErrorBanner('Failed to load ' + tagName + ': ' + (failedUrl || '(unknown)'), 'resource', e);
+    }
+    return;
+  }
   const src = e.filename ? e.filename.split('/').pop() + ':' + e.lineno : 'unknown';
-  _showJsErrorBanner(e.message, src, e);
+  _showJsErrorBanner(msg, src, e);
 });
 
 // Catches async failures — broken dynamic imports, unhandled promise rejections,
@@ -473,7 +469,23 @@ _bootReady.then(async () => {
       .catch(() => {});
     fetch('/admin/settings/app', { headers: authHeaders() })
       .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) window.__agentsAppSettingsData = d; })
+      .then(d => {
+        if (d) {
+          window.__agentsAppSettingsData = d;
+          // Apply hide_header_on_keyboard at boot so the CSS rule
+          // (body.hide-header-kb.chat-pill-focused) can gate header hiding
+          // on mobile. Default OFF — opt-in via App Settings → App Functions.
+          if (d.hide_header_on_keyboard === true && document.body) {
+            document.body.classList.add('hide-header-kb');
+          }
+          // Store the threshold as a data attribute so the viewport
+          // tracker in index.html can read it at resize time.
+          if (document.body) {
+            var t = parseInt(d.hide_header_kb_threshold, 10);
+            document.body.dataset.hhkThreshold = (!isNaN(t) && t >= 0) ? t : 200;
+          }
+        }
+      })
       .catch(() => {});
   }
 
@@ -493,6 +505,7 @@ _bootReady.then(async () => {
   }
 
   _safeInit('initTabs',        initTabs);
+  _safeInit('initMobileNavigation', initMobileNavigation);
   _safeInit('initLoop',        initLoop);
   _safeInit('initLoopVisual',  initLoopVisual);
   // Move parked Admin Tools markup (App Config + Database viewer) into the
@@ -515,6 +528,7 @@ _bootReady.then(async () => {
   _safeInit('initGenui',   initGenui);
   _safeInit('initAccount',     initAccount);
   _safeInit('initSessions',    initSessions);
+  _safeInit('initSessionChanges', initSessionChanges);
   _safeInit('initChatResize',  initChatResize);
   // Right-click anywhere → point at a UI element and send it to chat (the
   // user-facing half of the App Control ability). Self-gates on the ability.
@@ -522,8 +536,19 @@ _bootReady.then(async () => {
   // Floating agent-openable browser window (agent's browser_popup tool). Just
   // registers window.__browserPopup for the shared WS handler; no UI until used.
   _safeInit('initBrowserPopup', initBrowserPopup);
-  _safeInit('initDebugConsole', initDebugConsole);
   _safeInit('initTutorial',    initTutorial);
+
+  // Apply chat_ui.json config (textarea rows, header, footer) — reads from the
+  // already-fetched ui-config payload. Best-effort; HTML fallback is in place.
+  // NEW: unified chat-controls plugin system (replaces header/footer config over time)
+  // The boot curtain stays up until the async control builder has put every
+  // header/footer control in its final flex row. Without awaiting it, the
+  // browser can paint the flat fallback controls as a vertical stack for a
+  // frame before the builder reparents them.
+  await applyChatControlsConfig();
+  // LEGACY: keep the old header/footer config running during migration
+  applyChatFooterConfig();
+  applyChatHeaderConfig();
 
   // ── Deferred, non-critical boot work ────────────────────────────────────
   // These touch the network but aren't needed for first paint or first
@@ -612,9 +637,20 @@ window.addEventListener('webagent-token-refreshed', () => {
 // wipe every identity key (so the reload can't re-enter the zombie state) and
 // reload to a clean signed-out app with the sign-in form open. Once-only.
 let _authExpiredHandled = false;
-window.addEventListener('webagent-auth-expired', () => {
+window.addEventListener('webagent-auth-expired', async () => {
   if (_authExpiredHandled) return;
   _authExpiredHandled = true;
+  try {
+    const [{ default: sessionDB }, { syncEngine }] = await Promise.all([
+      import('../../chat/js/storage/indexeddb.js'),
+      import('../../chat/js/storage/sync.js'),
+    ]);
+    syncEngine.stopAutoSync();
+    if (sessionDB.ownerScope) await sessionDB.clearAll();
+    sessionDB.close();
+  } catch (purgeError) {
+    console.warn('[Auth] Browser storage expiry purge failed:', purgeError);
+  }
   try {
     const active = getActive();
     if (active) removeAccount(active.user_id);

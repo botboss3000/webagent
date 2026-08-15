@@ -84,10 +84,7 @@ async def _boot():
         from dotenv import load_dotenv
         load_dotenv(os.path.join(os.getcwd(), ".env"))
     except Exception:
-        pass  # .env is optional; provider.json may carry the key instead.
-
-    from app.provider_boot import apply_provider_config
-    apply_provider_config()
+        pass  # .env is optional; the web app reads LLM config from its DB.
 
     from app.db import get_db
     return get_db()
@@ -107,7 +104,7 @@ async def _ensure_session(db, user_id: str, session_id: str) -> None:
         pass
     try:
         raw.table("sessions").insert(
-            {"id": session_id, "user_id": user_id, "title": "Server Manager", "pinned": 1}
+            {"id": session_id, "user_id": user_id, "title": "Server Manager", "pinned": 0}
         ).execute()
     except Exception:
         pass  # Already exists / created concurrently — fine.

@@ -1,0 +1,17 @@
+FUNC: sendQuickNote @ 73057
+
+===== context around [QUICK NOTE] @ 39911 =====
+toastProjectAdded=S2.toastProjectAdded||'Project "${name}" added.';S2.toastNameRequired=S2.toastNameRequired||'Give the project a name first.';S2.toastChatSent=S2.toastChatSent||'Chat sent to ${name}';S2.toastSearchChat=S2.toastSearchChat||'Search/chat: ${text}';S2.allProjectsLabel=S2.allProjectsLabel||'All Projects';S2.projectsLabel=S2.projectsLabel||'projects';S2.overallProgressLabel=S2.overallProgressLabel||'Overall progress';S2.projectsListLabel=S2.projectsListLabel||'Projects';
+
+/* ── PROMPTS — editable in data.json → config.prompts (fallbacks inline) ── */
+var DEF_PROMPTS={
+  quickNote:'[QUICK NOTE - TRACKER UPDATE ONLY] You are filing a note in the Project Development Tracker. Read data.json for current projects and items. File this as a new open item (tag: feat/chore/bug/idea) under the best-fit project; if none fits, create a Miscellaneous project. Update the data bag and refresh the genui. Reply with one confirmation line. DO NOT fix, research, plan, or take any action.\nSuggested project: ${project}\nNote: ${text}\n\nAvailable projects:\n${projectContext}',
+  // Friendly user-facing labels shown in the chat panel as a green notice when
+  // the page sends a prompt (instead of the raw prompt as a "You" bubble).
+  // Editable in data.json → config.prompts.*_userMessage / config.qa.*_userMessage.
+  quickNote_userMessage:'Quick note filed to the Project Development Tracker GenUI page',
+  openChat_userMessage:'Opened chat for item on the Project Development Tracker GenUI page',
+  qa:{template:'[Project Readiness Agent]\nProject: ${project} (${status})\nItem: ${item} [${tag}]\nQA Status: ${qaStatus}\nUser Hint: ${hint}\n--- Q&A Thread ---\n${thread}\n${action}\n\nQUESTION RULES: Before proposing a plan, ask any clarifying questions needed — each 1 to 2 sentences max (3 ok occasionally), no preamble, no research dump in the question. Several independent questions may be asked at once (set qa.questions=[{id,text},...]); if answers chain, ask one at a time. Do NOT propose a plan while questions are pending.',
+      template_userMessage:'Research request sent from the Project Development Tracker GenUI page',
+      userAnswer:'--- User Answer ---\n${answer}\nACTION: User answered. If critical unknowns remain, ask the next clarifying question(s) — each 1-2 sentences; update qa.questions and keep qa.status="questions", refresh the genui, and wait. If fully specified, propose the plan now: write qa.plan (approach/files/steps/effort/impact/risks/research_notes/related_items), set qa.status="plan_ready", refresh the genui.',
+      userAnswer_userMessage:'Answer sent to 

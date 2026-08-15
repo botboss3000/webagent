@@ -17,7 +17,7 @@
 // fresh UUID session, so this never collides in practice.
 //
 // RELIABILITY — the WS is the smooth path, the DB is the durable one. Just
-// like the main panel (ui/chat-side-panel/js/chat-reconcile.js), the WS only
+// like the main panel (ui/chat/js/chat-reconcile.js), the WS only
 // delivers when the browser socket and the running agent live in the SAME
 // server process. When they don't (dev port-stacking, prod multi-worker), or
 // when the socket is briefly silent, the widget polls a cheap DB-tail endpoint
@@ -41,13 +41,60 @@ import { randomUUID } from '../../shared/js/uuid.js';
 import { registerSessionSubscriber } from '../../shared/js/agentWs.js';
 import { icon } from '../../shared/js/icons.js';
 import { chatMsg } from '../../shared/js/app-prompts.js';
-import { _fillAgentBubble } from '../../chat-side-panel/js/chat-bubble.js';
+import { _fillAgentBubble } from '../../chat/js/chat-bubble.js';
 import { buildToolRow } from '../../shared/js/chat-activity.js';
+import {
+  appendChatSurfaceBubble,
+  applyChatSurfaceProfile,
+  applyChatSurfaceHeader,
+  chatSurfaceStatsHtml,
+  createChatSurfaceUsage,
+  wireChatSurfaceComposer,
+  wireStatsCarousel,
+} from '../../shared/js/chat-surface.js';
 
 // How often the reconcile gate is checked, and how long the WS must be silent
 // for this session before the DB poll engages (mirrors chat-reconcile.js).
 const RECONCILE_INTERVAL_MS = 800;
 const WS_SILENCE_MS = 1200;
+
+// ── Widget registry (enumerate / close / restore all open widgets) ─────────
+const _openWidgets = new Set();
+
+/** @returns {Array} snapshot of all open widget instances */
+export function getOpenWidgets() { return Array.from(_openWidgets); }
+
+/** Close every open widget. Idempotent — already-closed widgets are skipped. */
+export function closeAllWidgets() {
+  const all = Array.from(_openWidgets);
+  all.forEach(w => { try { w.close(); } catch (_) {} });
+}
+
+/** Restore every minimized widget back to full card view. */
+export function restoreAllMinimized() {
+  _openWidgets.forEach(w => {
+    if (w.minimized) try { w.restore(); } catch (_) {}
+  });
+}
+
+let _chatUiProfilePromise;
+function _mergeChatProfile(base, overrides) {
+  const out = { ...(base || {}) };
+  for (const [key, value] of Object.entries(overrides || {})) {
+    out[key] = value && typeof value === 'object' && !Array.isArray(value)
+      ? _mergeChatProfile(base?.[key], value) : value;
+  }
+  return out;
+}
+export function _widgetChatUiProfile() {
+  if (!_chatUiProfilePromise) {
+    _chatUiProfilePromise = fetch(apiPath('/api/v1/auth/ui-config'), { headers: { ...authHeaders() } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => _mergeChatProfile(data?.chat_ui?.chat_common, data?.chat_ui?.chat_widget))
+      .catch(() => null);
+  }
+  return _chatUiProfilePromise;
+}
 
 // Trim the trailing "[Tool calls: …]" annotation off a stored assistant row
 // (same as chat-stream.js _stripToolCalls).
@@ -161,14 +208,19 @@ export function createChatWidget(opts = {}) {
     transformMessage = null,   // async (text) => sentText — wrap each outgoing message
                                //   (e.g. Gen UI tags every send with its page header);
                                //   the user bubble still shows the raw typed text.
+    sessionId = null,          // explicit session id (genui session contract)
+    sessionTargetName = '',    // title the deployed session gets after first send
+    rememberSessionKey = '',   // localStorage key to remember the session id under
     onDone = null,             // (finalText) => void — fires once per finished turn
     onClose = null,            // () => void
   } = opts;
 
   const st = {
-    sessionId: randomUUID(),
+    sessionId: sessionId || randomUUID(),
     userId: app.currentUserId,
     agentId: agentId || null,
+    sessionTargetName: sessionTargetName || '',
+    rememberSessionKey: rememberSessionKey || '',
     appControl: appControl || null,   // consumed on the first send, then cleared
     status: 'idle',
     closed: false,
@@ -187,6 +239,10 @@ export function createChatWidget(opts = {}) {
     reconcileTimer: null,
     reconcileInFlight: false,
     collapseTimer: null,
+    usage: null,
+    activityTimer: null,
+    activityNote: '',
+    activityStartedAt: 0,
     els: {},
   };
 
@@ -194,7 +250,7 @@ export function createChatWidget(opts = {}) {
 
   function _build() {
     const root = document.createElement('div');
-    root.className = 'chat-widget';
+    root.className = 'chat-widget chat-surface';
 
     // Resize handles (one per edge/corner). Appended first so the header and
     // its buttons paint above them and stay clickable.
@@ -240,58 +296,93 @@ export function createChatWidget(opts = {}) {
     footer.className = 'cw-footer';
 
     const actions = document.createElement('div');
-    actions.className = 'cw-actions';
-    // Spinning loader pinned to the left while the agent is working — the
-    // widget's echo of the main panel's live tool-call activity. Real loader
-    // icon (not a pulsing dot); the spin comes from the .cw-spinner animation.
-    const spinner = document.createElement('span');
-    spinner.className = 'cw-spinner';
-    spinner.innerHTML = icon('loader', { size: '15px' });
+    actions.className = 'chat-above-pill cw-actions';
+    // Spinning loader — the widget's echo of the main panel's live tool-call
+    // activity. Real loader icon (not a pulsing dot); the spin from .cw-spinner.
+    const spinner = document.createElement('button');
+    spinner.type = 'button';
+    spinner.className = 'chat-activity-bar cw-spinner';
+    spinner.dataset.footerControl = 'activity';
+    spinner.innerHTML = '<span class="chat-activity-dot"></span><span class="chat-activity-text">Working</span><span class="chat-activity-chevron">›</span>';
     spinner.style.display = 'none';
     actions.appendChild(spinner);
+    const actionRow = document.createElement('div');
+    actionRow.className = 'chat-action-row';
     const contBtn = document.createElement('button');
     contBtn.type = 'button';
-    contBtn.className = 'cw-action-btn cw-continue-btn';
+    contBtn.className = 'chat-continue-btn cw-continue-btn';
+    contBtn.dataset.footerControl = 'continue';
     contBtn.innerHTML = icon('play', { size: '12px' }) + ' Continue';
     contBtn.title = 'Ask the agent to keep going';
     contBtn.style.display = 'none';
     contBtn.addEventListener('click', () => send('continue'));
-    actions.appendChild(contBtn);
+    actionRow.appendChild(contBtn);
     const stopBtn = document.createElement('button');
     stopBtn.type = 'button';
-    stopBtn.className = 'cw-action-btn cw-stop-btn';
+    stopBtn.className = 'chat-stop-btn cw-stop-btn';
+    stopBtn.dataset.footerControl = 'stop';
     stopBtn.innerHTML = icon('square', { size: '12px' }) + ' Stop';
     stopBtn.style.display = 'none';
     stopBtn.addEventListener('click', () => interrupt());
-    actions.appendChild(stopBtn);
+    actionRow.appendChild(stopBtn);
+    actions.appendChild(actionRow);
     footer.appendChild(actions);
 
     // CHAT-PILL-SYNC: opts into the shared pill classes from app1.css —
     // geometry/behaviour come from there, never re-styled here.
     const pill = document.createElement('div');
-    pill.className = 'chat-pill no-voice cw-pill';
+    pill.className = 'chat-pill cw-pill';
     const input = document.createElement('textarea');
     input.className = 'chat-pill-input';
     input.rows = 1;
     input.placeholder = 'Reply to the agent…';
     input.autocomplete = 'off';
     pill.appendChild(input);
+    const stats = document.createElement('div');
+    stats.className = 'chat-pill-stats cw-stats';
+    stats.innerHTML = chatSurfaceStatsHtml();
+    wireStatsCarousel(stats);
+    pill.appendChild(stats);
+    const pillButtons = document.createElement('div');
+    pillButtons.className = 'chat-pill-buttons cw-pill-buttons';
+    const voiceBtn = document.createElement('button');
+    voiceBtn.type = 'button';
+    voiceBtn.className = 'chat-pill-voice';
+    voiceBtn.title = 'Record voice';
+    voiceBtn.innerHTML = icon('mic', { size: '32px' });
+    pillButtons.appendChild(voiceBtn);
     const sendBtn = document.createElement('button');
     sendBtn.type = 'button';
     sendBtn.className = 'chat-pill-send';
     sendBtn.title = 'Send';
     sendBtn.disabled = true;
     sendBtn.innerHTML = icon('send', { size: '18px' });
-    pill.appendChild(sendBtn);
+    pillButtons.appendChild(sendBtn);
+    pill.appendChild(pillButtons);
+    const attachBtn = document.createElement('button');
+    attachBtn.type = 'button';
+    attachBtn.className = 'chat-pill-attach';
+    attachBtn.title = 'Attach files';
+    attachBtn.innerHTML = icon('plus', { size: '22px' });
+    pill.appendChild(attachBtn);
+    const footerHandle = document.createElement('div');
+    footerHandle.className = 'chat-footer-handle expanded';
+    footerHandle.setAttribute('aria-expanded', 'true');
+    const handleLine = document.createElement('div');
+    handleLine.className = 'chat-footer-handle-line';
+    footerHandle.appendChild(handleLine);
+    pill.appendChild(footerHandle);
     footer.appendChild(pill);
+    const below = document.createElement('div');
+    below.className = 'chat-footer-row expanded cw-below';
+    below.innerHTML = '<button class="chat-skills-btn" type="button" data-footer-control="abilities">' + icon('blocks', { size: '16px' }) + '<span class="csp-badge">0</span></button><button class="chat-target-btn" type="button" data-footer-control="target">' + icon('monitor', { size: '16px' }) + '<span class="chat-target-label"></span></button><button class="chat-mode-btn" type="button" data-footer-control="mode">Ask</button>';
+    footer.appendChild(below);
     root.appendChild(footer);
 
-    input.addEventListener('input', () => {
-      pill.classList.toggle('has-text', !!input.value.trim());
-      sendBtn.disabled = !input.value.trim() || st.status === 'running' || st.status === 'starting';
-    });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
+        // On touch devices (mobile), let Enter insert a newline; send via the button.
+        if (window.matchMedia?.('(pointer: coarse)').matches) return;
         e.preventDefault();
         if (!sendBtn.disabled) _sendFromInput();
       }
@@ -303,13 +394,66 @@ export function createChatWidget(opts = {}) {
       if (st.collapseTimer) { clearTimeout(st.collapseTimer); st.collapseTimer = null; }
     });
 
-    st.els = { root, header, body, footer, pill, input, sendBtn, stopBtn, contBtn,
-               actions, spinner,
+    st.els = { root, header, body, footer, pill, input, sendBtn, send: sendBtn, stopBtn, contBtn,
+               actions, above: actions, spinner, stats, pillButtons, voiceBtn, voice: voiceBtn,
+               attachBtn, attach: attachBtn, below, footerToggle: footerHandle,
                title: header.querySelector('.cw-title'),
                statusEl: header.querySelector('.cw-status'),
-               dot: header.querySelector('.cw-dot') };
+               dot: header.querySelector('.cw-dot'),
+               headIcon: header.querySelector('.cw-head-icon'),
+               minBtn, closeBtn };
     st.els.title.textContent = title;
+    st.usage = createChatSurfaceUsage(stats);
+    wireChatSurfaceComposer(st.els, { isBusy: () => st.status === 'running' || st.status === 'starting' });
+    _widgetChatUiProfile().then(profile => {
+      applyChatSurfaceProfile(st.els, profile);
+      applyChatSurfaceHeader(st.els, profile);
+    });
+    spinner.addEventListener('click', () => {
+      const group = st.els.body.querySelector('.cw-tools');
+      if (!group) return;
+      group.classList.add('open');
+      group.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
     return root;
+  }
+
+  function _setActivity(note, hasTools = st.toolCalls.length > 0) {
+    const bar = st.els.spinner;
+    const wrap = bar?.parentElement;  // .chat-above-pill or .cw-actions
+    const text = bar?.querySelector('.chat-activity-text');
+    if (!bar || !wrap || !text) return;
+    if (note && note !== st.activityNote) {
+      st.activityNote = note;
+      st.activityStartedAt = performance.now();
+    }
+    bar.classList.toggle('has-tools', hasTools);
+    wrap.classList.add('visible');
+    bar.style.display = '';
+    const render = () => {
+      const elapsed = st.activityStartedAt ? (performance.now() - st.activityStartedAt) / 1000 : 0;
+      text.textContent = st.activityNote + (elapsed >= 0.3 ? `  ·  ${elapsed.toFixed(1)}s` : '');
+    };
+    render();
+    if (!st.activityTimer) st.activityTimer = setInterval(render, 120);
+  }
+
+  function _clearActivity() {
+    if (st.activityTimer) { clearInterval(st.activityTimer); st.activityTimer = null; }
+    st.activityNote = '';
+    st.activityStartedAt = 0;
+    const wrap = st.els.spinner?.parentElement;
+    wrap?.classList.remove('visible');
+    if (st.els.spinner) st.els.spinner.style.display = 'none';
+  }
+
+  function _pipelineActivity(step) {
+    return ({
+      load_context: 'Loading context', prep_tools: 'Building tools', prep_history: 'Loading history',
+      memory_search_start: 'Searching memory', build_prompt: 'Preparing', attachment: 'Reading attachment',
+      load_tools: 'Building tools', turn_start: 'Thinking…', llm_call_start: 'Thinking…',
+      memory_save_start: 'Saving memory',
+    })[step] || '';
   }
 
   function _setStatus(status) {
@@ -321,6 +465,8 @@ export function createChatWidget(opts = {}) {
     const busy = status === 'running' || status === 'starting';
     pill.classList.toggle('thinking', busy);
     spinner.style.display = busy ? '' : 'none';
+    if (busy) _setActivity(st.activityNote || 'Thinking…');
+    else _clearActivity();
     stopBtn.style.display = status === 'running' ? '' : 'none';
     // Continue is offered once a turn has finished and the agent is ready.
     const canContinue = st.hadTurn && !!st.agentId && !busy;
@@ -341,11 +487,8 @@ export function createChatWidget(opts = {}) {
   // ── Bubble helpers (shared by the WS path AND the DB-reconcile path) ──
 
   function _addBubble(role, text) {
-    const b = document.createElement('div');
-    b.className = 'cw-bubble ' + role;
-    b.textContent = text || '';
-    st.els.body.appendChild(b);
-    _scrollToBottom();
+    const b = appendChatSurfaceBubble(st.els.body, role, text || '');
+    b.classList.add('cw-bubble');
     return b;
   }
 
@@ -387,10 +530,9 @@ export function createChatWidget(opts = {}) {
       bubble = streaming[streaming.length - 1] || null;
     }
     if (bubble) {
-      const cur = (key && st.turnBuffers.get(key)) || bubble.textContent || '';
       while (bubble.firstChild) bubble.removeChild(bubble.firstChild);
       bubble.classList.remove('streaming');
-      _fillAgentBubble(bubble, cur ? cur + '\n\n_(stopped)_' : '_(stopped)_');
+      _fillAgentBubble(bubble, 'Stopped');
     }
     if (key) st.turnBuffers.delete(key);
   }
@@ -458,6 +600,10 @@ export function createChatWidget(opts = {}) {
     st.settled = false;
     st.toolCalls = [];
     st.toolGroup = null;
+    st.usage?.begin();
+    // An expanded footer stays expanded through sends. In particular, an async
+    // profile refresh must never leave the row hidden with its chevron open.
+    if (st.els.below?.classList.contains('expanded')) st.els.below.hidden = false;
     if (st.collapseTimer) { clearTimeout(st.collapseTimer); st.collapseTimer = null; }
     // Prime WS-liveness from "now" so the DB poll counts its silence window
     // from here; if the WS delivers it keeps this fresh and the poll stays
@@ -472,6 +618,7 @@ export function createChatWidget(opts = {}) {
     if (st.settled || st.closed) return;
     st.settled = true;
     st.hadTurn = true;
+    st.usage?.finish();
     _finalizeDanglingStreams();
     _stopReconcile();
     if (typeof finalText === 'string' && finalText.trim()) st.lastAgentText = finalText.trim();
@@ -494,10 +641,28 @@ export function createChatWidget(opts = {}) {
 
   function _handleEvent(ev) {
     if (st.closed || !ev || !ev.type) return;
+    st.usage?.event(ev);
     const key = ev.asst_id || ev.turn_id || '';
+    if (ev.type === 'pipeline') {
+      const note = _pipelineActivity(ev.step);
+      if (note) _setActivity(note);
+    }
     switch (ev.type) {
       case 'user_message': {
         const text = (ev.content || '').trim();
+        // GenUI-originated page sends carry a friendly label — render it as a
+        // green notice (compact surfaces never show the raw prompt).
+        const genuiLabel = (ev.genui_label || '').trim();
+        if (genuiLabel) {
+          const mid = ev.id || ev.interaction_id || '';
+          if (mid && st.els.body.querySelector(`.cw-bubble.info[data-msg-id="${CSS.escape(String(mid))}"]`)) break;
+          const b = _addBubble('info', genuiLabel);
+          b.classList.add('system-genui');
+          if (mid) b.setAttribute('data-msg-id', String(mid));
+          _beginTurn();           // a turn started (possibly from another device)
+          _setStatus('running');
+          break;
+        }
         const users = st.els.body.querySelectorAll('.cw-bubble.user');
         for (const u of users) { if (u.textContent.trim() === text) return; } // dedup optimistic
         _addBubble('user', ev.content || '');
@@ -507,6 +672,8 @@ export function createChatWidget(opts = {}) {
       }
       case 'stream': {
         if (!key) break;
+        _setActivity('Writing reply…');
+        st.usage?.stream(ev.content || '');
         _seedStreaming(key, (st.turnBuffers.get(key) || '') + (ev.content || ''));
         _setStatus('running');
         break;
@@ -521,6 +688,7 @@ export function createChatWidget(opts = {}) {
           result: '', durationMs: null, errorType: null, turn: 0, open: false,
         });
         _renderToolGroup();
+        _setActivity('Toolcall ' + (ev.tool || 'tool'), true);
         _setStatus('running');
         break;
       case 'tool_result': {
@@ -535,6 +703,7 @@ export function createChatWidget(opts = {}) {
           }
         }
         _renderToolGroup();
+        _setActivity((ev.error ? 'Error ' : 'Done ') + (ev.tool || 'tool'), true);
         break;
       }
       case 'response':
@@ -542,6 +711,7 @@ export function createChatWidget(opts = {}) {
         _settleTurn(ev.content || '');
         break;
       case 'interrupted':
+        st.usage?.finish();
         _markInterruptedKey(key);
         _setStatus('interrupted');
         st.hadTurn = true;
@@ -554,6 +724,7 @@ export function createChatWidget(opts = {}) {
         _startReconcile();
         break;
       case 'error':
+        st.usage?.finish();
         _addBubble('agent', 'Error: ' + (ev.message || 'unknown')).classList.add('cw-error');
         _setStatus('error');
         st.settled = true;
@@ -607,7 +778,7 @@ export function createChatWidget(opts = {}) {
     try {
       const token = localStorage.getItem('auth_token');
       const url = apiPath(
-        `/api/v1/db/session-tail?db=local.db&session_id=${encodeURIComponent(st.sessionId)}`
+        `/api/v1/db/session-tail?db=user.db&session_id=${encodeURIComponent(st.sessionId)}`
         + `&after_session_seq=${st.lastSeq}`
         + (st.userId ? `&user_id=${encodeURIComponent(st.userId)}` : '')
         + (token ? `&token=${encodeURIComponent(token)}` : ''),
@@ -649,9 +820,27 @@ export function createChatWidget(opts = {}) {
     }
   }
 
+  function _genuiLabelFromMeta(metaRaw) {
+    if (!metaRaw) return '';
+    let m = metaRaw;
+    if (typeof m === 'string') { try { m = JSON.parse(m); } catch (_) { return ''; } }
+    if (!m || typeof m !== 'object' || !m.genui) return '';
+    return String(m.genui_label || '').trim();
+  }
+
   function _reconcileUserRow(msg) {
     const mid = msg.id || '';
     const cont = (msg.content || '').trim();
+    // GenUI-originated page sends: green label notice, never the raw prompt.
+    const genuiLabel = _genuiLabelFromMeta(msg.metadata);
+    if (genuiLabel) {
+      if (mid && st.els.body.querySelector(`.cw-bubble.info[data-msg-id="${CSS.escape(String(mid))}"]`)) return;
+      const b = _addBubble('info', genuiLabel);
+      b.classList.add('system-genui');
+      if (mid) b.setAttribute('data-msg-id', String(mid));
+      st.hadTurn = true;
+      return;
+    }
     if (mid && st.els.body.querySelector(`.cw-bubble.user[data-msg-id="${CSS.escape(String(mid))}"]`)) return;
     const users = st.els.body.querySelectorAll('.cw-bubble.user');
     for (const u of users) {
@@ -687,6 +876,10 @@ export function createChatWidget(opts = {}) {
     // cleared — exactly like the side-panel pill's pendingAppControl handoff.
     const ac = st.appControl;
     st.appControl = null;
+    // Element pickup: if the launcher element pickup toggle is active, inject
+    // the current fingerprint on EVERY send so the agent sees what the dot is
+    // pointing at.
+    const pickupFp = (app.elementPickupActive && app.elementPickupFingerprint) || null;
     try {
       const resp = await fetch(apiPath('/api/v1/chat/send'), {
         method: 'POST',
@@ -698,11 +891,29 @@ export function createChatWidget(opts = {}) {
           agent_id: st.agentId,
           execution_mode: executionMode,
           ...(atts.length ? { attachment_ids: atts } : {}),
-          ...(ac ? { app_control: ac } : {}),
+          ...(ac ? { app_control: ac } : (pickupFp ? { app_control: pickupFp } : {})),
         }),
       });
       if (!resp.ok) { _markFailed(userBubble, msg); return; }
       const data = await resp.json().catch(() => ({}));
+      // ── Session contract: title + remember after the first send ────────────
+      // A brand-new session row is only created on first send — now it exists,
+      // so we can PATCH its title to the declared target name (which also locks
+      // it against the auto-namer) and remember the id for follow-up widgets.
+      if (!st._sessionInitialized) {
+        st._sessionInitialized = true;
+        if (st.rememberSessionKey && st.sessionId) {
+          try { localStorage.setItem(st.rememberSessionKey, st.sessionId); } catch (_) {}
+        }
+        if (st.sessionTargetName) {
+          const _title = st.sessionTargetName.slice(0, 120);
+          fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(st.sessionId) + '?db=user.db'), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ title: _title }),
+          }).catch(() => { /* best-effort; the auto-namer may fill it */ });
+        }
+      }
       // Synchronous reply path (no WS streaming for this turn).
       if (data && data.status === 'ok' && data.reply) {
         _finalizeKey(data.turn_id || '', data.reply);
@@ -827,6 +1038,7 @@ export function createChatWidget(opts = {}) {
     if (st.closed || st.els.root) return widget;
     const layer = _ensureLayer();
     layer.appendChild(_build());
+    _openWidgets.add(widget);
     _setStatus('starting');
     // Claim the session BEFORE the first send so no events are missed.
     st.unregister = registerSessionSubscriber(st.sessionId, _handleEvent);
@@ -881,7 +1093,9 @@ export function createChatWidget(opts = {}) {
   function close() {
     if (st.closed) return;
     st.closed = true;
+    _openWidgets.delete(widget);
     if (st.collapseTimer) { clearTimeout(st.collapseTimer); st.collapseTimer = null; }
+    _clearActivity();
     _stopReconcile();
     if (st.unregister) { st.unregister(); st.unregister = null; }
     if (st.els.root) st.els.root.remove();
@@ -895,6 +1109,7 @@ export function createChatWidget(opts = {}) {
     open, close, send, interrupt, minimize, restore,
     get sessionId() { return st.sessionId; },
     get status() { return st.status; },
+    get minimized() { return st.minimized; },
     get el() { return st.els.root || null; },
   };
   return widget;

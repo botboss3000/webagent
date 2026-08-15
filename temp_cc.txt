@@ -1,0 +1,23 @@
+{
+ "button": {
+  "agentId": "d413a9e8-10fb-4fc0-88ca-164da2955155",
+  "title": "Project Readiness",
+  "iconName": "sparkle",
+  "enabled": true,
+  "session": {
+   "target_name": "Project Readiness \u2014 ${item}",
+   "mode": "new_reuse",
+   "reuse_key": "button"
+  }
+ },
+ "toolbar": {
+  "agentId": "45b2b01d-228f-4964-8213-f7928daa38f9",
+  "title": "Project Tracker Chat",
+  "iconName": "sparkle",
+  "session": {
+   "target_name": "Project Tracker \u2014 Toolbar Chat",
+   "mode": "new_reuse",
+   "reuse_key": "toolbar"
+  }
+ }
+}

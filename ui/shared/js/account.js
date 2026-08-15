@@ -10,14 +10,16 @@
 
 import { renderAvatar } from './user-avatar.js';
 import { _esc } from './dom-utils.js';
-import { getActive, updateActive, removeAccount, listAccounts, upsertAccount } from './accounts.js';
+import { getActive, upsertAccount } from './accounts.js';
 import { getPrefs, setGlobalEnabled, hintsGloballyEnabled } from '../../tutorials/js/tutorial.js';
 // "My appearance" per-user theme editor. Self-fills its slot only when the admin
 // has enabled per-user themes (App Settings → Appearance); otherwise removes it.
 import { mountMyAppearance } from './appearance-me.js';
 // "Your database" per-user connect panel. Self-fills its slot only when the
-// admin has turned on Multi-tenant data (App Settings); otherwise removes itself.
+// admin has turned on User BYOD (App Settings); otherwise removes itself.
 import { mountMyDatabase } from './tenant-db.js';
+import { checkDevicePurge, purgeAndAcknowledge } from './device-purge.js';
+import { getBrowserStorageContext } from './browser-storage-policy.js';
 
 let _wired = false;
 
@@ -155,6 +157,14 @@ function renderTab() {
       <button id="account-save-session" class="account-btn account-btn-primary">Save changes</button>
       <span id="account-session-status" class="account-status" style="display:none;"></span>
     </div>
+    <div class="account-field" style="margin-top:18px;">
+      <label>Signed-in devices</label>
+      <span class="account-pref-desc" style="display:block;margin-bottom:8px;">Select device sessions to sign them out and erase their local account data.</span>
+      <div id="account-device-list" class="account-device-list">
+        <span class="account-status" style="display:block;">Loading devicesâ€¦</span>
+      </div>
+      <span id="account-device-status" class="account-status" style="display:none;"></span>
+    </div>
   `;
   wrap.appendChild(sess);
 
@@ -208,12 +218,28 @@ function renderTab() {
 
   // ── Your database (per-user bring-your-own-database) ──
   // A slot that mountMyDatabase() fills only when the admin has turned on
-  // Multi-tenant data, letting this user point their interaction data at their
+  // User BYOD, letting this user point their interaction data at their
   // own Postgres. Removes itself when the feature is off.
   const databaseSlot = document.createElement('section');
   databaseSlot.className = 'account-section';
   databaseSlot.id = 'account-database-slot';
   wrap.appendChild(databaseSlot);
+
+  // â”€â”€ Data export â”€â”€
+  const dataSection = document.createElement('section');
+  dataSection.className = 'account-section';
+  dataSection.id = 'account-data-section';
+  const storageContext = getBrowserStorageContext();
+  dataSection.innerHTML = `
+    <h3 class="account-section-title">Your data</h3>
+    <p class="account-danger-desc">Download server-authority records and this device's browser-authority/cache data in one JSON file.</p>
+    <p class="account-pref-desc">Browser storage mode: ${_esc(storageContext.mode)} · policy epoch ${storageContext.policy_epoch}</p>
+    <div class="account-row">
+      <button id="account-export-data" class="account-btn account-btn-primary">Download my data</button>
+      <span id="account-export-status" class="account-status" style="display:none;"></span>
+    </div>
+  `;
+  wrap.appendChild(dataSection);
 
   // ── Danger zone ──
   const danger = document.createElement('section');
@@ -260,6 +286,7 @@ function wireHandlers() {
   const sessBtn = document.getElementById('account-save-session');
   if (sessBtn) sessBtn.addEventListener('click', onSaveSessionPolicy);
   loadSessionPolicy();
+  loadDevices();
 
   const delTrigger = document.getElementById('account-delete-trigger');
   if (delTrigger) delTrigger.addEventListener('click', () => {
@@ -288,6 +315,8 @@ function wireHandlers() {
 
   const delBtn = document.getElementById('account-delete-confirm-btn');
   if (delBtn) delBtn.addEventListener('click', onDeleteAccount);
+  const exportBtn = document.getElementById('account-export-data');
+  if (exportBtn) exportBtn.addEventListener('click', onExportData);
 
   const tutorialGlobal = document.getElementById('account-tutorial-global');
   if (tutorialGlobal) {
@@ -308,7 +337,13 @@ function wireHandlers() {
   if (splashShow && window.WA_SPLASH) {
     splashShow.checked = window.WA_SPLASH.isShown();
     splashShow.addEventListener('change', () => {
-      window.WA_SPLASH.setShown(splashShow.checked);
+      const show = splashShow.checked;
+      window.WA_SPLASH.setShown(show);
+      // The welcome screen is served only by the root route now; the app shell
+      // lives at /app. Return to the front door immediately when re-enabling it
+      // so the cleared "seen" cookie takes effect instead of appearing to do
+      // nothing until a later visit.
+      if (show) window.location.assign('/');
     });
     // Stay in sync if the splash's own checkbox flips the same flag.
     window.addEventListener('wa-splash-pref-changed', (e) => {
@@ -471,11 +506,185 @@ async function onSaveSessionPolicy() {
   }
 }
 
+function _deviceTime(value) {
+  if (!value) return 'Unknown';
+  try { return new Date(Number(value) * 1000).toLocaleString(); }
+  catch (_) { return 'Unknown'; }
+}
+
+function _deviceLabel(userAgent) {
+  const ua = String(userAgent || '');
+  const browser = /Edg\//.test(ua) ? 'Edge'
+    : (/Firefox\//.test(ua) ? 'Firefox'
+      : (/Chrome\//.test(ua) ? 'Chrome'
+        : (/Safari\//.test(ua) ? 'Safari' : 'Browser')));
+  const platform = /Android/.test(ua) ? 'Android'
+    : (/iPhone|iPad/.test(ua) ? 'iOS'
+      : (/Windows/.test(ua) ? 'Windows'
+        : (/Mac OS/.test(ua) ? 'macOS' : (/Linux/.test(ua) ? 'Linux' : 'device'))));
+  return `${browser} on ${platform}`;
+}
+
+async function loadDevices() {
+  const list = document.getElementById('account-device-list');
+  if (!list) return;
+  try {
+    const res = await fetch('/api/v1/auth/me/devices', {
+      headers: _authHeaders(),
+      cache: 'no-store',
+    });
+    if (!res.ok) { list.closest('.account-field')?.remove(); return; }
+    const data = await res.json();
+    list.innerHTML = '';
+    const devices = Array.isArray(data.devices) ? data.devices : [];
+    if (!devices.length) {
+      list.textContent = 'No device sessions found.';
+      return;
+    }
+    const selected = new Set();
+    const frame = document.createElement('div');
+    frame.className = 'account-device-table-frame';
+    const table = document.createElement('table');
+    table.className = 'account-device-table';
+    const head = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    const selectHeader = document.createElement('th');
+    selectHeader.className = 'account-device-select';
+    const selectAll = document.createElement('input');
+    selectAll.type = 'checkbox';
+    selectAll.setAttribute('aria-label', 'Select all device sessions');
+    selectHeader.appendChild(selectAll);
+    headerRow.appendChild(selectHeader);
+    headerRow.insertAdjacentHTML(
+      'beforeend',
+      '<th>Device</th><th>Last login</th><th>Location</th>',
+    );
+    const actionHeader = document.createElement('th');
+    actionHeader.className = 'account-device-action';
+    const bulkButton = document.createElement('button');
+    bulkButton.type = 'button';
+    bulkButton.className = 'account-btn account-btn-danger account-device-purge-btn';
+    bulkButton.textContent = 'Sign out & purge';
+    bulkButton.disabled = true;
+    actionHeader.appendChild(bulkButton);
+    headerRow.appendChild(actionHeader);
+    head.appendChild(headerRow);
+    table.appendChild(head);
+    const body = document.createElement('tbody');
+    table.appendChild(body);
+    frame.appendChild(table);
+    list.appendChild(frame);
+
+    const rowCheckboxes = [];
+    const updateBulkButton = () => {
+      const count = selected.size;
+      bulkButton.disabled = count === 0;
+      bulkButton.textContent = count
+        ? `Sign out & purge (${count})`
+        : 'Sign out & purge';
+      selectAll.checked = count > 0 && count === devices.length;
+      selectAll.indeterminate = count > 0 && count < devices.length;
+    };
+    for (const device of devices) {
+      const row = document.createElement('tr');
+      const current = device.device_id === data.current_device_id;
+      const location = device.location || 'Unknown location';
+      const ip = device.ip_address || '';
+      row.innerHTML = `
+        <td class="account-device-select"></td>
+        <td><span class="account-device-primary">${current ? 'This device' : _esc(_deviceLabel(device.user_agent))}</span><span class="account-device-secondary">${_esc(String(device.device_id || '').slice(0, 10))}</span></td>
+        <td>${_esc(_deviceTime(device.last_login_at))}</td>
+        <td><span class="account-device-primary">${_esc(location)}</span><span class="account-device-secondary">${_esc(ip)}</span></td>
+        <td></td>
+      `;
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.setAttribute(
+        'aria-label',
+        current ? 'Select this device' : `Select ${_deviceLabel(device.user_agent)}`,
+      );
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) selected.add(device.device_id);
+        else selected.delete(device.device_id);
+        updateBulkButton();
+      });
+      row.querySelector('.account-device-select').appendChild(checkbox);
+      row.addEventListener('click', (event) => {
+        if (event.target === checkbox) return;
+        checkbox.checked = !checkbox.checked;
+        checkbox.dispatchEvent(new Event('change'));
+      });
+      rowCheckboxes.push({ checkbox, deviceId: device.device_id });
+      body.appendChild(row);
+    }
+    selectAll.addEventListener('change', () => {
+      selected.clear();
+      for (const entry of rowCheckboxes) {
+        entry.checkbox.checked = selectAll.checked;
+        if (selectAll.checked) selected.add(entry.deviceId);
+      }
+      updateBulkButton();
+    });
+    bulkButton.addEventListener('click', () => {
+      const chosen = devices
+        .filter(device => selected.has(device.device_id))
+        .map(device => ({
+          deviceId: device.device_id,
+          current: device.device_id === data.current_device_id,
+        }));
+      revokeSelectedDevices(chosen, bulkButton);
+    });
+  } catch (_) {
+    list.textContent = 'Could not load device sessions.';
+  }
+}
+
+async function revokeSelectedDevices(devices, button) {
+  if (!devices.length) return;
+  const status = document.getElementById('account-device-status');
+  button.disabled = true;
+  _setStatus(
+    status,
+    `Signing out ${devices.length} selected device${devices.length === 1 ? '' : 's'}…`,
+    '',
+  );
+
+  try {
+    const res = await fetch('/api/v1/auth/me/devices/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+      body: JSON.stringify({ device_ids: devices.map(device => device.deviceId) }),
+    });
+    if (!res.ok) {
+      _setStatus(status, (await _detail(res)) || 'Could not purge devices', 'error');
+      button.disabled = false;
+      return;
+    }
+    const result = await res.json();
+    const completed = Number(result.revoked_count || 0);
+    if (devices.some(device => device.current)) {
+      const purged = await checkDevicePurge({ reload: true });
+      if (!purged) _setStatus(status, 'Signed out; device data purge could not complete.', 'error');
+      return;
+    }
+    _setStatus(
+      status,
+      `${completed} device${completed === 1 ? '' : 's'} forcibly signed out and purge enforced.`,
+      'ok',
+    );
+    await loadDevices();
+  } catch (error) {
+    _setStatus(status, String(error?.message || 'Connection error'), 'error');
+    button.disabled = false;
+  }
+}
+
 async function onDeleteAccount() {
   const status = document.getElementById('account-delete-status');
   const pass = document.getElementById('account-delete-pass').value;
   const active = getActive();
   if (!active || !pass) return;
+  const token = active.access_token || '';
 
   _setStatus(status, 'Deleting…', '');
   try {
@@ -489,11 +698,81 @@ async function onDeleteAccount() {
       _setStatus(status, detail || 'Failed to delete account', 'error');
       return;
     }
-    removeAccount(active.user_id);
+    const purged = await purgeAndAcknowledge(token, { reload: false });
+    if (!purged) {
+      _setStatus(
+        status,
+        'The server account was deleted, but this device purge is incomplete. Keep this page open to retry.',
+        'error',
+      );
+      return;
+    }
     // Reload — another account becomes active, or the login overlay appears.
     window.location.reload();
   } catch (e) {
     _setStatus(status, 'Connection error', 'error');
+  }
+}
+
+async function onExportData() {
+  const status = document.getElementById('account-export-status');
+  const button = document.getElementById('account-export-data');
+  button.disabled = true;
+  _setStatus(status, 'Building exportâ€¦', '');
+  try {
+    const response = await fetch('/api/v1/auth/me/data-export', {
+      headers: _authHeaders(),
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      _setStatus(status, (await _detail(response)) || 'Export is unavailable', 'error');
+      if (response.status === 403 || response.status === 501) {
+        document.getElementById('account-data-section')?.remove();
+      }
+      return;
+    }
+    const server = await response.json();
+    let browser = null;
+    try {
+      const [{ default: sessionDB }, { exportBrowserData }] = await Promise.all([
+        import('../../chat/js/storage/indexeddb.js'),
+        import('./browser-lifecycle.js'),
+      ]);
+      if (sessionDB.ownerScope) browser = await exportBrowserData(sessionDB.ownerScope);
+    } catch (error) {
+      browser = {
+        format: 'webagent-browser-lifecycle-export',
+        version: 2,
+        complete: false,
+        failures: [{ database: null, error: String(error?.message || error) }],
+      };
+    }
+    if (browser && browser.complete === false) {
+      _setStatus(status, 'Browser data export is incomplete; no file was downloaded.', 'error');
+      return;
+    }
+    const payload = {
+      ...server,
+      browser_storage_policy: getBrowserStorageContext(),
+      browser_authority_included: !!browser,
+      browser_device: browser,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `webagent-data-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    _setStatus(status, 'Downloaded', 'ok');
+  } catch (_) {
+    _setStatus(status, 'Connection error', 'error');
+  } finally {
+    if (button.isConnected) button.disabled = false;
   }
 }
 

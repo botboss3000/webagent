@@ -34,22 +34,29 @@ _STATE_PURPOSE = "social_login"
 
 # ── State token ──────────────────────────────────────────────────────────────
 
-def make_state(provider_id: str) -> str:
+def make_state(provider_id: str, *, device_id: str = "") -> str:
     payload = {
         "purpose": _STATE_PURPOSE,
         "provider": provider_id,
         "nonce": _secrets.token_hex(8),
+        "device_id": device_id,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
     }
     return _jose.encode(payload, get_secret(), algorithm=_ALG)
 
 
 def read_state(state: str, provider_id: str) -> bool:
+    return read_state_payload(state, provider_id) is not None
+
+
+def read_state_payload(state: str, provider_id: str) -> dict | None:
     try:
         p = _jose.decode(state, get_secret(), algorithms=[_ALG])
     except Exception:
-        return False
-    return p.get("purpose") == _STATE_PURPOSE and p.get("provider") == provider_id
+        return None
+    if p.get("purpose") != _STATE_PURPOSE or p.get("provider") != provider_id:
+        return None
+    return p
 
 
 # ── Authorize URL ────────────────────────────────────────────────────────────

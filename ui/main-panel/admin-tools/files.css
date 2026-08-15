@@ -60,11 +60,12 @@ body {
   --files-textarea-text:     var(--fg-1);
   --files-selection:         rgba(var(--brand-rgb), 0.5);
 
-  --files-status-bg:         var(--accent);
-  --files-status-text:       #fff;          /* KEEP (intentional): contrast ink on accent fill */
-  --files-status-btn-bg:     rgba(var(--ink-rgb), 0.15);
-  --files-status-btn-bd:     rgba(var(--ink-rgb), 0.25);
-  --files-status-btn-hov:    rgba(var(--ink-rgb), 0.25);
+  --files-status-bg:         #1e1e1e;
+  --files-status-text:       #e0e0e0;
+  --files-status-btn-bg:     var(--accent);
+  --files-status-btn-bd:     var(--accent);
+  --files-status-btn-hov:    var(--accent-hover);
+  --files-status-btn-text:   var(--bg-0);
 
   --files-resize-hov:        rgba(var(--brand-rgb), 0.6);
   --files-resize-active:     rgba(var(--brand-rgb), 0.9);
@@ -73,8 +74,9 @@ body {
   --files-menu-item-hov:     rgba(var(--brand-rgb), 0.45);
   --files-danger:            var(--danger);
   --files-danger-hov:        rgba(var(--danger-rgb), 0.25);
-  --files-dirty-dot:         var(--warning);
+  --files-dirty-dot:         #e07020;
   --files-active-indicator:  var(--accent);
+  --files-indent-guide:      rgba(var(--ink-rgb), 0.08);
 }
 
 /* NOTE: there is no separate body.light-mode { --files-* } twin, and none is
@@ -206,7 +208,7 @@ body {
    (files.adminRailExpanded) and rides on the #files-sidebar.rail-expanded
    class. These rules sit after the strip/settings width rules and the
    .rail-expanded overrides are !important so they win over the 38px
-   icon-only widths for the panel-less views (dashboard / settings). */
+   icon-only widths for the panel-less views (settings / billing). */
 .files-strip-label {
   display: none;
   font-size: 12.5px;
@@ -231,10 +233,10 @@ body {
 }
 .files-sidebar.rail-expanded .files-strip-label { display: inline-block; }
 /* Widen the whole sidebar in rail mode for the panel-less icon-only views
-   (dashboard / settings / strip state) which are otherwise pinned to 38px. */
+   (settings / billing / strip state) which are otherwise pinned to 38px. */
 .files-sidebar.rail-expanded.strip,
 .files-sidebar.rail-expanded[data-view="settings"],
-.files-sidebar.rail-expanded[data-view="dashboard"] {
+.files-sidebar.rail-expanded[data-view="billing"] {
   width: 184px !important;
   min-width: 184px !important;
   max-width: 184px !important;
@@ -523,6 +525,19 @@ body {
   opacity: 0.55;
 }
 .files-tree.prod-view .files-tree-node.is-prod-dropped > .files-tree-row .files-tree-icon { opacity: 0.45; }
+
+/* Git tracked/ignored view — the same checkbox row UI as prod-view, but
+   read-only (clicks are swallowed in JS) and coloured by git state instead of
+   the production exclude list: checked = tracked, blank = ignored, partial dash
+   = folder with some ignored contents. Ignored rows dim + strike like excluded
+   ones so the "not going anywhere" set reads at a glance. */
+.files-tree.git-view .files-tree-check { display: inline-block; }
+.files-tree.git-view .files-tree-check:disabled { cursor: not-allowed; opacity: 0.5; }
+.files-tree.git-view .files-tree-node.is-prod-dropped > .files-tree-row .files-tree-label {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+.files-tree.git-view .files-tree-node.is-prod-dropped > .files-tree-row .files-tree-icon { opacity: 0.45; }
 
 /* Live status line for the production Copy / Push actions (driven from the
    toolbar "More" popover). Hidden until an action runs; revealed via .show by
@@ -1129,7 +1144,7 @@ textarea.files-textarea-overlay {
   top: 0; left: 0;
   width: 100%; height: 100%;
   margin: 0;
-  padding: 8px 12px;
+  padding: 8px 12px 8px 36px;
   border: 0;
   box-sizing: border-box;
   font-family: var(--font-mono, "JetBrains Mono", "Consolas", monospace);
@@ -1157,6 +1172,112 @@ textarea.files-textarea-overlay {
   background: transparent;
   padding: 0;
   white-space: inherit;
+  position: relative;          /* anchor for .json-error-squiggle */
+  /* Indent guide lines — faint vertical line every 2 characters (tab-size: 2) */
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent,
+    transparent calc(2ch - 1px),
+    var(--files-indent-guide) calc(2ch - 1px),
+    var(--files-indent-guide) 2ch
+  );
+}
+
+/* ── Fold gutter (left column with clickable collapse buttons) ── */
+
+.files-fold-gutter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 24px;
+  height: 100%;
+  z-index: 4;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.fold-btn {
+  position: absolute;
+  left: 2px;
+  width: 20px;
+  height: 19.5px;              /* match line-height */
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--files-text);
+  opacity: 0.4;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  pointer-events: auto;
+  transition: opacity 0.12s;
+  z-index: 5;
+}
+.fold-btn:hover { opacity: 0.9; }
+.fold-btn::before {
+  content: '\25BE';            /* ▾ downward triangle (unfolded) */
+  display: block;
+  line-height: 1;
+}
+.fold-btn.folded::before {
+  content: '\25B8';            /* ▸ rightward triangle (folded) */
+}
+
+/* ── Fold collapsed placeholder (shown inside the code element) ── */
+
+.fold-collapsed {
+  display: inline;
+  color: var(--files-text);
+  opacity: 0.5;
+  font-size: 12px;
+  user-select: none;
+  cursor: default;
+}
+
+/* ── JSON error squiggle (red wavy underline on the error line) ── */
+
+.json-error-squiggle {
+  position: absolute;
+  left: 0; right: 0;
+  height: 1.5em;               /* one line at 13px/1.5 */
+  pointer-events: none;
+  z-index: 2;
+  color: var(--files-danger);
+  /* Red wavy underline via repeating SVG wave using currentColor */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='4' viewBox='0 0 10 4'%3E%3Cpath d='M0 3 Q2.5 0 5 3 Q7.5 0 10 3' fill='none' stroke='currentColor' stroke-width='1.2'/%3E%3C/svg%3E");
+  background-repeat: repeat-x;
+  background-position: left bottom;
+  background-size: 10px 4px;
+}
+
+/* ── JSON error popover (floating tooltip) ─────────────────────── */
+
+.json-error-popover {
+  position: fixed;
+  z-index: 1001;
+  background: var(--files-bg-menu, #2a2a2a);
+  border: var(--border-width, 1px) solid var(--files-border-strong, #555);
+  border-radius: 6px;
+  box-shadow: var(--files-menu-shadow, 0 4px 16px rgba(0,0,0,0.35));
+  padding: 8px 12px;
+  max-width: min(420px, 90vw);
+  font-size: 12px;
+  font-family: var(--font-mono, "JetBrains Mono", "Consolas", monospace);
+  line-height: 1.45;
+  color: var(--files-danger, #ff5252);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+body.light-mode .json-error-popover {
+  background: var(--files-bg-menu, #f0f0f0);
+  border-color: var(--files-border-strong, #ccc);
+}
+.json-error-popover::before {
+  content: '⚠ ';
+  font-size: 13px;
 }
 
 textarea.files-textarea-overlay {
@@ -1448,7 +1569,7 @@ body.light-mode .token.regex, body.light-mode .token.important, body.light-mode 
 .files-status-info .files-save-btn {
   background: var(--files-status-btn-bg);
   border: 1px solid var(--files-status-btn-bd);
-  color: var(--files-status-text);
+  color: var(--files-status-btn-text);
   padding: 0 10px;
   height: 18px;
   border-radius: 3px;
@@ -1564,15 +1685,14 @@ body.admin-restricted #main-panel { display: flex !important; }
   display: inline-block;
 }
 
+/* Billing / Monetization view: content is dynamically rendered and can grow
+   taller than the viewport. #tab-admin-tools has overflow:hidden so this view
+   must roll its own scroll. */
+#files-billing-main:not([hidden]) { overflow-y: auto; }
+
 /* Settings view: takes the place of .files-main when Settings is toggled on.
    Same flex layout so it fills the right side; scrolls its own content. */
-.files-settings-main {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: auto;
-}
+
 /* Data Management view: takes the place of .files-main when the Data
    Management (data-view="database") sidebar view is active. Hosts the
    relocated #db-toolbar + #db-table-view inside the Tables sub-tab,
@@ -1586,7 +1706,6 @@ body.admin-restricted #main-panel { display: flex !important; }
   overflow: hidden;
 }
 .files-main[hidden],
-.files-settings-main[hidden],
 .files-database-main[hidden] { display: none; }
 
 /* The two main panes inside .files-database-main, switched by the
@@ -2099,7 +2218,7 @@ body.admin-restricted #main-panel { display: flex !important; }
    repo (this app's, or another local folder + GitHub remote + key) the page acts
    on. Reuses .fg-section / .fg-input / .fg-btn / .fg-result and the same tokens +
    dropdown look as the branch menu, so it sits in visually in both themes. */
-.fg-repo-selector { position: relative; padding-top: 10px; padding-bottom: 8px; }
+.fg-repo-selector { position: relative; padding-top: 10px; padding-bottom: 8px; border-bottom: none; }
 /* Trigger + the active repo's Edit/Remove buttons sit on one always-visible row;
    the trigger grows, the action buttons stay their natural size on the right. */
 .fg-repo-trigger-row { display: flex; align-items: stretch; gap: 4px; }
@@ -2186,6 +2305,11 @@ body.admin-restricted #main-panel { display: flex !important; }
 .fg-repo-browse-btn { flex: 0 0 auto; white-space: nowrap; }
 .fg-repo-form-actions { display: flex; gap: 6px; margin-top: 2px; }
 .fg-repo-form-actions .fg-btn { flex: 1 1 0; justify-content: center; }
+.fg-repo-form-section-title {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--files-text-faint); margin-top: 4px; padding-top: 6px;
+  border-top: var(--border-width) solid var(--files-border-strong);
+}
 
 /* Folder browser popover (reuses GET /api/v1/files/tree) */
 .fg-repo-browser {
@@ -2449,31 +2573,13 @@ input.fg-remote-input-inline {
 .fg-btn:hover:not(:disabled) { background: var(--files-btn-hover-strong); }
 .fg-btn:disabled { opacity: 0.5; cursor: default; }
 .fg-btn .lucide-icon { width: 12px; height: 12px; }
-.fg-btn-primary {
-  background: var(--files-active-indicator);
-  border-color: var(--files-active-indicator);
-  color: #fff;                                  /* KEEP (intentional): contrast ink on accent fill */
-}
-.fg-btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
 .fg-btn-deploy {
   background: linear-gradient(90deg, #f59e0b, #ef4444);  /* KEEP (intentional): git status colours (amber→red deploy) */
   border-color: transparent;
   color: #fff;                                  /* KEEP (intentional): contrast ink on coloured fill */
 }
 
-/* Commit — message input on top, labelled action buttons (Commit · Commit &
-   Push) below, mirroring the labelled sync row. Buttons fill the row and wrap
-   to stack when the sidebar is too narrow for both side by side. */
-.fg-commit { display: flex; flex-direction: column; gap: 6px; }
-.fg-commit-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.fg-commit-actions .fg-btn { flex: 1 1 auto; justify-content: center; white-space: nowrap; }
-
-/* Source Controller handoff (⭐) — amber star, theme-aware via design-system vars */
-.fg-star-btn .lucide-icon { color: var(--warning); }
-.fg-star-btn:hover:not(:disabled) { border-color: var(--warning); background: var(--warning-soft); }
-
 .fg-result {
-  margin-top: 6px;
   padding: 4px 6px;
   border-radius: 3px;
   font-size: 11px;
@@ -2515,10 +2621,26 @@ input.fg-remote-input-inline {
   border-radius: 50%;
   animation: files-icon-spin 0.7s linear infinite;
 }
+.fg-result-cancel {
+  margin-left: 8px;
+  padding: 2px 7px;
+  color: var(--files-danger);
+  background: transparent;
+  border: 1px solid var(--files-danger);
+  border-radius: 3px;
+  font: inherit;
+  cursor: pointer;
+}
+.fg-result-cancel:hover { background: var(--danger-soft, rgba(220, 60, 60, 0.12)); }
 
 /* Sync row */
 .fg-sync { display: flex; flex-wrap: wrap; gap: 6px; position: relative; }
-.fg-sync .fg-result { width: 100%; }
+.fg-action-results { padding: 0 10px 8px; }
+.fg-action-results .fg-result { width: 100%; }
+/* Click-to-copy result / error lines: pointer + subtle interactive hint */
+.fg-click-copy { cursor: pointer; user-select: all; }
+.fg-click-copy:hover { filter: brightness(1.2); }
+.fg-click-copy.fg-error { cursor: pointer; user-select: all; }
 
 /* Refresh button — icon-only, spins while re-fetching status + commit graph */
 .fg-refresh-btn { padding: 4px 6px; }
@@ -2577,7 +2699,15 @@ input.fg-remote-input-inline {
   font-weight: 600;
 }
 .fg-changes > summary::-webkit-details-marker { display: none; }
-.fg-changes[open] > summary { border-bottom: var(--border-width) solid var(--files-border-strong); }
+.fg-changes[open] > summary { border-bottom: 0; }
+
+/* The source-control workflow is one continuous stack below Changes. Section
+   spacing carries the grouping; divider rules added visual noise and split the
+   shared action status from the controls it describes. */
+.fg-changes,
+.fg-commit,
+.fg-sync,
+.fg-graph { border-bottom: 0; }
 .fg-count {
   background: var(--files-btn-hover-strong);
   color: var(--files-text);
@@ -2621,6 +2751,15 @@ input.fg-remote-input-inline {
 /* KEEP (intentional): git status colour palette — fixed Tailwind-style hues
    (amber=modified, green=added, red=deleted, blue=renamed, purple=untracked),
    a deliberate git decoration set, NOT the app theme. */
+.fg-file-stat {
+  flex: 0 0 auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.fg-file-stat-add { color: var(--success); }
+.fg-file-stat-del { color: var(--danger); }
 .fg-flag-m { background: rgba(245, 158, 11, 0.25); color: #f59e0b; }
 .fg-flag-a { background: rgba(16, 185, 129, 0.25); color: #10b981; }
 .fg-flag-d { background: rgba(239, 68, 68, 0.25);  color: #ef4444; }
@@ -2724,6 +2863,7 @@ input.fg-remote-input-inline {
   font-size: 10px;
   color: var(--files-text-muted);
   flex-shrink: 0;
+  cursor: pointer;
 }
 .fg-graph-date {
   color: var(--files-text-faint);
@@ -2748,7 +2888,7 @@ input.fg-remote-input-inline {
   letter-spacing: 0.04em;
   flex-shrink: 0;
 }
-.fg-graph-badge.head { background: var(--files-active-indicator); color: #fff; } /* KEEP (intentional): contrast ink on accent fill */
+.fg-graph-badge.head { background: var(--files-active-indicator); color: var(--files-bg); }
 .fg-graph-badge.unpulled { background: rgba(245, 158, 11, 0.25); color: #f59e0b; } /* KEEP (intentional): git status colour (amber=unpulled) */
 
 .fg-branch-tag {
@@ -2976,25 +3116,24 @@ input.fg-remote-input-inline {
 }
 .files-sidebar[data-view="settings"] ~ .files-resize-handle { display: none; }
 .files-sidebar[data-view="settings"] .files-sidebar-panel { display: none; }
-/* Dashboard is panel-less too — pin the sidebar to the icon strip so the
-   dashboard grid takes the remaining width (mirrors Settings above). */
-.files-sidebar[data-view="dashboard"] {
+/* Billing (Monetization) is panel-less too — collapse the sidebar to the icon strip. */
+.files-sidebar[data-view="billing"] {
   width: 38px !important;
   min-width: 38px !important;
   max-width: 38px !important;
   flex: 0 0 38px;
   transition: none !important;
 }
-.files-sidebar[data-view="dashboard"] ~ .files-resize-handle { display: none; }
-.files-sidebar[data-view="dashboard"] .files-sidebar-panel { display: none; }
-.files-sidebar[data-view="dashboard"].maximized ~ .files-main:not([hidden]) { display: flex; }
-/* Strip fills the whole sidebar on the panel-less views (settings / dashboard)
+.files-sidebar[data-view="billing"] ~ .files-resize-handle { display: none; }
+.files-sidebar[data-view="billing"] .files-sidebar-panel { display: none; }
+.files-sidebar[data-view="billing"].maximized ~ .files-main:not([hidden]) { display: flex; }
+/* Strip fills the whole sidebar on the panel-less views (settings / billing)
    so there is no empty band beside it — in both the 38px collapsed rail and
    the 184px expanded rail. Scoped to these views so panel views keep the
    strip at its rigid 38px beside their sub-panel. (Instances carries the same
    pair of rules in its own instances.css to stay a self-contained drop-in.) */
 .files-sidebar[data-view="settings"] .files-sidebar-strip,
-.files-sidebar[data-view="dashboard"] .files-sidebar-strip {
+.files-sidebar[data-view="billing"] .files-sidebar-strip {
   flex: 1 1 auto;
   width: 100%;
 }

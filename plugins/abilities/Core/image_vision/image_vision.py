@@ -105,11 +105,29 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
             "concrete details (objects, layout, colours, positions). Do not speculate "
             "beyond what is visible."
         )
-        answer = await ask_model(vision, sys_line, question, attachments=[att], max_tokens=900)
+        err_sink: list = []
+        answer = await ask_model(vision, sys_line, question, attachments=[att],
+                                 max_tokens=900, error_sink=err_sink)
         if not answer:
+            err_text = (err_sink[-1] if err_sink else "").strip()
+            # Provider account out of credits? Persist the user-facing alert in this
+            # session so the human sees WHY vision is down, and give the agent the
+            # REAL error instead of a generic "could not describe the image".
+            if err_text:
+                try:
+                    from app.util.alerts import is_provider_credit_error, persist_402_alert
+                    if is_provider_credit_error(err_text):
+                        await persist_402_alert(err_text, user_id, session_id,
+                                                vision.get("model", ""),
+                                                vision.get("provider", ""))
+                except Exception:
+                    pass
+            detail = " — {}".format(err_text) if err_text else ""
             return json.dumps({
                 "status": "error",
-                "message": f"The vision model ({vision.get('model','')}) could not describe the image.",
+                "code": "vision_model_error",
+                "message": "The vision model ({}) could not describe the image.{}".format(
+                    vision.get("model", ""), detail),
             })
         return json.dumps({
             "status": "ok",

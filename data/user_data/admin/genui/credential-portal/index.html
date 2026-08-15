@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Credential Portal</title>
+<style>
+  :host {
+    display: block;
+    color: var(--fg-2, #c7cee6);
+    font-family: var(--font-sans, 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  * { box-sizing: border-box; }
+  .wrap { width: 100%; padding: 44px 28px 72px; }
+  header { text-align: center; margin-bottom: 30px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--accent); background: var(--accent-soft);
+    padding: 6px 14px; border-radius: 100px; margin-bottom: 18px; font-weight: 600;
+    border: var(--border-width) solid var(--accent-line);
+  }
+  .eyebrow svg { width: 13px; height: 13px; }
+  h1 {
+    margin: 0 0 10px; font-size: 42px; font-weight: 650; letter-spacing: -.03em; line-height: 1.1;
+    color: var(--fg-1);
+  }
+  .tagline { margin: 0 auto; font-size: 15.5px; color: var(--fg-3); max-width: 600px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .card {
+    background: var(--bg-elev);
+    border: var(--border-width) solid var(--border);
+    border-radius: 18px;
+    box-shadow: var(--shadow-rest);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    overflow: hidden;
+  }
+  .card-head { display: flex; align-items: center; gap: 14px; padding: 18px 20px 0; }
+  .card-icon {
+    flex-shrink: 0; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+    background: var(--accent-soft); border: var(--border-width) solid var(--accent-line);
+    border-radius: 12px; color: var(--accent);
+  }
+  .card-icon svg { width: 19px; height: 19px; }
+  .card-title { margin: 0; font-size: 15.5px; font-weight: 600; color: var(--fg-1); }
+  .card-sub { margin: 2px 0 0; font-size: 12.5px; color: var(--fg-3); }
+  .card-body { padding: 16px 20px 20px; }
+  .field { margin-bottom: 13px; }
+  .field label {
+    display: block; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--fg-3); margin-bottom: 6px;
+  }
+  .input {
+    width: 100%; font: inherit; font-size: 14px; color: var(--fg-1);
+    background: var(--bg-tint); border: var(--border-width) solid var(--border);
+    border-radius: 12px; padding: 10px 12px; outline: none;
+    transition: border-color .2s, box-shadow .2s;
+  }
+  .input::placeholder { color: var(--fg-4); }
+  .input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+  textarea.input { resize: vertical; min-height: 76px; }
+  .pw-wrap { position: relative; }
+  .pw-toggle {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: var(--fg-3); cursor: pointer; padding: 6px; display: flex;
+  }
+  .pw-toggle:hover { color: var(--fg-1); }
+  .pw-toggle svg { width: 17px; height: 17px; }
+  .btn-row { display: flex; gap: 10px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer;
+    border-radius: 12px; padding: 10px 16px; border: var(--border-width) solid transparent;
+    transition: background .2s, border-color .2s, color .2s, transform .1s;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); }
+  .btn-primary:hover { background: var(--accent-mid); }
+  .btn-primary:disabled { opacity: .55; cursor: default; }
+  .btn-ghost { background: var(--bg-tint); color: var(--fg-2); border-color: var(--border); }
+  .btn-ghost:hover { color: var(--fg-1); border-color: var(--border-strong); }
+  .btn svg { width: 16px; height: 16px; }
+  .hint { display: flex; align-items: flex-start; gap: 8px; margin-top: 13px; font-size: 12px; color: var(--fg-3); }
+  .hint svg { width: 14px; height: 14px; flex-shrink: 0; margin-top: 2px; color: var(--accent); }
+  .banner { display: none; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; border-radius: 12px; font-size: 12.5px; font-weight: 500; }
+  .banner.show { display: flex; }
+  .banner svg { width: 15px; height: 15px; flex-shrink: 0; }
+  .banner-ok { color: var(--success); background: var(--success-soft); border: var(--border-width) solid var(--success-mid); }
+  .banner-err { color: var(--danger); background: var(--danger-soft); border: var(--border-width) solid var(--danger-mid); }
+  .banner-warn { color: var(--warning); background: var(--warning-soft); border: var(--border-width) solid var(--warning-mid); }
+  .results { margin-top: 16px; }
+  .results-head {
+    display: flex; align-items: center; gap: 10px; padding: 16px 20px;
+    border-bottom: var(--border-width) solid var(--border); flex-wrap: wrap;
+  }
+  .results-title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; color: var(--fg-1); margin-right: auto; }
+  .results-title svg { width: 17px; height: 17px; color: var(--accent); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: 100px; white-space: nowrap; }
+  .chip svg { width: 13px; height: 13px; }
+  .chip-idle { color: var(--fg-3); background: var(--bg-tint); border: var(--border-width) solid var(--border); }
+  .chip-ok { color: var(--success); background: var(--success-soft); border: var(--border-width) solid var(--success-mid); }
+  .chip-err { color: var(--danger); background: var(--danger-soft); border: var(--border-width) solid var(--danger-mid); }
+  .chip-warn { color: var(--warning); background: var(--warning-soft); border: var(--border-width) solid var(--warning-mid); }
+  .tbl-wrap { overflow-x: auto; padding: 6px 8px 10px; }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--fg-3); text-align: left; padding: 10px 12px;
+    border-bottom: var(--border-width) solid var(--border); white-space: nowrap;
+  }
+  td { padding: 12px; font-size: 13.5px; color: var(--fg-1); border-bottom: var(--border-width) solid var(--border-soft); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: var(--bg-tint); }
+  td .mono { font-family: var(--font-mono, ui-monospace, 'JetBrains Mono', monospace); font-size: 12.5px; }
+  .note-line { padding: 4px 20px 16px; font-size: 12px; color: var(--fg-3); display: flex; gap: 8px; align-items: flex-start; }
+  .note-line svg { width: 13px; height: 13px; flex-shrink: 0; margin-top: 2px; color: var(--accent); }
+  .empty { padding: 52px 24px; text-align: center; color: var(--fg-3); }
+  .empty svg { width: 34px; height: 34px; opacity: .5; margin-bottom: 10px; }
+  .empty p { margin: 0; font-size: 13.5px; }
+  .empty .em-sub { margin-top: 4px; font-size: 12.5px; color: var(--fg-4); }
+  @keyframes rot { to { transform: rotate(360deg); } }
+  .spin { animation: rot 1s linear infinite; }
+  @media (max-width: 720px) {
+    .grid { grid-template-columns: 1fr; }
+    h1 { font-size: 34px; }
+    .wrap { padding: 28px 16px 56px; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="eyebrow">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4M12 16h.01"/></svg>
+        Secure portal
+      </div>
+      <h1>Account data, on demand</h1>
+      <p class="tagline">Save your website sign-in once — it stays encrypted in your vault. Then let the agent log in headlessly and pull the details you need into the table below.</p>
+    </header>
+
+    <div class="grid">
+      <section class="card">
+        <div class="card-head">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.6 7.6a5.5 5.5 0 1 1-7.8 7.8 5.5 5.5 0 0 1 7.8-7.8zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          </div>
+          <div>
+            <h2 class="card-title">Website sign-in</h2>
+            <p class="card-sub">Stored encrypted in your vault — the agent never sees the password.</p>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="field">
+            <label for="site">Site URL</label>
+            <input class="input" id="site" type="text" placeholder="https://example.com/login" autocomplete="url">
+          </div>
+          <div class="field">
+            <label for="user">Username / email</label>
+            <input class="input" id="user" type="text" placeholder="you@example.com" autocomplete="username">
+          </div>
+          <div class="field">
+            <label for="pass">Password</label>
+            <div class="pw-wrap">
+              <input class="input" id="pass" type="password" placeholder="Enter password" autocomplete="current-password">
+              <button class="pw-toggle" id="pwToggle" type="button" title="Show / hide">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="query">What to look for</label>
+            <textarea class="input" id="query" placeholder="e.g. Latest order status, invoice total, and the date it was last updated"></textarea>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-primary" id="saveBtn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.6 7.6a5.5 5.5 0 1 1-7.8 7.8 5.5 5.5 0 0 1 7.8-7.8zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+              Save to vault
+            </button>
+          </div>
+          <div class="banner" id="saveBanner"></div>
+          <div class="hint">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+            Credentials go straight to the encrypted vault from this page — they never pass through the agent's chat.
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <div>
+            <h2 class="card-title">Fetch from the site</h2>
+            <p class="card-sub">The agent signs in with your vaulted credentials and scrapes the details.</p>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="btn-row">
+            <button class="btn btn-primary" id="fetchBtn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v4h-4"/></svg>
+              <span>Fetch now</span>
+            </button>
+            <button class="btn btn-ghost" id="viewBtn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v4h-4"/></svg>
+              Refresh view
+            </button>
+          </div>
+          <div class="banner" id="fetchBanner"></div>
+          <div class="hint">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+            The result lands in the table below with a “last updated” timestamp. Keep this tab open while the agent works — you can watch it in the chat.
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <section class="card results">
+      <div class="results-head">
+        <div class="results-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+          Latest data
+        </div>
+        <span class="chip chip-idle" id="updatedChip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <span id="updatedText">Never updated</span>
+        </span>
+        <span class="chip chip-idle" id="statusChip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/></svg>
+          <span id="statusText">Idle</span>
+        </span>
+      </div>
+      <div id="tableZone"></div>
+    </section>
+  </div>
+
+  <script>
+    WebagentGenui.register(function (root, api) {
+      var $ = function (s) { return root.querySelector(s); };
+
+      var ICON = {
+        check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+        alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>',
+        clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
+        table: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>',
+        refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7M21 4v4h-4"/></svg>',
+        eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
+        eyeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>'
+      };
+
+      var data = (typeof api.getData === 'function') ? (api.getData() || {}) : {};
+      var meta = data.meta || {};
+      var table = data.table || {};
+
+      // ── Prefill non-secret fields (site + query remembered; credentials never) ──
+      var siteEl = $('#site'), userEl = $('#user'), passEl = $('#pass'), queryEl = $('#query');
+      try {
+        if (meta.site) siteEl.value = meta.site;
+        else siteEl.value = localStorage.getItem('portal:site') || '';
+        if (meta.query) queryEl.value = meta.query;
+        else queryEl.value = localStorage.getItem('portal:query') || '';
+      } catch (e) {}
+
+      // ── Password visibility toggle ──
+      var pwToggle = $('#pwToggle');
+      pwToggle.addEventListener('click', function () {
+        var show = passEl.type === 'password';
+        passEl.type = show ? 'text' : 'password';
+        pwToggle.innerHTML = show ? ICON.eyeOff : ICON.eye;
+        pwToggle.title = show ? 'Hide' : 'Show';
+      });
+
+      // ── Helpers ──
+      function esc(v) {
+        return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+      }
+      function banner(id, type, msg) {
+        var el = $('#' + id);
+        var cls = type === 'ok' ? 'banner-ok' : (type === 'err' ? 'banner-err' : 'banner-warn');
+        var icon = type === 'ok' ? ICON.check : ICON.alert;
+        el.className = 'banner show ' + cls;
+        el.innerHTML = icon + '<span>' + esc(msg) + '</span>';
+      }
+      function clearBanner(id) { $('#' + id).className = 'banner'; }
+
+      // ── Save credentials → encrypted vault (never the agent) ──
+      $('#saveBtn').addEventListener('click', function () {
+        var user = userEl.value.trim();
+        var pass = passEl.value;
+        if (!user || !pass) { banner('saveBanner', 'warn', 'Enter both a username and a password.'); return; }
+        try {
+          localStorage.setItem('portal:site', siteEl.value.trim());
+          localStorage.setItem('portal:query', queryEl.value.trim());
+        } catch (e) {}
+        var btn = $('#saveBtn');
+        btn.disabled = true;
+        btn.innerHTML = ICON.refresh + '<span>Saving…</span>';
+        var spin = btn.querySelector('svg'); if (spin) spin.classList.add('spin');
+        clearBanner('saveBanner');
+        Promise.resolve(api.storeCredential('browser_control', { login_email: user, login_password: pass })).then(function (ok) {
+          btn.disabled = false;
+          btn.innerHTML = ICON.check + '<span>Save to vault</span>';
+          if (ok) {
+            banner('saveBanner', 'ok', 'Credentials saved securely to your vault. You can now fetch.');
+            passEl.value = '';
+          } else {
+            banner('saveBanner', 'err', 'Could not save credentials — please try again.');
+          }
+        });
+      });
+
+      // ── Fetch → dispatch to the agent (headless login + scrape) ──
+      var fetchBtn = $('#fetchBtn');
+      fetchBtn.addEventListener('click', function () {
+        var site = siteEl.value.trim() || meta.site || '';
+        var query = queryEl.value.trim() || meta.query || '';
+        if (!site) { banner('fetchBanner', 'warn', 'Enter the site URL first (or it will be reused from the last run).'); return; }
+        try {
+          localStorage.setItem('portal:site', site);
+          localStorage.setItem('portal:query', query);
+        } catch (e) {}
+        clearBanner('fetchBanner');
+        var msg = 'SITE-FETCH\nurl: ' + site + '\nquery: ' + (query || '(general status)');
+        if (typeof api.chat === 'function') api.chat(msg);
+        fetchBtn.disabled = true;
+        fetchBtn.innerHTML = ICON.refresh + '<span>Fetching…</span>';
+        var spin = fetchBtn.querySelector('svg'); if (spin) spin.classList.add('spin');
+        setStatus('working', 'Fetching…');
+        banner('fetchBanner', 'warn', 'Fetch started — watch the chat for progress. The table updates when the agent finishes.');
+      });
+
+      // ── Refresh view → ask the agent to re-render with latest data ──
+      $('#viewBtn').addEventListener('click', function () {
+        clearBanner('fetchBanner');
+        if (typeof api.refresh === 'function') api.refresh();
+        banner('fetchBanner', 'warn', 'Refreshing view from the latest data…');
+      });
+
+      // ── Status chip ──
+      function setStatus(state, text) {
+        var chip = $('#statusChip');
+        var label = $('#statusText');
+        chip.className = 'chip ' + (state === 'ok' ? 'chip-ok' : state === 'error' ? 'chip-err' : state === 'working' ? 'chip-warn' : 'chip-idle');
+        label.textContent = text || (state === 'ok' ? 'Updated' : state === 'error' ? 'Failed' : state === 'working' ? 'Fetching…' : 'Idle');
+      }
+
+      // ── Last-updated chip ──
+      function fmtDate(iso) {
+        if (!iso) return 'Never updated';
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return String(iso);
+        try { return d.toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+        catch (e) { return String(iso); }
+      }
+
+      // ── Table render ──
+      function renderTable() {
+        var zone = $('#tableZone');
+        var cols = (table.columns && table.columns.length) ? table.columns.slice() : null;
+        var rows = (table.rows && table.rows.length) ? table.rows : [];
+
+        if (!rows.length) {
+          zone.innerHTML = '<div class="empty">' + ICON.table +
+            '<p>No data yet</p><p class="em-sub">Hit “Fetch now” and the scraped details will appear here with a last-updated timestamp.</p></div>';
+          return;
+        }
+
+        if (!cols) {
+          var first = rows[0];
+          if (first && typeof first === 'object' && !Array.isArray(first)) cols = Object.keys(first);
+          else if (Array.isArray(first)) cols = first.map(function (_, i) { return 'Column ' + (i + 1); });
+          else cols = ['Value'];
+        }
+
+        var html = '<div class="tbl-wrap"><table><thead><tr>';
+        cols.forEach(function (h) { html += '<th>' + esc(h) + '</th>'; });
+        html += '</tr></thead><tbody>';
+        rows.forEach(function (r) {
+          html += '<tr>';
+          if (Array.isArray(r)) {
+            cols.forEach(function (_, i) { html += '<td>' + esc(r[i] != null ? r[i] : '') + '</td>'; });
+          } else if (r && typeof r === 'object') {
+            cols.forEach(function (h) { html += '<td>' + esc(r[h] != null ? r[h] : '') + '</td>'; });
+          } else {
+            html += '<td>' + esc(r) + '</td>';
+          }
+          html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+
+        if (meta.note) {
+          html += '<div class="note-line">' + ICON.table + '<span>' + esc(meta.note) + '</span></div>';
+        }
+        zone.innerHTML = html;
+      }
+
+      // ── Initial render from the data bag ──
+      $('#updatedText').textContent = fmtDate(meta.lastUpdated);
+      if (meta.lastUpdated) {
+        $('#updatedChip').className = 'chip chip-ok';
+        $('#updatedChip').innerHTML = ICON.clock + '<span>' + fmtDate(meta.lastUpdated) + '</span>';
+      }
+      setStatus(meta.status || 'idle', meta.status === 'ok' ? 'Updated' : meta.status === 'error' ? 'Failed' : 'Idle');
+      renderTable();
+
+      // ── Live status from the runtime (save/fetch lifecycle) ──
+      if (typeof api.onStatus === 'function') {
+        api.onStatus(function (st) {
+          if (!st) return;
+          if (st.state === 'working') setStatus('working', 'Working…');
+          else if (st.state === 'stored') setStatus('ok', 'Credentials saved');
+          else if (st.state === 'error') setStatus('error', 'Something went wrong');
+        });
+      }
+    });
+  </script>
+</body>
+</html>

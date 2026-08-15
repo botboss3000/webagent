@@ -244,10 +244,6 @@ async def _gather_database() -> Optional[dict]:
             pw = cred_store.get_secret(key)
             if pw:
                 d["password"] = pw
-        if getattr(cfg, "provider", None) == "supabase":
-            skey = cred_store.get_secret(cfg.supabase_service_key_secret or "supabase_service_key")
-            if skey:
-                d["supabase_service_key"] = skey
     except Exception as e:
         logger.warning("bootstrap: could not resolve DB secret: %s", e)
     return d
@@ -469,21 +465,17 @@ async def _apply_database(data: dict, choice: str, activate: bool) -> str:
         return "kept existing database"
     d = dict(data)
     password = d.pop("password", None)
-    service_key = d.pop("supabase_service_key", None)
     cfg = DBConnectionConfig(
         provider=d.get("provider"),
         host=d.get("host"), port=d.get("port"),
         database=d.get("database"), username=d.get("username"),
         ssl_mode=d.get("ssl_mode"), schema=d.get("schema"),
-        supabase_url=d.get("supabase_url"), options=d.get("options"),
+        options=d.get("options"),
     )
     if password:
         key = d.get("password_secret_key") or f"db_password_{cfg.provider}"
         cred_store.set_secret(key, password)
         cfg.password_secret_key = key
-    if service_key and cfg.provider == "supabase":
-        cred_store.set_secret("supabase_service_key", service_key)
-        cfg.supabase_service_key_secret = "supabase_service_key"
     save_config(cfg)
     msg = f"saved database config ({cfg.provider})"
     if activate:
@@ -587,8 +579,9 @@ def _boot_file() -> Optional[Path]:
 
 
 async def apply_boot_file() -> Optional[dict]:
-    """On startup: if a ``bootstrap.json`` is present AND the install is not yet
-    initialized, provision from it, then scrub the LLM key out of the file.
+    """On startup: if a ``bootstrap.json`` or ``WA_BOOTSTRAP_CODE`` environment
+    value is present AND the install is not yet initialized, provision from it,
+    then scrub the LLM key out of a file-backed bundle.
 
     The file may hold any of three things:
       * a **keyless ``WABOOT2`` code** — what the Deploy panel's "Include this
@@ -602,7 +595,8 @@ async def apply_boot_file() -> Optional[dict]:
     never clobbers a configured box.
     """
     path = _boot_file()
-    if path is None:
+    env_text = os.environ.get("WA_BOOTSTRAP_CODE", "").strip()
+    if path is None and not env_text:
         return None
     # Freshness gate: an already-provisioned box has an LLM config. We deliberately
     # do NOT gate on admin_exists() here — an encrypted boot file is decrypted with
@@ -611,14 +605,19 @@ async def apply_boot_file() -> Optional[dict]:
     # clone. Keying on "no LLM configured yet" avoids clobbering a real install
     # while still letting the intended fresh-clone provisioning through.
     if await _section_present(SECTION_LLM):
-        logger.info("bootstrap.json present but install already has an LLM config — ignoring.")
+        logger.info("bootstrap setup present but install already has an LLM config — ignoring.")
         return None
 
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except Exception as e:
-        logger.warning("bootstrap: could not read %s: %s", path, e)
-        return None
+    if path is not None:
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.warning("bootstrap: could not read %s: %s", path, e)
+            return None
+        source_name = path.name
+    else:
+        text = env_text
+        source_name = "WA_BOOTSTRAP_CODE"
 
     bundle: Optional[dict] = None
     if text.startswith(CODE_PREFIX_OPEN + "."):
@@ -627,7 +626,7 @@ async def apply_boot_file() -> Optional[dict]:
         try:
             bundle = decode_bundle(text)
         except BundleError as e:
-            logger.warning("bootstrap: could not decode %s: %s", path, e)
+            logger.warning("bootstrap: could not decode %s: %s", source_name, e)
             return None
     elif text.startswith(CODE_PREFIX + "."):
         pw = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "")
@@ -637,20 +636,21 @@ async def apply_boot_file() -> Optional[dict]:
         try:
             bundle = decode_bundle(text, pw)
         except BundleError as e:
-            logger.warning("bootstrap: could not decode %s: %s", path, e)
+            logger.warning("bootstrap: could not decode %s: %s", source_name, e)
             return None
     else:
         try:
             obj = json.loads(text)
             bundle = obj if isinstance(obj, dict) and "sections" in obj else {"v": BUNDLE_VERSION, "sections": obj}
         except Exception as e:
-            logger.warning("bootstrap: %s is neither a code nor valid JSON: %s", path, e)
+            logger.warning("bootstrap: %s is neither a code nor valid JSON: %s", source_name, e)
             return None
 
     bundle = _strip_comment_keys(bundle)
-    logger.info("bootstrap: provisioning fresh install from %s", path.name)
+    logger.info("bootstrap: provisioning fresh install from %s", source_name)
     res = await apply_bundle(bundle, choices=None, activate_db=True)
-    _scrub_boot_file(path, bundle)
+    if path is not None:
+        _scrub_boot_file(path, bundle)
     return res
 
 

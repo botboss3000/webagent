@@ -19,7 +19,7 @@
 
 "use strict";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 
 const DEFAULTS = {
   serverUrl: "ws://127.0.0.1:8080",
@@ -59,6 +59,13 @@ function wsUrl() {
 function connect() {
   if (state === "connected" || state === "connecting") return;
   if (!cfg.serverUrl) return;
+  // The server no longer has a tokenless/open access mode. Do not hammer the
+  // authenticated endpoint with guaranteed-to-fail handshakes before pairing.
+  if (!cfg.token) {
+    state = "off";
+    updateBadge();
+    return;
+  }
   state = "connecting";
   updateBadge();
   let sock;
@@ -98,7 +105,7 @@ function disconnect() {
 }
 
 function scheduleReconnect() {
-  if (!cfg.autoConnect) return;
+  if (!cfg.autoConnect || !cfg.token) return;
   chrome.alarms.create("reconnect", { when: Date.now() + backoff });
   backoff = Math.min(backoff * 2, 30000);
 }

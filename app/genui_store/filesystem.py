@@ -28,6 +28,8 @@ from app.genui_store.common import (
     write_genui_meta,
     read_genui_data,
     write_genui_data,
+    read_genui_widget,
+    write_genui_widget,
     sort_genui_entries,
     blank_genui_html,
     default_agent_context,
@@ -89,6 +91,7 @@ class FilesystemGenuiStore(GenuiStore):
         agent_context: str = "",
         initial_html: str = "",
         agent_id: str = "",
+        session_config: Optional[dict] = None,
     ) -> Dict:
         safe_slug = safe(slug)
         if os.path.exists(self._genui_path(user_id, safe_slug)):
@@ -98,6 +101,7 @@ class FilesystemGenuiStore(GenuiStore):
             "title": title,
             "agent_context": agent_context or default_agent_context(title),
             "agent_id": agent_id or "",
+            "session_config": session_config or {},
             "description": "",
             "created_at": now,
             "updated_at": now,
@@ -118,7 +122,8 @@ class FilesystemGenuiStore(GenuiStore):
         shutil.rmtree(folder, ignore_errors=True)
         return True
 
-    async def rename_genui(self, user_id: str, slug: str, new_title: str) -> bool:
+    async def rename_genui(self, user_id: str, slug: str, new_title: str,
+                           session_config: Optional[dict] = None) -> bool:
         safe_slug = safe(slug)
         if not os.path.exists(self._genui_path(user_id, safe_slug)):
             return False
@@ -126,6 +131,8 @@ class FilesystemGenuiStore(GenuiStore):
         # didn't have a page.json yet.
         meta = read_genui_meta(user_id, safe_slug)
         meta["title"] = new_title
+        if session_config is not None:
+            meta["session_config"] = session_config
         meta["updated_at"] = now_iso()
         if not meta.get("agent_context"):
             meta["agent_context"] = default_agent_context(new_title)
@@ -140,6 +147,19 @@ class FilesystemGenuiStore(GenuiStore):
         self._ensure_genui_dir(user_id, safe_slug)
         write_genui_data(user_id, safe_slug, data)
         # Mirror save_genui_html: bump updated_at only when a descriptor exists.
+        meta = read_genui_meta(user_id, safe_slug)
+        if meta:
+            meta["updated_at"] = now_iso()
+            write_genui_meta(user_id, safe_slug, meta)
+
+    async def get_genui_widget(self, user_id: str, slug: str) -> Optional[Dict]:
+        return read_genui_widget(user_id, safe(slug))
+
+    async def save_genui_widget(self, user_id: str, slug: str, widget: Dict) -> None:
+        safe_slug = safe(slug)
+        self._ensure_genui_dir(user_id, safe_slug)
+        write_genui_widget(user_id, safe_slug, widget)
+        # Mirror save_genui_data: bump updated_at only when a descriptor exists.
         meta = read_genui_meta(user_id, safe_slug)
         if meta:
             meta["updated_at"] = now_iso()

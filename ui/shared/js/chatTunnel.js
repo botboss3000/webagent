@@ -121,7 +121,10 @@ function _mount(state) {
     // Fit once laid out.
     setTimeout(() => { try { _term && _term.fit && _term.fit(); } catch (_) {} }, 60);
   } catch (e) {
-    _overlay.innerHTML = '<div class="chat-tunnel-error">Could not attach terminal: ' + (e && e.message || e) + '</div>';
+    const error = document.createElement('div');
+    error.className = 'chat-tunnel-error';
+    error.textContent = `Could not attach terminal: ${e && e.message || e}`;
+    _overlay.replaceChildren(error);
   }
 
   const cmd = state.command || state.name || 'the terminal';

@@ -1,0 +1,151 @@
+[
+  {
+    "id": "chat",
+    "name": "Chat Panel",
+    "icon": "chat",
+    "status": "active",
+    "statusLabel": "Active",
+    "progress": 65,
+    "tasks": 8,
+    "open": 5,
+    "metrics": { "commits": 142, "prs": 6, "daysLeft": 12, "reviewers": 3 },
+    "chart": [30, 35, 40, 48, 52, 55, 60, 65],
+    "items": [
+      { "text": "Fix scroll-anchor on new messages", "done": false, "tag": "bug" },
+      { "text": "Add thread reply inline preview", "done": false, "tag": "feat" },
+      { "text": "Wire up emoji reaction picker", "done": false, "tag": "feat" },
+      { "text": "Keyboard nav for message list", "done": false, "tag": "feat" },
+      { "text": "Improve typing indicator debounce", "done": true, "tag": "chore" },
+      { "text": "Dark-mode code block theme", "done": true, "tag": "chore" }
+    ]
+  },
+  {
+    "id": "onboarding",
+    "name": "Onboarding",
+    "icon": "onboard",
+    "status": "at-risk",
+    "statusLabel": "At Risk",
+    "progress": 40,
+    "tasks": 12,
+    "open": 9,
+    "metrics": { "commits": 87, "prs": 4, "daysLeft": 5, "reviewers": 2 },
+    "chart": [18, 22, 28, 30, 32, 34, 38, 40],
+    "items": [
+      { "text": "Design walkthrough step 3 illustrations", "done": false, "tag": "feat" },
+      { "text": "Fix stuck loader on email-verify step", "done": false, "tag": "bug" },
+      { "text": "A/B test new welcome flow copy", "done": false, "tag": "feat" },
+      { "text": "Add skip-all option for power users", "done": false, "tag": "feat" },
+      { "text": "Mobile carousel swipe gestures", "done": true, "tag": "feat" }
+    ]
+  },
+  {
+    "id": "database",
+    "name": "Database",
+    "icon": "database",
+    "status": "on-track",
+    "statusLabel": "On Track",
+    "progress": 80,
+    "tasks": 6,
+    "open": 2,
+    "metrics": { "commits": 210, "prs": 3, "daysLeft": 18, "reviewers": 4 },
+    "chart": [45, 52, 58, 63, 68, 73, 77, 80],
+    "items": [
+      { "text": "Add composite index for user search", "done": false, "tag": "chore" },
+      { "text": "Migrate analytics to partitioned table", "done": false, "tag": "feat" },
+      { "text": "Write connection-pool health probes", "done": true, "tag": "chore" },
+      { "text": "Audit slow queries > 500ms", "done": true, "tag": "chore" }
+    ]
+  },
+  {
+    "id": "security",
+    "name": "Security",
+    "icon": "security",
+    "status": "blocked",
+    "statusLabel": "Blocked",
+    "progress": 25,
+    "tasks": 10,
+    "open": 9,
+    "metrics": { "commits": 56, "prs": 2, "daysLeft": 0, "reviewers": 5 },
+    "chart": [8, 12, 15, 18, 20, 22, 24, 25],
+    "items": [
+      { "text": "Awaiting pen-test report from vendor", "done": false, "tag": "bug" },
+      { "text": "Rotate leaked staging API keys", "done": false, "tag": "bug" },
+      { "text": "Enforce MFA for all admin accounts", "done": false, "tag": "feat" },
+      { "text": "Rate-limit login endpoint", "done": true, "tag": "feat" }
+    ]
+  },
+  {
+    "id": "compliance",
+    "name": "Compliance",
+    "icon": "compliance",
+    "status": "on-track",
+    "statusLabel": "On Track",
+    "progress": 70,
+    "tasks": 7,
+    "open": 3,
+    "metrics": { "commits": 95, "prs": 4, "daysLeft": 22, "reviewers": 3 },
+    "chart": [25, 32, 40, 47, 54, 60, 65, 70],
+    "items": [
+      { "text": "GDPR data-retention policy document", "done": false, "tag": "chore" },
+      { "text": "Cookie consent banner v2", "done": false, "tag": "feat" },
+      { "text": "SOC 2 evidence collection automation", "done": false, "tag": "feat" },
+      { "text": "Privacy policy update for new regions", "done": true, "tag": "chore" }
+    ]
+  },
+  {
+    "id": "api-gateway",
+    "name": "API Gateway",
+    "icon": "api",
+    "status": "active",
+    "statusLabel": "Active",
+    "progress": 55,
+    "tasks": 9,
+    "open": 5,
+    "metrics": { "commits": 178, "prs": 7, "daysLeft": 14, "reviewers": 3 },
+    "chart": [20, 25, 30, 36, 42, 47, 51, 55],
+    "items": [
+      { "text": "GraphQL stitching for downstream svcs", "done": false, "tag": "feat" },
+      { "text": "Fix timeout propagation in edge cases", "done": false, "tag": "bug" },
+      { "text": "Rate-limit per-endpoint config UI", "done": false, "tag": "feat" },
+      { "text": "OpenAPI spec auto-publish on deploy", "done": true, "tag": "chore" },
+      { "text": "Add request-id to all gateway logs", "done": true, "tag": "chore" }
+    ]
+  },
+  {
+    "id": "ui-components",
+    "name": "UI Components",
+    "icon": "ui",
+    "status": "done",
+    "statusLabel": "Done",
+    "progress": 100,
+    "tasks": 14,
+    "open": 0,
+    "metrics": { "commits": 320, "prs": 18, "daysLeft": 0, "reviewers": 4 },
+    "chart": [30, 42, 55, 68, 78, 88, 95, 100],
+    "items": [
+      { "text": "Ship v2.0 design-system package", "done": true, "tag": "feat" },
+      { "text": "Accessibility audit — all components", "done": true, "tag": "chore" },
+      { "text": "Storybook integration for 48 components", "done": true, "tag": "feat" },
+      { "text": "Tree-shakeable ESM build", "done": true, "tag": "chore" },
+      { "text": "Visual regression snapshot suite", "done": true, "tag": "chore" }
+    ]
+  },
+  {
+    "id": "deployment",
+    "name": "Deployment",
+    "icon": "deploy",
+    "status": "on-track",
+    "statusLabel": "On Track",
+    "progress": 60,
+    "tasks": 5,
+    "open": 3,
+    "metrics": { "commits": 134, "prs": 3, "daysLeft": 10, "reviewers": 2 },
+    "chart": [22, 30, 36, 42, 48, 53, 57, 60],
+    "items": [
+      { "text": "Canary deploy strategy for staging", "done": false, "tag": "feat" },
+      { "text": "Zero-downtime DB migration scripts", "done": false, "tag": "feat" },
+      { "text": "Rollback hook health checks", "done": false, "tag": "chore" },
+      { "text": "Docker layer caching optimization", "done": true, "tag": "chore" }
+    ]
+  }
+]

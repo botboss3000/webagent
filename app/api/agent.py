@@ -83,6 +83,7 @@ async def agent_websocket(websocket: WebSocket):
         mode = data.get("mode", "").strip()
         claimed_user_id = data.get("user_id", "").strip()
         token = (data.get("token") or "").strip()
+        device_id = ""
 
         if mode != "user_subscriber" or not claimed_user_id:
             await websocket.send_text(json.dumps({
@@ -116,8 +117,10 @@ async def agent_websocket(websocket: WebSocket):
                 }, default=_json_default))
                 return
             user_id = verified
+            from app.auth.jwt import decode_signed_token
+            device_id = str((decode_signed_token(token) or {}).get("device_id") or "")
 
-        # Multi-tenant: pin data-plane DB routing to this verified user for the
+        # User BYOD: pin data-plane DB routing to this verified user for the
         # whole WS connection, so pre-loop reads (replay/reconcile) and the turn
         # itself resolve to the user's own database. No-op in single-tenant mode.
         try:
@@ -127,7 +130,7 @@ async def agent_websocket(websocket: WebSocket):
             pass
 
         # Register as a per-user listener — receives ALL events for this user
-        register_user_listener(user_id, websocket)
+        register_user_listener(user_id, websocket, device_id=device_id)
         logger.info(f"User subscriber registered for user {user_id}")
 
         # ── Replay buffered events from active in-flight runs ──

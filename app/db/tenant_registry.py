@@ -4,9 +4,9 @@ Tenant registry — the map from a user to THEIR OWN data database.
 Part of the per-user bring-your-own-database (multi-tenant) feature. This is the
 CONTROL-PLANE lookup that `app/db/tenant.py` consults to decide which Postgres a
 given user's interaction data lives in. It is only consulted when App Settings →
-Multi-tenant data is ON (see `app.admin.settings.get_multi_tenant_enabled`).
+User BYOD is ON (see `app.admin.settings.get_user_byod_enabled`).
 
-Storage mirrors the established per-user provider.json pattern
+Storage mirrors the established per-user auth_elements pattern
 (app/admin/settings.py): the non-secret connection details live in a JSON file
 keyed by user_id, and the DATABASE PASSWORD is kept OUT of that file — stored in
 the database-independent credential store (OS keyring / file fallback,

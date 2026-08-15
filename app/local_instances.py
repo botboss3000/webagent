@@ -26,13 +26,14 @@ back to 8080 and fight the hub); the fix is to update that repo.
 
 Nothing here is wired into the agent core; it is a self-contained admin-tools
 extension, mirroring ``app/git_repos.py`` and ``app/production_mirror.py``. Its
-only caller is the **instance-switcher header on the Admin Dashboard**: the
-full-width card at the top of Admin Tools → Dashboard names the current instance
-(this app) with its DB connection + health, and its chevron drops a menu to start
-a new instance or switch to another. That header's admin API is folded into the
-Dashboard backend (``ui/admin-tools/dashboard/server.py`` →
-``/admin/dashboard/instances/*``); its UI is ``ui/admin-tools/dashboard/
-instances-header.js``.
+caller is the **Deploy card's "Current deployment" list** (``app/api/deploy.py``
+→ ``/admin/deploy/instances/*``), which lists this hub + registered sibling
+checkouts and starts/stops them. It previously also powered the
+**instance-switcher header** on the standalone Admin Dashboard
+(``/admin/dashboard/instances/*``, UI ``ui/admin-tools/dashboard/
+instances-header.js``); that header and its endpoints were removed when the
+Dashboard became a tab inside the Instances view, so the registry is now
+reachable only through the Deploy card's wrappers.
 """
 
 from __future__ import annotations

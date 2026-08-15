@@ -136,7 +136,7 @@ body.light-mode #automations-back-btn { color: var(--fg-2); }
   overflow-x: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb, var(--bg-tint)) transparent;
-  padding: 0 var(--automations-content-inset) 24px;
+  padding: 0 var(--automations-content-inset) 24px 0;
 }
 #automations-table-wrap::-webkit-scrollbar { width: 5px; height: 5px; }
 #automations-table-wrap::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, var(--bg-tint)); border-radius: 3px; }
@@ -144,6 +144,7 @@ body.light-mode #automations-back-btn { color: var(--fg-2); }
 
 #automations-table-inner {
   min-width: 980px;
+  padding-left: var(--automations-content-inset);
 }
 
 /* ── Table ── */
@@ -257,6 +258,35 @@ body.light-mode #automations-back-btn { color: var(--fg-2); }
 #automations-table tbody td.col-check {
   width: 32px;
   padding: 7px 0 7px 6px;
+}
+
+/* ── Sticky left column (checkbox) ──
+   Stays pinned when the table scrolls horizontally so the user can always
+   see and click the row checkbox.
+   The wrap has no left padding so left:0 truly reaches the viewport edge.
+   outline: none stops tr.selected's outline from painting on top. */
+#automations-table thead th.col-check {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--bg-0);
+  border-right: 1px solid var(--border);
+  outline: none;
+}
+#automations-table tbody td.col-check {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-0);
+  border-right: 1px solid var(--border);
+  outline: none;
+}
+/* Hover/selected state for sticky cells */
+#automations-table tbody tr:hover td.col-check {
+  background: var(--accent-soft);
+}
+#automations-table tbody tr.selected td.col-check {
+  background: var(--accent-soft);
 }
 
 /* ── Agent badge (matches the Sessions agent badge) ── */

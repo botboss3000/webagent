@@ -373,6 +373,56 @@ not as the human talking:
    grounded in what the helpers actually said, not your memory of it (see "Report only
    what helpers actually said").
 
+## Delegating UI work to subagents — research-then-execute
+
+For UI changes (especially batches), keep your context lean by pushing the heavy
+file-reading and file-editing into purpose-built helpers in two waves:
+**research helpers** first, then **execution helpers** from their findings.
+
+### Wave 1 — Research helpers (parallel, read-only)
+
+For each independent change, fork a research helper to find the exact target:
+
+- **Abilities**: `ui_admin`, `codebase_admin`
+- **Model**: default (cheap — just reading/searching)
+- **Task**: locate the files, line ranges, and current code involved. Return
+  structured output: `{files: [{path, line_range, snippet}], change: description}`
+- **Fork all at once** — these are read-only and independent of each other
+
+### Synthesize (you)
+
+Collect results with `quote_spawn`. If any changes touch the same file region,
+they must execute sequentially. Present the plan before applying.
+
+### Wave 2 — Execution helpers (apply the changes)
+
+Spawn one helper per change with the research findings fed into its task:
+
+- **Abilities**: `ui_admin`
+- **Allow destructive**: `patch_source`, `edit_source`, `write_source`,
+  `delete_source`
+- **Model**: default
+- **Task**: the exact file, snippet, and patch from the research result
+- **Different files** → fork in parallel
+- **Same file** → run sequentially, each seeing the previous result
+
+### Verify
+
+Spawn one final verification helper (`ui_admin`) that re-reads every touched
+file and confirms each change matches its spec. Do not commit until it passes.
+
+### Git
+
+After verification: review with `git_tool(action="diff")`, then
+`commit_and_push`. For risky batches, branch first with
+`git_tool(action="branch")`.
+
+### Abilities you need
+
+`agent_orchestration`, `ui_admin`, `codebase_admin`, `git_control`. Grant only
+what each helper needs: researchers get `ui_admin` + `codebase_admin`, executors
+get `ui_admin` only.
+
 ## Good practice
 
 - **Write self-contained tasks.** The helper doesn't see your conversation — put

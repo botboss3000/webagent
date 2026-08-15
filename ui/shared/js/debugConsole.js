@@ -1,3 +1,7 @@
+import { copyText } from './clipboard.js';
+import { apiPath } from './config.js';
+import { authHeaders } from './left-login.js';
+
 'use strict';
 
 /**
@@ -85,12 +89,13 @@ let _entries = [];
 
 // ── DOM refs (set during init) ──
 let _panel, _content, _toggle, _close;
-let _clearBtn, _countEl, _preserveCheck;
+let _clearBtn, _countEl;
 let _filterBtns = {};
 
 // ── Add a single entry to the list ──
 function _addEntry(entry) {
   _entries.push(entry);
+  if (entry.level === 'error') _updateErrorIndicator();
 
   // Apply current filter
   if (!_filterState[entry.level]) return;
@@ -113,9 +118,15 @@ function _addEntry(entry) {
     stackEl.className = 'dc-stack';
     stackEl.textContent = entry.stack;
     // Click to expand/collapse stack trace
-    stackEl.addEventListener('click', () => stackEl.classList.toggle('expanded'));
+    stackEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      stackEl.classList.toggle('expanded');
+    });
     el.appendChild(stackEl);
   }
+
+  // Click the row to copy
+  _makeEntryClickable(el, entry);
 
   // Remove empty hint
   const empty = _content.querySelector('.debug-console-empty');
@@ -169,9 +180,15 @@ function _reFilter() {
       const stackEl = document.createElement('span');
       stackEl.className = 'dc-stack';
       stackEl.textContent = entry.stack;
-      stackEl.addEventListener('click', () => stackEl.classList.toggle('expanded'));
+      stackEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        stackEl.classList.toggle('expanded');
+      });
       el.appendChild(stackEl);
     }
+
+    // Click the row to copy
+    _makeEntryClickable(el, entry);
 
     _content.appendChild(el);
   }
@@ -187,6 +204,18 @@ function _updateCount() {
     const visible = _entries.filter(e => _filterState[e.level]).length;
     _countEl.textContent = visible + ' / ' + _entries.length + ' entries';
   }
+}
+
+// ── Error indicator on the header bug-toggle ──────────────────────────────
+// While the log holds ≥1 error entry, the toggle button gets `.has-errors`
+// (red icon — see app3.css). This is the app's always-visible error signal,
+// replacing the old fixed top-of-page JS error banner: every banner error
+// also emitted console.error('[WebAgent JS error]', …) from main.js, which
+// this panel captures, so the banner was a strict subset of the log.
+function _updateErrorIndicator() {
+  if (!_toggle) return;
+  const hasErrors = _entries.some(e => e.level === 'error');
+  _toggle.classList.toggle('has-errors', hasErrors);
 }
 
 function _clearLog() {
@@ -206,12 +235,47 @@ function _clearLog() {
   try {
     sessionStorage.removeItem('debugConsoleEntries');
   } catch (_) {}
+  _updateErrorIndicator();
+}
+
+// ── Make a row element clickable to copy its text ──
+function _makeEntryClickable(el, entry) {
+  el.addEventListener('click', () => _copyEntry(entry, el));
+
+  // Stack trace expand/collapse shouldn't also copy the row
+  const stackEl = el.querySelector('.dc-stack');
+  if (stackEl) {
+    stackEl.addEventListener('click', (e) => e.stopPropagation());
+  }
+}
+
+// ── Copy all visible entries as formatted text ──
+function _copyAllLogs() {
+  const lines = _entries
+    .filter(e => _filterState[e.level])
+    .map(e => '[' + e.level.toUpperCase() + '] ' + e.text + (e.stack ? '\n  ' + e.stack : ''));
+  const text = lines.join('\n');
+  if (!text) return;
+  copyText(text);
+  const btn = document.getElementById('debug-console-copy-all');
+  if (btn) {
+    btn.classList.add('copied');
+    setTimeout(() => btn.classList.remove('copied'), 1200);
+  }
+}
+
+// ── Copy a single entry ──
+function _copyEntry(entry, el) {
+  const text = '[' + entry.level.toUpperCase() + '] ' + entry.text + (entry.stack ? '\n  ' + entry.stack : '');
+  copyText(text);
+  // Brief highlight flash
+  el.classList.add('copied-row');
+  setTimeout(() => el.classList.remove('copied-row'), 400);
 }
 
 function _saveToSession() {
   try {
-    // Only save if preserve is checked and there are entries
-    if (_preserveCheck && _preserveCheck.checked && _entries.length > 0) {
+    if (_entries.length > 0) {
       // Trim to last 200 entries to keep storage sane
       const toSave = _entries.slice(-200);
       sessionStorage.setItem('debugConsoleEntries', JSON.stringify(toSave));
@@ -225,17 +289,34 @@ function _loadFromSession() {
     if (saved) {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) {
-        _entries = parsed;
-        // Re-render (respecting current filters)
-        _reFilter();
+        // Merge with any early-buffer entries already drained, session ones first
+        // (chronological order: session = older page, early buffer = this boot).
+        if (_entries.length > 0) {
+          _entries = parsed.concat(_entries);
+        } else {
+          _entries = parsed;
+        }
       }
     }
   } catch (_) {}
+  // Always re-render: covers early-buffer-only and session-only and merged cases
+  _reFilter();
+  _updateErrorIndicator();
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────
 export function initDebugConsole() {
   if (_initialized) return;
+
+  // ── Drain early capture buffer (console calls made before this module loaded) ──
+  // The early inline script in index.html's <head> intercepts console.* from the
+  // very first script tag onward, buffering everything into a window-level array.
+  // We drain it here so no boot-time log is lost.
+  if (window.__earlyConsoleBuffer && window.__earlyConsoleBuffer.length > 0) {
+    _entries = window.__earlyConsoleBuffer.slice();
+    window.__earlyConsoleBuffer = null;  // tells the early wrapper to stop buffering
+    // Don't re-render yet — _loadFromSession runs later and may merge more entries
+  }
 
   _panel = document.getElementById('debug-console-panel');
   _content = document.getElementById('debug-console-content');
@@ -243,7 +324,6 @@ export function initDebugConsole() {
   _close = document.getElementById('debug-console-close');
   _clearBtn = document.getElementById('debug-console-clear');
   _countEl = document.getElementById('debug-console-count');
-  _preserveCheck = document.getElementById('debug-console-preserve');
 
   if (!_panel || !_content || !_toggle) return;
 
@@ -286,18 +366,326 @@ export function initDebugConsole() {
     _clearBtn.addEventListener('click', _clearLog);
   }
 
-  // Preserve checkbox → save on change
-  if (_preserveCheck) {
-    _preserveCheck.addEventListener('change', () => {
-      if (!_preserveCheck.checked) {
-        try { sessionStorage.removeItem('debugConsoleEntries'); } catch (_) {}
+  // Copy-all button
+  const _copyAllBtn = document.getElementById('debug-console-copy-all');
+  if (_copyAllBtn) {
+    _copyAllBtn.addEventListener('click', _copyAllLogs);
+    if (window.lucide && typeof window.lucide.createIcons === 'function') {
+      try { window.lucide.createIcons({ nodes: [_copyAllBtn.querySelector('[data-lucide]')].filter(Boolean) }); } catch (_) {}
+    }
+  }
+
+  // ── Commit & Push button ──
+  const _commitPushBtn = document.getElementById('debug-console-commit-push');
+  let _commitAbortController = null;
+
+  if (_commitPushBtn) {
+    // Render the lucide icon
+    if (window.lucide && typeof window.lucide.createIcons === 'function') {
+      try { window.lucide.createIcons({ nodes: [_commitPushBtn.querySelector('[data-lucide]')].filter(Boolean) }); } catch (_) {}
+    }
+
+    _commitPushBtn.addEventListener('click', async () => {
+      if (_commitAbortController) return; // already running
+
+      const controller = new AbortController();
+      _commitAbortController = controller;
+      _commitPushBtn.disabled = true;
+      _commitPushBtn.classList.add('is-working');
+      console.log('› commit & push — starting...');
+
+      let final = null;
+      try {
+        const res = await fetch(apiPath('/api/v1/github/commit-and-push'), {
+          method: 'POST',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+          body: JSON.stringify({ stream: true }),
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          let detail = res.statusText;
+          try { const j = await res.json(); detail = j.detail || detail; } catch (_) {}
+          throw new Error(detail || ('HTTP ' + res.status));
+        }
+
+        const ctype = res.headers.get('content-type') || '';
+        if (!ctype.includes('ndjson') || !res.body || !res.body.getReader) {
+          final = await res.json();
+        } else {
+          const reader = res.body.getReader();
+          const dec = new TextDecoder();
+          let buf = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let nl;
+            while ((nl = buf.indexOf('\n')) >= 0) {
+              const line = buf.slice(0, nl).trim();
+              buf = buf.slice(nl + 1);
+              if (!line) continue;
+              try {
+                const ev = JSON.parse(line);
+                if (ev.phase === 'done') final = ev.result || null;
+                else if (ev.phase && ev.phase !== 'done') {
+                  const labels = { analyzing: 'Analyzing...', scanning: 'Safety check...', committing: 'Committing...', pushing: 'Pushing...' };
+                  console.log('› ' + (labels[ev.phase] || ev.phase));
+                }
+              } catch (_) {}
+            }
+          }
+          // Drain remainder
+          const tail = dec.decode();
+          if (tail) {
+            const tailLine = tail.trim();
+            if (tailLine) {
+              try {
+                const ev = JSON.parse(tailLine);
+                if (ev.phase === 'done') final = ev.result || null;
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (e) {
+        console.error('commit & push failed: ' + (e.message || e));
+      }
+
+      _commitPushBtn.classList.remove('is-working');
+      _commitPushBtn.disabled = false;
+
+      if (final) {
+        const push = final.push || {};
+        const pushed = push.attempted && push.ok;
+        const msg = (pushed ? '✓ Pushed: ' : '✓ Committed: ') + (final.title || final.hash || 'ok');
+        console.log(msg);
+        _commitPushBtn.classList.add('is-done');
+        setTimeout(() => { _commitPushBtn.classList.remove('is-done'); }, 1600);
+      }
+
+      _commitPushBtn.disabled = false;
+      _commitAbortController = null;
+    });
+  }
+
+  // ── Restart server button (two-tap arm/confirm) ──
+  const _restartBtn = document.getElementById('debug-console-restart');
+  let _restartTimer = null;
+
+  function _restartResetBtn() {
+    if (!_restartBtn) return;
+    clearTimeout(_restartTimer);
+    _restartBtn.dataset.state = 'idle';
+    _restartBtn.classList.remove('is-armed');
+    _restartBtn.disabled = false;
+    _restartBtn.title = 'Restart server';
+    _restartBtn.innerHTML = '<i data-lucide="rotate-ccw" class="lucide-icon" style="width:12px;height:12px;display:block;"></i>';
+    if (window.lucide && typeof window.lucide.createIcons === 'function') {
+      try { window.lucide.createIcons({ nodes: [_restartBtn.querySelector('[data-lucide]')].filter(Boolean) }); } catch (_) {}
+    }
+  }
+
+  if (_restartBtn) {
+    // Render the initial lucide icon
+    if (window.lucide && typeof window.lucide.createIcons === 'function') {
+      try { window.lucide.createIcons({ nodes: [_restartBtn.querySelector('[data-lucide]')].filter(Boolean) }); } catch (_) {}
+    }
+
+    _restartBtn.addEventListener('click', async () => {
+      if (_restartBtn.dataset.state === 'armed') {
+        // Second click — confirmed, fire restart
+        clearTimeout(_restartTimer);
+        _restartBtn.dataset.state = 'idle';
+        _restartBtn.classList.remove('is-armed');
+        _restartBtn.disabled = true;
+        _restartBtn.title = 'Restarting…';
+        _restartBtn.innerHTML = '<span style="font-size:9px;">Restarting…</span>';
+        console.log('› restarting server...');
+        // Keep the diagnostic console's module graph small so its header toggle
+        // is wired as soon as the shell parses. The file-manager graph is only
+        // needed when the user actually confirms a server restart.
+        const { restartServerAndReload } = await import('./files-git.js');
+        const ok = await restartServerAndReload();
+        if (!ok) {
+          console.error('› server restart timed out — reload manually');
+          _restartResetBtn();
+        }
+        // On success restartServerAndReload calls window.location.reload()
       } else {
-        _saveToSession();
+        // First click — arm the button
+        if (_restartTimer) clearTimeout(_restartTimer);
+        _restartBtn.dataset.state = 'armed';
+        _restartBtn.classList.add('is-armed');
+        _restartBtn.title = 'Click again to restart server';
+        _restartBtn.innerHTML = '<i data-lucide="alert-triangle" class="lucide-icon" style="width:12px;height:12px;display:block;"></i>';
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          try { window.lucide.createIcons({ nodes: [_restartBtn.querySelector('[data-lucide]')].filter(Boolean) }); } catch (_) {}
+        }
+        _restartTimer = setTimeout(_restartResetBtn, 3000);
       }
     });
   }
 
-  // Filter buttons
+  // ── Carousel chevron toggle (same pattern as main-tab strip) ──
+  const _actionsWrap = document.querySelector('.debug-console-header-actions-wrap');
+  const _actionsStrip = document.querySelector('.debug-console-header-actions');
+  const _chevLeft = _actionsWrap && _actionsWrap.querySelector('.debug-console-chev.left');
+  const _chevRight = _actionsWrap && _actionsWrap.querySelector('.debug-console-chev.right');
+
+  function _updateDebugChevrons() {
+    if (!_actionsStrip || !_chevLeft || !_chevRight) return;
+    const overflow = _actionsStrip.scrollWidth - _actionsStrip.clientWidth > 1;
+    _chevLeft.classList.toggle('visible', overflow && _actionsStrip.scrollLeft > 1);
+    _chevRight.classList.toggle('visible', overflow && _actionsStrip.scrollLeft < _actionsStrip.scrollWidth - _actionsStrip.clientWidth - 1);
+  }
+
+  if (_actionsStrip && _chevLeft && _chevRight) {
+    const _chevStep = function () { return Math.max(60, Math.floor(_actionsStrip.clientWidth * 0.5)); };
+    _chevLeft.addEventListener('click', function () { _actionsStrip.scrollBy({ left: -_chevStep(), behavior: 'smooth' }); });
+    _chevRight.addEventListener('click', function () { _actionsStrip.scrollBy({ left: _chevStep(), behavior: 'smooth' }); });
+    _actionsStrip.addEventListener('scroll', _updateDebugChevrons, { passive: true });
+    requestAnimationFrame(_updateDebugChevrons);
+    if (typeof ResizeObserver !== 'undefined') {
+      let roPending = false;
+      const ro = new ResizeObserver(function () {
+        if (roPending) return;
+        roPending = true;
+        requestAnimationFrame(function () { roPending = false; _updateDebugChevrons(); });
+      });
+      ro.observe(_actionsStrip);
+    }
+    window.addEventListener('resize', _updateDebugChevrons);
+  }
+
+  // ── Drag-to-resize (Pointer Events API — works for both mouse and touch) ──
+  const _dragHandle = document.getElementById('debug-console-drag-handle');
+  const STORAGE_HEIGHT_KEY = 'debugConsoleHeight';
+  const MIN_H = 120;
+  const MAX_H = window.innerHeight - 100;
+
+  // Restore saved height
+  try {
+    const saved = sessionStorage.getItem(STORAGE_HEIGHT_KEY);
+    if (saved) {
+      const h = parseInt(saved, 10);
+      if (!isNaN(h) && h >= MIN_H && h <= MAX_H) _panel.style.height = h + 'px';
+    }
+  } catch (_) {}
+
+  let _dragging = false;
+  let _dragStartY = 0;
+  let _dragStartHeight = 0;
+
+  if (_dragHandle) {
+    _dragHandle.addEventListener('pointerdown', (e) => {
+      _dragging = true;
+      _dragStartY = e.clientY;
+      _dragStartHeight = _panel.getBoundingClientRect().height;
+      _dragHandle.classList.add('resizing');
+      document.body.style.cursor = 'row-resize';
+      document.body.style.userSelect = 'none';
+      _dragHandle.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+  }
+
+  document.addEventListener('pointermove', (e) => {
+    if (!_dragging) return;
+    const delta = _dragStartY - e.clientY;
+    const maxH = window.innerHeight - 100;
+    const newH = Math.min(maxH, Math.max(MIN_H, _dragStartHeight + delta));
+    _panel.style.height = newH + 'px';
+  });
+
+  document.addEventListener('pointerup', () => {
+    if (!_dragging) return;
+    _dragging = false;
+    if (_dragHandle) _dragHandle.classList.remove('resizing');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    try {
+      sessionStorage.setItem(STORAGE_HEIGHT_KEY, parseInt(_panel.style.height, 10));
+    } catch (_) {}
+  });
+
+  // ── SW version display + clear ──
+  const _swVerEl = document.getElementById('debug-console-sw-version');
+  const _clearSwEl = document.getElementById('debug-console-clear-sw');
+  const _clearSwBtn = _clearSwEl ? _clearSwEl.querySelector('.dc-clear-sw-btn') : null;
+
+  function _setSwVersion(label) {
+    if (!_swVerEl) return;
+    _swVerEl.textContent = 'SW: ' + label;
+    _swVerEl.classList.add('has-sw');
+  }
+
+  // Listen for the SW to push its version
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data && e.data.type === 'sw-version') {
+        const ver = (e.data.cache || '').replace(/^webagent-v/, 'v');
+        _setSwVersion(ver);
+      }
+    });
+    // Also try reading the active cache name directly as fallback
+    if (caches && caches.keys) {
+      caches.keys().then((keys) => {
+        const swCache = keys.find((k) => k.startsWith('webagent-'));
+        if (swCache) {
+          const ver = swCache.replace(/^webagent-v/, 'v');
+          _setSwVersion(ver);
+        }
+      }).catch(() => {});
+    }
+  }
+
+  // Click SW version → show/hide the clear prompt
+  if (_swVerEl) {
+    _swVerEl.addEventListener('click', () => {
+      if (!_clearSwEl) return;
+      const shown = _clearSwEl.style.display !== 'none';
+      _clearSwEl.style.display = shown ? 'none' : 'inline-flex';
+    });
+  }
+
+  // Clear button → unregister SW, delete all caches, reload
+  if (_clearSwBtn) {
+    _clearSwBtn.addEventListener('click', async () => {
+      try {
+        if (navigator.serviceWorker) {
+          const reg = await navigator.serviceWorker.getRegistration();
+          if (reg) await reg.unregister();
+        }
+        if (caches && caches.keys) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((k) => caches.delete(k)));
+        }
+      } catch (_) {}
+      window.location.reload();
+    });
+  }
+
+  // ── Filter popover toggle ──
+  const _filterToggle = document.getElementById('debug-console-filter-toggle');
+  const _filterPopover = document.getElementById('debug-console-filter-popover');
+
+  if (_filterToggle && _filterPopover) {
+    _filterToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const wasOpen = _filterPopover.classList.toggle('is-open');
+      _filterToggle.classList.toggle('is-open', wasOpen);
+    });
+
+    // Close popover when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!_filterPopover.contains(e.target) && e.target !== _filterToggle) {
+        _filterPopover.classList.remove('is-open');
+        _filterToggle.classList.remove('is-open');
+      }
+    });
+  }
+
+  // Filter buttons (inside popover)
   ['log', 'warn', 'error', 'debug'].forEach(level => {
     const btn = document.getElementById('debug-console-filter-' + level);
     if (!btn) return;
@@ -308,6 +696,43 @@ export function initDebugConsole() {
       _reFilter();
     });
   });
+
+  // ── Command input (REPL) ──
+  const _input = document.getElementById('debug-console-input');
+  const _runBtn = document.getElementById('debug-console-run-btn');
+
+  function _runCommand() {
+    if (!_input) return;
+    const command = _input.value.trim().toLowerCase();
+    if (!command) return;
+
+    // Show the expression in the console (use the intercepted console so it
+    // appears in the panel as well as the real browser console)
+    console.log('› ' + command);
+
+    if (command === 'clear') {
+      _clearLog();
+    } else if (command === 'help') {
+      console.log('Available commands: clear, help');
+    } else {
+      console.warn('Arbitrary JavaScript execution is disabled. Available commands: clear, help');
+    }
+
+    _input.value = '';
+    _input.focus();
+  }
+
+  if (_input) {
+    _input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        _runCommand();
+      }
+    });
+  }
+  if (_runBtn) {
+    _runBtn.addEventListener('click', _runCommand);
+  }
 
   // Save entries to sessionStorage before unload
   window.addEventListener('pagehide', _saveToSession);
@@ -322,6 +747,7 @@ export function initDebugConsole() {
   });
 
   _initialized = true;
+  window.__debugConsoleReady = true;
 
   // Flush early buffer
   for (const entry of _earlyBuffer) {
@@ -331,4 +757,14 @@ export function initDebugConsole() {
 
   // Load any preserved entries from session
   _loadFromSession();
+}
+
+// This module is loaded directly by index.html instead of through main.js.
+// Keep the console usable when the rest of the application module graph cannot
+// finish booting (for example while the server is down and the PWA falls back
+// to its cached shell).
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initDebugConsole, { once: true });
+} else {
+  initDebugConsole();
 }

@@ -4,7 +4,7 @@ Tool for reading attachment content (images, text files, PDFs).
 Registered dynamically so the agent can call read_attachment(attachment_id)
 to inspect files the user uploaded.
 
-File bytes are fetched via app/db/attachments/ (local filesystem or Supabase Storage).
+File bytes are fetched via app/db/attachments/ (local filesystem or remote storage).
 """
 
 import json

@@ -10,7 +10,7 @@ import { icon } from './icons.js';
  * SINGLE source of truth for that interaction and is shared by TWO call sites
  * that must stay in sync. Grep `SHARED-DELETE-CONTROL` to find them:
  *
- *   1) Chat header session menu  →  ui/chat-side-panel/js/session-core.js + session-init.js
+ *   1) Chat header session menu  →  ui/chat/js/session-core.js + session-init.js
  *        - the trash button on every session row in the dropdown
  *        - the trash button in the chat header itself (#session-delete-header)
  *   2) Agents page agent card    →  ui/main-panel/agents/js/view.js
@@ -72,7 +72,7 @@ export function resetDeleteBtn(btn, { size = '14px', title = 'Delete' } = {}) {
 export function advanceDeleteBtn(btn, {
   size = '14px',
   spinSize = null,
-  armTitle = 'Click again to delete permanently',
+  armTitle = 'Click again to delete',
   busyTitle = 'Deleting\u2026',
   onArm = null,
   onConfirm = null,

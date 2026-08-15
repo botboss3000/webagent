@@ -26,6 +26,7 @@
 import { icon } from '../../../shared/js/icons.js';
 import { _esc, _makeAutosaveCheck, _flashSaved, _debounced } from './utils.js';
 import { authHeaders } from '../../../shared/js/left-login.js';
+import { applyRubberBand } from '../../../shared/js/rubber-band.js';
 
 const _CC = '/api/v1/claude-code';
 const _SRC_LABEL = { personal: 'Personal', project: 'Project' };
@@ -371,8 +372,8 @@ async function _deleteSkill(agent, state, list, idx) {
 
 // ╔═╗ CAROUSEL-WIRING PATTERN (4th copy — sisters: _wireSquaresCarousel + ════════╗
 // ║ _wireTabCarousel in view.js, _wirePromptCarousel in tab-prompts.js).          ║
-// ║ Drag-to-scroll + chevron affordance. If you fix scroll, pointer capture, or   ║
-// ║ affordance logic, update ALL FOUR copies.                                     ║
+// ║ Native scroll + chevron affordance. If you fix scroll or affordance logic,    ║
+// ║ update ALL FOUR copies.                                                       ║
 // ╚════════════════════════════════════════════════════════════════════════════════╝
 function _wireSkillsCarousel(wrap) {
   const scroller = wrap.querySelector('.skills-squares');
@@ -390,6 +391,7 @@ function _wireSkillsCarousel(wrap) {
   };
 
   scroller.addEventListener('scroll', updateAffordances, { passive: true });
+    applyRubberBand(scroller);
   requestAnimationFrame(updateAffordances);
   setTimeout(updateAffordances, 120);
   if (typeof ResizeObserver !== 'undefined') { new ResizeObserver(updateAffordances).observe(scroller); }
@@ -397,23 +399,4 @@ function _wireSkillsCarousel(wrap) {
   const page = () => Math.max(scroller.clientWidth * 0.7, 100);
   if (chevLeft)  chevLeft.addEventListener('click',  e => { e.stopPropagation(); scroller.scrollBy({ left: -page(), behavior: 'smooth' }); });
   if (chevRight) chevRight.addEventListener('click', e => { e.stopPropagation(); scroller.scrollBy({ left:  page(), behavior: 'smooth' }); });
-
-  let dragging = false, startX = 0, startScroll = 0, moved = false;
-  scroller.addEventListener('pointerdown', e => {
-    if (e.button !== 0) return;
-    dragging = true; moved = false; startX = e.clientX; startScroll = scroller.scrollLeft;
-  });
-  scroller.addEventListener('pointermove', e => {
-    if (!dragging) return;
-    const dx = e.clientX - startX;
-    if (Math.abs(dx) > 4) { moved = true; try { scroller.setPointerCapture(e.pointerId); } catch (_) {} }
-    if (moved) { scroller.scrollLeft = startScroll - dx; e.preventDefault(); }
-  });
-  const endDrag = e => {
-    if (!dragging) return; dragging = false;
-    try { scroller.releasePointerCapture(e.pointerId); } catch (_) {}
-  };
-  scroller.addEventListener('pointerup', endDrag);
-  scroller.addEventListener('pointercancel', endDrag);
-  scroller.addEventListener('click', e => { if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
 }

@@ -70,9 +70,9 @@ const TYPE_FIELDS = {
     { key: 'user',     label: 'User',     placeholder: 'readonly_user',  required: true },
   ],
   doc_store: [
-    { key: 'backend',    label: 'Backend',    placeholder: 'local | supabase_storage' },
+    { key: 'backend',    label: 'Backend',    placeholder: 'local' },
     { key: 'path',       label: 'Path',       placeholder: 'C:/docs/wiki  (local)' },
-    { key: 'bucket',     label: 'Bucket',     placeholder: 'docs  (supabase_storage)' },
+    { key: 'bucket',     label: 'Bucket',     placeholder: 'docs' },
     { key: 'prefix',     label: 'Prefix',     placeholder: 'wiki/' },
     { key: 'extensions', label: 'Extensions', placeholder: 'md,txt,markdown' },
   ],

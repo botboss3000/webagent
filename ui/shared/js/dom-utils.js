@@ -22,7 +22,7 @@
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 
-import { wireChatPillUploads, uploadAndPreview, startSpeechDictation } from './attachments.js';
+import { wireChatPillUploads, uploadAndPreview, startSpeechDictation, isVoiceInputSupported } from './attachments.js';
 import { authHeaders } from './left-login.js';
 
 // ── HTML escaping ─────────────────────────────────────────────────────────────
@@ -534,11 +534,32 @@ export function _buildPermissionTri(cfg) {
  * Call lucide.createIcons on all [data-lucide] children of host that lucide
  * hasn't already replaced. Safe to call even if lucide is not loaded yet.
  * Deduplicated from ~15 identical call sites in files.js, chat.js, etc.
+ *
+ * IDEMPOTENT — the vendored lucide's createIcons IGNORES the `nodes` option and
+ * scans every [data-lucide] in the whole document, and the <svg> it generates
+ * KEEPS the data-lucide attribute. So a bare call is not a no-op when there is
+ * nothing to do: it re-replaces every already-rendered icon, and each
+ * replacement is a DOM mutation. Under a MutationObserver (e.g. the git_changes
+ * dashboard card's grid observer) that becomes an endless
+ * replace → mutate → observer → replace loop that freezes the tab.
+ * Two guards make this safe:
+ *   1. bail out entirely when no unreplaced placeholders exist in scope;
+ *   2. strip the data-lucide marker off the svgs we (re)rendered so a later
+ *      call can never match them again.
  */
 export function _refreshLucideIcons(host) {
   if (window.lucide && typeof window.lucide.createIcons === 'function') {
     try {
-      window.lucide.createIcons({ nodes: Array.from(host.querySelectorAll('[data-lucide]:not(.lucide)')) });
+      const scope = host || document;
+      const nodes = Array.from(scope.querySelectorAll('[data-lucide]:not(.lucide)'));
+      if (!nodes.length) return;
+      window.lucide.createIcons({ nodes });
+      // The vendored lucide copies data-lucide onto the svgs it renders (and
+      // renders them document-wide regardless of `nodes`). Remove the marker so
+      // those svgs never match a future [data-lucide] scan again.
+      scope.querySelectorAll('svg[data-lucide].lucide').forEach(function (svg) {
+        svg.removeAttribute('data-lucide');
+      });
     } catch (_) {}
   }
 }
@@ -1422,12 +1443,13 @@ export function buildAbilitySearchPill(container, cfg = {}) {
   });
   wireChatPillUploads(pill, input, uploadOpts);
 
-  // VOICE → dictate into THIS pill's input; force send-only if unsupported.
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (SR) {
-    voiceBtn.addEventListener('click', () => startSpeechDictation(voiceBtn, input));
-  } else {
+  // VOICE → native recognition or the cross-browser recorder fallback. Where
+  // NO voice path can work (insecure context / unsupported browser), degrade
+  // to send-only via the shared no-voice hook instead of an erroring mic.
+  if (!isVoiceInputSupported()) {
     pill.classList.add('no-voice');
+  } else {
+    voiceBtn.addEventListener('click', () => startSpeechDictation(voiceBtn, input));
   }
 
   container.appendChild(wrap);
@@ -1435,7 +1457,16 @@ export function buildAbilitySearchPill(container, cfg = {}) {
   // Render the icon placeholders we just inserted (scoped + :not(.lucide) guard,
   // per the Lucide rules in ui/shared/js/icons.js — never a bare createIcons()).
   if (typeof lucide !== 'undefined' && lucide.createIcons) {
-    lucide.createIcons({ nodes: Array.from(pill.querySelectorAll('[data-lucide]:not(.lucide)')) });
+    const nodes = Array.from(pill.querySelectorAll('[data-lucide]:not(.lucide)'));
+    if (nodes.length) {
+      lucide.createIcons({ nodes });
+      // Vendored lucide copies data-lucide onto the svg it renders — strip it so
+      // a later [data-lucide] scan (a MutationObserver call site, e.g. the
+      // git_changes dashboard card) never re-replaces this icon in a loop.
+      pill.querySelectorAll('svg[data-lucide].lucide').forEach(function (svg) {
+        svg.removeAttribute('data-lucide');
+      });
+    }
   }
 
   return { wrap, pill, input, focus: () => input.focus() };
@@ -1563,4 +1594,43 @@ export function openFloatingMenu(items, top, left) {
     document.addEventListener('contextmenu', outside, true);
     document.addEventListener('keydown', onKey, true);
   }, 0);
+}
+
+// ── Keep the mobile keyboard open while tapping footer controls ──────────────
+// On touch devices a tap on any button blurs the focused chat pill and
+// dismisses the keyboard. The mode / model / abilities / stop / continue /
+// suggestion controls are typing-adjacent interactions — the user reaches for
+// them mid-sentence and expects to keep typing. Canceling the focus-shift
+// default action of pointerdown / mousedown (the click still fires and runs
+// the control) keeps focus on the pill so the keyboard stays open.
+// Both events are needed: mobile browsers shift focus on pointerdown;
+// desktop browsers shift focus on mousedown.
+//
+// scope        — element to listen on (capture). Pass `document` plus an
+//                `areaSelector` when the interactive area includes floating
+//                panels mounted on <body> (e.g. the model / skills pickers).
+// inputEl      — the chat pill textarea that must keep focus.
+// areaSelector — optional CSS selector: only button-like taps matching this
+//                area are intercepted (default: the scope itself).
+export function keepPillFocusOnFooterTap(scope, inputEl, areaSelector) {
+  if (!scope || !inputEl) return;
+  const isEditable = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    const tag = el.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || !!el.isContentEditable;
+  };
+  const guard = (e) => {
+    // Only while the pill holds focus — i.e. the keyboard is up.
+    if (document.activeElement !== inputEl) return;
+    const t = e.target;
+    // Editable fields (e.g. a picker's search box) legitimately take focus.
+    if (isEditable(t)) return;
+    if (!t || typeof t.closest !== 'function') return;
+    if (areaSelector && !t.closest(areaSelector)) return;
+    if (!t.closest('button, [role="button"], a, [tabindex], .cml-item, .csp-item, .cmp-item, .chat-footer-handle')) return;
+    // Stop the focus-shift default action; the click still runs the control.
+    e.preventDefault();
+  };
+  scope.addEventListener('pointerdown', guard, true);
+  scope.addEventListener('mousedown', guard, true);
 }

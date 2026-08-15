@@ -8,7 +8,7 @@ to this data source.
 
 Phase-1 storage backends:
   * local filesystem path (dev mode)
-  * Supabase Storage bucket (cloud mode) — TODO: wire through file_store.py
+  * Remote storage (s3, gcs) — wired through file_store.py
 
 Ingestion is triggered by the admin API (`POST /api/v1/data-sources/{id}/ingest`)
 rather than implicit-on-query, so the model doesn't get blocked waiting on
@@ -93,9 +93,6 @@ class DocStoreConnector(Connector):
             if not p.is_dir():
                 return {"ok": False, "message": f"path is not a directory: {base}", "details": {}}
             return {"ok": True, "message": "directory accessible", "details": {"path": str(p)}}
-        if backend == "supabase_storage":
-            # Bucket existence check is delegated to file_store.py; succeed loudly here.
-            return {"ok": True, "message": "supabase storage backend (file check on ingest)", "details": {}}
         return {"ok": False, "message": f"unknown backend: {backend}", "details": {}}
 
     async def introspect(self, data_source, auth_resolver):
@@ -282,24 +279,4 @@ class DocStoreConnector(Connector):
                     "size": path.stat().st_size,
                 })
             return out
-        if backend == "supabase_storage":
-            try:
-                from app.db import get_db
-
-                client = get_db().get_raw_client()
-                bucket = cfg.get("bucket") or ""
-                prefix = cfg.get("prefix") or ""
-                if not bucket:
-                    return []
-                listing = client.storage.from_(bucket).list(prefix or None)
-                out = []
-                for item in listing or []:
-                    name = item.get("name") if isinstance(item, dict) else getattr(item, "name", "")
-                    if not name:
-                        continue
-                    out.append({"source_ref": name, "path": f"supabase://{bucket}/{name}", "size": None})
-                return out
-            except Exception as e:
-                logger.warning("doc_store supabase list failed: %s", e)
-                return []
         return []

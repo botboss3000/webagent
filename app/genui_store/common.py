@@ -30,6 +30,15 @@ GENUI_META_FILE = "page.json"
 # are a later phase; this is the per-genui file.)
 GENUI_DATA_FILE = "data.json"
 
+# Per-genui WIDGET file — optional launcher/widget configuration for THIS page:
+# which agent the page's chat launcher opens, which icon it shows, which corner
+# buttons surround it, and any createChatWidget options (session contract,
+# initial message, transformMessage…). Shape mirrors the createChatLauncher
+# options in ui/chat-widget/js/chat-launcher.js. Optional: a genui with no
+# widget.json simply gets no page launcher (the global launcher, when enabled,
+# still works). Sibling to index.html / data.json in the genui folder.
+GENUI_WIDGET_FILE = "widget.json"
+
 # A genui with no `order` in its descriptor sorts after all ordered genui.
 DEFAULT_ORDER = 100
 
@@ -154,6 +163,36 @@ def write_genui_data(user_id: str, slug: str, data: Dict) -> None:
     os.makedirs(genui_dir(user_id, slug), exist_ok=True)
     with open(genui_data_path(user_id, slug), "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+
+
+def genui_widget_path(user_id: str, slug: str) -> str:
+    """The optional widget file for one genui: ``<genui dir>/<slug>/widget.json``.
+
+    Holds the page's launcher/widget configuration (which agent the page's chat
+    launcher opens, icon, corner buttons, widget options) as a JSON object, kept
+    out of index.html the same way data.json is so the agent edits config
+    without touching the page markup."""
+    return os.path.join(genui_dir(user_id, slug), GENUI_WIDGET_FILE)
+
+
+def read_genui_widget(user_id: str, slug: str) -> Optional[Dict]:
+    """Read a genui's widget.json, or ``None`` when absent/unreadable/not an object."""
+    path = genui_widget_path(user_id, slug)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def write_genui_widget(user_id: str, slug: str, widget: Dict) -> None:
+    """Write (create or overwrite) a genui's widget.json config file."""
+    os.makedirs(genui_dir(user_id, slug), exist_ok=True)
+    with open(genui_widget_path(user_id, slug), "w", encoding="utf-8") as f:
+        json.dump(widget, f, indent=2)
 
 
 def now_iso() -> str:
@@ -312,6 +351,15 @@ def genui_entry(user_id: str, slug: str) -> Dict:
     alphabetically), timestamps → None."""
     meta = read_genui_meta(user_id, slug)
     title = meta.get("title") or slug
+    # Session config: the REQUIRED session contract for this page's actions/chat.
+    # Defaults to {} for legacy pages (they keep current runtime behavior until
+    # an agent sets a config via the PATCH endpoint).
+    _sc = meta.get("session_config")
+    if not isinstance(_sc, dict):
+        try:
+            _sc = json.loads(_sc) if isinstance(_sc, str) and _sc.strip() else {}
+        except Exception:
+            _sc = {}
     return {
         "slug": slug,
         "title": title,
@@ -321,6 +369,7 @@ def genui_entry(user_id: str, slug: str) -> Dict:
         # genui hasn't been rendered by an agent yet — the footer then falls back
         # to the default WebAgent.
         "agent_id": meta.get("agent_id") or "",
+        "session_config": _sc,
         "order": meta.get("order", DEFAULT_ORDER),
         "created_at": meta.get("created_at"),
         "updated_at": meta.get("updated_at"),
@@ -464,7 +513,7 @@ def blank_genui_html(title: str) -> str:
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>{escaped}</title>
 <!--
   BASE GENUI — minimal correct skeleton. Follow these and the usual bugs can't happen:

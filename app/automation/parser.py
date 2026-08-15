@@ -245,7 +245,7 @@ async def _call_llm(slot_content: str, sources_block: str, agent_context: Dict[s
     except ImportError:
         from app.openai_compat import AsyncOpenAI
 
-    base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+    base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL") or ""
     api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or ""
     model = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or ""
 

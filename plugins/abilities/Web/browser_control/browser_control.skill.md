@@ -12,6 +12,12 @@ JavaScript runs, or taking a screenshot of what a page looks like. The page is a
 **persistent browser session** (a tab) that keeps its cookies and login between
 actions and across server restarts.
 
+This is also how you act on the user's behalf with **external providers that
+don't have a direct integration** in the app: the user stores their login in the
+encrypted vault, you call `vault_login` to sign in headlessly (you never see the
+password), then you navigate, scrape, and make changes just like a human would.
+See "Acting on unsupported external providers" below for the full recipe.
+
 For a plain one-shot API call or fetching a URL's raw response, prefer
 `http_request` instead — it's faster and doesn't spin up a page.
 
@@ -19,6 +25,13 @@ For a plain one-shot API call or fetching a URL's raw response, prefer
 
 - **`browser_action`** — drives a single browser tab (navigate, click, type, read,
   screenshot, run JS, close). One `action` per call.
+- **`vault_login`** — logs into a site **using credentials the user saved in the
+  encrypted vault** (email + password). The credentials are read server-side and
+  typed into the login form — the agent never sees them. Returns `logged_in`,
+  `needs_2fa`, or an error. Use this when the user needs you to act on an
+  external provider that doesn't have a direct integration — DNS registrars,
+  hosting panels, billing dashboards, any site behind a login form. See the
+  "Acting on unsupported external providers" section below for the full pattern.
 - **`http_request`** — arbitrary outbound HTTP (GET/POST/…). No page, no cookies
   from the browser session — use it for **public** APIs, not for logged-in web flows.
 - **`web_session_status` / `web_session_fetch` / `web_session_graphql`** — the
@@ -186,6 +199,61 @@ repeating until the task is done, then **close** if the tab was only for this ta
 9. **`close`** — end the tab. Its login state is saved first, so reopening the same
    session id later comes back authenticated.
 
+## Acting on unsupported external providers (`vault_login`)
+
+Some providers don't have a direct integration in the app (no API connector, no
+dedicated router), but the user still needs the agent to log into their account
+and do something — check DNS records, configure a setting, pull a report, make a
+change. This is where the vault + browser combo fills the gap.
+
+**The user stores their login in the encrypted vault** (email + password, saved
+via a credentials form on the page or through the Browser Control panel), and the
+agent logs in headlessly with `vault_login` — the credentials are read server-side
+and typed into the login form without the agent *ever* seeing them.
+
+### The pattern
+
+1. **Confirm the credential exists.** Call `check_credential(ability="browser_control")`.
+   If `configured` is `false`, tell the user they need to save their login to the
+   vault first — point them to the credentials form. Stop there.
+2. **Log in headlessly.** Call `vault_login` with the `login_url` and the right CSS
+   selectors for the site's email/username field, password field, and submit button.
+   If the site uses a two-step login (username first, then password on a separate
+   page), `vault_login` may not handle it — fall back to driving the browser manually
+   with `browser_action` `type` calls (the vaulted values are still injected for you).
+3. **Handle 2FA.** If the result is `needs_2fa`, tell the user to finish signing in
+   on the Browser tab — the verification page is already open there. Once they confirm
+   they're in, continue.
+4. **Navigate to the target page.** The session's cookies persist, so you stay
+   authenticated.
+5. **Scrape or act.** Use `get_text` / `get_html` / `evaluate` to extract data, or
+   `click` / `type` to make changes. One action per call, reading before each click.
+6. **Report back.** Summarise what you found or changed in 1–2 sentences unless the
+   user asks for detail.
+
+### What the user sees (and doesn't see)
+
+- **The agent never sees the credentials.** `vault_login` reads the email + password
+  server-side from the encrypted vault and types them into the page. The agent only
+  receives the outcome: `logged_in`, `needs_2fa`, or an error.
+- **The user can watch the whole process** on the Web tab — the same shared browser
+  session the agent drives is mirrored there live.
+- **Cookies persist** across tasks, so you only need to log in once per session.
+
+### Example: Namecheap DNS management
+
+This is the exact pattern the Namecheap DNS genui uses:
+
+1. `check_credential(ability="browser_control")` → confirmed.
+2. `vault_login(login_url="https://www.namecheap.com/myaccount/login/", …)` → logged in.
+3. Navigate to `https://ap.www.namecheap.com/Domains/DomainControlPanel/<domain>/advancedns`.
+4. Scrape the DNS records table with `evaluate`, then publish them to a genui.
+5. When the user asks to change a record, click the edit controls, type the new value,
+   save, re-scrape, and refresh.
+
+The whole flow runs headlessly in the in-app browser — no API key, no special setup,
+just the user's Namecheap login saved to the vault.
+
 ## Rules of thumb
 
 - **Read before you click.** Use `get_text` (with a `selector` — `body` for the
@@ -202,10 +270,15 @@ repeating until the task is done, then **close** if the tab was only for this ta
   and have none, just act without an id — you'll get your own shared tab the user
   can watch. Never expect to see a user's private tab.
 
-## Example: log in and grab a value
+## Example: log in and grab a value (with vault)
 
-1. `navigate` to the login page.
-2. `type` the username into its field, `type` the password into its field.
-3. `click` the submit button, then `wait`, then `get_text` to confirm you're in.
-4. `navigate` to the page you actually need; `get_text` (or `screenshot`) the value.
-5. Leave the tab open (login persists) or `close` it when done.
+1. Call `check_credential(ability="browser_control")` to confirm the login is saved.
+2. Call `vault_login(login_url="…", email_selector="…", password_selector="…", submit_selector="…")`.
+   If `needs_2fa`, tell the user to finish on the Browser tab.
+3. `navigate` to the page you need; `get_text` (or `screenshot` / `evaluate`) the value.
+4. Leave the tab open (login persists) or `close` it when done.
+
+When `vault_login` cannot handle the site's form (e.g. a two-step login), fall
+back to the manual approach: `navigate`, `type` the username + password, `click`
+submit. The vaulted values are still injected for the `type` calls — you never
+see them.

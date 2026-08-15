@@ -7,14 +7,17 @@
 // view, the tutorial-hint refresher, and the Admin Tools sub-panel inits (Admin
 // Tools is the locked shell tab).
 import { startAccount } from './account.js';
+import { pageMemory } from './page-memory.js';
 import { refreshTutorial } from '../../tutorials/js/tutorial.js';
 import { isAdmin } from './left-login.js';
-import { initAppConfig } from '../../admin-tools/app-config/index.js';
+import { initAppConfig } from '../../main-panel/instances/app-config/index.js';
 import { initDbViewer } from './index.js';
 import { initDataManagement } from './data-management.js';
 import { initRemoteAccess } from './remote-access.js';
 import { initTunnelLink } from './tunnel-link.js';
 import { showPageAccessGate, hidePageAccessGate } from './page-access-gate.js';
+import { app } from './state.js';
+import { createChatLauncher } from '../../chat-widget/js/chat-launcher.js';
 
 // ── Lazy Admin Tools init ───────────────────────────────────────────────────
 // The Admin Tools sub-panels (App Config, Database viewer, Data Management,
@@ -76,7 +79,15 @@ const _SHELL_HOOKS = {
 };
 
 let _activePageId = null;
-const _dynMods = {};   // page id → Promise<module> (cached after first import)
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  DYN-IMPORT-CACHE — evict on failure, never cache a rejection.         ║
+// ║  A failed dynamic import must NOT poison the module cache.  The next    ║
+// ║  tab activation retries with a fresh import.  Sister site:              ║
+// ║  _dynAdminMods in files.js (same contract).  DO NOT simplify back to    ║
+// ║  `try/catch Promise.reject(e)` — that caches the rejection forever.     ║
+// ║  (grep `DYN-IMPORT-CACHE` to find both sites).                          ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+const _dynMods = {};   // page id → Promise<module> (evicted on failure)
 
 function _catalogPage(id) {
   try {
@@ -88,8 +99,10 @@ function _catalogPage(id) {
 
 function _dynModule(id, entry) {
   if (!_dynMods[id]) {
-    try { _dynMods[id] = import(new URL(entry, document.baseURI).href); }
-    catch (e) { _dynMods[id] = Promise.reject(e); }
+    // DYN-IMPORT-CACHE: evict the rejection so the next activation retries.
+    _dynMods[id] = Promise.resolve()
+      .then(() => import(new URL(entry, document.baseURI).href))
+      .catch((e) => { delete _dynMods[id]; throw e; });
   }
   return _dynMods[id];
 }
@@ -99,23 +112,42 @@ function _startPage(id) {
   const h = _SHELL_HOOKS[id];
   if (h) {
     try { if (h.start) h.start(); } catch (e) { console.error('start ' + id + ' failed', e); }
+    _mountPageLauncher(id, null);
     return;
   }
   const p = _catalogPage(id);
+  // Mount the page's chat launcher (page.json `widget` block) as soon as the
+  // tab activates — it floats over the app like the global launcher.
+  _mountPageLauncher(id, p);
   if (p && p.entry && p.start) {
     _dynModule(id, p.entry)
-      .then((m) => { const fn = m && m[p.start]; if (typeof fn === 'function') fn(); })
+      .then((m) => {
+        const fn = m && m[p.start];
+        if (typeof fn === 'function') fn();
+        // Restore the page's saved view state after it has started rendering.
+        _recallPage(id, p, m);
+      })
       .catch((e) => console.error('start ' + id + ' failed', e));
+  } else {
+    // Static / iframe-only pages still get their DOM snapshot restored.
+    _recallPage(id, p, null);
   }
 }
 
-function _stopPage(id) {
+async function _stopPage(id) {
   const h = _SHELL_HOOKS[id];
+  const p = _catalogPage(id);
+  // The page's chat launcher (page.json `widget` block) only exists while its
+  // tab is active — tear it down on leave so each page gets its own.
+  _destroyPageLauncher(id);
+  // Capture the page's view state BEFORE its stop hook tears anything down —
+  // the DOM snapshot is synchronous, then (best-effort) the page's declared
+  // `remember` export contributes custom state (see page-memory.js).
+  await _rememberPage(id, p);
   if (h) {
     if (h.stop) { try { h.stop(); } catch (_) {} }
     return;
   }
-  const p = _catalogPage(id);
   if (p && p.entry && p.stop && _dynMods[id]) {
     _dynMods[id]
       .then((m) => { const fn = m && m[p.stop]; if (typeof fn === 'function') fn(); })
@@ -123,14 +155,119 @@ function _stopPage(id) {
   }
 }
 
+// ── Per-page chat launcher (page.json `widget` block) ───────────────────────
+// A catalog page may declare a `widget` block in its page.json — the SAME shape
+// as createChatLauncher options in ui/chat-widget/js/chat-launcher.js (icon,
+// agent_id, corner buttons, widget options…). The shell mounts the page's own
+// launcher when the tab activates and destroys it on deactivate, so every page
+// can have a distinct chat launcher without any per-page code. Lives in the
+// main document (the widget layer attaches to <body>) so it floats like the
+// global WebAgent launcher.
+const _pageLaunchers = {};
+
+function _mountPageLauncher(id, p) {
+  if (!p || !p.widget || typeof p.widget !== 'object' || _pageLaunchers[id]) return;
+  const cfg = p.widget;
+  const agentId = cfg.agent_id || cfg.agentId || null;
+  let ensureAgent = null;
+  if (!agentId && app && typeof app.ensureWebagentAgent === 'function') {
+    ensureAgent = () => app.ensureWebagentAgent(app.currentUserId);
+  }
+  try {
+    _pageLaunchers[id] = createChatLauncher({
+      mountEl: document.body,
+      position: cfg.position || 'fixed',
+      icon: cfg.icon || 'bot',
+      iconSize: cfg.iconSize,
+      ariaLabel: cfg.ariaLabel || `Ask about ${p.label || id}`,
+      label: cfg.label,
+      showLabel: !!cfg.showLabel,
+      agentId: agentId || null,
+      ensureAgent,
+      cornerButtons: cfg.cornerButtons,
+      cornerActions: cfg.cornerActions,
+      widget: (cfg.widget && typeof cfg.widget === 'object') ? cfg.widget : {},
+      draggable: cfg.draggable,
+      storageKey: cfg.storageKey || ('page-launcher:' + (app.currentUserId || 'anon') + ':' + id),
+      elementPickup: !!cfg.elementPickup,
+      hoverDelayMs: cfg.hoverDelayMs,
+      onOpen: (typeof cfg.onOpen === 'function') ? cfg.onOpen : null,
+      onClose: (typeof cfg.onClose === 'function') ? cfg.onClose : null,
+    });
+  } catch (e) {
+    console.error('page launcher mount failed for ' + id, e);
+  }
+}
+
+function _destroyPageLauncher(id) {
+  const l = _pageLaunchers[id];
+  if (l) {
+    try { l.destroy(); } catch (_) {}
+    delete _pageLaunchers[id];
+  }
+}
+
 // Only the previously-active page can be "running", so stopping it (when it
 // isn't the new target) is sufficient and idempotent. Admin Tools' stop hook
 // (stopAdminTools) owns its sidebar sub-views' lifecycle, so leaving Admin Tools
 // tears them down here too.
-function _stopAllExcept(target) {
+async function _stopAllExcept(target) {
   if (_activePageId && _activePageId !== target) {
-    _stopPage(_activePageId);
+    await _stopPage(_activePageId);
   }
+}
+
+// ── Page memory — automatic save/recall of every page's view state ─────────
+// Every catalog page (built-in or drop-in) gets its view state remembered in
+// localStorage — scroll positions, open panels/toggles, selects/checkboxes,
+// [data-memory] elements — and restored when the page starts again (tab switch
+// or refresh). Zero per-page code: enabled by default for every page; a page
+// opts out with "memory": false in page.json, or adds richer state with
+// "memory": {"remember": "fn", "recall": "fn"} exports in its entry module
+// (remember() returns state on leave, recall(state) receives it on return).
+// See ui/shared/js/page-memory.js for the storage contract.
+function _memoryEnabled(p) {
+  return pageMemory.enabled(p);
+}
+
+function _pageMount(id, p) {
+  if (p && p.mount) {
+    try { const el = document.querySelector(p.mount); if (el) return el; } catch (_) {}
+  }
+  return document.getElementById('tab-' + id);
+}
+
+// Called by _stopPage BEFORE the page's stop hook: snapshot the page's DOM
+// synchronously, then ask the page's declared `remember` export for custom
+// state. The stop hook runs after, so remember() sees the page as the user
+// left it (module-scope state survives; don't depend on the DOM here).
+async function _rememberPage(id, p) {
+  if (!_memoryEnabled(p)) return;
+  const state = { dom: pageMemory.captureDom(_pageMount(id, p)), custom: null };
+  if (p && p.entry && p.memory && p.memory.remember && _dynMods[id]) {
+    try {
+      const m = await _dynMods[id];
+      const fn = m && m[p.memory.remember];
+      if (typeof fn === 'function') state.custom = fn() || null;
+    } catch (_) {}
+  }
+  pageMemory.save(id, state);
+}
+
+// Called by _startPage AFTER the page's start hook: hand custom state to the
+// page's declared `recall` export, then re-apply the DOM snapshot (scroll is
+// retried on a schedule because the page may still be rendering).
+function _recallPage(id, p, mod) {
+  if (!_memoryEnabled(p)) return;
+  const state = pageMemory.load(id);
+  if (!state) return;
+  if (mod && p && p.memory && p.memory.recall) {
+    try {
+      const fn = mod[p.memory.recall];
+      if (typeof fn === 'function') fn(state.custom || null);
+    } catch (_) {}
+  }
+  pageMemory.restoreDom(_pageMount(id, p), state.dom);
 }
 
 // ── Address-bar sync ─────────────────────────────────────────────────────────
@@ -284,7 +421,11 @@ export function initTabs() {
     } else {
       const stored = localStorage.getItem('chatPanelVisible');
       const visible = stored === null ? true : stored !== 'false';
-      setChatPanelVisible(visible);
+      if (typeof window.__applyChatVisible === 'function') {
+        window.__applyChatVisible(visible);
+      } else {
+        setChatPanelVisible(visible);
+      }
     }
 
     if (gated) {
@@ -340,7 +481,9 @@ export function initTabs() {
           if (v) { try { localStorage.setItem('files.sidebarView', v); } catch (_) {} }
         }
         if (tabSelect.querySelector('option[value="' + t + '"]')) tabSelect.value = t;
-        activateTab(t, true);
+        // userInitiated=true drives URL sync (desktop) but on mobile would override
+        // the saved chat-visibility state — only sync the URL on desktop.
+        activateTab(t, !window.__isMobileChatLayout());
         _deepLinkHandled = true;
       }
     } catch (_) {}
@@ -412,19 +555,43 @@ export function initTabs() {
   // Skip the default initial activation when a ?tab= deep link already activated
   // a page (or its gate) above — re-activating tabSelect.value here would drop the
   // gate and snap to the default tab.
-  if (!_deepLinkHandled) activateTab(tabSelect.value);
+  // On mobile, if the chat panel was visible on the last visit, the user was on
+  // the chat view — not a main page tab. Skip activating any main page so the
+  // refresh lands on the chat view with the same session (restored from
+  // terminalSessionId) instead of starting a stale main page in the background.
+  // Also apply the saved chat visibility here (not just in _initChatVisibility)
+  // because this module script runs before DOMContentLoaded, so the body class
+  // hasn't been set yet — without it the user would see the main panel.
+  if (typeof window.__isMobileChatLayout === 'function' && window.__isMobileChatLayout()
+      && typeof window.__getChatVisible === 'function' && window.__getChatVisible()) {
+    if (typeof window.__applyChatVisible === 'function') window.__applyChatVisible(true);
+  } else if (!_deepLinkHandled) {
+    // Restore the last page this browser was on (saved to localStorage on every
+    // navigation), falling back to the canonical landing page. The ?tab= deep
+    // link above covers refresh-after-navigation; this covers a bare load of
+    // "/app" (new tab, cleared URL) so the user lands where they left off.
+    const initialTab = tabSelect.value ? tabSelect.value : (_computeDefaultTab() || 'agents');
+    tabSelect.value = initialTab;
+    activateTab(initialTab);
+  }
 
   // Deferred Admin Tools restore. The guard above redirected admin-tools → a safe
   // default because admin status isn't known yet at boot (the /check-access probe
   // is async). This covers BOTH ways an admin can request Admin Tools at boot: a
   // restored lastActiveTab OR a ?tab=admin-tools deep link. Once the server
-  // confirms admin, send them (back) to Admin Tools — userInitiated:true so the
-  // address bar reflects ?tab=admin-tools(&view=) and the link stays shareable. A
-  // confirmed NON-admin gets is_admin=false here and simply stays on the default.
+  // confirms admin, send them (back) to Admin Tools. On mobile this is a boot
+  // restore, not a user navigation: mount the saved page behind chat without
+  // changing the saved chat/main view. Desktop still treats it as navigation so
+  // the address bar reflects ?tab=admin-tools(&view=) and the link stays
+  // shareable. A confirmed NON-admin simply stays on the default.
   if ((_isAdminOnlyTab(savedTab) || _isAdminOnlyTab(_deepLinkTab)) && !isAdmin()) {
     const _restoreAdminTab = (e) => {
       window.removeEventListener('admin-status-loaded', _restoreAdminTab);
-      if (e && e.detail && e.detail.is_admin) activateTab('admin-tools', true);
+      if (e && e.detail && e.detail.is_admin) {
+        const isMobile = typeof window.__isMobileChatLayout === 'function'
+          && window.__isMobileChatLayout();
+        activateTab('admin-tools', !isMobile);
+      }
     };
     window.addEventListener('admin-status-loaded', _restoreAdminTab);
   }
@@ -476,7 +643,7 @@ export function initTabs() {
 
   // ── Middle-click on a header tab opens that page in a new browser tab ──
   // (The new-session + button's own middle-click handler moved with the button
-  // into ui/chat-side-panel/js/session-init.js when it relocated to the chat
+  // into ui/chat/js/session-init.js when it relocated to the chat
   // header — that partial mounts after this shell-init runs.)
   (function () {
     var base = location.pathname.replace(/\/+$/, '') || '/';
@@ -512,6 +679,8 @@ export function initTabs() {
       }
     } catch (_) {}
   })();
+
+  // (Main-panel swipe-to-flip gesture removed — was causing accidental page switches.)
 
   // The spinner was shown in the header during init (pre-paint script
   // set body.is-booting). Now that the tab content is mounted, clear

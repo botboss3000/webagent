@@ -9,7 +9,7 @@ Use `render_sqlite()`, `render_postgres()`, `render_mysql()` from
 `ddl_renderer` to emit dialect-specific DDL strings.
 
 This module is intentionally pure-Python and dialect-agnostic. Do not
-import sqlite3 / asyncpg / supabase from here.
+import sqlite3 / asyncpg from here.
 """
 
 from app.db.schema.tables import TABLES, INDEXES, TRIGGERS, FTS_TABLES
@@ -17,6 +17,8 @@ from app.db.schema.ddl_renderer import (
     render_sqlite,
     render_postgres,
     render_mysql,
+    render_plane,
+    ensure_sqlite_plane_columns,
     DIALECTS,
 )
 
@@ -28,5 +30,7 @@ __all__ = [
     "render_sqlite",
     "render_postgres",
     "render_mysql",
+    "render_plane",
+    "ensure_sqlite_plane_columns",
     "DIALECTS",
 ]

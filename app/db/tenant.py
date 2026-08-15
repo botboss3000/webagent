@@ -6,7 +6,7 @@ data (their own Postgres). This is the "data plane" half of the split; the
 control plane (accounts, agent catalog, billing) stays on the central backend
 returned by `app.db.get_control_db()`.
 
-Only used when App Settings → Multi-tenant data is ON. The tenant router
+Only used when App Settings → User BYOD is ON. The tenant router
 (app/db/router.py) calls `resolve_data_backend()` with the current caller's id.
 
 Design notes
@@ -20,7 +20,7 @@ Design notes
   encrypted at rest in their DB — but NOT with the hybrid local-first wrapper:
   hybrid uses one shared local SQLite hot store, which would cross-contaminate
   tenants. Personal DBs go straight to Postgres.
-* No-personal-DB fallback: when multi-tenant is ON but a user has no registry
+* No-personal-DB fallback: when user BYOD is ON but a user has no registry
   record, we fall back to the central control backend (a shared "trial" DB) and
   flag it so the UI can show a "connect your own database" banner. A user who DOES
   have a personal DB that is currently unreachable is NOT silently sent to central
@@ -187,7 +187,7 @@ def evict(user_id: str) -> None:
 
 
 def evict_all() -> None:
-    """Close every cached tenant pool (e.g. when multi-tenant is switched off)."""
+    """Close every cached tenant pool (e.g. when user BYOD is switched off)."""
     with _CACHE_LOCK:
         for uid in list(_CACHE.keys()):
             _evict_locked(uid)

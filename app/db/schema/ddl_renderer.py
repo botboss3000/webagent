@@ -16,7 +16,8 @@ Default translation:
     CURRENT_TIMESTAMP → datetime('now') (sqlite), now() (pg/mysql)
 """
 
-from typing import List
+from dataclasses import replace
+from typing import List, Optional
 from app.db.schema.tables import (
     Table, Column, Index, FtsTable, Trigger,
     TABLES, INDEXES, FTS_TABLES, TRIGGERS,
@@ -106,6 +107,33 @@ def _render_column(c: Column, dialect: str) -> str:
             ref += f" ON DELETE {c.on_delete}"
         parts.append(ref)
     return " ".join(parts)
+
+
+def ensure_sqlite_plane_columns(conn, plane) -> None:
+    """Add canonical non-key columns missing from an existing plane database."""
+    from app.db.schema.ownership import tables_for_plane
+
+    wanted = set(tables_for_plane(plane))
+    for table in (item for item in TABLES if item.name in wanted):
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table.name,)
+        ).fetchone()
+        if not exists:
+            continue
+        current = {
+            row[1] for row in conn.execute(f'PRAGMA table_info("{table.name}")').fetchall()
+        }
+        for column in table.columns:
+            if column.name in current:
+                continue
+            if column.primary_key or column.unique:
+                raise RuntimeError(
+                    f"Cannot add missing key column {table.name}.{column.name} additively"
+                )
+            additive = replace(column, references=None, on_delete=None)
+            conn.execute(
+                f'ALTER TABLE "{table.name}" ADD COLUMN {_render_column(additive, "sqlite")}'
+            )
 
 
 def _render_table(t: Table, dialect: str, idempotent: bool = True) -> str:
@@ -254,7 +282,19 @@ def _sort_tables_by_deps(tables: List[Table]) -> List[Table]:
     return ordered
 
 
-def _render_all(dialect: str, idempotent: bool = True) -> str:
+def _render_all(
+    dialect: str,
+    idempotent: bool = True,
+    *,
+    tables: Optional[List[Table]] = None,
+    indexes: Optional[List[Index]] = None,
+    fts_tables: Optional[List[FtsTable]] = None,
+    triggers: Optional[List[Trigger]] = None,
+) -> str:
+    selected_tables = TABLES if tables is None else tables
+    selected_indexes = INDEXES if indexes is None else indexes
+    selected_fts = FTS_TABLES if fts_tables is None else fts_tables
+    selected_triggers = TRIGGERS if triggers is None else triggers
     parts: List[str] = []
     # NB: keep this text free of the literal tokens a naive SQL linter scans for
     # (no "CREATE TABLE", no "IF"+"EXISTS", no "DROP") so the header comment can't
@@ -267,7 +307,7 @@ def _render_all(dialect: str, idempotent: bool = True) -> str:
         f"dialect: {dialect}  |  {variant}\n"
     )
 
-    ordered = _sort_tables_by_deps(TABLES)
+    ordered = _sort_tables_by_deps(selected_tables)
 
     # Postgres: any embedding column uses pgvector's `vector` type, which does
     # not exist until the extension is enabled. Emit the enable FIRST (before any
@@ -289,7 +329,7 @@ def _render_all(dialect: str, idempotent: bool = True) -> str:
         if dialect == "postgres":
             parts.append(_render_rls(t, idempotent))
 
-    for idx in INDEXES:
+    for idx in selected_indexes:
         parts.append(_render_index(idx, dialect, idempotent))
 
     # Postgres: an ANN index for every pgvector column so similarity search is a
@@ -311,7 +351,7 @@ def _render_all(dialect: str, idempotent: bool = True) -> str:
                         f"    ON {t.name} USING hnsw ({c.name} vector_cosine_ops);"
                     )
 
-    for f in FTS_TABLES:
+    for f in selected_fts:
         if dialect == "sqlite":
             parts.append(_render_fts_sqlite(f))
         elif dialect == "postgres":
@@ -320,7 +360,7 @@ def _render_all(dialect: str, idempotent: bool = True) -> str:
             parts.append(_render_fts_mysql(f))
 
     if dialect == "sqlite":
-        for trig in TRIGGERS:
+        for trig in selected_triggers:
             parts.append(_render_trigger_sqlite(trig))
 
     return "\n\n".join(parts) + "\n"
@@ -343,6 +383,54 @@ def render_postgres(idempotent: bool = True) -> str:
 
 def render_mysql() -> str:
     return _render_all("mysql")
+
+
+def render_plane(
+    plane: str,
+    dialect: str = "sqlite",
+    *,
+    idempotent: bool = True,
+) -> str:
+    """Render only the tables owned by one storage plane.
+
+    Foreign keys that cross a plane boundary are removed from the physical DDL.
+    The referenced IDs remain normal columns and are validated by the service
+    layer/outbox reconciliation; neither SQLite ATTACH nor separate Postgres
+    databases can provide a portable cross-plane FK.
+    """
+    from app.db.schema.ownership import StoragePlane, tables_for_plane
+
+    selected_plane = StoragePlane(plane)
+    names = set(tables_for_plane(selected_plane))
+    selected: List[Table] = []
+    for table in TABLES:
+        if table.name not in names:
+            continue
+        columns = []
+        for column in table.columns:
+            target = column.references.split("(", 1)[0] if column.references else None
+            columns.append(
+                replace(column, references=None, on_delete=None)
+                if target and target not in names
+                else column
+            )
+        selected.append(replace(table, columns=columns))
+
+    selected_indexes = [idx for idx in INDEXES if idx.table in names]
+    selected_fts = [fts for fts in FTS_TABLES if fts.content_table in names]
+    selected_triggers = [
+        trigger
+        for trigger in TRIGGERS
+        if any(trigger.name.startswith(f"trg_{fts.content_table}_") for fts in selected_fts)
+    ]
+    return _render_all(
+        dialect,
+        idempotent,
+        tables=selected,
+        indexes=selected_indexes,
+        fts_tables=selected_fts,
+        triggers=selected_triggers,
+    )
 
 
 def render(dialect: str, idempotent: bool = True) -> str:

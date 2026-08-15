@@ -282,7 +282,7 @@ function _lvNodeHint(nd, agent) {
     final_response: 'Final reply streamed to the user over WebSocket',
     db_persist_final: 'Saves final assistant response to interactions table',
     memory_save: isCustom ? 'Memory save \u2014 click to toggle' : 'Key facts saved to long-term memory',
-    fire_optimizer: isCustom ? 'Optimizer fires on every exit path' : 'fire-and-forget optimization',
+
   };
   return hints[nd.id] || '';
 }
@@ -400,7 +400,6 @@ function _lvShowEditPanel(nd, nodeEl, container, agent) {
     case 'interrupt_chk':  _lvRenderGatedNodeEditor(body, agent, 'interrupt_chk', 'Interrupt check', 'Polls for cancellation signal.', {}); break;
     case 'delegation_chk': _lvRenderGatedNodeEditor(body, agent, 'delegation_chk', 'Agent delegation', 'Checks for __delegate__ sentinel.', {}); break;
     case 'skill_track':    _lvRenderGatedNodeEditor(body, agent, 'skill_track', 'Skill tracking', 'Records tool execution event.', {}); break;
-    case 'fire_optimizer': _lvRenderGatedNodeEditor(body, agent, 'fire_optimizer', 'Fire optimizer', 'Background optimization after response.', {}); break;
     default: { _lvRenderNodeInfo(body, nd); const info = document.createElement('div'); info.className = 'lv-edit-desc'; info.textContent = _lvNodeHint(nd, agent) || 'No editable settings.'; body.appendChild(info); }
   }
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WebAgent Browser Connector",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Let your WebAgent server drive THIS browser — navigate, click, type, read, screenshot — in your own logged-in session. You watch it happen and can pause anytime.",
   "permissions": ["scripting", "tabs", "alarms", "storage", "notifications"],
   "host_permissions": ["<all_urls>"],

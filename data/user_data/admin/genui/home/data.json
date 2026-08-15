@@ -1,0 +1,1331 @@
+{
+ "projects": [
+  {
+   "id": "chat-panel",
+   "name": "Chat Panel",
+   "icon": "chat",
+   "status": "active",
+   "statusLabel": "Active",
+   "progress": 22,
+   "tasks": 18,
+   "open": 14,
+   "metrics": {
+    "commits": 0,
+    "prs": 0,
+    "daysLeft": 0,
+    "reviewers": 0
+   },
+   "chart": [],
+   "items": [
+    {
+     "text": "Make chat header buttons match main app header size (icons and text)",
+     "done": true,
+     "tag": "feat",
+     "qa": {
+      "status": "done",
+      "session_id": "3317c81d-0376-48aa-a9b1-f7b7af621402",
+      "thread": [
+       {
+        "role": "agent",
+        "text": "Research complete. Found the size mismatch: main app header tabs (.main-tab) use 20px icons + 14px text, while chat header chips render 19px icons (JS derives floor(28px * 0.7)) at 13px text, with a 12px session title and 15px agent name. Plan posted — reviewing it will start the change.",
+        "ts": "2026-08-03T01:34:00Z"
+       },
+       {
+        "role": "agent",
+        "text": "Done — chat header buttons now match the main app header: 20px icons, 14px text, 32px chips. Files: data/config/chat_ui.json, ui/shared/css/app1.css, ui/chat-controls/chat-controls-config.js. Verified JSON + no stale sizes; the legacy chat-header-config.js fallback was left untouched (it reads the same config, and the file's CRLF blob would pollute the diff).",
+        "ts": "2026-08-03T01:42:00Z"
+       }
+      ],
+      "plan": {
+       "approach": "Match chat header buttons to the main app header: 20px icons, 14px text, and bump the header chips from 28px to 32px tall so they visually match the main header tabs.",
+       "files": [
+        "data/config/chat_ui.json",
+        "ui/shared/css/app1.css",
+        "ui/chat-controls/chat-controls-config.js"
+       ],
+       "steps": [
+        "chat_ui.json (chat_desktop): add element_size 20px and container_size 32px to more, changes, new_session, session_prev, session_next",
+        "chat_ui.json (chat_mobile): add element_size 20px and container_size 32px to changes, more, new_session",
+        "app1.css: header control font-size 13px -> 14px, agent-name 15px -> 14px, session-dropdown-trigger 12px -> 14px; update icon-only chip fallbacks 28px -> 32px",
+        "chat-controls-config.js: inline font-size 13px -> 14px in the two carousel builders",
+        "Verify: JSON validity, JS syntax check, grep for stale 13px/28px in header paths"
+       ],
+       "effort": "S",
+       "impact": "Medium",
+       "risks": [
+        "Header gets ~4px taller per row (28px -> 32px chips)",
+        "Embed widget shares the shared CSS defaults, so its header text inherits 14px too (its own config stays compact at 28px)",
+        "Per-agent chat_ui.json overrides would win over this global default if set"
+       ],
+       "related_items": [
+        "Clean up chat_ui buttons (chore)",
+        "Change mode buttons below header from round to pill so labels fit (chore)"
+       ],
+       "research_notes": "Main app header: .main-tab in ui/shared/css/design-system.css uses 20px lucide icons, 14px/500 text, padding 6px 12px, pill radius (height ~32px). Chat header: zone chips styled in ui/shared/css/app1.css (`.chat-header-zone > [data-header-control]`) are 28px min-height, 13px text; `_sizeControl` in ui/chat-controls/chat-controls-config.js derives icon size as floor(container * 0.7) = 19px for the 28px header containers, overriding the CSS 20px rule; session-dropdown-trigger text is 12px; chat-header-agent-name is 15px. Source of truth for sizes is data/config/chat_ui.json (comments in chat-controls-config.js explicitly say to edit the JSON, not the JS defaults)."
+      },
+      "plan_status": "accepted",
+      "plan_history": [],
+      "execution_log": [
+       {
+        "step": "chat_ui.json (desktop): more/changes/new_session/session_prev/session_next -> element_size 20px, container_size 32px",
+        "status": "done"
+       },
+       {
+        "step": "chat_ui.json (mobile): changes/more/new_session -> element_size 20px, container_size 32px",
+        "status": "done"
+       },
+       {
+        "step": "app1.css: header chips 28px -> 32px (zone, carousel, more, mobile dropdown), text 13px -> 14px, agent name 15px -> 14px, session title 12px -> 14px",
+        "status": "done"
+       },
+       {
+        "step": "chat-controls-config.js: inline chip font-size 13px -> 14px in both carousel builders",
+        "status": "done"
+       },
+       {
+        "step": "Verified: chat_ui.json parses, config values correct, no stale header sizes remain, no per-agent chat_ui overrides shadow the change",
+        "status": "done"
+       }
+      ],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Optimize session dropdown",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": "14ab2785-30d3-4f81-b19c-c62f6f541e22",
+      "thread": [
+       {
+        "role": "agent",
+        "text": "Analyzing this item and researching the codebase...",
+        "ts": "2026-08-05T11:01:10.514Z"
+       },
+       {
+        "role": "agent",
+        "text": "Research complete. Three concrete optimization targets found: (1) Every dropdown open fires TWO round-trips — a GET /sessions?limit=50 (even though the list is already rendered from cache) plus a POST /sessions/refresh that is a no-op returning changed:false outside hybrid mode. The 15s poll already keeps the cache fresh, so opens are doing redundant work. (2) Keyboard support stops at the trigger: Enter/Space toggles and Escape closes, but rows aren't focusable and there's no arrow navigation — switching sessions is mouse-only. (3) The 50-row cap is hard-coded in the fetch URL AND enforced server-side (limit le=50); pinned sessions always show, so only older unpinned ones get trimmed, and sessions beyond 50 are unreachable from the dropdown (the Sessions page has them). Before proposing a plan, three questions: 1) What motivated this item — slow open, keyboard-only switching, finding sessions past the cap, or all of it? 2) For keyboard work: arrows + Home/End + Enter-to-switch (plus type-ahead) acceptable, with the full search-bar footer left to the separate related item? 3) Keep the 50-row cap, or add a load-more/pagination path so older sessions stay reachable?",
+        "ts": "2026-08-05T11:03:08Z"
+       }
+      ],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": "ui/chat/js/session-list.js renders rows (pin, family carets, status, kebab/trash) and fetches via /api/v1/db/sessions?limit=50 (+ include_hidden). ui/chat/js/session-init.js owns open/close: _loadSessionList() calls populateSessionSelect() (GET) + refreshSessionMetadata() (POST /sessions/refresh) on EVERY open. Keyboard handling exists only on the trigger (Enter/Space toggle, Escape close) — no arrow navigation over rows. The 50-row cap is hard-coded in the fetch URL. Sessions Page (ui/main-panel/sessions) has the full list + recycle bin + restore, so the dropdown is the quick-switch surface. POST /sessions/refresh is a hybrid-mirror sync (app/api/db_viewer.py:473) that returns {\"changed\":false} immediately when no hybrid backend is configured — a wasted round-trip on every open in the default local setup. The server enforces limit le=50 (app/api/db_viewer.py list_sessions); pinned sessions are fetched without a limit, so only older unpinned sessions are trimmed. refreshSessionMetadata() refetches only when changed; the 15s poll (menu closed, session-init.js:1342) already keeps _sessionsCache fresh, so the GET on open is largely redundant.",
+      "effort": null,
+      "impact": null,
+      "related_items": [
+       "Add search bar and recycle-bin toggle to session dropdown footer (search session names incl. recycled; content search later, low priority)",
+       "Quick session switching should be driven by the session list"
+      ],
+      "user_hint": null,
+      "questions": [
+       {
+        "id": 1,
+        "text": "What motivated this item — slow open, keyboard-only switching, or finding sessions past the 50-row cap?"
+       },
+       {
+        "id": 2,
+        "text": "For keyboard work: are arrows + Home/End + Enter-to-switch acceptable, or do you want a search bar too?"
+       },
+       {
+        "id": 3,
+        "text": "Keep the 50-row cap, or add a load-more path so older sessions stay reachable?"
+       }
+      ]
+     }
+    },
+    {
+     "text": "Add search bar and recycle-bin toggle to session dropdown footer (search session names incl. recycled; content search later, low priority)",
+     "done": true,
+     "tag": "feat",
+     "qa": {
+      "status": "done",
+      "session_id": "9b7ebf12-6ab1-419d-a851-e4dc44003117",
+      "thread": [
+       {
+        "role": "agent",
+        "text": "Analyzing this item and researching the codebase...",
+        "ts": "2026-08-09T01:05:38.040Z"
+       },
+       {
+        "role": "agent",
+        "text": "Research complete. The dropdown footer (.session-manage-row) already hosts manage actions (show-hidden eye, checkbox batch-delete); the session fetch (GET /sessions?limit=50) never returns recycled sessions and caps at 50, so covering recycled sessions needs at least a small backend addition. Three questions posted.",
+        "ts": "2026-08-09T01:08:54Z"
+       },
+       {
+        "role": "user",
+        "text": "Q1) Search should match session names across ALL sessions — including ones past the 50-row cap and recycled ones — which needs a small backend addition (q + include_recycled params on /sessions). OK to touch the API, or should search only filter what's already loaded?\n→ Yes all sessions and content. It needs to mimic the session page search\n\nQ2) When a search query is active, should recycled matches appear automatically (with a 'bin' badge, like the Sessions page cross-catalog search), or only when the recycle-bin toggle is on?\n→ Yes there should be a bin flag and click to restore just like session page\n\nQ3) In recycle-bin mode, how should restoring work: a per-row restore button, click-the-row-to-restore, or a two-click confirm like the Sessions page?\n→ Just show the bin flags and click to restore similar to how they're presented in search results",
+        "ts": "2026-08-09T01:52:47.242Z"
+       },
+       {
+        "role": "agent",
+        "text": "Plan ready: backend q + include_recycled params on /sessions (title search across all sessions incl. bin, no truncation when searching); dropdown footer gains a search bar with Title/Content mode chip and a recycle-bin toggle; recycled rows get the Sessions-page bin badge with two-click restore; content mode ports the Sessions page message scan (session-messages endpoint, chunked + cached).",
+        "ts": "2026-08-09T01:53:00Z"
+       },
+       {
+        "role": "agent",
+        "text": "Done — search bar and recycle-bin toggle shipped in the session dropdown footer. Backend: /sessions gained q (title LIKE, escaped) + include_recycled params; search lifts the 50-row cap (all matches, hard cap 200) and bin rows are flagged recycled:true. Frontend: search bar with Title/Content mode chip + clear, recycle-bin toggle beside the eye/checkbox, bin-badge two-click restore, content-mode message scan ported from the Sessions page (chunked + cached). Also fixed a stale search-debounce race that could hide sessions after clearing the query. Verified: node --check both JS files, Python syntax, SQL validated against real DBs.",
+        "ts": "2026-08-09T11:36:05Z"
+       }
+      ],
+      "plan": {
+       "approach": "Mimic the Sessions page search + recycle-bin behavior inside the session dropdown. Backend: add q (title LIKE, no truncation while searching) and include_recycled (bin rows returned, each flagged recycled:true) params to GET /sessions, relaxing the limit cap to 200 so search truly covers sessions past the old 50 cap. Frontend: the dropdown footer (.session-manage-row) gains a search bar with a Title/Content mode chip and a recycle-bin toggle; recycled rows render the Sessions-page 'bin' badge with two-click restore (POST /sessions/{id}/restore); content mode ports the Sessions page message scan (/session-messages?light=1, chunked, cached, match-count chip). Search state lives in module state so the 15s poll and re-renders preserve it.",
+       "files": [
+        "app/api/db_viewer.py",
+        "ui/chat/js/session-list.js",
+        "ui/chat/js/session-init.js",
+        "ui/shared/css/app1.css"
+       ],
+       "steps": [
+        "db_viewer.py list_sessions: add q (title contains, escaped, LIKE) and include_recycled params; include bin rows (flagged recycled:true) when include_recycled OR q is set; skip the 50-row truncation while q is active (all matches returned) and bump the hard cap to 200 so the dropdown can request more when searching/bin mode; select s.status to derive the flag; verify no-q/no-recycled behavior is unchanged",
+        "session-list.js: module state _searchQuery/_searchMode/_binMode/_msgIndex/_msgScanBusy; populateSessionSelect appends q + include_recycled + limit=200 when active; map recycled into cache entries",
+        "session-list.js: _renderSessionRows filters by query (title/agent match, or content match count in content mode) and by bin mode (only recycled rows when toggled with no query; merged with bin badges while searching); recycled rows render the bin badge (two-click restore) and hide trash/kebab; content matches get a match-count chip",
+        "session-list.js: port _scanMessagesForQuery from the Sessions page (fetch /session-messages per session with the same light=1 filters, chunked at 8, in-flight query superseded, _msgIndex cached, progressive re-render) with the same constants (min query 2, scan cap, fetch limit)",
+        "session-list.js: _appendManageRow adds the search input (flex:1) + Title/Content mode chip + recycle-bin toggle button beside the existing eye/checkbox buttons",
+        "session-init.js: handlers for search input (debounced ~200ms → set _searchQuery → populateSessionSelect + content scan), mode chip toggle, bin toggle (set _binMode → refetch), and the bin-badge two-click restore (arm 'Restore?' 3s, second click POST /sessions/{id}/restore, refetch + toast 'Session restored'); Escape inside the search input clears the query first instead of closing the menu",
+        "app1.css: style the search input, mode chip, bin toggle and bin badge with design-system variables (both themes); keep the sticky footer layout intact and let the input shrink the row buttons",
+        "Verify: node --check on both JS files, JSON/param sanity on the API (q returns only matching incl. bin; include_recycled flags rows; default unchanged), manual browser pass (title search, content mode, bin toggle, two-click restore, search survives the 15s poll, dark+light themes)"
+       ],
+       "effort": "M",
+       "impact": "Medium",
+       "risks": [
+        "Content search scans one /session-messages fetch per candidate session — bounded by the Sessions page's scan cap, chunked and cached, but still N requests on first content query",
+        "Search results beyond the old 50-row cap now surface (by design) — the fetch is heavier while a query is active (limit=200, no truncation)",
+        "Keyboard nav: the search input must swallow arrows/Enter/Escape while focused so typing doesn't switch sessions or close the menu",
+        "Bin rows get restore only — the trash button is hidden on them to avoid a confusing no-op recycle; bulk delete stays active-only",
+        "storageAdapter.isBrowser path (hybrid/browser storage) has no server q — search/bin filter client-side over the adapter rows (recycled flag read from the adapter data if present)"
+       ],
+       "research_notes": "Sessions page precedent: two-click bin chip (sessions-page.js:1194-1219: arm 'Restore?' 3s disarm, then _restoreOne → POST /api/v1/db/sessions/{id}/restore), cross-catalog search (_ensureSearchExtra merges the other catalog during a query), content scan (_scanMessagesForQuery: /api/v1/db/session-messages?db=local.db&session_id=..&limit=300&light=1, user/assistant rows only, chunks of 8, supersede in-flight query, constants _MSG_MIN_QUERY_LEN=2/_MSG_SCAN_MAX=300/_MSG_FETCH_LIMIT=300). Dropdown plumbing: menu #session-dropdown-menu (chat-side-panel.html:32), rows/footer in session-list.js (_renderSessionRows:638, _appendManageRow:757, fetch populateSessionSelect:776 with hard-coded limit=50), footer handlers session-init.js:720-739, manage-row CSS app1.css:6484, sticky footer + open-height re-measure _refreshOpenMenuHeight:626. Backend: list_sessions db_viewer.py:1589 (limit le=50:1595, recycled exclusion :1698, pinned bypass cap precedent), restore endpoint :1110. Existing search-param precedent db_viewer.py:4044 (LIKE).",
+       "related_items": [
+        "Optimize session dropdown"
+       ]
+      },
+      "plan_status": "accepted",
+      "plan_history": [],
+      "execution_log": [
+       {
+        "step": "Plan accepted — starting execution",
+        "status": "done"
+       },
+       {
+        "step": "db_viewer.py list_sessions: added q (title LIKE, escaped) + include_recycled params; bin rows flagged recycled:true; search lifts the 50-row cap (all matches) and the hard cap is now 200",
+        "status": "done"
+       },
+       {
+        "step": "session-list.js: search/bin module state (query, title/content mode, bin toggle, msg index + hit counts) exported for session-init",
+        "status": "done"
+       },
+       {
+        "step": "session-list.js: populateSessionSelect sends q/include_recycled/limit=200 when active; recycled mapped into cache rows",
+        "status": "done"
+       },
+       {
+        "step": "session-list.js: _renderSessionRows filters by query + bin mode; recycled rows render the two-click bin badge (restore-only); content hits get a count chip; focus/value preserved across re-renders",
+        "status": "done"
+       },
+       {
+        "step": "session-list.js: ported the Sessions page content scan (_scanMessagesForQuery via /session-messages?light=1, chunked 8, cached, in-flight superseded)",
+        "status": "done"
+       },
+       {
+        "step": "session-list.js: _appendManageRow adds search bar (Title/Content chip + clear) and recycle-bin toggle beside eye/checkbox",
+        "status": "done"
+       },
+       {
+        "step": "session-init.js: handlers for debounced search input, mode chip, bin toggle, clear, two-click restore (POST /sessions/{id}/restore + refetch), Escape-clears-first; recycled rows never switch",
+        "status": "done"
+       },
+       {
+        "step": "app1.css: search bar, mode chip, bin toggle, bin badge (danger -> accent armed), msg-hit chip — all design-system tokens, both themes",
+        "status": "done"
+       },
+       {
+        "step": "Verified: node --check both JS files; Python syntax check; SQL logic validated against real DBs (default excludes bin == live total_count 15; q returns recycled matches; include_recycled surfaces bin; LIKE escape holds)",
+        "status": "done"
+       },
+       {
+        "step": "Live-server verification (limit=200 / q / include_recycled on the running API) — requires a server restart to load the backend change",
+        "status": "done"
+       },
+       {
+        "step": "BUGFIX: stale search-debounce race made the dropdown hide sessions. Type in the search box, then clear within 200ms (× or Escape) — the pending debounce timer resurrected the old query and silently filtered the list while the input looked empty; the eye toggle's fresh refetch is why sessions 'sometimes' reappeared. Fix: _setSearchQuery cancels any pending commit, input debounce centralised in session-list.js (_scheduleSearchCommit), and closeMenu cancels pending commits. Verified: node --check both files; live API default returns every non-hidden/non-recycled session (all hidden:false); DB has 0 active-but-hidden sessions.",
+        "status": "done"
+       }
+      ],
+      "research_notes": "Dropdown menu markup: ui/chat/chat-side-panel.html:32 (#session-dropdown-menu). Rows + footer rendered by ui/chat/js/session-list.js (_renderSessionRows/_appendManageRow); footer = .session-manage-row (sticky, app1.css:6484) with eye toggle (show hidden), checkbox-mode toggle, delete-selected. Fetch: populateSessionSelect() -> GET /api/v1/db/sessions?db=local.db&user_id=..&limit=50 (+include_hidden=1 in manage mode); server list_sessions (app/api/db_viewer.py:1589) caps limit le=50, always excludes status='recycled' (line 1698), has NO search param. Recycle = soft delete (status='recycled', cascades children); restore endpoint POST /api/v1/db/sessions/{id}/restore (db_viewer.py:1110). Sessions page (ui/main-panel/sessions) has the full list + recycle-bin view + cross-catalog search + two-click restore chip (sessions-page.js:1156/1191) as precedent. Footer handlers in ui/chat/js/session-init.js:720-739; the 15s poll (session-init.js:1424) calls populateSessionSelect, so search/bin state must live in module state and be re-applied on every refetch. Adding q (title LIKE) + include_recycled params to list_sessions is additive and mirrors the existing search param pattern (db_viewer.py:4044).",
+      "effort": null,
+      "impact": null,
+      "related_items": [
+       "Optimize session dropdown"
+      ],
+      "user_hint": null,
+      "questions": []
+     }
+    },
+    {
+     "text": "Model selector to have effort too",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Clean up chat_ui buttons",
+     "done": false,
+     "tag": "chore",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Fix rendering dupe and reorder bugs",
+     "done": false,
+     "tag": "bug",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Fix lazy loads",
+     "done": false,
+     "tag": "bug",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Stabilize voice recording: only show mic option when browser supports it",
+     "done": true,
+     "tag": "bug",
+     "qa": {
+      "status": "done",
+      "session_id": "bd62e95f-0b4b-44ba-b831-7957adf589d1",
+      "thread": [
+       {
+        "role": "agent",
+        "text": "Analyzing this item and researching the codebase...",
+        "ts": "2026-08-07T13:59:07.351Z"
+       },
+       {
+        "role": "agent",
+        "text": "Research complete. The mic button (#chat-voice-btn) is rendered unconditionally via the mic_send control in chat_ui.json; support is only checked on click inside startSpeechDictation (native SpeechRecognition, or MediaRecorder + getUserMedia with server LLM transcription, per the /api/v1/auth/ui-config voice policy). On unsupported browsers the button still shows and just pops an error alert — this item reverses that. A ready-made hook exists: the .no-voice pill class (used by the web-chat sign-in gate) already hides the mic and forces send-only. Two questions before the plan:",
+        "ts": "2026-08-07T14:04:00Z"
+       },
+       {
+        "role": "user",
+        "text": "Q1) Should the mic hide only in the main chat composer, or also in the other places it appears (Gen UI page toolbar, app-config assistant, secondary search pills)?\n→ it should hide everywhere where browser mic is not supported\n\nQ2) On non-HTTPS addresses (e.g. LAN over http) the mic APIs are unavailable — hide the button there too, or keep showing it with the existing ‘requires HTTPS’ alert on click?\n→ yes hide it there too",
+        "ts": "2026-08-07T14:16:32.709Z"
+       },
+       {
+        "role": "agent",
+        "text": "Plan ready. Hide the mic everywhere voice input is unsupported (no SpeechRecognition AND no MediaRecorder+getUserMedia, or a non-secure context) via one shared isVoiceInputSupported() in attachments.js applied at every mic-button wiring site — the main composer reuses the existing .no-voice CSS hook to go send-only; Gen UI pill, app-config assistant and secondary pills hide the button directly. Review the plan to start the change.",
+        "ts": "2026-08-07T14:17:00Z"
+       },
+       {
+        "role": "agent",
+        "text": "Done — implemented. isVoiceInputSupported() in ui/shared/js/attachments.js now gates every mic button: the main composer (#chat-input-row), Gen UI page pill and ability-search pill go send-only via the existing .no-voice CSS hook; the app-config assistant and the legacy voice element hide the button directly; forwardChatPillControls never forwards to a hidden mic. Covers non-HTTPS and unsupported browsers (no SpeechRecognition AND no MediaRecorder), plus an async refinement that hides the mic when LLM dictation is disabled and there is no native SpeechRecognition. All five edited files pass node --check.",
+        "ts": "2026-08-07T14:30:00Z"
+       }
+      ],
+      "plan": {
+       "approach": "Centralize the voice-support decision in one exported helper (isVoiceInputSupported in ui/shared/js/attachments.js) that mirrors startSpeechDictation's runtime matrix, and call it at every mic-button wiring site so the button is hidden (not click-to-alert) wherever voice is impossible: insecure context (non-HTTPS), or no SpeechRecognition AND no MediaRecorder+getUserMedia. The main chat composer (#chat-input-row) reuses the existing .no-voice CSS hook (app1.css:3786) to become send-only; the Gen UI page pill, app-config assistant and secondary search/chat pills hide their voice button directly. An async policy refinement (reusing the cached /api/v1/auth/ui-config voice policy) also hides the mic when the admin has disabled LLM dictation AND the browser has no native SpeechRecognition — the exact case startSpeechDictation would otherwise error on.",
+       "files": [
+        "ui/shared/js/attachments.js",
+        "ui/main-panel/genui/js/genui-toolbar.js",
+        "ui/admin-tools/instances/app-config/page-assistant.js",
+        "ui/shared/js/dom-utils.js",
+        "ui/chat/elements/voice.js"
+       ],
+       "steps": [
+        "attachments.js: export isVoiceInputSupported() = window.isSecureContext && !!(SR || (navigator.mediaDevices?.getUserMedia && window.MediaRecorder)); in initAttachments(), when unsupported add 'no-voice' to #chat-input-row (existing CSS hides #chat-voice-btn and forces send visible); when supported, run async refinement via _loadVoicePolicy(): if policy.llm_enabled === false && !SR, hide too",
+        "genui-toolbar.js: in the Gen UI page pill builder, when !isVoiceInputSupported() hide the voice button (hidden + inline display:none important, the wake-lock pattern)",
+        "page-assistant.js: same guard on the app-config assistant composer's voice control",
+        "dom-utils.js: same guard in the secondary search/chat pill builder (voiceBtn wiring at ~line 1447)",
+        "voice.js (element module): same guard in init() so a config that lists the legacy 'voice' control never renders an unsupported mic",
+        "Verify: grep all #chat-voice-btn / voiceBtn wiring sites to confirm none are left unguarded; confirm the predicate matches startSpeechDictation's paths (native SR, LLM recorder, llm-disabled, insecure-context); JS syntax check; no chat_ui.json change needed (mic_send stays configured — CSS handles the send-only swap)"
+       ],
+       "effort": "S",
+       "impact": "Medium",
+       "risks": [
+        "On non-HTTPS (LAN http) the mic disappears entirely in the main composer — intended per Q2; the old 'requires HTTPS' alert path becomes unreachable from the main pill (still used by startSpeechDictation if called programmatically)",
+        "A mic-only pill mode config (chat-pill-mic-only) would override .no-voice (its !important rule comes later in app1.css) — current config always uses mic_send, so unaffected; documented for future config authors",
+        "The LLM-disabled refinement is async, so an unsupported mic could flash for a frame at boot in that edge case; the sync capability check covers the common cases instantly",
+        "Legacy chat-footer-config.js / chat-header-config.js also reference the mic but are replaced by chat-controls-config.js — left untouched (inert)",
+        "Reversible: the button reappears automatically in any browser/context where voice works; no config or data changes"
+       ],
+       "related_items": [],
+       "research_notes": "Decisions from Q&A: (Q1) hide everywhere the browser mic is unsupported — all four wiring sites in scope; (Q2) also hide on non-HTTPS, dropping the 'requires HTTPS' alert path for the button. Support predicate mirrors startSpeechDictation (attachments.js:499-520): voice works iff (!useLlm && SR) || (useLlm && canRecord), where useLlm depends on the ui-config voice policy; the sync helper approximates the default policy (browser_then_llm) and the async refinement matches the exact runtime decision. .no-voice already proven in production by the web-chat sign-in gate and dash-adder pill."
+      },
+      "plan_status": "accepted",
+      "plan_history": [],
+      "execution_log": [
+       {
+        "step": "attachments.js: isVoiceInputSupported() exported (secure-context + SR/MediaRecorder matrix); initAttachments() adds no-voice to #chat-input-row when unsupported, with async LLM-policy refinement",
+        "status": "done"
+       },
+       {
+        "step": "genui-toolbar.js: Gen UI page pill goes send-only (no-voice) when voice unsupported",
+        "status": "done"
+       },
+       {
+        "step": "page-assistant.js: app-config assistant hides voice button + no-voice on row when unsupported",
+        "status": "done"
+       },
+       {
+        "step": "dom-utils.js: ability search/chat pill goes send-only (no-voice) when voice unsupported",
+        "status": "done"
+       },
+       {
+        "step": "voice.js element module + forwardChatPillControls: hide / never forward an unsupported mic",
+        "status": "done"
+       },
+       {
+        "step": "Verified: node --check passes on all 5 edited files; every mic wiring site guarded",
+        "status": "done"
+       }
+      ],
+      "research_notes": "Mic button = #chat-voice-btn (static DOM in ui/chat/chat-side-panel.html:286), mounted via the mic_send control in data/config/chat_ui.json (chat_pill right zone in desktop + mobile active_footer and idle_footer). applyChatPillLayout (ui/shared/js/chat-pill-config.js) shows mic + send together; CSS (.chat-pill.has-text) swaps mic out for send when the input has text. Click is wired in ui/shared/js/attachments.js initAttachments() -> startSpeechDictation(), which holds the canonical support matrix: SR = window.SpeechRecognition || window.webkitSpeechRecognition; canRecord = !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder); server voice policy fetched from /api/v1/auth/ui-config (voice_dictation_llm_enabled, voice_dictation_mode browser_then_llm | llm_only), cached in _loadVoicePolicy(). Paths: native SR when !useLlm && SR; recorded audio + LLM transcribe when useLlm && canRecord; otherwise error alerts (llm-disabled / insecure-context / unsupported). attachments.js:93-96 documents the CURRENT deliberate behavior: keep the button visible even in an insecure or very old browser so clicking explains the limitation — this item reverses that decision. Ready-made hook: app1.css:3786-3787 already has .chat-pill.no-voice .chat-pill-voice { display:none !important } and .chat-pill.no-voice .chat-pill-send { display:inline-flex } (used by the web-chat sign-in gate and dash-adder pill); nothing ever adds no-voice to the main pill today. Note: the light-mode + mode-class rules (chat-pill-mic-only etc.) could fight .no-voice if the pill ever runs mic-only mode — current config always uses mic_send, so the swap stays send-only. Element module ui/chat/elements/voice.js only serves the legacy 'voice' control name (not in any current config row) and has no support check; wake-lock.js shows the established hide-when-unsupported pattern. Other surfaces that render their own mic button: ui/main-panel/genui/js/genui-toolbar.js:219 (Gen UI page pill), ui/admin-tools/instances/app-config/page-assistant.js:365 (app-config assistant), ui/shared/js/dom-utils.js:1447 (secondary search/chat pills).",
+      "effort": "S",
+      "impact": "Medium",
+      "related_items": [],
+      "user_hint": null,
+      "questions": []
+     }
+    },
+    {
+     "text": "Fix context stats pricing always showing $0",
+     "done": false,
+     "tag": "bug",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Commit local changes for just the selected session (advanced, lower priority)",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Change mode buttons below header from round to pill so labels fit",
+     "done": false,
+     "tag": "chore",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Remove always-on display, server, and device buttons from chat UI",
+     "done": false,
+     "tag": "chore",
+     "qa": {
+      "status": "idle",
+      "session_id": "b86fc1ca-600e-4052-b466-b6ed9f49e343",
+      "thread": [
+       {
+        "role": "agent",
+        "text": "Analyzing this item and researching the codebase...",
+        "ts": "2026-08-04T22:03:12.504Z"
+       },
+       {
+        "role": "agent",
+        "text": "Research complete. The three buttons are chat controls in the active footer's below-pill row (data/config/chat_ui.json -> chat_common.active_footer.below_pill): (1) always-on display = wake_lock ('Keep screen on' / Screen Wake Lock, ui/chat/elements/wake-lock.js), (2) server = storage_mode (button labeled 'Server', toggles Browser <-> Server storage, ui/chat/elements/storage-mode/), (3) device = target ('Remote Control - choose which device runs your next message', ui/chat/elements/target/). All three are only ever mounted in below_pill row 0 right zone; no other surface and no per-agent chat_ui override references them. Removing them is a pure config change: drop the three names from the row (leaving abilities, thinking, mode, model_changer) and delete their now-dead sizing entries under below_pill.controls. The element modules and static HTML buttons stay in the repo (inert - the control engine hides anything not listed) so the change is trivially reversible. Plan proposed - review it to start the change.",
+        "ts": "2026-08-04T22:06:03Z"
+       }
+      ],
+      "plan": {
+       "approach": "Remove the three always-on footer chips from the chat UI by deleting them from the below_pill row config in data/config/chat_ui.json. wake_lock (always-on display / keep screen on), storage_mode (Server storage toggle), and target (device picker) are only ever mounted in that row; removing the names stops the control engine from rendering them. Element modules and static HTML stay in place (inert) so the change is config-only and reversible.",
+       "files": [
+        "data/config/chat_ui.json"
+       ],
+       "steps": [
+        "chat_ui.json: remove target, storage_mode, wake_lock from chat_common.active_footer.below_pill.rows[0].right (leaves abilities, thinking, mode, model_changer)",
+        "chat_ui.json: remove the target/storage_mode/wake_lock entries from below_pill.controls (dead config once the row no longer references them)",
+        "Verify: JSON parses; grep chat_ui.json confirms no below_pill placement of the three names; no per-agent chat_ui override re-adds them; footer row is now abilities/thinking/mode/model_changer"
+       ],
+       "effort": "XS",
+       "impact": "Low",
+       "risks": [
+        "Wake-lock, server-storage toggle, and device picker become unreachable from the chat panel (no other UI surface exposes them today)",
+        "Change is config-only and reversible - re-add the names to the row to restore",
+        "Per-agent chat_ui overrides (none currently set) would re-add the buttons if they listed these controls",
+        "Deeper removal (element modules, target-device plumbing in chat-ui.js/chat-send.js) is a separate, riskier change if wanted"
+       ],
+       "related_items": [],
+       "research_notes": "chat_ui.json chat_common.active_footer.below_pill.rows[0].right = [abilities, target, thinking, mode, model_changer, storage_mode, wake_lock]; controls sizing entries for target/storage_mode/wake_lock at below_pill.controls. The elements registry (ui/chat/elements/_manifest.json) maps wake_lock -> wake-lock.js, storage_mode -> storage-mode/index.js, target -> target/index.js. Static fallback buttons chat-target-btn and chat-storage-mode-btn exist in chat-side-panel.html's flat control pool but are hidden by _resetAllControls unless listed in config (chat-controls-config.js). The wake_lock element self-hides when the Wake Lock API is unsupported. No per-agent chat_ui overrides in app-prompts.json reference these controls."
+      },
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Restore chat pill drag handle (footer handle exists in code but not visible)",
+     "done": true,
+     "tag": "bug",
+     "qa": {
+      "status": "done",
+      "session_id": null,
+      "thread": [
+       {
+        "role": "agent",
+        "text": "Analyzing this item and researching the codebase...",
+        "ts": "2026-08-04T19:08:43.745Z"
+       },
+       {
+        "role": "agent",
+        "text": "Root cause found. The handle (#chat-footer-handle) and its CSS both exist and nothing clips them, but the JS visibility checks keep hiding it. Two checks decide visibility: _updateFooterHandleVisibility() in ui/chat/js/chat-ui.js and the checks in ui/chat-controls/chat-controls-config.js (_buildActiveFooter + switchFooterMode active branch). All three only inspect DIRECT children of #chat-footer-row for the data-header-control attribute. Since the row-layout refactor, footer buttons live nested inside generated .chat-header-row[data-controls-row] > .chat-header-zone > button — so they are never direct children — and manifest-driven controls like wake_lock carry data-element-origin instead of data-header-control. The check always evaluates false, the handle gets display:none, and the drag/click toggle is dead. Fix: query descendants via r.querySelectorAll('[data-header-control], [data-element-origin]') in all three spots. Plan proposed — review it to start the change.",
+        "ts": "2026-08-04T19:13:41Z"
+       },
+       {
+        "role": "agent",
+        "text": "Done. All 3 checks fixed: chat-controls-config.js now has a _footerRowHasVisibleControl(r) helper that queries ALL descendants via querySelectorAll('[data-header-control], [data-element-origin]') and accounts for idle-collapsed state; both _buildActiveFooter and switchFooterMode('active') use it. chat-ui.js' _updateFooterHandleVisibility() applies the same descendant query. Both files pass node --check. The handle will now be visible whenever the footer row has controls (active mode) and hidden in idle mode — which is the intended behavior.",
+        "ts": "2026-08-04T19:38:35Z"
+       }
+      ],
+      "plan": {
+       "approach": "Restore the chat pill drag handle by fixing the three footer-handle visibility checks to look at ALL descendants of #chat-footer-row (querySelectorAll on [data-header-control], [data-element-origin]) instead of only direct children — the current checks miss controls nested inside generated row/zone divs and manifest elements, so they always return false and the handle is permanently hidden.",
+       "files": [
+        "ui/chat-controls/chat-controls-config.js",
+        "ui/chat/js/chat-ui.js"
+       ],
+       "steps": [
+        "chat-controls-config.js: add a helper _footerRowHasVisibleControl(r) that returns false when the row is idle-collapsed, otherwise queries r.querySelectorAll('[data-header-control], [data-element-origin]') and checks each el.style.display !== 'none' && !el.hidden",
+        "chat-controls-config.js: use the helper in _buildActiveFooter (line ~366) and in the switchFooterMode('active') branch (line ~488)",
+        "chat-ui.js: apply the same descendant query in _updateFooterHandleVisibility (line ~1138)",
+        "Verify: node --check both files; grep that no direct-children data-header-control check remains on the footer row; logic check — active footer mode shows the handle, idle mode keeps it hidden (intentional)"
+       ],
+       "effort": "S",
+       "impact": "Low",
+       "risks": [
+        "If below_pill is disabled in chat_ui.json, the handle stays hidden (correct — there is nothing to expand)",
+        "Idle footer mode intentionally hides the handle; it reappears when the textarea is focused (active mode)"
+       ],
+       "related_items": [],
+       "research_notes": "DOM: chat-side-panel.html:310 has <div id=\"chat-footer-handle\" class=\"chat-footer-handle\"> as a child of #chat-input-row; CSS app1.css:1211-1296 styles it (display:flex, bottom:-14px, drag line) and no ancestor clips it (#chat-input-area / pill have no overflow:hidden). chat-ui.js:1133-1155 wires visibility + re-checks after app._reapplyChatControls; 1189-1288 wires drag (pointerdown/move/up with rubber-band) + click toggle. chat-controls-config.js:362-371 (_buildActiveFooter) and 484-493 (switchFooterMode active) run the same visibility check. chat_ui.json active_footer.below_pill is enabled with 7 controls (abilities, target, thinking, mode, model_changer, storage_mode, wake_lock) in row 0 right zone. Row layout nests them as #chat-footer-row > .chat-header-row[data-controls-row] > .chat-header-zone-right > button[data-header-control]; wake_lock is manifest-built with data-element-origin. Direct-children checks therefore always fail. Idle mode (switchFooterMode('idle')) hides the handle explicitly — intentional."
+      },
+      "plan_status": "accepted",
+      "plan_history": [],
+      "execution_log": [
+       {
+        "step": "chat-controls-config.js: added _footerRowHasVisibleControl(r) helper that queries descendants (querySelectorAll) and accounts for idle-collapsed state",
+        "status": "done"
+       },
+       {
+        "step": "chat-controls-config.js: replaced the direct-children Array.from check in _buildActiveFooter with the helper",
+        "status": "done"
+       },
+       {
+        "step": "chat-controls-config.js: replaced the direct-children check in switchFooterMode('active') with the helper",
+        "status": "done"
+       },
+       {
+        "step": "chat-ui.js: replaced direct-children check in _updateFooterHandleVisibility with querySelectorAll on both data-header-control + data-element-origin",
+        "status": "done"
+       },
+       {
+        "step": "Verify: node --check passes for both files; syntax clean",
+        "status": "done"
+       }
+      ],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Optimize chat rendering stability (GPT-assisted rewrite + CAC optimization)",
+     "done": false,
+     "tag": "bug",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Harmonize chevron up/down: up should jump to very first message (or last user message), not just latest loaded batch",
+     "done": false,
+     "tag": "bug",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [
+       "Fix rendering dupe and reorder bugs",
+       "Optimize session warm-up and continuation when a session is loaded"
+      ],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Optimize session warm-up and continuation when a session is loaded",
+     "done": false,
+     "tag": "chore",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [
+       "Fix lazy loads",
+       "Harmonize chevron up/down: up should jump to very first message (or last user message), not just latest loaded batch"
+      ],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Quick session switching should be driven by the session list",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [
+       "Optimize session dropdown",
+       "Add search bar and recycle-bin toggle to session dropdown footer (search session names incl. recycled; content search later, low priority)"
+      ],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "[JS ERR] in browser tab name. this should be configurable through app functions menu in app-settings",
+     "done": false,
+     "tag": "bug",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    }
+   ],
+   "info": "Data/config/chat_ui.json for most of configurations"
+  },
+  {
+   "id": "embed-widget",
+   "name": "Embed Widget",
+   "icon": "layers",
+   "status": "active",
+   "statusLabel": "Active",
+   "progress": 0,
+   "tasks": 7,
+   "open": 7,
+   "metrics": {
+    "commits": 0,
+    "prs": 0,
+    "daysLeft": 0,
+    "reviewers": 0
+   },
+   "chart": [],
+   "items": [
+    {
+     "text": "Make website content and code aware by widget location",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Optimize ui to inherit main chat panel design",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Make color customizeable and optimize configurable json",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Optimize button locations for default",
+     "done": false,
+     "tag": "chore",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Design script for client",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Design iframe",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Chat widget needs an off button",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    }
+   ],
+   "info": ""
+  },
+  {
+   "id": "agents",
+   "name": "Agents",
+   "icon": "users",
+   "status": "active",
+   "statusLabel": "Active",
+   "progress": 0,
+   "tasks": 5,
+   "open": 5,
+   "metrics": {
+    "commits": 0,
+    "prs": 0,
+    "daysLeft": 0,
+    "reviewers": 0
+   },
+   "chart": [],
+   "items": [
+    {
+     "text": "Make different common database aware for context (company info, company wiki, etc)",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Optimize config and ability pages, hide other pages",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Simplify agent config page significantly and standardize look; move config JSON options into comments",
+     "done": false,
+     "tag": "chore",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Clean up abilities tab: advanced toggle shows all options, simple view by default",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Add celebration moment when creating a new agent or page",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    }
+   ],
+   "info": ""
+  },
+  {
+   "id": "onboarding",
+   "name": "Onboarding",
+   "icon": "check",
+   "status": "active",
+   "statusLabel": "Active",
+   "progress": 0,
+   "tasks": 2,
+   "open": 2,
+   "metrics": {
+    "commits": 0,
+    "prs": 0,
+    "daysLeft": 0,
+    "reviewers": 0
+   },
+   "chart": [],
+   "items": [
+    {
+     "text": "Do full walkthrough",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Info path needs example pages for embed feature",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    }
+   ],
+   "info": ""
+  },
+  {
+   "id": "sessions-page",
+   "name": "Sessions Page",
+   "icon": "folder",
+   "status": "active",
+   "statusLabel": "Active",
+   "progress": 0,
+   "tasks": 0,
+   "open": 0,
+   "metrics": {
+    "commits": 0,
+    "prs": 0,
+    "daysLeft": 0,
+    "reviewers": 0
+   },
+   "chart": [],
+   "items": [],
+   "info": ""
+  },
+  {
+   "id": "security-compliance",
+   "name": "Security and Compliance",
+   "icon": "folder",
+   "status": "active",
+   "statusLabel": "Active",
+   "progress": 0,
+   "tasks": 0,
+   "open": 0,
+   "metrics": {
+    "commits": 0,
+    "prs": 0,
+    "daysLeft": 0,
+    "reviewers": 0
+   },
+   "chart": [],
+   "items": [],
+   "info": ""
+  },
+  {
+   "id": "trials-monetization",
+   "name": "Trials and Monetization",
+   "icon": "dollar-sign",
+   "status": "active",
+   "statusLabel": "Active",
+   "progress": 0,
+   "tasks": 4,
+   "open": 4,
+   "metrics": {
+    "commits": 0,
+    "prs": 0,
+    "daysLeft": 0,
+    "reviewers": 0
+   },
+   "chart": [],
+   "items": [
+    {
+     "text": "Design trial plan flow: how it works, limits, and when it cuts off",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Implement pay options and payment methods",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Define free options: self-hosting and bring-your-own services for data and storage",
+     "done": false,
+     "tag": "feat",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Optimize trial to use in-browser database instead of server database to reduce load",
+     "done": false,
+     "tag": "chore",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    }
+   ],
+   "info": ""
+  },
+  {
+   "id": "miscellaneous",
+   "name": "Miscellaneous",
+   "icon": "folder",
+   "status": "active",
+   "statusLabel": "Active",
+   "progress": 0,
+   "tasks": 2,
+   "open": 2,
+   "metrics": {
+    "commits": 0,
+    "prs": 0,
+    "daysLeft": 0,
+    "reviewers": 0
+   },
+   "chart": [],
+   "items": [
+    {
+     "text": "Fix the chevrons in the main header",
+     "done": false,
+     "tag": "bug",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    },
+    {
+     "text": "Add a way to customize hard coded SEO material",
+     "done": false,
+     "tag": "idea",
+     "qa": {
+      "status": "idle",
+      "session_id": null,
+      "thread": [],
+      "plan": null,
+      "plan_status": null,
+      "plan_history": [],
+      "execution_log": [],
+      "research_notes": null,
+      "effort": null,
+      "impact": null,
+      "related_items": [],
+      "user_hint": null
+     }
+    }
+   ],
+   "info": ""
+  }
+ ],
+ "config": {
+  "card": {
+   "width": 300,
+   "minWidth": 200,
+   "maxWidth": 480,
+   "widthMobile": 272,
+   "gap": 16,
+   "radius": 18,
+   "tileSize": 40,
+   "tileRadius": 12
+  },
+  "carousel": {
+   "defaultHeight": 360,
+   "minHeight": 240,
+   "maxHeight": 620,
+   "scrollStep": 0.6,
+   "edgeFade": 32,
+   "rubberBand": {
+    "maxPull": 50,
+    "resistance": 0.35,
+    "springCurve": "cubic-bezier(0.16, 1, 0.3, 1)",
+    "springDuration": 220,
+    "snapLockMs": 700
+   }
+  },
+  "cardChat": {
+   "enabled": true,
+   "agentId": "45b2b01d-228f-4964-8213-f7928daa38f9",
+   "userMessage": "Chat opened with the ${name} card on the Project Development Tracker GenUI page",
+   "template": "You are the assistant for the ${name} card on the Project Development Tracker. Card state: ${status} · ${progress}% complete · ${open} of ${tasks} tasks open · ${daysLeft} days left · commits ${commits} · PRs ${prs} · reviewers ${reviewers}. Open items on this card: ${items}. Detail panel (shown when this card is selected): completion ${done} of ${tasks} done, 8-week progress chart [${chart}], and the metrics above. ${notes}Answer specifically about this card — its status, open items, metrics and progress — using the data above. User's message: ${text}",
+   "detailNote": "The card's detail panel also renders its open items, completion donut and progress chart when the card is selected. "
+  },
+  "chatConfig": {
+   "button": {
+    "agentId": "d413a9e8-10fb-4fc0-88ca-164da2955155",
+    "title": "Project Readiness",
+    "iconName": "sparkle",
+    "enabled": true,
+    "session": {
+     "target_name": "Project Readiness — ${item}",
+     "mode": "new_reuse",
+     "reuse_key": "button"
+    }
+   },
+   "toolbar": {
+    "agentId": "45b2b01d-228f-4964-8213-f7928daa38f9",
+    "title": "Project Tracker Chat",
+    "iconName": "sparkle",
+    "session": {
+     "target_name": "Project Tracker — Toolbar Chat",
+     "mode": "new_reuse",
+     "reuse_key": "toolbar"
+    }
+   }
+  },
+  "prompts": {
+   "quickNote": "[QUICK NOTE - TRACKER UPDATE ONLY] You are filing a note in the Project Development Tracker. Use the GenUI data tools — do NOT read or edit files on disk.\n1. Call get_genui_data with slug \"home\" to load the current data bag.\n2. Append the note to the items array of the best-fit project as { \"text\": \"<note>\", \"done\": false, \"tag\": \"<feat|chore|bug|idea — pick from the note, default idea>\" }, matching the shape of existing items. If the suggested project below is a real card, prefer it; otherwise pick the best name match; if none fits, use the \"miscellaneous\" project. Do NOT modify tasks/open — the page recomputes them from items on load.\n3. Call set_genui_data with slug \"home\", data { \"projects\": <the full updated projects array> }, merge true.\n4. Call refresh_genui with slug \"home\".\nReply with one confirmation line naming the project. DO NOT fix, research, plan, or take any other action.\nSuggested project: ${project}\nNote: ${text}",
+   "quickNote_userMessage": "Quick note filed to the Project Development Tracker GenUI page",
+   "openChat_userMessage": "Opened chat for item on the Project Development Tracker GenUI page",
+   "qa": {
+    "template": "[Project Readiness Agent]\nProject: ${project} (${status})\nItem: ${item} [${tag}]\nQA Status: ${qaStatus}\nUser Hint: ${hint}\n--- Q&A Thread ---\n${thread}\n${action}\n\nQUESTION RULES: Before proposing a plan, ask any clarifying questions needed — each 1 to 2 sentences max (3 ok occasionally), no preamble, no research dump in the question. Several independent questions may be asked at once (set qa.questions=[{id,text},...]); if answers chain, ask one at a time. Do NOT propose a plan while questions are pending.",
+    "template_userMessage": "Research request sent from the Project Development Tracker GenUI page",
+    "userAnswer": "--- User Answer ---\n${answer}\nACTION: User answered. If critical unknowns remain, ask the next clarifying question(s) — each 1-2 sentences; update qa.questions and keep qa.status='questions', refresh the genui, and wait. If fully specified, propose the plan now: write qa.plan (approach/files/steps/effort/impact/risks/research_notes/related_items), set qa.status='plan_ready', refresh the genui.",
+    "userAnswer_userMessage": "Answer sent to the Project Development Tracker GenUI page",
+    "skip": "ACTION: User wants to skip questions and go straight to plan — propose the plan now using reasonable assumptions.",
+    "skip_userMessage": "Skipped questions — plan requested from the Project Development Tracker GenUI page",
+    "planAction": "ACTION: User's plan decision: ${decision}",
+    "planAction_userMessage": "Plan decision sent to the Project Development Tracker GenUI page"
+   }
+  }
+ },
+ "sessions": {
+  "general": null,
+  "card:chat-panel": "82929262-6165-497c-83a0-69d90f6d7caa"
+ }
+}

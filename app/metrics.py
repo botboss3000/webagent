@@ -49,6 +49,10 @@ _llm_samples: Deque[Tuple[float, float, int, int]] = collections.deque(maxlen=_M
 _llm_total_calls = 0
 _llm_total_ms = 0.0
 
+# ── Cache hit / miss counters ──────────────────────────────────────────────────
+_cache_hits: Dict[str, int] = {}
+_cache_misses: Dict[str, int] = {}
+
 # ── CPU sampler state (on-demand, no background thread) ─────────────────────
 _cpu_last_proc: float | None = None
 _cpu_last_wall: float | None = None
@@ -84,6 +88,24 @@ def record_llm(ms: float, in_tokens: int = 0, out_tokens: int = 0) -> None:
             _llm_samples.append((time.time(), float(ms), int(in_tokens or 0), int(out_tokens or 0)))
             _llm_total_calls += 1
             _llm_total_ms += float(ms)
+    except Exception:
+        pass
+
+
+def record_cache_hit(cache_name: str = "session_messages") -> None:
+    """Increment the hit counter for *cache_name*."""
+    try:
+        with _LOCK:
+            _cache_hits[cache_name] = _cache_hits.get(cache_name, 0) + 1
+    except Exception:
+        pass
+
+
+def record_cache_miss(cache_name: str = "session_messages") -> None:
+    """Increment the miss counter for *cache_name*."""
+    try:
+        with _LOCK:
+            _cache_misses[cache_name] = _cache_misses.get(cache_name, 0) + 1
     except Exception:
         pass
 
@@ -189,6 +211,16 @@ def snapshot(window_s: float = 300.0) -> Dict[str, Any]:
             "tokens_in_window": tokens_in_win,
             "tokens_out_window": tokens_out_win,
             "tokens_per_min": round((tokens_in_win + tokens_out_win) / max(window_s / 60.0, 1e-9), 0),
+        },
+        "cache": {
+            name: {
+                "hits": _cache_hits.get(name, 0),
+                "misses": _cache_misses.get(name, 0),
+                "hit_rate": round(
+                    _cache_hits.get(name, 0) / max(_cache_hits.get(name, 0) + _cache_misses.get(name, 0), 1) * 100, 1
+                ),
+            }
+            for name in sorted(set(list(_cache_hits.keys()) + list(_cache_misses.keys())))
         },
         "loop_split": {"llm_pct": pct_llm, "db_pct": pct_db},
     }

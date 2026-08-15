@@ -10,7 +10,7 @@ registered singleton services only while this worker holds the lease. If the
 leader dies, its lease expires and another worker takes over and starts the
 services there.
 
-Backends without the lock methods (the partial Supabase/Postgres backends)
+Backends without the lock methods (Postgres backends that use the LocalBackend
 degrade to "always leader", preserving today's single-instance behaviour.
 """
 from __future__ import annotations

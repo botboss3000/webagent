@@ -87,6 +87,12 @@ logger = logging.getLogger(__name__)
 
 _ABILITIES_DIR = Path(__file__).resolve().parents[2] / "plugins" / "abilities"
 
+# Background APP FUNCTIONS live OUTSIDE the abilities tree (they are not
+# agent-facing abilities): plugins/app_functions/<function>/. Entries there are
+# forced kind="app_function" / app_function=True so they render in App Settings
+# ▸ App Functions and never in the two ability tables. See _load().
+_APP_FUNCTIONS_DIR = Path(__file__).resolve().parents[2] / "plugins" / "app_functions"
+
 # ── Emergent group defaults (when _group.json is absent) ─────────────────────
 _EMERGENT_GROUP_ICON = "layers"
 _EMERGENT_GROUP_COLOR = "#9aa5ce"
@@ -147,6 +153,124 @@ def _load_ability_json(json_path: Path) -> Optional[Dict[str, Any]]:
 _CATALOG: Optional[Dict[str, Dict[str, Any]]] = None
 _GROUP_META: Dict[str, Dict[str, Any]] = {}
 _MODULE_CACHE: Dict[str, Any] = {}
+
+
+def _build_catalog_entry(
+    ability_id: str,
+    sub_dir: Path,
+    gid: str,
+    desc: Dict[str, Any],
+    is_app_function_dir: bool = False,
+) -> Dict[str, Any]:
+    """Build one catalog entry from a descriptor + its directory.
+
+    ``is_app_function_dir`` marks entries discovered under
+    ``plugins/app_functions/`` — they are forced ``kind="app_function"`` and
+    ``app_function=True`` regardless of what the descriptor says, so a
+    background app service can never leak into the ability tables as an
+    agent-facing ability.
+    """
+    py_path = sub_dir / f"{ability_id}.py"
+    has_runtime = py_path.is_file()
+
+    # Determine kind and placeholder status
+    kind = desc.get("kind", "ability")
+    # A "virtual" ability lists always-on CORE tools (load_tool, get_time,
+    # memory, …) for display + permission management only. It owns no
+    # runtime and gates nothing — its tools are wired into every agent by
+    # the loader regardless — so it is NOT a coming-soon placeholder even
+    # without a .py, and it is deliberately kept OUT of tools_map() /
+    # ABILITY_TOOLS so the runtime never withholds these tools via ability
+    # gating. See base (plugins/abilities/Core/base) and virtual_ability_for_tool.
+    is_virtual = bool(desc.get("virtual", False))
+    is_placeholder = bool(desc.get("placeholder", False))
+    # An app_function is a background app SERVICE, not an agent tool. Some
+    # of them (the wired-in core singletons — scheduler, watchdog, sync
+    # engine, …) own no ability runtime at all: they are just a descriptor
+    # that gives an admin a toggle in App Settings ▸ App Functions, and the
+    # matching core service reads ``app_function_enabled(id)`` at boot. So —
+    # like a virtual row — an app_function is intentionally runtime-less and
+    # must NOT be coerced to a "coming soon" placeholder for lacking a .py.
+    is_app_function = is_app_function_dir or bool(desc.get("app_function", False))
+    # Only ability-kind requires a .py; oauth/credential/channel can work
+    # without one, and a virtual / app_function ability is intentionally
+    # runtime-less.
+    if (not is_placeholder and not is_virtual and not is_app_function
+            and kind == "ability" and not has_runtime):
+        is_placeholder = True
+    if is_placeholder:
+        kind = "placeholder"
+    # Entries from the app_functions tree are never agent-facing abilities.
+    if is_app_function_dir:
+        kind = "app_function"
+
+    return {
+        "id": ability_id,
+        "display_name": desc.get("display_name") or ability_id,
+        "kind": kind,
+        "icon": desc.get("icon") or "plug",
+        "color": desc.get("color") or "#7aa2f7",
+        "description": desc.get("description") or "",
+        "note": desc.get("note"),
+        "simple": bool(desc.get("simple", True)),
+        # Marks a behavioural, pick-one context-management strategy
+        # (compaction / window / retrieval). The resolver filters on this
+        # before loading any module. See context_strategy_for_agent.
+        "context_strategy": bool(desc.get("context_strategy", False)),
+        # Safety device: an always-on ability whose toggle is fixed in
+        # the ON position and cannot be turned off (e.g. Context Control,
+        # which keeps long chats from running away). Forced enabled at
+        # both the app and per-agent level; the two ability panels render
+        # its toggle locked. See get_agent_connections / disable_ability /
+        # context_strategy_for_agent for the enforcement points.
+        "locked_on": bool(desc.get("locked_on", False)),
+        "placeholder": is_placeholder,
+        "status": desc.get("status") or "stable",
+        "protected": bool(desc.get("protected", False)),
+        # App function: a BACKGROUND app service, not an agent-invoked
+        # ability. The agent never chooses to use it — it runs
+        # automatically for the app itself (e.g. Session Namer auto-titles
+        # chats, Context Control's compaction train, the Render Recorder
+        # flight recorder). Purely a UI-classification flag: an app_function
+        # is rendered in App Settings ▸ App Functions instead of the two
+        # ability tables, and is excluded from ui_catalog()'s abilities +
+        # group members. It changes NOTHING at runtime — tool-building,
+        # context-strategy resolution, turn hooks and background services
+        # all still read this same catalog and key off locked_on /
+        # context_strategy / enabled exactly as before. See ui_catalog().
+        "app_function": is_app_function,
+        # On-by-default at the app level: an ability with no explicit
+        # admin toggle stored in data/config/agent-abilities.json falls
+        # back to this. SHIP POLICY — abilities are ON by default, so a
+        # descriptor that omits the flag bakes True (fresh installs and
+        # newly dropped-in abilities are unlocked with no hand-toggling).
+        # An ability that must ship OFF opts out with an explicit
+        # "default_enabled": false. (Credentialed abilities stay hidden by
+        # the separate secret-present gate until their key is supplied.)
+        "default_enabled": bool(desc.get("default_enabled", True)),
+        "order": desc.get("order", 100),
+        # Display-only ability: lists always-on core tools for management
+        # but owns no runtime and gates nothing (see is_virtual above).
+        "virtual": is_virtual,
+        "tools": list(desc.get("tools") or []),
+        "tool_metadata": desc.get("tool_metadata") or {},
+        "config": desc.get("config"),
+        # Declarative credential needs (the common-credential framework,
+        # see app/abilities/credentials.py). When present, the ability's
+        # secrets are stored/read/gated generically — no bespoke endpoint.
+        "credentials": desc.get("credentials"),
+        # Bundled-skill metadata (the body lives inline or in a sibling
+        # <id>.skill.md). skill_summary is the always-shown "when to use
+        # it" catalog line; without it a JSON ability's skill would have
+        # a blank summary. skill_mode: selectable (load-on-demand) or
+        # always_on. See app/agent/ability_skills.py.
+        "skill_summary": desc.get("skill_summary") or "",
+        "skill_mode": desc.get("skill_mode") or "selectable",
+        "skill_handle": desc.get("skill_handle"),
+        "group": gid,
+        "has_runtime": has_runtime,
+        "_py_path": py_path if has_runtime else None,
+    }
 
 
 def _load(force: bool = False) -> Dict[str, Dict[str, Any]]:
@@ -211,104 +335,46 @@ def _load(force: bool = False) -> Dict[str, Dict[str, Any]]:
             if desc is None:
                 continue
 
-            py_path = sub_dir / f"{ability_id}.py"
-            has_runtime = py_path.is_file()
+            cat[ability_id] = _build_catalog_entry(
+                ability_id, sub_dir, gid, desc, is_app_function_dir=False
+            )
 
-            # Determine kind and placeholder status
-            kind = desc.get("kind", "ability")
-            # A "virtual" ability lists always-on CORE tools (load_tool, get_time,
-            # memory, …) for display + permission management only. It owns no
-            # runtime and gates nothing — its tools are wired into every agent by
-            # the loader regardless — so it is NOT a coming-soon placeholder even
-            # without a .py, and it is deliberately kept OUT of tools_map() /
-            # ABILITY_TOOLS so the runtime never withholds these tools via ability
-            # gating. See base (plugins/abilities/Core/base) and virtual_ability_for_tool.
-            is_virtual = bool(desc.get("virtual", False))
-            is_placeholder = bool(desc.get("placeholder", False))
-            # An app_function is a background app SERVICE, not an agent tool. Some
-            # of them (the wired-in core singletons — scheduler, watchdog, sync
-            # engine, …) own no ability runtime at all: they are just a descriptor
-            # that gives an admin a toggle in App Settings ▸ App Functions, and the
-            # matching core service reads ``ability_app_enabled(id)`` at boot. So —
-            # like a virtual row — an app_function is intentionally runtime-less and
-            # must NOT be coerced to a "coming soon" placeholder for lacking a .py.
-            is_app_function = bool(desc.get("app_function", False))
-            # Only ability-kind requires a .py; oauth/credential/channel can work
-            # without one, and a virtual / app_function ability is intentionally
-            # runtime-less.
-            if (not is_placeholder and not is_virtual and not is_app_function
-                    and kind == "ability" and not has_runtime):
-                is_placeholder = True
-            if is_placeholder:
-                kind = "placeholder"
+    # ── App-function tree: plugins/app_functions/<function>/ (flat) ──
+    # A background APP FUNCTION (Session Namer, …) is not an agent ability — it
+    # lives outside the abilities tree and is forced kind="app_function" so the
+    # two ability tables never list it. It renders in App Settings ▸ App
+    # Functions via the app_function flag, exactly like the descriptor-only
+    # System app functions that still live in the abilities tree.
+    if _APP_FUNCTIONS_DIR.is_dir():
+        for sub_dir in sorted(_APP_FUNCTIONS_DIR.iterdir()):
+            if not sub_dir.is_dir():
+                continue
+            if sub_dir.name.startswith("_") or sub_dir.name == "__pycache__":
+                continue
 
-            cat[ability_id] = {
-                "id": ability_id,
-                "display_name": desc.get("display_name") or ability_id,
-                "kind": kind,
-                "icon": desc.get("icon") or "plug",
-                "color": desc.get("color") or "#7aa2f7",
-                "description": desc.get("description") or "",
-                "note": desc.get("note"),
-                "simple": bool(desc.get("simple", True)),
-                # Marks a behavioural, pick-one context-management strategy
-                # (compaction / window / retrieval). The resolver filters on this
-                # before loading any module. See context_strategy_for_agent.
-                "context_strategy": bool(desc.get("context_strategy", False)),
-                # Safety device: an always-on ability whose toggle is fixed in
-                # the ON position and cannot be turned off (e.g. Context Control,
-                # which keeps long chats from running away). Forced enabled at
-                # both the app and per-agent level; the two ability panels render
-                # its toggle locked. See get_agent_connections / disable_ability /
-                # context_strategy_for_agent for the enforcement points.
-                "locked_on": bool(desc.get("locked_on", False)),
-                "placeholder": is_placeholder,
-                "status": desc.get("status") or "stable",
-                "protected": bool(desc.get("protected", False)),
-                # App function: a BACKGROUND app service, not an agent-invoked
-                # ability. The agent never chooses to use it — it runs
-                # automatically for the app itself (e.g. Session Namer auto-titles
-                # chats, Context Control's compaction train, the Render Recorder
-                # flight recorder). Purely a UI-classification flag: an app_function
-                # is rendered in App Settings ▸ App Functions instead of the two
-                # ability tables, and is excluded from ui_catalog()'s abilities +
-                # group members. It changes NOTHING at runtime — tool-building,
-                # context-strategy resolution, turn hooks and background services
-                # all still read this same catalog and key off locked_on /
-                # context_strategy / enabled exactly as before. See ui_catalog().
-                "app_function": bool(desc.get("app_function", False)),
-                # On-by-default at the app level: an ability with no explicit
-                # admin toggle stored in data/config/agent-abilities.json falls
-                # back to this. SHIP POLICY — abilities are ON by default, so a
-                # descriptor that omits the flag bakes True (fresh installs and
-                # newly dropped-in abilities are unlocked with no hand-toggling).
-                # An ability that must ship OFF opts out with an explicit
-                # "default_enabled": false. (Credentialed abilities stay hidden by
-                # the separate secret-present gate until their key is supplied.)
-                "default_enabled": bool(desc.get("default_enabled", True)),
-                "order": desc.get("order", 100),
-                # Display-only ability: lists always-on core tools for management
-                # but owns no runtime and gates nothing (see is_virtual above).
-                "virtual": is_virtual,
-                "tools": list(desc.get("tools") or []),
-                "tool_metadata": desc.get("tool_metadata") or {},
-                "config": desc.get("config"),
-                # Declarative credential needs (the common-credential framework,
-                # see app/abilities/credentials.py). When present, the ability's
-                # secrets are stored/read/gated generically — no bespoke endpoint.
-                "credentials": desc.get("credentials"),
-                # Bundled-skill metadata (the body lives inline or in a sibling
-                # <id>.skill.md). skill_summary is the always-shown "when to use
-                # it" catalog line; without it a JSON ability's skill would have
-                # a blank summary. skill_mode: selectable (load-on-demand) or
-                # always_on. See app/agent/ability_skills.py.
-                "skill_summary": desc.get("skill_summary") or "",
-                "skill_mode": desc.get("skill_mode") or "selectable",
-                "skill_handle": desc.get("skill_handle"),
-                "group": gid,
-                "has_runtime": has_runtime,
-                "_py_path": py_path if has_runtime else None,
-            }
+            ability_id = sub_dir.name
+            json_path = sub_dir / f"{ability_id}.json"
+            if not json_path.is_file():
+                continue  # no descriptor inside — not a valid app function
+
+            desc = _load_ability_json(json_path)
+            if desc is None:
+                continue
+
+            cat[ability_id] = _build_catalog_entry(
+                ability_id, sub_dir, "app_functions", desc,
+                is_app_function_dir=True,
+            )
+            # Flat dir → give it an emergent group so group bookkeeping (pure
+            # app-function group suppression in ui_catalog) stays consistent.
+            groups.setdefault("app_functions", {
+                "name": "App Functions",
+                "icon": _EMERGENT_GROUP_ICON,
+                "color": _EMERGENT_GROUP_COLOR,
+                "desc": "Background app services (not agent abilities)",
+                "order": _EMERGENT_GROUP_ORDER,
+                "_folder": "app_functions",
+            })
 
     # Log collisions
     for gid, folders in _COLLIDING_GROUPS.items():
@@ -474,10 +540,11 @@ async def turn_hooks_for_agent(agent_id: str) -> list:
     # Functions (stored in agent-abilities.json). Dispatch it only when that
     # toggle resolves ON (ships ON by default). ``session_titler`` isn't in the
     # ``enabled|locked_on`` set precisely because it's an app_function, not an
-    # agent-facing ability.
+    # agent-facing ability. Its runtime lives OUTSIDE the abilities tree:
+    # plugins/app_functions/session_titler/.
     try:
-        if ability_app_enabled("session_titler"):
-            from plugins.abilities.Core.session_titler.session_titler import (
+        if app_function_enabled("session_titler"):
+            from plugins.app_functions.session_titler.session_titler import (
                 TURN_HOOK as _session_namer_hook,
             )
             if callable(_session_namer_hook):
@@ -864,6 +931,12 @@ def ui_catalog() -> Dict[str, Any]:
             # Background app service, not an agent ability — rendered in App
             # Settings ▸ App Functions, excluded from the two ability tables below.
             "app_function": entry.get("app_function", False),
+            # App Functions are administered only from App Settings.  Include
+            # their non-secret schema in the catalog so the expanded row can
+            # render its controls immediately; it still fetches saved values
+            # through the authenticated config endpoint. Agent-facing abilities
+            # keep their schema on the existing on-demand endpoint.
+            "config": entry.get("config") if entry.get("app_function") else None,
             # Resolved live on/off: a locked-on safety ability is forced ON
             # regardless of any stored admin choice; otherwise stored admin
             # choice ▸ descriptor default.
@@ -1108,23 +1181,23 @@ def ability_default_enabled(ability_id: str) -> bool:
     return bool(e and e.get("default_enabled", True))
 
 
-def ability_app_enabled(ability_id: str) -> bool:
-    """Resolved app-level on/off for an ability — the SAME resolution ui_catalog
-    bakes into each row: a ``locked_on`` safety device is always True; otherwise
-    the admin's stored choice (data/config/agent-abilities.json) wins, falling back
-    to the descriptor ``default_enabled`` (SHIP POLICY: True when unset). Used by
-    background dispatchers that have no per-agent connection row to key off — e.g.
-    the Session Namer turn hook, an app_function gated only at the app level.
-    Fails ON if the config store can't be read (never silently disables a default
-    -on function)."""
-    e = _load().get(ability_id)
+def app_function_enabled(app_function_id: str) -> bool:
+    """Resolved app-level on/off for an app function — the SAME resolution
+    ui_catalog bakes into each row: a ``locked_on`` safety device is always True;
+    otherwise the admin's stored choice (data/config/agent-abilities.json) wins,
+    falling back to the descriptor ``default_enabled`` (SHIP POLICY: True when
+    unset). Used by background dispatchers that have no per-agent connection row
+    to key off — e.g. the Session Namer turn hook, an app_function gated only at
+    the app level. Fails ON if the config store can't be read (never silently
+    disables a default-on function)."""
+    e = _load().get(app_function_id)
     if not e:
         return False
     if e.get("locked_on"):
         return True
     try:
         from app.admin import ability_config as _abcfg
-        stored = _abcfg.get_ability_enabled(ability_id)
+        stored = _abcfg.get_ability_enabled(app_function_id)
     except Exception:
         stored = None
     if stored is None:

@@ -31,7 +31,7 @@ Contract
 import asyncio
 import logging
 import time
-from typing import Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,7 @@ class RunManager:
         user_id: str,
         turn_id: Optional[str],
         run_factory: Callable[[], Awaitable[None]],
+        db: Optional[Any] = None,
     ) -> bool:
         """Start a supervised background run for ``session_id``.
 
@@ -96,6 +97,18 @@ class RunManager:
             if existing and existing.task and not existing.task.done():
                 logger.info("start_run rejected — run already active for session %s", session_id[:12])
                 return False
+
+            # Belt-and-braces against a stale interrupt flag: if an interrupt was
+            # requested while no run was live (or a previous flag was never
+            # consumed), the fresh run would self-cancel at its first poll and
+            # answer nothing. Clear any leftover flag before starting. Only reach
+            # this when no live run exists, so we can never wipe a real stop
+            # request aimed at an active run.
+            if db is not None:
+                try:
+                    await db.clear_interrupt(session_id)
+                except Exception:
+                    pass
 
             handle = _RunHandle(session_id, user_id, turn_id)
 
@@ -145,10 +158,23 @@ class RunManager:
             replaced = self.is_running(session_id)
             if replaced:
                 await self._interrupt_and_wait(session_id, db)
-            await self.start_run(
+            # Never acknowledge a replacement that did not actually start. A
+            # cancelled task can briefly remain live while it unwinds; previously
+            # start_run then returned False, but this method still reported
+            # "running", leaving the newly persisted user message with no agent
+            # turn behind it.
+            if self.is_running(session_id):
+                logger.error("Replacement run for %s is still active after cancellation",
+                             session_id[:12])
+                raise RuntimeError("The previous agent run did not stop; please retry.")
+            started = await self.start_run(
                 session_id=session_id, user_id=user_id, turn_id=turn_id,
                 run_factory=lambda: run_factory(replaced),
+                db=db,
             )
+            if not started:
+                logger.error("Failed to start replacement run for session %s", session_id[:12])
+                raise RuntimeError("The agent run could not be started; please retry.")
             return "replacing" if replaced else "running"
 
     async def _interrupt_and_wait(self, session_id: str, db) -> None:
@@ -163,7 +189,10 @@ class RunManager:
         try:
             await db.run_state_set_cause(session_id, "replaced")
         except Exception as e:
-            logger.debug("interrupt: set_cause(replaced) failed for %s: %s", session_id[:12], e)
+            logger.exception("Could not persist replacement cancellation cause for %s: %s",
+                             session_id[:12], e)
+        await self._record_stop_request(session_id, db, "replaced",
+                                        {"source": "new_user_message"})
         try:
             await db.set_interrupt(session_id)
         except Exception as e:
@@ -179,8 +208,17 @@ class RunManager:
                     await task
                 except BaseException:
                     pass
-            except BaseException:
-                pass
+            except BaseException as e:
+                # A failed/cooperatively-cancelled wait is not proof that the
+                # task is gone. Force it down before permitting the replacement.
+                logger.warning("Run for %s ended wait unexpectedly (%s); ensuring cancellation",
+                               session_id[:12], type(e).__name__)
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except BaseException:
+                        pass
         # Clear the flag so the replacement run doesn't immediately self-interrupt.
         try:
             await db.clear_interrupt(session_id)
@@ -212,15 +250,42 @@ class RunManager:
         ``cause`` records intent so the self-healing layer treats it correctly.
         The default 'user_stop' (the Stop button) is NEVER auto-resumed."""
         was_running = self.is_running(session_id)
+        if not was_running:
+            # Nothing live to stop — do NOT plant an interrupt flag. A Stop
+            # pressed with no active run used to leave the flag set in the DB,
+            # and the *next* run's first interrupt poll would then immediately
+            # self-cancel before producing any output (the silent "no response"
+            # bug). A stop with nothing running is a no-op.
+            return False
         try:
             await db.run_state_set_cause(session_id, cause)
         except Exception as e:
-            logger.debug("interrupt: set_cause(%s) failed for %s: %s", cause, session_id[:12], e)
+            logger.exception("Could not persist cancellation cause %s for %s: %s",
+                             cause, session_id[:12], e)
+        await self._record_stop_request(session_id, db, cause, {"source": "stop_request"})
         try:
             await db.set_interrupt(session_id)
         except Exception as e:
             logger.warning("interrupt: set_interrupt failed for %s: %s", session_id[:12], e)
         return was_running
+
+    async def _record_stop_request(self, session_id: str, db, cause: str, detail: dict) -> None:
+        """Persist a human-readable audit event before a run is interrupted.
+
+        ``session_runs.stop_cause`` is the recovery authority; the diagnostics
+        row makes the initiating action visible after the process has gone away.
+        Neither must prevent an already-requested cancellation from unwinding.
+        """
+        try:
+            row = await db.run_state_get(session_id)
+            from app.agent.diagnostics import record_run_lifecycle
+            record_run_lifecycle(
+                "interrupt_requested", session_id, status="running", stop_cause=cause,
+                agent_id=(row or {}).get("agent_id"), user_id=(row or {}).get("user_id"),
+                origin=(row or {}).get("origin"), detail=detail,
+            )
+        except Exception:
+            logger.exception("Could not record cancellation audit event for %s", session_id[:12])
 
     async def cancel(self, session_id: str) -> bool:
         """Hard-cancel the live task for a session and wait for it to unwind.

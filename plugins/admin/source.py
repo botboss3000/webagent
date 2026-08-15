@@ -24,6 +24,7 @@ Guardrails can be added by implementing plugins/admin/guardrails.py.
 """
 
 import ast
+import asyncio
 import logging
 import os
 import shutil
@@ -319,25 +320,54 @@ async def _do_exec(command: str, timeout: int = 30) -> CommandResponse:
         raise HTTPException(status_code=403, detail=str(e))
     logger.info("Executing command: %s", command)
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=str(PROJECT_ROOT),
-        )
+        kwargs = {
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+            "cwd": str(PROJECT_ROOT),
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        proc = await asyncio.create_subprocess_shell(command, **kwargs)
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=max(1, int(timeout)))
+        except asyncio.TimeoutError:
+            # Kill the complete tree. On Windows, killing only cmd.exe leaves a
+            # PowerShell grandchild holding captured-output pipes forever; that
+            # was sufficient to deadlock the whole ASGI event loop.
+            if os.name == "nt":
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                try:
+                    await asyncio.wait_for(killer.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    killer.kill()
+            else:
+                try:
+                    os.killpg(proc.pid, 9)
+                except ProcessLookupError:
+                    pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+            return CommandResponse(
+                exit_code=-1,
+                stdout="",
+                stderr=f"Command timed out after {timeout} seconds",
+                timed_out=True,
+            )
+        stdout = stdout_b.decode(errors="replace")
+        stderr = stderr_b.decode(errors="replace")
         return CommandResponse(
-            exit_code=result.returncode,
-            stdout=result.stdout[-50000:],
-            stderr=result.stderr[-50000:],
-        )
-    except subprocess.TimeoutExpired:
-        return CommandResponse(
-            exit_code=-1,
-            stdout="",
-            stderr=f"Command timed out after {timeout} seconds",
-            timed_out=True,
+            exit_code=proc.returncode or 0,
+            stdout=stdout[-50000:],
+            stderr=stderr[-50000:],
         )
     except Exception as e:
         return CommandResponse(

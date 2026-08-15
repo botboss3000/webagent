@@ -4,7 +4,7 @@
  * Chat Attachments — App Configuration → Data Management → Chat Attachments card.
  *
  * Drives the per-row attachment storage backend selector (local / browser /
- * supabase / s3 / gcs) by talking to /admin/storage/attachments/*. Each
+ * s3 / gcs) by talking to /admin/storage/attachments/*. Each
  * attachment row records its own provider, so switching here only affects
  * NEW uploads; existing rows keep working.
  */
@@ -12,45 +12,48 @@
 import { apiPath } from './config.js';
 import { isAdmin } from './left-login.js';
 
+/** Race fetch() against a timeout (default 20s) so badges don't hang on
+ *  "loading…" forever when a request stalls. */
+async function _fetchWithTimeout(url, opts, ms = 20000) {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...(opts || {}), signal: ctrl.signal });
+  } finally {
+    clearTimeout(id);
+  }
+}
+
 let _statusCache = null;
 let _renderedFor = null;
 
 const PROVIDER_META = {
   local: {
-    label: 'Local filesystem',
-    blurb: 'Files saved to UPLOAD_DIR on the server (default uploads/). Served via /uploads.',
+    label: 'This server’s disk',
+    blurb: 'Files saved to UPLOAD_DIR on the server (default uploads/), served via /uploads. They follow you across devices ONLY if every device reaches this same server; on a local-first, per-device install they stay on the machine that received them. For true cross-device sync, pick a cloud option below.',
     fields: [
       { key: 'upload_dir', label: 'Upload directory', placeholder: 'uploads',
         help: 'Optional absolute path. Leave blank to use the UPLOAD_DIR env var or default ./uploads.' },
     ],
   },
   browser: {
-    label: 'This device (browser storage)',
-    blurb: 'Bytes stay on the user\'s own device via the browser (IndexedDB); the server records only the row metadata. Nothing leaves the device — but server-side tools (read_attachment, agent vision) cannot read the bytes, and files do not follow the user to another device. (Cross-device sync is a planned addition.)',
+    label: 'This device only (browser storage)',
+    blurb: 'Bytes stay on this one device via the browser (IndexedDB); the server records only the row metadata. Nothing leaves the device — but server-side tools (read_attachment, agent vision) cannot read the bytes, and files do NOT follow you to another device. Pick a cloud option below if you want your files on every device.',
     fields: [],
   },
-  supabase: {
-    label: 'Supabase Storage',
-    blurb: 'Uses the Supabase project from your DB settings. SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in the environment.',
-    fields: [
-      { key: 'bucket', label: 'Bucket name', placeholder: 'attachments', required: true },
-      { key: 'public', label: 'Public bucket', type: 'checkbox',
-        help: 'Public URL if checked; otherwise a 7-day signed URL.' },
-    ],
-  },
   s3: {
-    label: 'AWS S3 (or S3-compatible)',
-    blurb: 'Requires boto3 installed and AWS credentials from env/IAM. S3_ENDPOINT_URL lets you point at MinIO / Cloudflare R2 / etc.',
+    label: 'S3 / Cloudflare R2 — synced across your devices',
+    blurb: 'Files live in a shared cloud bucket, so they follow you to every device. Works with AWS S3 or any S3-compatible store. RECOMMENDED FREE OPTION: Cloudflare R2 — 10 GB free and no download fees ever. Create an R2 bucket, then put your R2 endpoint (https://<account>.r2.cloudflarestorage.com) in Endpoint URL and its access key / secret in the environment. Requires boto3 installed.',
     fields: [
       { key: 'bucket', label: 'Bucket', placeholder: 'my-webagent-uploads', required: true },
-      { key: 'region', label: 'Region', placeholder: 'us-east-1' },
+      { key: 'region', label: 'Region', placeholder: 'us-east-1 (use "auto" for R2)' },
       { key: 'prefix', label: 'Key prefix', placeholder: 'attachments/' },
-      { key: 'endpoint_url', label: 'Endpoint URL', placeholder: 'https://… (optional)' },
+      { key: 'endpoint_url', label: 'Endpoint URL', placeholder: 'https://<account>.r2.cloudflarestorage.com (R2) — blank for AWS' },
     ],
   },
   gcs: {
-    label: 'Google Cloud Storage',
-    blurb: 'Requires google-cloud-storage installed and GOOGLE_APPLICATION_CREDENTIALS (or run inside GCP with default ADC).',
+    label: 'Google Cloud Storage — synced across your devices',
+    blurb: 'Files live in a shared Google Cloud bucket, so they follow you to every device. Free tier: 5 GB (US regions). Requires google-cloud-storage installed and GOOGLE_APPLICATION_CREDENTIALS (or run inside GCP with default ADC).',
     fields: [
       { key: 'bucket', label: 'Bucket', placeholder: 'my-webagent-uploads', required: true },
       { key: 'prefix', label: 'Object prefix', placeholder: 'attachments/' },
@@ -75,7 +78,7 @@ function _setStatus(msg, kind) {
 async function _load() {
   _setStatus('Loading…');
   try {
-    const res = await fetch(apiPath('/admin/storage/attachments/status?requesting_user_id=' + encodeURIComponent(_userId())));
+    const res = await _fetchWithTimeout(apiPath('/admin/storage/attachments/status?requesting_user_id=' + encodeURIComponent(_userId())));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     _statusCache = await res.json();
     try { window.__webagentAttachmentBackend = _statusCache.mode; } catch {}
@@ -264,6 +267,7 @@ async function _testBackend() {
 
 export function initDataManagement() {
   const sel = _qs('ac-attach-mode');
+  if (!sel) return;  // DOM not yet rendered — startDataManagement will re-call us
   if (sel && !sel.dataset.wired) {
     sel.dataset.wired = '1';
     sel.addEventListener('change', () => _renderProviderDetail(sel.value));
@@ -286,6 +290,14 @@ export function initDataManagement() {
 /** Fetch attachment backend status. Called when the Data Management card
  *  becomes visible (from startAdminTools in files.js). */
 export function startDataManagement() {
+  // initDataManagement may have run before the Data Settings template was
+  // rendered (from _ensureAdminInit which fires on first Admin Tools open,
+  // before initAppConfig renders the template). If so, wiring was skipped
+  // because _qs('ac-attach-mode') returned null. Try again now.
+  const sel = _qs('ac-attach-mode');
+  if (sel && !sel.dataset.wired) {
+    initDataManagement();
+  }
   _load();
 }
 

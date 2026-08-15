@@ -1,11 +1,11 @@
 /*
  * tenant-db.js — the account page's "Your database" per-user panel.
  *
- * Part of the multi-tenant (bring-your-own-database) feature. Lets a signed-in
+ * Part of the User BYOD (bring-your-own-database) feature. Lets a signed-in
  * user point WebAgent at THEIR OWN Postgres so their interaction data (chats,
  * memories, agents, secrets) lives in a database they control, instead of the
  * shared central one. mountMyDatabase(slot) is called by account.js; it removes
- * its slot entirely unless the admin has turned Multi-tenant data ON (App
+ * its slot entirely unless the admin has turned User BYOD ON (App
  * Settings), so single-tenant installs never show it.
  *
  * Talks to the backend at /api/v1/tenant-db (app/api/tenant_db.py):
@@ -36,7 +36,7 @@ export async function mountMyDatabase(slotEl) {
     status = await r.json();
   } catch (_) { slotEl.remove(); return; }
   // Feature off → no panel at all (single-tenant behaviour).
-  if (!status || !status.multi_tenant_enabled) { slotEl.remove(); return; }
+  if (!status || !status.user_byod_enabled) { slotEl.remove(); return; }
   _render(slotEl, status);
 }
 
@@ -63,7 +63,6 @@ function _render(slotEl, status) {
       <select id="tdb-provider" class="ac-input">
         <option value="postgres">PostgreSQL</option>
         <option value="neon">Neon</option>
-        <option value="supabase">Supabase</option>
         <option value="aws_rds">AWS RDS / Aurora</option>
         <option value="gcp_cloud_sql">Google Cloud SQL</option>
         <option value="azure_postgres">Azure Postgres</option>

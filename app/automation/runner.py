@@ -32,6 +32,13 @@ logger = logging.getLogger(__name__)
 
 ORCH_ABILITY = "agent_orchestration"
 
+# Custom exception for failing fast when a target session is recycled/dead
+class _RecycledSessionError(Exception):
+    """Raised when an automation tries to write into a recycled/deleted session."""
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        super().__init__(f"Session {session_id[:12]} is recycled or deleted")
+
 # Set during a turn so the `remember_automation_state` tool can write back to the
 # right row. Propagates to tool handlers because the agent loop is awaited inline.
 _current: "contextvars.ContextVar[Optional[tuple]]" = contextvars.ContextVar(
@@ -220,6 +227,15 @@ async def _make_session(db, *, runner_agent_id: str, user_id: str, label: str,
         target = (plan.get("session_id") or "").strip()
         if target:
             try:
+                # Safety: refuse to run in a recycled session
+                if hasattr(db, "is_session_dead"):
+                    try:
+                        if await db.is_session_dead(target):
+                            logger.warning("Automation refused target %s: session is recycled/deleted", target[:12])
+                            raise _RecycledSessionError(target)
+                    except Exception as _rse:
+                        if isinstance(_rse, _RecycledSessionError):
+                            raise
                 existing = await db.get_session(target) if hasattr(db, "get_session") else None
                 if existing is None:
                     raw = db.get_raw_client()
@@ -227,6 +243,8 @@ async def _make_session(db, *, runner_agent_id: str, user_id: str, label: str,
                     existing = (rows.data or [None])[0]
                 if existing and (existing.get("user_id") == user_id):
                     return target
+            except _RecycledSessionError:
+                raise
             except Exception as e:
                 logger.debug("here-session reuse failed for %s: %s", target, e)
         # fall through to a fresh session if the target is gone / not owned.

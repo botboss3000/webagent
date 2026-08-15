@@ -34,7 +34,22 @@ async def save_genui_data(user_id: str, slug: str, data: Dict) -> None:
     await get_genui_store().save_genui_data(user_id, slug, data)
 
 
-async def save_genui_html(user_id: str, slug: str, html: str, title: str = "", agent_id: str = "") -> str:
+async def get_genui_widget(user_id: str, slug: str) -> Optional[Dict]:
+    """Return a genui's widget config (the page's launcher/widget.json options:
+    which agent the page's chat launcher opens, icon, corner buttons, widget
+    options), or None when unset."""
+    return await get_genui_store().get_genui_widget(user_id, slug)
+
+
+async def save_genui_widget(user_id: str, slug: str, widget: Dict) -> None:
+    """Replace a genui's widget config. The Gen UI tab reads it (baked into the
+    served HTML as window.__GENUI_WIDGET) and mounts the page's chat launcher
+    from it, so the agent edits the launcher without touching the page markup."""
+    await get_genui_store().save_genui_widget(user_id, slug, widget)
+
+
+async def save_genui_html(user_id: str, slug: str, html: str, title: str = "",
+                          agent_id: str = "", session_config: Optional[dict] = None) -> str:
     """Write HTML to a genui, auto-registering it in the manifest if it's new.
 
     The store's own ``save_genui_html`` only updates the timestamp of an
@@ -42,7 +57,9 @@ async def save_genui_html(user_id: str, slug: str, html: str, title: str = "", a
     ``render_visual`` (without a prior ``create_genui``) would save its HTML but
     never appear in the page selector. So when the slug isn't listed yet we
     create it (which registers it + writes the HTML in one step); the agent can
-    therefore add a new genui simply by rendering to it.
+    therefore add a new genui simply by rendering to it. ``session_config`` is
+    the session contract ({target_name, mode, session_id?}) carried into the
+    auto-create — required by render_visual when the page is brand new.
 
     ``agent_id`` records the agent doing the render as the genui's owner — set on
     the auto-create and carried into the plain save (last writer wins; an existing
@@ -56,7 +73,7 @@ async def save_genui_html(user_id: str, slug: str, html: str, title: str = "", a
             try:
                 created = await store.create_genui(
                     user_id=user_id, slug=slug, title=nice, initial_html=html,
-                    agent_id=agent_id,
+                    agent_id=agent_id, session_config=session_config,
                 )
                 if isinstance(created, dict) and created.get("url"):
                     return created["url"]
@@ -104,6 +121,7 @@ async def create_genui(
     agent_context: str = "",
     initial_html: str = "",
     agent_id: str = "",
+    session_config: Optional[dict] = None,
 ) -> Dict:
     return await get_genui_store().create_genui(
         user_id=user_id,
@@ -112,6 +130,7 @@ async def create_genui(
         agent_context=agent_context,
         initial_html=initial_html,
         agent_id=agent_id,
+        session_config=session_config,
     )
 
 
@@ -119,8 +138,10 @@ async def delete_genui(user_id: str, slug: str) -> bool:
     return await get_genui_store().delete_genui(user_id, slug)
 
 
-async def rename_genui(user_id: str, slug: str, new_title: str) -> bool:
-    return await get_genui_store().rename_genui(user_id, slug, new_title)
+async def rename_genui(user_id: str, slug: str, new_title: str,
+                       session_config: Optional[dict] = None) -> bool:
+    return await get_genui_store().rename_genui(user_id, slug, new_title,
+                                                session_config=session_config)
 
 
 async def ensure_home_genui(user_id: str) -> None:

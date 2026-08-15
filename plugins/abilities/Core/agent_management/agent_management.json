@@ -20,7 +20,11 @@
     "set_agent_tool",
     "edit_agent_prompt",
     "set_agent_ability",
-    "manage_agent_skills"
+    "manage_agent_skills",
+    "list_user_sessions",
+    "manage_user_session",
+    "create_user_session",
+    "kick_user_session"
   ],
   "config": {
     "settings": [

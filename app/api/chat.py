@@ -11,14 +11,16 @@ import uuid
 from typing import List, Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.models.schemas import ChatRequest, ChatResponse
 from app.db import get_db
 from app.db.turn_cache import with_turn_cache, turn_cache_scope
 from app.db.offload import db_offload
 from app.agent import turn_prewarm
+from app.agent import session_gate
 from app.agent.prompts import (
     build_system_prompt,
+    build_system_prompt_parts,
     append_skills_section,
     build_user_message_content,
     format_attachments_for_prompt,
@@ -27,15 +29,87 @@ from app.agent.prompts import (
 
 from app.agent.loop import run_agent_loop_buffered, stream_agent_events
 from app.agent.loop_executor import LoopConfig
-from app.agent.session_history import build_openai_history_from_session, trim_history_for_resume
+from app.agent.session_history import build_openai_history_from_session
 from app.agent.run_buffer import get_registry as get_run_buffer_registry
 from app.agent.run_manager import get_run_manager
+from app.agent.turn_reservations import stable_key as stable_turn_key
 from app.optimizer.runner import run_optimizer_async
 from app.agent import trigger_index
 from plugins.billing.enforcement import check_access as billing_check_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
+
+
+class ChatComponentRequest(BaseModel):
+    component: Dict[str, Any]
+
+
+class ChatComponentActionRequest(BaseModel):
+    action: str
+    payload: Dict[str, Any] = {}
+
+
+def _component_caller(request: Request) -> str:
+    from app.admin.integrations import resolve_user_id, ANONYMOUS_KEY
+    uid = resolve_user_id(request.headers.get("Authorization", ""), request.query_params.get("token", ""))
+    if not uid or uid == ANONYMOUS_KEY:
+        raise HTTPException(status_code=401, detail="Sign in to use chat components.")
+    return uid
+
+
+@router.get("/components")
+async def get_chat_components(request: Request, session_id: str = Query(...)):
+    from app.chat_components import list_components
+    uid = _component_caller(request)
+    try:
+        await get_db().assert_session_owned(uid, session_id)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="This session is not yours.")
+    return {"components": await list_components(uid, session_id)}
+
+
+@router.post("/components")
+async def create_chat_component(request: Request, body: ChatComponentRequest, session_id: str = Query(...)):
+    from app.chat_components import save_component
+    uid = _component_caller(request)
+    try:
+        await get_db().assert_session_owned(uid, session_id)
+        return {"component": await save_component(uid, session_id, body.component)}
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="This session is not yours.")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post("/components/{component_id}/actions")
+async def act_on_chat_component(request: Request, component_id: str, body: ChatComponentActionRequest,
+                                session_id: str = Query(...)):
+    from app.chat_components import apply_action
+    uid = _component_caller(request)
+    try:
+        await get_db().assert_session_owned(uid, session_id)
+        return {"component": await apply_action(uid, session_id, component_id, body.action, body.payload)}
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="This session is not yours.")
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Component not found.")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+@router.delete("/components/{component_id}")
+async def delete_chat_component(request: Request, component_id: str, session_id: str = Query(...)):
+    from app.chat_components import delete_component
+    uid = _component_caller(request)
+    try:
+        await get_db().assert_session_owned(uid, session_id)
+        await delete_component(uid, session_id, component_id)
+        return {"ok": True}
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="This session is not yours.")
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Component not found.")
+
 
 # ── Fire-and-forget background tasks ──
 # asyncio only keeps a WEAK reference to a bare ``create_task`` result, so a task
@@ -75,7 +149,7 @@ def _cancel_if_pending(task) -> None:
 
 
 # ── Concurrent pure-DB reads ──
-# On a remote Postgres (e.g. Supabase) every DB call is a network round-trip of
+# On a remote Postgres every DB call is a network round-trip of
 # tens-to-hundreds of ms. The storage layer is synchronous psycopg wearing an
 # ``async def`` hat, so a plain ``asyncio.gather`` of these coroutines does NOT
 # overlap them — each one blocks the single event-loop thread for its whole
@@ -217,12 +291,18 @@ def _should_skip_vector(message: str) -> bool:
 
 
 def _session_title_from_message(message: str, max_words: int = 6) -> str:
-    """Extract a concise 3–6 word session title from the user's first message."""
+    """Extract a concise 3–6 word session title from the user's first message.
+
+    The ``"new: "`` prefix marks sessions that haven't been renamed by the
+    Session Namer ability yet — once the namer runs, it overwrites the title
+    entirely and the prefix drops.
+    """
     words = (message or "").strip().split()
     if not words:
         return "New Session"
     title = " ".join(words[:max_words]).rstrip(".,!?;: ")
-    return title[:60] or "New Session"
+    title = (title[:60] or "New Session")
+    return f"New: {title}"
 
 
 async def _enforce_agent_access_policy(db, agent: dict, user_id: str) -> None:
@@ -231,21 +311,8 @@ async def _enforce_agent_access_policy(db, agent: dict, user_id: str) -> None:
     # straight from the authority, not the (Stage-3 possibly locally-served) agent
     # dict. db._get_conn() delegates to the remote authority under the hybrid
     # backend — the same authoritative-read idiom used for the tier check below.
-    mode = None
+    mode = (agent or {}).get("user_mode")
     agent_id = (agent or {}).get("id")
-    if agent_id:
-        try:
-            conn = db._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT user_mode FROM agents WHERE id = ?", (agent_id,)
-                ).fetchone()
-                mode = (row["user_mode"] if row else None)
-            finally:
-                conn.close()
-        except Exception as e:
-            logger.debug("authoritative user_mode read failed for %s (%s); using resolved dict", agent_id, e)
-            mode = (agent or {}).get("user_mode")
     mode = mode or "anonymous"
     if mode == "anonymous":
         return
@@ -260,7 +327,8 @@ async def _enforce_agent_access_policy(db, agent: dict, user_id: str) -> None:
         return
     if mode == "register":
         # Look up the channel identity for this user_id. If anonymous tier, refuse.
-        conn = db._get_conn()
+        from app.db import get_app_db
+        conn = get_app_db()._get_conn()
         try:
             row = conn.execute(
                 "SELECT user_tier FROM channel_identities WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1",
@@ -284,10 +352,17 @@ async def _enforce_billing_access(db, agent: dict, user_id: str) -> None:
     exempt) pass through. Otherwise we raise HTTP 402 with a structured
     reason so the frontend can show the right paywall."""
     try:
-        decision = await billing_check_access(agent, user_id, db)
+        from app.db import get_app_db
+        decision = await billing_check_access(agent, user_id, get_app_db())
     except Exception as e:
-        logger.debug("billing access check failed (allowing): %s", e)
-        return
+        logger.warning("billing access check failed closed: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "billing_policy_unavailable",
+                "message": "Billing policy is temporarily unavailable.",
+            },
+        ) from e
     if decision.allow:
         return
     raise HTTPException(status_code=402, detail=decision.to_dict())
@@ -305,7 +380,10 @@ async def _ensure_session(db, user_id: str, session_id: str, title: str = None) 
     """
     conn = db._get_conn()
     try:
-        row = conn.execute("SELECT title FROM sessions WHERE id=?", (session_id,)).fetchone()
+        row = conn.execute(
+            "SELECT title, user_id, status FROM sessions WHERE id=?",
+            (session_id,),
+        ).fetchone()
     finally:
         conn.close()
 
@@ -323,7 +401,7 @@ async def _ensure_session(db, user_id: str, session_id: str, title: str = None) 
                 "id": session_id,
                 "user_id": user_id,
                 "title": title or "New Session",
-                "pinned": 1,
+                "pinned": 0,
                 "metadata": json.dumps(meta),
             }).execute()
             logger.info(f"Created session {session_id[:12]} for user {user_id[:12]}")
@@ -334,7 +412,11 @@ async def _ensure_session(db, user_id: str, session_id: str, title: str = None) 
             # (a race), so we can't assume there's no history — fall through and
             # let the caller take the normal history-loading path.
             logger.warning(f"Session creation failed (may already exist): {create_err}")
-    elif title and row[0] in (None, "New Session", session_id[:12]):
+    elif row["user_id"] != user_id:
+        raise PermissionError(
+            f"Session {session_id} is not owned by user {user_id}"
+        )
+    elif title and row["title"] in (None, "New Session", session_id[:12]):
         # Session exists with placeholder title — update to first real message
         conn = db._get_conn()
         try:
@@ -342,12 +424,58 @@ async def _ensure_session(db, user_id: str, session_id: str, title: str = None) 
             conn.commit()
         finally:
             conn.close()
+    # Store the status so the caller can reject recycled sessions without any
+    # auto-resurrection (a session in the bin must stay dead unless the user
+    # explicitly restores it from the Sessions page).
+    row_status = (row["status"] if row else None)
     return False
+
+
+async def _require_chat_session_access(
+    fastapi_request: Request,
+    claimed_user_id: Optional[str],
+    session_id: str,
+) -> tuple[str, Any]:
+    """Require a verified caller and ownership/participation in ``session_id``."""
+    from app.auth.identity import assert_caller_is
+
+    user_id = await assert_caller_is(fastapi_request, claimed_user_id)
+    db = get_db()
+    try:
+        await db.assert_session_owned(user_id, session_id)
+    except PermissionError:
+        try:
+            participant = await db.is_session_participant(
+                session_id, user_id, "user"
+            )
+        except Exception:
+            participant = False
+        if not participant:
+            raise HTTPException(status_code=404, detail="Session not found.")
+    return user_id, db
+
+
+async def _require_chat_agent_access(
+    db: Any,
+    agent_id: Optional[str],
+    user_id: str,
+) -> Optional[dict]:
+    if not agent_id:
+        return None
+    agent = await db.fetch_agent_by_id_with_context(
+        agent_id,
+        CONTEXT_SECTION_TYPES,
+        user_id=user_id,
+    )
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    await _enforce_agent_access_policy(db, agent, user_id)
+    return agent
 
 
 # Canonical Ask/Plan/Auto, accepting the legacy Read/Write names (mirrors
 # loop.py's _MODE_ALIASES) so saved DB values and the TUI bridge stay valid.
-_CHAT_MODE_ALIASES = {'read': 'plan', 'write': 'ask', 'plan': 'plan', 'ask': 'ask', 'auto': 'auto'}
+_CHAT_MODE_ALIASES = {'read': 'plan', 'write': 'ask', 'plan': 'plan', 'ask': 'ask', 'auto': 'auto', 'wkspc': 'wkspc'}
 
 
 async def _record_session_execution_mode(db, session_id: str, raw_mode) -> None:
@@ -369,21 +497,29 @@ async def _record_session_execution_mode(db, session_id: str, raw_mode) -> None:
 
 
 class InterruptRequest(BaseModel):
-    session_id: str
+    session_id: str = Field(..., min_length=1, max_length=128)
 
 
 class ResumeRequest(BaseModel):
-    session_id: str
+    session_id: str = Field(..., min_length=1, max_length=128)
 
 def _match_slash_command(message: str):
     """Match message against all slash_command triggers from the trigger index.
 
     Returns (trigger_key, arg, template_id) if matched, else None.
     trigger_key is e.g. '/optimize', arg is the text after the command.
+
+    Also handles known aliases: /optimizer → /optimize.
     """
     stripped = (message or "").strip()
     if not stripped.startswith("/"):
         return None
+
+    # ── /optimizer alias ──
+    if stripped.lower().startswith("/optimizer"):
+        arg = stripped[len("/optimizer"):].strip()
+        return "/optimizer", arg, "optimizer"
+
     slash_cmds = trigger_index.get_slash_commands()
     for trigger_key, template_id in slash_cmds.items():
         # Require the command to be followed by whitespace or end-of-string, so a
@@ -424,14 +560,18 @@ async def _handle_generic_slash_command(
         }).execute()
     except Exception as e:
         logger.warning("Could not create session for %s: %s", trigger_key, e)
-        return f"Could not start `{trigger_key}` — session creation failed."
+        result = f"Could not start `{trigger_key}` — session creation failed."
+        await _persist_system_interaction(db, user_id, session_id, result, "system:slash")
+        return result
 
-    return (
+    result = (
         f"**{trigger_key}** session started.\n"
         f"Session ID: `{new_sid}`\n"
         + (f"Input: {arg}\n" if arg else "")
         + f"\nOpen the session to continue."
     )
+    await _persist_system_interaction(db, user_id, session_id, result, "system:slash")
+    return result
 
 
 async def _handle_optimize_command(
@@ -480,7 +620,9 @@ async def _handle_optimize_command(
         target_session = session_id if _is_real_session(session_id) else ""
 
     if not target_session:
-        return "No chat session found to optimize. Send a few messages first, then try /optimize."
+        result = "No chat session found to optimize. Send a few messages first, then try /optimize."
+        await _persist_system_interaction(db, user_id, session_id, result, "system:optimizer")
+        return result
 
     # Run optimizer inline (fast: no LLM calls, just prefilter + session setup)
     opt_sid = await run_optimizer_async(
@@ -491,11 +633,12 @@ async def _handle_optimize_command(
         force=True,
     )
 
-    msg = f"⚡ **Optimization session created!**\n"
+    msg = f"⚡ **Optimizer session opened!**\n"
     msg += f"• Target: `{target_session[:8]}`\n"
     msg += f"• Optimizer: `{opt_sid}`\n" if opt_sid else ""
     msg += f"• Feedback: {feedback}\n" if feedback else ""
-    msg += f"\nOpen the optimizer session in the UI to review the analysis and discuss changes with the Planner."
+    msg += f"\n📝 **Chat with the Optimizer** — tell it what to analyze, fix, or improve."
+    await _persist_system_interaction(db, user_id, session_id, msg, "system:optimizer")
     return msg
 
 
@@ -510,6 +653,30 @@ def _is_compact_command(message: str) -> bool:
     return bool(re.match(r"^/compact(?:\s+.*)?$", s, re.IGNORECASE | re.DOTALL))
 
 
+async def _persist_system_interaction(db, user_id: str, session_id: str, content: str, source: str) -> None:
+    """Persist a system-status message into the interactions table.
+
+    These messages are visible to the user in chat (across refreshes) but never
+    fed to the agent — ``interactions_to_openai_messages`` skips role='system' rows.
+    Failure is non-fatal: we log and swallow so the caller's return value still reaches the user."""
+    try:
+        # System notices are durable transcript rows too. The live session-tail
+        # endpoint filters out NULL session_seq rows, so omitting this made a
+        # notice disappear until a full reload/cache merge and then surface at
+        # the end instead of where the action occurred.
+        session_seq = await db.next_session_seq(session_id)
+        await db.insert_interaction(
+            user_id=user_id,
+            session_id=session_id,
+            role="system",
+            content=content,
+            source=source,
+            session_seq=session_seq,
+        )
+    except Exception as exc:
+        logger.warning("Failed to persist system interaction (%s): %s", source, exc)
+
+
 async def _handle_compact_command(user_id: str, session_id: str, db) -> str:
     """Force a compaction of the CURRENT session now (the ``/compact`` command).
 
@@ -518,7 +685,12 @@ async def _handle_compact_command(user_id: str, session_id: str, db) -> str:
     summary parts immediately — regardless of how full the context is — honouring
     the agent's Context Control settings (part size etc.). Nothing is deleted; the
     raw turns stay searchable. Failure-safe: returns a user-facing message either
-    way, never raising into the chat."""
+    way, never raising into the chat.
+
+    Every result (success, short-circuit, error) is persisted as a role='system'
+    interaction so the user sees it in their chat history across refreshes."""
+    result: str
+
     try:
         agent_id = await db.get_session_agent_id(session_id)
     except Exception:
@@ -527,11 +699,13 @@ async def _handle_compact_command(user_id: str, session_id: str, db) -> str:
         # No agent is bound to this session yet (e.g. nothing has run in it). This is
         # NOT the same as "nothing old enough to fold" — say so honestly so the user
         # isn't told to send messages they may already have sent.
-        return (
+        result = (
             "Couldn't compact — this session isn't linked to an agent yet, so there's "
             "nothing to summarise. Send a message to the agent first, then run "
             "`/compact`."
         )
+        await _persist_system_interaction(db, user_id, session_id, result, "system:compaction")
+        return result
 
     # An alternate engine (e.g. Local Claude Code) keeps its memory OUTSIDE WebAgent,
     # so /compact means "compact & restart" for it: after the fold below, hand off to
@@ -555,14 +729,27 @@ async def _handle_compact_command(user_id: str, session_id: str, db) -> str:
         from app.agent.compaction import maybe_compact
         settings = await get_context_settings(db, agent_id, session_id, user_id)
         if not settings.get("enabled"):
-            return (
+            result = (
                 "Context Control isn't active for this agent, so there's nothing to "
                 "compact. Enable the Context Control ability to use `/compact`."
             )
+            await _persist_system_interaction(db, user_id, session_id, result, "system:compaction")
+            return result
         info = await maybe_compact(db, user_id, session_id, settings, force=True)
     except Exception as e:
         logger.warning("/compact failed for %s: %s", session_id, e)
-        return f"Couldn't compact this session — {e}"
+        result = f"Couldn't compact this session — {e}"
+        await _persist_system_interaction(db, user_id, session_id, result, "system:compaction")
+        return result
+
+    # The summary train changed — drop any prewarmed prep bundle. A bundle built
+    # before this fold carries the FULL transcript; without this invalidation it
+    # stays inside its TTL and the next turn consumes it, so the fold has no
+    # visible effect on context size.
+    try:
+        turn_prewarm.invalidate(session_id)
+    except Exception:
+        pass
 
     # Alternate engine: hand the fold result to its /compact behaviour. The Claude
     # Code engine uses this to compact-and-restart even when nothing was folded (a
@@ -570,56 +757,81 @@ async def _handle_compact_command(user_id: str, session_id: str, db) -> str:
     # native "nothing to compact" short-circuit below.
     if compact_hook is not None:
         try:
-            return await compact_hook(db, user_id, session_id, agent_id, info)
+            result = await compact_hook(db, user_id, session_id, agent_id, info)
+            await _persist_system_interaction(db, user_id, session_id, result, "system:compaction")
+            return result
         except Exception as e:
             logger.warning("/compact engine hook failed for %s: %s", session_id, e)
-            return f"Couldn't restart this session — {e}"
+            result = f"Couldn't restart this session — {e}"
+            await _persist_system_interaction(db, user_id, session_id, result, "system:compaction")
+            return result
 
     if not info:
-        return (
+        result = (
             "Nothing to compact right now — this conversation already fits inside "
             "the verbatim recent tail (Keep Verbatim), so there are no older turns "
             "to fold. No summary was created."
         )
+        await _persist_system_interaction(db, user_id, session_id, result, "system:compaction")
+        return result
     folded = info.get("summarised_rows") or 0
     new_cars = info.get("new_cars") or 0
     parts = info.get("segments") or 0
-    return (
+    tokens_before = info.get("tokens_before")
+    tokens_after = info.get("tokens_after")
+    if tokens_before is not None and tokens_after is not None:
+        saved = tokens_before - tokens_after
+        pct = round(saved / tokens_before * 100) if tokens_before > 0 else 0
+        token_detail = f" (~{tokens_before:,} → ~{tokens_after:,} tokens, {saved:,} saved, ~{pct}%)"
+    else:
+        token_detail = ""
+    result = (
         f"✅ **Compacted this conversation.** Folded {folded} older message(s) into "
-        f"{new_cars} new summary part(s) ({parts} part(s) total). The most recent "
+        f"{new_cars} new summary part(s) ({parts} part(s) total){token_detail}. The most recent "
         "turns are kept word-for-word; everything older is now summarized and stays "
         "searchable. This takes effect on the next turn."
     )
+    await _persist_system_interaction(db, user_id, session_id, result, "system:compaction")
+    return result
 
 
 @router.post("/interrupt")
-async def interrupt_chat(request: InterruptRequest):
+async def interrupt_chat(request: InterruptRequest, fastapi_request: Request):
     """Request a graceful interruption for an ongoing chat session.
 
     Interrupt is the ONLY thing (besides finishing or a server restart) that
     stops a supervised run. Sets the DB flag the agent loop polls; the loop
     finalizes its partial answer as 'interrupted' and flips run-state."""
     try:
-        db = get_db()
+        _, db = await _require_chat_session_access(
+            fastapi_request, None, request.session_id
+        )
         was_running = await get_run_manager().interrupt(request.session_id, db)
         return {"status": "ok", "message": "Interrupt requested.", "was_running": was_running}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error setting interrupt: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/resume")
-async def resume_chat(request: ResumeRequest):
+async def resume_chat(request: ResumeRequest, fastapi_request: Request):
     """Manually re-ignite a stopped run (the one-click path for a run held as
     'needs_manual_resume' by the auto-resume opt-out, or any interrupted/failed
     turn the user wants to continue). Backend-driven — works even with no live
     WebSocket. The resumed turn streams into the chat via the normal event path."""
     try:
+        await _require_chat_session_access(
+            fastapi_request, None, request.session_id
+        )
         from app.agent.runner import manual_resume
         ok = await manual_resume(request.session_id)
         return {"status": "ok" if ok else "noop",
                 "resumed": ok,
                 "message": "Resuming." if ok else "Nothing to resume (already running or not resumable)."}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Error resuming run %s: %s", request.session_id, e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -642,11 +854,10 @@ async def terminal_chat_activate(fastapi_request: Request):
     
     from app.db import get_db
     db = get_db()
+    await _require_chat_session_access(fastapi_request, user_id, session_id)
     
-    # Get agent record to read terminal_chat config
-    agent_rec = await db.get_agent_by_id(agent_id)
-    if not agent_rec:
-        return {"status": "error", "error": "Agent not found"}
+    # Resolve visibility/roles before allocating a terminal resource.
+    agent_rec = await _require_chat_agent_access(db, agent_id, user_id)
     
     # Read engine from metadata
     meta = {}
@@ -682,9 +893,17 @@ async def terminal_chat_activate(fastapi_request: Request):
 
 
 @router.get("/self-heal/status")
-async def self_heal_status():
+async def self_heal_status(fastapi_request: Request):
     """Observability: the liveness watchdog's status + counters, plus the list of
     runs currently awaiting a manual one-click resume."""
+    from app.auth.identity import assert_caller_is
+
+    user_id = await assert_caller_is(fastapi_request, None)
+    db = get_db()
+    try:
+        is_admin = await db.is_user_admin(user_id)
+    except Exception:
+        is_admin = False
     try:
         from app.agent.watchdog import get_watchdog
         wd = await get_watchdog().get_status()
@@ -692,14 +911,19 @@ async def self_heal_status():
         wd = {"error": str(e)}
     manual: List[Dict[str, Any]] = []
     try:
-        db = get_db()
         conn = db._get_conn()
         try:
-            rows = conn.execute(
-                "SELECT session_id, user_id, origin, resume_attempts, error, updated_at "
-                "FROM session_runs WHERE stop_cause='needs_manual_resume' "
-                "ORDER BY updated_at DESC LIMIT 100"
-            ).fetchall()
+            sql = (
+                "SELECT session_id, user_id, origin, resume_attempts, error, "
+                "updated_at FROM session_runs "
+                "WHERE stop_cause='needs_manual_resume'"
+            )
+            params: tuple[Any, ...] = ()
+            if not is_admin:
+                sql += " AND user_id = ?"
+                params = (user_id,)
+            sql += " ORDER BY updated_at DESC LIMIT 100"
+            rows = conn.execute(sql, params).fetchall()
             manual = [dict(r) for r in rows]
         finally:
             conn.close()
@@ -726,19 +950,28 @@ class SuggestionsConfigRequest(BaseModel):
 
 
 @router.post("/suggestions")
-async def chat_suggestions(req: SuggestionsRequest):
+async def chat_suggestions(
+    req: SuggestionsRequest, fastapi_request: Request
+):
     """Return up to N suggested next user-messages for the chat pill chips.
 
     Best-effort: returns an empty list (HTTP 200) when the engine is off,
     credentials are missing, or generation fails — the UI just shows no chips."""
+    from app.auth.identity import assert_caller_is
     from app.agent.suggestions import generate_suggestions, load_runtime_config
+
+    user_id = await assert_caller_is(fastapi_request, req.user_id)
+    if req.session_id:
+        await _require_chat_session_access(
+            fastapi_request, user_id, req.session_id
+        )
     cfg = load_runtime_config()
     if cfg.get("mode") == "off":
         return {"suggestions": [], "mode": "off"}
     try:
         db = get_db()
         items = await generate_suggestions(
-            db, req.user_id, req.session_id, count=req.count
+            db, user_id, req.session_id, count=req.count
         )
     except Exception as e:
         logger.warning("chat_suggestions failed: %s", e)
@@ -747,9 +980,12 @@ async def chat_suggestions(req: SuggestionsRequest):
 
 
 @router.get("/suggestions/config")
-async def get_suggestions_config():
+async def get_suggestions_config(fastapi_request: Request):
     """Read the Suggested-Replies runtime config (mode / count / idle seconds)."""
+    from app.auth.identity import assert_caller_is
     from app.agent.suggestions import load_runtime_config
+
+    await assert_caller_is(fastapi_request, None)
     return load_runtime_config()
 
 
@@ -771,7 +1007,12 @@ class SkillDeactivateRequest(BaseModel):
 
 
 @router.get("/skills")
-async def chat_skills(user_id: str, session_id: str, agent_id: Optional[str] = None):
+async def chat_skills(
+    fastapi_request: Request,
+    user_id: str,
+    session_id: str,
+    agent_id: Optional[str] = None,
+):
     """Return the active (loaded) selectable skills for a session, plus the
     agent's full selectable skill catalog (authored + ability-bundled) when
     `agent_id` is supplied. Each catalog entry carries a display_name for the
@@ -780,7 +1021,10 @@ async def chat_skills(user_id: str, session_id: str, agent_id: Optional[str] = N
     The active list alone needs no agent (it lives in session metadata), so the
     chat chips work even if agent_id isn't passed; the panel passes agent_id to
     also get descriptions + modes + display_name."""
-    db = get_db()
+    user_id, db = await _require_chat_session_access(
+        fastapi_request, user_id, session_id
+    )
+    await _require_chat_agent_access(db, agent_id, user_id)
     active = await db.get_session_active_skills(session_id)
     active_set = set(active)
 
@@ -830,14 +1074,22 @@ async def chat_skills(user_id: str, session_id: str, agent_id: Optional[str] = N
 
 
 @router.get("/abilities")
-async def chat_abilities(user_id: str, session_id: str, agent_id: Optional[str] = None):
+async def chat_abilities(
+    fastapi_request: Request,
+    user_id: str,
+    session_id: str,
+    agent_id: Optional[str] = None,
+):
     """Return the agent's enabled abilities + which are active for this session.
 
     Drives the chat-side abilities panel + its counter. An ability is **active**
     (highlighted; counted) when it is `visible` (its tools + skill are shown to
     the agent now) OR the agent has pulled it in this session via `load_ability`.
     """
-    db = get_db()
+    user_id, db = await _require_chat_session_access(
+        fastapi_request, user_id, session_id
+    )
+    await _require_chat_agent_access(db, agent_id, user_id)
     loaded = set(await db.get_session_active_abilities(session_id))
     suppressed = set(await db.get_session_suppressed_abilities(session_id))
     out = []
@@ -887,13 +1139,17 @@ class AbilityToggleRequest(BaseModel):
 
 
 @router.post("/abilities/activate")
-async def chat_ability_activate(req: AbilityToggleRequest):
+async def chat_ability_activate(
+    req: AbilityToggleRequest, fastapi_request: Request
+):
     """Arm an ability for this conversation from the chat panel. Clears any
     suppression and — for a ``discoverable`` ability — adds it to the session's
     active list (same effect as the agent calling ``load_ability``), so its tools
     + skill flow into the next turn. A ``visible`` ability just needs un-suppressing."""
-    db = get_db()
-    await _ensure_session(db, req.user_id, req.session_id)
+    user_id, db = await _require_chat_session_access(
+        fastapi_request, req.user_id, req.session_id
+    )
+    await _require_chat_agent_access(db, req.agent_id, user_id)
     await db.set_session_suppressed_ability(req.session_id, req.ability_id, False)
     mode = "visible"
     if req.agent_id:
@@ -909,13 +1165,17 @@ async def chat_ability_activate(req: AbilityToggleRequest):
 
 
 @router.post("/abilities/deactivate")
-async def chat_ability_deactivate(req: AbilityToggleRequest):
+async def chat_ability_deactivate(
+    req: AbilityToggleRequest, fastapi_request: Request
+):
     """Turn an ability OFF for this conversation from the chat panel. Drops it
     from the session's active list and — for a ``visible`` ability — records a
     suppression so it's withheld even though the agent's config makes it visible.
     Its tools + skill leave the model's context on the next turn."""
-    db = get_db()
-    await _ensure_session(db, req.user_id, req.session_id)
+    user_id, db = await _require_chat_session_access(
+        fastapi_request, req.user_id, req.session_id
+    )
+    await _require_chat_agent_access(db, req.agent_id, user_id)
     await db.set_session_active_ability(req.session_id, req.ability_id, False)
     # Only a `visible`-by-config ability needs an explicit suppression to stay
     # off; for a discoverable one, dropping it from the active list is enough —
@@ -933,23 +1193,29 @@ async def chat_ability_deactivate(req: AbilityToggleRequest):
 
 
 @router.post("/skills/activate")
-async def chat_skill_activate(req: SkillActivateRequest):
+async def chat_skill_activate(
+    req: SkillActivateRequest, fastapi_request: Request
+):
     """Manually activate a selectable skill from the UI panel. Calls load_skill
     on behalf of the user so it counts as loaded the same way as if the agent
     called load_skill itself."""
-    db = get_db()
-    await _ensure_session(db, req.user_id, req.session_id)
+    _, db = await _require_chat_session_access(
+        fastapi_request, req.user_id, req.session_id
+    )
     active = await db.set_session_active_skill(req.session_id, req.name, True)
     return {"active": active, "name": req.name}
 
 
 @router.post("/skills/deactivate")
-async def chat_skill_deactivate(req: SkillDeactivateRequest):
+async def chat_skill_deactivate(
+    req: SkillDeactivateRequest, fastapi_request: Request
+):
     """Drop a loaded skill from the conversation: remove it from the session's
     active list and neutralize its stored load result so the body leaves the
     model's context on the next turn."""
-    db = get_db()
-    await _ensure_session(db, req.user_id, req.session_id)
+    _, db = await _require_chat_session_access(
+        fastapi_request, req.user_id, req.session_id
+    )
     active = await db.set_session_active_skill(req.session_id, req.name, False)
     try:
         await db.neutralize_skill_load(req.session_id, req.name)
@@ -967,42 +1233,101 @@ async def chat_skill_deactivate(req: SkillDeactivateRequest):
 class SessionModelRequest(BaseModel):
     user_id: str
     session_id: str
-    model: Optional[str] = None
+    selection_type: Optional[str] = None   # "role" | "custom" | None (clear)
+    role: Optional[str] = None
+    custom_position: Optional[int] = None
 
 
 @router.post("/session-model")
-async def set_session_model(req: SessionModelRequest):
-    """Set (or clear, with an empty model) this session's model override. Takes
-    effect on the next turn — the loop re-resolves the effective model per run."""
+async def set_session_model(
+    req: SessionModelRequest, fastapi_request: Request
+):
+    """Set (or clear) this session's model override as a SLOT reference.
+
+    Stores ``{use_default: False, selection_type: "role", role: "standard"}``
+    (or ``selection_type: "custom", custom_position: 2``) in the session's
+    metadata. On every turn the backend resolves the slot LIVE against the
+    agent's current roster — so admin changes to the model list take effect
+    immediately. Pass ``selection_type`` = None to clear the override entirely.
+
+    If the session row does not exist yet (model picker used before the first
+    message), the DB layer creates it on the fly so the selection is stored
+    per-session immediately — never falling back to agent metadata."""
+    from app.auth.identity import assert_caller_is
+    user_id = await assert_caller_is(fastapi_request, req.user_id)
     db = get_db()
-    # A brand-new chat has no session row until its first message; create it so a
-    # model picked before sending anything still persists.
-    await _ensure_session(db, req.user_id, req.session_id)
-    cfg = await db.set_session_llm_override(req.session_id, (req.model or "").strip() or None)
-    return {"llm_config": cfg, "model": (cfg or {}).get("model", "")}
+    # Verify the caller owns this session OR it doesn't exist yet (the DB layer
+    # will create the row in set_session_llm_override when it's missing).
+    try:
+        await db.assert_session_owned(user_id, req.session_id)
+    except PermissionError:
+        participant = False
+        try:
+            participant = await db.is_session_participant(req.session_id, user_id, "user")
+        except Exception:
+            pass
+        if not participant:
+            raise HTTPException(status_code=404, detail="Session not found.")
+    if req.selection_type:
+        sel = {"type": req.selection_type}
+        if req.selection_type == "role":
+            sel["role"] = req.role or ""
+        elif req.selection_type == "custom":
+            sel["position"] = req.custom_position or 0
+        cfg = await db.set_session_llm_override(req.session_id, sel)
+    else:
+        cfg = await db.set_session_llm_override(req.session_id, None)
+    return {"llm_config": cfg, "active_slot": cfg.get("selection_type") if cfg else None}
 
 
 class SessionEffortRequest(BaseModel):
     user_id: str
     session_id: str
-    model: str
+    slot_ref: str   # e.g., "role:standard", "custom:2"
     reasoning_effort: Optional[str] = None
 
 
 @router.post("/session-model-effort")
-async def set_session_model_effort(req: SessionEffortRequest):
+async def set_session_model_effort(
+    req: SessionEffortRequest, fastapi_request: Request
+):
     """Set (or clear, with 'default'/empty) the reasoning-effort level for a
-    specific model on THIS session. Each model remembers its own level (the footer
-    picker shows an effort selector per model row, and the Model Switcher ability
-    writes here too). Doesn't change which model is active — takes effect on the
-    next turn for whichever model is running."""
-    db = get_db()
-    await _ensure_session(db, req.user_id, req.session_id)
+    specific SLOT on THIS session. Each slot remembers its own level (the footer
+    picker shows an effort selector per slot row). Doesn't change which slot is
+    active — takes effect on the next turn for whichever model the slot resolves to."""
+    _, db = await _require_chat_session_access(
+        fastapi_request, req.user_id, req.session_id
+    )
     cfg = await db.set_session_model_effort(
-        req.session_id, (req.model or "").strip(), (req.reasoning_effort or "").strip() or None)
+        req.session_id, (req.slot_ref or "").strip(), (req.reasoning_effort or "").strip() or None)
     effort_map = (cfg or {}).get("model_effort") or {}
-    return {"llm_config": cfg, "model": (req.model or "").strip(),
-            "reasoning_effort": effort_map.get((req.model or "").strip(), "default")}
+    return {"llm_config": cfg, "slot_ref": (req.slot_ref or "").strip(),
+            "reasoning_effort": effort_map.get((req.slot_ref or "").strip(), "default")}
+
+
+# ── Per-session execution-mode override ──────────────────────────────────────
+# The chat pill (Ask/Plan/Auto) is the user's per-message control. When the user
+# flips the pill mid-turn, the UI persists the choice HERE so the loop can re-read
+# it before each tool gate — the mode change takes effect on the very next tool
+# call without needing a new user message. Mirrors /session-model above.
+
+class SessionModeRequest(BaseModel):
+    user_id: str
+    session_id: str
+    mode: str  # 'ask' | 'plan' | 'auto'
+
+
+@router.post("/session-mode")
+async def set_session_mode(
+    req: SessionModeRequest, fastapi_request: Request
+):
+    """Persist the session's execution mode (Ask/Plan/Auto). The loop re-reads
+    this before every tool gate, so a pill flip mid-turn takes effect immediately."""
+    _, db = await _require_chat_session_access(
+        fastapi_request, req.user_id, req.session_id
+    )
+    mode = await db.set_session_execution_mode(req.session_id, req.mode)
+    return {"execution_mode": mode}
 
 
 # ── Per-session compaction override ──────────────────────────────────────────
@@ -1022,6 +1347,7 @@ class SessionCompactionRequest(BaseModel):
 
 @router.get("/session-compaction")
 async def get_session_compaction(
+    fastapi_request: Request,
     session_id: str = Query(...),
     agent_id: Optional[str] = Query(None),
     user_id: Optional[str] = Query(None),
@@ -1030,12 +1356,17 @@ async def get_session_compaction(
     Control knobs with any per-session override layered on top — so the footer panel
     shows the live "compact at %" / "keep verbatim %". Also reports whether each value
     is a per-session override or inherited from the agent (so the UI can hint that)."""
-    db = get_db()
+    verified_user_id, db = await _require_chat_session_access(
+        fastapi_request, user_id, session_id
+    )
+    await _require_chat_agent_access(db, agent_id, verified_user_id)
     aid = (agent_id or "").strip()
     if not aid:
         aid = (await db.get_session_agent_id(session_id)) or ""
     from app.agent.context_control import get_context_settings
-    settings = await get_context_settings(db, aid, session_id, user_id)
+    settings = await get_context_settings(
+        db, aid, session_id, verified_user_id
+    )
     try:
         override = await db.get_session_context_override(session_id)
     except Exception:
@@ -1054,13 +1385,16 @@ async def get_session_compaction(
 
 
 @router.post("/session-compaction")
-async def set_session_compaction(req: SessionCompactionRequest):
+async def set_session_compaction(
+    req: SessionCompactionRequest, fastapi_request: Request
+):
     """Save this chat's per-session compaction override (the footer sliders). Each
     percentage is stored as a fraction and clamped to the same safe range as the
     ability's config panel; it takes effect on the next turn's gauge and the next
     automatic/manual compaction. Omitted fields are left unchanged."""
-    db = get_db()
-    await _ensure_session(db, req.user_id, req.session_id)
+    _, db = await _require_chat_session_access(
+        fastapi_request, req.user_id, req.session_id
+    )
     updates: Dict[str, Any] = {}
     if req.compact_threshold_pct is not None:
         updates["compact_threshold"] = max(0.1, min(0.99, req.compact_threshold_pct / 100.0))
@@ -1071,10 +1405,21 @@ async def set_session_compaction(req: SessionCompactionRequest):
 
 
 @router.put("/suggestions/config")
-async def update_suggestions_config(req: SuggestionsConfigRequest):
+async def update_suggestions_config(
+    req: SuggestionsConfigRequest, fastapi_request: Request
+):
     """Update the Suggested-Replies runtime config. Used by the impersonator
     agent's config panel on the Agents page."""
+    from app.auth.identity import assert_caller_is
     from app.agent.suggestions import save_runtime_config
+
+    user_id = await assert_caller_is(fastapi_request, None)
+    try:
+        is_admin = await get_db().is_user_admin(user_id)
+    except Exception:
+        is_admin = False
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required.")
     updates = {k: v for k, v in req.dict().items() if v is not None}
     return save_runtime_config(updates)
 
@@ -1100,6 +1445,9 @@ async def chat_prewarm(req: PrewarmRequest, fastapi_request: Request):
         return {"ok": False, "reason": "auth"}
     db = get_db()
     try:
+        await _require_chat_session_access(
+            fastapi_request, uid, req.session_id
+        )
         # Share the per-turn read cache so duplicate reads within this build are
         # de-duped, exactly like a real send.
         with turn_cache_scope():
@@ -1108,6 +1456,8 @@ async def chat_prewarm(req: PrewarmRequest, fastapi_request: Request):
             if req.agent_id:
                 agent = await db.fetch_agent_by_id_with_context(
                     req.agent_id, CONTEXT_SECTION_TYPES, user_id=uid)
+                if agent:
+                    await _enforce_agent_access_policy(db, agent, uid)
             else:
                 agent = await db.get_agent_for_user(uid)
             if not agent:
@@ -1184,6 +1534,12 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
         # authenticated user impersonate another for the whole session.
         from app.auth.identity import assert_caller_is
         request.user_id = await assert_caller_is(fastapi_request, request.user_id)
+
+        # Abuse guard for PUBLIC (embed / anonymous) chat only — no-op for
+        # registered users. See app/api/rate_limit.py + the security audit.
+        from app.api.rate_limit import enforce_anon_chat
+        enforce_anon_chat(request.user_id, fastapi_request)
+
         db = get_db()
 
         # ── Temp DB resolution for optimizer/closer sessions ──
@@ -1226,7 +1582,7 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
         _slash_match = _match_slash_command(request.message or "")
         if _slash_match:
             _slash_key, _slash_arg, _slash_tid = _slash_match
-            if _slash_tid == "opt_planner":
+            if _slash_tid == "optimizer":
                 result = await _handle_optimize_command(
                     request.user_id, request.session_id,
                     _slash_arg, "web_portal", db,
@@ -1254,16 +1610,7 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
                     "SELECT metadata FROM sessions WHERE id=?", (request.session_id,)
                 ).fetchone()
                 opt_metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
-                if request.session_id.startswith('closer-'):
-                    opt_role = 'closer'
-                    opt_template_id = trigger_index.get('tool_call', 'handoff_to_closer') or 'opt_closer'
-                else:
-                    opt_role = opt_metadata.get('opt_role', 'planner')
-                    opt_template_id = (
-                        trigger_index.get('tool_call', 'run_optimizer') or 'opt_planner'
-                        if opt_role == 'planner'
-                        else trigger_index.get('tool_call', 'handoff_to_closer') or 'opt_closer'
-                    )
+                opt_template_id = trigger_index.get('tool_call', 'run_optimizer') or 'optimizer'
             finally:
                 conn.close()
 
@@ -1304,6 +1651,9 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
         if agent is None:
             agent = await db.get_agent_for_user(request.user_id)
         if agent is None:
+            from app.api.agents import provision_default_agent
+            agent = await provision_default_agent(db, request.user_id)
+        if agent is None:
             raise HTTPException(
                 status_code=400,
                 detail="No agent assigned. Create an agent before chatting.",
@@ -1332,6 +1682,11 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
             await db.add_session_participant(request.session_id, request.user_id, 'user')
         if not await db.is_session_participant(request.session_id, agent["id"], 'agent'):
             await db.add_session_participant(request.session_id, agent["id"], 'agent')
+
+        # ── Model Switcher reset: new user message → back to the agent's default
+        # model. Any upgrade the agent applied for the previous turn group is
+        # dropped here; the user's footer-picker selection survives.
+        await _reset_agent_model_switcher(db, request.session_id)
 
         # Save user message and get its ID for parent linking
         # Optimizer/Closer sessions get source='optimizer' to distinguish from normal chats
@@ -1422,6 +1777,10 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
                 sender_id=agent["id"],
                 receiver_id=agent["id"],
             )
+            await _emit_to_visualizers(request.session_id, {
+                "type": "db", "level": "db", "op": "insert_interaction",
+                "role": "tool", "id": parent_id,
+            }, db_override=db)
             await _emit_to_visualizers(request.session_id, {
                 "type": "pipeline", "level": "pipeline",
                 "step": "memory_search_end", "results_count": 0, "results": [],
@@ -1533,6 +1892,11 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
                 receiver_id=agent["id"],
             )
 
+            await _emit_to_visualizers(request.session_id, {
+                "type": "db", "level": "db", "op": "insert_interaction",
+                "role": "tool", "id": parent_id,
+            }, db_override=db)
+
             # Emit memory_search as a tool result
             await _emit_to_visualizers(request.session_id, {
                 "type": "tool_result", "level": "agent",
@@ -1591,7 +1955,7 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
         exclude_ids = {user_interaction_id} if user_interaction_id else set()
         # Build conversation history from DB. For closer sessions, all context
         # (judging criteria, baseline, trial transcripts) is pre-injected as real
-        # interaction rows in the temp DB by handoff_to_closer, so the standard
+        # interaction rows in the temp DB, so the standard
         # history builder works for both planner and closer sessions.
         history = await build_openai_history_from_session(
             db, request.user_id, request.session_id,
@@ -1601,7 +1965,9 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
 
         # Create event callback that pushes to visualizer and user listeners
         async def event_callback(event: Dict[str, Any]):
-            await _emit_to_visualizers(request.session_id, event, user_id=request.user_id)
+            await _emit_to_visualizers(
+                request.session_id, event, user_id=request.user_id, db_override=db
+            )
 
         # Run the agent loop (with 5-minute timeout)
         # Resolve allowed_tools from agent config (may be list or JSON string)
@@ -1645,7 +2011,7 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
 
         # End the run buffer for this turn — starts the retention countdown.
         try:
-            await get_run_buffer_registry().end_turn(request.session_id)
+            await get_run_buffer_registry().end_turn(request.session_id, db=db)
         except Exception as _eb:
             logger.debug("end_turn failed (buffered) for session %s: %s", request.session_id, _eb)
 
@@ -1661,7 +2027,7 @@ async def _chat_impl(request: ChatRequest, fastapi_request: Request):
         _cancel_if_pending(locals().get("_brain_task"))
         # Make sure we mark the run buffer ended even on error path.
         try:
-            await get_run_buffer_registry().end_turn(request.session_id)
+            await get_run_buffer_registry().end_turn(request.session_id, db=db)
         except Exception:
             pass
         logger.error(f"Chat endpoint error: {e}", exc_info=True)
@@ -1673,7 +2039,7 @@ def _find_interaction_by_cmid(db, session_id: str, client_msg_id: str) -> Option
     client message id (stored in metadata as ``cmid``), or None.
 
     Makes /send idempotent: the browser keeps unconfirmed sends in a localStorage
-    outbox and retries them (see ui/chat-side-panel/js/chat-send.js). Without this,
+    outbox and retries them (see ui/chat/js/chat-send.js). Without this,
     a retry of a message the server already accepted inserts a duplicate row (the
     "it keeps resending to the DB" symptom). The id is matched with a LIKE against
     the metadata JSON; ``_``/``%``/``\\`` in the id are escaped so they can't act
@@ -1739,6 +2105,11 @@ def _cmid_lock_release_ref(cmid: str) -> None:
 # Bounded FIFO so it can't grow without limit.
 _RECENT_CMIDS: Dict[str, str] = {}
 _RECENT_CMIDS_CAP = 4096
+# Slash commands return before a normal user interaction is inserted, so their
+# result cannot be recovered by _find_interaction_by_cmid. Keep their accepted
+# result in the same bounded, process-local idempotency lane. The per-cmid lock
+# above serializes an outbox retry behind the original command.
+_RECENT_COMMAND_RESULTS: Dict[str, str] = {}
 
 
 def _recent_cmid_key(session_id: str, cmid: str) -> str:
@@ -1757,6 +2128,44 @@ def _recent_cmid_put(session_id: str, cmid: str, interaction_id: str) -> None:
             _RECENT_CMIDS.pop(next(iter(_RECENT_CMIDS)))
         except (StopIteration, KeyError):
             break
+
+
+def _recent_command_get(session_id: str, cmid: Optional[str]) -> Optional[str]:
+    if not cmid:
+        return None
+    return _RECENT_COMMAND_RESULTS.get(_recent_cmid_key(session_id, cmid))
+
+
+def _recent_command_put(session_id: str, cmid: Optional[str], result: str) -> None:
+    if not cmid:
+        return
+    _RECENT_COMMAND_RESULTS[_recent_cmid_key(session_id, cmid)] = result
+    while len(_RECENT_COMMAND_RESULTS) > _RECENT_CMIDS_CAP:
+        try:
+            _RECENT_COMMAND_RESULTS.pop(next(iter(_RECENT_COMMAND_RESULTS)))
+        except (StopIteration, KeyError):
+            break
+
+
+# ── Model Switcher auto-reset on a new user message ─────────────────────────
+# The Model Switcher ability lets the agent upgrade THIS conversation onto a
+# pricier model (use_premium_model / set_model) or raise reasoning effort
+# (set_effort) for a hard stretch. Those writes are agent-driven and must not
+# leak into the user's NEXT message: a fresh user turn always starts on the
+# agent's DEFAULT model at default effort. The reset drops exactly the
+# agent-driven parts (concrete-model override + bare-model-id effort entries)
+# and leaves the user's own footer-picker slot selection and its per-slot
+# efforts intact. (grep SISTER-SYNC: SESSION-MODEL-OVERRIDE)
+
+async def _reset_agent_model_switcher(db, session_id: str) -> None:
+    if not session_id:
+        return
+    try:
+        clear = getattr(db, "clear_session_agent_model_override", None)
+        if clear:
+            await clear(session_id)
+    except Exception as _ms_err:  # noqa: BLE001
+        logger.debug("model-switcher reset failed for %s: %s", session_id, _ms_err)
 
 
 async def _prepare_send(request: ChatRequest, fastapi_request: Request) -> Dict[str, Any]:
@@ -1794,6 +2203,14 @@ async def _prepare_send_inner(request: ChatRequest, fastapi_request: Request) ->
     _perf = _PerfTimer("prepare_send", session_id=request.session_id, user_id=request.user_id)
     request.user_id = await assert_caller_is(fastapi_request, request.user_id)
     _perf.mark("auth_done")
+
+    # Abuse guard for PUBLIC (embed / anonymous) chat only — no-op for registered
+    # users. This is the shared /send + /stream lane the embed widget uses, so the
+    # guard MUST live here too (not just the blocking /chat path). See the security
+    # audit's CRITICAL finding + app/api/rate_limit.py.
+    from app.api.rate_limit import enforce_anon_chat
+    enforce_anon_chat(request.user_id, fastapi_request)
+
     db = get_db()
     channel = "web_portal"
 
@@ -1830,13 +2247,22 @@ async def _prepare_send_inner(request: ChatRequest, fastapi_request: Request) ->
     # ── Handle slash commands ──
     # Built-in system commands first (not template-driven). /compact folds the
     # session's older turns now; see _handle_compact_command.
+    client_msg_id = getattr(request, "client_msg_id", None)
+    _prior_command_result = _recent_command_get(request.session_id, client_msg_id)
+    if _prior_command_result is not None:
+        logger.info(
+            "Duplicate command for session %s (cmid=%s) — returning cached result",
+            request.session_id[:12], client_msg_id,
+        )
+        return {"slash_result": _prior_command_result}
     if _is_compact_command(request.message or ""):
         result = await _handle_compact_command(request.user_id, request.session_id, db)
+        _recent_command_put(request.session_id, client_msg_id, result)
         return {"slash_result": result}
     _slash_match = _match_slash_command(request.message or "")
     if _slash_match:
         _slash_key, _slash_arg, _slash_tid = _slash_match
-        if _slash_tid == "opt_planner":
+        if _slash_tid == "optimizer":
             # Pass the parsed argument (text AFTER the command) as feedback — not the
             # whole raw message. Passing request.message smuggled the literal
             # "/optimize" in as user feedback to the Planner.
@@ -1848,7 +2274,40 @@ async def _prepare_send_inner(request: ChatRequest, fastapi_request: Request) ->
                 _slash_tid, _slash_key, _slash_arg,
                 request.user_id, request.session_id, channel, db,
             )
+        _recent_command_put(request.session_id, client_msg_id, result)
         return {"slash_result": result}
+
+    # ── Message length cap (App Functions toggle) ──
+    # Truncate overly-long messages server-side so both normal chat and genui
+    # dispatches (which POST to the same /send endpoint) are capped at a single
+    # enforcement point. When OFF, messages pass through uncapped.
+    # A user-facing system notice is appended to the message so the sender sees
+    # the truncation in the chat bubble. The cap is adjustable in App Settings.
+    msg_str = request.message or ""
+    _truncated_from_len = 0
+    if msg_str:
+        try:
+            from app.abilities import app_function_enabled
+            if app_function_enabled("message_length_cap"):
+                from app.admin.ability_config import get_ability_config
+                cfg = get_ability_config("message_length_cap")
+                max_len_raw = cfg.get("max_length", 8000) if isinstance(cfg, dict) else 8000
+                try:
+                    max_len = int(float(max_len_raw))
+                except (TypeError, ValueError):
+                    max_len = 8000
+                if max_len < 1:
+                    max_len = 8000
+                if len(msg_str) > max_len:
+                    _truncated_from_len = len(msg_str)
+                    _notice = (
+                        f"[System: Your message was truncated from {_truncated_from_len:,} characters "
+                        f"to the {max_len:,}-character limit. The cap can be adjusted or disabled "
+                        f"in App Settings \u2192 App Functions \u2192 Message Length Cap.]\n\n"
+                    )
+                    request.message = _notice + msg_str[:max_len]
+        except Exception:
+            pass  # fail open — never block a send on config read errors
 
     # Ensure the session exists before inserting interactions. A freshly-created
     # session row means this is the first message of a brand-new session, so
@@ -1856,6 +2315,62 @@ async def _prepare_send_inner(request: ChatRequest, fastapi_request: Request) ->
     # history read and its "Loading history" pill step.
     _session_title = _session_title_from_message(request.message) if (request.message or "").strip() else None
     _is_first_turn = await _ensure_session(db, request.user_id, request.session_id, title=_session_title)
+
+    # ── Recycled-session gate ──
+    # A message sent to a session sitting in the recycle bin must NOT revive it
+    # (that is a safety risk the user controls manually from the Sessions page).
+    # We persist the message so the sender's intent is recorded, emit a visible
+    # system notice so the user knows why nothing happened, and return early —
+    # no agent run, no crash storm, no wasted LLM calls.
+    try:
+        _dead = await db.is_session_dead(request.session_id)
+    except Exception:
+        _dead = False
+    if _dead:
+        _user_id_for_notice = request.user_id or ""
+        _sid = request.session_id
+        try:
+            _notice = (
+                "This session is in the recycle bin and cannot accept messages. "
+                "Restore it from the Sessions page first."
+            )
+            _user_content = request.message or ""
+            _first_seq = await db.next_session_seq(_sid, count=2)
+            await db.insert_interaction(
+                _user_id_for_notice, _sid, role="user", content=_user_content,
+                channel=channel,
+                metadata=json.dumps({"source": "web_portal_chat"}),
+                sender_id=_user_id_for_notice,
+                receiver_id="",
+                session_seq=_first_seq,
+            )
+            await db.insert_interaction(
+                _user_id_for_notice, _sid, role="system", content=_notice,
+                channel=channel,
+                metadata=json.dumps({"source": "recycled_session"}),
+                sender_id="system",
+                receiver_id=_user_id_for_notice,
+                session_seq=_first_seq + 1,
+            )
+            await _emit_to_visualizers(_sid, {
+                "type": "user_message", "level": "user",
+                "content": _user_content,
+            }, user_id=_user_id_for_notice)
+            await _emit_to_visualizers(_sid, {
+                "type": "agent_message", "level": "system",
+                "content": _notice,
+            }, user_id=_user_id_for_notice)
+        except Exception as _recycle_err:
+            logger.warning("Recycled-session notice failed for %s: %s", _sid[:12], _recycle_err)
+        logger.info("Message to recycled session %s — saved + system notice, no agent run", _sid[:12])
+        return {
+            "db": db,
+            "agent": {"id": ""},
+            "user_interaction_id": "",
+            "channel": channel,
+            "is_first_turn": _is_first_turn,
+            "recycled": True,
+        }
 
     # ── Idempotent send (dedupe outbox retries) ──
     # The browser parks unconfirmed sends in a localStorage outbox and re-POSTs
@@ -1865,7 +2380,6 @@ async def _prepare_send_inner(request: ChatRequest, fastapi_request: Request) ->
     # again. We short-circuit here — before the costly agent/billing round-trips —
     # when this client message id was already accepted, returning the original
     # turn so the retry resolves without a duplicate row or a second agent run.
-    client_msg_id = getattr(request, "client_msg_id", None)
     if client_msg_id:
         # In-process first: catches a concurrent duplicate whose DB write isn't yet
         # visible to this read's connection (the per-cmid lock serialized us behind
@@ -1885,6 +2399,13 @@ async def _prepare_send_inner(request: ChatRequest, fastapi_request: Request) ->
             )
             return {"duplicate": True, "user_interaction_id": _existing_id}
 
+    # ── Model Switcher reset: a NEW user message always starts on the agent's
+    # default model. Any model/effort the agent switched to for the previous
+    # turn group (use_premium_model / set_model / set_effort) is dropped here —
+    # it never carries into the user's next message. The user's own footer
+    # picker selection is slot-based and survives untouched.
+    await _reset_agent_model_switcher(db, request.session_id)
+
     # ── Optimizer / Closer session: route to dedicated agent ──
     opt_template_id = None
     opt_metadata = {}
@@ -1895,16 +2416,7 @@ async def _prepare_send_inner(request: ChatRequest, fastapi_request: Request) ->
                 "SELECT metadata FROM sessions WHERE id=?", (request.session_id,)
             ).fetchone()
             opt_metadata = json.loads(meta_row[0]) if meta_row and meta_row[0] else {}
-            if request.session_id.startswith('closer-'):
-                opt_role = 'closer'
-                opt_template_id = trigger_index.get('tool_call', 'handoff_to_closer') or 'opt_closer'
-            else:
-                opt_role = opt_metadata.get('opt_role', 'planner')
-                opt_template_id = (
-                    trigger_index.get('tool_call', 'run_optimizer') or 'opt_planner'
-                    if opt_role == 'planner'
-                    else trigger_index.get('tool_call', 'handoff_to_closer') or 'opt_closer'
-                )
+            opt_template_id = trigger_index.get('tool_call', 'run_optimizer') or 'optimizer'
         finally:
             conn.close()
 
@@ -1959,12 +2471,20 @@ async def _prepare_send_inner(request: ChatRequest, fastapi_request: Request) ->
             # spawn never runs. Resolving via the binding makes the resolved agent
             # match the bound one. A genuinely new/unbound session (no binding
             # row yet) falls through to the default-agent fallback unchanged.
+            agent = None  # must be bound before the None-check below (fresh unbound session)
             _bound_id = await db.get_session_agent_id(request.session_id)
             if _bound_id:
                 agent = await db.fetch_agent_by_id_with_context(
                     _bound_id, CONTEXT_SECTION_TYPES, user_id=request.user_id)
             if agent is None:
                 agent = await db.get_agent_for_user(request.user_id)
+        if agent is None:
+            # When shared default agent is enabled, every user resolves to the
+            # single app-level agent — no per-user agent row is needed.
+            from app.admin.settings import shared_default_agent_enabled as _sd_chat
+            if _sd_chat():
+                from app.api.agents import provision_default_agent
+                agent = await provision_default_agent(db, request.user_id)
         if agent is None:
             raise HTTPException(
                 status_code=400,
@@ -2045,6 +2565,14 @@ async def _prepare_send_inner(request: ChatRequest, fastapi_request: Request) ->
     # Carry the client message id (cmid) in metadata so an outbox retry of this
     # exact send is recognised as a duplicate next time (see _find_interaction_by_cmid).
     _user_meta = {"source": "web_portal_chat"}
+    # GenUI-page-initiated sends (field/button prompts) carry a friendly label so
+    # the chat UI can render a green notice instead of the raw prompt as a "You"
+    # bubble. The raw prompt is still the persisted user turn — the agent sees it
+    # exactly as before; only the presentation changes.
+    _genui_label = (getattr(request, "genui_label", None) or "").strip()
+    if _genui_label:
+        _user_meta["genui"] = True
+        _user_meta["genui_label"] = _genui_label[:200]
     if client_msg_id:
         _user_meta["cmid"] = client_msg_id
     if request.attachment_ids:
@@ -2076,10 +2604,13 @@ async def _prepare_send_inner(request: ChatRequest, fastapi_request: Request) ->
     # (The RunBuffer + run-state for the new turn are started inside the turn
     # coroutine. If an old run is still active, its buffer stamps this event;
     # seq stays monotonic across the interrupt.)
-    await _emit_to_visualizers(request.session_id, {
+    _user_event = {
         "type": "user_message", "level": "user",
         "content": request.message, "id": user_interaction_id,
-    }, user_id=request.user_id)
+    }
+    if _genui_label:
+        _user_event["genui_label"] = _genui_label[:200]
+    await _emit_to_visualizers(request.session_id, _user_event, user_id=request.user_id)
 
     # ── TUI bridge check: if the agent is a TUI bridge agent, forward the
     # message to the TUI instead of running the normal agent loop.
@@ -2125,6 +2656,42 @@ async def _run_turn_background(
                        user_id=user_id, agent_id=(agent.get("id") if agent else None))
     _perf.mark("turn_start")
 
+    # App-wide session cap (app/agent/session_gate.py): if max_active_sessions
+    # is reached, wait in the FIFO queue until an active session completes. The
+    # user message is already persisted/emitted, so the sender sees it instantly;
+    # the run simply starts when a slot frees. Fail-open: a gate error must
+    # never block chat (release() then no-ops).
+
+    # Register a one-shot callback that fires if this session enters the queue,
+    # so the frontend can show the queue position in the session dropdown and
+    # apply pending styling to the user's message bubble.
+    _agent_id = agent.get("id") if agent else None
+    _queue_cb_fired = False
+
+    async def _on_gate_queue(sid: str, pos: int, total: int) -> None:
+        nonlocal _queue_cb_fired
+        _queue_cb_fired = True
+        try:
+            await notify_user(user_id, {
+                "type": "agent_status", "status": "queued",
+                "agent_id": _agent_id, "session_id": sid,
+                "turn_id": user_interaction_id,
+                "queue_position": pos, "queue_total": total,
+            })
+        except Exception:
+            pass
+
+    session_gate.register_queue_callback(_on_gate_queue)
+    try:
+        try:
+            await session_gate.acquire(session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as _ge:
+            logger.debug("session gate acquire failed for %s: %s", session_id[:12], _ge)
+    finally:
+        session_gate.unregister_queue_callback(_on_gate_queue)
+
     # Start the RunBuffer + durable run-state for THIS turn. Done here (not in
     # _prepare_send) so a replaced run's begin happens strictly after the prior
     # run's finalize — no race on the single session_runs row.
@@ -2161,14 +2728,21 @@ async def _run_turn_background(
     except Exception as _seqerr:
         logger.debug("Failed to backfill seq on user row: %s", _seqerr)
 
+    final_error = None
+    final_stop_cause = None
+
     async def event_callback(event: Dict[str, Any]):
-        nonlocal final_status, _last_seq_persist
-        await _emit_to_visualizers(session_id, event, user_id=user_id)
+        nonlocal final_status, final_error, final_stop_cause, _last_seq_persist
+        await _emit_to_visualizers(
+            session_id, event, user_id=user_id, db_override=db
+        )
         et = event.get("type")
         if et == "interrupted":
             final_status = "interrupted"
         elif et == "error":
             final_status = "error"
+            final_error = str(event.get("message") or "Agent turn failed.")
+            final_stop_cause = event.get("stop_cause") or None
         # Throttled advance of the durable latest_session_seq (drives WS resume
         # for cold devices). The RunBuffer holds the real events; this is just a
         # cheap pointer so a fresh device knows where the live stream is up to.
@@ -2260,6 +2834,10 @@ async def _run_turn_background(
                                      "args": {"query": request.message, "skipped": True}}),
                 sender_id=agent["id"], receiver_id=agent["id"],
             )
+            await event_callback({
+                "type": "db", "level": "db", "op": "insert_interaction",
+                "role": "tool", "id": parent_id,
+            })
             await event_callback({"type": "pipeline", "level": "pipeline",
                                   "step": "memory_search_end", "results_count": 0,
                                   "results": [], "skipped": True})
@@ -2461,19 +3039,52 @@ async def _run_turn_background(
                 output_data=search_content,
                 sender_id=agent["id"], receiver_id=agent["id"],
             )
+            await event_callback({
+                "type": "db", "level": "db", "op": "insert_interaction",
+                "role": "tool", "id": parent_id,
+            })
             await event_callback({"type": "tool_result", "level": "agent", "tool": "memory_search",
                                   "result": search_content[:2000], "duration_ms": 0, "error": False})
 
         _perf.mark("memory_recall_done", memory_hits=len(brain_results or []))
-        system_prompt = await build_system_prompt(
+        # When no attachments are present, strip read_attachment from the static
+        # bootstrap_tools slot so the agent doesn't see it as a generic file-reading
+        # tool. The # [USER ATTACHMENTS] section already tells the agent to call
+        # read_attachment by attachment_id when there are attachments.
+        if not attachment_docs:
+            for _doc in context_docs:
+                if _doc.get("context_type") == "bootstrap_tools":
+                    _content = _doc.get("content", "")
+                    import re
+                    _content = re.sub(
+                        r',?\s*read_attachment\s*,?\s*', ', ', _content
+                    )
+                    _content = re.sub(r',\s*,', ',', _content)
+                    _content = re.sub(r',\s*\.', '.', _content)
+                    _content = re.sub(r',\s*\n', '\n', _content)
+                    _doc["content"] = _content
+                    break
+        system_prompt_parts = await build_system_prompt_parts(
             context_docs, brain_context, request.user_id, agent_id=_agent_id_for_prompt)
+        # Engine agents: capture the pure persona (agent-authored slots) BEFORE
+        # append_skills_section appends the platform skills catalog. Engines want
+        # just the admin's instructions, not tool schemas/capability layers.
+        persona_prompt = system_prompt_parts.agent_context
         # The attachment summary tells the model to call the `read_attachment`
         # tool by attachment_id — meaningful only to the default loop. An engine
         # agent (Local Claude Code) has no such tool; it gets the real file paths
         # from its own adapter instead, so don't feed it this contradictory note.
         if attachment_context and not _is_engine_agent:
-            system_prompt = system_prompt + "\n\n" + attachment_context
-        system_prompt = await append_skills_section(system_prompt, agent, request.session_id, caller_user_id=request.user_id)
+            system_prompt_parts.turn_context = "\n\n".join(
+                p for p in (system_prompt_parts.turn_context, attachment_context) if p
+            )
+        system_prompt_parts.agent_context = await append_skills_section(
+            system_prompt_parts.agent_context,
+            agent,
+            request.session_id,
+            caller_user_id=request.user_id,
+        )
+        system_prompt = system_prompt_parts.render()
 
         # Emit the pipeline events now, in their original visual order (the work
         # above was reordered for overlap, but the narrative shown stays the same).
@@ -2528,6 +3139,11 @@ async def _run_turn_background(
             # Claude Code) can read pasted images / attached files off disk with
             # its own tools — the default loop already inlines images itself.
             attachment_docs=attachment_docs,
+            system_prompt_parts=system_prompt_parts,
+            persona_prompt=persona_prompt,
+            turn_reservation_key=stable_turn_key(
+                "chat-turn", request.user_id, request.session_id, user_interaction_id
+            ),
         ):
             if not _seen_first_event:
                 _seen_first_event = True
@@ -2582,7 +3198,7 @@ async def _run_turn_background(
         try:
             await _emit_to_visualizers(session_id, {
                 "type": "error", "level": "agent", "message": str(e),
-            }, user_id=user_id)
+            }, user_id=user_id, db_override=db)
         except Exception:
             pass
     finally:
@@ -2601,17 +3217,63 @@ async def _run_turn_background(
         # Derive the machine cause from the terminal status. A voluntary cause
         # (user_stop / replaced) already on the row is preserved by run_state_finish.
         _web_cause = ("complete" if final_status == "complete"
-                      else "crash" if final_status == "error" else None)
+                      else (final_stop_cause or "crash") if final_status == "error" else None)
         try:
             # NOT offloaded: run_state_finish emits an agent-status WebSocket
             # broadcast (main-loop-bound notify_user), so it stays on the loop.
-            await db.run_state_finish(session_id, status=final_status, stop_cause=_web_cause)
+            await db.run_state_finish(
+                session_id, status=final_status, error=final_error,
+                stop_cause=_web_cause,
+            )
         except Exception as _rsf:
-            logger.debug("run_state_finish failed for %s: %s", session_id, _rsf)
+            # This is the authoritative completion write.  A debug-only line
+            # made an unfinished session indistinguishable from a normal one.
+            logger.exception("run_state_finish failed for %s: %s", session_id, _rsf)
+            # The browser may still be connected even when the DB is unhealthy.
+            # Tell it explicitly that the turn's terminal state was NOT saved;
+            # this becomes a red, replayable RunBuffer event on reconnect.
+            try:
+                await event_callback({
+                    "type": "error", "level": "agent",
+                    "message": "The agent stopped, but its final run status could not be saved: "
+                               f"{_rsf}",
+                    "persistence_failure": True,
+                })
+            except Exception:
+                logger.exception("Could not publish run-state persistence failure for %s", session_id)
+        if session_id.startswith("optimizer-") and final_status != "complete":
+            try:
+                from app.optimizer.runner import mark_optimizer_run_terminal
+                await db_offload(lambda: mark_optimizer_run_terminal(
+                    session_id, final_status, final_error or ""
+                ))
+            except Exception as _ore:
+                logger.exception(
+                    "optimizer terminal status update failed for %s: %s",
+                    session_id, _ore,
+                )
         try:
-            await get_run_buffer_registry().end_turn(session_id)
+            await get_run_buffer_registry().end_turn(session_id, db=db)
         except Exception as _eb:
             logger.debug("end_turn failed for session %s: %s", session_id, _eb)
+
+        # Free this session's slot for the next queued session (FIFO). Must
+        # happen BEFORE the instant-resume launch below so a re-ignited run
+        # re-acquires through the gate like any other run.
+        try:
+            await session_gate.release(session_id)
+        except Exception as _gr:
+            logger.debug("session gate release failed for %s: %s", session_id[:12], _gr)
+
+        # Instant resume: if the turn crashed with a network error (tagged as
+        # 'crash'), don't wait 30s for the watchdog — re-ignite immediately.
+        # This makes transient network blips recover in ~1s instead of ~30s.
+        if _web_cause == "crash":
+            try:
+                from app.agent.runner import resume_one
+                asyncio.create_task(resume_one(session_id, reason="network_crash"))
+            except Exception as _ire:
+                logger.debug("instant resume launch failed for %s: %s", session_id, _ire)
 
 
 async def _resume_web_turn(rc: Dict[str, Any], replaced: bool):
@@ -2637,37 +3299,46 @@ async def _resume_web_turn(rc: Dict[str, Any], replaced: bool):
                           error="agent not found for web resume")
 
     final_status = "complete"
+    final_stop_cause = None
+    final_error = None
     reply = ""
     _run_buffer = await get_run_buffer_registry().start_turn(
         session_id=session_id, user_id=user_id, turn_id=rc.get("turn_id"), db=db,
     )
 
     async def event_callback(event: Dict[str, Any]):
-        nonlocal final_status
-        await _emit_to_visualizers(session_id, event, user_id=user_id)
+        nonlocal final_status, final_stop_cause, final_error
+        await _emit_to_visualizers(
+            session_id, event, user_id=user_id, db_override=db
+        )
         et = event.get("type")
         if et == "interrupted":
             final_status = "interrupted"
         elif et == "error":
             final_status = "error"
+            final_stop_cause = event.get("stop_cause") or None
+            final_error = str(event.get("message") or "Agent turn failed.")[:500]
         ss = event.get("session_seq")
         if ss is not None:
             try:
                 await db.run_state_update_seq(session_id, int(ss))
             except Exception:
                 pass
-
     try:
         loop_config = LoopConfig.from_agent(agent)
         context_docs = agent.get("context_documents", [])
         system_prompt = await build_system_prompt(
             context_docs, None, user_id, agent_id=agent_id)
         system_prompt = await append_skills_section(system_prompt, agent, session_id, caller_user_id=user_id)
-        # Resume replays a BOUNDED checkpoint, not the whole transcript: the
-        # recent steps + the task anchor, so a re-ignition doesn't grow the
-        # working set with conversation length (the runaway-memory cause).
-        history = await build_openai_history_from_session(db, user_id, session_id, agent_id=agent_id)
-        history = trim_history_for_resume(history)
+        # Pre-load full compacted history so the agent sees the conversation exactly
+        # as it was before the crash — no bootstrap tool call, no empty trailing user.
+        # The nudge is light: just "continue". Everything else is clean history.
+        try:
+            from app.agent.session_history import build_openai_history_from_session
+            history = await build_openai_history_from_session(
+                db, user_id, session_id, agent_id=agent_id)
+        except Exception:
+            history = []
         _raw_at = agent.get("allowed_tools", [])
         if isinstance(_raw_at, str):
             try:
@@ -2677,12 +3348,32 @@ async def _resume_web_turn(rc: Dict[str, Any], replaced: bool):
         await event_callback({
             "type": "resumed", "level": "agent",
             "reason": rc.get("resume_reason", "server_restart"),
+            "recovery": rc.get("recovery") or {},
         })
+        # Persist the recovery record as a system interaction so it survives
+        # refresh. Only visible when the debug toggle is on (frontend gates on
+        # source prefix "system:debug:").
+        _rec = rc.get("recovery") or {}
+        if _rec:
+            _rec_msg = (
+                f"🔧 **Recovered and resumed** (attempt {_rec.get('attempt', '?')}"
+                f"/{_rec.get('max_attempts', '?')})\n"
+                f"• Cause: {_rec.get('stop_cause', 'unknown')}\n"
+                + (f"• Issue: {_rec.get('issue')}\n" if _rec.get('issue') else "")
+                + f"• Trigger: {_rec.get('trigger', 'watchdog')}\n"
+                f"• Stopped: {_rec.get('stopped_at', '?')}\n"
+                f"• Recovered: {_rec.get('recovered_at', '?')}"
+            )
+            await _persist_system_interaction(
+                db, user_id, session_id, _rec_msg, "system:debug:recovery")
         async for event in stream_agent_events(
             user_id=user_id, session_id=session_id, user_message=RESUME_NUDGE,
             system_prompt=system_prompt, agent_id=agent_id, history=history,
             max_turns=agent.get("max_turn_count", 0), channel=rc.get("channel"), db=db,
             agent_template_id=agent.get("template_id"), allowed_tools=_raw_at or None,
+            turn_reservation_key=stable_turn_key(
+                "chat-turn", user_id, session_id, rc.get("turn_id") or ""
+            ),
         ):
             await event_callback(event)
             if event["type"] == "response":
@@ -2695,14 +3386,15 @@ async def _resume_web_turn(rc: Dict[str, Any], replaced: bool):
         logger.error("web resume failed for session %s: %s", session_id, e, exc_info=True)
     finally:
         try:
-            await get_run_buffer_registry().end_turn(session_id)
+            await get_run_buffer_registry().end_turn(session_id, db=db)
         except Exception:
             pass
 
     from app.agent.runner import RunOutcome as _RO
     cause = ("complete" if final_status == "complete"
-             else "crash" if final_status == "error" else None)
-    return _RO(status=final_status, stop_cause=cause, reply=reply)
+             else (final_stop_cause or "crash") if final_status == "error" else None)
+    return _RO(status=final_status, stop_cause=cause, reply=reply,
+               error=final_error)
 
 
 # Register the web-origin resume builder so the self-healing layer (boot recovery
@@ -2843,6 +3535,11 @@ async def chat_send(request: ChatRequest, fastapi_request: Request):
         # from the outbox — but do NOT start a second run for it.
         return {"status": "duplicate", "session_id": request.session_id,
                 "turn_id": prep["user_interaction_id"]}
+    if prep.get("recycled"):
+        # The session is in the recycle bin — the message was persisted and a
+        # system notice was emitted. Nothing else to do; no agent run.
+        return {"status": "recycled", "session_id": request.session_id,
+                "message": "Message saved — session is in the bin. Restore it first."}
 
     # ── Cross-device hand-off ──
     # If this turn targets another device, enqueue it for that device's worker to
@@ -2858,6 +3555,21 @@ async def chat_send(request: ChatRequest, fastapi_request: Request):
         target_instance = (dev or {}).get("instance_id") or target_device
         target_label = (dev or {}).get("label") or target_device
         if target_instance != _identity.device_id():
+            # The job queue is shared/remote, whereas the newly-created user
+            # interaction is local-first.  Publish its skeleton before enqueueing
+            # the job: otherwise the target can claim it, re-sync its SQLite copy,
+            # and miss the very message it was asked to answer.
+            publish_now = getattr(prep["db"], "publish_interaction_now", None)
+            if callable(publish_now):
+                try:
+                    await publish_now(prep["user_interaction_id"])
+                except Exception as e:
+                    logger.warning("Remote hand-off blocked: user turn %s was not published: %s",
+                                   prep["user_interaction_id"], e)
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Could not publish this message to the remote device. Please retry.",
+                    ) from e
             job_id = await _dispatch.enqueue(
                 owner_user_id=request.user_id,
                 prompt=request.message or "",
@@ -3045,6 +3757,45 @@ async def chat_stream(request: ChatRequest, fastapi_request: Request):
     return StreamingResponse(safe_event_generator(), media_type="text/event-stream")
 
 
+class _ForceRunRequest(BaseModel):
+    user_id: str   # caller (must own / participate in the session)
+    session_id: str
+
+
+@router.post("/force-run")
+async def force_session_run(req: _ForceRunRequest, fastapi_request: Request):
+    """Immediately grant a queued session a run slot, bypassing the session cap.
+
+    When max_active_sessions is reached, a turn waits in the FIFO gate queue
+    (app/agent/session_gate.py). This endpoint is the "force run" escape
+    hatch: it pulls the session out of the queue and grants it a slot NOW, so
+    its waiting background turn starts immediately — temporarily running one
+    over the cap. The slot is released normally when the turn finishes.
+
+    Only the session owner/participant may force their own session. No-op
+    (but still 200) when the session isn't actually queued — e.g. it already
+    got a slot or the gate is disabled.
+    """
+    from app.agent import session_gate
+    user_id, db = await _require_chat_session_access(fastapi_request, req.user_id, req.session_id)
+
+    queued = session_gate.queued_position(req.session_id) is not None
+    await session_gate.force_acquire(req.session_id)
+
+    # The turn wakes inside _run_turn_background and emits agent_status:
+    # "running" itself (via run_state_begin), which clears the frontend's
+    # queued styling — no extra broadcast needed here.
+
+    # Fire-and-forget diagnostics record so the force is traceable.
+    try:
+        from app.agent.diagnostics import record as _diag
+        _diag("info", "run", f"Session {req.session_id[:12]} force-run by user {user_id[:8]}",
+              source="force_run", session_id=req.session_id)
+    except Exception:
+        pass
+
+    return {"status": "ok", "session_id": req.session_id, "forced": queued}
+
 
 async def _save_chat_to_memory(
     db, user_id: str, session_id: str,
@@ -3070,6 +3821,9 @@ async def _save_chat_to_memory(
             title=f"Session {session_id[:8]}",
             compiled_truth=assistant_reply[:500],
             timeline=user_message[:200],
+            origin="distilled",
+            source_session_id=session_id,
+            source_interaction_id=parent_interaction_id,
         )
 
         # Save memory_save as visible tool interaction. Offloaded: this runs in a
@@ -3275,6 +4029,7 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
         _img_start = _t.time()
         desc = None
         was_cached = False
+        err_sink: list = []
         if isinstance(meta, dict) and meta.get("vision_description") \
                 and meta.get("vision_describer_model") == describer.get("model"):
             desc = meta.get("vision_description")
@@ -3285,6 +4040,7 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
                 a, describer, user_text_hint=message,
                 system_prompt=plan.get("worker_system") or None,
                 instruction=plan.get("worker_instruction"),
+                error_sink=err_sink,
             )
             if desc:
                 described += 1
@@ -3297,8 +4053,27 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
                 except Exception as e:
                     logger.debug("attachment route: metadata cache failed: %s", e)
         _img_ms = int((_t.time() - _img_start) * 1000)
+        # Surface the REAL failure reason (e.g. the provider being out of credits)
+        # to the agent and the user instead of a silent generic fallback. The
+        # description worker swallows exceptions and returns None, so without this
+        # the failure was invisible: the foldable tool row said "could not describe"
+        # and the user never learned WHY vision was down.
+        err_text = (err_sink[-1] if err_sink else "").strip()
+        if not desc and err_text:
+            logger.warning(
+                "attachment route: image describe failed (model=%s, att=%s): %s",
+                describer.get("model", ""), a.get("id"), err_text)
+            try:
+                from app.util.alerts import is_provider_credit_error, persist_402_alert
+                if is_provider_credit_error(err_text):
+                    await persist_402_alert(err_text, user_id, session_id,
+                                            describer.get("model", ""),
+                                            describer.get("provider", ""))
+            except Exception:
+                pass
+        fail_note = " — {}".format(err_text) if (not desc and err_text) else ""
         yield {"type": "tool_result", "level": "agent", "tool": "process_image",
-               "result": desc or "(the vision model could not describe this image)",
+               "result": (desc or "(the vision model could not describe this image)") + fail_note,
                "duration_ms": _img_ms,
                "error": not bool(desc), "turn": 1}
         # Persist the vision-describe step as an inspectable tool interaction —
@@ -3313,7 +4088,7 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
         try:
             await db.insert_interaction(
                 user_id, session_id, role="tool",
-                content=desc or "(the vision model could not describe this image)",
+                content=(desc or "(the vision model could not describe this image)") + fail_note,
                 parent_id=user_interaction_id,
                 tool_name="process_image",
                 channel="web_portal",
@@ -3324,6 +4099,7 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
                     "error": not bool(desc),
                     "duration_ms": _img_ms,
                     "args": tool_args,
+                    **({"error_detail": err_text} if err_text else {}),
                 }),
                 output_data=desc or "",
                 sender_id=agent_id or None,
@@ -3334,7 +4110,7 @@ async def _maybe_describe_images(db, user_id, message, user_interaction_id,
         if desc:
             parts.append(f"\n\n[Attached image — '{name}']:\n{desc}")
         else:
-            parts.append(f"\n\n[Attached image — '{name}']:\n(Image could not be described.)")
+            parts.append(f"\n\n[Attached image — '{name}']:\n(Image could not be described.){fail_note}")
 
     # Persist the user turn with the image DESCRIPTION folded in (so the model keeps
     # it across turns) but NOT the guidance NOTE — the note is an instruction to the
@@ -3462,7 +4238,12 @@ async def _maybe_emit_app_control(db, request, user_interaction_id, desc_out,
         desc_out["message_text"] = (base + "\n\n" + summary).strip()
 
 
-async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: Optional[str] = None):
+async def _emit_to_visualizers(
+    session_id: str,
+    event: Dict[str, Any],
+    user_id: Optional[str] = None,
+    db_override: Optional[Any] = None,
+):
     """Push an event to all visualizer listeners for a session, and optionally user listeners.
 
     Side effect: if a RunBuffer is active for this session, the event is
@@ -3487,23 +4268,31 @@ async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: 
     except Exception as _be:
         logger.debug("RunBuffer stamp failed for session %s: %s", session_id, _be)
 
-    # Backfill the ordering number onto the assistant transcript ROW as its "db"
-    # event is stamped. The loop saves the assistant row (on first token / at step
-    # finalize) WITHOUT a session_seq — so without this it stays NULL and the
-    # reconcile tail's `session_seq IS NOT NULL` filter can never see it (the agent
-    # message goes missing on any DB-reconcile render). The stamp goes local-first
-    # via the same helper the user row uses, so the row becomes visible immediately
-    # and the push carries the number to remote too.
+    # Backfill the ordering number onto EVERY db-persisted row as its "db"
+    # event is stamped. The loop saves rows (assistant on first token, tool
+    # results, system messages etc.) WITHOUT a session_seq — so without this
+    # they stay NULL and the reconcile tail's `session_seq IS NOT NULL` filter
+    # can never see them (rows go missing on any DB-reconcile render). The stamp
+    # goes local-first via the same helper the user row uses, so the row becomes
+    # visible immediately and the push carries the number to remote too.
     try:
-        if (event.get("type") == "db" and event.get("role") == "assistant"
+        if (event.get("type") == "db"
+                and event.get("op") != "update_interaction"
                 and event.get("id") and event.get("session_seq") is not None):
             _asst_id = event.get("id")
             _asst_ss = int(event.get("session_seq"))
             _asst_tid = event.get("turn_id")
             _asst_ts = event.get("turn_seq")
-            _db_seq = get_db()
+            # Optimizer/closer sessions write to a temp DB. Reopening the global
+            # backend here stamped the wrong database and left every assistant
+            # row NULL-session_seq, breaking reconcile and replay ordering.
+            _db_seq = db_override or get_db()
             await db_offload(lambda: _db_seq.stamp_interaction_seq(
                 _asst_id, _asst_ss, _asst_tid, _asst_ts))
+            # State the durable row order separately from this event's replay
+            # cursor. Clients can cache it by interaction id and never position
+            # transcript nodes using a transport sequence.
+            event["interaction_seq"] = _asst_ss
     except Exception as _ae:
         logger.debug("assistant row seq backfill failed for session %s: %s", session_id, _ae)
 
@@ -3524,7 +4313,7 @@ async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: 
                 _op = None  # tool finished — back to a generic "thinking" state
             # Offloaded: emitted for every tool event mid-turn; a blocking write
             # here would freeze the loop (and the stream) on each tool call.
-            _db_op = get_db()
+            _db_op = db_override or get_db()
             await db_offload(lambda: _db_op.run_state_set_op(session_id, _op))
         except Exception as _oe:
             logger.debug("run_state_set_op failed for session %s: %s", session_id, _oe)
@@ -3552,20 +4341,20 @@ async def _emit_to_visualizers(session_id: str, event: Dict[str, Any], user_id: 
 
 
 # ── User listener registry (per-user) ──
-_user_listeners: Dict[str, List[Any]] = {}  # user_id → list of WebSocket objects
+_user_listeners: Dict[str, List[tuple[Any, str]]] = {}
 
 
-def register_user_listener(user_id: str, websocket: Any):
+def register_user_listener(user_id: str, websocket: Any, *, device_id: str = ""):
     """Register a WebSocket that receives events for all of a user's sessions."""
     if user_id not in _user_listeners:
         _user_listeners[user_id] = []
-    _user_listeners[user_id].append(websocket)
+    _user_listeners[user_id].append((websocket, str(device_id or "")))
 
 def unregister_user_listener(user_id: str, websocket: Any):
     """Remove a WebSocket from the per-user listeners."""
     if user_id in _user_listeners:
         _user_listeners[user_id] = [
-            ws for ws in _user_listeners[user_id] if ws is not websocket
+            entry for entry in _user_listeners[user_id] if entry[0] is not websocket
         ]
         if not _user_listeners[user_id]:
             del _user_listeners[user_id]
@@ -3576,7 +4365,7 @@ async def _emit_to_user_listeners(user_id: str, event: Dict[str, Any]):
     import json
     listeners = _user_listeners.get(user_id, [])
     disconnected = []
-    for ws in listeners:
+    for ws, _device_id in listeners:
         try:
             await ws.send_text(json.dumps(event))
         except Exception:
@@ -3597,3 +4386,28 @@ async def notify_user(user_id: str, event: Dict[str, Any]) -> None:
         await _emit_to_user_listeners(user_id, event)
     except Exception:
         pass
+
+
+async def revoke_user_device_connections(
+    user_id: str,
+    device_ids: list[str],
+    event: Dict[str, Any],
+) -> None:
+    """Deliver a final purge directive, then close matching live device sockets."""
+    import json
+
+    targets = {str(value) for value in device_ids if value}
+    if not user_id or not targets:
+        return
+    for websocket, device_id in list(_user_listeners.get(user_id, [])):
+        if device_id not in targets:
+            continue
+        try:
+            await websocket.send_text(json.dumps(event))
+        except Exception:
+            pass
+        try:
+            await websocket.close(code=4401, reason="Device session revoked")
+        except Exception:
+            pass
+        unregister_user_listener(user_id, websocket)

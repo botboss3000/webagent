@@ -4,7 +4,12 @@ import json
 import unittest
 from datetime import datetime, timezone
 
-from app.agent.session_history import TOOL_MARKER, interactions_to_openai_messages
+from app.agent.session_history import (
+    TOOL_MARKER,
+    build_openai_history_from_session,
+    interactions_to_openai_messages,
+)
+from app.agent.compaction import maybe_compact
 from app.models.schemas import InteractionRecord
 
 
@@ -15,6 +20,7 @@ def _ir(
     *,
     tool_name: str | None = None,
     tool_call_id: str | None = None,
+    output: str | None = None,
 ) -> InteractionRecord:
     return InteractionRecord(
         id=iid,
@@ -25,6 +31,7 @@ def _ir(
         tool_name=tool_name,
         tool_call_id=tool_call_id,
         metadata=None,
+        output=output,
         created_at=datetime.now(timezone.utc),
     )
 
@@ -72,6 +79,109 @@ class InteractionsToOpenaiMessagesTests(unittest.TestCase):
         self.assertEqual(out[1]["tool_calls"][0]["function"]["name"], "web_search")
         self.assertEqual(out[2]["role"], "tool")
         self.assertEqual(out[2]["tool_call_id"], "call_abc")
+
+    def test_evicted_tool_output_remains_a_valid_result_pair(self) -> None:
+        tool_calls = [{
+            "id": "call_evicted",
+            "type": "function",
+            "function": {"name": "web_search", "arguments": '{"q":"cats"}'},
+        }]
+        notice = (
+            "Stored tool output removed to manage storage. The original tool request "
+            "is retained. Re-run only if the operation is safe and current output is needed."
+        )
+        rows = [
+            _ir("a", "assistant", "", output=json.dumps({"tool_calls": tool_calls})),
+            _ir("t", "tool", notice, tool_name="web_search", tool_call_id="call_evicted"),
+        ]
+
+        out = interactions_to_openai_messages(rows)
+
+        self.assertEqual(out[0]["tool_calls"], tool_calls)
+        self.assertEqual(out[1], {
+            "role": "tool", "content": notice, "tool_call_id": "call_evicted",
+        })
+
+
+class LargeSessionAssemblyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_compacted_prefix_is_never_materialized(self) -> None:
+        tail = [_ir("tail-user", "user", "latest request")]
+
+        class FakeDB:
+            full_fetches = 0
+            suffix_offsets = []
+
+            async def count_interactions(self, user_id, session_id):
+                return 1_000_000
+
+            async def get_session_segments(self, user_id, session_id):
+                return [{
+                    "seq": 0,
+                    "start_index": 0,
+                    "end_index": 999_999,
+                    "summary": "bounded earlier context",
+                    "token_estimate": 3,
+                    "topic": "Earlier work",
+                    "tier": 1,
+                }]
+
+            async def fetch_interactions_from_offset(self, user_id, session_id, offset):
+                self.suffix_offsets.append(offset)
+                return tail
+
+            async def fetch_interactions(self, user_id, session_id):
+                self.full_fetches += 1
+                raise AssertionError("raw compacted prefix must not be fetched")
+
+        db = FakeDB()
+        out = await build_openai_history_from_session(db, "user", "session")
+
+        self.assertEqual(db.full_fetches, 0)
+        self.assertEqual(db.suffix_offsets, [999_999])
+        self.assertEqual(out[-1], {"role": "user", "content": "latest request"})
+        self.assertIn("bounded earlier context", out[0]["content"])
+
+    async def test_compaction_check_reads_only_uncovered_suffix(self) -> None:
+        tail = [_ir("tail-user", "user", "small hot tail")]
+
+        class FakeDB:
+            full_fetches = 0
+            suffix_offsets = []
+
+            async def count_interactions(self, user_id, session_id):
+                return 1_000_000
+
+            async def get_session_segments(self, user_id, session_id):
+                return [{
+                    "seq": 0,
+                    "start_index": 0,
+                    "end_index": 999_999,
+                    "summary": "earlier context",
+                    "token_estimate": 3,
+                    "topic": "Earlier work",
+                    "tier": 1,
+                }]
+
+            async def fetch_interactions_from_offset(self, user_id, session_id, offset):
+                self.suffix_offsets.append(offset)
+                return tail
+
+            async def fetch_interactions(self, user_id, session_id):
+                self.full_fetches += 1
+                raise AssertionError("compaction check loaded summarized prefix")
+
+        db = FakeDB()
+        changed = await maybe_compact(db, "user", "session", {
+            "enabled": True,
+            "compaction_enabled": True,
+            "token_limit": 1_000_000,
+            "compact_threshold": 0.85,
+            "tail_fraction": 0.30,
+        })
+
+        self.assertIsNone(changed)
+        self.assertEqual(db.full_fetches, 0)
+        self.assertEqual(db.suffix_offsets, [999_999])
 
 
 if __name__ == "__main__":

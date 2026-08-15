@@ -1,0 +1,17 @@
+{
+  "cache_schema_version": 2,
+  "delete_enabled": true,
+  "export_enabled": true,
+  "generated_html_ttl_seconds": 86400,
+  "max_cache_bytes": 52428800,
+  "metadata_ttl_seconds": 300,
+  "persistence_mode": "persistent_cache",
+  "policy_epoch": 1,
+  "receipt_retention_days": 30,
+  "run_state_ttl_seconds": 3600,
+  "telemetry_enabled": true,
+  "telemetry_redact_payloads": true,
+  "tombstone_retention_days": 90,
+  "transcript_ttl_seconds": 900,
+  "turn_reservation_retention_hours": 24
+}

@@ -211,7 +211,11 @@ def is_default_seed() -> bool:
 
 # ── Remember-me tokens ───────────────────────────────────────────────────────
 
-async def set_remember_token(username: str) -> Optional[str]:
+async def set_remember_token(
+    username: str,
+    *,
+    device_id: str = "",
+) -> Optional[str]:
     """Generate and store a new remember token for the user.
     Returns the token string, or None if user not found.
     Every call invalidates the previous token (single-session)."""
@@ -220,6 +224,13 @@ async def set_remember_token(username: str) -> Optional[str]:
         return None
     token = _generate_remember_token()
     await _db().update_user_account(row["user_id"], remember_token=token)
+    from app.auth.revocation import bind_remember_token, clear_remember_tokens
+
+    clear_remember_tokens(row["user_id"])
+    if device_id and not bind_remember_token(row["user_id"], device_id, token):
+        # Never hand the client a persistent credential that failed to bind.
+        await _db().update_user_account(row["user_id"], remember_token="")
+        return None
     return token
 
 
@@ -234,6 +245,9 @@ async def clear_remember_token(username: str) -> bool:
     if row is None:
         return False
     await _db().update_user_account(row["user_id"], remember_token="")
+    from app.auth.revocation import clear_remember_tokens
+
+    clear_remember_tokens(row["user_id"])
     return True
 
 
@@ -261,7 +275,7 @@ async def register_user(username: str, password: str, display_name: str = "",
     # The bootstrap admin's *privilege* (user_profiles.is_admin) must travel with
     # its *login* on EVERY backend. The is_admin=1 seed historically lived only in
     # the LocalBackend SQLite migrations, so a shared/remote control DB (Postgres/
-    # Supabase) never received it — a signed-in "admin" then had no Admin Tools.
+    # remote DB) never received it — a signed-in "admin" then had no Admin Tools.
     # Stamping it here (a backend-agnostic, control-DB-routed write) closes that
     # gap for the setup page, the env-var bootstrap, and the bundle path alike.
     if user is not None and user.user_id == ADMIN_USER_ID:
@@ -290,7 +304,15 @@ async def delete_user(username: str) -> bool:
         return False
     if row["user_id"] == "admin":
         return False
-    return await _db().delete_user_account(row["user_id"])
+    eraser = getattr(_db(), "erase_user_owned_data", None)
+    if eraser is not None:
+        await eraser(row["user_id"])
+    await _purge_local_user_state(row["user_id"], remove_files=False)
+    deleted = await _db().delete_user_account(row["user_id"])
+    if deleted:
+        await _purge_local_user_state(row["user_id"], remove_files=True)
+        _scrub_legacy_backup(row["user_id"])
+    return deleted
 
 
 async def set_session_policy(username: str, lifetime_minutes: int,
@@ -424,8 +446,57 @@ async def delete_user_self(username: str) -> tuple[bool, str]:
         return False, "not_found"
     if row["user_id"] == "admin":
         return False, "protected"
+    eraser = getattr(_db(), "erase_user_owned_data", None)
+    if eraser is not None:
+        await eraser(row["user_id"])
+    await _purge_local_user_state(row["user_id"], remove_files=False)
     ok = await _db().delete_user_account(row["user_id"])
+    if ok:
+        await _purge_local_user_state(row["user_id"], remove_files=True)
+        _scrub_legacy_backup(row["user_id"])
     return (True, "") if ok else (False, "not_found")
+
+
+async def _purge_local_user_state(
+    user_id: str,
+    *,
+    remove_files: bool,
+) -> None:
+    """Remove browser-sync files and process-local caches for a deleted user."""
+    from app.agent.browser_history_cache import (
+        get_browser_history_cache,
+        get_browser_turn_replay_cache,
+    )
+    from app.db.user_store import purge_user_store_files
+
+    await purge_user_store_files(user_id, remove_files=remove_files)
+    await get_browser_history_cache().purge_user(user_id)
+    await get_browser_turn_replay_cache().purge_user(user_id)
+
+
+def _scrub_legacy_backup(user_id: str) -> None:
+    """Remove one account from the pre-database JSON backup, if present."""
+    backup = _USER_FILE.with_name(f"{_USER_FILE.name}.bak")
+    if not backup.exists():
+        return
+    try:
+        rows = json.loads(backup.read_text(encoding="utf-8"))
+        if not isinstance(rows, list):
+            raise ValueError("legacy account backup is not a list")
+        kept = [
+            row for row in rows
+            if not isinstance(row, dict) or str(row.get("user_id") or "") != user_id
+        ]
+        if len(kept) == len(rows):
+            return
+        temporary = backup.with_suffix(f"{backup.suffix}.tmp")
+        temporary.write_text(
+            json.dumps(kept, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        temporary.replace(backup)
+    except Exception as exc:
+        raise RuntimeError("Could not scrub deleted user from legacy backup") from exc
 
 
 # ── Startup: legacy-file migration + env-var admin bootstrap ──────────────────
@@ -499,7 +570,7 @@ async def ensure_admin_privilege() -> bool:
     The admin *login* lives in user_accounts; the *privilege* lives in
     user_profiles.is_admin. That privilege was only ever seeded by the LocalBackend
     SQLite migrations, so a box whose control DB is a shared/remote Postgres or
-    Supabase (e.g. a fresh deploy that inherits an existing shared database) ends up
+    remote DB (e.g. a fresh deploy that inherits an existing shared database) ends up
     with a valid admin login but NO admin privilege — signed in, yet locked out of
     Admin Tools. Run once at startup (after the account bootstrap) it repairs any
     such box, and repairs the shared DB itself so later deploys inherit the flag.

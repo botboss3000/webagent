@@ -1,0 +1,21 @@
+{
+  "id": "instances",
+  "label": "Instances",
+  "icon": "boxes",
+  "order": 1,
+  "locked": true,
+  "html": "instances.html",
+  "mount": "#tab-instances",
+  "entry": "ui/main-panel/instances/instances.js",
+  "start": "startView",
+  "stop": "stopView",
+  "css": ["instances.css", "new-deployment/new-deployment.css", "new-instance/new-instance.css", "dashboard/dashboard.css", "users/users.css"],
+  "partials": [
+    "app-config/app-config.html",
+    "app-config/data-settings/data-settings.html",
+    "app-config/agent-settings/agent-settings.html",
+    "app-config/app-settings/app-settings.html"
+  ],
+  "router": "server.py",
+  "routers": ["dashboard/server.py"]
+}

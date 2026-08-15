@@ -4,7 +4,7 @@
  * Agents Management — orchestrator module.
  *
  * Wires together all sub-modules (grid, card, tabs, etc.) following the same
- * pattern as ui/admin-tools/app-config/.
+ * pattern as ui/admin-tools/instances/app-config/.
  * Called by tabs.js (startAgents, stopAgents).
  */
 

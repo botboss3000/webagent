@@ -115,6 +115,15 @@ TABLES: List[Table] = [
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
+    Table("browser_sync_receipts", [
+        Column("mutation_id", "TEXT", nullable=False, primary_key=True),
+        Column("user_id", "TEXT", nullable=False),
+        Column("session_id", "TEXT", nullable=False),
+        Column("request_hash", "TEXT", nullable=False),
+        Column("result_json", "TEXT", nullable=False),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
     Table("interactions", [
         Column("id", "TEXT", nullable=False, primary_key=True),
         Column("session_id", "TEXT", nullable=False, references="sessions(id)"),
@@ -140,6 +149,20 @@ TABLES: List[Table] = [
         # durable (survives RunBuffer eviction and server restarts).
         Column("status", "TEXT", nullable=False, default="'complete'"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
+    # Materialized transcript revision/hash. SQLite marks this dirty through
+    # triggers and rebuilds the canonical hash once after a mutation, making
+    # subsequent browser-cache validations O(1). Remote backends may populate it
+    # in their write adapter before enabling validated persistent cache.
+    Table("session_manifests", [
+        Column("session_id", "TEXT", nullable=False, primary_key=True),
+        Column("authority_revision", "INTEGER", nullable=False, default="0"),
+        Column("content_hash", "TEXT", nullable=False, default="''"),
+        Column("interaction_count", "INTEGER", nullable=False, default="0"),
+        Column("max_session_seq", "INTEGER", nullable=False, default="0"),
+        Column("dirty", "INTEGER", nullable=False, default="1"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
     # Per-session durable run state — the in-flight (or recently finished) agent
@@ -264,6 +287,8 @@ TABLES: List[Table] = [
 
     Table("agent_templates", [
         Column("id", "TEXT", nullable=False, primary_key=True, default="'default'"),
+        Column("name", "TEXT", nullable=False, default="''"),
+        Column("description", "TEXT", nullable=False, default="''"),
         Column("max_turn_count", "INTEGER", nullable=False, default="0"),
         Column("max_wall_seconds", "REAL"),
         Column("max_identical_tool_calls", "INTEGER", nullable=False, default="0"),
@@ -277,6 +302,14 @@ TABLES: List[Table] = [
         Column("trigger_key", "TEXT"),
         Column("loop_logic", "TEXT", nullable=False, default="'[]'"),
         Column("abilities", "TEXT"),
+        Column("icon", "TEXT"),
+        Column("can_be_default", "INTEGER", nullable=False, default="1"),
+        Column("is_system", "INTEGER", nullable=False, default="0"),
+        Column("is_pipeline", "INTEGER", nullable=False, default="0"),
+        Column("access_level", "TEXT", nullable=False, default="'user'"),
+        Column("trigger_description", "TEXT"),
+        Column("discoverable", "INTEGER", nullable=False, default="1"),
+        Column("is_admin_agent", "INTEGER", nullable=False, default="0"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
@@ -297,9 +330,17 @@ TABLES: List[Table] = [
         Column("max_tokens", "INTEGER", nullable=False, default="8000"),
         Column("status", "TEXT", nullable=False, default="'active'"),
         Column("metadata", "TEXT", nullable=False, default="'{}'"),
+        Column("default_execution_mode", "TEXT", nullable=False, default="'ask'"),
+        Column("allowed_tools", "TEXT", nullable=False, default="'[]'"),
+        Column("custom_tool_ids", "TEXT", nullable=False, default="'[]'"),
+        Column("safety_policy", "TEXT", nullable=False, default="'{}'"),
         Column("trigger_type", "TEXT", nullable=False, default="'user_input'"),
         Column("trigger_key", "TEXT"),
         Column("loop_logic", "TEXT", nullable=False, default="'[]'"),
+        Column("auto_resume", "INTEGER", nullable=False, default="0"),
+        Column("is_admin_agent", "INTEGER", nullable=False, default="0"),
+        Column("icon", "TEXT"),
+        Column("current_context_id", "TEXT"),
         Column("assigned_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
@@ -383,6 +424,46 @@ TABLES: List[Table] = [
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ], constraints=["UNIQUE(agent_id, ability_id)"]),
+
+    # Per-agent, database-backed abilities.  Unlike host abilities these do not
+    # load Python modules: they contribute a skill and a constrained declaration
+    # of which already-granted tools a workflow may use.
+    Table("agent_soft_abilities", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("agent_id", "TEXT", nullable=False, references="agents(id)", on_delete="CASCADE"),
+        Column("slug", "TEXT", nullable=False),
+        Column("display_name", "TEXT", nullable=False),
+        Column("description", "TEXT", nullable=False, default="''"),
+        Column("icon", "TEXT", nullable=False, default="'sparkles'"),
+        Column("enabled", "INTEGER", nullable=False, default="1"),
+        Column("skill_summary", "TEXT", nullable=False, default="''"),
+        Column("skill_body", "TEXT", nullable=False, default="''"),
+        Column("workflow", "TEXT", nullable=False, default="'{}'"),
+        Column("allowed_tools", "TEXT", nullable=False, default="'[]'"),
+        Column("credential_schema", "TEXT", nullable=False, default="'[]'"),
+        Column("policy", "TEXT", nullable=False, default="'{}'"),
+        Column("status", "TEXT", nullable=False, default="'draft'"),
+        Column("version", "INTEGER", nullable=False, default="1"),
+        Column("created_by", "TEXT", nullable=False),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=[
+        "UNIQUE(agent_id, slug)",
+        "CHECK (status IN ('draft','ready','disabled','error'))",
+    ]),
+
+    Table("soft_ability_runs", [
+        Column("id", "TEXT", nullable=False, primary_key=True),
+        Column("ability_id", "TEXT", nullable=False, references="agent_soft_abilities(id)", on_delete="CASCADE"),
+        Column("agent_id", "TEXT", nullable=False, references="agents(id)", on_delete="CASCADE"),
+        Column("user_id", "TEXT", nullable=False),
+        Column("session_id", "TEXT", nullable=False, default="''"),
+        Column("ability_version", "INTEGER", nullable=False),
+        Column("status", "TEXT", nullable=False),
+        Column("tools", "TEXT", nullable=False, default="'[]'"),
+        Column("elapsed_ms", "INTEGER", nullable=False, default="0"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
 
     Table("memories", [
         Column("id", "TEXT", nullable=False, primary_key=True),
@@ -503,6 +584,16 @@ TABLES: List[Table] = [
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
 
+    Table("session_notifications", [
+        Column("session_id", "TEXT", nullable=False, primary_key=True, references="sessions(id)", on_delete="CASCADE"),
+        Column("user_id", "TEXT", nullable=False),
+        Column("title", "TEXT", nullable=False, default="''"),
+        Column("dismissed", "INTEGER", nullable=False, default="0"),
+        Column("dismissed_at", "TEXT"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
     Table("attachments", [
         Column("id", "TEXT", nullable=False, primary_key=True),
         Column("user_id", "TEXT", nullable=False),
@@ -586,6 +677,8 @@ TABLES: List[Table] = [
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("last_login_at", "TEXT"),
+        Column("tutorial_prefs", "TEXT"),
+        Column("appearance", "TEXT"),
     ]),
 
     # The account/identity plane — login credentials. Central (never per-tenant
@@ -680,14 +773,19 @@ TABLES: List[Table] = [
         Column("allowed_processors", "TEXT", nullable=False, default="'[]'"),
         Column("rate_card_default_llm", "TEXT", nullable=False, default="'{}'"),
         Column("rate_card_byo_llm", "TEXT", nullable=False, default="'{}'"),
+        # Cost-based pricing: charge = provider cost × multiplier (floored at
+        # min_charge_cents); flat_image_cost_usd estimates per-image cost for
+        # providers that report no usage. NULL = inherit the platform default;
+        # the agent row only overrides when a value is explicitly set.
+        Column("cost_multiplier", "REAL"),
+        Column("min_charge_cents", "INTEGER"),
+        Column("flat_image_cost_usd", "REAL"),
         Column("trial_config", "TEXT", nullable=False, default="'{}'"),
         Column("subscription_price_cents", "INTEGER", nullable=False, default="0"),
         Column("currency", "TEXT", nullable=False, default="'usd'"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_by", "TEXT"),
-    ], constraints=[
-        "CHECK (strategy IN ('free','credits','per_message','per_token','subscription','trial'))",
     ]),
 
     Table("usage_events", [
@@ -711,6 +809,10 @@ TABLES: List[Table] = [
         # session / agent / global cost even when the session switches models.
         Column("cost_usd", "REAL", nullable=False, default="0"),
         Column("cost_source", "TEXT"),
+        Column("cached_input_tokens", "INTEGER", nullable=False, default="0"),
+        Column("cache_write_tokens", "INTEGER", nullable=False, default="0"),
+        Column("uncached_input_tokens", "INTEGER"),
+        Column("reasoning_tokens", "INTEGER", nullable=False, default="0"),
         # Direct session attribution for chat rows (NULL for background rows).
         Column("session_id", "TEXT"),
         # 'chat' for agent turns, 'background' for non-chat LLM calls.
@@ -765,6 +867,12 @@ TABLES: List[Table] = [
         Column("agent_id", "TEXT", nullable=False),
         Column("started_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("expires_at", "TIMESTAMP"),
+        # The trial is a credit grant: credit_cents is the original allotment,
+        # remaining_cents burns down with the same cost × multiplier charges as
+        # purchased credits. (messages_remaining/tokens_remaining kept for
+        # legacy rows; clean cutover — the engine reads only the credit fields.)
+        Column("credit_cents", "INTEGER"),
+        Column("remaining_cents", "INTEGER"),
         Column("messages_remaining", "INTEGER"),
         Column("tokens_remaining", "INTEGER"),
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
@@ -1005,6 +1113,74 @@ TABLES: List[Table] = [
         Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
         Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
     ]),
+
+    # ── Instance metadata (shared identity store) ──────────────────────────────
+    # Persistent facts about any instance (cloud VMs, fleet devices, local
+    # checkouts, Cloud Run services, manual servers). One row per instance, keyed
+    # by ``ref``. ``metadata`` is a JSON bag for everything optional or
+    # kind-specific — adding a new field never needs a migration.
+    # SEPARATE from ``device_presence`` (heartbeat/liveness) and ``device_jobs``
+    # (dispatch queue).
+    Table("instances", [
+        Column("ref", "TEXT", nullable=False, primary_key=True),
+        Column("kind", "TEXT", nullable=False),
+        Column("display_name", "TEXT"),
+        Column("provider", "TEXT"),
+        Column("status", "TEXT"),
+        Column("ip", "TEXT"),
+        Column("endpoint", "TEXT"),
+        Column("platform", "TEXT"),
+        Column("zone", "TEXT"),
+        Column("machine_type", "TEXT"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("metadata", "TEXT", nullable=False, default="'{}'"),
+    ]),
+
+    # Minimal control-plane projection used to locate and authorize an agent
+    # without duplicating its complete per-agent authority record in app.db.
+    Table("agent_catalog", [
+        Column("agent_id", "TEXT", nullable=False, primary_key=True),
+        Column("name", "TEXT", nullable=False, default="''"),
+        Column("icon", "TEXT"),
+        Column("status", "TEXT", nullable=False, default="'active'"),
+        Column("template_id", "TEXT"),
+        Column("owner_user_id", "TEXT"),
+        Column("admin_users", "TEXT", nullable=False, default="'[]'"),
+        Column("member_users", "TEXT", nullable=False, default="'[]'"),
+        Column("authorized_users", "TEXT", nullable=False, default="'[]'"),
+        Column("storage_ref", "TEXT", nullable=False, default="''"),
+        Column("authority_revision", "INTEGER", nullable=False, default="0"),
+        Column("deleted_at", "TEXT"),
+        Column("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ]),
+
+    # Durable activation marker.  Merely finding app.db/global.db on disk is
+    # never sufficient to activate a partially completed storage migration.
+    Table("storage_layout", [
+        Column("id", "INTEGER", nullable=False, primary_key=True),
+        Column("layout_version", "INTEGER", nullable=False),
+        Column("state", "TEXT", nullable=False, default="'preparing'"),
+        Column("manifest_json", "TEXT", nullable=False, default="'{}'"),
+        Column("started_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+        Column("activated_at", "TEXT"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=["CHECK (state IN ('preparing','verified','active','failed','retired'))"]),
+
+    Table("storage_migrations", [
+        Column("migration_id", "TEXT", nullable=False, primary_key=True),
+        Column("source_ref", "TEXT", nullable=False),
+        Column("target_ref", "TEXT", nullable=False),
+        Column("table_name", "TEXT", nullable=False),
+        Column("state", "TEXT", nullable=False, default="'pending'"),
+        Column("source_count", "INTEGER", nullable=False, default="0"),
+        Column("target_count", "INTEGER", nullable=False, default="0"),
+        Column("source_hash", "TEXT", nullable=False, default="''"),
+        Column("target_hash", "TEXT", nullable=False, default="''"),
+        Column("detail", "TEXT", nullable=False, default="'{}'"),
+        Column("updated_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP"),
+    ], constraints=["CHECK (state IN ('pending','copied','verified','failed'))"]),
 ]
 
 # NOTE: the company-wide Wiki lives in its OWN dedicated SQLite file
@@ -1019,6 +1195,9 @@ INDEXES: List[Index] = [
     Index("idx_browser_sessions_agent", "browser_sessions", "agent_id"),
     Index("idx_interactions_session", "interactions", "session_id"),
     Index("idx_interactions_created", "interactions", "created_at"),
+    # The transcript hot path filters one session and renders it chronologically.
+    # This avoids an extra sort (and growing per-session work) on long chats.
+    Index("idx_interactions_session_created", "interactions", "session_id, created_at"),
     Index("idx_interactions_session_seq", "interactions", "session_id, session_seq"),
     Index("idx_interactions_turn", "interactions", "turn_id"),
     Index("idx_diagnostics_ts", "diagnostics", "ts"),
@@ -1031,11 +1210,16 @@ INDEXES: List[Index] = [
     Index("idx_render_rec_seq", "render_recordings", "session_seq"),
     Index("idx_summaries_user", "session_summaries", "user_id"),
     Index("idx_summary_segments_session", "session_summary_segments", "session_id, seq"),
+    # Session-list/live-recovery polling asks for a user's active runs.
+    Index("idx_session_runs_user_status", "session_runs", "user_id, status"),
+    Index("idx_session_runs_status_heartbeat", "session_runs", "status, heartbeat_at"),
     Index("idx_agent_prompts_agent", "agent_prompts", "agent_id"),
     Index("idx_agent_prompts_user", "agent_prompts", "user_id"),
     Index("idx_agent_prompt_templates_tpl", "agent_prompt_templates", "template_id"),
     Index("idx_agent_conn_agent", "agent_connections", "agent_id"),
     Index("idx_agent_conn_type", "agent_connections", "connection_type"),
+    Index("idx_agent_soft_abilities_agent", "agent_soft_abilities", "agent_id"),
+    Index("idx_soft_ability_runs_ability", "soft_ability_runs", "ability_id, created_at"),
     Index("idx_agent_ability_agent", "agent_abilities", "agent_id"),
     Index("idx_agent_ability_id", "agent_abilities", "ability_id"),
     Index("idx_memories_user", "memories", "user_id"),
@@ -1111,6 +1295,8 @@ INDEXES: List[Index] = [
     Index("idx_device_jobs_claim", "device_jobs", "status, target_instance"),
     Index("idx_device_jobs_created", "device_jobs", "created_at"),
     Index("idx_device_presence_seen", "device_presence", "last_seen"),
+    # Instance metadata
+    Index("idx_instances_kind", "instances", "kind"),
 ]
 
 

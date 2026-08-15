@@ -52,8 +52,7 @@ _FOLDER_SPECS = [
 # schema-render/bootstrap only (no live backend module), so it isn't listed.
 _STORAGE_BACKENDS = [
     ("sqlite", "app.db.local"),
-    ("supabase", "app.db.supabase"),
-    ("postgres", "app.db.pg_portable"),
+    ("postgres", "app.db.postgres_backend"),
 ]
 
 # Agent abilities — the per-agent tool bundles. As of the abilities drop-in

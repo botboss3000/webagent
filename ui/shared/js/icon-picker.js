@@ -7,7 +7,7 @@
  * icon name, or null if cancelled. It has NO coupling to any app object — the
  * caller decides what to do with the result. Reused by the Agents page (pick an
  * agent icon) and App Settings (pick a page icon). The .icon-picker-* CSS lives
- * in ui/agents/agents.css, which index.html loads globally, so the popover is
+ * in ui/main-panel/agents/agents.css, which index.html loads globally, so the popover is
  * styled on every page.
  *
  * Usage:

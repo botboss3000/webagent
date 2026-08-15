@@ -1,0 +1,22 @@
+/* ── Top nav — jump-to-top / jump-to-last-user FAB buttons ──────────── */
+/* Flex child of #chat-header (which shares the same max-width as the
+   message content). margin-left: auto pushes it to the right edge.
+   6px right padding compensates for the header's 2px padding vs the
+   message content's 8px padding, keeping the nav aligned with bubbles.
+   order: 9999 pushes it below the zone rows that the control system builds. */
+#chat-top-nav {
+  display: none;
+  flex-direction: row;
+  gap: 4px;
+  margin-left: auto;
+  padding-right: 6px;
+  flex-shrink: 0;
+  order: 9999;
+}
+#chat-top-nav.visible {
+  display: flex;
+}
+#chat-top-nav .chat-nav-fab {
+  opacity: 1;
+  pointer-events: auto;
+}

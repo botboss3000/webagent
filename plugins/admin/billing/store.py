@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS platform_billing_config (
     allowed_processors         TEXT    NOT NULL DEFAULT '[]',
     rate_card_default_llm      TEXT    NOT NULL DEFAULT '{}',
     rate_card_byo_llm          TEXT    NOT NULL DEFAULT '{}',
+    cost_multiplier            REAL    NOT NULL DEFAULT 1,
+    min_charge_cents           INTEGER NOT NULL DEFAULT 1,
+    flat_image_cost_usd        REAL    NOT NULL DEFAULT 0.01,
     platform_fee_pct           REAL    NOT NULL DEFAULT 0,
     platform_fee_flat_cents    INTEGER NOT NULL DEFAULT 0,
     trial_config               TEXT    NOT NULL DEFAULT '{}',
@@ -70,6 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_platform_ledger_event ON platform_ledger (usage_e
 _CONFIG_FIELDS = (
     "strategy", "allowed_strategies", "allowed_processors",
     "rate_card_default_llm", "rate_card_byo_llm",
+    "cost_multiplier", "min_charge_cents", "flat_image_cost_usd",
     "platform_fee_pct", "platform_fee_flat_cents",
     "trial_config", "subscription_price_cents", "currency",
 )
@@ -96,6 +100,20 @@ def ensure_schema(db: Any) -> None:
                 conn.executescript(_SCHEMA_SQL)
                 conn.commit()
                 _migrate_legacy_platform_row(conn)
+                # Guarded ADD COLUMN for DBs created before the cost-based
+                # pricing fields existed (SQLite has no ADD COLUMN IF NOT EXISTS).
+                try:
+                    cols = {r[1] for r in conn.execute("PRAGMA table_info(platform_billing_config)").fetchall()}
+                    for _col, _sql in (
+                        ("cost_multiplier", "ALTER TABLE platform_billing_config ADD COLUMN cost_multiplier REAL NOT NULL DEFAULT 1"),
+                        ("min_charge_cents", "ALTER TABLE platform_billing_config ADD COLUMN min_charge_cents INTEGER NOT NULL DEFAULT 1"),
+                        ("flat_image_cost_usd", "ALTER TABLE platform_billing_config ADD COLUMN flat_image_cost_usd REAL NOT NULL DEFAULT 0.01"),
+                    ):
+                        if _col not in cols:
+                            conn.execute(_sql)
+                    conn.commit()
+                except Exception as _e:
+                    logger.debug("platform billing column migration skipped: %s", _e)
             finally:
                 conn.close()
     except Exception as e:

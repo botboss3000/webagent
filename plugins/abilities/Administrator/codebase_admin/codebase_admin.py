@@ -130,7 +130,7 @@ _DB_QUERY_SCHEMA = {
             "enum": ["list", "get", "insert", "update", "delete"],
             "description": "Action to perform: list, get, insert, update, or delete (delete clears content)",
         },
-        "context_type": {"type": "string", "description": "Document type (agent, user, skills, tools, tasks, memory, project, jobs) — for list/insert actions"},
+        "context_type": {"type": "string", "description": "Document type (agent, user, skills, tools, tasks, memory, project, jobs). This reads/writes the agent's prompt slot documents — it is NOT a SQL interface; for raw DB queries use run_python with sqlite3."},
         "context_id": {"type": "string", "description": "Document ID — for get/update/delete actions"},
         "title": {"type": "string", "description": "Title — for insert action"},
         "content": {"type": "string", "description": "Content body — for insert/update actions"},

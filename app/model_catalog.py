@@ -179,11 +179,22 @@ def _index(models: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
     """Map full-id and bare-id -> canonical key in `models` for fast lookup.
     Full ids win over bare on collision (bare ids are ambiguous across providers)."""
     idx: Dict[str, str] = {}
-    # First pass: bare ids (may be overwritten by a later provider — acceptable).
+    # First pass: bare ids. Prefer entries that have pricing data so a bare-id
+    # lookup returns a pricelist-bearing entry, not an early alphabetical hit
+    # (e.g. "anyapi/..." with no cost) that shows $0 cost in the chat controls.
     for key, e in models.items():
         bare = _bare(e.get("id") or key)
-        if bare:
-            idx.setdefault(bare, key)
+        if not bare:
+            continue
+        if bare not in idx:
+            idx[bare] = key
+        else:
+            existing = models.get(idx[bare], {})
+            candidate = models.get(key, {})
+            existing_has = existing.get("cost_input") is not None or existing.get("cost_output") is not None
+            candidate_has = candidate.get("cost_input") is not None or candidate.get("cost_output") is not None
+            if not existing_has and candidate_has:
+                idx[bare] = key
     # Second pass: exact ids always take precedence.
     for key, e in models.items():
         idx[(e.get("id") or key).strip().lower()] = key
@@ -315,7 +326,16 @@ def lookup(model_id: str, provider_hint: str = "") -> Optional[Dict[str, Any]]:
     if not model_id:
         return None
     bare = _bare(model_id)
-    key = index.get(model_id.strip().lower())
+    key = None
+    if "/" in model_id:
+        # Fully-qualified id — exact match wins.
+        key = index.get(model_id.strip().lower())
+    # A bare id ('deepseek-v4-pro') exists under MANY providers in the catalog;
+    # the bare-id index keeps only ONE of them (the first with pricing data), so
+    # an unqualified hit can return another provider's entry — wrong capability
+    # flags (e.g. tool_call: False on azure vs True on deepseek) that silently
+    # disqualify a configured model. When a provider is known, the
+    # provider-qualified entry takes precedence over the bare-id fallback.
     if not key and provider_hint:
         key = index.get(f"{provider_hint.strip().lower()}/{bare}")
     if not key:
@@ -335,6 +355,9 @@ def cost_for(
     input_tokens: int = 0,
     output_tokens: int = 0,
     provider_hint: str = "",
+    cached_input_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    uncached_input_tokens: Optional[int] = None,
 ) -> tuple:
     """Published-price USD cost for one LLM call: the model's per-1M input/output
     price (from the catalog) × this call's tokens.
@@ -349,9 +372,22 @@ def cost_for(
     co = meta.get("cost_output")
     if ci is None and co is None:
         return 0.0, "unknown"
-    cost = (int(input_tokens or 0) / 1_000_000.0) * (ci or 0.0) \
+    total_in = max(0, int(input_tokens or 0))
+    cached_in = min(total_in, max(0, int(cached_input_tokens or 0)))
+    # A provider may explicitly report misses (DeepSeek), otherwise the
+    # remainder of prompt_tokens is the only defensible miss count.
+    uncached_in = (min(max(0, total_in - cached_in), max(0, int(uncached_input_tokens)))
+                   if uncached_input_tokens is not None else max(0, total_in - cached_in))
+    cache_read_rate = meta.get("cost_cache_read")
+    cache_write_rate = meta.get("cost_cache_write")
+    cost = (uncached_in / 1_000_000.0) * (ci or 0.0) \
+        + (cached_in / 1_000_000.0) * (cache_read_rate if cache_read_rate is not None else (ci or 0.0)) \
+        + (max(0, int(cache_write_tokens or 0)) / 1_000_000.0) * (cache_write_rate or 0.0) \
         + (int(output_tokens or 0) / 1_000_000.0) * (co or 0.0)
-    return round(cost, 8), "catalog"
+    has_cache_pricing = ((cached_in and cache_read_rate is not None)
+                         or (cache_write_tokens and cache_write_rate is not None))
+    source = "cache_aware_catalog" if has_cache_pricing else "catalog"
+    return round(cost, 8), source
 
 
 def all_models() -> Dict[str, Any]:

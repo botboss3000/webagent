@@ -1,6 +1,6 @@
 """Per-turn (request-scoped) read cache for the chat hot path.
 
-On a remote Postgres/Supabase every DB read is a network round-trip (~150ms+).
+On a remote Postgres database every DB read is a network round-trip (~150ms+).
 A single chat turn re-reads the SAME invariant rows many times — the caller's
 admin flag, vault secrets, the agent's connections / tool-modes / ability-modes,
 its attached data sources. None of those change mid-turn, so reading them once
@@ -26,7 +26,9 @@ the agent loop re-reads them mid-turn to pick up changes a tool just made.
 """
 from __future__ import annotations
 
+import asyncio
 import functools
+from concurrent.futures import Future
 from contextvars import ContextVar
 from typing import Any, Dict, Optional
 
@@ -106,9 +108,35 @@ def turn_cached(fn):
             _ = hash(key)
         except TypeError:
             return await fn(self, *args, **kwargs)
+        # The context is copied into persistent DB-worker threads. A plain
+        # get/await/set lets multiple workers observe the same miss and each
+        # issue an identical remote query. Store a cross-loop Future first, so
+        # concurrent callers share one in-flight read.
+        existing = cache.get(key)
+        if isinstance(existing, Future):
+            return await asyncio.wrap_future(existing)
         if key in cache:
-            return cache[key]
-        val = await fn(self, *args, **kwargs)
-        cache[key] = val
+            return existing
+
+        pending: Future = Future()
+        # setdefault is atomic under the GIL, so only the winning worker runs
+        # the query. concurrent.futures.Future is intentionally used rather
+        # than asyncio.Future because waiters may belong to different loops.
+        current = cache.setdefault(key, pending)
+        if current is not pending:
+            if isinstance(current, Future):
+                return await asyncio.wrap_future(current)
+            return current
+        try:
+            val = await fn(self, *args, **kwargs)
+        except BaseException as exc:
+            pending.set_exception(exc)
+            # Failures are not cached; later reads can retry a transient issue.
+            if cache.get(key) is pending:
+                cache.pop(key, None)
+            raise
+        pending.set_result(val)
+        if cache.get(key) is pending:
+            cache[key] = val
         return val
     return wrapper

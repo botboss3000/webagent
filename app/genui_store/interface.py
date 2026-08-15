@@ -51,10 +51,13 @@ class GenuiStore(ABC):
         agent_context: str = "",
         initial_html: str = "",
         agent_id: str = "",
+        session_config: Optional[dict] = None,
     ) -> Dict:
         """Create a new page. Raises ValueError if slug already exists.
         Returns the manifest entry including its URL. `agent_id` is the creating
-        agent (the genui's owner)."""
+        agent (the genui's owner). `session_config` is the REQUIRED session
+        contract for the page's actions/chat — {target_name, mode, session_id?}
+        — see the API request model for the shape and validation rules."""
         ...
 
     @abstractmethod
@@ -63,9 +66,11 @@ class GenuiStore(ABC):
         ...
 
     @abstractmethod
-    async def rename_genui(self, user_id: str, slug: str, new_title: str) -> bool:
-        """Update only the display title of a page. Slug and body are preserved.
-        Returns False if no page with that slug exists."""
+    async def rename_genui(self, user_id: str, slug: str, new_title: str,
+                           session_config: Optional[dict] = None) -> bool:
+        """Update a page's display title and optionally its session config.
+        Slug and body are preserved. Returns False if no page with that slug
+        exists. When `session_config` is None the existing config is kept."""
         ...
 
     @abstractmethod
@@ -83,5 +88,17 @@ class GenuiStore(ABC):
     @abstractmethod
     async def save_genui_data(self, user_id: str, slug: str, data: Dict) -> None:
         """Write (replace) a genui's DATA object. Bumps updated_at where the
+        backend tracks it."""
+        ...
+
+    @abstractmethod
+    async def get_genui_widget(self, user_id: str, slug: str) -> Optional[Dict]:
+        """Return a genui's WIDGET config (widget.json — the page's launcher /
+        widget options), or None when it has no widget file."""
+        ...
+
+    @abstractmethod
+    async def save_genui_widget(self, user_id: str, slug: str, widget: Dict) -> None:
+        """Write (replace) a genui's WIDGET config. Bumps updated_at where the
         backend tracks it."""
         ...

@@ -3,7 +3,8 @@
 --
 -- sort_order is a nullable integer holding the user's drag-to-reorder position
 -- (0 = top). NULL means "never manually ordered" and the row falls back to its
--- natural order (agents: created_at ASC; sessions: pinned DESC, created_at DESC).
+-- natural order (agents: created_at ASC; unpinned sessions: latest interaction
+-- activity DESC). Only pinned sessions consume manual sort_order.
 -- The agent ordering is consumed by /api/v1/agents (and mirrored on the Agents
 -- page); the session ordering is consumed by /api/v1/db/sessions.
 --

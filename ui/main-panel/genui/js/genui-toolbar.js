@@ -39,8 +39,9 @@
 import { app } from '../../../shared/js/state.js';
 import { apiPath } from '../../../shared/js/config.js';
 import { authHeaders } from '../../../shared/js/left-login.js';
+import { randomUUID } from '../../../shared/js/uuid.js';
 import { createChatWidget } from '../../../chat-widget/js/chat-widget.js';
-import { startSpeechDictation, uploadAndPreview, wireChatPillUploads } from '../../../shared/js/attachments.js';
+import { startSpeechDictation, uploadAndPreview, uploadPendingAttachments, wireChatPillUploads, isVoiceInputSupported } from '../../../shared/js/attachments.js';
 import { advanceDeleteBtn } from '../../../shared/js/delete-control.js';
 
 // ── Module state ───────────────────────────────────────────────────────────────
@@ -62,6 +63,11 @@ const _pendingAtts = [];
 // genui's owning agent_id into a display name + to fall back to the default
 // WebAgent. Resolved once via _loadAgents (see _resolveGenuiAgentName/Id).
 let _agentsById = null;
+
+// Version check state — cached results per slug (so we don't re-fetch on every
+// render) and an AbortController to cancel an in-flight check.
+const _versionCache = {};       // slug → { upToDate:bool|null, error:string|null, checkedAt:ts }
+let _versionAbort = null;       // AbortController for in-flight fetch
 
 // Tiny lucide-style icon helper for menu rows. Lucide rewrites <i> tags at boot,
 // but rows are created after boot — we inline the SVGs so they render without
@@ -89,6 +95,14 @@ export function initGenuiToolbar(ctx) {
   if (newBtn)     newBtn.addEventListener('click', () => _ctx.newPage());
   if (refreshBtn) refreshBtn.addEventListener('click', () => _ctx.refresh());
 
+  // Gallery (front page) toggle — see genui.js showGalleryView.
+  const galleryBtn = document.getElementById('genui-gallery-btn');
+  if (galleryBtn)  galleryBtn.addEventListener('click', () => _ctx.showGallery());
+
+  // Version check — compare local data bag against a remote GitHub source.
+  const versionBtn = document.getElementById('genui-version-btn');
+  if (versionBtn) versionBtn.addEventListener('click', () => _checkVersion());
+
   _bindChatPill();
   _bindPageDropdown();
   _setAgentPlaceholder();   // name the maintaining agent in the pill placeholder
@@ -104,6 +118,11 @@ function syncPages() {
   _renderPageRows();
   _markPageDropdownLoaded();
   _setAgentPlaceholder();   // refresh once identity is known (no-op once cached)
+  // Auto-check version when a genui is loaded (reads version config from data bag).
+  _autoCheckVersion();
+  // Highlight the gallery toggle while the front page (card grid) is showing.
+  const galleryBtn = document.getElementById('genui-gallery-btn');
+  if (galleryBtn && _ctx.isGallery) galleryBtn.classList.toggle('active', !!_ctx.isGallery());
 }
 
 // ── Toolbar markup (the design surface — restyle/reshape freely) ─────────────
@@ -135,6 +154,12 @@ function _buildToolbar(footer) {
         // The selector is now CHEVRON-ONLY — the current genui shows highlighted
         // inside the popup, not spelled out on the trigger.
         '<div class="genui-page-controls">' +
+          // Gallery (front page) toggle — shows the card grid of every page
+          // (agents-page style) instead of a single page. Highlighted while the
+          // gallery is showing. See genui.js showGalleryView.
+          '<button id="genui-gallery-btn" type="button" class="header-plus-btn" title="All pages (gallery)">' +
+            '<i data-lucide="layout-grid"></i>' +
+          '</button>' +
           '<div id="genui-page-dropdown" class="session-dropdown">' +
             '<button id="genui-page-dropdown-trigger" type="button" class="session-dropdown-trigger" title="Switch genui">' +
               '<i data-lucide="chevron-down"></i>' +
@@ -143,6 +168,7 @@ function _buildToolbar(footer) {
           '</div>' +
           '<button id="genui-new-page-btn" title="New Gen UI" class="header-plus-btn"><i data-lucide="plus"></i></button>' +
           '<button id="genui-refresh-btn" title="Refresh Gen UI" class="header-plus-btn"><i data-lucide="refresh-cw"></i></button>' +
+          '<button id="genui-version-btn" title="Check data version" class="header-plus-btn"><i data-lucide="git-compare"></i></button>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -190,9 +216,16 @@ function _bindChatPill() {
   }
   wireChatPillUploads(pill, input, uploadOpts);
 
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (SR && voiceBtn) voiceBtn.addEventListener('click', () => startSpeechDictation(voiceBtn, input));
-  else pill.classList.add('no-voice');
+  if (voiceBtn) {
+    // Voice dictates into this input. Where NO voice path can work (insecure
+    // context / unsupported browser), force send-only via the shared no-voice
+    // hook instead of an erroring mic button.
+    if (!isVoiceInputSupported()) {
+      pill.classList.add('no-voice');
+    } else {
+      voiceBtn.addEventListener('click', () => startSpeechDictation(voiceBtn, input));
+    }
+  }
 }
 
 // Arm the send glyph (mic → send) when there's text OR a pending attachment.
@@ -205,6 +238,9 @@ function _updateArmed() {
 
 // Drop the pill's pending attachments + clear the preview bar (after a send).
 function _clearGenuiAtts() {
+  for (const entry of _pendingAtts) {
+    if (entry._objectUrl) URL.revokeObjectURL(entry._objectUrl);
+  }
   _pendingAtts.length = 0;
   const previewBar = document.getElementById('genui-chat-preview');
   if (previewBar) { previewBar.innerHTML = ''; previewBar.style.display = 'none'; }
@@ -213,11 +249,12 @@ function _clearGenuiAtts() {
 // Send the pill's text → open (or reuse) the page's chat-widget seeded with it,
 // then clear the pill. The widget tags each message with the genui handoff so it
 // reaches the page's maintaining agent (see _openChat).
-function _submitChatPill() {
+async function _submitChatPill() {
   const input = document.getElementById('genui-chat-input');
   if (!input) return;
   const text = input.value.trim();
-  const attachmentIds = _pendingAtts.map(a => a.attachment_id).filter(Boolean);
+  // Upload any locally-pending files to the server before sending.
+  const attachmentIds = await uploadPendingAttachments(_pendingAtts);
   if (!text && !attachmentIds.length) return;
   input.value = '';
   _clearGenuiAtts();
@@ -239,15 +276,50 @@ async function _openChat(initialMessage, attachmentIds) {
   const msg = (initialMessage || '').trim();
   const atts = Array.isArray(attachmentIds) ? attachmentIds.filter(Boolean) : [];
 
-  // Talk to the agent that OWNS this genui (its agent_id), falling back to the
-  // user's WebAgent when the genui isn't linked yet.
-  const agentId = await _resolveGenuiAgentId();
+  // ── Resolve config from data bag chatConfig.toolbar (independent of the button) ──
+  let dataBag = {};
+  try { dataBag = _ctx.readGenuiData() || {}; } catch (_) {}
+  const chatCfg = (dataBag && typeof dataBag.chatConfig === 'object') ? dataBag.chatConfig : {};
+  const cfg = (typeof chatCfg.toolbar === 'object') ? chatCfg.toolbar : {};
+  let agentId = cfg.agentId && cfg.agentId !== 'default' ? cfg.agentId : null;
+  if (!agentId) agentId = await _resolveGenuiAgentId();
+  const prompt = typeof cfg.prompt === 'string' ? cfg.prompt : '';
 
-  // If a widget is already open but for a DIFFERENT agent (the user switched to a
-  // genui owned by another agent), close it so the message can't go to the wrong
-  // agent — a fresh widget opens against the new owner below.
+  // ── Session contract for the toolbar chat ─────────────────────────────────
+  // The pill must dispatch into a properly-titled session like every other
+  // chat input: use chatConfig.toolbar.session when given, else fall back to
+  // the PAGE's session_config (all page chat inherits it). Without any config
+  // the widget keeps its old fresh-session behavior.
+  const cur = _ctx.getCurrentPage();
+  const pageSc = (cur && cur.session_config && typeof cur.session_config === 'object') ? cur.session_config : null;
+  const tbSc = (cfg.session && typeof cfg.session === 'object') ? cfg.session : null;
+  const sessionCfg = tbSc || pageSc || null;
+  let widgetSession = null;
+  let widgetReuseKey = '';
+  let widgetTargetName = '';
+  if (sessionCfg && sessionCfg.mode) {
+    const slug = cur ? cur.slug : 'home';
+    // Optional reuse_key keeps this surface's new_reuse session separate from
+    // the page chat's (they'd otherwise collide on the same slug key).
+    const rk = (sessionCfg.reuse_key && String(sessionCfg.reuse_key).trim()) ? String(sessionCfg.reuse_key).trim() : '';
+    const key = 'genui_session_reuse:' + (app.currentUserId || 'anon') + ':' + slug + (rk ? ':' + rk : '');
+    if (sessionCfg.mode === 'existing') {
+      widgetSession = String(sessionCfg.session_id || '').trim();
+    } else if (sessionCfg.mode === 'new_each') {
+      widgetSession = randomUUID();
+      try { localStorage.removeItem(key); } catch (_) {}
+    } else {
+      // new_reuse (default): remembered id or a fresh one remembered on first send.
+      try { widgetSession = localStorage.getItem(key) || ''; } catch (_) {}
+      if (!widgetSession) widgetSession = randomUUID();
+      widgetReuseKey = key;
+    }
+    widgetTargetName = String(sessionCfg.target_name || '').trim();
+  }
+
+  // If a widget is already open but for a DIFFERENT agent, close it first.
   if (_genuiChat && _genuiChatAgentId && agentId && _genuiChatAgentId !== agentId) {
-    try { _genuiChat.close(); } catch (_) {}   // onClose nulls our refs
+    try { _genuiChat.close(); } catch (_) {}
     _genuiChat = null;
     _genuiChatAgentId = null;
   }
@@ -256,18 +328,201 @@ async function _openChat(initialMessage, attachmentIds) {
     if (msg || atts.length) _genuiChat.send(msg, atts);
     return;
   }
-  const cur = _ctx.getCurrentPage();
+  let _promptInjected = false;
   _genuiChatAgentId = agentId;
   _genuiChat = createChatWidget({
-    title: cur ? cur.title : 'Gen UI',
-    iconName: 'sparkle',
+    title: cfg.title || (cur ? cur.title : 'Gen UI'),
+    iconName: cfg.iconName || 'sparkle',
     ensureAgent: () => Promise.resolve(agentId),
-    transformMessage: (text) => _ctx.buildTaggedPrompt(text),
+    sessionId: widgetSession,
+    sessionTargetName: widgetTargetName,
+    rememberSessionKey: widgetReuseKey,
+    transformMessage: (text) => {
+      // Tag every message with the genui page context first
+      const tagged = _ctx.buildTaggedPrompt ? _ctx.buildTaggedPrompt(text) : Promise.resolve(text);
+      // Then prepend the custom prompt on the first message only
+      if (prompt) {
+        return tagged.then(t => {
+          if (!_promptInjected && t) {
+            _promptInjected = true;
+            return prompt + '\n\n---\n\n' + t;
+          }
+          return t;
+        });
+      }
+      return tagged;
+    },
     initialMessage: msg,
     initialAttachmentIds: atts,
-    onClose: () => { _genuiChat = null; _genuiChatAgentId = null; },
-  });
-  _genuiChat.open();
+	    onClose: () => { _genuiChat = null; _genuiChatAgentId = null; },
+	  });
+	  _genuiChat.open();
+	}
+
+	// ── Version check ──────────────────────────────────────────────────────────────
+// Compares the current genui's data bag against a canonical version stored in a
+// remote GitHub repo. Configuration lives in the data bag under a "version" key:
+//   { "version": { "repo":"owner/repo", "path":"data/my.json", "ref":"main",
+//     "field":"version" } }
+// — where "field" (optional) compares just one key; otherwise the whole object is
+//   deep-compared.  Cached per slug so we don't re-fetch on every toolbar render;
+//   clicking the button always re-checks (ignores cache).
+
+const _GITHUB_RAW = 'https://raw.githubusercontent.com';
+
+// Update the button's visual state (icon + colour + tooltip).
+function _setVersionBtnState(state) {
+  const btn = document.getElementById('genui-version-btn');
+  if (!btn) return;
+  // reset all state classes
+  btn.classList.remove('checking', 'up-to-date', 'outdated', 'error');
+  btn.title = '';
+  if (state === 'checking') {
+    btn.classList.add('checking');
+    btn.title = 'Checking…';
+  } else if (state === 'up-to-date') {
+    btn.classList.add('up-to-date');
+    btn.title = 'Data is up to date';
+  } else if (state === 'outdated') {
+    btn.classList.add('outdated');
+    btn.title = 'Data is out of date — click to re-check';
+  } else if (state === 'error') {
+    btn.classList.add('error');
+    btn.title = 'Version check failed';
+  } else {
+    // idle — neutral
+    btn.title = 'Check data version';
+  }
+}
+
+function _versionConfig() {
+  try {
+    const d = _ctx.readGenuiData ? _ctx.readGenuiData() : {};
+    const v = d && typeof d === 'object' ? d.version : null;
+    if (!v || typeof v !== 'object') return null;
+    const repo = String(v.repo || '').trim();
+    const path = String(v.path || '').trim();
+    if (!repo || !path) return null;
+    return {
+      repo,
+      path,
+      ref: String(v.ref || 'main').trim() || 'main',
+      field: String(v.field || '').trim() || '',
+      label: String(v.label || '').trim() || '',
+    };
+  } catch (_) { return null; }
+}
+
+// Deep-equal for plain JSON values (objects, arrays, primitives).
+function _deepEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null) return false;
+  if (typeof a === 'object') {
+    const ka = Object.keys(a), kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (const k of ka) { if (!(k in b) || !_deepEqual(a[k], b[k])) return false; }
+    return true;
+  }
+  return false;
+}
+
+async function _checkVersion() {
+  const cur = _ctx.getCurrentPage ? _ctx.getCurrentPage() : null;
+  const slug = cur ? cur.slug : null;
+  if (!slug) { _ctx.updateStatus('Open a genui to check its version', 'info'); return; }
+
+  const cfg = _versionConfig();
+  if (!cfg) {
+    _ctx.updateStatus('No version source configured — add a "version" key to the data bag (repo + path)', 'info');
+    return;
+  }
+
+  // Cancel any in-flight request
+  if (_versionAbort) { try { _versionAbort.abort(); } catch (_) {} }
+  _versionAbort = new AbortController();
+  const signal = _versionAbort.signal;
+
+  _setVersionBtnState('checking');
+
+  const url = `${_GITHUB_RAW}/${encodeURI(cfg.repo)}/${encodeURI(cfg.ref)}/${cfg.path.replace(/^\/+/, '')}`;
+
+  let remote;
+  try {
+    const res = await fetch(url, {
+      signal,
+      headers: { 'Accept': 'application/vnd.github.v3.raw' },
+    });
+    if (!res.ok) {
+      if (res.status === 404) throw new Error(`File not found: ${res.status}`);
+      throw new Error(`GitHub returned ${res.status}`);
+    }
+    const text = await res.text();
+    try { remote = JSON.parse(text); } catch (_) {
+      throw new Error('Remote file is not valid JSON');
+    }
+  } catch (e) {
+    _versionAbort = null;
+    if (e.name === 'AbortError') return;   // cancelled
+    const msg = (e && e.message) || 'Unknown error';
+    _versionCache[slug] = { upToDate: null, error: msg, checkedAt: Date.now() };
+    _setVersionBtnState('error');
+    const btn = document.getElementById('genui-version-btn');
+    if (btn) btn.title = msg;
+    _ctx.updateStatus('Version check failed: ' + msg, 'error');
+    return;
+  }
+  _versionAbort = null;
+
+  // Compare
+  const local = _ctx.readGenuiData ? _ctx.readGenuiData() : {};
+  const match = cfg.field
+    ? _deepEqual(local && local[cfg.field], remote && remote[cfg.field])
+    : _deepEqual(local, remote);
+
+  _versionCache[slug] = { upToDate: match, error: null, checkedAt: Date.now() };
+  if (match) {
+    _setVersionBtnState('up-to-date');
+    _ctx.updateStatus('Data is up to date' + (cfg.label ? ' (' + cfg.label + ')' : ''), 'success');
+  } else {
+    _setVersionBtnState('outdated');
+    _ctx.updateStatus('Data is out of date — remote has changed' + (cfg.label ? ' (latest: ' + cfg.label + ')' : ''), 'warning');
+  }
+}
+
+// Auto-check on page load if the genui has version config and we haven't already
+// cached a result for this slug within a short window (debounce 30s).
+function _autoCheckVersion() {
+  const cur = _ctx.getCurrentPage ? _ctx.getCurrentPage() : null;
+  const slug = cur ? cur.slug : null;
+  if (!slug) {
+    // Gallery view — reset to idle
+    _setVersionBtnState('idle');
+    return;
+  }
+  const cfg = _versionConfig();
+  if (!cfg) {
+    _setVersionBtnState('idle');
+    const btn = document.getElementById('genui-version-btn');
+    if (btn) btn.title = 'No version source configured';
+    return;
+  }
+  const cached = _versionCache[slug];
+  if (cached && (Date.now() - cached.checkedAt < 30_000)) {
+    // Still fresh — restore cached state
+    if (cached.error) {
+      _setVersionBtnState('error');
+      const btn = document.getElementById('genui-version-btn');
+      if (btn) btn.title = cached.error;
+    } else if (cached.upToDate === true) {
+      _setVersionBtnState('up-to-date');
+    } else if (cached.upToDate === false) {
+      _setVersionBtnState('outdated');
+    }
+    return;
+  }
+  // Check in the background
+  _checkVersion();
 }
 
 // ── Page dropdown (mirrors the web-chat session dropdown) ─────────────────────

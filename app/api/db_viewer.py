@@ -8,12 +8,14 @@ app/db/pg_portable.py). Temp/optimizer `.db` scratch files are always SQLite.
 Dispatch happens in `_open()`.
 """
 
+import asyncio
 import json
 import logging
 import os
 import sqlite3
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -23,9 +25,63 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from app.auth.db_auth import require_db_auth
 from app.auth.jwt import decode_token
+from app.db.browser_canary import rollback_active
+from app.db.session_manifest import compute_session_manifest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/db", tags=["db_viewer"])
+
+
+def _interaction_order_parts(tiebreaker: str) -> tuple[str, ...]:
+    if tiebreaker not in ("rowid", "id"):
+        raise ValueError(f"unsupported interaction tiebreaker: {tiebreaker}")
+    return (
+        "CASE WHEN session_seq IS NULL THEN 0 ELSE 1 END",
+        "COALESCE(session_seq, 0)",
+        "created_at",
+        tiebreaker,
+    )
+
+
+def _interaction_order_key(tiebreaker: str) -> str:
+    """SQL tuple used by every transcript pagination cursor."""
+    # Parts are kept as one comma-delimited string for row-value comparisons.
+    return ", ".join(_interaction_order_parts(tiebreaker))
+
+
+def _interaction_order_by(tiebreaker: str, direction: str = "ASC") -> str:
+    """ORDER BY terms with direction applied to every component."""
+    direction = direction.upper()
+    if direction not in ("ASC", "DESC"):
+        raise ValueError(f"unsupported interaction order direction: {direction}")
+    return ", ".join(
+        f"{part} {direction}" for part in _interaction_order_parts(tiebreaker)
+    )
+
+
+def _interaction_cursor_values(session_seq, created_at, tiebreaker):
+    return (
+        0 if session_seq is None else 1,
+        int(session_seq or 0),
+        created_at,
+        tiebreaker,
+    )
+
+
+def _manifest_cache_not_modified(
+    known_revision: Optional[int],
+    known_hash: Optional[str],
+    manifest: dict,
+) -> bool:
+    """Validate one browser-cache manifest against the live rollback state."""
+    if rollback_active():
+        return False
+    return (
+        known_revision is not None
+        and bool(known_hash)
+        and int(known_revision) == int(manifest["authority_revision"])
+        and str(known_hash) == str(manifest["content_hash"])
+    )
 
 
 def _is_loser_row(metadata_str) -> bool:
@@ -122,7 +178,7 @@ async def require_admin(_auth: dict = Depends(require_db_auth)) -> dict:
 def _get_caller(payload: Optional[dict]) -> tuple[Optional[str], bool]:
     """Extract (user_id, is_admin) from a JWT payload.
 
-    Admin status is looked up from local.db's user_profiles table — the
+    Admin status is looked up from app.db's authoritative user_profiles table — the
     same source `app.db.local.is_user_admin` consults — so the check is
     consistent regardless of which db file is being viewed.
     """
@@ -133,7 +189,7 @@ def _get_caller(payload: Optional[dict]) -> tuple[Optional[str], bool]:
         return None, False
     is_admin = False
     try:
-        conn, _dialect = _open("local.db")
+        conn, _dialect = _open("app.db")
         try:
             row = conn.execute(
                 "SELECT is_admin FROM user_profiles WHERE user_id = ?", (user_id,)
@@ -188,10 +244,15 @@ def _is_open_access_mode() -> bool:
     return False
 
 
-def _get_db_path(name: str = "local.db") -> Path:
+def _get_db_path(name: str = "user.db") -> Path:
     if Path(name).name != name:
         raise HTTPException(status_code=400, detail="Database name must be a plain filename")
-    db_path = _DB_FILES_DIR / name
+    if name == "user.db":
+        from app.db.local import get_db_user_context
+        from app.db.user_store import _user_db_path
+        db_path = Path(_user_db_path(get_db_user_context()))
+    else:
+        db_path = _DB_FILES_DIR / name
     # When Postgres is the active backend, the main DB has no file — callers that
     # only need it for the (now Postgres) connection still call this; don't 404.
     if not db_path.exists() and _pg_conninfo_for(name) is None:
@@ -202,7 +263,7 @@ def _get_db_path(name: str = "local.db") -> Path:
 def _pg_conninfo_for(db: str):
     """Return PG conninfo when Postgres is the active backend AND `db` is the
     main database. Temp/optimizer .db files always stay on SQLite."""
-    if db not in ("local.db", "", None):
+    if db not in ("user.db", "", None):
         return None
     try:
         from app.db import active_postgres_conninfo
@@ -211,7 +272,7 @@ def _pg_conninfo_for(db: str):
         return None
 
 
-def _open_local_sqlite(db: str = "local.db"):
+def _open_local_sqlite(db: str = "user.db"):
     """Open the on-disk SQLite file for `db` (plaintext through db_crypto).
 
     Factored out of `_open` so the chat-panel READ endpoints can force the local
@@ -223,7 +284,7 @@ def _open_local_sqlite(db: str = "local.db"):
     # cursor).
     from app.db import db_crypto
     _DB_ID_BY_FILE = {
-        "local.db": "local", "vault.db": "vault",
+        "app.db": "app", "vault.db": "vault",
         "logs.db": "logs", "recordings.db": "recordings", "wiki.db": "wiki",
     }
     db_id = _DB_ID_BY_FILE.get(Path(db).name, "_viewer_other")
@@ -237,10 +298,11 @@ def _open_local_sqlite(db: str = "local.db"):
         conn.execute("PRAGMA busy_timeout=5000")
     except Exception:
         pass
+
     return conn
 
 
-def _open(db: str = "local.db"):
+def _open(db: str = "user.db"):
     """Open the right connection for `db`. Returns (conn, dialect).
 
     - Postgres active + main DB → standalone autocommit PgPortableConnection
@@ -258,7 +320,7 @@ def _open(db: str = "local.db"):
     return _open_local_sqlite(db), "sqlite"
 
 
-def _open_read(db: str = "local.db"):
+def _open_read(db: str = "user.db"):
     """Read-only opener for the CHAT-PANEL endpoints (session list, transcript,
     live-reconcile tail, related/family). Returns (conn, dialect).
 
@@ -336,7 +398,15 @@ def _reconcile_session_from_remote(db: str, session_id: str) -> None:
             return
         conn = _open_local_sqlite(db)
         try:
-            cols = list(irows[0].keys())
+            # Do not let an old remote-only column make the whole reconcile
+            # incompatible with this device's local SQLite schema.  The typed
+            # interaction surface is the contract; remote schema drift is not.
+            _local_cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(interactions)").fetchall()
+            }
+            cols = [c for c in irows[0] if c in _local_cols]
+            if not cols:
+                return
             col_sql = ",".join(cols)
             ph = ",".join("?" * len(cols))
             # (1) Add any genuinely-missing rows. INSERT OR IGNORE never touches a
@@ -351,10 +421,34 @@ def _reconcile_session_from_remote(db: str, session_id: str) -> None:
             # only when the local copy isn't already there — this refreshes the
             # executor's finished reply without clobbering a fresher local streaming
             # row (a device only streams its OWN runs, shown live over WS anyway).
+            # ALSO: skip remote rows marked as placeholders (tool results >2048 chars
+            # or slimmed output skeletons) — these are stubs pushed by the sync engine
+            # and must never overwrite the local full-fidelity copy.
             for r in irows:
                 st = r.get("status")
-                if st in ("complete", "error", "interrupted"):
-                    conn.execute(
+                if st not in ("complete", "error", "interrupted"):
+                    continue
+                # Skip remote placeholder rows — the full content lives locally.
+                # The sync engine marks these in two ways:
+                #   • tool rows: remote_placeholder=True in the metadata column
+                #   • assistant rows: _remote_placeholder=true in the output JSON
+                _meta = r.get("metadata")
+                if _meta:
+                    try:
+                        _parsed = json.loads(_meta) if isinstance(_meta, str) else _meta
+                        if isinstance(_parsed, dict) and _parsed.get("remote_placeholder"):
+                            continue
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                _output = r.get("output")
+                if _output and isinstance(_output, str):
+                    try:
+                        _oparsed = json.loads(_output)
+                        if isinstance(_oparsed, dict) and _oparsed.get("_remote_placeholder"):
+                            continue
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                conn.execute(
                         "UPDATE interactions SET content=?, status=?, output=?, "
                         "metadata=?, session_seq=? WHERE id=? AND "
                         "(status IS NULL OR status != ?)",
@@ -405,6 +499,36 @@ async def _enqueue_remote_push(hb, ids, op: str = "upsert") -> None:
         logger.warning("hybrid: enqueue of session push failed: %s", e)
 
 
+@router.post("/sessions/refresh")
+async def refresh_session_metadata(
+    request: Request,
+    user_id: str = Query(..., description="User ID"),
+    db: str = Query("user.db", description="Database filename"),
+):
+    """Refresh only newer session-list metadata into the local hybrid mirror.
+
+    The chat picker calls this after it paints its cached local list.  Returning
+    only a change flag lets the browser avoid a second list render when the
+    shared authority has not changed.
+    """
+    token = request.headers.get("Authorization", "")
+    token = token[7:] if token.startswith("Bearer ") else request.query_params.get("token", "")
+    payload = decode_token(token) if token else None
+    identities = {v for v in ((payload or {}).get("user_id"), (payload or {}).get("sub")) if v}
+    if payload and user_id not in identities:
+        raise HTTPException(status_code=403, detail="Not authorized for this user's sessions")
+    hb = _hybrid_backend_for(db)
+    if not hb:
+        return {"changed": False, "session_ids": []}
+    try:
+        changed = await hb.refresh_session_metadata(user_id)
+        return {"changed": bool(changed), "session_ids": changed}
+    except Exception as e:
+        logger.debug("hybrid: session metadata refresh failed: %s", e)
+        # The cached local list remains usable if the remote is briefly offline.
+        return {"changed": False, "session_ids": []}
+
+
 def _hard_delete_family(conn, targets) -> dict:
     """Erase a session run-family — interactions, summaries, pipeline events, the
     session rows themselves, and the spawned-clone cascade — on ``conn``, commit,
@@ -413,14 +537,30 @@ def _hard_delete_family(conn, targets) -> dict:
     cur = conn.cursor()
     interactions_deleted = 0
     session_deleted = 0
+    try:
+        memory_links_removed, memory_pages_deleted = _quota_prune_memory_provenance(
+            conn, {str(target) for target in targets if target},
+        )
+    except Exception:
+        memory_links_removed = memory_pages_deleted = 0
+
+    def _delete_optional(sql, params):
+        try:
+            cur.execute(sql, params)
+        except Exception:
+            pass
+
     for tid in targets:
         cur.execute('DELETE FROM interactions WHERE session_id = ?', (tid,))
         interactions_deleted += cur.rowcount
-        cur.execute('DELETE FROM session_summaries WHERE session_id = ?', (tid,))
-        try:
-            cur.execute('DELETE FROM pipeline_events WHERE session_id = ?', (tid,))
-        except Exception:
-            pass
+        # Delete all session-scoped state, including the run and spawn ledgers.
+        # Leaving either behind makes a permanently deleted session reappear in
+        # a related-session view on another device.
+        for table in ("session_summaries", "session_summary_segments", "pipeline_events",
+                      "session_runs", "messages", "browser_sessions"):
+            _delete_optional(f'DELETE FROM {table} WHERE session_id = ?', (tid,))
+        _delete_optional('DELETE FROM agent_spawns WHERE orchestrator_session_id = ?', (tid,))
+        _delete_optional('DELETE FROM agent_spawns WHERE spawn_session_id = ?', (tid,))
         cur.execute('DELETE FROM sessions WHERE id = ?', (tid,))
         session_deleted += cur.rowcount
     # Cascade: an orchestrator session takes its spawned CLONES with it — their
@@ -437,10 +577,695 @@ def _hard_delete_family(conn, targets) -> dict:
         "interactions_deleted": interactions_deleted,
         "session_deleted": session_deleted,
         "clones_deleted": clones_deleted,
+        "memory_links_removed": memory_links_removed,
+        "memory_pages_deleted": memory_pages_deleted,
     }
 
 
-def _resolve_session_db(session_id: str, fallback_db: str = "local.db") -> str:
+_DEFAULT_USER_DATABASE_LIMIT_MB = 100
+_MIN_USER_DATABASE_LIMIT_MB = 10
+_MAX_USER_DATABASE_LIMIT_MB = 10_240
+_DEFAULT_TOOL_OUTPUT_SHARE_PERCENT = 10
+_DEFAULT_MEMORY_SHARE_PERCENT = 10
+_MIN_CONVERSATION_SHARE_PERCENT = 10
+_QUOTA_TOOL_OUTPUT_PLACEHOLDER = (
+    "Stored tool output removed to manage storage. The original tool request is "
+    "retained. Re-run only if the operation is safe and current output is needed."
+)
+_QUOTA_CLEANUP_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _user_database_limit_bytes() -> Optional[int]:
+    """Return the configured per-user SQLite limit, or ``None`` when disabled.
+
+    The App Functions catalog owns both the switch and its number field.  Keep
+    parsing defensive because the generic config endpoint intentionally stores
+    JSON values as supplied by the browser (and older hand-edited configs may
+    contain a string).
+    """
+    try:
+        from app.abilities import app_function_enabled
+        if not app_function_enabled("user_database_size_limit"):
+            return None
+        from app.admin import ability_config
+        configured = ability_config.get_ability_config("user_database_size_limit")
+        raw_mb = configured.get("max_size_mb", _DEFAULT_USER_DATABASE_LIMIT_MB)
+        megabytes = int(float(raw_mb))
+    except (TypeError, ValueError, OverflowError):
+        megabytes = _DEFAULT_USER_DATABASE_LIMIT_MB
+    except Exception:
+        # A configuration read failure must retain the documented safe default,
+        # rather than silently allowing an unlimited database to grow.
+        megabytes = _DEFAULT_USER_DATABASE_LIMIT_MB
+    megabytes = max(_MIN_USER_DATABASE_LIMIT_MB, min(_MAX_USER_DATABASE_LIMIT_MB, megabytes))
+    return megabytes * 1024 * 1024
+
+
+def _user_database_quota_shares() -> tuple[int, int, int]:
+    """Return conversation/tool/memory preferred shares as whole percentages.
+
+    The two configurable cache shares are clamped defensively and conversation
+    storage receives the remainder.  Keeping at least ten percent for the core
+    transcript prevents a malformed config from making messages the first thing
+    quota cleanup has to sacrifice.
+    """
+    tool_percent = _DEFAULT_TOOL_OUTPUT_SHARE_PERCENT
+    memory_percent = _DEFAULT_MEMORY_SHARE_PERCENT
+    try:
+        from app.admin import ability_config
+        configured = ability_config.get_ability_config("user_database_size_limit")
+        tool_percent = int(float(configured.get(
+            "tool_output_share_percent", _DEFAULT_TOOL_OUTPUT_SHARE_PERCENT)))
+        memory_percent = int(float(configured.get(
+            "memory_share_percent", _DEFAULT_MEMORY_SHARE_PERCENT)))
+    except (TypeError, ValueError, OverflowError):
+        tool_percent = _DEFAULT_TOOL_OUTPUT_SHARE_PERCENT
+        memory_percent = _DEFAULT_MEMORY_SHARE_PERCENT
+    except Exception:
+        pass
+    tool_percent = max(0, min(80, tool_percent))
+    memory_percent = max(0, min(50, memory_percent))
+    available = 100 - _MIN_CONVERSATION_SHARE_PERCENT
+    if tool_percent + memory_percent > available:
+        # Preserve the user's tool preference first; memory's rebuildable index
+        # is the safer bucket to squeeze when a hand-edited config exceeds 90%.
+        memory_percent = max(0, available - tool_percent)
+    return 100 - tool_percent - memory_percent, tool_percent, memory_percent
+
+
+def _sqlite_file_footprint(db_path: Path) -> int:
+    """Bytes occupied by a SQLite authority file and its live WAL.
+
+    SQLite commonly keeps recently committed transcript data in ``-wal`` until
+    a checkpoint.  Counting it prevents the quota from appearing satisfied
+    while the disk is actually over budget.  The shared-memory sidecar is not
+    counted: it is a small coordination file, not durable user content.
+    """
+    total = 0
+    for path in (db_path, Path(f"{db_path}-wal")):
+        try:
+            total += path.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _compact_sqlite_for_quota(conn) -> None:
+    """Checkpoint and reclaim freed SQLite pages once after quota cleanup."""
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception as exc:  # A concurrent writer may temporarily hold the WAL.
+        logger.debug("quota WAL checkpoint skipped: %s", exc)
+    try:
+        conn.execute("VACUUM")
+    except Exception as exc:
+        logger.debug("quota VACUUM skipped: %s", exc)
+
+
+def _sqlite_used_bytes(conn) -> int:
+    """Return SQLite's live main-file allocation, excluding reusable pages.
+
+    File size is the quota trigger, but it is a bad loop condition: DELETE makes
+    pages reusable without shrinking the file until VACUUM.  Measuring live pages
+    lets the worker stop deleting at the quota and compact only once afterward.
+    """
+    page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
+    page_count = int(conn.execute("PRAGMA page_count").fetchone()[0])
+    freelist_count = int(conn.execute("PRAGMA freelist_count").fetchone()[0])
+    return max(0, page_count - freelist_count) * page_size
+
+
+def _quota_sort_time(value) -> float:
+    """Normalize mixed legacy SQLite/ISO timestamps for deterministic ordering."""
+    if not value:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _quota_json(value, fallback):
+    if not value:
+        return fallback
+    try:
+        parsed = json.loads(value)
+        return parsed
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+
+def _quota_text_bytes(value) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bytes):
+        return len(value)
+    return len(str(value).encode("utf-8", "replace"))
+
+
+def _quota_logical_usage(conn) -> dict:
+    """Estimate reclaimable content by policy bucket, independent of DB pages."""
+    usage = {"conversation": 0, "tool_outputs": 0, "memory": 0}
+    try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(interactions)")}
+        wanted = [name for name in ("role", "content", "output", "metadata") if name in columns]
+        if wanted:
+            for row in conn.execute(f"SELECT {', '.join(wanted)} FROM interactions"):
+                item = dict(zip(wanted, row))
+                role = str(item.get("role") or "")
+                if role == "tool":
+                    usage["tool_outputs"] += sum(
+                        _quota_text_bytes(item.get(name)) for name in ("content", "output", "metadata")
+                    )
+                else:
+                    usage["conversation"] += _quota_text_bytes(item.get("content"))
+                    output = item.get("output")
+                    if role == "assistant" and output:
+                        parsed = _quota_json(output, None)
+                        if isinstance(parsed, dict):
+                            tool_part = {}
+                            for key in ("tool_calls", "_sent_messages"):
+                                if key in parsed:
+                                    tool_part[key] = parsed.pop(key)
+                            usage["tool_outputs"] += _quota_text_bytes(
+                                json.dumps(tool_part, separators=(",", ":")) if tool_part else None)
+                            usage["conversation"] += _quota_text_bytes(
+                                json.dumps(parsed, separators=(",", ":")) if parsed else None)
+                        else:
+                            usage["conversation"] += _quota_text_bytes(output)
+                    else:
+                        usage["conversation"] += _quota_text_bytes(output)
+                    usage["conversation"] += _quota_text_bytes(item.get("metadata"))
+    except Exception:
+        pass
+
+    try:
+        for row in conn.execute(
+            "SELECT compiled_truth, timeline, frontmatter, provenance FROM memories"
+        ):
+            usage["memory"] += sum(_quota_text_bytes(value) for value in row)
+    except Exception:
+        pass
+    try:
+        for row in conn.execute(
+            "SELECT chunk_text, embedding FROM memory_chunks"
+        ):
+            usage["memory"] += sum(_quota_text_bytes(value) for value in row)
+    except Exception:
+        pass
+    usage["total_content"] = sum(usage.values())
+    return usage
+
+
+def _quota_evict_tool_outputs(
+    conn, ranked_families: list[tuple], target_bytes: int,
+) -> tuple[int, int]:
+    """Replace old tool results with replay-safe receipts until the share fits."""
+    usage = _quota_logical_usage(conn)
+    remaining = usage["tool_outputs"]
+    if remaining <= target_bytes:
+        return 0, 0
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(interactions)")}
+    required = {"id", "session_id", "role", "content"}
+    if not required <= columns:
+        return 0, 0
+    has_output = "output" in columns
+    has_metadata = "metadata" in columns
+    has_created = "created_at" in columns
+    has_status = "status" in columns
+    select_cols = ["id", "content"]
+    if has_output:
+        select_cols.append("output")
+    if has_metadata:
+        select_cols.append("metadata")
+    evicted = reclaimed = 0
+    placeholder_bytes = _quota_text_bytes(_QUOTA_TOOL_OUTPUT_PLACEHOLDER)
+
+    for _tier, _age, _root, family_ids in ranked_families:
+        if remaining <= target_bytes:
+            break
+        marks = ",".join("?" for _ in family_ids)
+        status_sql = " AND status != 'deleted'" if has_status else ""
+        order_sql = " ORDER BY created_at ASC, id ASC" if has_created else " ORDER BY id ASC"
+        rows = conn.execute(
+            f"SELECT {', '.join(select_cols)} FROM interactions "
+            f"WHERE session_id IN ({marks}) AND role = 'tool'{status_sql}{order_sql}",
+            family_ids,
+        ).fetchall()
+        for row in rows:
+            if remaining <= target_bytes:
+                break
+            item = dict(zip(select_cols, row))
+            meta = _quota_json(item.get("metadata"), {}) if has_metadata else {}
+            if isinstance(meta, dict) and meta.get("payload_state") == "evicted_local":
+                continue
+            before = sum(_quota_text_bytes(item.get(name)) for name in ("content", "output", "metadata"))
+            if before <= placeholder_bytes + 256:
+                continue
+            if not isinstance(meta, dict):
+                meta = {}
+            # The canonical request remains on the assistant row, so duplicated
+            # result-row args can go while small execution receipts stay useful.
+            meta.pop("args", None)
+            meta.update({
+                "payload_state": "evicted_local",
+                "storage_reason": "tool_payload_quota",
+                "original_bytes": before,
+                "evicted_at": datetime.now(timezone.utc).isoformat(),
+            })
+            assignments = ["content = ?"]
+            values = [_QUOTA_TOOL_OUTPUT_PLACEHOLDER]
+            if has_output:
+                assignments.append("output = NULL")
+            if has_metadata:
+                assignments.append("metadata = ?")
+                values.append(json.dumps(meta, separators=(",", ":")))
+            values.append(item["id"])
+            conn.execute(
+                f"UPDATE interactions SET {', '.join(assignments)} WHERE id = ?", values,
+            )
+            after = placeholder_bytes + (_quota_text_bytes(values[-2]) if has_metadata else 0)
+            delta = max(0, before - after)
+            remaining = max(0, remaining - delta)
+            reclaimed += delta
+            evicted += 1
+    if evicted:
+        conn.commit()
+    return evicted, reclaimed
+
+
+def _quota_reclaim_memory_cache(conn, target_bytes: int) -> tuple[int, int]:
+    """Drop rebuildable vector chunks, unpinned before pinned, to fit memory share."""
+    usage = _quota_logical_usage(conn)
+    remaining = usage["memory"]
+    if remaining <= target_bytes:
+        return 0, 0
+    try:
+        rows = conn.execute(
+            """SELECT m.id, COALESCE(m.pinned, 0), m.updated_at,
+                      COALESCE(SUM(LENGTH(mc.chunk_text)), 0) +
+                      COALESCE(SUM(LENGTH(mc.embedding)), 0) AS chunk_bytes
+               FROM memories m JOIN memory_chunks mc ON mc.memory_id = m.id
+               GROUP BY m.id, m.pinned, m.updated_at
+               ORDER BY COALESCE(m.pinned, 0) ASC, m.updated_at ASC, m.id ASC"""
+        ).fetchall()
+    except Exception:
+        return 0, 0
+    pages = reclaimed = 0
+    for memory_id, _pinned, _updated_at, chunk_bytes in rows:
+        if remaining <= target_bytes:
+            break
+        conn.execute("DELETE FROM memory_chunks WHERE memory_id = ?", (memory_id,))
+        delta = max(0, int(chunk_bytes or 0))
+        remaining = max(0, remaining - delta)
+        reclaimed += delta
+        pages += 1
+    if pages:
+        conn.commit()
+    return pages, reclaimed
+
+
+def _quota_prune_memory_provenance(conn, deleted_session_ids: set[str]) -> tuple[int, int]:
+    """Remove deleted-session evidence and orphaned automatic memory pages."""
+    if not deleted_session_ids:
+        return 0, 0
+    try:
+        rows = conn.execute(
+            "SELECT id, slug, origin, COALESCE(pinned, 0), provenance FROM memories"
+        ).fetchall()
+    except Exception:
+        return 0, 0
+    links_removed = pages_deleted = 0
+    for memory_id, slug, origin, pinned, raw_provenance in rows:
+        provenance = _quota_json(raw_provenance, [])
+        if not isinstance(provenance, list) or not provenance:
+            continue
+
+        def _source_session(item):
+            if isinstance(item, dict):
+                return item.get("session_id") or item.get("session")
+            return item if isinstance(item, str) else None
+
+        kept = [item for item in provenance if _source_session(item) not in deleted_session_ids]
+        removed = len(provenance) - len(kept)
+        if not removed:
+            continue
+        links_removed += removed
+        if not kept and not pinned and str(origin or "distilled") == "distilled" \
+                and str(slug or "").startswith("chat/"):
+            conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            pages_deleted += 1
+        else:
+            conn.execute(
+                "UPDATE memories SET provenance = ?, updated_at = updated_at WHERE id = ?",
+                (json.dumps(kept, separators=(",", ":")), memory_id),
+            )
+    if links_removed:
+        conn.commit()
+    return links_removed, pages_deleted
+
+
+def _quota_cleanup_local(
+    db: str,
+    db_path: Path,
+    user_id: str,
+    protected_session_ids: set[str],
+    limit_bytes: int,
+    tool_output_share_percent: int = _DEFAULT_TOOL_OUTPUT_SHARE_PERCENT,
+    memory_share_percent: int = _DEFAULT_MEMORY_SHARE_PERCENT,
+) -> dict:
+    """Reclaim cache payloads, then locally ranked session families, and compact.
+
+    This function is intentionally synchronous: its caller runs it in a worker
+    thread so checkpoint/VACUUM never stalls FastAPI's event loop.
+    """
+    result = {
+        "enabled": True,
+        "limit_bytes": limit_bytes,
+        "size_before_bytes": _sqlite_file_footprint(db_path),
+        "size_after_bytes": _sqlite_file_footprint(db_path),
+        "used_before_bytes": 0,
+        "used_after_bytes": 0,
+        "purged_sessions": 0,
+        "purged_interactions": 0,
+        "purged_recycled": 0,
+        "purged_active": 0,
+        "purged_unpinned": 0,
+        "purged_pinned": 0,
+        "evicted_tool_outputs": 0,
+        "tool_output_bytes_reclaimed": 0,
+        "memory_cache_pages_reclaimed": 0,
+        "memory_cache_bytes_reclaimed": 0,
+        "memory_links_removed": 0,
+        "memory_pages_deleted": 0,
+        "conversation_share_percent": 100 - tool_output_share_percent - memory_share_percent,
+        "tool_output_share_percent": tool_output_share_percent,
+        "memory_share_percent": memory_share_percent,
+        "usage_before": {},
+        "usage_after": {},
+        "protected_families": 0,
+        "deleted_families": [],
+    }
+    conn = _open_local_sqlite(db)
+    try:
+        # Reclaim a stale WAL before deciding that user history must be removed.
+        # A busy reader may prevent truncation; logical live pages below remain a
+        # safe deletion threshold and avoid treating WAL bytes as session data.
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception as exc:
+            logger.debug("quota preflight WAL checkpoint skipped: %s", exc)
+
+        used_bytes = _sqlite_used_bytes(conn)
+        result["used_before_bytes"] = used_bytes
+        result["usage_before"] = _quota_logical_usage(conn)
+        result["size_before_bytes"] = _sqlite_file_footprint(db_path)
+        if used_bytes <= limit_bytes:
+            # The overage was reusable main-file space rather than live history.
+            # Reclaim it without deleting a session (still exactly one VACUUM,
+            # and still on the worker thread).
+            if result["size_before_bytes"] > limit_bytes:
+                _compact_sqlite_for_quota(conn)
+            result["used_after_bytes"] = used_bytes
+            result["usage_after"] = result["usage_before"]
+            result["size_after_bytes"] = _sqlite_file_footprint(db_path)
+            return result
+
+        session_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        pinned_sql = "COALESCE(pinned, 0)" if "pinned" in session_columns else "0"
+        rows = conn.execute(
+            f"""SELECT id, status, {pinned_sql} AS pinned, created_at, updated_at
+                FROM sessions WHERE user_id = ?""",
+            (user_id,),
+        ).fetchall()
+        session_rows = {
+            str(row[0]): {
+                "status": str(row[1] or "active"),
+                "pinned": bool(row[2]),
+                "created_at": row[3],
+                "updated_at": row[4],
+            }
+            for row in rows if row[0]
+        }
+        # Build connected components from the spawn ledger. Quota decisions and
+        # hard deletes operate on a whole run-family, never an isolated child.
+        parent = {sid: sid for sid in session_rows}
+
+        def _find(sid: str) -> str:
+            while parent[sid] != sid:
+                parent[sid] = parent[parent[sid]]
+                sid = parent[sid]
+            return sid
+
+        def _union(left: str, right: str) -> None:
+            left_root, right_root = _find(left), _find(right)
+            if left_root != right_root:
+                parent[max(left_root, right_root)] = min(left_root, right_root)
+
+        try:
+            edges = conn.execute(
+                "SELECT orchestrator_session_id, spawn_session_id FROM agent_spawns"
+            ).fetchall()
+        except Exception:
+            edges = []
+        for edge in edges:
+            left, right = str(edge[0] or ""), str(edge[1] or "")
+            if left in parent and right in parent:
+                _union(left, right)
+
+        families: dict[str, list[str]] = {}
+        for sid in session_rows:
+            families.setdefault(_find(sid), []).append(sid)
+
+        interaction_activity = {}
+        try:
+            for row in conn.execute(
+                "SELECT session_id, MAX(created_at) FROM interactions GROUP BY session_id"
+            ).fetchall():
+                if row[0]:
+                    interaction_activity[str(row[0])] = row[1]
+        except Exception:
+            pass
+
+        live_session_ids: set[str] = set()
+        try:
+            for row in conn.execute(
+                "SELECT session_id FROM session_runs WHERE status IN ('running', 'queued')"
+            ).fetchall():
+                if row[0]:
+                    live_session_ids.add(str(row[0]))
+        except Exception:
+            pass
+
+        candidates = []
+        for root, family_ids in families.items():
+            family_set = set(family_ids)
+            if family_set & protected_session_ids or family_set & live_session_ids:
+                result["protected_families"] += 1
+                continue
+            members = [session_rows[sid] for sid in family_ids]
+            all_recycled = all(member["status"] == "recycled" for member in members)
+            any_pinned = any(member["pinned"] for member in members)
+            tier = 0 if all_recycled else (2 if any_pinned else 1)
+            if tier == 0:
+                # Recycle stamps updated_at, so the newest member determines when
+                # the entire family became safely eligible for bin eviction.
+                age = max(
+                    _quota_sort_time(member["updated_at"] or member["created_at"])
+                    for member in members
+                )
+            else:
+                # Metadata changes must not make old sessions look recently used.
+                age = max(
+                    _quota_sort_time(
+                        interaction_activity.get(sid) or session_rows[sid]["created_at"]
+                    )
+                    for sid in family_ids
+                )
+            candidates.append((tier, age, root, sorted(family_ids)))
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+
+        # Preferred shares are enforced only while the total database is under
+        # pressure. Tool output is the cheapest context to lose, followed by
+        # rebuildable vector chunks; core messages remain intact through both.
+        initial_overage = max(0, used_bytes - limit_bytes)
+        tool_target = limit_bytes * max(0, tool_output_share_percent) // 100
+        memory_target = limit_bytes * max(0, memory_share_percent) // 100
+        evicted, tool_reclaimed = _quota_evict_tool_outputs(
+            conn, candidates, tool_target,
+        )
+        result["evicted_tool_outputs"] = evicted
+        result["tool_output_bytes_reclaimed"] = tool_reclaimed
+        memory_pages, memory_reclaimed = _quota_reclaim_memory_cache(
+            conn, memory_target,
+        )
+        result["memory_cache_pages_reclaimed"] = memory_pages
+        result["memory_cache_bytes_reclaimed"] = memory_reclaimed
+        reclaimed_before_sessions = tool_reclaimed + memory_reclaimed
+        used_bytes = _sqlite_used_bytes(conn)
+
+        for tier, _age, root, family_ids in candidates:
+            if used_bytes <= limit_bytes or reclaimed_before_sessions >= initial_overage:
+                break
+            counts = _hard_delete_family(conn, family_ids)
+            result["memory_links_removed"] += counts.get("memory_links_removed", 0)
+            result["memory_pages_deleted"] += counts.get("memory_pages_deleted", 0)
+            used_bytes = _sqlite_used_bytes(conn)
+            result["purged_sessions"] += counts["session_deleted"]
+            result["purged_interactions"] += counts["interactions_deleted"]
+            if tier == 0:
+                result["purged_recycled"] += counts["session_deleted"]
+            else:
+                result["purged_active"] += counts["session_deleted"]
+                key = "purged_pinned" if tier == 2 else "purged_unpinned"
+                result[key] += counts["session_deleted"]
+            result["deleted_families"].append({
+                "root_session_id": root,
+                "session_ids": family_ids,
+                "tier": ("recycled", "active", "pinned")[tier],
+            })
+
+        result["used_after_bytes"] = used_bytes
+        if evicted or memory_pages or result["deleted_families"]:
+            _compact_sqlite_for_quota(conn)
+            result["used_after_bytes"] = _sqlite_used_bytes(conn)
+        result["usage_after"] = _quota_logical_usage(conn)
+        result["size_after_bytes"] = _sqlite_file_footprint(db_path)
+        return result
+    finally:
+        conn.close()
+
+
+async def _replicate_hard_session_delete(
+    db: str, hb, targets: list[str], request: Optional[Request],
+) -> bool:
+    """Mirror a permanent session-family delete and publish peer tombstones.
+
+    Returns whether a durable outbox retry was required.  This is shared by the
+    explicit permanent-delete route and automatic quota cleanup so their hybrid
+    semantics cannot drift apart.
+    """
+    if not hb or not targets:
+        return False
+    remote_pending = False
+    remote_deleted = False
+    try:
+        rconn, _ = _open(db)
+        try:
+            _hard_delete_family(rconn, targets)
+            remote_deleted = True
+        finally:
+            rconn.close()
+    except Exception as exc:  # noqa: BLE001
+        remote_pending = True
+        logger.warning("hybrid: remote hard-delete replication failed (%s); queued durable retry", exc)
+        await _enqueue_remote_push(hb, targets, "delete")
+    if remote_deleted:
+        try:
+            from app.db.sync.tombstones import record_tombstones
+            from app.db import get_db as _get_db
+            owner = None
+            if request is not None:
+                try:
+                    from app.auth.identity import caller_uid_sync
+                    owner = caller_uid_sync(request)
+                except Exception:  # noqa: BLE001
+                    pass
+            written = record_tombstones(_get_db(), [("sessions", target) for target in targets], owner)
+            if written != len(targets):
+                remote_pending = True
+                await _enqueue_remote_push(hb, targets, "delete")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("hybrid: session tombstone record failed: %s", exc)
+            remote_pending = True
+            await _enqueue_remote_push(hb, targets, "delete")
+    return remote_pending
+
+
+async def _enforce_user_database_size_limit(
+    db: str,
+    db_path: Path,
+    user_id: Optional[str],
+    protected_session_ids: list[str],
+    hb,
+    request: Optional[Request],
+) -> dict:
+    """Keep one user's SQLite store within the configured limit after recycling.
+
+    The freshly recycled session family is protected: quota cleanup only removes
+    *older* binned sessions first. Once no older bin entries remain, it moves to
+    old active sessions. If the protected recycle alone exceeds the quota, it is
+    retained and the result reports the remaining excess rather than deleting
+    the session family the user just chose to keep recoverable.
+    """
+    limit_bytes = _user_database_limit_bytes()
+    conversation_share, tool_share, memory_share = _user_database_quota_shares()
+    protected_ids = {session_id for session_id in protected_session_ids if session_id}
+    if db != "user.db" or not user_id or limit_bytes is None or not db_path.exists():
+        return {"enabled": limit_bytes is not None, "purged_sessions": 0, "remote_pending": False}
+    size_bytes = _sqlite_file_footprint(db_path)
+    if size_bytes <= limit_bytes:
+        return {
+            "enabled": True,
+            "limit_bytes": limit_bytes,
+            "size_before_bytes": size_bytes,
+            "size_after_bytes": size_bytes,
+            "used_before_bytes": size_bytes,
+            "used_after_bytes": size_bytes,
+            "purged_sessions": 0,
+            "purged_interactions": 0,
+            "purged_recycled": 0,
+            "purged_active": 0,
+            "purged_unpinned": 0,
+            "purged_pinned": 0,
+            "evicted_tool_outputs": 0,
+            "tool_output_bytes_reclaimed": 0,
+            "memory_cache_pages_reclaimed": 0,
+            "memory_cache_bytes_reclaimed": 0,
+            "memory_links_removed": 0,
+            "memory_pages_deleted": 0,
+            "conversation_share_percent": conversation_share,
+            "tool_output_share_percent": tool_share,
+            "memory_share_percent": memory_share,
+            "protected_families": 0,
+            "remote_pending": False,
+        }
+
+    lock_key = f"{db_path.resolve()}::{user_id}"
+    lock = _QUOTA_CLEANUP_LOCKS.setdefault(lock_key, asyncio.Lock())
+    async with lock:
+        # All SQLite file maintenance runs outside the event loop. The request may
+        # wait for its cleanup result, but health checks and unrelated users remain
+        # responsive while a large database is compacted.
+        result = await asyncio.to_thread(
+            _quota_cleanup_local,
+            db,
+            db_path,
+            user_id,
+            protected_ids,
+            limit_bytes,
+            tool_share,
+            memory_share,
+        )
+        result["remote_pending"] = False
+        for family in result.pop("deleted_families", []):
+            result["remote_pending"] |= await _replicate_hard_session_delete(
+                db, hb, family["session_ids"], request,
+            )
+    if result["used_after_bytes"] > limit_bytes:
+        logger.warning(
+            "user database quota remains exceeded for %s (%d live bytes > %d); protected/live sessions retained",
+            user_id[:12], result["used_after_bytes"], limit_bytes,
+        )
+    return result
+
+
+def _resolve_session_db(session_id: str, fallback_db: str = "user.db") -> str:
     """If a session has temp_db_path in its metadata, route to that temp DB.
     Otherwise return fallback_db. Reads local-first when hybrid is on (this is a
     hot pre-read on every transcript/tail open) — falls back to the active
@@ -463,7 +1288,7 @@ def _resolve_session_db(session_id: str, fallback_db: str = "local.db") -> str:
 
 @router.get("/tables")
 async def list_tables(
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     _auth: dict = Depends(require_db_auth),
 ):
     """List all tables in the database."""
@@ -526,7 +1351,7 @@ async def list_tables(
 
 @router.get("/users")
 async def list_users(
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     _auth: dict = Depends(require_db_auth),
 ):
     """List distinct user IDs from the database.
@@ -562,13 +1387,18 @@ async def list_users(
 @router.delete("/users/{user_id}")
 async def delete_user(
     user_id: str,
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     _auth: dict = Depends(require_db_auth),
 ):
     """Delete all sessions, interactions, and messages for a user."""
     caller_uid, is_admin = _get_caller(_auth)
     if not is_admin and caller_uid != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this user's data")
+    from app.db.browser_policy import require_delete_enabled
+    try:
+        require_delete_enabled()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     db_path = _get_db_path(db)
     try:
         conn, _dialect = _open(db)
@@ -626,7 +1456,7 @@ async def delete_user(
 async def delete_session(
     session_id: str,
     request: Request,
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     permanent: bool = Query(False, description="Hard-delete instead of recycling"),
 ):
     """Recycle a session (soft delete) or, with ``permanent=true``, erase it.
@@ -636,6 +1466,12 @@ async def delete_session(
     when its agent is permanently emptied from the recycling bin (or via an
     explicit ``permanent=true`` call from the future sessions page).
     """
+    if permanent:
+        from app.db.browser_policy import require_delete_enabled
+        try:
+            require_delete_enabled()
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
     db_path = _get_db_path(db)
     hb = _hybrid_backend_for(db)
     try:
@@ -673,6 +1509,8 @@ async def delete_session(
             except Exception:
                 pass
             if has_status:
+                owner_row = cur.execute("SELECT user_id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                owner_user_id = owner_row[0] if owner_row else None
                 # Bump updated_at alongside the status flip: the puller on ANOTHER
                 # device only pulls rows whose watermark (updated_at) advanced, so
                 # without this the recycle would never reach a second device's local
@@ -698,9 +1536,32 @@ async def delete_session(
                         children_recycled += cur.rowcount
                     conn.commit()
                     conn.close()
+                    # ── Safety: kill any active loop and clear active state ──
+                    # Set an interrupt signal so any running agent loop for this
+                    # session (or its children) halts on the next interrupt check.
+                    # Also clear the metadata active state so the loop can't
+                    # re-activate from a cold read.
+                    try:
+                        from app.db import get_db as _get_db
+                        _db = _get_db()
+                        for _sid in recycled_ids:
+                            try:
+                                await _db.set_interrupt(_sid)
+                            except Exception:
+                                pass
+                            try:
+                                await _db.clear_session_active_state(_sid)
+                            except Exception:
+                                pass
+                        logger.info("Recycled: killed loops for %d sessions", len(recycled_ids))
+                    except Exception as _ke:
+                        logger.warning("Recycled: loop-kill sweep failed: %s", _ke)
                     # Push the status flip to the remote authority (upsert).
                     if hb:
                         await _enqueue_remote_push(hb, recycled_ids, "upsert")
+                    quota = await _enforce_user_database_size_limit(
+                        db, db_path, owner_user_id, recycled_ids, hb, request,
+                    )
                     logger.info(f"Recycled session {session_id[:12]}: {recycled} session, "
                                 f"{children_recycled} children")
                     return {
@@ -708,6 +1569,7 @@ async def delete_session(
                         "session_id": session_id,
                         "recycled": recycled,
                         "children_recycled": children_recycled,
+                        "quota_cleanup": quota,
                     }
             # Fall through to hard delete if the column isn't there yet OR this is
             # a phantom session with no `sessions` row to recycle.
@@ -716,6 +1578,17 @@ async def delete_session(
         # Phantom-safe: deleting by session_id removes the orphan interactions
         # even when no `sessions` row exists.
         targets = [session_id] + [c for c in child_ids if c != session_id]
+        # Kill any active loops before erasing the session row
+        try:
+            from app.db import get_db as _get_db2
+            _db2 = _get_db2()
+            for _sid in targets:
+                try:
+                    await _db2.set_interrupt(_sid)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         counts = _hard_delete_family(conn, targets)
         conn.close()
         interactions_deleted = counts["interactions_deleted"]
@@ -729,32 +1602,7 @@ async def delete_session(
         # pass is acceptable — unlike soft actions it is NOT queued to the outbox
         # (the outbox is row-id keyed and can't express "delete all interactions
         # for session X").
-        if hb:
-            try:
-                rconn, _ = _open(db)
-                try:
-                    _hard_delete_family(rconn, targets)
-                finally:
-                    rconn.close()
-            except Exception as _re:  # noqa: BLE001
-                logger.warning("hybrid: remote hard-delete replication failed (%s); "
-                               "rows may linger on the authority", _re)
-            # Tombstone each erased session so OTHER devices prune it from their
-            # local mirror on the next puller tick. Without this the row is simply
-            # absent from the remote and the watermark-based puller can never learn
-            # it was deleted, leaving a ghost session until the peer cold-starts.
-            try:
-                from app.db.sync.tombstones import record_tombstones
-                from app.db import get_db as _get_db
-                owner = None
-                try:
-                    from app.auth.identity import caller_uid_sync
-                    owner = caller_uid_sync(request)
-                except Exception:  # noqa: BLE001
-                    pass
-                record_tombstones(_get_db(), [("sessions", t) for t in targets], owner)
-            except Exception as _te:  # noqa: BLE001
-                logger.debug("hybrid: session tombstone record failed: %s", _te)
+        remote_pending = await _replicate_hard_session_delete(db, hb, targets, request)
 
         logger.info(f"Deleted session {session_id[:12]}: {session_deleted} session(s) "
                     f"(+{len(targets) - 1} family), {interactions_deleted} interactions, "
@@ -766,6 +1614,144 @@ async def delete_session(
             "interactions_deleted": interactions_deleted,
             "children_deleted": len(targets) - 1,
             "clones_deleted": clones_deleted,
+            "remote_pending": remote_pending,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SessionForkRequest(BaseModel):
+    """Body for POST /sessions/{id}/fork — fork a session at a given interaction."""
+    up_to_interaction_id: str
+    user_id: Optional[str] = None
+
+
+@router.post("/sessions/{session_id}/fork")
+async def fork_session(
+    session_id: str,
+    req: SessionForkRequest,
+    request: Request,
+    db: str = Query("user.db", description="Database filename"),
+):
+    """Fork a session at a given interaction. Creates a new session as a copy of
+    the original up to and including the specified interaction, then switches to
+    the forked session.
+
+    The new session's title is prefixed with "Fork: ". The interaction's
+    ``session_seq`` is used as the cut-off, so all interactions with
+    ``session_seq <= target.session_seq`` are copied (with new IDs and remapped
+    ``parent_id`` references). The forked session is independent: subsequent
+    messages in the original are not mirrored.
+    """
+    hb = _hybrid_backend_for(db)
+    try:
+        conn, _dialect = (_open_local_sqlite(db), "sqlite") if hb else _open(db)
+        cur = conn.cursor()
+
+        # Ownership gate.
+        if _session_access_ok(cur, session_id, request, req.user_id) is False:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not authorized for this session")
+
+        # Resolve the target interaction's session_seq.
+        target_row = cur.execute(
+            "SELECT session_seq, created_at FROM interactions WHERE id = ? AND session_id = ?",
+            (req.up_to_interaction_id, session_id),
+        ).fetchone()
+        if not target_row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Interaction not found in this session")
+        target_seq = target_row[0] if target_row[0] is not None else 0
+
+        # Fetch the original session's title and metadata.
+        src_row = cur.execute(
+            "SELECT title, user_id, metadata, agent_id, participants FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if not src_row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Session not found")
+        src_title, src_user_id, src_meta_json, src_agent_id, src_participants = src_row
+
+        # Determine the user_id for the new session.
+        # Use the fork request's user_id, then fall back to the original session's owner.
+        resolved_user_id = req.user_id or src_user_id
+
+        # Create the new session.
+        new_session_id = str(uuid.uuid4())
+        fork_title = "Fork: " + (src_title or "New Session")
+        # Copy metadata, strip run-specific fields, add fork origin.
+        try:
+            src_meta = json.loads(src_meta_json) if src_meta_json else {}
+        except (json.JSONDecodeError, TypeError):
+            src_meta = {}
+        if not isinstance(src_meta, dict):
+            src_meta = {}
+        src_meta.pop("remote_executor", None)
+        src_meta.pop("execution_mode", None)
+        src_meta["forked_from"] = {
+            "session_id": session_id,
+            "interaction_id": req.up_to_interaction_id,
+            "session_seq": target_seq,
+        }
+
+        cur.execute(
+            "INSERT INTO sessions (id, user_id, title, metadata, agent_id, participants, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'active', datetime('now'), datetime('now'))",
+            (new_session_id, resolved_user_id, fork_title, json.dumps(src_meta),
+             src_agent_id, src_participants),
+        )
+
+        # Fetch all interactions up to and including the target seq, ordered by
+        # session_seq ASC so the new session_seq assignment is monotonic.
+        rows = cur.execute(
+            "SELECT id, parent_id, role, content, tool_name, tool_call_id, channel, "
+            "       metadata, output, source, from_id, to_id, turn_id, turn_seq, status, "
+            "       created_at "
+            "FROM interactions "
+            "WHERE session_id = ? AND session_seq IS NOT NULL AND session_seq <= ? "
+            "ORDER BY session_seq ASC",
+            (session_id, target_seq),
+        ).fetchall()
+
+        # Build a map: old_id → new_id, then insert with remapped parent_id.
+        id_map: dict[str, str] = {}
+        for row in rows:
+            old_id = row[0]
+            id_map[old_id] = str(uuid.uuid4())
+
+        new_seq = 1
+        for row in rows:
+            old_id, old_parent_id, role, content, tool_name, tool_call_id, channel, \
+                metadata, output, source, from_id, to_id, turn_id, turn_seq, status, created_at = row
+
+            new_id = id_map[old_id]
+            new_parent_id = id_map.get(old_parent_id) if old_parent_id else None
+
+            cur.execute(
+                "INSERT INTO interactions (id, session_id, parent_id, role, content, "
+                "    tool_name, tool_call_id, channel, metadata, output, source, "
+                "    from_id, to_id, session_seq, turn_id, turn_seq, status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_id, new_session_id, new_parent_id, role, content, tool_name,
+                 tool_call_id, channel, metadata, output, source, from_id, to_id,
+                 new_seq, turn_id, turn_seq, status, created_at),
+            )
+            new_seq += 1
+
+        conn.commit()
+        conn.close()
+
+        if hb:
+            await _enqueue_remote_push(hb, [new_session_id], "upsert")
+
+        return {
+            "success": True,
+            "session_id": new_session_id,
+            "title": fork_title,
+            "interactions_copied": len(rows),
         }
     except HTTPException:
         raise
@@ -777,7 +1763,7 @@ async def delete_session(
 async def restore_session(
     session_id: str,
     request: Request,
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
 ):
     """Restore a recycled session back to active status."""
     db_path = _get_db_path(db)
@@ -840,7 +1826,7 @@ async def patch_session(
     session_id: str,
     req: SessionPatchRequest,
     request: Request,
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
 ):
     """Update a session's title, pinned, hidden, and/or Remote Control executor."""
     if (req.title is None and req.pinned is None and req.hidden is None
@@ -884,7 +1870,7 @@ async def patch_session(
             sets.append("title = ?")
             params.append(req.title)
             # A manual rename wins over the auto-namer: lock it so the background
-            # Session Namer ability (plugins/abilities/Core/session_titler/)
+            # Session Namer app function (plugins/app_functions/session_titler/)
             # stops overwriting it.
             _meta["auto_title_locked"] = True
             _meta_dirty = True
@@ -941,18 +1927,155 @@ async def patch_session(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/sessions/{session_id}/auto-title")
+async def auto_title_session(
+    session_id: str,
+    request: Request,
+    db: str = Query("user.db", description="Database filename"),
+):
+    """On-demand "Auto rename": re-title a session via the Session Namer app
+    function, forcing past any lock or special prefix.
+
+    The background namer only names the first few turns, skips optimizer-/
+    closer-/slash- sessions, and stops once a name is locked (manual rename or
+    the 3-turn lock). This action calls the same LLM titler with ``force=True``
+    and a larger message sample so ANY session gets a fresh name, and re-locks
+    the result. It emits the same ``session_title`` WS events as a normal turn,
+    so the header spinner + live rename work identically. When the Session
+    Namer app function is disabled (App Settings ▸ App Functions), it returns
+    ``status: "disabled"`` with the current title untouched.
+    """
+    # App Functions gate — the Session Namer is an app function (not an agent
+    # ability); its on/off lives in App Settings ▸ App Functions. Fail open on
+    # a read error, matching the turn-hook dispatch.
+    try:
+        from app.abilities import app_function_enabled
+        if not app_function_enabled("session_titler"):
+            return {"status": "disabled", "title": None,
+                    "message": "Session Namer is turned off (App Settings ▸ App Functions)"}
+    except Exception:
+        pass
+
+    db_path = _get_db_path(db)
+    hb = _hybrid_backend_for(db)
+    conn, _dialect = (_open_local_sqlite(db), "sqlite") if hb else _open(db)
+    try:
+        cur = conn.cursor()
+        # Ownership gate (open/local mode + admins pass; non-owner refused).
+        if _session_access_ok(cur, session_id, request, None) is False:
+            raise HTTPException(status_code=403, detail="Not authorized for this session")
+        row = cur.execute(
+            "SELECT user_id, title, agent_id FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+    owner_id, current_title, agent_id = row[0], row[1], row[2]
+
+    # The titler's internal fetch asserts ownership — use the session's OWNER id
+    # (the requester already passed the access gate above), so open-mode / admin
+    # requests don't trip the strict owner check.
+    from app.db import get_db as _get_app_db
+    app_db = _get_app_db()
+
+    # Best-effort WS emit to the REQUESTER (who clicked Auto rename) so the
+    # header shows the titling spinner and swaps the name live.
+    _token = ""
+    _auth_header = request.headers.get("Authorization", "")
+    if _auth_header.startswith("Bearer "):
+        _token = _auth_header[7:]
+    if not _token:
+        _token = request.query_params.get("token", "")
+    _payload = decode_token(_token) if _token else None
+    requester_id = _payload.get("user_id") if _payload else None
+
+    from app.api.chat import _emit_to_user_listeners
+
+    async def _emit(ev: dict) -> None:
+        if not requester_id:
+            return
+        try:
+            await _emit_to_user_listeners(requester_id, ev)
+        except Exception:
+            pass
+
+    from plugins.app_functions.session_titler.session_titler import (
+        _maybe_title_session, _model,
+    )
+
+    # The titler resolves its model from env vars (LLM_MODEL / CLASSIFIER_MODEL),
+    # which the run loop populates via apply_provider_for_run(apply_env=True).
+    # This on-demand endpoint fires OUTSIDE a chat run, so if no turn has run
+    # since boot the env is empty and the LLM call silently no-ops (title
+    # unchanged, status "ok"). Resolve + apply the session's AGENT provider
+    # config explicitly, and prefer the roster row flagged "System" (the model
+    # the agent admin marked for app misc. LLM tasks — session naming, context
+    # mgmt) over the agent's plain chat default.
+    import os as _os
+    try:
+        from app.admin.settings import apply_provider_for_run
+        agent_rec = None
+        if agent_id:
+            agent_rec = await app_db.get_agent_by_id(agent_id)
+        effective = await apply_provider_for_run(
+            owner_id, agent_rec, session_id, apply_env=True
+        )
+        # Find the agent's "System" model in the effective roster (inherited or
+        # own). Fall back to the effective default model if no System row exists.
+        sys_row = None
+        for _p in (effective.get("multi_providers") or []):
+            if isinstance(_p, dict) and _p.get("use_for_system") and _p.get("model"):
+                sys_row = _p
+                break
+        if sys_row:
+            _m = sys_row.get("model", "")
+            _b = sys_row.get("base_url", "") or effective.get("base_url", "")
+            _k = sys_row.get("api_key", "") or effective.get("api_key", "")
+            if _m and _b:
+                _os.environ["CLASSIFIER_MODEL"] = _m
+                _os.environ["LLM_MODEL"] = _m
+                _os.environ["OPENROUTER_MODEL"] = _m
+                _os.environ["LLM_BASE_URL"] = _b
+                _os.environ["OPENROUTER_BASE_URL"] = _b
+                if _k:
+                    _os.environ["LLM_API_KEY"] = _k
+                    _os.environ["OPENROUTER_API_KEY"] = _k
+    except Exception as _pe:
+        logger.warning("auto_title_session: provider resolution failed: %s", _pe)
+
+    _diag_model = _model()
+    logger.info("auto_title_session: session=%s model=%s force=True",
+                session_id, _diag_model or "<none>")
+    await _maybe_title_session(
+        app_db, owner_id, session_id, emit=_emit, force=True, sample_limit=30
+    )
+
+    # Re-read the stored title (the titler updated it in place; the done event
+    # also carried it) so the response is authoritative even if emit was a no-op.
+    conn2, _dialect2 = (_open_local_sqlite(db), "sqlite") if hb else _open(db)
+    try:
+        trow = conn2.execute(
+            "SELECT title FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+    finally:
+        conn2.close()
+    new_title = trow[0] if trow else current_title
+    return {"status": "ok", "session_id": session_id, "title": new_title}
+
+
 @router.post("/sessions/reorder")
 async def reorder_sessions(
     req: SessionReorderRequest,
     request: Request,
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
 ):
     """Persist the manual drag order of the requesting user's sessions.
 
-    Each id in ``order`` gets sort_order = its index (0 = top). Writes are
-    scoped to sessions owned by ``user_id`` so a user can't reorder another
-    user's rows. Sessions not listed keep their existing sort_order and fall
-    after the ordered set (NULLS LAST) in list_sessions.
+    Each distinct pinned id in ``order`` gets sort_order = its index (0 = top).
+    Writes are scoped to sessions owned by ``user_id`` so a user can't reorder
+    another user's rows. Unpinned rows are deliberately unaffected because they
+    are always ordered by recent activity.
     """
     # Identity gate: the claimed user_id must be the authenticated caller (or an
     # admin); open/local mode is full-trust. Without this a caller could reorder
@@ -960,36 +2083,256 @@ async def reorder_sessions(
     if not _is_open_access_mode():
         from app.auth.identity import assert_caller_is
         await assert_caller_is(request, req.user_id)
-    if not req.order:
+    # Preserve first occurrence and discard empty/duplicate ids. Apart from
+    # producing ambiguous positions, duplicates used to make the response's
+    # updated count look successful even though fewer distinct rows were saved.
+    ordered_ids = list(dict.fromkeys(sid for sid in req.order if sid))
+    if not ordered_ids:
         return {"success": True, "updated": 0}
     db_path = _get_db_path(db)
     hb = _hybrid_backend_for(db)
     try:
-        # Local-first (drag order must reflect instantly in the now-local list) +
-        # queued upsert push of every row whose sort_order changed.
-        conn, _dialect = (_open_local_sqlite(db), "sqlite") if hb else _open(db)
-        cur = conn.cursor()
-        # Auto-add the column on older DBs (mirrors the pinned guard above).
-        cur.execute("PRAGMA table_info(sessions)")
-        cols = {row[1] for row in cur.fetchall()}
-        if "sort_order" not in cols:
-            cur.execute("ALTER TABLE sessions ADD COLUMN sort_order INTEGER")
-        updated = 0
-        pushed_ids = []
-        for position, sid in enumerate(req.order):
-            cur.execute(
-                "UPDATE sessions SET sort_order = ?, updated_at = CURRENT_TIMESTAMP "
-                "WHERE id = ? AND user_id = ?",
-                (position, sid, req.user_id),
-            )
-            if cur.rowcount:
-                pushed_ids.append(sid)
-            updated += cur.rowcount
-        conn.commit()
-        conn.close()
+        def _write(conn, *, enqueue: bool) -> tuple[int, list[str]]:
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(sessions)")
+            cols = {row[1] for row in cur.fetchall()}
+            if "sort_order" not in cols:
+                cur.execute("ALTER TABLE sessions ADD COLUMN sort_order INTEGER")
+            if "pinned" not in cols:
+                cur.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+
+            # One fixed-width, timezone-qualified watermark for the whole reorder.
+            # This avoids second-resolution LWW ties in hybrid pull/push races.
+            changed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+            updated = 0
+            pushed_ids: list[str] = []
+            for position, sid in enumerate(ordered_ids):
+                cur.execute(
+                    "UPDATE sessions SET sort_order = ?, updated_at = ? "
+                    "WHERE id = ? AND user_id = ? AND pinned = 1",
+                    (position, changed_at, sid, req.user_id),
+                )
+                if cur.rowcount:
+                    pushed_ids.append(sid)
+                    updated += cur.rowcount
+
+            if enqueue and pushed_ids:
+                # The row mutations and their durable outbox markers MUST commit
+                # together. Previously _enqueue_remote_push ran afterward in a
+                # second transaction, leaving a crash window where local order
+                # changed but could never reach the remote authority.
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS hybrid_outbox ("
+                    "seq INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT NOT NULL, "
+                    "row_id TEXT NOT NULL, op TEXT NOT NULL DEFAULT 'upsert', "
+                    "created_at TEXT NOT NULL)"
+                )
+                cur.executemany(
+                    "INSERT INTO hybrid_outbox "
+                    "(table_name, row_id, op, created_at) VALUES (?, ?, ?, ?)",
+                    [("sessions", sid, "upsert", changed_at) for sid in pushed_ids],
+                )
+            conn.commit()
+            return updated, pushed_ids
+
         if hb:
-            await _enqueue_remote_push(hb, pushed_ids, "upsert")
-        return {"success": True, "updated": updated}
+            # Serialize against the hybrid pusher/puller and commit data + outbox
+            # atomically on the exact local backend connection they share.
+            async with hb.local._write_lock:
+                conn = hb.local._get_conn()
+                try:
+                    updated, pushed_ids = _write(conn, enqueue=True)
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    conn.close()
+        else:
+            conn, _dialect = _open(db)
+            try:
+                updated, pushed_ids = _write(conn, enqueue=False)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                conn.close()
+        return {
+            "success": updated == len(ordered_ids),
+            "updated": updated,
+            "requested": len(ordered_ids),
+            "updated_ids": pushed_ids,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SessionNotificationRequest(BaseModel):
+    """Body for POST /session-notifications — persist (or dismiss) one
+    session-completion toast for the caller."""
+    session_id: str
+    title: str = ""
+    dismissed: bool = False
+
+
+# ── Session-completion notifications (chat-panel sliding toast) ──────────────
+# Persisted in the caller's per-user database (data/user_data/{user_id}/{user_id}.db
+# in split mode, attached as `_user`) so an undismissed toast survives refresh AND
+# shows on every device. Dismissal is a soft `dismissed` flag so the upsert-only
+# hybrid puller can propagate it cross-device; old dismissed rows are pruned on read.
+
+_SESSION_NOTIFICATIONS_DDL = (
+    "CREATE TABLE IF NOT EXISTS session_notifications ("
+    "session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, "
+    "title TEXT NOT NULL DEFAULT '', dismissed INTEGER NOT NULL DEFAULT 0, "
+    "dismissed_at TEXT, "
+    "created_at TEXT NOT NULL DEFAULT (datetime('now')), "
+    "updated_at TEXT NOT NULL DEFAULT (datetime('now')))"
+)
+
+_SESSION_NOTIFICATIONS_UPSERT = (
+    "INSERT INTO session_notifications (session_id, user_id, title, dismissed, dismissed_at, updated_at) "
+    "VALUES (?, ?, ?, ?, NULL, datetime('now')) "
+    "ON CONFLICT(session_id) DO UPDATE SET "
+    "title = excluded.title, "
+    "dismissed = excluded.dismissed, "
+    "dismissed_at = CASE WHEN excluded.dismissed = 1 THEN datetime('now') ELSE NULL END, "
+    "updated_at = datetime('now') "
+    "WHERE session_notifications.user_id = excluded.user_id"
+)
+
+
+def _ensure_session_notifications(conn, dialect: str) -> None:
+    """Ensure the table in the caller's already-scoped user authority."""
+    if dialect != "sqlite":
+        return
+    conn.execute(_SESSION_NOTIFICATIONS_DDL)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_notifications_user "
+        "ON session_notifications(user_id)"
+    )
+
+def _caller_user_id(request: Request) -> str:
+    """Resolve the authenticated caller's user_id for the notification endpoints."""
+    from app.auth.identity import request_user_id
+    return request_user_id(request)
+
+
+@router.get("/session-notifications")
+async def list_session_notifications(
+    request: Request,
+    db: str = Query("user.db", description="Database filename"),
+):
+    """List the caller's undismissed session-completion notifications.
+
+    Served from the caller's per-user database (attached to the main connection
+    in split mode), so a toast dismissed on one device is gone on the next poll
+    on every device. Also prunes dismissed rows older than 7 days."""
+    user_id = _caller_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    conn, _dialect = _open_read(db)
+    try:
+        _ensure_session_notifications(conn, _dialect)
+        if _dialect == "sqlite":
+            try:
+                conn.execute(
+                    "DELETE FROM session_notifications "
+                    "WHERE dismissed = 1 AND dismissed_at IS NOT NULL "
+                    "AND dismissed_at < datetime('now', '-7 days')"
+                )
+                conn.commit()
+            except Exception:
+                pass
+        rows = conn.execute(
+            "SELECT session_id, title, created_at, updated_at "
+            "FROM session_notifications WHERE user_id = ? AND dismissed = 0 "
+            "ORDER BY created_at ASC",
+            (user_id,),
+        ).fetchall()
+        return {"notifications": [dict(r) for r in rows]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@router.post("/session-notifications")
+async def upsert_session_notification(
+    req: SessionNotificationRequest,
+    request: Request,
+    db: str = Query("user.db", description="Database filename"),
+):
+    """Persist one session-completion toast for the caller.
+
+    ``dismissed=false`` marks the session as needing a toast (shown on every
+    device until dismissed); ``dismissed=true`` soft-dismisses it. Local-first:
+    written to the per-user SQLite DB immediately and queued for the hybrid
+    sync engine when a remote authority is configured, so other devices pick
+    the change up on their next pull."""
+    user_id = _caller_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    sid = (req.session_id or "").strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    title = (req.title or "")[:500]
+    dismissed = 1 if req.dismissed else 0
+    hb = _hybrid_backend_for(db)
+    try:
+        def _write(conn, *, enqueue: bool) -> None:
+            _ensure_session_notifications(conn, "sqlite")
+            conn.execute(
+                _SESSION_NOTIFICATIONS_UPSERT,
+                (sid, user_id, title, dismissed),
+            )
+            if enqueue:
+                # Row mutation + durable outbox marker commit together so a crash
+                # can't leave a local toast that never reaches other devices.
+                cur = conn.cursor()
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS hybrid_outbox ("
+                    "seq INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT NOT NULL, "
+                    "row_id TEXT NOT NULL, op TEXT NOT NULL DEFAULT 'upsert', "
+                    "created_at TEXT NOT NULL)"
+                )
+                cur.execute(
+                    "INSERT INTO hybrid_outbox "
+                    "(table_name, row_id, op, created_at) VALUES (?, ?, ?, ?)",
+                    ("session_notifications", sid, "upsert",
+                     datetime.now(timezone.utc).isoformat(timespec="microseconds")),
+                )
+            conn.commit()
+
+        if hb:
+            async with hb.local._write_lock:
+                conn = hb.local._get_conn()
+                try:
+                    _write(conn, enqueue=True)
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    conn.close()
+        else:
+            conn, _dialect = _open(db)
+            try:
+                _write(conn, enqueue=False)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                conn.close()
+        return {"success": True, "session_id": sid}
     except HTTPException:
         raise
     except Exception as e:
@@ -997,13 +2340,16 @@ async def reorder_sessions(
 
 
 @router.get("/sessions")
-def list_sessions(
+async def list_sessions(
     request: Request,
     user_id: str = Query(..., description="User ID"),
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     agent_id: Optional[str] = Query(None, description="Filter to sessions bound to this agent"),
-    limit: int = Query(20, ge=1, le=50, description="Max sessions to return"),
+    limit: int = Query(20, ge=0, le=200, description="Max sessions to return (0 = no limit, all matching sessions)"),
     include_hidden: bool = Query(False, description="Include sessions flagged hidden"),
+    q: Optional[str] = Query(None, description="Search term: sessions whose title contains it (case-insensitive)"),
+    include_recycled: bool = Query(False, description="Include sessions in the recycling bin (flagged recycled:true)"),
+    include_manifest: bool = Query(True, description="Compute per-session manifest fields (disable for lightweight UI lists that never read them)"),
 ):
     """List sessions for a user (owner or participant).
 
@@ -1012,9 +2358,20 @@ def list_sessions(
     are filtered out in that case — they appear as orphans that don't
     belong to any specific agent.
 
-    Pinned sessions are always returned first (in sort_order), then the
-    most recent unpinned sessions up to the limit. ``total_count`` reports
+    Pinned sessions are always returned first (most recent activity first),
+    then the most recent unpinned sessions up to the limit. ``total_count`` reports
     the total number of unpinned sessions matching the filter.
+
+    ``limit=0`` returns every matching session (no cap) — the chat-header
+    dropdown uses it so its list matches the Sessions page, which reads the
+    same data from /session-stats without any limit.
+
+    ``q`` filters to sessions whose title contains the term (case-insensitive)
+    and, when set, lifts the row cap so ALL matches are returned (the dropdown
+    search must find sessions past the normal 50-row ceiling). ``include_recycled``
+    brings recycling-bin rows back into the result, each flagged
+    ``recycled: true``; without it (and without ``q``) binned sessions stay
+    hidden, exactly as before.
     """
     # Resolve requester identities from token
     _token = ""
@@ -1041,18 +2398,6 @@ def list_sessions(
         # (the puller keeps `sessions` current within ~5s; the user's own edits are
         # instant). The per-user WHERE filter below still scopes the rows.
         conn, _dialect = _open_read(db)
-        if _dialect == "sqlite" and _pg_conninfo_for(db) is not None:
-            # Cold-mirror guard: this query LEFT-... actually INNER-joins agents and
-            # drops sessions whose agent row is absent. Before the first puller tick
-            # pulls `agents`, that would hide every agent-bound session. If no agents
-            # are mirrored yet, read the authoritative remote until the pull lands.
-            try:
-                _warm = conn.execute("SELECT 1 FROM agents LIMIT 1").fetchone()
-            except Exception:
-                _warm = None
-            if _warm is None:
-                conn.close()
-                conn, _dialect = _open(db)
         # Only a plain stdlib sqlite3 connection needs its row_factory set here.
         # db_crypto's SQLCipher connections already carry a dict-capable Row (and
         # MUST NOT be reassigned — stdlib sqlite3.Row rejects a cipher cursor), and
@@ -1074,24 +2419,51 @@ def list_sessions(
             has_status = "status" in sess_cols
             has_hidden = "hidden" in sess_cols
 
-            select_cols = 's.id, s.title, s.created_at, s.user_id, s.participants, s.agent_id, s.updated_at, a.name AS agent_name, a.metadata AS agent_metadata'
+            # A session's latest interaction is its authoritative activity time.
+            # Session.updated_at is only a fallback for empty sessions because it
+            # is also bumped by administrative edits such as pin/title changes.
+            activity_expr = (
+                "COALESCE((SELECT MAX(i.created_at) FROM interactions i "
+                "WHERE i.session_id = s.id), s.updated_at, s.created_at)"
+            )
+            select_cols = (
+                's.id, s.title, s.created_at, s.user_id, s.participants, '
+                f's.agent_id, {activity_expr} AS activity_at'
+            )
             if has_pinned:
                 select_cols += ', s.pinned'
+            if has_sort_order:
+                select_cols += ', s.sort_order'
             if has_read_at:
                 select_cols += ', s.read_at'
             if has_hidden:
                 select_cols += ', s.hidden'
-
-            where_clause = '(s.agent_id IS NULL OR a.id IS NOT NULL)'
+            if has_status:
+                select_cols += ', s.status'
+            # Agent authority lives in per-agent databases now. Never join the
+            # user-plane session query to a retired/co-located `agents` table;
+            # display metadata is enriched from the agent plane below.
+            where_clause = '1=1'
             params: list = []
             if agent_id:
                 where_clause = 's.agent_id = ?'
                 params.append(agent_id)
 
-            # Recycling bin: hide sessions soft-deleted from the chat header.
-            # A NULL status counts as live (Postgres adds the column without a
-            # default, so pre-existing rows read back as NULL).
-            if has_status:
+            # Title search (dropdown search bar): case-insensitive contains,
+            # escaped so literal % _ \ in the term can't widen the match.
+            _search = (q or "").strip()
+            if _search:
+                _escaped = _search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                where_clause = f"({where_clause}) AND (s.title LIKE ? ESCAPE '\\')"
+                params.append(f"%{_escaped}%")
+
+            # Recycling bin: hidden from the chat header by default (a NULL
+            # status counts as live — Postgres adds the column without a
+            # default, so pre-existing rows read back as NULL). include_recycled
+            # brings bin rows back (each flagged recycled:true); an active
+            # search also surfaces them so a name search can find binned
+            # sessions, matching the Sessions page cross-catalog search.
+            if has_status and not include_recycled and not _search:
                 where_clause = f"({where_clause}) AND (s.status IS NULL OR s.status != 'recycled')"
 
             # Hidden sessions: the chat-header "manage list" eye-toggle declutters
@@ -1104,24 +2476,21 @@ def list_sessions(
             # ephemeral clone agents and live/die with their orchestrator (see
             # cascade_delete_clones). Their ids are always prefixed 'spawn-'.
             # Optimizer Planner ('optimizer-*') and Closer ('closer-*') sessions
-            # are likewise children of the BASE session the optimizer ran on —
-            # they're reached by expanding that base row in the tree / via its
-            # sub-header tabs, not as their own top-level rows.
+            # are ordinary TOP-LEVEL sessions of their own — the optimizer
+            # family is no longer nested under the base session — so they show
+            # up here as regular rows like any other session.
             where_clause = (
-                f"({where_clause}) AND (s.id NOT LIKE 'spawn-%') "
-                f"AND (s.id NOT LIKE 'closer-%') AND (s.id NOT LIKE 'optimizer-%')"
+                f"({where_clause}) AND (s.id NOT LIKE 'spawn-%')"
             )
 
-            # Sort by last active time (updated_at), newest first.
-            # Pinned sessions come first, then the rest sorted by last active.
-            order_parts = []
-            if has_pinned:
-                order_parts.append('s.pinned DESC')
+            # Pinned rows preserve their explicit/manual location. Unpinned rows
+            # ignore manual order and always follow latest activity.
+            pinned_order_parts = []
             if has_sort_order:
-                order_parts.append('(s.sort_order IS NULL)')
-                order_parts.append('s.sort_order ASC')
-            order_parts.append('s.updated_at DESC NULLS LAST')
-            order_clause = ', '.join(order_parts)
+                pinned_order_parts.extend(['(s.sort_order IS NULL)', 's.sort_order ASC'])
+            pinned_order_parts.extend([f'{activity_expr} DESC NULLS LAST', 's.id ASC'])
+            pinned_order_clause = ', '.join(pinned_order_parts)
+            unpinned_order_clause = f'{activity_expr} DESC NULLS LAST, s.id ASC'
 
             # Pre-fetch run statuses for all sessions in one query
             run_statuses = {}
@@ -1134,10 +2503,10 @@ def list_sessions(
                 pass
 
             # Pre-fetch child counts so a parent row can show an expand caret.
-            # A session has children if it is an orchestrator (spawned helpers in
-            # agent_spawns) or a BASE session an optimizer ran on (its Planner
-            # 'optimizer-*' + Closer 'closer-*' members). One small query each;
-            # tallied into child_counts keyed by the parent (base) sid.
+            # A session has children only if it is an orchestrator (spawned
+            # helpers in agent_spawns). Optimizer Planner/Closer sessions are
+            # top-level sessions of their own, so they contribute no child
+            # count to the base session.
             child_counts: dict = {}
             try:
                 for r in cur2.execute(
@@ -1148,46 +2517,14 @@ def list_sessions(
                         child_counts[r[0]] = child_counts.get(r[0], 0) + int(r[1] or 0)
             except Exception:
                 pass
-            # Optimizer Planners: each is a child of its base session
-            # (metadata.target_session). Build planner→base map for the closers.
-            _planner_base: dict = {}
-            try:
-                for r in cur2.execute(
-                    "SELECT id, metadata FROM sessions WHERE id LIKE 'optimizer-%'"
-                ).fetchall():
-                    try:
-                        _pm = json.loads(r[1] or "{}")
-                    except (json.JSONDecodeError, TypeError):
-                        _pm = {}
-                    _base = _pm.get("target_session")
-                    if _base:
-                        _planner_base[r[0]] = _base
-                        child_counts[_base] = child_counts.get(_base, 0) + 1
-            except Exception:
-                pass
-            # Optimizer Closers: also children of the base session, resolved via
-            # their Planner (metadata.source_optimizer_session → planner → base).
-            try:
-                for r in cur2.execute(
-                    "SELECT metadata FROM sessions WHERE id LIKE 'closer-%'"
-                ).fetchall():
-                    try:
-                        _cm = json.loads(r[0] or "{}")
-                    except (json.JSONDecodeError, TypeError):
-                        _cm = {}
-                    _base = _planner_base.get(_cm.get("source_optimizer_session"))
-                    if _base:
-                        child_counts[_base] = child_counts.get(_base, 0) + 1
-            except Exception:
-                pass
 
             # ── Step 1: fetch all pinned sessions (no limit) ──
             pinned_where = f'({where_clause}) AND s.pinned = 1' if has_pinned else '1=0'
             pinned_sql = (
                 f'SELECT {select_cols} '
-                f'FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
+                f'FROM sessions s '
                 f'WHERE {pinned_where} '
-                f'ORDER BY {order_clause}'
+                f'ORDER BY {pinned_order_clause}'
             )
             cur.execute(pinned_sql, params)
             pinned_rows = cur.fetchall()
@@ -1197,26 +2534,60 @@ def list_sessions(
             if has_pinned:
                 unpinned_where += ' AND (s.pinned IS NULL OR s.pinned = 0)'
             count_sql = (
-                f'SELECT COUNT(*) FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
+                f'SELECT COUNT(*) FROM sessions s '
                 f'WHERE {unpinned_where}'
             )
             cur.execute(count_sql, params)
             total_count = cur.fetchone()[0]
 
             # ── Step 3: fetch unpinned sessions with limit ──
-            unpinned_limit = max(0, limit - len(pinned_rows))
+            # Search mode returns ALL matches (no truncation) so the dropdown
+            # search genuinely covers sessions past the normal limit cap.
+            # limit=0 also means "no cap" — the dropdown requests it so its list
+            # matches the Sessions page (which has no limit at all).
+            unpinned_limit = None if (_search or limit <= 0) else max(0, limit - len(pinned_rows))
             unpinned_sql = (
                 f'SELECT {select_cols} '
-                f'FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id '
+                f'FROM sessions s '
                 f'WHERE {unpinned_where} '
-                f'ORDER BY {order_clause} '
-                f'LIMIT ?'
+                f'ORDER BY {unpinned_order_clause} '
+                + ('' if unpinned_limit is None else 'LIMIT ?')
             )
-            cur.execute(unpinned_sql, params + [unpinned_limit])
+            cur.execute(unpinned_sql, params if unpinned_limit is None else params + [unpinned_limit])
             unpinned_rows = cur.fetchall()
 
             # ── Step 4: merge — pinned first, then unpinned ──
             all_rows = list(pinned_rows) + list(unpinned_rows)
+
+            # Resolve each referenced agent once from its own authority plane.
+            # Keeping this outside the row loop avoids an N+1 lookup when many
+            # sessions share the same agent.
+            agent_display: dict[str, dict] = {}
+            agent_ids = {row["agent_id"] for row in all_rows if row["agent_id"]}
+            if agent_ids:
+                try:
+                    from app.db import get_db
+                    authority = get_db()
+                    for aid in agent_ids:
+                        try:
+                            agent = await authority.get_agent_by_id(aid)
+                        except Exception:
+                            agent = None
+                        if not agent:
+                            continue
+                        metadata = agent.get("metadata") or {}
+                        if isinstance(metadata, str):
+                            try:
+                                metadata = json.loads(metadata)
+                            except (json.JSONDecodeError, TypeError):
+                                metadata = {}
+                        agent_display[aid] = {
+                            "name": agent.get("name") or "",
+                            "icon": agent.get("icon") or metadata.get("icon") or "",
+                            "engine": metadata.get("engine") or agent.get("engine") or "",
+                        }
+                except Exception as exc:
+                    logger.debug("session list agent-plane enrichment failed: %s", exc)
 
             for row in all_rows:
                 owner_id = row[3]
@@ -1229,11 +2600,29 @@ def list_sessions(
                 all_ids = ({owner_id} | participant_ids) - {None}
                 if requester_identities & all_ids:
                     sid = row["id"]
+                    display = agent_display.get(row["agent_id"], {})
                     pinned_val = bool(row["pinned"]) if has_pinned else False
                     read_at = row["read_at"] if has_read_at else None
-                    run = run_statuses.get(sid)
-                    run_status = run["status"] if run else None
-                    run_updated_at = run["updated_at"] if run else None
+                    # In-process session-gate queue state takes precedence: a
+                    # session waiting in the FIFO queue is "queued" even when a
+                    # stale terminal session_runs row exists from its last turn.
+                    queue_position = None
+                    queue_total = None
+                    try:
+                        from app.agent.session_gate import queue_info as _gate_qi
+                        _qi = _gate_qi(sid)
+                        if _qi:
+                            queue_position = _qi.get("position")
+                            queue_total = _qi.get("total")
+                    except Exception:
+                        pass
+                    if queue_position is not None:
+                        run_status = "queued"
+                        run_updated_at = None  # no completed time while queued
+                    else:
+                        run = run_statuses.get(sid)
+                        run_status = run["status"] if run else None
+                        run_updated_at = run["updated_at"] if run else None
                     # has_unread: session has a completed run that the user hasn't read yet
                     has_unread = False
                     if run_status in ("complete", "interrupted", "error") and run_updated_at:
@@ -1243,31 +2632,29 @@ def list_sessions(
                         "id": sid,
                         "title": row["title"] or sid[:12],
                         "created_at": row["created_at"],
-                        "updated_at": row["updated_at"],
+                        "updated_at": row["activity_at"],
                         "agent_id": row["agent_id"],
-                        "agent_name": row["agent_name"] or "",
-                        "agent_icon": "",
-                        "agent_engine": "",
+                        "agent_name": display.get("name", ""),
+                        "agent_icon": display.get("icon", ""),
+                        "agent_engine": display.get("engine", ""),
                         "pinned": pinned_val,
+                        "sort_order": row["sort_order"] if has_sort_order else None,
                         "hidden": bool(row["hidden"]) if has_hidden else False,
+                        "recycled": bool(has_status and row["status"] == "recycled"),
                         "run_status": run_status,
+                        "run_updated_at": run_updated_at,
+                        "queue_position": queue_position,
+                        "queue_total": queue_total,
                         "has_unread": has_unread,
                         "child_count": child_counts.get(sid, 0),
+                        **(compute_session_manifest(conn, sid) if include_manifest else {}),
                     })
-                    # Resolve icon and engine from agent metadata JSON
-                    am = row["agent_metadata"]
-                    if am:
-                        try:
-                            _m = json.loads(am)
-                            if isinstance(_m, dict):
-                                if _m.get("icon"):
-                                    sessions[-1]["agent_icon"] = _m["icon"]
-                                if _m.get("engine"):
-                                    sessions[-1]["agent_engine"] = _m["engine"]
-                        except Exception:
-                            pass
         except Exception:
-            pass
+            # Do not disguise a query failure as a real empty account. The
+            # session picker treats non-2xx responses as retryable and keeps its
+            # warm cache (or cold-load skeleton) visible while it retries.
+            conn.close()
+            raise
 
         conn.close()
         return {"sessions": sessions, "db": db, "total_count": total_count}
@@ -1278,7 +2665,7 @@ def list_sessions(
 
 
 @router.post("/sessions/{session_id}/read")
-async def mark_session_read(session_id: str, request: Request, db: str = Query("local.db", description="Database filename")):
+async def mark_session_read(session_id: str, request: Request, db: str = Query("user.db", description="Database filename")):
     """Mark a session as read by setting read_at to now."""
     db_path = _get_db_path(db)
     hb = _hybrid_backend_for(db)
@@ -1314,23 +2701,11 @@ def _session_title(cur, sid: str):
         return None
 
 
-def _session_meta_get(cur, sid: str, key: str):
-    """Best-effort lookup of a single key from a session's metadata JSON."""
-    try:
-        row = cur.execute("SELECT metadata FROM sessions WHERE id = ?", (sid,)).fetchone()
-        if not row:
-            return None
-        meta = json.loads(row["metadata"] or "{}")
-        return meta.get(key) if isinstance(meta, dict) else None
-    except (json.JSONDecodeError, TypeError, Exception):
-        return None
-
-
 @router.get("/sessions/{session_id}/related")
 def get_session_related(
     session_id: str,
     request: Request,
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
 ):
     """Return spawned helpers and browser sessions related to this session.
 
@@ -1344,12 +2719,10 @@ def get_session_related(
     user_id = caller_uid_sync(request)
 
     db_path = _get_db_path(db)
-    # `children` is the unified family-member list (spawned helpers OR optimizer
-    # worker/closer sessions). Each carries a `label`/`role` so one frontend
-    # renderer draws both the sub-header tab bar AND the session-list tree the
-    # same way. `root_label` names the family-root tab ("Main" for an
-    # orchestrator, "Planner" for an optimizer run). `spawns` is kept as a
-    # back-compat alias for the spawn children.
+    # `children` is the unified family-member list (spawned helpers). Each
+    # carries a `label`/`role` so one frontend renderer draws both the
+    # sub-header tab bar AND the session-list tree the same way. `spawns` is
+    # kept as a back-compat alias for the spawn children.
     result = {"spawns": [], "children": [], "browser_sessions": [],
               "parent": None, "orchestrator": None,
               "group_kind": None, "root_label": "Main"}
@@ -1449,87 +2822,36 @@ def get_session_related(
         except Exception:
             pass
 
-        # ── 1c. Optimizer family (BASE session = root; Planner + Closer = tabs) ──
-        # The real session the optimizer ran ON is the family root ("Main"); its
-        # Planner (``optimizer-*``, linked by metadata.target_session → base) and
-        # Closer (``closer-*``, linked by metadata.source_optimizer_session →
-        # Planner) are surfaced as spawn-style member tabs beneath it — exactly
-        # like an orchestrator's spawns. Worker trials are NOT surfaced (they are
-        # ephemeral sims, deleted after the run). Resolves the base session from
-        # whichever member we're viewing (the base session itself, a Planner, or
-        # a Closer). This APPENDS to any spawn family already found above, so a
-        # session that is BOTH an orchestrator AND an optimizer base shows both
-        # its spawns and its Planner/Closer members in one tab strip.
-        if True:
+        # ── 1c. Optimizer family ──────────────────────────────────────────────
+        # Optimizer Planner ('optimizer-*') and Closer ('closer-*') sessions are
+        # TOP-LEVEL sessions of their own — they appear in the session list as
+        # regular rows — so they are deliberately NOT surfaced here as children
+        # of the base session they ran on. Only the spawn family above applies.
+        pass
+
+        # ── 1d. Enrich children with completed_at / run_status from session_runs ──
+        if result.get("children"):
             try:
-                base_sid = None
-                if session_id.startswith("optimizer-"):
-                    base_sid = _session_meta_get(cur, session_id, "target_session")
-                elif session_id.startswith("closer-"):
-                    _planner = _session_meta_get(cur, session_id, "source_optimizer_session")
-                    if _planner:
-                        base_sid = _session_meta_get(cur, _planner, "target_session")
-                else:
-                    # Possibly a base session — confirmed below iff a Planner
-                    # actually targets it.
-                    base_sid = session_id
-
-                if base_sid:
-                    children = []
-                    planner_sids = set()
-                    for pr in cur.execute(
-                        "SELECT id, title, metadata FROM sessions WHERE id LIKE 'optimizer-%' "
-                        "ORDER BY created_at ASC"
+                _child_ids = [c["session_id"] for c in result["children"] if c.get("session_id")]
+                if _child_ids:
+                    _placeholders = ",".join("?" for _ in _child_ids)
+                    _child_runs = {}
+                    for _cr in cur.execute(
+                        f"SELECT session_id, status, updated_at FROM session_runs WHERE session_id IN ({_placeholders})",
+                        _child_ids,
                     ).fetchall():
-                        try:
-                            pm = json.loads(pr["metadata"] or "{}")
-                        except (json.JSONDecodeError, TypeError):
-                            pm = {}
-                        if pm.get("target_session") == base_sid:
-                            planner_sids.add(pr["id"])
-                            children.append({
-                                "session_id": pr["id"],
-                                "label": "Planner",
-                                "role": "planner",
-                                "name": pr["title"] or "Planner",
-                                "status": None,
-                            })
-                    for cr in cur.execute(
-                        "SELECT id, title, metadata FROM sessions WHERE id LIKE 'closer-%' "
-                        "ORDER BY created_at ASC"
-                    ).fetchall():
-                        try:
-                            cm = json.loads(cr["metadata"] or "{}")
-                        except (json.JSONDecodeError, TypeError):
-                            cm = {}
-                        if cm.get("source_optimizer_session") in planner_sids:
-                            children.append({
-                                "session_id": cr["id"],
-                                "label": "Closer",
-                                "role": "closer",
-                                "name": cr["title"] or "Closer",
-                                "status": None,
-                            })
-
-                    # Surface the family only when it actually has optimizer
-                    # members hanging off this base session. Append to (not
-                    # replace) any spawn family found above; only fill in the
-                    # root/group fields if the spawn branch didn't already.
-                    if children:
-                        result["children"] = (result.get("children") or []) + children
-                        result["root_label"] = result.get("root_label") or "Main"
-                        if not result.get("group_kind"):
-                            result["group_kind"] = "optimizer"
-                        if not result.get("orchestrator"):
-                            result["orchestrator"] = {
-                                "session_id": base_sid,
-                                "title": _session_title(cur, base_sid),
-                            }
-                        if session_id != base_sid and not result.get("parent"):
-                            result["parent"] = {
-                                "session_id": base_sid,
-                                "title": _session_title(cur, base_sid),
-                            }
+                        _child_runs[_cr["session_id"]] = {
+                            "run_status": _cr["status"],
+                            "completed_at": _cr["updated_at"],
+                        }
+                    for _c in result["children"]:
+                        _r = _child_runs.get(_c["session_id"])
+                        if _r:
+                            _c["run_status"] = _r["run_status"]
+                            _c["completed_at"] = _r["completed_at"]
+                        else:
+                            _c["run_status"] = None
+                            _c["completed_at"] = None
             except Exception:
                 pass
 
@@ -1632,6 +2954,37 @@ def _user_row_attachments(meta_raw, att_by_id):
     return [att_by_id[i] for i in ids if i in att_by_id]
 
 
+def _interaction_message_phase(metadata, role, status, output):
+    """Return the durable UI phase without changing the protocol role.
+
+    New assistant rows carry metadata.message_phase. Older tool-bearing
+    assistant rows are unambiguously progress; legacy text-only rows remain
+    unclassified so the client can apply its bounded last-message fallback.
+    """
+    if role != "assistant":
+        return None
+    # A crash/stop can leave metadata stamped as pending. The durable row status
+    # is authoritative once terminal.
+    if status in ("interrupted", "error"):
+        return "terminal"
+    if status == "streaming":
+        return "pending"
+    try:
+        meta = json.loads(metadata) if isinstance(metadata, str) else (metadata or {})
+        phase = str(meta.get("message_phase") or "").strip().lower()
+        if phase in ("pending", "progress", "main", "final", "terminal"):
+            return phase
+    except Exception:
+        pass
+    try:
+        out = json.loads(output) if isinstance(output, str) else (output or {})
+        if isinstance(out, dict) and out.get("tool_calls"):
+            return "progress"
+    except Exception:
+        pass
+    return None
+
+
 @router.get("/session-messages")
 def get_session_messages(
     request: Request,
@@ -1640,16 +2993,25 @@ def get_session_messages(
     before_id: Optional[str] = Query(None, description="If set, return the batch of messages immediately older than this message (backward pagination)"),
     after_id: Optional[str] = Query(None, description="If set, return the batch of messages immediately newer than this message (forward pagination)"),
     around_id: Optional[str] = Query(None, description="If set, return a window centred on this message: up to `limit` older rows plus up to `limit` newer rows. Used to reopen a session on the user's saved scroll position without downloading the whole tail."),
+    at_start: bool = Query(False, description="If set, return the OLDEST `limit` rows (the true start of the session) instead of the newest. Used by the double-chevron 'jump to start' nav."),
+    nearest_user_before_id: Optional[str] = Query(None, description="If set, return the single most-recent USER row strictly older than this message (the true 'last user message' for the single-chevron nav, even when it was never loaded)."),
+    after_seq: Optional[int] = Query(None, description="If set, return only rows with session_seq > this value. Used by hybrid/browser caching to fetch only new messages since last sync (incremental delta)."),
+    known_revision: Optional[int] = Query(None, ge=0, description="Cached authority revision to validate."),
+    known_hash: Optional[str] = Query(None, max_length=128, description="Cached authoritative content hash to validate."),
+    manifest_only: bool = Query(False, description="Validate the cached manifest without transferring transcript rows."),
     light: int = Query(0, description="When 1, blank the heavy tool-call bodies (tool results, tool-call arguments) while keeping the wire shape. Tool-call headings (names + durations) still render; the full bodies load on demand via /session-turn-detail when the user expands a panel."),
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
 ):
     """Return a window of a session's messages, oldest-first.
 
-    Three open modes, by cursor:
+    Open modes, by cursor:
       • none → the NEWEST `limit` rows (a long session opens on its latest
         messages, not its oldest).
       • `around_id` → a window CENTRED on that message (`limit` older + `limit`
         newer). This is the fast "reopen where I left off" path.
+      • `at_start` → the OLDEST `limit` rows (jump-to-start nav).
+      • `nearest_user_before_id` → the single most-recent USER row older than
+        that message (jump-to-last-user-message nav).
       • `before_id` / `after_id` → the batch immediately older / newer than that
         message (infinite scroll up / down).
 
@@ -1752,6 +3114,23 @@ def get_session_messages(
         except Exception:
             pass  # No sessions table — fall through to message fetch
 
+        manifest = compute_session_manifest(conn, session_id)
+        if manifest_only:
+            not_modified = _manifest_cache_not_modified(
+                known_revision,
+                known_hash,
+                manifest,
+            )
+            conn.close()
+            return {
+                "messages": [],
+                "session_id": session_id,
+                "db": db,
+                "manifest": manifest,
+                "not_modified": not_modified,
+                "cache_status": "validated" if not_modified else "stale",
+            }
+
         messages = []
         # Resolve this session's attachments once so a reloaded user turn can
         # re-render its pasted images/files (the live bubble gets them from the
@@ -1784,32 +3163,40 @@ def get_session_messages(
         role_by_id = {}
         has_more = False
         has_newer = False
-        # Pagination cursors. created_at alone is NOT a safe cursor —
-        # insert_interaction relies on the second-resolution datetime('now')
-        # default, so a whole turn's rows usually share the same created_at. We
-        # therefore order and page by the composite (created_at, rowid): rowid is
-        # the table's monotonic insertion counter, which breaks same-second ties
-        # in true chronological order.
+        # Canonical transcript order. session_seq records emission order and is
+        # authoritative; created_at/rowid are deterministic tie-breakers and the
+        # compatibility path for rows created before sequencing existed.
+        _order_key = _interaction_order_key(_tb)
+        _order_asc = _interaction_order_by(_tb)
+        _order_desc = _interaction_order_by(_tb, "DESC")
+
         def _cursor_for(mid):
             for _tbl in ("interactions", "messages"):
                 try:
-                    cur.execute(f'SELECT created_at, {_tb} FROM "{_tbl}" WHERE id = ?', (mid,))
+                    _seq_col = "session_seq" if _tbl == "interactions" else "NULL"
+                    cur.execute(
+                        f'SELECT {_seq_col}, created_at, {_tb} FROM "{_tbl}" WHERE id = ?',
+                        (mid,),
+                    )
                     _r = cur.fetchone()
                     if _r:
-                        return _r[0], _r[1]
+                        return _r[0], _r[1], _r[2]
                 except Exception:
                     pass
-            return None, None
+            return None, None, None
 
-        before_ts = before_rowid = None
-        after_ts = after_rowid = None
-        around_ts = around_rowid = None
+        before_seq = before_ts = before_rowid = None
+        after_seq_cursor = after_ts = after_rowid = None
+        around_seq = around_ts = around_rowid = None
         if before_id:
-            before_ts, before_rowid = _cursor_for(before_id)
+            before_seq, before_ts, before_rowid = _cursor_for(before_id)
         if after_id:
-            after_ts, after_rowid = _cursor_for(after_id)
+            after_seq_cursor, after_ts, after_rowid = _cursor_for(after_id)
         if around_id:
-            around_ts, around_rowid = _cursor_for(around_id)
+            around_seq, around_ts, around_rowid = _cursor_for(around_id)
+        nearest_user_seq = nearest_user_ts = nearest_user_rowid = None
+        if nearest_user_before_id:
+            nearest_user_seq, nearest_user_ts, nearest_user_rowid = _cursor_for(nearest_user_before_id)
 
         lim = limit or 20
         # Fetch one extra row per edge so we can detect remaining rows without a
@@ -1855,7 +3242,17 @@ def get_session_messages(
                             {"function": {"name": (tc.get("function") or {}).get("name"), "arguments": ""}}
                             for tc in _tcs if isinstance(tc, dict)
                         ]
-                        m["output"] = json.dumps({"tool_calls": _slim_tcs}) if _slim_tcs else None
+                        _slim_o = {}
+                        if _slim_tcs:
+                            _slim_o["tool_calls"] = _slim_tcs
+                        # Strip the full LLM schema snapshot in light mode — it's
+                        # heavy payload that the UI lazy-loads on demand via
+                        # /session-turn-detail when the user clicks the inspect icon.
+                        # Preserve a boolean flag so the frontend knows this turn
+                        # HAS a schema available to fetch.
+                        if _o.get("_sent_messages"):
+                            _slim_o["_has_sent_schema"] = True
+                        m["output"] = json.dumps(_slim_o) if _slim_o else None
                     except Exception:
                         m["output"] = None
             elif role == "tool":
@@ -1878,7 +3275,13 @@ def get_session_messages(
                 "output": row[8],
                 "metadata": row[9],
                 "parent_id": row[10],
+                "source": row[11] if len(row) > 11 else None,
+                "turn_id": row[12] if len(row) > 12 else None,
+                "turn_seq": row[13] if len(row) > 13 else None,
             }
+            m["message_phase"] = _interaction_message_phase(
+                m["metadata"], m["role"], m["status"], m["output"])
+            m["interaction_seq"] = m["session_seq"]
             # Hide any image-description block folded into the user turn — it is
             # shown as a process_image tool row, not inside the user's bubble.
             if m.get("role") == "user":
@@ -1916,25 +3319,49 @@ def get_session_messages(
             _status_col = "status" if _has_status else "'complete' AS status"
             _base = (
                 f'SELECT id, session_id, role, content, tool_name, created_at, {_status_col}, '
-                f'session_seq, output, metadata, parent_id FROM interactions'
+                f'session_seq, output, metadata, parent_id, source, turn_id, turn_seq FROM interactions'
             )
 
-            if around_ts is not None:
+            if at_start:
+                # True start of the session — oldest `limit` rows, oldest-first.
+                # Nothing can be older than the first row, so has_more is always
+                # False; has_newer reports whether rows remain beyond the window.
+                cur.execute(
+                    _base + f' WHERE session_id = ? ORDER BY {_order_asc} LIMIT ?',
+                    (session_id, fetch_n),
+                )
+                rows = cur.fetchall()  # oldest-first
+                has_newer = len(rows) > lim
+                rows = rows[:lim]
+                has_more = False
+            elif nearest_user_before_id and nearest_user_ts is not None:
+                # Single most-recent USER row strictly older than the cursor —
+                # the jump-to-last-user-message nav, accurate even when that turn
+                # was never loaded into the open window.
+                cur.execute(
+                    _base + f" WHERE session_id = ? AND role = 'user' AND ({_order_key}) < (?, ?, ?, ?) "
+                    f"ORDER BY {_order_desc} LIMIT 1",
+                    (session_id, *_interaction_cursor_values(nearest_user_seq, nearest_user_ts, nearest_user_rowid)),
+                )
+                rows = cur.fetchall()
+                has_more = False
+                has_newer = False
+            elif around_ts is not None:
                 # Window centred on the anchor: anchor-and-older (newest-first)
                 # plus strictly-newer (oldest-first); each edge reports whether
                 # more rows remain beyond it.
                 cur.execute(
-                    _base + f' WHERE session_id = ? AND (created_at < ? OR (created_at = ? AND {_tb} <= ?)) '
-                    f'ORDER BY created_at DESC, {_tb} DESC LIMIT ?',
-                    (session_id, around_ts, around_ts, around_rowid, fetch_n),
+                    _base + f' WHERE session_id = ? AND ({_order_key}) <= (?, ?, ?, ?) '
+                    f'ORDER BY {_order_desc} LIMIT ?',
+                    (session_id, *_interaction_cursor_values(around_seq, around_ts, around_rowid), fetch_n),
                 )
                 older = cur.fetchall()
                 has_more = len(older) > lim
                 older = older[:lim]
                 cur.execute(
-                    _base + f' WHERE session_id = ? AND (created_at > ? OR (created_at = ? AND {_tb} > ?)) '
-                    f'ORDER BY created_at ASC, {_tb} ASC LIMIT ?',
-                    (session_id, around_ts, around_ts, around_rowid, fetch_n),
+                    _base + f' WHERE session_id = ? AND ({_order_key}) > (?, ?, ?, ?) '
+                    f'ORDER BY {_order_asc} LIMIT ?',
+                    (session_id, *_interaction_cursor_values(around_seq, around_ts, around_rowid), fetch_n),
                 )
                 newer = cur.fetchall()
                 has_newer = len(newer) > lim
@@ -1942,9 +3369,9 @@ def get_session_messages(
                 rows = list(reversed(older)) + list(newer)  # oldest-first
             elif after_ts is not None:
                 cur.execute(
-                    _base + f' WHERE session_id = ? AND (created_at > ? OR (created_at = ? AND {_tb} > ?)) '
-                    f'ORDER BY created_at ASC, {_tb} ASC LIMIT ?',
-                    (session_id, after_ts, after_ts, after_rowid, fetch_n),
+                    _base + f' WHERE session_id = ? AND ({_order_key}) > (?, ?, ?, ?) '
+                    f'ORDER BY {_order_asc} LIMIT ?',
+                    (session_id, *_interaction_cursor_values(after_seq_cursor, after_ts, after_rowid), fetch_n),
                 )
                 rows = cur.fetchall()  # oldest-first
                 has_newer = len(rows) > lim
@@ -1954,10 +3381,13 @@ def get_session_messages(
                 _where = "session_id = ?"
                 _params: list = [session_id]
                 if before_ts is not None:
-                    _where += f" AND (created_at < ? OR (created_at = ? AND {_tb} < ?))"
-                    _params.extend([before_ts, before_ts, before_rowid])
+                    _where += f" AND ({_order_key}) < (?, ?, ?, ?)"
+                    _params.extend(_interaction_cursor_values(before_seq, before_ts, before_rowid))
+                if after_seq is not None:
+                    _where += " AND session_seq IS NOT NULL AND session_seq > ?"
+                    _params.append(after_seq)
                 cur.execute(
-                    _base + f' WHERE {_where} ORDER BY created_at DESC, {_tb} DESC LIMIT ?',
+                    _base + f' WHERE {_where} ORDER BY {_order_desc} LIMIT ?',
                     (*_params, fetch_n),
                 )
                 rows = cur.fetchall()  # newest-first
@@ -2047,20 +3477,45 @@ def get_session_messages(
         except Exception:
             pass
 
-        # Whole-session token estimate for the ctx indicator (the windowed
-        # payload alone would under-report it once the open fetch is small).
+        # Exact latest prompt size plus session totals, from the append-only
+        # usage ledger. This is local-first in hybrid mode and replaces the
+        # misleading transcript-character estimate and a second API request.
+        # Usage events live in the CONTROL database (billing writes there via
+        # get_control_db()), not the per-user database — query that DB directly
+        # so the session list shows real context / cost instead of zeros.
         context_tokens = 0
-        try:
-            cur.execute(
-                "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM interactions "
-                "WHERE session_id = ? AND role IN ('user', 'assistant')",
-                (session_id,),
-            )
-            _r = cur.fetchone()
-            if _r and _r[0]:
-                context_tokens = int(_r[0]) // 4
-        except Exception:
-            pass
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_cost_usd": 0.0}
+        _uid = requesting_user_id
+        if _uid:
+            try:
+                from app.db import get_app_db
+                _cdb = get_app_db()
+                if hasattr(_cdb, "_get_conn"):
+                    _cdb_conn = _cdb._get_conn()
+                    try:
+                        _cdb_cur = _cdb_conn.cursor()
+                        _cdb_cur.execute(
+                            "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), "
+                            "COALESCE(SUM(cost_usd),0) FROM usage_events "
+                            "WHERE user_id = ? AND session_id = ?",
+                            (_uid, session_id),
+                        )
+                        _r = _cdb_cur.fetchone()
+                        if _r:
+                            usage = {"input_tokens": int(_r[0] or 0), "output_tokens": int(_r[1] or 0),
+                                     "total_cost_usd": float(_r[2] or 0.0)}
+                        _cdb_cur.execute(
+                            "SELECT input_tokens FROM usage_events WHERE user_id = ? AND session_id = ? "
+                            "ORDER BY created_at DESC LIMIT 1",
+                            (_uid, session_id),
+                        )
+                        _r = _cdb_cur.fetchone()
+                        if _r:
+                            context_tokens = int(_r[0] or 0)
+                    finally:
+                        _cdb_conn.close()
+            except Exception:
+                pass
 
         conn.close()
         return {
@@ -2073,8 +3528,10 @@ def get_session_messages(
             "light": bool(light),
             "max_session_seq": max_session_seq,
             "context_tokens": context_tokens,
+            "usage": usage,
             "execution_mode": _session_exec_mode,
             "remote_executor": _session_remote_exec,
+            "manifest": manifest,
         }
     except HTTPException:
         raise
@@ -2087,7 +3544,7 @@ async def get_session_turn_detail(
     request: Request,
     session_id: str = Query(..., description="Session ID (for the participant check)"),
     ids: str = Query(..., description="Comma-separated assistant interaction ids to expand"),
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
 ):
     """Full tool-call bodies for specific assistant turns, loaded on demand.
 
@@ -2152,7 +3609,7 @@ async def get_session_turn_detail(
                 try:
                     cur.execute(
                         "SELECT id, tool_name, content, output, metadata FROM interactions "
-                        f"WHERE parent_id = ? AND session_id = ? ORDER BY created_at ASC, {_tb} ASC",
+                        f"WHERE parent_id = ? AND session_id = ? AND (status IS NULL OR status != 'deleted') ORDER BY created_at ASC, {_tb} ASC",
                         (aid, session_id),
                     )
                     for tr in cur.fetchall():
@@ -2207,7 +3664,7 @@ def get_session_tail(
     session_id: str = Query(..., description="Session ID"),
     after_session_seq: int = Query(0, description="Return only interactions with session_seq greater than this"),
     user_id: Optional[str] = Query(None, description="Active client identity — fallback when no JWT (local users)"),
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
 ):
     """Incremental tail of a session's interactions for the live DB-reconcile path.
 
@@ -2226,58 +3683,12 @@ def get_session_tail(
     resolved_db = _resolve_session_db(session_id, db)
     if resolved_db != db:
         db = resolved_db
-    # Remote Control continuity: pull rows another device wrote into this session
-    # into the local mirror (bounded) so a viewer's live poll surfaces the executor's
-    # turns. Paired with the executor stamping session_seq (app/devices/worker.py) so
-    # the pulled rows pass this endpoint's `session_seq > after` filter.
-    _reconcile_session_from_remote(db, session_id)
     try:
-        # Local-first read, matching the initial load (/session-messages). The
-        # transcript is written local-first, so on the device that OWNS the run
-        # (and same-machine cross-worker setups that share the local file) the local
-        # hot store is the freshest, network-free copy — and reading it here keeps
-        # the live poll CONSISTENT with the initial load instead of racing the
-        # remote's ~1s sync lag (the two disagreeing was the flicker).
-        #
-        # `interactions` is push-only (a viewer on ANOTHER machine never receives a
-        # run's live rows into its local mirror), so two explicit fallbacks to the
-        # authoritative REMOTE preserve the cross-DEVICE path — decided from LOCAL
-        # reads only, so a normal poll still pays no remote round-trip:
-        #   (a) COLD VIEWER — no local rows for this session at all, or
-        #   (b) ACTIVE FOREIGN RUN — a run is 'running' but its assistant row isn't
-        #       in the local store, i.e. it's streaming on another machine.
-        # (`session_runs` IS pulled into the local mirror, so the run-state probe is
-        # a local read.) The narrow residual — a foreign message written AND
-        # completed entirely between two idle polls on a different machine — surfaces
-        # on the next run or reload; single-device and active cross-device are exact.
-        conn, _dialect = _open_read(db)
-        if _dialect == "sqlite" and _pg_conninfo_for(db) is not None:
-            _use_remote = False
-            try:
-                _exists = conn.execute(
-                    "SELECT 1 FROM interactions WHERE session_id = ? LIMIT 1",
-                    (session_id,),
-                ).fetchone()
-                if _exists is None:
-                    _use_remote = True                       # (a) cold viewer
-                else:
-                    _rs = conn.execute(
-                        "SELECT status, assistant_interaction_id "
-                        "FROM session_runs WHERE session_id = ?",
-                        (session_id,),
-                    ).fetchone()
-                    if _rs and _rs[0] == "running" and _rs[1]:
-                        _has_asst = conn.execute(
-                            "SELECT 1 FROM interactions WHERE id = ? LIMIT 1",
-                            (_rs[1],),
-                        ).fetchone()
-                        if _has_asst is None:
-                            _use_remote = True               # (b) active foreign run
-            except Exception:
-                _use_remote = False
-            if _use_remote:
-                conn.close()
-                conn, _dialect = _open(db)
+        # This endpoint is polled as often as every 800 ms, so it is intentionally
+        # restricted to the local SQLite mirror. Never reconcile or fall back to
+        # Postgres from this hot path.
+        conn = _open_local_sqlite(db)
+        _dialect = "sqlite"
         cur = conn.cursor()
 
         # Same participant gate as /session-messages (False = deny; None/True = proceed).
@@ -2294,15 +3705,21 @@ def get_session_tail(
             _has_status = False
         _status_col = "status" if _has_status else "'complete' AS status"
         _cols = (f'id, session_id, role, content, tool_name, created_at, {_status_col}, '
-                 f'session_seq, output, metadata, parent_id')
+                 f'session_seq, output, metadata, parent_id, source, turn_id, turn_seq')
 
         def _row_to_msg(row):
-            return {
+            m = {
                 "id": row[0], "session_id": row[1], "role": row[2], "content": row[3],
                 "tool_name": row[4], "created_at": row[5], "status": row[6],
                 "session_seq": row[7], "output": row[8], "metadata": row[9],
-                "parent_id": row[10],
+                "parent_id": row[10], "source": row[11] if len(row) > 11 else None,
+                "turn_id": row[12] if len(row) > 12 else None,
+                "turn_seq": row[13] if len(row) > 13 else None,
             }
+            m["message_phase"] = _interaction_message_phase(
+                m["metadata"], m["role"], m["status"], m["output"])
+            m["interaction_seq"] = m["session_seq"]
+            return m
 
         messages = []
         seen_ids = set()
@@ -2417,21 +3834,22 @@ async def delete_turn(
     session_id: str = Query(..., description="Session ID"),
     interaction_id: str = Query(..., description="Any interaction id within the turn to delete"),
     user_id: Optional[str] = Query(None, description="Active client identity — fallback when no JWT (local users)"),
-    db: str = Query("local.db", description="Database filename"),
+    permanent: bool = Query(False, description="Hard-delete instead of recycling"),
+    db: str = Query("user.db", description="Database filename"),
 ):
     """Delete one whole conversation turn from `interactions`.
 
     A "turn" is the **parent-chain closure rooted at the user message** that
     started it: the user row (``parent_id IS NULL``) plus every assistant step,
-    tool call and memory write that descended from it. This is robust against
-    the fact that turns interleave in wall-clock time — a background memory_save
-    or an interrupting user message can land another turn's row in the middle —
-    so a naive "delete everything between two user messages" would corrupt
-    neighbouring turns. Walking the parent tree keeps the cut surgical.
+    tool call and memory write that descended from it.
+
+    Default (permanent=false): soft-deletes by setting status='deleted'.  Rows
+    stay in the transcript (struck through) but are excluded from the agent
+    context.  With ``permanent=true`` the rows are hard-deleted from the table
+    and are gone for good.
 
     ``interaction_id`` may be any row in the turn (the clicked bubble's id); the
-    server walks up to the root itself. Removing the rows strips that turn from
-    the history the agent rebuilds each turn — i.e. it prunes the context."""
+    server walks up to the root itself."""
     resolved_db = _resolve_session_db(session_id, db)
     db_path = _get_db_path(resolved_db)
     try:
@@ -2487,10 +3905,16 @@ async def delete_turn(
             conn.close()
             return {"deleted_ids": [], "count": 0, "turn_root": root, "session_id": session_id}
 
-        cur.executemany(
-            "DELETE FROM interactions WHERE id = ?",
-            [(i,) for i in to_delete],
-        )
+        if permanent:
+            cur.executemany(
+                "DELETE FROM interactions WHERE id = ?",
+                [(i,) for i in to_delete],
+            )
+        else:
+            cur.executemany(
+                "UPDATE interactions SET status = 'deleted' WHERE id = ?",
+                [(i,) for i in to_delete],
+            )
         conn.commit()
         conn.close()
         return {
@@ -2505,11 +3929,388 @@ async def delete_turn(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/interaction")
+async def delete_interaction(
+    request: Request,
+    session_id: str = Query(..., description="Session ID"),
+    interaction_id: str = Query(..., description="The interaction id to delete"),
+    include_children: bool = Query(False, description="Also delete direct tool-result children"),
+    user_id: Optional[str] = Query(None, description="Active client identity — fallback when no JWT (local users)"),
+    permanent: bool = Query(False, description="Hard-delete instead of recycling"),
+    db: str = Query("user.db", description="Database filename"),
+):
+    """Delete ONE interaction row (not a whole turn).
+
+    Default (permanent=false): soft-deletes by setting status='deleted'.
+    With ``permanent=true`` the row is hard-deleted.
+
+    When ``include_children=true``, direct tool-result child rows
+    (role='tool' with parent_id = interaction_id) are also deleted."""
+    resolved_db = _resolve_session_db(session_id, db)
+    db_path = _get_db_path(resolved_db)
+    try:
+        conn, _dialect = _open(db)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        access = _session_access_ok(cur, session_id, request, user_id)
+        if access is False:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not a participant in this session")
+
+        # Verify the interaction exists in this session
+        row = cur.execute(
+            "SELECT id FROM interactions WHERE id = ? AND session_id = ?",
+            (interaction_id, session_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Interaction not found")
+
+        to_delete = {interaction_id}
+
+        if include_children:
+            child_rows = cur.execute(
+                "SELECT id FROM interactions WHERE parent_id = ? AND role = 'tool' AND session_id = ?",
+                (interaction_id, session_id),
+            ).fetchall()
+            for cr in child_rows:
+                to_delete.add(cr["id"])
+
+        if permanent:
+            cur.executemany(
+                "DELETE FROM interactions WHERE id = ?",
+                [(i,) for i in to_delete],
+            )
+        else:
+            cur.executemany(
+                "UPDATE interactions SET status = 'deleted' WHERE id = ?",
+                [(i,) for i in to_delete],
+            )
+        conn.commit()
+        conn.close()
+        return {
+            "deleted_ids": list(to_delete),
+            "count": len(to_delete),
+            "interaction_id": interaction_id,
+            "session_id": session_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/tool-call")
+async def delete_tool_call(
+    request: Request,
+    session_id: str = Query(..., description="Session ID"),
+    interaction_id: str = Query(..., description="Assistant interaction id whose tool_call to remove"),
+    tool_call_idx: int = Query(..., description="Index of the tool_call in output.tool_calls[] to remove"),
+    user_id: Optional[str] = Query(None, description="Active client identity — fallback when no JWT (local users)"),
+    permanent: bool = Query(False, description="Hard-delete instead of recycling"),
+    db: str = Query("user.db", description="Database filename"),
+):
+    """Remove a single tool call from context.
+
+    Default (permanent=false): soft-deletes the tool-result child row by setting
+    status='deleted'.  With ``permanent=true`` the row is hard-deleted."""
+    db_path = _get_db_path(db)
+    try:
+        conn, _dialect = _open(db)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        access = _session_access_ok(cur, session_id, request, user_id)
+        if access is False:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not a participant in this session")
+
+        # ── Load the assistant interaction ──
+        row = cur.execute(
+            "SELECT id, output FROM interactions WHERE id = ? AND session_id = ?",
+            (interaction_id, session_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Interaction not found")
+        if not row["output"]:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Interaction has no output")
+
+        try:
+            output = json.loads(row["output"])
+        except json.JSONDecodeError:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Invalid output JSON")
+
+        tool_calls = output.get("tool_calls", [])
+        if tool_call_idx < 0 or tool_call_idx >= len(tool_calls):
+            conn.close()
+            raise HTTPException(status_code=400, detail=f"tool_call_idx {tool_call_idx} out of range (0-{len(tool_calls)-1})")
+
+        removed_call = tool_calls[tool_call_idx]
+        removed_name = removed_call.get("function", {}).get("name", "?")
+
+        # ── Find corresponding tool result child rows ──
+        child_rows = cur.execute(
+            "SELECT id, tool_name FROM interactions WHERE parent_id = ? AND role = 'tool' ORDER BY session_seq ASC, created_at ASC",
+            (interaction_id,),
+        ).fetchall()
+
+        deleted_child_ids = []
+        matched = False
+        for cr in child_rows:
+            if cr["tool_name"] == removed_name and not matched:
+                deleted_child_ids.append(cr["id"])
+                matched = True
+                break
+
+        if not matched and tool_call_idx < len(child_rows):
+            deleted_child_ids.append(child_rows[tool_call_idx]["id"])
+
+        for child_id in deleted_child_ids:
+            if permanent:
+                cur.execute("DELETE FROM interactions WHERE id = ?", (child_id,))
+            else:
+                cur.execute("UPDATE interactions SET status = 'deleted' WHERE id = ?", (child_id,))
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "removed": True,
+            "interaction_id": interaction_id,
+            "tool_call_idx": tool_call_idx,
+            "tool_name": removed_name,
+            "deleted_child_ids": deleted_child_ids,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/turn/restore")
+async def restore_turn(
+    request: Request,
+    session_id: str = Query(..., description="Session ID"),
+    interaction_id: str = Query(..., description="Any interaction id within the turn to restore"),
+    user_id: Optional[str] = Query(None, description="Active client identity — fallback when no JWT (local users)"),
+    db: str = Query("user.db", description="Database filename"),
+):
+    """Restore a soft-deleted turn back to active.
+
+    Walks the same parent tree as delete_turn and flips ``status = 'deleted'``
+    back to ``'complete'`` for every row in the turn."""
+    resolved_db = _resolve_session_db(session_id, db)
+    try:
+        conn, _dialect = _open(db)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        access = _session_access_ok(cur, session_id, request, user_id)
+        if access is False:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not a participant in this session")
+
+        rows = cur.execute(
+            "SELECT id, parent_id, turn_id FROM interactions WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+        by_id = {r["id"]: r for r in rows}
+        children: dict = {}
+        for r in rows:
+            children.setdefault(r["parent_id"], []).append(r["id"])
+
+        # Walk up to the root user message
+        cur_id = interaction_id
+        visited = set()
+        while (cur_id in by_id and by_id[cur_id]["parent_id"]
+               and by_id[cur_id]["parent_id"] in by_id and cur_id not in visited):
+            visited.add(cur_id)
+            cur_id = by_id[cur_id]["parent_id"]
+        root = cur_id
+
+        # Collect the descendant tree
+        to_restore = set()
+        stack = [root]
+        while stack:
+            n = stack.pop()
+            if n in to_restore:
+                continue
+            to_restore.add(n)
+            stack.extend(children.get(n, []))
+
+        for r in rows:
+            if r["turn_id"] and r["turn_id"] == root:
+                to_restore.add(r["id"])
+
+        to_restore = {i for i in to_restore if i in by_id}
+        if not to_restore:
+            conn.close()
+            return {"restored_ids": [], "count": 0, "turn_root": root, "session_id": session_id}
+
+        cur.executemany(
+            "UPDATE interactions SET status = 'complete' WHERE id = ? AND status = 'deleted'",
+            [(i,) for i in to_restore],
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "restored_ids": list(to_restore),
+            "count": len(to_restore),
+            "turn_root": root,
+            "session_id": session_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/interaction/restore")
+async def restore_interaction(
+    request: Request,
+    session_id: str = Query(..., description="Session ID"),
+    interaction_id: str = Query(..., description="The interaction id to restore"),
+    include_children: bool = Query(False, description="Also restore direct tool-result children"),
+    user_id: Optional[str] = Query(None, description="Active client identity — fallback when no JWT (local users)"),
+    db: str = Query("user.db", description="Database filename"),
+):
+    """Restore a single soft-deleted interaction back to active.
+
+    Flips ``status = 'deleted'`` back to ``'complete'`` for the interaction
+    row. When ``include_children=true``, direct tool-result children are
+    also restored."""
+    resolved_db = _resolve_session_db(session_id, db)
+    try:
+        conn, _dialect = _open(db)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        access = _session_access_ok(cur, session_id, request, user_id)
+        if access is False:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not a participant in this session")
+
+        row = cur.execute(
+            "SELECT id FROM interactions WHERE id = ? AND session_id = ?",
+            (interaction_id, session_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Interaction not found")
+
+        to_restore = {interaction_id}
+
+        if include_children:
+            child_rows = cur.execute(
+                "SELECT id FROM interactions WHERE parent_id = ? AND role = 'tool' AND session_id = ?",
+                (interaction_id, session_id),
+            ).fetchall()
+            for cr in child_rows:
+                to_restore.add(cr["id"])
+
+        cur.executemany(
+            "UPDATE interactions SET status = 'complete' WHERE id = ? AND status = 'deleted'",
+            [(i,) for i in to_restore],
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "restored_ids": list(to_restore),
+            "count": len(to_restore),
+            "interaction_id": interaction_id,
+            "session_id": session_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tool-call/restore")
+async def restore_tool_call(
+    request: Request,
+    session_id: str = Query(..., description="Session ID"),
+    interaction_id: str = Query(..., description="Assistant interaction id whose tool_call to restore"),
+    tool_call_idx: int = Query(..., description="Index of the tool_call in output.tool_calls[] to restore"),
+    user_id: Optional[str] = Query(None, description="Active client identity — fallback when no JWT (local users)"),
+    db: str = Query("user.db", description="Database filename"),
+):
+    """Restore a soft-deleted tool-call result row.
+
+    Flips the matching tool-result child row's ``status`` from ``'deleted'``
+    back to ``'complete'`` so it re-enters the agent context."""
+    try:
+        conn, _dialect = _open(db)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        access = _session_access_ok(cur, session_id, request, user_id)
+        if access is False:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not a participant in this session")
+
+        # Load the assistant interaction to get the tool call name
+        row = cur.execute(
+            "SELECT id, output FROM interactions WHERE id = ? AND session_id = ?",
+            (interaction_id, session_id),
+        ).fetchone()
+        if not row or not row["output"]:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Interaction not found")
+        try:
+            output = json.loads(row["output"])
+        except json.JSONDecodeError:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Invalid output JSON")
+
+        tool_calls = output.get("tool_calls", [])
+        if tool_call_idx < 0 or tool_call_idx >= len(tool_calls):
+            conn.close()
+            raise HTTPException(status_code=400, detail=f"tool_call_idx out of range")
+        removed_name = tool_calls[tool_call_idx].get("function", {}).get("name", "?")
+
+        child_rows = cur.execute(
+            "SELECT id, tool_name FROM interactions WHERE parent_id = ? AND role = 'tool' ORDER BY session_seq ASC, created_at ASC",
+            (interaction_id,),
+        ).fetchall()
+
+        restored_id = None
+        for cr in child_rows:
+            if cr["tool_name"] == removed_name:
+                restored_id = cr["id"]
+                break
+        if not restored_id and tool_call_idx < len(child_rows):
+            restored_id = child_rows[tool_call_idx]["id"]
+
+        if restored_id:
+            cur.execute(
+                "UPDATE interactions SET status = 'complete' WHERE id = ? AND status = 'deleted'",
+                (restored_id,),
+            )
+        conn.commit()
+        conn.close()
+        return {
+            "restored": True,
+            "interaction_id": interaction_id,
+            "tool_call_idx": tool_call_idx,
+            "tool_name": removed_name,
+            "restored_id": restored_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/session-stats")
 async def session_stats(
     request: Request,
     user_id: str = Query(..., description="User ID"),
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     status: str = Query("active", description="Filter by session status: 'active', 'recycled', or 'all'"),
 ):
     """
@@ -2533,8 +4334,13 @@ async def session_stats(
 
     db_path = _get_db_path(db)
     try:
-        conn, _dialect = _open(db)
-        conn.row_factory = sqlite3.Row
+        # WHEN-CHANGE-SESSION-STATS-READ: session_stats reads from the local mirror
+        # when hybrid is on — same as the chat-header dropdown (/sessions). Both
+        # views must agree, so both read from _open_read, not _open (which routes
+        # to Postgres). The sync puller keeps the local mirror current.
+        conn, _dialect = _open_read(db)
+        if isinstance(conn, sqlite3.Connection):
+            conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
         # Fetch sessions for user — optionally filtered by status
@@ -2546,7 +4352,8 @@ async def session_stats(
             elif status == "recycled":
                 _status_filter = " AND status = 'recycled'"
             cur.execute(
-                'SELECT id, title, created_at, status FROM sessions WHERE user_id = ?' + _status_filter + ' ORDER BY updated_at DESC NULLS LAST',
+                'SELECT id, title, created_at, updated_at, status, COALESCE(pinned, 0) AS pinned, sort_order '
+                'FROM sessions WHERE user_id = ?' + _status_filter + ' ORDER BY updated_at DESC NULLS LAST',
                 _params
             )
             session_rows = cur.fetchall()
@@ -2554,7 +4361,13 @@ async def session_stats(
             session_rows = []
 
         sessions_map = {
-            r["id"]: {"title": r["title"] or r["id"][:12], "created_at": r["created_at"]}
+            r["id"]: {
+                "title": r["title"] or r["id"][:12],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "pinned": bool(r["pinned"]),
+                "sort_order": r["sort_order"],
+            }
             for r in session_rows
         }
 
@@ -2584,7 +4397,11 @@ async def session_stats(
                 for row in cur.fetchall():
                     sid = row[0]
                     if sid and sid not in sessions_map and sid not in recycled_ids:
-                        sessions_map[sid] = {"title": sid[:12], "created_at": None}
+                        sessions_map[sid] = {
+                            "title": sid[:12], "created_at": None,
+                            "updated_at": None, "pinned": False,
+                            "sort_order": None,
+                        }
             except Exception:
                 pass
 
@@ -2626,14 +4443,16 @@ async def session_stats(
         # ── Family grouping (mirror /sessions + the chat session list) ──────
         # Tag every session so the Sessions table can nest children under their
         # parent as an expandable tree, identical in shape to the chat session
-        # list. A session is a parent if it is an orchestrator (spawned helpers
-        # in agent_spawns) or an optimizer Planner (a closer-* whose metadata
-        # points back to it); a session is a child if it is one of those
-        # spawn-* / closer-* rows. Workers ('trial-*') live in throwaway temp
-        # DBs and never reach local.db, so they're naturally excluded.
+        # list. A session is a parent only if it is an orchestrator (spawned
+        # helpers in agent_spawns); a session is a child only if it is a
+        # spawn-* helper row. Optimizer Planner ('optimizer-*') and Closer
+        # ('closer-*') sessions are TOP-LEVEL sessions of their own — they are
+        # not nested under the base session they ran on. Workers ('trial-*')
+        # live in throwaway temp DBs and never reach user.db, so they're
+        # naturally excluded.
         child_counts: dict = {}
         parent_of: dict = {}     # child sid -> parent sid
-        child_role: dict = {}    # child sid -> 'spawn' | 'planner' | 'closer'
+        child_role: dict = {}    # child sid -> 'spawn'
         try:
             for r in cur.execute(
                 "SELECT orchestrator_session_id AS p, spawn_session_id AS c FROM agent_spawns"
@@ -2645,41 +4464,6 @@ async def session_stats(
                     child_role[_c] = "spawn"
         except Exception:
             pass
-        # Optimizer Planners are children of the BASE session they ran on
-        # (metadata.target_session). Build planner→base for the closers below.
-        _planner_base: dict = {}
-        try:
-            for r in cur.execute(
-                "SELECT id, metadata FROM sessions WHERE id LIKE 'optimizer-%'"
-            ).fetchall():
-                try:
-                    _pm = json.loads(r["metadata"] or "{}")
-                except (json.JSONDecodeError, TypeError):
-                    _pm = {}
-                _base = _pm.get("target_session")
-                if _base:
-                    _planner_base[r["id"]] = _base
-                    child_counts[_base] = child_counts.get(_base, 0) + 1
-                    parent_of[r["id"]] = _base
-                    child_role[r["id"]] = "planner"
-        except Exception:
-            pass
-        # Optimizer Closers are also children of the base session, via Planner.
-        try:
-            for r in cur.execute(
-                "SELECT id, metadata FROM sessions WHERE id LIKE 'closer-%'"
-            ).fetchall():
-                try:
-                    _cm = json.loads(r["metadata"] or "{}")
-                except (json.JSONDecodeError, TypeError):
-                    _cm = {}
-                _base = _planner_base.get(_cm.get("source_optimizer_session"))
-                if _base:
-                    child_counts[_base] = child_counts.get(_base, 0) + 1
-                    parent_of[r["id"]] = _base
-                    child_role[r["id"]] = "closer"
-        except Exception:
-            pass
 
         # ── Authoritative per-session cost (usage_events) ───────────────────
         # The interactions.metadata 'cost' field is only populated on some rows,
@@ -2688,20 +4472,34 @@ async def session_stats(
         # LLM call and is the single source of truth for spend (see the
         # /session-cost endpoint). Sum it once, grouped by session, and overlay
         # it below — preferring it over the sparse interactions cost.
+        # Usage events live in the CONTROL database (billing writes there via
+        # get_control_db()), not the per-user database.
         cost_by_session: dict = {}
-        try:
-            for r in cur.execute(
-                "SELECT session_id, COALESCE(SUM(cost_usd),0) AS c "
-                "FROM usage_events WHERE user_id = ? GROUP BY session_id",
-                (user_id,),
-            ).fetchall():
-                _sid, _c = r["session_id"], r["c"]
-                if _sid is not None:
-                    cost_by_session[_sid] = float(_c or 0)
-        except Exception:
-            pass
+        if user_id:
+            try:
+                from app.db import get_app_db
+                _cdb = get_app_db()
+                if hasattr(_cdb, "_get_conn"):
+                    _cdb_conn = _cdb._get_conn()
+                    try:
+                        _cdb_cur = _cdb_conn.cursor()
+                        for r in _cdb_cur.execute(
+                            "SELECT session_id, COALESCE(SUM(cost_usd),0) AS c "
+                            "FROM usage_events WHERE user_id = ? GROUP BY session_id",
+                            (user_id,),
+                        ).fetchall():
+                            _sid, _c = r["session_id"], r["c"]
+                            if _sid is not None:
+                                cost_by_session[_sid] = float(_c or 0)
+                    finally:
+                        _cdb_conn.close()
+            except Exception:
+                pass
 
-        # Build stats per session
+        # Build stats per session. Agent authority lives in per-agent stores,
+        # not alongside the user/session tables, so cache cross-plane lookups
+        # as session rows are enriched below.
+        agent_display: dict[str, dict] = {}
         results = []
         for sid in session_ids:
             try:
@@ -2780,7 +4578,9 @@ async def session_stats(
                 "session_id": sid,
                 "title": sessions_map[sid]["title"],
                 "created_at": sessions_map[sid]["created_at"],
-                "last_active": last_active,
+                "last_active": last_active or sessions_map[sid]["updated_at"] or sessions_map[sid]["created_at"],
+                "pinned": sessions_map[sid]["pinned"],
+                "sort_order": sessions_map[sid]["sort_order"],
                 "message_count": message_count,
                 "turn_count": turn_count,
                 "total_input_tokens": total_input_tokens,
@@ -2810,42 +4610,59 @@ async def session_stats(
                 except Exception:
                     pass
                 if srow and srow["agent_id"]:
-                    entry["agent_id"] = srow["agent_id"]
-                    cur2 = conn.cursor()
-                    cur2.execute('SELECT name, metadata FROM agents WHERE id = ?', (srow["agent_id"],))
-                    arow = cur2.fetchone()
-                    entry["agent_name"] = arow["name"] if arow else ""
-                    entry["agent_icon"] = ""
-                    entry["agent_engine"] = ""
-                    if arow and arow["metadata"]:
+                    aid = srow["agent_id"]
+                    entry["agent_id"] = aid
+                    if aid not in agent_display:
                         try:
-                            meta = json.loads(arow["metadata"])
-                            if isinstance(meta, dict):
-                                if meta.get("icon"):
-                                    entry["agent_icon"] = meta["icon"]
-                                if meta.get("engine"):
-                                    entry["agent_engine"] = meta["engine"]
+                            from app.db import get_db
+                            agent = await get_db().get_agent_by_id(aid) or {}
                         except Exception:
-                            pass
+                            agent = {}
+                        meta = agent.get("metadata") or {}
+                        if isinstance(meta, str):
+                            try:
+                                meta = json.loads(meta)
+                            except (json.JSONDecodeError, TypeError):
+                                meta = {}
+                        if not isinstance(meta, dict):
+                            meta = {}
+                        agent_display[aid] = {
+                            "name": agent.get("name") or "",
+                            "icon": agent.get("icon") or meta.get("icon") or "",
+                            "engine": meta.get("engine") or agent.get("engine") or "",
+                        }
+                    display = agent_display[aid]
+                    entry["agent_name"] = display["name"]
+                    entry["agent_icon"] = display["icon"]
+                    entry["agent_engine"] = display["engine"]
                 else:
                     entry["agent_id"] = None
                     entry["agent_name"] = ""
 
                 # Run status
                 try:
-                    cur2.execute('SELECT status FROM session_runs WHERE session_id = ?', (sid,))
+                    cur2 = conn.cursor()
+                    cur2.execute('SELECT status, updated_at FROM session_runs WHERE session_id = ?', (sid,))
                     rrow = cur2.fetchone()
                     entry["run_status"] = rrow["status"] if rrow else None
+                    entry["run_updated_at"] = rrow["updated_at"] if rrow else None
                 except Exception:
                     entry["run_status"] = None
+                    entry["run_updated_at"] = None
             except Exception:
                 entry["agent_id"] = None
                 entry["agent_name"] = ""
                 entry["run_status"] = None
+                entry["run_updated_at"] = None
             results.append(entry)
 
-        # Sort by last_active descending
+        # Unpinned follows activity; pinned then overlays its manual location.
         results.sort(key=lambda s: s["last_active"] or "", reverse=True)
+        results.sort(key=lambda s: (
+            not s["pinned"],
+            (s["sort_order"] is None) if s["pinned"] else False,
+            s["sort_order"] if s["pinned"] and s["sort_order"] is not None else 0,
+        ))
 
         conn.close()
         return {"sessions": results, "db": db}
@@ -2858,7 +4675,7 @@ async def session_stats(
 @router.get("/stream/interactions")
 async def stream_interactions(
     since: str = Query("", description="ISO timestamp — return rows with created_at > since"),
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     user_id: str = Query("", description="Filter by user_id (optional)"),
     session_id: str = Query("", description="Filter by session_id (optional)"),
 ):
@@ -2915,7 +4732,7 @@ async def stream_interactions(
 
 class UpdateRowRequest(BaseModel):
     """Request body for updating a row."""
-    db: str = "local.db"
+    db: str = "user.db"
     table: str
     # Column-value pairs to identify the row (typically PK columns)
     where: dict[str, object]
@@ -2973,7 +4790,7 @@ async def update_row(
 
 class DeleteRowRequest(BaseModel):
     """Request body for deleting a row."""
-    db: str = "local.db"
+    db: str = "user.db"
     table: str
     # Column-value pairs to identify the row (typically PK columns)
     where: dict[str, object]
@@ -3029,7 +4846,7 @@ async def delete_row(
 
 @router.delete("/reset")
 async def reset_database(
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     exclude: list[str] = Query(default=["agent_templates", "agent_prompts", "auth_elements"], description="List of tables to exclude from reset"),
     _auth: dict = Depends(require_admin),
 ):
@@ -3071,7 +4888,7 @@ async def reset_database(
 @router.delete("/truncate")
 async def truncate_table(
     table: str = Query(..., description="Table name to truncate"),
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     _auth: dict = Depends(require_admin),
 ):
     """Delete ALL rows from a table. Admin-only."""
@@ -3106,7 +4923,7 @@ async def truncate_table(
 async def column_values(
     table: str = Query(..., description="Table name"),
     column: str = Query(..., description="Column name"),
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     search: str = Query("", description="Search term to filter distinct values"),
     _auth: dict = Depends(require_db_auth),
 ):
@@ -3179,7 +4996,7 @@ async def query_table(
     filter_op: str = Query("contains", pattern="^(contains|equals|starts|gt|lt|not_in)$"),
     filter_val: Optional[str] = Query(None, description="Filter value (comma-separated for not_in)"),
     filters_json: Optional[str] = Query(None, description="JSON array of {col, op, val} for multi-column filters"),
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     with_count: bool = Query(True, description="When false, skip SELECT COUNT(*) (total will be -1). Used by silent auto-refresh."),
     _auth: dict = Depends(require_db_auth),
 ):
@@ -3305,7 +5122,7 @@ async def query_table(
 
 @router.get("/download")
 async def download_db(
-    db: str = Query("local.db", description="Database filename"),
+    db: str = Query("user.db", description="Database filename"),
     _auth=Depends(require_db_auth),
 ):
     """Download the SQLite database file."""
@@ -3336,15 +5153,15 @@ async def delete_database_file(
 ):
     """Delete a .db file (plus sidecar -wal/-shm) from the db directory. Admin-only.
 
-    Refuses to delete local.db (primary app database).
+    Refuses to delete user.db (primary app database).
     """
     # Reject path-traversal / non-plain names
     if Path(db).name != db:
         raise HTTPException(status_code=400, detail="Database name must be a plain filename")
     if not db.endswith(".db"):
         raise HTTPException(status_code=400, detail="Only .db files may be deleted")
-    if db == "local.db":
-        raise HTTPException(status_code=400, detail="Refusing to delete local.db")
+    if db in {"user.db", "app.db"}:
+        raise HTTPException(status_code=400, detail=f"Refusing to delete {db}")
 
     db_path = _DB_FILES_DIR / db
     if not db_path.exists():
@@ -3366,6 +5183,3 @@ async def delete_database_file(
 
     logger.info(f"Deleted database files: {removed} (errors: {errors})")
     return {"success": True, "deleted": removed, "errors": errors}
-
-
-

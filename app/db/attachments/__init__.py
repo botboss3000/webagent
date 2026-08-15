@@ -1,7 +1,7 @@
 """File-bytes facade for attachments (images, voice, docs).
 
 Delegates to the configured backend in `app/attachments_store/`. The active
-backend can be one of: local, browser (IndexedDB), supabase, s3, gcs.
+backend can be one of: local, browser (IndexedDB), s3, gcs.
 
 Usage:
     from app.db.attachments import store_file, read_file, delete_file

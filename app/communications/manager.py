@@ -13,7 +13,6 @@ CLAUDE.md ("Core vs. plugins") and docs/claude/production-editions.md.
 import importlib
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -154,13 +153,8 @@ class PluginManager:
     async def start_polling_for_offline_plugins(self) -> None:
         """Start polling for all enabled plugins without a reachable webhook URL.
         Called on server startup. Also loads per-agent Telegram connections."""
-        # Env var takes highest priority -- if set to a public URL, never poll
-        env_url = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
-        _local_hints = ("localhost", "127.0.0.1", "0.0.0.0")
-        if env_url and not any(h in env_url for h in _local_hints):
-            logger.info("WEBHOOK_BASE_URL env var is set (%s), skipping auto-polling", env_url)
-            return
         base_url = self._registry.get("webhook_base_url", "")
+        _local_hints = ("localhost", "127.0.0.1", "0.0.0.0")
         is_offline = not base_url or any(h in base_url for h in _local_hints)
         if not is_offline:
             logger.info("Webhook base URL is set (%s), skipping auto-polling", base_url)
@@ -252,15 +246,8 @@ class PluginManager:
         inbound webhook endpoint already handles messages, so starting a concurrent
         polling loop would cause the same message to be processed twice.
         """
-        env_url = os.environ.get("WEBHOOK_BASE_URL", "").rstrip("/")
-        _local_hints = ("localhost", "127.0.0.1", "0.0.0.0")
-        if env_url and not any(h in env_url for h in _local_hints):
-            logger.info(
-                "reload_agent_connections: webhook mode (WEBHOOK_BASE_URL=%s) -- skipping polling",
-                env_url,
-            )
-            return
         base_url = self._registry.get("webhook_base_url", "")
+        _local_hints = ("localhost", "127.0.0.1", "0.0.0.0")
         if base_url and not any(h in base_url for h in _local_hints):
             logger.info(
                 "reload_agent_connections: webhook mode (registry url=%s) -- skipping polling",

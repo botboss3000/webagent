@@ -4,14 +4,14 @@ Database-connection credential store — SYNCHRONOUS and DATABASE-INDEPENDENT.
 Why this exists (and why it is separate from app.secrets):
   The general secrets vault (app.secrets) is configurable and, by default, the
   "inline_db" backend stores secrets INSIDE the application database. That is a
-  chicken-and-egg for a *remote* database connection: the Postgres/Supabase
+  chicken-and-egg for a *remote* database connection: the Postgres
   password would live inside the very database we need the password to reach.
   When that database is down (or on a cold start), the password is unreachable,
   so the app silently falls back to local SQLite — and a device configured for a
   shared database quietly stops sharing it.
 
   This module holds ONLY the few secrets needed to open the database connection
-  (Postgres password, Supabase service-role key). It is:
+  (Postgres password). It is:
     * synchronous     — so the cold-start build path (get_db(), which is sync)
                         can resolve the password without an event loop or the
                         fragile asyncio.run() dance.
@@ -24,7 +24,7 @@ Why this exists (and why it is separate from app.secrets):
   (~/.webagent/db_creds.json) — OUTSIDE the repo, like the per-machine
   device_id file. This is plaintext on disk and is logged as a downgrade; it is
   only reached when no OS keyring is available. The keys here mirror the names
-  used elsewhere: "db_password_<provider>" and "supabase_service_key".
+  used elsewhere: "db_password_<provider>".
 """
 
 from __future__ import annotations

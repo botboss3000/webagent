@@ -45,6 +45,8 @@ class VaultKeyManager:
         self._dek_cache: Dict[Tuple[str, int], Tuple[Fernet, float]] = {}
         # KEK is cached by version; "active" is mapped to its real version too.
         self._kek_cache: Dict[str, Tuple[Fernet, float]] = {}
+        # Peer KEKs for cross-instance decryption (P2P vault sync)
+        self._peer_keks: Dict[str, Fernet] = {}  # peer_id -> Fernet
 
     # ── KEK ────────────────────────────────────────────────────────────────
 
@@ -242,8 +244,8 @@ class VaultKeyManager:
 
     async def list_dek_versions(self, user_id: str) -> List[dict]:
         """Return all tenant_key_meta rows for this user, ordered by version desc."""
-        from app.db import get_db
-        db = _unwrap(get_db())
+        from app.db import get_app_db
+        db = _unwrap(get_app_db())
         raw = db.get_raw_client()
         try:
             res = (
@@ -261,8 +263,12 @@ class VaultKeyManager:
 
     async def list_tenants(self) -> List[dict]:
         """Return one summary row per tenant: {user_id, active_version, total_versions}."""
-        from app.db import get_db
-        db = _unwrap(get_db())
+        from app.db import get_app_db
+        # Key-version metadata is installation/control-plane state.  Never use
+        # ambient get_db() here: during a chat turn it may be overridden with a
+        # user-plane backend, which makes an existing tenant look keyless and can
+        # cause get_or_create_dek() to overwrite wa:dek:<user>:v1 in the vault.
+        db = _unwrap(get_app_db())
         raw = db.get_raw_client()
         try:
             res = raw.table("tenant_key_meta").select("*").execute()
@@ -284,8 +290,8 @@ class VaultKeyManager:
     # ── Metadata helpers ───────────────────────────────────────────────────
 
     async def _read_active_version(self, user_id: str) -> Optional[int]:
-        from app.db import get_db
-        db = _unwrap(get_db())
+        from app.db import get_app_db
+        db = _unwrap(get_app_db())
         raw = db.get_raw_client()
         try:
             res = (
@@ -305,8 +311,8 @@ class VaultKeyManager:
             return None
 
     async def _upsert_meta(self, user_id: str, version: int, status: str, algo: str) -> None:
-        from app.db import get_db
-        db = _unwrap(get_db())
+        from app.db import get_app_db
+        db = _unwrap(get_app_db())
         raw = db.get_raw_client()
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()
@@ -317,7 +323,7 @@ class VaultKeyManager:
             "status": status,
             "created_at": now,
         }
-        # Local backend's raw client returns an upsert-like proxy; Supabase has .upsert().
+        # Local backend's raw client returns an upsert-like proxy.
         # Easiest portable path: try update, then insert if no rows touched.
         try:
             ex = (
@@ -339,8 +345,8 @@ class VaultKeyManager:
             logger.warning("_upsert_meta(%s, v%d) failed: %s", user_id, version, e)
 
     async def _mark_retired(self, user_id: str, version: int) -> None:
-        from app.db import get_db
-        db = _unwrap(get_db())
+        from app.db import get_app_db
+        db = _unwrap(get_app_db())
         raw = db.get_raw_client()
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()
@@ -354,8 +360,8 @@ class VaultKeyManager:
             logger.warning("_mark_retired(%s, v%d) failed: %s", user_id, version, e)
 
     async def _delete_meta(self, user_id: str, version: int) -> None:
-        from app.db import get_db
-        db = _unwrap(get_db())
+        from app.db import get_app_db
+        db = _unwrap(get_app_db())
         raw = db.get_raw_client()
         try:
             raw.table("tenant_key_meta") \
@@ -379,6 +385,38 @@ class VaultKeyManager:
         except ValueError:
             pass
         return out
+
+    def register_peer_kek(self, peer_id: str, kek_bytes: bytes) -> None:
+        """Register a peer's KEK for cross-instance Fernet decryption.
+        
+        Called after a successful P2P handshake + KEK exchange.
+        The KEK bytes are the raw Fernet key (urlsafe-base64 encoded).
+        """
+        try:
+            f = Fernet(kek_bytes)
+            self._peer_keks[peer_id] = f
+            logger.info("Registered peer KEK for %s", peer_id)
+        except Exception as e:
+            logger.error("Failed to register peer KEK for %s: %s", peer_id, e)
+
+    def unregister_peer_kek(self, peer_id: str) -> None:
+        """Remove a peer's KEK (called on revocation or disconnect)."""
+        self._peer_keks.pop(peer_id, None)
+        logger.info("Unregistered peer KEK for %s", peer_id)
+
+    def try_decrypt_with_peer_keks(self, token: str) -> Optional[bytes]:
+        """Try to decrypt a Fernet token using any registered peer KEK.
+        
+        Returns the plaintext bytes on first successful decryption, or None.
+        Used when the local KEK can't decrypt a synced row's secret_ref.
+        """
+        for peer_id, f in self._peer_keks.items():
+            try:
+                token_bytes = token.encode("utf-8") if isinstance(token, str) else token
+                return f.decrypt(token_bytes)
+            except InvalidToken:
+                continue
+        return None
 
 
 # ── Module-level singleton ─────────────────────────────────────────────────

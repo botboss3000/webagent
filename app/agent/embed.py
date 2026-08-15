@@ -217,7 +217,6 @@ def _get_embed_client():
         base_url = (
             os.environ.get("LLM_BASE_URL")
             or os.environ.get("OPENROUTER_BASE_URL")
-            or "https://openrouter.ai/api/v1"
         )
         api_key = (
             os.environ.get("LLM_API_KEY")

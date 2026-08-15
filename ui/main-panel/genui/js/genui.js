@@ -24,7 +24,13 @@
 import { app } from '../../../shared/js/state.js';
 import { apiPath } from '../../../shared/js/config.js';
 import { authHeaders } from '../../../shared/js/left-login.js';
+import { randomUUID } from '../../../shared/js/uuid.js';
 import { initGenuiToolbar } from './genui-toolbar.js';
+import { createChatWidget } from '../../../chat-widget/js/chat-widget.js';
+import { createChatLauncher } from '../../../chat-widget/js/chat-launcher.js';
+import { icon } from '../../../shared/js/icons.js';
+import { advanceDeleteBtn, resetDeleteBtn } from '../../../shared/js/delete-control.js';
+import { enableWakeLock, disableWakeLock } from '../../../shared/js/screen-wake.js';
 
 // ── Module state ───────────────────────────────────────────────────────────────
 
@@ -75,12 +81,19 @@ export function initGenui() {
     getPages: () => pages,
     getCurrentPage: () => currentPage,
     selectPage: (slug) => switchToPage(slug),
+    // Front-page gallery: show the card grid of every page (agents-page style)
+    // instead of a page. The toolbar's grid button calls this; the core also
+    // lands here by default when the tab opens (see loadPages).
+    showGallery: () => showGalleryView(),
+    isGallery: () => !currentPage,
     newPage: () => showNewPageDialog(),
     refresh: () => _refreshGenui(),
     renamePage: (slug, title) => _renamePage(slug, title),
     deletePage: (slug) => _deletePage(slug),
     buildTaggedPrompt: (text) => buildTaggedGenuiPrompt(text),
     updateStatus: (text, type) => updateStatus(text, type),
+    // Read the current genui's data bag so the toolbar can resolve chatConfig.toolbar
+    readGenuiData: () => _readGenuiData(),
   });
 
   // New-page dialog confirm/cancel (the dialog itself stays in the core).
@@ -92,6 +105,40 @@ export function initGenui() {
   if (dialogInput)   dialogInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submitNewPage();
     if (e.key === 'Escape') hideNewPageDialog();
+  });
+
+  // Front-page gallery controls (see showGalleryView / _renderGallery below).
+  const galleryNew     = document.getElementById('genui-gallery-new-btn');
+  const galleryRefresh = document.getElementById('genui-gallery-refresh-btn');
+  if (galleryNew)     galleryNew.addEventListener('click', () => showNewPageDialog());
+  if (galleryRefresh) galleryRefresh.addEventListener('click', () => _renderGallery(true));
+
+  // Selection toolbar (mirrors the Agents page): select-all / clear toggle the
+  // per-tile checkboxes, and the delete button permanently deletes the checked
+  // pages via the shared two-click confirm (SHARED-DELETE-CONTROL).
+  const gallerySelectAll   = document.getElementById('genui-gallery-select-all');
+  const galleryDeselectAll = document.getElementById('genui-gallery-deselect-all');
+  const galleryDelete      = document.getElementById('genui-gallery-delete-btn');
+
+  const resetGalleryDelete = () => {
+    if (galleryDelete) resetDeleteBtn(galleryDelete, { size: '16px', title: 'Delete selected pages' });
+  };
+
+  if (gallerySelectAll) gallerySelectAll.addEventListener('click', () => {
+    pages.forEach(p => { if (p && p.slug) _selectedSlugs.add(p.slug); });
+    _syncGallerySelectionVisuals(); resetGalleryDelete(); _syncGalleryToolbar();
+  });
+  if (galleryDeselectAll) galleryDeselectAll.addEventListener('click', () => {
+    _selectedSlugs.clear();
+    _syncGallerySelectionVisuals(); resetGalleryDelete(); _syncGalleryToolbar();
+  });
+  if (galleryDelete) galleryDelete.addEventListener('click', () => {
+    if (_selectedSlugs.size === 0) return;
+    advanceDeleteBtn(galleryDelete, {
+      size: '16px', spinSize: '16px',
+      armTitle: 'Click again to permanently delete',
+      onConfirm: () => _permanentDeleteSelected(galleryDelete),
+    });
   });
 
   // Persist the genui scroll position as the user scrolls (throttled). The host
@@ -123,6 +170,9 @@ function _refreshGenui() {
   if (currentPage && currentPage.url) {
     updateStatus('Refreshing page...');
     showGenui(currentPage.url, currentPage.title);
+  } else {
+    // No page open (the front-page gallery is showing) — reload the previews.
+    _renderGallery(true);
   }
 }
 
@@ -165,6 +215,7 @@ async function _deletePage(slug) {
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.status === 'ok') {
       if (currentPage && currentPage.slug === slug) currentPage = null;
+      _thumbCache.delete(slug);   // gallery thumbnail is gone with the page
       await loadPages();   // reloads + re-syncs the toolbar
     } else {
       updateStatus('Delete failed: ' + (data.detail || 'error'), 'error');
@@ -175,7 +226,18 @@ async function _deletePage(slug) {
 }
 
 export function startGenui() {
+  const wasActive = genuiActive;
   genuiActive = true;
+  // Re-clicking the Gen UI tab while it is ALREADY active (header button /
+  // mobile dropdown) CYCLES the view instead of re-mounting the same page:
+  // an open page → the front-page gallery grid; the gallery → the last page
+  // the user had open (persisted in localStorage by _rememberLastSlug). This
+  // is how the header button toggles between a saved page and the gallery.
+  if (wasActive) {
+    if (currentPage) showGalleryView();
+    else _openLastSavedPage();
+    return;
+  }
   // Show the spinner immediately so the viewport isn't blank while the gate
   // check + page-list fetch (a multi-step chain) are in flight.
   showLoading();
@@ -185,14 +247,19 @@ export function startGenui() {
 
 export function stopGenui() {
   genuiActive = false;
-  // Leaving the Gen UI tab: release the live genui (stops its camera tracks).
+  // Leaving the Gen UI tab: release the live genui (stops its camera tracks)
+  // and drop the screen wake lock (auto-held by showGenui while a page shows).
   _teardownLiveGenui();
+  disableWakeLock();
 }
 
 export function genuiSessionChanged() {
-  if (!genuiActive) return;
-  // Reset view but keep the page list; the pages are per-user not per-session
-  loadPages();
+  // No-op on purpose: genui pages are per-user, not per-session — switching the
+  // chat session, starting a new session, or switching agents changes nothing
+  // about the rendered page. Reloading here is what made the Gen UI view remount
+  // (spinner + full HTML re-fetch) on every chat-side session change. The export
+  // is kept so the chat module's call sites (session-core.js / session-init.js)
+  // stay valid.
 }
 
 // ── Page loading ──────────────────────────────────────────────────────────────
@@ -209,21 +276,23 @@ async function loadPages() {
     const data = await res.json();
     pages = data.genui || [];
 
-    // Try to keep the current page selected; otherwise restore the last page the
-    // user had open (persisted in localStorage), then fall back to home.
-    const savedSlug = _savedLastSlug();
-    const target = currentPage
-      ? pages.find(p => p.slug === currentPage.slug)
-      : (savedSlug && pages.find(p => p.slug === savedSlug))
-        || pages.find(p => p.slug === 'home')
-        || pages[0];
-
-    if (target) {
-      currentPage = target;
-      showGenui(target.url, target.title);
+    // Keep the current page open when it still exists (a background refresh or
+    // a delete of a DIFFERENT page shouldn't yank the user away from what
+    // they're reading). Otherwise the FRONT PAGE is the gallery: a card grid of
+    // every page (agents-page style). We deliberately do NOT auto-open the
+    // first/last page anymore — the user asked for the grid of all pages as the
+    // landing view. The last-open page (persisted in localStorage) is still
+    // highlighted on its tile by _renderGallery.
+    if (currentPage) {
+      const keep = pages.find(p => p.slug === currentPage.slug);
+      if (keep) {
+        currentPage = keep;
+        showGenui(keep.url, keep.title);
+      } else {
+        showGalleryView();
+      }
     } else {
-      currentPage = null;
-      showPlaceholder();
+      showGalleryView();
     }
     _syncToolbar();
   } catch (e) {
@@ -240,6 +309,314 @@ function switchToPage(slug) {
   showGenui(page.url, page.title);
   _syncToolbar();
   updateStatus('');
+}
+
+// Re-open the page the user last had open (the localStorage-saved slug the
+// gallery highlights on its tile). Used when re-clicking the active Gen UI
+// tab while the gallery is showing. If the saved page no longer exists
+// (deleted / first visit on this browser) we stay on the gallery.
+function _openLastSavedPage() {
+  const slug = _savedLastSlug();
+  const page = slug && pages.find(p => p.slug === slug);
+  if (page) switchToPage(page.slug);
+}
+
+// ── Front-page gallery (card grid of every page) ────────────────────────────
+// The Gen UI tab's landing view, styled after the Agents page card grid
+// (ui/main-panel/agents/): a toolbar + a wrapping grid of square tiles, one per
+// page, each with a thumbnail preview of that page's HTML. Clicking a tile
+// opens the page (switchToPage); the "New page" tile opens the create dialog.
+// Shown by default when the tab opens (see loadPages) and re-shown by the grid
+// button in the footer toolbar (ctx.showGallery).
+
+const _GALLERY_CANVAS_W = 720;   // virtual page width previews are rendered at
+const _GALLERY_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>';
+const _GALLERY_LAYOUT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>';
+
+// Mounted thumbnail previews, keyed by page slug → the preview mount element
+// (or null for a page whose preview fell back to the placeholder). Kept across
+// gallery rebuilds so returning to the front page doesn't re-fetch every page.
+// Invalidate a slug after a render_visual/edit_genui touches that page, and
+// clear all with the toolbar Refresh button (force).
+const _thumbCache = new Map();
+
+// Slugs currently checked on the front-page gallery (mirrors the Agents page's
+// _selectedIds). Drives the per-tile checkboxes and the toolbar delete button.
+// Cleared whenever the gallery is freshly entered (showGalleryView).
+let _selectedSlugs = new Set();
+
+function _gEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Show the front-page gallery: tear down any live page, clear the current page,
+// render the card grid, and flip the stage to the gallery. When the local-only
+// gate refused this caller, show the disabled notice instead (agent-authored
+// pages must never run — or even be offered — without permission).
+function showGalleryView() {
+  if (_genuiFirstClass === false) { _showGenuiDisabledNotice(); return; }
+  _teardownLiveGenui();
+  currentPage = null;
+  // Leave the gallery → no page on screen, release the screen wake lock
+  // (it was auto-held while a live genui page was showing; see showGenui).
+  disableWakeLock();
+  // Fresh landing on the gallery: start with no pages checked.
+  _selectedSlugs.clear();
+  _renderGallery();
+  _setStage('gallery');
+  _syncToolbar();
+  updateStatus('');
+}
+
+// Rebuild the gallery card grid from `pages`. With `force` (the toolbar Refresh
+// button) every thumbnail is re-fetched; otherwise tiles whose preview is in the
+// cache keep it (so returning to the gallery or a delete-driven rebuild doesn't
+// refetch every page).
+function _renderGallery(force) {
+  const squares = document.getElementById('genui-gallery-squares');
+  if (!squares) return;
+
+  if (force) _thumbCache.clear();
+
+  const sub = document.getElementById('genui-gallery-sub');
+  if (sub) {
+    sub.textContent = pages.length
+      ? pages.length + ' page' + (pages.length === 1 ? '' : 's')
+      : 'No pages yet';
+  }
+
+  // Reflect the selection state on the toolbar (delete button visibility,
+  // select-all/clear enabled state) — runs before the cards exist so the
+  // no-pages early return below still leaves the toolbar correct.
+  _syncGalleryToolbar();
+
+  squares.innerHTML = '';
+
+  // "New page" create tile — mirrors the Agents page's "New Agent" tile.
+  const newTile = document.createElement('div');
+  newTile.className = 'genui-gallery-card genui-gallery-new';
+  newTile.setAttribute('role', 'button');
+  newTile.tabIndex = 0;
+  newTile.title = 'New Gen UI';
+  newTile.innerHTML =
+    '<div class="genui-gallery-new-icon">' + _GALLERY_PLUS_SVG + '</div>' +
+    '<div class="genui-gallery-card-name">New page</div>';
+  newTile.addEventListener('click', () => showNewPageDialog());
+  newTile.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showNewPageDialog(); }
+  });
+  squares.appendChild(newTile);
+
+  if (!pages.length) {
+    const empty = document.createElement('div');
+    empty.className = 'genui-gallery-empty';
+    empty.textContent = 'No pages yet — create your first Gen UI page.';
+    squares.appendChild(empty);
+    return;
+  }
+
+  // The last page the user had open gets the accent ring on its tile.
+  const lastSlug = _savedLastSlug();
+
+  for (const page of pages) {
+    const slug = page.slug || '';
+    const title = page.title || slug;
+
+    const card = document.createElement('div');
+    card.className = 'genui-gallery-card' + (slug === lastSlug ? ' activated' : '');
+    card.dataset.slug = slug;
+    card.setAttribute('role', 'button');
+    card.tabIndex = 0;
+    card.title = 'Open ' + title;
+    card.innerHTML =
+      '<div class="genui-card-thumb">' +
+        '<div class="genui-thumb-skeleton sk-shimmer"></div>' +
+      '</div>' +
+      '<div class="genui-gallery-card-name">' + _gEsc(title) + '</div>';
+
+    // Per-tile selection checkbox (top-right corner, mirrors the Agents page).
+    // Clicking it toggles the slug in _selectedSlugs instead of opening the page.
+    const on = _selectedSlugs.has(slug);
+    if (on) card.classList.add('selected');
+    const box = document.createElement('div');
+    box.className = 'genui-select-box';
+    box.title = 'Select';
+    box.setAttribute('role', 'checkbox');
+    box.setAttribute('aria-checked', on ? 'true' : 'false');
+    box.innerHTML = on ? icon('check', { size: '13px' }) : '';
+    box.addEventListener('click', e => {
+      e.stopPropagation();
+      _toggleGallerySelect(slug);
+    });
+    card.appendChild(box);
+
+    card.addEventListener('click', () => switchToPage(slug));
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchToPage(slug); }
+    });
+    squares.appendChild(card);
+
+    // Reuse the cached preview if we have one; otherwise load it fresh.
+    const thumb = card.querySelector('.genui-card-thumb');
+    if (_thumbCache.has(slug)) {
+      const cached = _thumbCache.get(slug);
+      if (cached) {
+        thumb.innerHTML = '';
+        thumb.appendChild(cached);
+        card.dataset.thumb = 'ok';
+      } else {
+        _thumbFallback(card);
+      }
+    } else {
+      _loadThumb(card, page);
+    }
+  }
+}
+
+// Build a thumbnail preview of one page inside its card: fetch the page's HTML,
+// lift its <style> + body markup (scripts stripped — previews must stay inert),
+// mount it into a shadow root on the card, and scale it down to the thumb box.
+// Falls back to a "layout" placeholder when the static markup is empty (some
+// pages render everything from JS, which previews deliberately don't run).
+function _loadThumb(card, page) {
+  const thumb = card.querySelector('.genui-card-thumb');
+  if (!thumb || !page || !page.url) { _thumbFallback(card); return; }
+
+  // Scale factor from the thumb's actual box (180px fallback before layout).
+  const fit = (thumb.clientWidth || 180) / _GALLERY_CANVAS_W;
+
+  fetch(apiPath(page.url), { headers: authHeaders() })
+    .then((res) => { if (!res.ok) throw new Error('http ' + res.status); return res.text(); })
+    .then((html) => {
+      if (!card.isConnected) return;   // gallery rebuilt while fetching
+      let doc;
+      try { doc = new DOMParser().parseFromString(html || '', 'text/html'); } catch (_) { doc = null; }
+      if (!doc || !doc.body) { _thumbFallback(card); return; }
+
+      const mount = document.createElement('div');
+      mount.className = 'genui-thumb-mount';
+      mount.style.transform = 'scale(' + fit + ')';
+      const shadow = mount.attachShadow({ mode: 'open' });
+
+      const base = document.createElement('style');
+      base.textContent = _GENUI_BASE_STYLE;
+      shadow.appendChild(base);
+      doc.querySelectorAll('style').forEach((st) => {
+        const s = document.createElement('style');
+        s.textContent = st.textContent;
+        shadow.appendChild(s);
+      });
+      doc.querySelectorAll('link[rel="stylesheet"]').forEach((ln) => {
+        const l = document.createElement('link');
+        l.rel = 'stylesheet';
+        if (ln.getAttribute('href')) l.href = ln.getAttribute('href');
+        shadow.appendChild(l);
+      });
+
+      const root = document.createElement('div');
+      root.className = 'wa-genui-body';
+      root.innerHTML = doc.body.innerHTML;
+      // Previews are inert by design: no scripts, no embeds, no media. (innerHTML
+      // never executes scripts, but drop them anyway so nothing lingers.)
+      root.querySelectorAll('script,noscript,iframe,video,audio,canvas,genui').forEach((el) => el.remove());
+      shadow.appendChild(root);
+
+      // Empty static markup → placeholder (a JS-only page renders nothing here).
+      const hasVisual = !!root.querySelector('img,svg,table,section,header,main,ul,ol,form');
+      const hasText = (root.textContent || '').trim().length > 0;
+      if (!hasVisual && !hasText) { _thumbFallback(card); return; }
+
+      // Swap the shimmer out for the live preview and cache it so a later
+      // gallery rebuild reuses it without refetching.
+      thumb.innerHTML = '';
+      thumb.appendChild(mount);
+      _thumbCache.set(page.slug, mount);
+      card.dataset.thumb = 'ok';
+    })
+    .catch(() => { if (card.isConnected) _thumbFallback(card); });
+}
+
+// Replace the shimmer with a quiet placeholder (used when a page's static
+// markup is empty — its content is JS-rendered, which previews skip).
+function _thumbFallback(card) {
+  const thumb = card.querySelector('.genui-card-thumb');
+  if (!thumb) return;
+  const slug = card.dataset.slug;
+  if (slug && !_thumbCache.has(slug)) _thumbCache.set(slug, null);
+  thumb.innerHTML = '<div class="genui-thumb-fallback">' + _GALLERY_LAYOUT_SVG + '<span>Preview</span></div>';
+}
+
+// ── Gallery selection / permanent delete (mirrors the Agents page) ───────────
+
+// Toggle one tile's checkbox (called from the select box; never from the card
+// body, whose click opens the page).
+function _toggleGallerySelect(slug) {
+  if (_selectedSlugs.has(slug)) _selectedSlugs.delete(slug);
+  else _selectedSlugs.add(slug);
+  _syncGallerySelectionVisuals();
+  // A selection change disarms any in-progress delete confirm.
+  const deleteBtn = document.getElementById('genui-gallery-delete-btn');
+  if (deleteBtn) resetDeleteBtn(deleteBtn, { size: '16px', title: 'Delete selected pages' });
+}
+
+// Update every tile's checkbox + .selected border to match _selectedSlugs, and
+// reflect the selection on the toolbar. Called after any selection change.
+function _syncGallerySelectionVisuals() {
+  document.querySelectorAll('.genui-gallery-squares .genui-gallery-card[data-slug]').forEach(card => {
+    const slug = card.dataset.slug;
+    const on = _selectedSlugs.has(slug);
+    card.classList.toggle('selected', on);
+    const box = card.querySelector('.genui-select-box');
+    if (box) {
+      box.innerHTML = on ? icon('check', { size: '13px' }) : '';
+      box.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+  });
+  _syncGalleryToolbar();
+}
+
+// Selection-driven toolbar state: select-all / clear enabled-ness, and the
+// delete button, which is HIDDEN until at least one page is checked (unlike the
+// Agents page, where the trash stays visible for the recycling bin).
+function _syncGalleryToolbar() {
+  const n = _selectedSlugs.size;
+  const selectable = pages.length;
+  const selectAll   = document.getElementById('genui-gallery-select-all');
+  const deselectAll = document.getElementById('genui-gallery-deselect-all');
+  const deleteBtn   = document.getElementById('genui-gallery-delete-btn');
+  if (selectAll)   selectAll.disabled = (selectable === 0 || n >= selectable);
+  if (deselectAll) deselectAll.disabled = (n === 0);
+  if (deleteBtn) {
+    const visible = n > 0;
+    deleteBtn.style.display = visible ? 'inline-flex' : 'none';
+    deleteBtn.disabled = !visible;
+    if (!visible) resetDeleteBtn(deleteBtn, { size: '16px', title: 'Delete selected pages' });
+  }
+}
+
+// Permanently delete every checked page (Gen UI has no recycling bin — this is
+// a true DELETE, not a soft trash). Batch-deletes the slugs, then reloads the
+// page list so the grid and toolbar settle on the server's new state.
+async function _permanentDeleteSelected(btn) {
+  const slugs = [..._selectedSlugs];
+  _selectedSlugs.clear();
+  if (btn) resetDeleteBtn(btn, { size: '16px', title: 'Delete selected pages' });
+  _syncGalleryToolbar();
+  const results = await Promise.all(slugs.map(slug => {
+    _thumbCache.delete(slug);   // that page's preview is gone with it
+    return fetch(
+      apiPath('/api/v1/genui/' + encodeURIComponent(slug) + '?user_id=' + encodeURIComponent(app.currentUserId)),
+      { method: 'DELETE', headers: authHeaders() },
+    ).then(res => ({ slug, ok: res.ok })).catch(() => ({ slug, ok: false }));
+  }));
+  const failed = results.filter(r => !r.ok);
+  if (failed.length) {
+    updateStatus('Delete failed for ' + failed.length + ' page(s)', 'error');
+  }
+  await loadPages();   // reloads + re-syncs the toolbar
+  _syncGalleryToolbar();
 }
 
 // ── Sending prompts ───────────────────────────────────────────────────────────
@@ -286,6 +663,12 @@ async function buildTaggedGenuiPrompt(text) {
 // Gen UI chat pill omits it and keeps its "fresh session per prompt" behavior.
 async function handoffToWebagent(taggedPrompt, opts) {
   let onWebagent = false;
+  const silent = !!(opts && opts.silent);
+  // Friendly label for genui-initiated sends (page fields/buttons). Consumed by
+  // chat-send.js (chat-input path) or sent as genui_label on the direct POST so
+  // the server persists it and the chat UI shows a green notice, not the raw
+  // prompt as a "You" bubble.
+  const genuiLabel = ((opts && opts.genuiLabel) || '').toString().trim().slice(0, 200) || null;
   if (opts && opts.continueIfActive && typeof app.ensureWebagentAgent === 'function') {
     try {
       const waId = await app.ensureWebagentAgent(app.currentUserId);
@@ -293,15 +676,54 @@ async function handoffToWebagent(taggedPrompt, opts) {
     } catch (_) { /* fall back to a fresh session */ }
   }
   if (!onWebagent) {
-    await app.startWebagentSession();
+    // If the caller already set a specific agent (e.g. the page's agent_id),
+    // create a session for THAT agent — don't overwrite it with the default.
+    if (app.currentAgentId) {
+      try { app.switchToAgent(app.currentAgentId, { forceNewSession: true, silent: true }); } catch (_) {}
+    } else {
+      await app.startWebagentSession();
+    }
   }
-  if (app.chatInput && app.chatSend) {
-    app.chatInput.value = taggedPrompt;
-    // Notify the chat's input listener so the send button enables and
-    // the input row picks up the `has-text` class.
-    app.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-    app.chatSend.click();
+  // Silent dispatch or no chat-panel DOM: send directly via POST without
+  // touching app.chatInput / app.chatSend (avoids auto-opening the panel).
+  if (silent || !app.chatInput || !app.chatSend) {
+    try {
+      const body = {
+        message: taggedPrompt,
+        session_id: app.currentSessionId || '',
+        user_id: app.currentUserId,
+        agent_id: app.currentAgentId,
+      };
+      if (genuiLabel) body.genui_label = genuiLabel;
+      await fetch(apiPath('/api/v1/chat/send'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(body),
+      });
+      // Name the session if the page called api.nameSession() beforehand
+      const sid = app.currentSessionId;
+      const title = app._genuiSessionTitle;
+      if (sid && title) {
+        app._genuiSessionTitle = null;
+        fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '?db=user.db'), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ title: title }),
+        }).catch(() => {});
+      }
+    } catch (_) { /* silent — the caller handles user-visible errors */ }
+    return;
   }
+  // Chat-input path: hand the label to chat-send.js via a one-shot override so
+  // its optimistic bubble renders the green notice instead of a "You" bubble.
+  app._genuiLabelOverride = genuiLabel;
+  app.chatInput.value = taggedPrompt;
+  // Notify the chat's input listener so the send button enables and
+  // the input row picks up the `has-text` class.
+  app.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+  app.chatSend.click();
+  // chat-send consumes the override synchronously; clear it as a safety net.
+  setTimeout(() => { try { app._genuiLabelOverride = null; } catch (_) {} }, 2000);
 }
 
 // ── Gen UI visibility gate ───────────────────────────────────────────────────
@@ -412,6 +834,192 @@ function _readGenuiData() {
   } catch (_) { return {}; }
 }
 
+// ── Per-page chat launcher (from widget.json) ────────────────────────────────
+// A genui page can declare its OWN chat launcher via its widget.json — served
+// to the tab as window.__GENUI_WIDGET (see app/api/genui.py _inject_genui_widget)
+// — holding the createChatLauncher options: which agent it opens, icon, corner
+// buttons, and createChatWidget options. The launcher lives in the MAIN
+// document (the widget layer attaches to <body>, outside the page's shadow
+// root), so it floats over the app exactly like the global WebAgent launcher.
+// Destroyed when the page changes or the tab tears down (_teardownLiveGenui).
+function _mountPageLauncher() {
+  let cfg = null;
+  try { cfg = window.__GENUI_WIDGET || null; } catch (_) {}
+  if (!cfg || typeof cfg !== 'object' || Object.keys(cfg).length === 0) return null;
+
+  const slug = currentPage ? currentPage.slug : 'home';
+  const sessionCfg = _pageSessionConfig();
+
+  // Widget options from the config (title, initialMessage, executionMode,
+  // transformMessage, onDone…) PLUS the page's session contract — the same
+  // session targeting its own chat buttons use (see createChatButton), so the
+  // launcher's sessions behave like the page's chat inputs.
+  const widgetOpts = { ...((cfg.widget && typeof cfg.widget === 'object') ? cfg.widget : {}) };
+  if (sessionCfg && sessionCfg.mode) {
+    // Optional widget.sessionReuseKey gives the floating launcher its OWN
+    // new_reuse session, separate from the page's chat inputs.
+    const wkey = (cfg.widget && cfg.widget.sessionReuseKey)
+      ? String(cfg.widget.sessionReuseKey).trim() : '';
+    const cfgForWidget = wkey ? Object.assign({}, sessionCfg, { reuse_key: wkey }) : sessionCfg;
+    const sid = _resolveSessionIdForConfig(cfgForWidget, slug);
+    const reuseKey = (sessionCfg.mode === 'new_reuse') ? _sessionStorageKey(wkey ? slug + ':' + wkey : slug) : '';
+    const targetName = String(sessionCfg.target_name || '').trim();
+    if (!widgetOpts.sessionId) widgetOpts.sessionId = sid;
+    if (!widgetOpts.sessionTargetName) widgetOpts.sessionTargetName = targetName;
+    if (!widgetOpts.rememberSessionKey) widgetOpts.rememberSessionKey = reuseKey;
+  }
+
+  // Owning agent: widget.json agent_id → the page's owning agent → default
+  // WebAgent (app.ensureWebagentAgent, the same fallback the footer uses).
+  const agentId = cfg.agent_id || cfg.agentId || (currentPage && currentPage.agent_id) || null;
+  let ensureAgent = null;
+  if (!agentId && app && typeof app.ensureWebagentAgent === 'function') {
+    ensureAgent = () => app.ensureWebagentAgent(app.currentUserId);
+  }
+
+  const launcher = createChatLauncher({
+    mountEl: document.body,
+    position: cfg.position || 'fixed',
+    icon: cfg.icon || 'bot',
+    iconSize: cfg.iconSize,
+    ariaLabel: cfg.ariaLabel || `Ask about ${(currentPage && currentPage.title) || slug}`,
+    label: cfg.label,
+    showLabel: !!cfg.showLabel,
+    agentId: agentId || null,
+    ensureAgent,
+    cornerButtons: cfg.cornerButtons,
+    cornerActions: cfg.cornerActions,
+    widget: widgetOpts,
+    draggable: cfg.draggable,
+    storageKey: cfg.storageKey || ('genui-launcher:' + (app.currentUserId || 'anon') + ':' + slug),
+    elementPickup: !!cfg.elementPickup,
+    hoverDelayMs: cfg.hoverDelayMs,
+    onOpen: (typeof cfg.onOpen === 'function') ? cfg.onOpen : null,
+    onClose: (typeof cfg.onClose === 'function') ? cfg.onClose : null,
+  });
+
+  if (_liveGenui) _liveGenui.launcher = launcher;
+  return launcher;
+}
+
+// ── Session contract for genui actions/chat ──────────────────────────────────
+// Every genui declares a session config at create time (the `session_config`
+// entry the server returns with each page): the DEPLOYED SESSION'S TITLE plus
+// the new-session mode. The runtime obeys it when dispatching actions/chat:
+//   existing  → always dispatch into the configured session id
+//   new_each  → every action starts a brand-new session
+//   new_reuse (default) → first action creates a session, follow-ups reuse the
+//              same one (remembered per user+page in localStorage)
+// Legacy pages created before the config existed keep the old behavior.
+
+function _pageSessionConfig() {
+  const sc = (currentPage && currentPage.session_config) || null;
+  return (sc && typeof sc === 'object') ? sc : null;
+}
+
+function _sessionStorageKey(slug) {
+  return 'genui_session_reuse:' + (app.currentUserId || 'anon') + ':' + (slug || 'home');
+}
+
+function _rememberedSessionId(slug) {
+  try { return localStorage.getItem(_sessionStorageKey(slug)) || ''; } catch (_) { return ''; }
+}
+
+function _rememberSessionId(slug, sid) {
+  try { localStorage.setItem(_sessionStorageKey(slug), sid); } catch (_) {}
+}
+
+function _forgetSessionId(slug) {
+  try { localStorage.removeItem(_sessionStorageKey(slug)); } catch (_) {}
+}
+
+// Resolve the session id for a given session config (used by page actions AND
+// by chat inputs): existing → the configured id; new_each → fresh + forget any
+// remembered one; new_reuse (default) → remembered id or fresh + remember.
+function _resolveSessionIdForConfig(cfg, slug) {
+  if (!cfg || !cfg.mode) return '';
+  // Optional reuse_key lets several surfaces on the same page keep SEPARATE
+  // new_reuse sessions (page chat vs. toolbar pill vs. floating widget) — the
+  // key is namespaced per user+slug, the surface just supplies a suffix.
+  const key = (cfg.reuse_key && String(cfg.reuse_key).trim())
+    ? _sessionStorageKey(slug + ':' + String(cfg.reuse_key).trim())
+    : _sessionStorageKey(slug);
+  if (cfg.mode === 'existing') return String(cfg.session_id || '').trim();
+  if (cfg.mode === 'new_each') {
+    _forgetSessionId(key);
+    return randomUUID();
+  }
+  const remembered = _rememberedSessionId(key);
+  if (remembered) return remembered;
+  const fresh = randomUUID();
+  _rememberSessionId(key, fresh);
+  return fresh;
+}
+
+// Resolve the session id an action/chat should dispatch into for THIS page,
+// honoring the page's session config. Returns '' when there's no config (legacy
+// pages keep the old "continueIfActive / fresh per prompt" behavior).
+function _resolveTargetSessionId() {
+  // Per-call override: a genui can route THIS dispatch into a specific session
+  // (per-task / per-surface sessions) by setting window.__genuiSessionOverride
+  // just before api.chat()/api.send(). Consumed once — mirrors __genuiCardAgentId.
+  const ov = window.__genuiSessionOverride || '';
+  if (ov) { try { window.__genuiSessionOverride = null; } catch (_) {} return String(ov).trim(); }
+  const cfg = _pageSessionConfig();
+  return _resolveSessionIdForConfig(cfg, currentPage ? currentPage.slug : 'home');
+}
+
+// Prepare the main chat panel to send into `sid`: ensure the WebAgent agent is
+// current and load that session into the panel so the user sees it happen.
+// Prepare the main chat panel to send into `sid`. When `silent` is true,
+// the session is set as current but the chat panel is NOT loaded — the
+// message dispatches in the background without auto-opening the panel.
+async function _prepareSessionForSend(sid, silent) {
+  if (!app.currentUserId) return false;
+  try {
+    let waId = app.currentAgentId;
+    if (!waId && typeof app.ensureWebagentAgent === 'function') {
+      waId = await app.ensureWebagentAgent(app.currentUserId);
+    }
+    if (waId && waId !== app.currentAgentId) {
+      app.currentAgentId = waId;
+      if (!silent) { try { localStorage.setItem('selectedAgentId', waId); } catch (_) {} }
+    }
+    if (sid && sid !== app.currentSessionId) {
+      app.currentSessionId = sid;
+      if (!silent) {
+        try { localStorage.setItem('terminalSessionId', sid); } catch (_) {}
+        if (typeof app.loadSessionChat === 'function') {
+          try { app.loadSessionChat(sid); } catch (_) {}
+        }
+      }
+    }
+    return true;
+  } catch (_) { return false; }
+}
+
+// Rename the deployed session to the page's target name. Setting a title also
+// locks it against the auto-namer (server-side), so it can't be overwritten
+// with a confusing auto-generated name. Retries briefly because a brand-new
+// session row only appears after the first message is sent.
+async function _titleTargetSession(sid, targetName, attempts) {
+  const name = (targetName || '').trim();
+  if (!sid || !name) return false;
+  const tries = (typeof attempts === 'number' && attempts > 0) ? attempts : 6;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(apiPath('/api/v1/db/sessions/' + encodeURIComponent(sid) + '?db=user.db'), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ title: name.slice(0, 120) }),
+      });
+      if (res.ok) return true;
+    } catch (_) { /* retry below */ }
+    await new Promise(r => setTimeout(r, 500 + i * 350));
+  }
+  return false;
+}
+
 // Build the toolbox handed to a genui's mount(root, api).
 function _buildGenuiApi(live) {
   const emitStatus = (state, extra) => {
@@ -421,7 +1029,7 @@ function _buildGenuiApi(live) {
   };
   live._emitStatus = emitStatus;
 
-  const sendAction = async (verb, text) => {
+  const sendAction = async (verb, text, opts) => {
     if (!app.currentUserId) { updateStatus('Sign in to use this genui', 'error'); return; }
     let t = (text == null ? '' : String(text)).trim();
     if (!t) {
@@ -430,13 +1038,75 @@ function _buildGenuiApi(live) {
     }
     // Only a bounded plain-text instruction reaches the agent — never a secret
     // (those use storeCredential → the vault, never the agent's context).
-    if (t.length > 4000) t = t.slice(0, 4000);
     emitStatus('working');
     updateStatus('WebAgent is on the chat →');
+
+    // ── Session contract ─────────────────────────────────────────────────────
+    // The page's session_config (required at create time) decides WHICH session
+    // this dispatch lands in and what it gets titled. When a config is present
+    // we prepare that session first, then send into it and rename it to the
+    // target name. Legacy pages without a config keep the old behavior.
+    const cfg = _pageSessionConfig();
+    const silent = !!(opts && opts.silent);
+    // raw: the caller built the COMPLETE message (no genui tag/context wrap).
+    // Used by pages whose prompt in data.json is already self-contained — the
+    // agent must receive exactly that text, nothing injected.
+    const raw = !!(opts && opts.raw);
+    // Friendly label for THIS dispatch (page fields/buttons): set via
+    // window.__genuiLabelOverride just before api.chat() — consumed once,
+    // mirrors __genuiSessionOverride / __genuiCardAgentId. Lets the chat panel
+    // show a green notice instead of the raw prompt as a "You" bubble.
+    let genuiLabel = window.__genuiLabelOverride || null;
+    if (genuiLabel) { try { window.__genuiLabelOverride = null; } catch (_) {} }
+    genuiLabel = String(genuiLabel || '').trim().slice(0, 200) || null;
+    if (cfg) {
+      // Ensure the page's maintaining agent is current before session prep,
+      // so Research/card-chat/QA actions target the right agent (mirrors
+      // _resolveGenuiAgentId in the toolbar chat). This also fixes the legacy
+      // path below.
+      let cardAgentId = window.__genuiCardAgentId || null; if (cardAgentId) { try { window.__genuiCardAgentId = null; } catch(_) {} }
+      let pageAgentId = cardAgentId || ((currentPage && currentPage.agent_id) || null);
+      if (pageAgentId && pageAgentId !== app.currentAgentId) {
+        app.currentAgentId = pageAgentId;
+        try { localStorage.setItem('selectedAgentId', pageAgentId); } catch (_) {}
+      }
+      const sid = _resolveTargetSessionId();
+      const prepared = sid ? await _prepareSessionForSend(sid, silent) : false;
+      if (!prepared) { updateStatus('Could not prepare the session', 'error'); emitStatus('error', { error: 'session prepare failed' }); return; }
+      // A page-requested title (api.nameSession — e.g. per-task/per-surface
+      // names) wins over the page's generic target_name. Capture it before
+      // handoff so the rename below agrees with what handoff may have applied.
+      const pendingTitle = (app._genuiSessionTitle || '').trim();
+      if (pendingTitle) { try { app._genuiSessionTitle = null; } catch (_) {} }
+      try {
+        const tagged = raw ? t : await buildTaggedGenuiPrompt(t);
+        await handoffToWebagent(tagged, { continueIfActive: true, silent: silent, genuiLabel: genuiLabel });
+      } catch (err) {
+        updateStatus('Could not reach WebAgent: ' + (err && err.message || err), 'error');
+        emitStatus('error', { error: String(err && err.message || err) });
+        return;
+      }
+      // Rename the deployed session (locks it against the auto-namer).
+      // Best-effort with a short retry: a brand-new session row only appears
+      // after the first message is sent.
+      _titleTargetSession(sid, pendingTitle || cfg.target_name);
+      return;
+    }
+
+    // Legacy path (no session config on the page).
     try {
-      const tagged = await buildTaggedGenuiPrompt(t);
+      const tagged = raw ? t : await buildTaggedGenuiPrompt(t);
+      // Resolve the genui page's maintaining agent so Research/card-chat/QA
+      // actions target the correct agent (e.g. Project Readiness Agent),
+      // not the default WebAgent. The toolbar chat does the same via
+      // _resolveGenuiAgentId — mirror that here.
+      let cardAgentId = window.__genuiCardAgentId || null; if (cardAgentId) { try { window.__genuiCardAgentId = null; } catch(_) {} }
+      let pageAgentId = cardAgentId || ((currentPage && currentPage.agent_id) || null);
+      if (pageAgentId && pageAgentId !== app.currentAgentId) {
+        try { app.switchToAgent(pageAgentId, { forceNewSession: true, silent: true }); } catch (_) {}
+      }
       // Keep one conversation across the dashboard's actions (login → search → reply).
-      await handoffToWebagent(tagged, { continueIfActive: true });
+      await handoffToWebagent(tagged, { continueIfActive: true, silent: silent, genuiLabel: genuiLabel });
     } catch (err) {
       updateStatus('Could not reach WebAgent: ' + (err && err.message || err), 'error');
       emitStatus('error', { error: String(err && err.message || err) });
@@ -448,13 +1118,130 @@ function _buildGenuiApi(live) {
     getTheme: () => currentTheme(),
     onTheme: (cb) => { if (typeof cb === 'function') live.themeCbs.push(cb); },
     onStatus: (cb) => { if (typeof cb === 'function') live.statusCbs.push(cb); },
-    chat: (text) => sendAction('chat', text),
-    send: (text) => sendAction('chat', text),
+    onSessionActivity: (cb) => { if (typeof cb === 'function') live.sessionActivityCbs.push(cb); },
+    chat: (text, opts) => sendAction('chat', text, opts),
+    send: (text, opts) => sendAction('chat', text, opts),
     action: (verb, text) => sendAction(String(verb || 'chat'), text),
     refresh: () => sendAction('refresh', ''),
     getData: () => _readGenuiData(),
+    nameSession: (title) => { try { app._genuiSessionTitle = String(title || '').slice(0, 120); } catch (_) {} },
+    getSessionId: () => { try { return app.currentSessionId || ''; } catch (_) { return ''; } },
     storeCredential: (ability, values) => _storeCredentialToVault(live, ability, values),
     callWithKey: (keyId, opts) => _callWithVaultKey(live, keyId, opts),
+
+    // ── Floating chat button ──
+    // Returns a DOM element the page author appends anywhere in their genui,
+    // or null if chatConfig.button.enabled is explicitly false.
+    //
+    // Configuration is read from the genui's DATA BAG under chatConfig.button.
+    // The toolbar chat pill reads its OWN config from chatConfig.toolbar —
+    // they can target different agents with different prompts independently.
+    //
+    // Data‑bag shape (all keys optional):
+    //   "chatConfig": {
+    //     "button": {
+    //       "agentId": "uuid",     // agent to chat with; null/"default" = page owner
+    //       "title":   "Help",     // widget header title
+    //       "iconName":"bot",      // Lucide icon name
+    //       "prompt":  "You are…", // injected before the first user message
+    //       "enabled": true        // false = api.createChatButton() returns null
+    //     },
+    //     "toolbar": { ... }       // separate config for the genui toolbar pill
+    //   }
+    createChatButton(opts) {
+      const o = (opts && typeof opts === 'object') ? opts : {};
+
+      // ── Resolve config: data bag → caller opts → page defaults ──
+      const dataBag = _readGenuiData();
+      const chatCfg = (dataBag && typeof dataBag.chatConfig === 'object') ? dataBag.chatConfig : {};
+      const cfg = (chatCfg && typeof chatCfg.button === 'object') ? chatCfg.button : {};
+      if (cfg.enabled === false) return null;
+
+      const resolved = {
+        title:    o.title    || cfg.title    || (currentPage ? currentPage.title : 'Gen UI'),
+        iconName: o.iconName || cfg.iconName || 'sparkle',
+        agentId:  o.agentId  || null,
+        prompt:   o.prompt   || cfg.prompt   || '',
+        enabled:  o.enabled !== undefined ? o.enabled : (cfg.enabled !== false),
+      };
+
+      if (!resolved.agentId && cfg.agentId && cfg.agentId !== 'default') {
+        resolved.agentId = cfg.agentId;
+      }
+      if (!resolved.agentId && currentPage && currentPage.agent_id) {
+        resolved.agentId = currentPage.agent_id;
+      }
+
+      // ── Session contract for chat inputs ───────────────────────────────────
+      // Every chat input a genui adds must declare how its messages deploy into
+      // agent sessions: { target_name, mode, session_id? }. Resolve from the
+      // caller's opts.session first, then the data-bag chatConfig.button.session,
+      // then the page-level session_config (all inputs inherit the page's
+      // contract when they don't specify their own). Refuse to build the button
+      // with a clear console error when nothing is declared.
+      const _pageSc = _pageSessionConfig();
+      let sessionCfg = (o.session && typeof o.session === 'object') ? o.session
+        : (cfg.session && typeof cfg.session === 'object') ? cfg.session
+        : _pageSc || null;
+      if (!sessionCfg || !String(sessionCfg.target_name || '').trim() || !sessionCfg.mode) {
+        console.error(
+          '[genui] createChatButton requires a session config — every chat input must ' +
+          'declare its deployed session. Pass opts.session {target_name, mode, session_id?} ' +
+          'or set chatConfig.button.session in the genui data bag (or give the page a ' +
+          'session_config via create_genui). Button not created.'
+        );
+        return null;
+      }
+      if (sessionCfg.mode === 'existing' && !String(sessionCfg.session_id || '').trim()) {
+        console.error('[genui] createChatButton session.mode is "existing" but no session_id was provided. Button not created.');
+        return null;
+      }
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'genui-chat-btn';
+      btn.title = resolved.title;
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>';
+
+      // Resolve the widget's target session from the input's session config:
+      // the widget itself gets the concrete session id + target title + a reuse
+      // key, so it can title the session after its first send and keep reusing
+      // it across widget instances for the same page (new_reuse behavior).
+      const _inputSlug = currentPage ? currentPage.slug : 'home';
+      const _sid = _resolveSessionIdForConfig(sessionCfg, _inputSlug);
+      const _reuseKey = (sessionCfg.mode === 'new_reuse') ? _sessionStorageKey(_inputSlug) : '';
+      const _targetName = String(sessionCfg.target_name || '').trim();
+
+      let widget = null;
+      let promptInjected = false;   // only inject once, on the first user message
+
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (widget && widget.el && widget.el.isConnected) return;
+        btn.hidden = true;
+        promptInjected = false;
+        widget = createChatWidget({
+          title: resolved.title,
+          iconName: resolved.iconName,
+          agentId: resolved.agentId || null,
+          sessionId: _sid,
+          sessionTargetName: _targetName,
+          rememberSessionKey: _reuseKey,
+          transformMessage: resolved.prompt ? (text) => {
+            if (!promptInjected && text) {
+              promptInjected = true;
+              return resolved.prompt + '\n\n---\n\n' + text;
+            }
+            return text;
+          } : null,
+          onClose: () => { widget = null; btn.hidden = false; },
+        });
+        widget.open();
+      });
+
+      return btn;
+    },
   };
 }
 
@@ -595,6 +1382,14 @@ function _makeGenuiDocument(shadowRoot) {
   const real = document;
   if (!shadowRoot) return real;
   const esc = (s) => ((window.CSS && CSS.escape) ? CSS.escape(String(s)) : String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&'));
+  // Capture the REAL document.getElementById ONCE at proxy creation. A genui's
+  // script may write `document.getElementById = …` through this Proxy's set trap,
+  // which lands on the real document — if the override below then called
+  // real.getElementById dynamically it would re-enter that page's wrapper (and
+  // vice versa) and recurse forever (RangeError: Maximum call stack size
+  // exceeded, taking the whole app's getElementById down). The captured original
+  // can never be a page-installed wrapper, so the fallback always terminates.
+  const realGetElementById = real.getElementById.bind(real);
   // Run a shadow-root query; if it finds nothing, fall back to the real document.
   const shadowFirst = (shadowFn, realFn, emptyIsHit) => {
     try {
@@ -611,7 +1406,7 @@ function _makeGenuiDocument(shadowRoot) {
           if (el) return el;
         }
       } catch (_) {}
-      return real.getElementById(id);
+      return realGetElementById(id);
     },
     querySelector(sel) {
       return shadowFirst(() => shadowRoot.querySelector(sel), () => real.querySelector(sel));
@@ -768,11 +1563,9 @@ function _restoreInnerStruct(shadow, inner) {
     if ('ax' in d && el.setAttribute) el.setAttribute('aria-expanded', d.ax);
     if ('ck' in d && el.tagName === 'INPUT') {
       el.checked = d.ck;
-      try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
     }
     if ('val' in d && el.tagName === 'SELECT') {
       el.value = d.val;
-      try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
     }
   }
 }
@@ -847,6 +1640,14 @@ const _GENUI_BASE_STYLE =
   // OWN `.genui-root` (a name they reach for) can't collide with ours and double
   // its grid/padding — the old half-width / fat-margin bug. (grep: WA-GENUI-BODY)
   '.wa-genui-body{min-height:100%;}' +
+  // Floating chat button (api.createChatButton) — round, themed, inherits palette
+  '.genui-chat-btn{position:fixed;bottom:24px;right:24px;z-index:99;width:48px;height:48px;border-radius:50%;' +
+  'border:var(--border-width,1px) solid var(--border,rgba(255,255,255,.12));background:var(--bg-elev,#191927);' +
+  'color:var(--accent,#6c8cff);cursor:pointer;display:flex;align-items:center;justify-content:center;' +
+  'box-shadow:var(--shadow-float,0 6px 18px rgba(0,0,0,.28));transition:transform .2s,box-shadow .2s,opacity .2s;}' +
+  '.genui-chat-btn:hover{transform:scale(1.08);box-shadow:var(--shadow-glow,0 0 0 4px rgba(108,140,255,.25)),var(--shadow-float);}' +
+  '.genui-chat-btn svg{width:22px;height:22px;}' +
+  '.genui-chat-btn[hidden]{display:none;}' +
   '*{scrollbar-width:thin;scrollbar-color:rgba(var(--brand-rgb),0.32) transparent;}' +
   '*::-webkit-scrollbar{width:6px;height:6px;}' +
   '*::-webkit-scrollbar-track{background:transparent;}' +
@@ -870,6 +1671,14 @@ function _teardownLiveGenui() {
   // away and back (or a refresh mid-session) restores scroll + open panels.
   if (live) {
     try { _saveLiveView(); } catch (_) {}
+    // Destroy the page's own chat launcher (if it had a widget.json).
+    if (live.launcher && typeof live.launcher.destroy === 'function') {
+      try { live.launcher.destroy(); } catch (_) {}
+    }
+    live.launcher = null;
+    // Disconnect the render-burst observer (mountGenui wired it on the shadow).
+    if (live._renderBurstObs) { live._renderBurstObs.disconnect(); live._renderBurstObs = null; }
+    if (live._renderBurstTimer) { clearTimeout(live._renderBurstTimer); live._renderBurstTimer = null; }
     // Flush any console output this genui buffered before we let it go.
     try {
       if (live._logFlushT) { clearTimeout(live._logFlushT); live._logFlushT = null; }
@@ -918,9 +1727,11 @@ function mountGenui(html, title) {
   const live = {
     host, mountEl, shadow, cleanup: null,
     themeCbs: [], statusCbs: [],
+    sessionActivityCbs: [],  // genui-live.standard: notify pages when ANY session has WS activity
     mounted: false,  // set true once register() or the drop-in fallback mounts the page
     slug: currentPage ? currentPage.slug : 'home',
     logs: [],        // this genui's captured console output, flushed to its log file
+    _lastReloadMs: 0, // debounce slug-scoped background reloads
   };
   const api = _buildGenuiApi(live);
 
@@ -931,6 +1742,30 @@ function mountGenui(html, title) {
   shadow.addEventListener('change', () => _scheduleSaveView(), true);
   shadow.addEventListener('toggle', () => _scheduleSaveView(), true);
   shadow.addEventListener('click',  () => _scheduleSaveView(), true);
+
+  // ── Render-loop watchdog: if a page rebuilds its own DOM >50 times in 500ms
+  // (classic listener leak — re-binding a change/click handler inside a render
+  // function that itself fires on that event), warn loudly in console + logs and
+  // let the tab survive.  Rule for page authors: bind delegated listeners ONCE at
+  // boot; never inside renderDetail / renderCards / any function called by them.
+  live._renderBurstCount = 0;
+  live._renderBurstTimer = null;
+  live._renderBurstObs = new MutationObserver((records) => {
+    const n = records.filter(r => r.type === 'childList').length;
+    live._renderBurstCount += n;
+    if (!live._renderBurstTimer) {
+      live._renderBurstTimer = setTimeout(() => {
+        if (live._renderBurstCount > 50) {
+          const msg = '[genui] RENDER BURST: ' + live._renderBurstCount + ' childList mutations in 500ms — possible listener-in-render loop. Check that delegated event listeners are bound ONCE at boot, not inside render functions.';
+          console.warn(msg);
+          try { if (live.logs) { live.logs.push({ ts: Date.now(), level: 'warn', text: msg }); _scheduleGenuiLogFlush(live); } } catch (_) {}
+        }
+        live._renderBurstCount = 0;
+        live._renderBurstTimer = null;
+      }, 500);
+    }
+  });
+  live._renderBurstObs.observe(shadow, { childList: true, subtree: true });
 
   const base = document.createElement('style');
   base.textContent = _GENUI_BASE_STYLE;
@@ -1050,9 +1885,11 @@ function _showGenuiDisabledNotice() {
   const host        = document.getElementById('genui-host');
   const placeholder = document.getElementById('genui-placeholder');
   const loading     = document.getElementById('genui-loading');
+  const gallery     = document.getElementById('genui-gallery');
   _teardownLiveGenui();
   if (loading) loading.style.display = 'none';
   if (host)    host.style.display    = 'none';
+  if (gallery) gallery.hidden        = true;
   if (placeholder) {
     placeholder.style.display = 'flex';
     const text = placeholder.querySelector('.genui-placeholder-text');
@@ -1068,12 +1905,57 @@ function _showGenuiDisabledNotice() {
 function handleEvent(event) {
   if (!genuiActive) return;
 
+  const _sid = event.session_id || event.sessionId || '';
+
+  // ── Broadcast to page subscribers (any session) BEFORE the gate ────────────
+  // Pages that use genui-live.standard subscribe via api.onSessionActivity() to
+  // be woken on ANY session's activity — e.g. the Home page watches item QA
+  // sessions to advance progress bars and next-step indicators. This fires for
+  // every WS event, so the page's GenUILive skeleton coalesces / debounces it.
+  const live = _liveGenui;
+  if (live && live.sessionActivityCbs.length && _sid) {
+    for (const cb of live.sessionActivityCbs) {
+      try { cb({ session_id: _sid, type: event.type, tool: event.tool || event.tool_name || '' }); } catch (_) {}
+    }
+  }
+
+  // ── Slug-scoped background reload ──────────────────────────────────────────
+  // When a render_visual / edit_genui / refresh_genui tool_result carries a slug
+  // that matches the CURRENTLY DISPLAYED page, remount it even though the event
+  // came from a background session. Debounced 3s so a busy agent can't remount
+  // in a storm. The page's own GenUILive data poll handles state between remounts.
   const isToolEvent = event.type === 'tool_result' || event.type === 'tool_call';
   const toolName    = event.tool || event.tool_name || '';
+  if (event.type === 'tool_result' && (toolName === 'render_visual' || toolName === 'edit_genui' || toolName === 'refresh_genui')) {
+    try {
+      const result = typeof event.result === 'string' ? JSON.parse(event.result) : event.result;
+      if (result && result.status === 'ok' && result.path && currentPage) {
+        const renderedSlug = result.slug || 'home';
+        if (renderedSlug === currentPage.slug && _sid !== app.currentSessionId) {
+          // Background session rendered the page we're looking at — reload it.
+          if (live) {
+            const now = Date.now();
+            if (now - live._lastReloadMs > 3000) {
+              live._lastReloadMs = now;
+              _thumbCache.delete(renderedSlug);
+              showGenui(result.path, result.title || currentPage.title);
+            }
+          }
+        }
+      }
+    } catch (_) { /* ignore parse errors */ }
+  }
+
+  // ── Stay in the current-session gate for everything else ──────────────────
+  // Only react to events from the session the user is currently viewing (or
+  // untagged events). Events from background sessions — automations, spawned
+  // helpers, other browser tabs — must NOT remount the page, flash the loading
+  // spinner, or overwrite the status line.
+  if (_sid && app.currentSessionId && _sid !== app.currentSessionId) return;
 
   // render_visual (full rewrite) AND edit_genui (surgical edit) both save through
   // the same path and return {path, slug, title} — so both drive the live reload.
-  if (isToolEvent && (toolName === 'render_visual' || toolName === 'edit_genui')) {
+  if (isToolEvent && (toolName === 'render_visual' || toolName === 'edit_genui' || toolName === 'refresh_genui')) {
     if (event.type === 'tool_call') {
       showLoading();
       updateStatus(toolName === 'edit_genui' ? 'Applying edit...' : 'Rendering page...');
@@ -1086,6 +1968,9 @@ function handleEvent(event) {
           // If the rendered page matches current, reload it
           // If it's a different page (agent created/updated a different one), refresh list
           const renderedSlug = result.slug || 'home';
+          // The gallery may hold a stale thumbnail for this page — drop it so the
+          // next gallery render refetches the updated preview.
+          _thumbCache.delete(renderedSlug);
           if (currentPage && currentPage.slug === renderedSlug) {
             showGenui(result.path, result.title || currentPage.title);
           } else {
@@ -1096,6 +1981,9 @@ function handleEvent(event) {
                 currentPage = p;
                 showGenui(p.url, p.title);
                 _syncToolbar();
+              } else if (!currentPage) {
+                // Still on the front-page gallery — refresh its previews.
+                _renderGallery();
               }
             });
           }
@@ -1174,6 +2062,11 @@ async function submitNewPage() {
         user_id: app.currentUserId,
         slug,
         title,
+        // Session contract is REQUIRED at create time — user-made pages default
+        // to the page title as the deployed session's name, new_reuse behavior
+        // (first action creates the session, follow-ups reuse it).
+        session_target_name: title,
+        session_mode: 'new_reuse',
       }),
     });
     const data = await res.json();
@@ -1215,6 +2108,13 @@ async function showGenui(url, title) {
     if (!res.ok) { showError('Gen UI not found'); return; }
     const html = await res.text();
     mountGenui(html, title);
+    // A page with a widget.json config mounts its OWN chat launcher (floating
+    // over the app like the global one); torn down on page switch/leave.
+    _mountPageLauncher();
+    // A live genui page is on screen — keep the device screen on while the
+    // user reads/watches it (dashboards, media pages). Released in
+    // showGalleryView / showPlaceholder; no-op on unsupported browsers.
+    enableWakeLock();
   } catch (e) {
     showError('Failed to load genui: ' + (e && e.message || e));
   }
@@ -1238,17 +2138,19 @@ function currentTheme() {
   obs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 })();
 
-// The stage shows exactly ONE of three things: a spinner (loading), the
-// "nothing here yet" placeholder (empty), or the live genui host (page).
-// _setStage is the single display switch the show* helpers below route through
-// (mirrors browser.js _setStage).
-function _setStage(state) {  // 'loading' | 'empty' | 'page'
+// The stage shows exactly ONE of four things: a spinner (loading), the
+// "nothing here yet" placeholder (empty), the live genui host (page), or the
+// front-page gallery (gallery). _setStage is the single display switch the
+// show* helpers below route through (mirrors browser.js _setStage).
+function _setStage(state) {  // 'loading' | 'empty' | 'page' | 'gallery'
   const host        = document.getElementById('genui-host');
   const placeholder = document.getElementById('genui-placeholder');
   const loading     = document.getElementById('genui-loading');
+  const gallery     = document.getElementById('genui-gallery');
   if (host)        host.style.display        = state === 'page'    ? 'block' : 'none';
   if (placeholder) placeholder.style.display = state === 'empty'   ? 'flex'  : 'none';
   if (loading)     loading.style.display     = state === 'loading' ? 'flex'  : 'none';
+  if (gallery)     gallery.hidden            = state !== 'gallery';
 }
 
 function showLoading() {
@@ -1258,6 +2160,8 @@ function showLoading() {
 function showPlaceholder() {
   _teardownLiveGenui();
   _setStage('empty');
+  // Nothing live on screen — drop the screen wake lock (see showGenui).
+  disableWakeLock();
   updateStatus('');
 }
 

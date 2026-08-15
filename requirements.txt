@@ -56,6 +56,9 @@ croniter>=2.0.0
 # QR codes for the Remote Access card (optional; the card degrades to text without it)
 qrcode>=7.4
 
+# WebRTC direct P2P transport (aiortc) — peer-to-peer data mirroring between instances
+aiortc>=1.7.0
+
 # SSH client for the "Existing server (SSH)" deploy target — install WebAgent onto
 # a Linux VM you already own. Runtime-guarded (app/deploy/providers/ssh_vm.py), so
 # a trimmed edition without it just shows that target as unavailable.

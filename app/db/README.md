@@ -1,6 +1,17 @@
 the system_prompt is hardcoded to use the system_prompt.md as fallback. the priority prompt is loaded through the database.
 
-`local.db` is SQLite and is the **zero-config default** (and the shipped seed DB). The backend is pluggable: `get_db()` returns a `LocalBackend` (SQLite), a `SupabaseBackend` (Postgres over REST), or a **`PostgresBackend`** (raw Postgres via `psycopg`). All three implement the same `StorageBackend` interface.
+The Phase 1 browser authority/cache contract, retention policy, benchmark, and
+Phase 2 handoff are documented in `docs/storage-authority-phase1.md`.
+
+Storage layout v2 assigns every core table to an app, user, agent, secrets, or
+telemetry authority in `schema/ownership.py`. See
+`docs/storage-layout-v2.md` for generated schemas and the hard-cutover rules.
+
+SQLite remains the **zero-config default**, but it is plane-routed: app data is
+in `data/db/app.db`, user data is in `data/user_data/<user>/<user>.db`, and each
+agent is authoritative in its own `data/agent_data/` database. `local.db` and
+`global.db` are retired and are never runtime fallbacks. Remote deployments can
+still use a Postgres-family backend through the same `StorageBackend` interface.
 
 ## SQLite write concurrency (tuned for parallel agent writes)
 
@@ -146,4 +157,3 @@ Structured per-call metrics (revived from `app/tools/tracker.py`): `tool_name, s
 Both stores are local SQLite, so the reader can **`ATTACH`** `logs.db` to the main connection and join `diagnostics`/`tool_executions` to `interactions` on `interaction_id` (or `session_seq`/`turn_seq`). On a single-box device both files share one clock, so timestamp alignment is also reliable — but the keys are the robust join.
 
 > **Note:** the legacy `diagnostics` / `render_recordings` tables still defined in `schema/tables.py` + `local.py` `SCHEMA_SQL` are now **dormant** (the live recorders write to the dedicated store instead). They are left in place to avoid disturbing the Postgres reconciliation path; existing rows simply age out.
-

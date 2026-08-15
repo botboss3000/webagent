@@ -1,6 +1,11 @@
 'use strict';
 
 /**
+ * 🤖 AI CODING AGENT — the Automations view is now rendered by the unified
+ *    multi-purpose data viewer in ui/main-panel/sessions/js/sessions-page.js.
+ *    Column layout, responsive breakpoints, and data sources are configured in
+ *    ui/main-panel/sessions/js/column-config.js (see AUTOMATIONS_CONFIG).
+ *
  * Automations Dashboard — table view.
  *
  * Aggregates scheduled tasks, event triggers, active worker spawns, clone
@@ -16,7 +21,7 @@
 import { app } from '../../../shared/js/state.js';
 import { apiPath } from '../../../shared/js/config.js';
 import { _esc, _fmtTime, _statusBadge, _typeIcon, _enabledToggle } from '../../../shared/js/dom-utils.js';
-import { icon, claudeMark } from '../../../shared/js/icons.js';
+import { icon, claudeMark, codexMark } from '../../../shared/js/icons.js';
 import { ICON_PICKER_ICONS } from '../../../shared/js/icon-picker.js';
 // SHARED-DELETE-CONTROL — two-click trash→hazard→spinner delete, shared with the
 // Agents page and chat session menu. State machine lives in delete-control.js.
@@ -36,6 +41,9 @@ function _agentIconHtml(iconName, engine, size) {
   const big = `${n * 1.5}${unit}`;
   if (engine === 'claude_code' && (!iconName || iconName === 'sparkles')) {
     return claudeMark({ size: big });
+  }
+  if (engine === 'codex' && (!iconName || iconName === 'code-2')) {
+    return codexMark({ size: big });
   }
   if (!iconName) return icon('bot', { size: big });
   if (ICON_PICKER_ICONS.includes(iconName)) return icon(iconName, { size: big });

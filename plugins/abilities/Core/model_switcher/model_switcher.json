@@ -4,7 +4,7 @@
   "icon": "gauge",
   "color": "#bb9af7",
   "description": "Lets the agent right-size its own brain for this chat — check the menu of available models and what each can do (vision, image output, premium), switch to a specific model (including a vision or image-output model for image work), upgrade onto a premium model for a hard task (with permission), and tune how hard the model thinks (reasoning effort: minimal → high) per task — then revert to the default model and effort when done.",
-  "skill_summary": "How the agent right-sizes its own model AND thinking depth: list_models() to read the menu of available models (with sees-images / makes-images / premium badges + effort levels) so it switches by capability, not by guessing an id; set_model('<id>') to honour a user's model request or take over on a vision/image model; use_premium_model() to upgrade onto the configured premium tier for a hard task; set_effort('minimal'|'low'|'medium'|'high') to rate a task and dial the reasoning effort up for hard reasoning or down for speed; reset_to_default() to drop back to the default model at default effort when the task is finished. Load when the user asks to change models or effort, when settling in for image-heavy work, or when a task is light/heavy enough to warrant tuning the model or its thinking depth.",
+  "skill_summary": "How the agent right-sizes its own model AND thinking depth: list_models() to read the menu of available models (with sees-images / makes-images / premium badges + effort levels) so it switches by capability, not by guessing an id; set_model('<id>') to honour a user's model request or take over on a vision/image model; use_premium_model() to upgrade onto the configured premium tier for a hard task; set_effort('minimal'|'low'|'medium'|'high') to rate a task and dial the reasoning effort up for hard reasoning or down for speed; reset_to_default() to drop back to the default model at default effort when the task is finished. Also includes a planning-mode protocol: draft on standard, assess complexity, optionally upgrade to premium for the final plan, deliver a model recommendation, then revert. Load when the user asks to change models or effort, when settling in for image-heavy work, when entering plan mode, or when a task is light/heavy enough to warrant tuning the model or its thinking depth.",
   "skill_mode": "selectable",
   "note": null,
   "simple": false,
@@ -50,7 +50,7 @@
       }
     },
     "guidance": {
-      "no_high_effort_model": "No high-effort model is configured, so there's nothing stronger to upgrade onto. Tell the user plainly that an admin can mark one in App Config → Models by ticking the 'Eff' box on a capable model. Do NOT pretend you switched."
+      "no_premium_model": "No premium model is configured, so there's nothing stronger to upgrade onto. Tell the user plainly that an admin can assign the Premium role to a capable model in App Config → Models. Do NOT pretend you switched."
     },
     "settings": [
       {

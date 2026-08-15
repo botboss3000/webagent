@@ -26,9 +26,10 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.auth.identity import assert_caller_is
-from app.db import get_db
+from app.db import get_app_db, get_db
 from plugins.billing import wallet as wallet_mod
 from plugins.billing import pricing as pricing_mod
+from plugins.billing.enforcement import check_access
 from plugins.billing.pricing import (
     Strategy,
     load_effective_config,
@@ -128,6 +129,11 @@ def _config_to_response(row: dict) -> dict:
         "allowed_processors": _j(row.get("allowed_processors"), []),
         "rate_card_default_llm": _j(row.get("rate_card_default_llm"), {}),
         "rate_card_byo_llm": _j(row.get("rate_card_byo_llm"), {}),
+        # Raw values (None when the agent hasn't overridden) so the UI can fall
+        # back to the effective/inherited numbers.
+        "cost_multiplier": row.get("cost_multiplier"),
+        "min_charge_cents": row.get("min_charge_cents"),
+        "flat_image_cost_usd": row.get("flat_image_cost_usd"),
         "trial_config": _j(row.get("trial_config"), {}),
         "subscription_price_cents": int(row.get("subscription_price_cents") or 0),
         "currency": row.get("currency") or "usd",
@@ -145,6 +151,9 @@ class AgentConfigBody(BaseModel):
     allowed_processors: Optional[List[str]] = None
     rate_card_default_llm: Optional[Dict[str, Any]] = None
     rate_card_byo_llm: Optional[Dict[str, Any]] = None
+    cost_multiplier: Optional[float] = None
+    min_charge_cents: Optional[int] = None
+    flat_image_cost_usd: Optional[float] = None
     trial_config: Optional[Dict[str, Any]] = None
     subscription_price_cents: Optional[int] = None
 
@@ -177,7 +186,7 @@ async def get_config(
     agent_id: Optional[str] = Query(None),
     user_id: str = Query(...),
 ):
-    db = get_db()
+    db = get_app_db()
     if not _has_billing_tables(db):
         return {"effective": {"strategy": "free"}, "agent": {}}
     agent = (
@@ -194,7 +203,7 @@ async def get_config(
 @router.put("/config/agent/{agent_id}")
 async def put_agent_config(agent_id: str, body: AgentConfigBody, fastapi_request: Request):
     body.user_id = await assert_caller_is(fastapi_request, body.user_id)
-    db = get_db()
+    db = get_app_db()
     await _require_agent_admin(db, agent_id, body.user_id)
 
     fields: Dict[str, Any] = {}
@@ -206,6 +215,10 @@ async def put_agent_config(agent_id: str, body: AgentConfigBody, fastapi_request
         fields["rate_card_default_llm"] = json.dumps(body.rate_card_default_llm)
     if body.rate_card_byo_llm is not None:
         fields["rate_card_byo_llm"] = json.dumps(body.rate_card_byo_llm)
+    for n in ("cost_multiplier", "min_charge_cents", "flat_image_cost_usd"):
+        v = getattr(body, n)
+        if v is not None:
+            fields[n] = v
     if body.trial_config is not None:
         fields["trial_config"] = json.dumps(body.trial_config)
     if body.subscription_price_cents is not None:
@@ -235,7 +248,7 @@ async def get_processors():
 
 @router.get("/wallet")
 async def get_wallet(user_id: str = Query(...)):
-    db = get_db()
+    db = get_app_db()
     w = await wallet_mod.get_balance(db, user_id)
     if not w:
         return {"balance_cents": 0, "hold_cents": 0, "currency": "usd", "transactions": []}
@@ -247,6 +260,29 @@ async def get_wallet(user_id: str = Query(...)):
         "currency": w.currency,
         "transactions": tx,
     }
+
+
+@router.get("/access")
+async def get_access(
+    agent_id: str = Query(...),
+    user_id: str = Query(...),
+    fastapi_request: Request = None,
+):
+    """Re-evaluate billing access for a (user, agent) WITHOUT raising 402.
+
+    Lets the frontend clear a trial-expired / needs-credits block after the user
+    buys credits or connects their own LLM key (the composer is disabled while
+    blocked, so the only way to re-check is a read endpoint like this). Returns
+    the same AccessDecision shape the 402 denial carries."""
+    if fastapi_request is not None:
+        user_id = await assert_caller_is(fastapi_request, user_id)
+    agent = await get_db().get_agent_by_id(agent_id)
+    if not agent:
+        return {"allow": True, "reason": "allow", "detail": "agent-not-found",
+                "strategy": "free", "balance_cents": 0,
+                "accepted_processors": [], "agent_id": agent_id}
+    decision = await check_access(agent, user_id, get_app_db())
+    return decision.to_dict()
 
 
 @router.post("/wallet/purchase")
@@ -272,7 +308,7 @@ async def wallet_purchase(body: PurchaseBody, fastapi_request: Request):
         logger.error("purchase checkout failed: %s", e)
         raise HTTPException(status_code=502, detail=f"Checkout creation failed: {e}")
     # Record the pending payment for reconciliation
-    _insert_payment(get_db(), {
+    _insert_payment(get_app_db(), {
         "id": str(uuid.uuid4()),
         "processor": body.processor,
         "external_payment_id": session.session_id,
@@ -289,7 +325,7 @@ async def wallet_purchase(body: PurchaseBody, fastapi_request: Request):
 @router.post("/subscribe/{agent_id}")
 async def subscribe(agent_id: str, body: SubscribeBody, fastapi_request: Request):
     body.user_id = await assert_caller_is(fastapi_request, body.user_id)
-    db = get_db()
+    db = get_app_db()
     cfg = await load_effective_config(db, agent_id)
     price = int(cfg.get("subscription_price_cents") or 0)
     if price <= 0:
@@ -332,7 +368,7 @@ async def list_exemptions(
     user_id: str = Query(...),
     agent_id: Optional[str] = Query(None),
 ):
-    db = get_db()
+    db = get_app_db()
     is_platform_admin = await db.is_user_admin(user_id)
     rows: List[dict] = []
     if hasattr(db, "_get_conn"):
@@ -365,7 +401,7 @@ async def list_exemptions(
 @router.post("/exemptions")
 async def create_exemption(body: ExemptionBody, fastapi_request: Request):
     body.user_id = await assert_caller_is(fastapi_request, body.user_id)
-    db = get_db()
+    db = get_app_db()
     if body.kind in ("agent", "user"):
         await _require_admin(db, body.user_id)
     elif body.kind == "user_for_agent":
@@ -396,7 +432,7 @@ async def create_exemption(body: ExemptionBody, fastapi_request: Request):
 async def delete_exemption(exemption_id: str, user_id: str = Query(...), fastapi_request: Request = None):
     if fastapi_request is not None:
         user_id = await assert_caller_is(fastapi_request, user_id)
-    db = get_db()
+    db = get_app_db()
     row = None
     if hasattr(db, "_get_conn"):
         conn = db._get_conn()
@@ -430,7 +466,7 @@ async def get_usage(
     agent_id: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=500),
 ):
-    db = get_db()
+    db = get_app_db()
     is_admin = await db.is_user_admin(user_id)
     rows: List[dict] = []
     if hasattr(db, "_get_conn"):
@@ -487,7 +523,7 @@ async def webhook_intake(processor: str, fastapi_request: Request):
         logger.warning("Webhook verification failed for %s: %s", processor, e)
         raise HTTPException(status_code=401, detail="Webhook signature verification failed")
 
-    db = get_db()
+    db = get_app_db()
     if event.event_type == "payment.completed":
         if event.user_id and event.amount_cents > 0:
             await wallet_mod.credit(

@@ -18,10 +18,16 @@ Five tools — a read-only menu plus the switches:
     take over on it, or "default"/empty to revert.
 
   • ``use_premium_model`` — for a genuinely hard task the agent can UPGRADE
-    itself onto the configured premium / "high-effort" tier (the rows an admin
-    ticked *Eff* in App Config → Models). If it's already on a premium model, this
-    is a no-op. Pair it with ``set_model('default')`` to fall back to the cheap
-    model when the hard task is done.
+    itself onto the configured premium model (the row an admin assigned the
+    *Premium* role to in App Config → Models; the role is stored per-model in
+    the user's DB llm config as ``high_effort_capable`` and resolved through
+    the same role-slot mechanism the chat footer picker uses —
+    ``app.admin.settings._assign_slots`` with the legacy
+    ``high_effort_targets`` resolver as a fallback). The premium model counts
+    even when it is NOT enabled as an everyday brain, i.e. the "premium-only"
+    pattern. If it's already on a premium model, this is a no-op. Pair it with
+    ``set_model('default')`` to fall back to the cheap model when the hard task
+    is done.
 
   • ``set_effort`` / ``reset_to_default`` — tune the reasoning depth for this chat,
     and drop both model + effort back to the agent's defaults in one call.
@@ -39,9 +45,10 @@ discovered generically by app/tools/loader.py. See plugins/abilities/_TEMPLATE.p
 ║  SISTER-SYNC: SESSION-MODEL-OVERRIDE                                          ║
 ║  The session override + capability ladder (text+tools = a valid brain) is the ║
 ║  SAME mechanism the chat footer model picker uses (and that image_vision's     ║
-║  describe/route guidance now points back to here). The high-effort tier is via ║
-║  app.admin.settings.high_effort_targets (the *Eff* tick). If that resolver or ║
-║  set_session_llm_override changes, update here. (grep SISTER-SYNC: SESSION-MODEL-OVERRIDE)║
+║  describe/route guidance now points back to here). The premium tier is the    ║
+║  *Premium* role slot resolved by app.admin.settings._assign_slots (the legacy ║
+║  high_effort_targets / "Eff" resolver remains as a fallback for old configs). ║
+║  If that resolver or set_session_llm_override changes, update here. (grep SISTER-SYNC: SESSION-MODEL-OVERRIDE)║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -71,7 +78,11 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
 
     async def _load_caps():
         """Warm the catalog (so tool-capability guards have data) and read the
-        user's model config. Returns (caps, error_str_or_None)."""
+        user's model config. Returns (caps, error_str_or_None).
+
+        When an agent_id is available, fetches the agent record so the caps
+        default reflects the agent's effective model — not just the global
+        app default. (grep AGENT-AWARE-CAPS)"""
         try:
             from app import model_catalog
             await model_catalog.ensure_fresh()
@@ -79,38 +90,162 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
             pass
         try:
             from app.admin.settings import load_llm_capabilities_for_user
-            return (await load_llm_capabilities_for_user(user_id)), None
+            agent_rec = None
+            if agent_id:
+                try:
+                    from app.db import get_db
+                    agent_rec = await get_db().get_agent_by_id(agent_id)
+                except Exception:
+                    pass
+            return (await load_llm_capabilities_for_user(user_id, agent_rec=agent_rec)), None
         except Exception as e:  # noqa: BLE001
             return None, f"Could not read model config: {e}"
 
-    def _enabled_brains(caps: dict) -> list:
-        """Model ids that are enabled AND can be the brain (text + tool-capable)."""
+    def _enabled_brains(caps: dict, current_model: str = "") -> list:
+        """Model ids that can be the brain. Only includes models where at least ONE
+        of the capability checkboxes is checked in the model table:
+        - text_capable (Text)
+        - image_capable (Image-in / Text+)
+        - image_out_capable (Image-out)
+
+        Models with none of these checked are not switchable by the ability —
+        the user can still switch to them manually via the footer picker, but
+        the ability should respect the user's configured model roster."""
         from app.admin.settings import _is_tool_capable
         d = caps.get("default") or {}
-        entries = ([d] if d.get("model") else []) + [
-            r for r in (caps.get("racers") or []) if r.get("enabled") and r.get("model")
-        ]
-        return sorted({
-            e["model"] for e in entries
-            if e.get("text_capable") and _is_tool_capable(e)
-        })
+        # Collect ALL racers regardless of the legacy "enabled" flag.
+        all_entries: dict = {}
+        for r in (caps.get("racers") or []):
+            if r.get("model"):
+                all_entries.setdefault(r["model"], r)
+        if d.get("model"):
+            all_entries[d["model"]] = d
+
+        def _has_any_capability(e: dict) -> bool:
+            """True if the model has at least one capability checkbox checked."""
+            return (e.get("text_capable") is not False  # default True
+                    or e.get("image_capable")
+                    or e.get("image_out_capable"))
+
+        brains = {
+            e["model"] for e in all_entries.values()
+            if _has_any_capability(e) and _is_tool_capable(e)
+        }
+        # Also include the session-override model if it's not already accounted
+        # for (e.g. when it was set via the footer picker before being saved).
+        # Skip the catalog tool-call guard for it — it's already running as the
+        # brain, so it demonstrably supports tools even if the catalog is stale.
+        if current_model and current_model not in brains:
+            cur = all_entries.get(current_model)
+            if cur and _has_any_capability(cur):
+                brains.add(current_model)
+        return sorted(brains)
+
+    def _premium_targets(caps: dict) -> list:
+        """Model ids in the configured *Premium* role that can be the agent's brain.
+
+        The premium tier is the model assigned the Premium role in App Config →
+        Models — resolved here through the SAME role-slot mechanism the chat
+        footer picker uses (``_assign_slots`` → ``roles['premium']``), so the
+        ability agrees with what the user sees in the footer. Falls back to the
+        legacy ``high_effort_targets`` (the old per-model "Eff" flag) for
+        configurations saved before the role rename. ``enabled`` is deliberately
+        NOT required — the common "premium-only" pattern stores the premium
+        model with ``enabled: false`` so it's an upgrade target, not an everyday
+        brain. A premium model must still be text + tool-capable (the same gate
+        the legacy resolver applies) so the ability never upgrades onto a model
+        that can't run the agent loop. Returns a sorted list of model ids
+        (empty when none configured)."""
+        from app.admin.settings import _assign_slots, high_effort_targets, _is_tool_capable
+        d = caps.get("default") or {}
+        union = ([d] if d.get("model") else []) + list(caps.get("racers") or [])
+        try:
+            slots = _assign_slots(union, default_model_id=d.get("model", ""))
+            prem = (slots.get("roles") or {}).get("premium") or {}
+            if (prem.get("model") and prem.get("text_capable") is not False
+                    and _is_tool_capable(prem)):
+                return sorted({prem["model"]})
+        except Exception:  # noqa: BLE001
+            pass
+        return sorted(high_effort_targets(caps))
 
     async def _current_model(caps: dict) -> str:
         """The model this conversation is running on right now: the session
-        override if set, else the agent/app default."""
+        override if set, else the agent/app default.
+
+        Handles BOTH concrete-model overrides (``{model: <id>}``, the Model
+        Switcher ability's own stored form) AND slot-based overrides
+        (``{selection_type: "role", role: "premium"}``, the chat footer picker's
+        stored form — resolved LIVE through _assign_slots + _resolve_slot)."""
         from app.db import get_db
         db = get_db()
         try:
             override = await db.get_session_llm_override(session_id)
         except Exception:
             override = None
-        return ((override or {}).get("model")
-                or (caps.get("default") or {}).get("model") or "")
+
+        if isinstance(override, dict) and override.get("use_default") is False:
+            # Concrete-model override (the Model Switcher ability's own form).
+            if override.get("model"):
+                return override["model"]
+
+            # Slot-based override (the chat footer model picker) — resolve LIVE.
+            sel_type = override.get("selection_type")
+            if sel_type:
+                from app.admin.settings import _assign_slots, _resolve_slot, _normalize_role
+                default_id = (caps.get("default") or {}).get("model") or ""
+                racers = caps.get("racers") or []
+                # Build the provider roster: default entry + every racer that has
+                # a model id (the same union _merge_agent_override feeds into the
+                # slot resolver at runtime).
+                default_entry = caps.get("default") or {}
+                providers = [default_entry] if default_entry.get("model") else []
+                seen = {default_entry.get("model")} if default_entry.get("model") else set()
+                for r in racers:
+                    m = r.get("model")
+                    if m and m not in seen:
+                        providers.append(r)
+                        seen.add(m)
+                slots = _assign_slots(providers, default_model_id=default_id)
+                role = _normalize_role(override.get("role", ""))
+                pos = override.get("custom_position", 0)
+                resolved = _resolve_slot(slots, sel_type, role, pos)
+                if resolved and resolved.get("model"):
+                    return resolved["model"]
+
+        # No session override, unresolvable slot, or override cleared → fall back
+        # to the effective default model from caps.
+        return (caps.get("default") or {}).get("model") or ""
+
+    async def _stash_prior_slot(db, session_id) -> Optional[dict]:
+        """Return the session's current USER footer-picker slot selection as a
+        stash dict, so set_model / use_premium_model can restore it after the
+        agent's temporary upgrade is reset on the next user message. Reuses an
+        existing stash when the agent upgrades again on top of its own prior
+        upgrade; returns None when there is no user-picked slot to preserve."""
+        try:
+            prior = await db.get_session_llm_override(session_id)
+        except Exception:
+            return None
+        if not isinstance(prior, dict):
+            return None
+        existing = prior.get("_prior_slot")
+        if isinstance(existing, dict) and existing.get("selection_type"):
+            return existing
+        if prior.get("selection_type"):
+            stash = {"selection_type": prior["selection_type"]}
+            if prior.get("role"):
+                stash["role"] = prior["role"]
+            if prior.get("custom_position") is not None:
+                stash["custom_position"] = prior["custom_position"]
+            return stash
+        return None
 
     async def set_model(model: str = "") -> str:
         """Switch THIS conversation's model. Pass a model id to run on it (must be
         an enabled, tool-capable model), or "default"/empty to revert to the
-        agent's default. Persists for the session; takes effect next turn."""
+        agent's default. Persists for the session; the next LLM call (even
+        mid-message, on the next tool-call iteration) uses the new model."""
         import json
         from app.db import get_db
 
@@ -121,49 +256,55 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         if target in ("", "default", "reset"):
             await db.set_session_llm_override(session_id, None)
             return json.dumps({"status": "ok", "model": "",
-                               "message": "Reverted to the agent's default model (next turn)."})
+                               "message": "Reverted to the agent's default model (on the next LLM call)."})
 
         caps, err = await _load_caps()
         if err:
             return json.dumps({"status": "error", "message": err})
-        brains = _enabled_brains(caps)
+        current = await _current_model(caps)
+        brains = _enabled_brains(caps, current)
         if target not in brains:
             return json.dumps({
                 "status": "error",
                 "code": "not_a_brain_model",
-                "message": (f"'{target}' isn't an enabled model that can run the agent "
-                            f"(it must be enabled and support tools). You can switch to: "
+                "message": (f"'{target}' isn't a model that can run the agent "
+                            f"(it must support tools and be configured). You can switch to: "
                             f"{', '.join(brains) or '(none configured)'}."),
             })
 
-        await db.set_session_llm_override(session_id, target)
+        # Stash any user footer-picker slot selection before overwriting it, so
+        # the new-user-message reset can restore it (SISTER-SYNC stash-restore).
+        prior_slot = await _stash_prior_slot(db, session_id)
+        selection = {"type": "model", "model": target}
+        if prior_slot:
+            selection["_prior_slot"] = prior_slot
+        await db.set_session_llm_override(session_id, selection)
         return json.dumps({
             "status": "ok",
             "model": target,
-            "message": (f"This conversation will now run on {target} (next turn). "
+            "message": (f"This conversation will now run on {target} (on the next LLM call). "
                         "Call set_model('default') to revert when you're done."),
         })
 
     async def use_premium_model() -> str:
-        """Upgrade THIS conversation onto a configured premium (high-effort) model
-        for a hard task. No-op if already on one. Revert later with
-        set_model('default'). Ask the user before calling unless told otherwise."""
+        """Upgrade THIS conversation onto the configured premium model for a hard
+        task. No-op if already on one. Revert later with set_model('default').
+        Ask the user before calling unless told otherwise."""
         import json
         from app.db import get_db
-        from app.admin.settings import high_effort_targets
 
         caps, err = await _load_caps()
         if err:
             return json.dumps({"status": "error", "message": err})
 
-        targets = high_effort_targets(caps)
+        targets = _premium_targets(caps)
         if not targets:
             return json.dumps({
                 "status": "error",
-                "code": "no_high_effort_model",
-                "message": ("No high-effort model is configured, so there's nothing stronger "
-                            "to upgrade onto. Tell the user an admin can mark one in App Config "
-                            "→ Models by ticking the 'Eff' box on a capable model."),
+                "code": "no_premium_model",
+                "message": ("No premium model is configured, so there's nothing stronger "
+                            "to upgrade onto. Tell the user an admin can assign one the "
+                            "Premium role in App Config → Models."),
             })
 
         current = await _current_model(caps)
@@ -172,19 +313,24 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
                 "status": "ok",
                 "model": current,
                 "changed": False,
-                "message": f"Already running on a high-effort model ({current}); no change needed.",
+                "message": f"Already running on the premium model ({current}); no change needed.",
             })
 
         # Prefer a target that isn't the current model (it won't be, given the
         # guard above, but stay defensive), else the first configured one.
         target = next((t for t in targets if t != current), targets[0])
         db = get_db()
-        await db.set_session_llm_override(session_id, target)
+        # Stash any user footer-picker slot selection before overwriting it.
+        prior_slot = await _stash_prior_slot(db, session_id)
+        selection = {"type": "model", "model": target}
+        if prior_slot:
+            selection["_prior_slot"] = prior_slot
+        await db.set_session_llm_override(session_id, selection)
         return json.dumps({
             "status": "ok",
             "model": target,
             "changed": True,
-            "message": (f"Upgraded this conversation to the high-effort model {target} (next turn). "
+            "message": (f"Upgraded this conversation to the premium model {target} (on the next LLM call). "
                         "Call set_model('default') to drop back to the cheaper model when the hard "
                         "task is done."),
         })
@@ -194,9 +340,9 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         effort. ``level`` is one of default / minimal / low / medium / high
         ('default' clears the hint = the model's own default). ``model`` is the
         model id to set it for; leave empty to set it for the model the chat is
-        running on right now. Each model remembers its own level. Takes effect next
-        turn. Raising effort costs more, so propose it before calling unless told
-        otherwise."""
+        running on right now. Each model remembers its own level. The next LLM call
+        (even mid-message) uses the new level. Raising effort costs more, so propose
+        it before calling unless told otherwise."""
         import json
         from app.db import get_db
 
@@ -249,10 +395,11 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
     async def list_models() -> str:
         """List the models this conversation can switch onto and what each can do —
         call this BEFORE switching so you pick by capability, not by guessing an id.
-        Returns every enabled, runnable (text + tool-capable) model with badges —
-        whether it can see images, generate images, and whether it's the premium
-        (high-effort) tier — plus which model is running now, which is the default,
-        and the reasoning-effort levels you can set. Read-only; changes nothing.
+        Returns models where at least one capability checkbox (Text, Image-in, or
+        Image-out) is checked in the model table. Each model shows badges for whether
+        it can see images, generate images, and whether it's the premium tier — plus
+        which model is running now, which is the default, and the reasoning-effort
+        levels you can set. Read-only; changes nothing.
 
         Use it like a menu: to honour a user's explicit model request pass that id to
         set_model; to right-size on your own, switch by *capability* — use_premium_model()
@@ -260,7 +407,7 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         is true for image work — without memorising any id."""
         import json
         from app.admin.settings import (
-            model_sees_images, model_makes_images, high_effort_targets,
+            model_sees_images, model_makes_images,
         )
 
         caps, err = await _load_caps()
@@ -277,9 +424,9 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         if d.get("model"):
             entries[d["model"]] = d
 
-        brains = _enabled_brains(caps)            # the valid set_model targets
-        premium = set(high_effort_targets(caps))  # the *Eff* (high-effort) tier
         current = await _current_model(caps)
+        brains = _enabled_brains(caps, current)   # the valid set_model targets
+        premium = set(_premium_targets(caps))     # the *Premium* role tier
         default_id = (caps.get("default") or {}).get("model") or ""
 
         models = []

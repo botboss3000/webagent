@@ -6,7 +6,7 @@ feedback repo. Anonymous by default; the user may optionally include an email
 for follow-up.
 
 The relay URL and feedback toggle come from app-settings.json. The
-installation_id (a per-deployment UUID) lives in provider.json and is generated
+installation_id (a per-deployment UUID) lives in app-settings.json and is generated
 on first use, so the relay can rate-limit or block individual clones without
 breaking everyone.
 """
@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/feedback")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_PROVIDER_FILE = _PROJECT_ROOT / "data" / "config" / "provider.json"
 
 # Default relay URL — points at the upstream WebAgent project's relay (a
 # Cloudflare Worker). Every clone inherits this and works out of the box;
@@ -43,31 +42,21 @@ MAX_BODY_LEN = 8000
 MAX_EMAIL_LEN = 254
 
 
-def _read_provider_json() -> dict:
-    try:
-        if _PROVIDER_FILE.is_file():
-            return json.loads(_PROVIDER_FILE.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger.warning("Failed to read provider.json: %s", e)
-    return {}
-
-
-def _write_provider_json(data: dict) -> None:
-    try:
-        _PROVIDER_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except Exception as e:
-        logger.error("Failed to write provider.json: %s", e)
-
-
 def _get_installation_id() -> str:
-    """Return a stable per-deployment UUID. Generates one on first call."""
-    data = _read_provider_json()
-    inst = data.get("installation_id")
+    """Return a stable per-deployment UUID. Generates one on first call.
+
+    Stored in app-settings.json. (grep INSTALLATION-ID-MIGRATION)
+    """
+    from app.admin.settings import _load_app_settings, _save_app_settings
+
+    s = _load_app_settings()
+    inst = s.get("installation_id")
     if isinstance(inst, str) and len(inst) >= 16:
         return inst
+
     inst = str(uuid.uuid4())
-    data["installation_id"] = inst
-    _write_provider_json(data)
+    s["installation_id"] = inst
+    _save_app_settings(s)
     return inst
 
 

@@ -86,6 +86,7 @@ nul
 # Temp / scratch
 temp/
 .server.pid
+.ast-index/
 # Ad-hoc prompt-slot dumps written to the project root (scratch; belong in temp/)
 /tmp_*.txt
 _envdump.txt
@@ -155,10 +156,10 @@ app/db/test_*.db
 app/db/test_*.db-journal
 app/db/test_*.db-wal
 app/db/test_*.db-shm
-app/db/optimizer_*.db
-app/db/optimizer_*.db-journal
-app/db/optimizer_*.db-wal
-app/db/optimizer_*.db-shm
+data/db/optimizer.db
+data/db/optimizer.db-journal
+data/db/optimizer.db-wal
+data/db/optimizer.db-shm
 
 # Per-machine runtime artifacts (Android/proot etc.)
 .proot.pid
@@ -168,6 +169,7 @@ start_server_proot.sh
 # JWT signing secret — generated on first run; committing it would let anyone
 # forge tokens (see app/auth/jwt.py). Per-machine, never tracked.
 data/config/jwt_secret.txt
+data/config/auth_revocation.sqlite*
 db_connection.json
 /db_mode.json
 app/auth/users.json
@@ -205,9 +207,17 @@ data/uploads/*
 data/visuals/
 
 # Per-user data home — agent outputs + screenshots saved per user at runtime
-# (data/user_data/<user_id>/{files,screenshots,...}). Never tracked.
-data/user_data/
-
+# (data/user_data/<user_id>/{files,screenshots,...}). Tracked, except: the admin
+# SQLite DB, the admin credentials vault (OAuth tokens + inline secrets), and the
+# live Chrome profile (cookies/stored logins — never commit). SQLite
+# WAL/SHM/journal sidecars are transient (they vanish mid-write and break
+# `git add`) — never tracked.
+data/user_data/admin/admin.db
+data/user_data/admin/admin.vault.db
+data/user_data/admin/chrome-profile/
+data/user_data/**/*.db-wal
+data/user_data/**/*.db-shm
+data/user_data/**/*.db-journal
 # Browser-tool screenshots — runtime output (legacy/fallback pile). The per-user
 # home above is the new destination; this dir stays only as a fallback. Never tracked.
 data/screenshots/
@@ -241,3 +251,6 @@ cookies.txt
 
 # Pre-admin-rename DB backup (kept on disk, never committed — contains 166MB+ DBs)
 data/db.bak-pre-admin-rename/
+
+# DB backup embeds (*.bak-embed) � can exceed GitHub's 100 MB file limit
+*.bak-embed

@@ -17,6 +17,7 @@ Events yielded:
 
 import asyncio
 import difflib
+import hashlib
 import json
 import logging
 import os
@@ -24,15 +25,17 @@ import re
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
+from app.agent.cache_profiles import stable_hash as _cache_hash
 from app.agent.error_classifier import classify_tool_error, ToolError
 from app.agent.loop_executor import LoopConfig
+from app.agent.session_cache import (
+    get_session_cache,
+    get_tool_defs_cache,
+    compute_tool_defs_cache_key,
+)
 from app.db import get_db
 from app.db.offload import db_offload
 from app.db.system_prompt_fragments import get_prompt_fragments
-from app.optimizer.runner import run_optimizer_async
-from plugins.billing import pricing as _billing_pricing
-from plugins.billing import wallet as _billing_wallet
-from plugins.billing import extensions as _billing_ext
 
 
 # ── Turn-limit & safety-cap defaults ─────────────────────────────────────────
@@ -43,6 +46,7 @@ from plugins.billing import extensions as _billing_ext
 # globally via the AGENT_MAX_WALL_SECONDS env var and per-agent via the agent's
 # max_wall_seconds field (set an agent's value to 0 to opt out of the cap).
 DEFAULT_MAX_WALL_SECONDS = 600.0
+MAX_TURN_SNAPSHOT_BYTES = 256 * 1024
 
 # ── Memory-pressure thresholds (MB) ──────────────────────────────────────────
 # Before each LLM call, if the Python process exceeds COMPACT_MB, the session
@@ -96,43 +100,121 @@ def _process_memory_mb() -> int:
         return 0
 
 
-def _fire_optimizer(user_id: str, session_id: str, channel: Optional[str] = None,
-                    agent_template_id: Optional[str] = None) -> None:
-    """Fire-and-forget optimizer task with error trapping.
-    Only fires if optimizer config mode is 'on'. The minimum-session-length
-    threshold (only run once a session has > N turns) is enforced inside
-    run_optimizer_async.
-    Never fires for the admin agent — it edits the codebase, it is not a
-    user-facing chat agent whose prompt the optimizer should rewrite, and
-    auto-spawning the Planner on its sessions is exactly the "calling on
-    optimizer agents" behavior we want to stop.
-    """
-    if agent_template_id == "admin-agent":
-        logger.debug("Optimizer: skipped for session %s (admin agent)", session_id)
-        return
-    try:
-        from app.optimizer.config import load_config, optimizer_enabled
-        cfg = load_config()
-        if not optimizer_enabled(cfg):
-            logger.debug("Optimizer: skipped for session %s (mode=%s)", session_id, cfg.get("mode"))
-            return
-    except Exception:
-        logger.debug("Optimizer: skipped for session %s (load_config failed)", session_id)
-        return
-    async def _run():
-        try:
-            logger.info("Optimizer: triggering for session %s (user=%s, channel=%s)", session_id, user_id, channel)
-            result = await run_optimizer_async(user_id, session_id, channel)
-            logger.info("Optimizer: completed for session %s -> %s", session_id, result)
-        except Exception as e:
-            logger.error("Optimizer: crashed for session %s: %s", session_id, e, exc_info=True)
-    asyncio.create_task(_run())
-
 logger = logging.getLogger(__name__)
 
 _client = None
 _current_base_url = None
 _current_api_key = None
+
+
+def _canonical_tool_signature(
+    tool_name: str,
+    arguments: Any,
+    parameters: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Stable signature for semantically identical tool calls.
+
+    Provider JSON whitespace/key ordering must not bypass the loop guard. Apply
+    top-level schema defaults too, so omitting ``limit=10`` and explicitly
+    sending it count as the same request.
+    """
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments or "{}")
+        except (TypeError, json.JSONDecodeError):
+            parsed = arguments.strip()
+    else:
+        parsed = arguments
+    if isinstance(parsed, dict):
+        parsed = dict(parsed)
+        props = (parameters or {}).get("properties") or {}
+        if isinstance(props, dict):
+            for key, spec in props.items():
+                if key not in parsed and isinstance(spec, dict) and "default" in spec:
+                    parsed[key] = spec["default"]
+    try:
+        canonical = json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError):
+        canonical = str(parsed)
+    return f"{tool_name}|{canonical}"
+
+
+def _bounded_turn_snapshot(
+    messages: Optional[List[Dict[str, Any]]],
+    tools: Optional[List[Dict[str, Any]]],
+    max_bytes: int = MAX_TURN_SNAPSHOT_BYTES,
+) -> Dict[str, Any]:
+    """Return one bounded debug snapshot suitable for the final row of a turn.
+
+    Intermediate assistant rows deliberately do not carry request snapshots:
+    persisting the growing message list and full tool schema on every internal
+    step caused quadratic database growth.
+    """
+    source_messages = list(messages or [])
+    source_tools = list(tools or [])
+    original_messages = len(source_messages)
+    original_tools = len(source_tools)
+
+    # Serialize each candidate at most once. The previous pop-and-redump loop
+    # encoded the full (potentially 1M-token) history once per removed message,
+    # turning finalization into quadratic CPU work on the web server event loop.
+    reserve = min(1024, max(0, max_bytes // 20))
+    remaining = max(0, max_bytes - reserve)
+    kept_messages: List[Dict[str, Any]] = []
+    for message in reversed(source_messages):
+        try:
+            size = len(json.dumps(message, ensure_ascii=False, default=str).encode("utf-8")) + 1
+        except Exception:
+            size = len(str(message).encode("utf-8", errors="replace")) + 1
+        if size > remaining:
+            break  # keep a contiguous newest-message suffix
+        kept_messages.insert(0, message)
+        remaining -= size
+
+    kept_tools: List[Dict[str, Any]] = []
+    for tool in source_tools:
+        try:
+            size = len(json.dumps(tool, ensure_ascii=False, default=str).encode("utf-8")) + 1
+        except Exception:
+            size = len(str(tool).encode("utf-8", errors="replace")) + 1
+        if size > remaining:
+            break
+        kept_tools.append(tool)
+        remaining -= size
+
+    out: Dict[str, Any] = {}
+    if kept_messages:
+        out["_sent_messages"] = kept_messages
+    if kept_tools:
+        out["_sent_tools"] = kept_tools
+    if len(kept_messages) != original_messages or len(kept_tools) != original_tools:
+        out["_snapshot_truncated"] = {
+            "messages_kept": len(kept_messages),
+            "messages_total": original_messages,
+            "tools_kept": len(kept_tools),
+            "tools_total": original_tools,
+        }
+    return out
+
+
+def _assistant_output(
+    *,
+    tool_calls: Optional[List[Dict[str, Any]]] = None,
+    messages: Optional[List[Dict[str, Any]]] = None,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    include_snapshot: bool = False,
+) -> str:
+    """Serialize the minimal durable assistant payload.
+
+    ``content`` is intentionally absent because it already lives in the
+    interaction's dedicated content column.
+    """
+    payload: Dict[str, Any] = {"role": "assistant"}
+    if tool_calls:
+        payload["tool_calls"] = tool_calls
+    if include_snapshot:
+        payload.update(_bounded_turn_snapshot(messages, tools))
+    return json.dumps(payload, ensure_ascii=False)
 
 # ── Destructive tools that require confirmation (hardcoded baseline) ──
 # These are always treated as destructive regardless of agent safety_policy.
@@ -238,6 +320,75 @@ def _effort_raises_spend(tool_args: Any, current_effort: Optional[str]) -> bool:
     req_rank = _EFFORT_RANK.get(req, 3)
     cur_rank = _EFFORT_RANK.get(str(current_effort or "").strip().lower(), 2)
     return req_rank > cur_rank
+
+
+# ── Cleanup-tool finalization (model-switcher revert) ────────────────────────
+# The two-phase model protocol tells the agent to write its final answer, then
+# call reset_to_default (or set_model/set_effort back to default) to drop back
+# to the cheaper model. Because that revert is a tool call, the loop otherwise
+# treats the turn as still working: the substantive answer is stamped `progress`
+# (so the UI buries it in the tools/updates panel) and the loop takes one more
+# LLM step on the now-default model, which emits a redundant wrap-up line that
+# becomes the visible "final" bubble. These helpers recognize the revert as
+# housekeeping so the real answer is finalized and the loop ends without that
+# extra step.
+_CLEANUP_EFFORT_LEVELS = frozenset({"", "default", "reset"})
+
+
+def _is_cleanup_tool(tool_name: str, tool_args: Any) -> bool:
+    """True when a tool call merely reverts the run to its default model/effort
+    — housekeeping, not productive work."""
+    name = str(tool_name or "").strip()
+    if name == "reset_to_default":
+        return True
+    if not isinstance(tool_args, dict):
+        return False
+    if name == "set_effort":
+        return str(tool_args.get("level", "")).strip().lower() in _CLEANUP_EFFORT_LEVELS
+    if name == "set_model":
+        return str(tool_args.get("model", "")).strip().lower() in ("", "default")
+    return False
+
+
+def _is_substantive_answer(text: str) -> bool:
+    """True when assistant text reads like a real answer rather than a short
+    transitional line ('Now switching to premium…'). Long text always counts;
+    short text counts when it is structurally an answer (markdown heading or
+    bullet list)."""
+    if not text:
+        return False
+    stripped = re.sub(r"[\s#>*_`\[\]()|]+", "", text)
+    if len(stripped) >= 200:
+        return True
+    return bool(re.search(r"(?m)^#{1,4}\s+\S|^\s*[-*+]\s+\S", text))
+
+
+def _cleanup_final_step(content: str, tool_calls: Any) -> bool:
+    """True when a step carries a substantive answer plus ONLY cleanup tool
+    calls — the signal that the real answer is done and the remaining tools are
+    housekeeping to run before ending the loop."""
+    if not content or not content.strip():
+        return False
+    if not hasattr(tool_calls, "values"):
+        return False
+    calls = list(tool_calls.values())
+    if not calls:
+        return False
+    if not _is_substantive_answer(content):
+        return False
+    for tc in calls:
+        fn = getattr(tc, "function", None)
+        name = getattr(fn, "name", None) if fn is not None else None
+        if not name:
+            return False
+        args_raw = getattr(fn, "arguments", None) or "{}"
+        try:
+            args = json.loads(args_raw) if isinstance(args_raw, str) else (args_raw or {})
+        except json.JSONDecodeError:
+            args = {}
+        if not _is_cleanup_tool(name, args):
+            return False
+    return True
 
 
 # ── git_tool per-arg exemption: read-only git operations skip the gate ──
@@ -362,11 +513,19 @@ def _max_concurrent_tools(agent_rec: Optional[Dict[str, Any]]) -> Optional[int]:
     return None
 
 
-def _get_client():
+def _get_client(base_url: Optional[str] = None, api_key: Optional[str] = None):
     global _client, _current_base_url, _current_api_key
-    
-    base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
-    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or ""
+
+    if base_url is None:
+        base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL")
+    if api_key is None:
+        api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or ""
+
+    if not base_url:
+        raise ValueError(
+            "No LLM base URL configured. Open Settings → Providers to set up a provider, "
+            "or set LLM_BASE_URL environment variable."
+        )
 
     # Re-initialize if env changed or first time
     if _client is None or base_url != _current_base_url or api_key != _current_api_key:
@@ -439,13 +598,13 @@ def _stream_open_seconds() -> float:
         return 120.0
 
 
-async def _open_stream(create_kwargs: Dict[str, Any], timeout_s: float):
+async def _open_stream(create_kwargs: Dict[str, Any], timeout_s: float, client: Any = None):
     """Open the streaming LLM response, bounded by ``timeout_s`` so a hung connect
     cannot freeze the turn. ``timeout_s <= 0`` disables the bound (falls back to
     the client's own request timeout). Raises ``asyncio.TimeoutError`` if the
     stream object isn't returned in time — the caller turns that into a resumable
     stop, mirroring the mid-stream stall guard."""
-    _coro = _get_client().chat.completions.create(**create_kwargs)
+    _coro = (client or _get_client()).chat.completions.create(**create_kwargs)
     if timeout_s and timeout_s > 0:
         return await asyncio.wait_for(_coro, timeout=timeout_s)
     return await _coro
@@ -464,190 +623,78 @@ async def _record_billing_usage(
     session_id: Optional[str] = None,
     cost_usd: float = 0.0,
     cost_source: Optional[str] = None,
+    cached_input_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    uncached_input_tokens: Optional[int] = None,
+    reasoning_tokens: int = 0,
 ) -> Optional[dict]:
     """Compute the per-call charge, write a usage_events row, and debit the
     user's credit wallet when applicable.
 
-    Returns the ChargeResult as a dict for callers that want to emit it to
-    the event stream, or None on failure / when billing tables don't exist.
-    Silent-failure-friendly: any exception is logged and swallowed so the
-    chat continues working even if billing is misconfigured."""
-    if not agent_id or not user_id:
-        return None
-    try:
-        agent = await db_offload(lambda: db.get_agent_by_id(agent_id))
-        if not agent:
-            return None
-        # Billing is the CENTRAL account plane: usage_events, wallets, trials and
-        # subscriptions must stay in one place even when interaction data is
-        # scattered across per-user databases (multi-tenant). Resolve the control
-        # DB and use it for every billing read/write below; the agent CONFIG is
-        # still read via `db` (the caller's own database in the self-contained
-        # model). No-op in single-tenant mode (get_control_db() == the one DB).
-        from app.db import get_control_db
-        cdb = get_control_db()
-        provider_cents = int(round((llm_cost or 0) * 100)) if llm_cost else 0
-        usage = _billing_pricing.Usage(
-            input_tokens=int(input_tokens or 0),
-            output_tokens=int(output_tokens or 0),
-            provider_cost_cents=provider_cents,
-            message_count=1,
-        )
-        result = await _billing_pricing.resolve_charge(agent, user_id, usage, cdb)
-        charge = result.end_user_charge_cents
-
-        # The end user pays `charge`; the agent admin keeps it. An optional
-        # billing extension, if installed, may allocate part of the charge
-        # elsewhere (no-op otherwise: nothing deducted, the agent keeps it all)
-        # and record its own accounting below.
-        import uuid as _uuid
-        event_id = str(_uuid.uuid4())
-        deducted_cents, agent_earnings_cents = await _billing_ext.apply_split(cdb, agent, charge)
-
-        # Insert usage_events row (always, even free/exempt, for visibility).
-        # cdb (control) — usage_events is central so the admin dashboard/metrics
-        # keep working when interaction data lives in per-user databases.
-        try:
-            if hasattr(cdb, "_get_conn"):
-                conn = cdb._get_conn()
-                try:
-                    conn.execute(
-                        "INSERT INTO usage_events ("
-                        "id, agent_id, user_id, interaction_id, input_tokens, output_tokens, "
-                        "provider_cost_cents, end_user_charge_cents, "
-                        "agent_admin_earnings_cents, strategy, is_byo_llm, is_trial, is_exempt, "
-                        "model, provider, cost_usd, cost_source, session_id, source"
-                        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (
-                            event_id, agent_id, user_id, interaction_id,
-                            usage.input_tokens, usage.output_tokens, provider_cents,
-                            charge, agent_earnings_cents, result.strategy,
-                            1 if result.is_byo_llm else 0,
-                            1 if result.is_trial else 0,
-                            1 if result.is_exempt else 0,
-                            model_name, provider_name,
-                            float(cost_usd or 0), cost_source, session_id, "chat",
-                        ),
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
-            elif hasattr(cdb, "get_raw_client"):
-                cdb.get_raw_client().table("usage_events").insert({
-                    "id": event_id,
-                    "agent_id": agent_id,
-                    "user_id": user_id,
-                    "interaction_id": interaction_id,
-                    "input_tokens": usage.input_tokens,
-                    "output_tokens": usage.output_tokens,
-                    "provider_cost_cents": provider_cents,
-                    "end_user_charge_cents": charge,
-                    "agent_admin_earnings_cents": agent_earnings_cents,
-                    "strategy": result.strategy,
-                    "is_byo_llm": 1 if result.is_byo_llm else 0,
-                    "is_trial": 1 if result.is_trial else 0,
-                    "is_exempt": 1 if result.is_exempt else 0,
-                    "model": model_name,
-                    "provider": provider_name,
-                    "cost_usd": float(cost_usd or 0),
-                    "cost_source": cost_source,
-                    "session_id": session_id,
-                    "source": "chat",
-                }).execute()
-        except Exception as e:
-            logger.debug("usage_events insert skipped: %s", e)
-
-        # Record any extension-side accounting (no-op without a billing extension).
-        await _billing_ext.apply_record(
-            cdb, event_id=event_id, agent_id=agent_id, user_id=user_id,
-            end_user_charge_cents=charge, deducted_cents=deducted_cents,
-            retained_cents=agent_earnings_cents, interaction_id=interaction_id,
-        )
-
-        # Debit the user's wallet for credit-based strategies
-        if (
-            result.end_user_charge_cents > 0
-            and not result.is_exempt
-            and not result.is_trial
-            and result.strategy in ("credits", "per_message", "per_token")
-        ):
-            try:
-                await _billing_wallet.credit(
-                    cdb,
-                    owner_type="user",
-                    owner_id=user_id,
-                    amount_cents=-result.end_user_charge_cents,
-                    kind="usage",
-                    ref_id=interaction_id,
-                    note=f"agent:{agent_id}",
-                )
-            except Exception as e:
-                logger.debug("wallet debit skipped: %s", e)
-
-        # Decrement trial counters if applicable
-        if result.is_trial:
-            try:
-                if hasattr(cdb, "_get_conn"):
-                    conn = cdb._get_conn()
-                    try:
-                        conn.execute(
-                            "UPDATE trials SET messages_remaining = "
-                            "CASE WHEN messages_remaining IS NULL THEN NULL ELSE messages_remaining - 1 END, "
-                            "tokens_remaining = CASE WHEN tokens_remaining IS NULL THEN NULL "
-                            "ELSE tokens_remaining - ? END "
-                            "WHERE user_id=? AND agent_id=?",
-                            (usage.input_tokens + usage.output_tokens, user_id, agent_id),
-                        )
-                        conn.commit()
-                    finally:
-                        conn.close()
-            except Exception as e:
-                logger.debug("trial decrement skipped: %s", e)
-
-        # Credit the agent admin's earnings wallet (informational mirror)
-        if agent_earnings_cents > 0:
-            try:
-                roles = await db_offload(lambda: db.get_agent_roles(agent_id))
-                admins = roles.get("admin_users") or []
-                if admins:
-                    await _billing_wallet.credit(
-                        cdb,
-                        owner_type="agent_admin",
-                        owner_id=admins[0],
-                        amount_cents=agent_earnings_cents,
-                        kind="earnings",
-                        ref_id=interaction_id,
-                        note=f"agent:{agent_id}",
-                    )
-            except Exception as e:
-                logger.debug("earnings credit skipped: %s", e)
-
-        return {
-            "end_user_charge_cents": charge,
-            "agent_admin_earnings_cents": agent_earnings_cents,
-            "strategy": result.strategy,
-            "is_byo_llm": result.is_byo_llm,
-            "is_trial": result.is_trial,
-            "is_exempt": result.is_exempt,
-        }
-    except Exception as e:
-        logger.debug("billing usage recording skipped: %s", e)
-        return None
+    Thin wrapper over the single charge path (plugins/billing/charge.py) so
+    text runs and image generation share one implementation. Returns the
+    charge summary as a dict for the event stream, or None on failure / when
+    billing tables don't exist. Silent-failure-friendly: any exception is
+    logged and swallowed so the chat continues working even if billing is
+    misconfigured."""
+    provider_cents = int(round((llm_cost or 0) * 100)) if llm_cost else 0
+    from plugins.billing.charge import record_and_charge
+    return await record_and_charge(
+        db, agent_id, user_id,
+        input_tokens=int(input_tokens or 0),
+        output_tokens=int(output_tokens or 0),
+        provider_cost_cents=provider_cents,
+        model=model_name,
+        provider=provider_name,
+        interaction_id=interaction_id,
+        session_id=session_id,
+        cost_usd=cost_usd,
+        cost_source=cost_source,
+        cached_input_tokens=cached_input_tokens,
+        cache_write_tokens=cache_write_tokens,
+        uncached_input_tokens=uncached_input_tokens,
+        reasoning_tokens=reasoning_tokens,
+        source="chat",
+    )
 
 
-async def _check_interrupt(session_id: str, interrupt_event: Optional[asyncio.Event]):
+async def _check_interrupt(
+    session_id: str,
+    interrupt_event: Optional[asyncio.Event],
+    *,
+    db: Optional[Any] = None,
+):
     """
-    Checks the local event and the DB interrupt flag.
-    Raises CancelledError if interrupted.
+    Checks the local event, the DB interrupt flag, and whether the session
+    has been recycled/deleted. Raises CancelledError if interrupted.
     """
     if interrupt_event and interrupt_event.is_set():
         raise asyncio.CancelledError("Agent interrupted by new user message (local event).")
 
-    db = get_db()
+    db = db or get_db()
     if await db.check_interrupt(session_id):
         # Clear the flag so next runs are clean
         await db.clear_interrupt(session_id)
         raise asyncio.CancelledError("Agent interrupted by new user message (db flag).")
+
+    # ── Session-death safety check ──────────────────────────────────────────
+    # If the session was recycled (soft-deleted) or hard-deleted while the loop
+    # was running, abort immediately. This catches the case where the interrupt
+    # flag was already consumed on a previous check but the session was recycled
+    # between checks, or where the LLM call was in-flight when the recycle happened.
+    try:
+        if await db.is_session_dead(session_id):
+            logger.warning("Session %s is dead (recycled/deleted) — interrupting loop", session_id[:12])
+            # Clear any leftover interrupt flag so the next run is clean
+            try:
+                await db.clear_interrupt(session_id)
+            except Exception:
+                pass
+            raise asyncio.CancelledError("Session has been recycled or deleted.")
+    except asyncio.CancelledError:
+        raise
+    except Exception as _sde:
+        logger.warning("session-death check in _check_interrupt failed: %s", _sde)
 
 
 async def validate_tool_call(name: str, args: dict, tools: Dict[str, Any],
@@ -731,6 +778,32 @@ def _check_user_confirmed(messages: List[Dict[str, Any]], tool_name: str) -> boo
     return any(kw in last_user_content for kw in confirm_keywords)
 
 
+def _build_layered_messages(
+    *,
+    shared_system: str,
+    capability_parts: List[str],
+    agent_system: str,
+    turn_parts: List[str],
+    history: Optional[List[Dict[str, Any]]],
+    user_message: Any,
+) -> List[Dict[str, Any]]:
+    """Serialize cache layers using only standard provider message roles."""
+    messages: List[Dict[str, Any]] = []
+    for system_block in (shared_system, *capability_parts, agent_system):
+        if system_block and system_block.strip():
+            messages.append({"role": "system", "content": system_block.strip()})
+    if history:
+        messages.extend(history)
+    if turn_parts:
+        turn_content = "\n\n".join(
+            part.strip() for part in turn_parts if part and part.strip()
+        )
+        if turn_content:
+            messages.append({"role": "system", "content": turn_content})
+    messages.append({"role": "user", "content": user_message})
+    return messages
+
+
 async def stream_agent_events(
     user_id: str,
     session_id: str,
@@ -748,6 +821,9 @@ async def stream_agent_events(
     loop_config: Optional[LoopConfig] = None,
     execution_mode: str = 'ask',
     attachment_docs: Optional[List[Dict[str, Any]]] = None,
+    system_prompt_parts: Optional[Any] = None,
+    turn_reservation_key: Optional[str] = None,
+    persona_prompt: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Run the unified agent loop and yield structured events.
@@ -762,7 +838,7 @@ async def stream_agent_events(
       'auto' — all tools allowed without confirmation.
     Legacy values are normalized: 'read' -> 'plan', 'write' -> 'ask'.
     """
-    # Multi-tenant (bring-your-own-database): pin data-plane routing to THIS run's
+    # User BYOD (bring-your-own-database): pin data-plane routing to THIS run's
     # user for the whole turn, so every get_db() below — and in the tools, memory
     # and db_offload calls this loop makes — resolves to this user's own database.
     # This is the single chokepoint every agent turn funnels through (interactive,
@@ -778,7 +854,8 @@ async def stream_agent_events(
     # Normalize the execution mode to the canonical Ask/Plan/Auto set, accepting
     # the legacy Read/Write/Auto names so in-flight sessions, saved DB values and
     # the TUI bridge keep working. Anything unrecognized falls back to 'ask'.
-    _MODE_ALIASES = {'read': 'plan', 'write': 'ask', 'plan': 'plan', 'ask': 'ask', 'auto': 'auto'}
+    _MODE_ALIASES = {'read': 'plan', 'write': 'ask', 'plan': 'plan', 'ask': 'ask', 'auto': 'auto',
+                     'wkspc': 'wkspc'}  # codex-engine mode (workspace-write); passed through to engines
     execution_mode = _MODE_ALIASES.get(str(execution_mode or '').strip().lower(), 'ask')
     # Normalize the turn ceiling up front: 0 means UNLIMITED. Guard against a
     # NULL in the DB (which makes agent.get("max_turn_count", 0) return None, not
@@ -798,6 +875,25 @@ async def stream_agent_events(
     from app.db import get_db
     if db is None:
         db = get_db()
+    _browser_authority = getattr(db, "authority_mode", "") == "browser"
+    if not turn_reservation_key and parent_interaction_id:
+        from app.agent.turn_reservations import stable_key as _stable_turn_key
+        turn_reservation_key = _stable_turn_key(
+            "chat-turn", user_id, session_id, parent_interaction_id
+        )
+
+    # Prompt layout v2 keeps reusable platform/capability blocks ahead of
+    # agent-, session-, and turn-specific content. Legacy callers may continue
+    # passing one flattened string.
+    _shared_system = getattr(system_prompt_parts, "shared_core", "") or ""
+    _agent_system = getattr(system_prompt_parts, "agent_context", "") or ""
+    _turn_system_parts: List[str] = []
+    _initial_turn_context = getattr(system_prompt_parts, "turn_context", "") or ""
+    if _initial_turn_context:
+        _turn_system_parts.append(_initial_turn_context)
+    if system_prompt_parts is None:
+        _agent_system = system_prompt or ""
+    _capability_system_parts: List[str] = []
 
     # Load the agent record first so a per-agent LLM override can be applied.
     agent_name = "Agent"
@@ -806,6 +902,26 @@ async def stream_agent_events(
         _agent_rec = await db_offload(lambda: db.get_agent_by_id(agent_id))
         if _agent_rec and _agent_rec.get("name"):
             agent_name = _agent_rec["name"]
+    if system_prompt_parts is not None:
+        try:
+            from app.agent.cache_profiles import (
+                profile_from_metadata as _profile_from_metadata,
+                profile_layer_blocks as _profile_layer_blocks,
+            )
+            _profile_meta = (_agent_rec or {}).get("metadata") or {}
+            if isinstance(_profile_meta, str):
+                _profile_meta = json.loads(_profile_meta or "{}")
+            _profile_extensions = (
+                _profile_meta.get("capability_extensions") or []
+                if isinstance(_profile_meta, dict)
+                else []
+            )
+            _capability_system_parts.extend(_profile_layer_blocks(
+                _profile_from_metadata(_profile_meta),
+                _profile_extensions,
+            ))
+        except Exception as _cpe:
+            logger.warning("capability cache layers build failed: %s", _cpe)
 
     # ── Alternate engine dispatch ────────────────────────────────────────────
     # An agent may declare a non-default runtime in metadata.engine (e.g. a Local
@@ -825,6 +941,10 @@ async def stream_agent_events(
     except Exception:
         _engine_id = ""
     if _engine_id and _engine_id != "default":
+        if _browser_authority:
+            raise RuntimeError(
+                "Alternate engines are not enabled for browser-authority sessions."
+            )
         from plugins.engines import get_engine_stream
         _engine_fn = get_engine_stream(_engine_id)
         if _engine_fn is not None:
@@ -842,6 +962,9 @@ async def stream_agent_events(
                 # `claude --permission-mode`. Engines that don't care ignore it via
                 # their **_ignored catch-all.
                 execution_mode=execution_mode,
+                # Persona-only prompt for engine agents that forward it to the CLI
+                # (agent-authored instructions without platform boilerplate).
+                persona_prompt=persona_prompt,
             ):
                 yield _ev
             return
@@ -853,14 +976,47 @@ async def stream_agent_events(
     # and then any per-session override (the model picked in this chat's footer)
     # layered on top, so the run uses the right model — not just the global
     # default. Resolution order: app-default → agent → session.
-    await apply_provider_for_run(user_id, _agent_rec, session_id)
+    # Keep provider credentials local to this coroutine. Writing the selected
+    # model's configuration to os.environ lets concurrent chats cross-wire keys.
+    llm_config = await apply_provider_for_run(
+        user_id, _agent_rec, None if _browser_authority else session_id,
+        apply_env=False)
 
-    model_name = os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or "deepseek/deepseek-v4-flash"
-    provider_name = os.environ.get("LLM_PROVIDER", "openrouter")
-    # Per-session reasoning-effort for this run (set by apply_provider_for_run from
-    # the footer picker / Model Switcher ability). Empty = send no hint. Passed as
-    # the provider reasoning hint on the LLM call; dropped + retried if rejected.
-    reasoning_effort = (os.environ.get("LLM_REASONING_EFFORT") or "").strip().lower() or None
+    def _runtime_model(config: Dict[str, Any]) -> str:
+        model = str(config.get("model") or "")
+        base_url = str(config.get("base_url") or "")
+        return model.split("/", 1)[-1] if base_url and "openrouter.ai" not in base_url and "/" in model else model
+
+    def _client_for(config: Dict[str, Any]):
+        return _get_client(config.get("base_url"), config.get("api_key"))
+
+    model_name = _runtime_model(llm_config)
+    provider_name = llm_config.get("provider") or ""
+    llm_client = _client_for(llm_config)
+    reasoning_effort = (llm_config.get("reasoning_effort") or "").strip().lower() or None
+
+    if llm_config.get("_credential_error") == "decrypt_failed":
+        yield {
+            "type": "error",
+            "level": "fatal",
+            "stop_cause": "failed",
+            "message": (
+                "The configured LLM credential exists but could not be decrypted: "
+                "its encryption key no longer matches the stored secret. Re-save "
+                "the API key in App Settings → Providers, then retry."
+            ),
+        }
+        return
+
+    # ── Validate resolved config — no silent fallbacks to OpenRouter ──────────
+    if not model_name:
+        yield {"type": "error", "level": "fatal",
+               "message": "No LLM model configured. Open Settings → Providers to select a model."}
+        return
+    if not llm_config.get("base_url"):
+        yield {"type": "error", "level": "fatal",
+               "message": "No LLM provider configured. Open Settings → Providers to set one up."}
+        return
 
     # ── App-wide global per-tool defaults (admin) ────────────────────────────
     # The DEFAULTS every agent inherits unless it has its own per-tool override.
@@ -909,6 +1065,25 @@ async def stream_agent_events(
            "step": "load_tools", "count": len(tools),
            "names": list(tools.keys()),
            "duration_ms": load_duration}
+
+    # ── Session-death safety switch ──────────────────────────────────────────
+    # If the session was recycled (soft-deleted) while this generator was being
+    # set up, abort NOW — before any LLM call, tool execution, or interaction
+    # write. This is the single chokepoint every agent turn funnels through:
+    # interactive chat, background automation, optimizer runs, and self-heal
+    # resume. Without it a recycled session could still execute agent loops.
+    try:
+        if await db.is_session_dead(session_id):
+            logger.warning("Session %s is dead (recycled/deleted) — aborting loop", session_id[:12])
+            yield {"type": "error", "level": "agent",
+                   "message": "Session has been deleted — loop aborted"}
+            # Still yield a final pipeline event so the caller knows we stopped
+            yield {"type": "pipeline", "level": "pipeline",
+                   "step": "session_dead", "session_id": session_id}
+            return
+    except Exception as _sde:
+        # Never let a safety check failure break the run — log and continue
+        logger.warning("session-death check failed: %s", _sde)
 
     # ── Integration status: inject available OAuth integrations into system prompt ──
     _OAUTH_PROVIDER_TYPES = {"google", "microsoft", "yahoo", "dropbox", "meta",
@@ -986,7 +1161,7 @@ async def stream_agent_events(
                     f'- {_s["provider"].title()}: not connected'
                     f' — call check_oauth_connection("{_s["provider"]}") to get a connect link for the user'
                 )
-        system_prompt = (system_prompt or "") + "\n\n## Available Integrations\n" + "\n".join(_int_lines)
+        _turn_system_parts.append("## Available Integrations\n" + "\n".join(_int_lines))
 
         # If a generic web tool is connected, also inject the site-recipe
         # fragment so the agent knows the common URL templates / GraphQL
@@ -1002,7 +1177,7 @@ async def stream_agent_events(
             except Exception:
                 _recipes = ""
             if _recipes:
-                system_prompt = (system_prompt or "") + "\n\n## Web automation recipes\n" + _recipes
+                _turn_system_parts.append("## Web automation recipes\n" + _recipes)
 
     yield {"type": "pipeline", "level": "pipeline",
            "step": "integration_status",
@@ -1113,6 +1288,9 @@ async def stream_agent_events(
         # load_ability (persist active-ability + skill so the per-iteration schema
         # build sends its tools this turn), and inline its how-to so instructions
         # and tools arrive together — not a turn apart.
+        # The reveal body is turn-specific and is therefore appended only to the
+        # late turn layer. Identical onboarding prompts still produce identical
+        # reveals without weakening first-turn ability routing.
         _reveal_id = _ability_route.get("reveal")
         if _reveal_id and _reveal_id not in _active_ability_set:
             try:
@@ -1135,7 +1313,7 @@ async def stream_agent_events(
                 _active_ability_set.add(_reveal_id)
                 _active_ability_names.append(_reveal_id)
                 if _sk_body:
-                    system_prompt = (system_prompt or "") + "\n\n# [AUTO-LOADED ABILITY]\n" + _sk_body
+                    _turn_system_parts.append("# [AUTO-LOADED ABILITY]\n" + _sk_body)
                 _rv_score = _ability_route.get("reveal_score")
                 yield {"type": "pipeline", "level": "pipeline",
                        "step": "ability_auto_revealed", "ability_id": _reveal_id,
@@ -1167,7 +1345,7 @@ async def stream_agent_events(
                     _agent_hint = await _suggest_agents(
                         _msg_txt2, _tmpl_cands, exclude_id=agent_template_id)
                     if _agent_hint:
-                        system_prompt = (system_prompt or "") + "\n\n" + _agent_hint
+                        _turn_system_parts.append(_agent_hint)
         except Exception as _aserr:
             logger.debug("agent suggestions skipped: %s", _aserr)
 
@@ -1179,6 +1357,18 @@ async def stream_agent_events(
                                _suppressed_ability_set, ability_default=_agent_discovery_default):
                 continue
             _d = (_ti.handler.__doc__ or "").strip() if hasattr(_ti, "handler") else ""
+            # When no attachments are present, move read_attachment to "Load on
+            # demand" instead of "Ready to use" so the agent doesn't reach for it
+            # as a generic file-reading tool. The # [USER ATTACHMENTS] section
+            # already tells the agent to call read_attachment when needed.
+            if _tn == "read_attachment" and not (attachment_docs or []):
+                _idx_entries.append({
+                    "name": _tn,
+                    "desc": _d,
+                    "mode": "discoverable",
+                    "active": False,
+                })
+                continue
             _idx_entries.append({
                 "name": _tn,
                 "desc": _d,
@@ -1196,7 +1386,7 @@ async def stream_agent_events(
             _ask_names = set()
         _tools_index = _tm_render(_idx_entries, ask_names=_ask_names, denied_names=_denied_names)
         if _tools_index:
-            system_prompt = (system_prompt or "") + "\n\n" + _tools_index
+            _turn_system_parts.append(_tools_index)
 
         # # [ABILITIES] — discoverable-and-unloaded abilities (their tools + skill
         # are hidden until load_ability). Derive the enabled host-ability set from
@@ -1219,15 +1409,21 @@ async def stream_agent_events(
                         "name": _meta.get("display_name") or _aid,
                         "desc": _meta.get("skill_summary") or _meta.get("description") or "",
                     })
-            # Message-aware ordering + starring from the semantic router (hint).
-            # Empty route (embedder off / no message) ⇒ plain alphabetical menu.
-            _ab_index = _tm_render_abilities(
-                _ab_entries,
-                starred=_ability_route.get("starred"),
-                order=[r.get("id") for r in _ability_route.get("ranked", []) if r.get("id")],
-            )
+            # Keep the shared menu canonical. Semantic routing is emitted below
+            # as a late, request-specific hint.
+            _ab_index = _tm_render_abilities(_ab_entries)
             if _ab_index:
-                system_prompt = (system_prompt or "") + "\n\n" + _ab_index
+                _turn_system_parts.append(_ab_index)
+            _starred = [
+                a for a in (_ability_route.get("starred") or [])
+                if any(e.get("id") == a for e in _ab_entries)
+            ]
+            if _starred:
+                _turn_system_parts.append(
+                    "# [ABILITY ROUTING HINT]\nLikely relevant to this request: "
+                    + ", ".join(f"`{a}`" for a in _starred)
+                    + ". Load one only if it fits."
+                )
         except Exception as _aie:
             logger.warning("abilities index build failed: %s", _aie)
     except Exception as _tie:
@@ -1257,7 +1453,13 @@ async def stream_agent_events(
                     "Think deeply and verify against the real code. When a guess could change your "
                     "whole approach, STOP and ask the user a clarifying question, then wait. Collect "
                     "smaller unknowns in an \"Open questions / assumptions\" section, and deliver a "
-                    "clear step-by-step plan rather than executing it."
+                    "clear step-by-step plan rather than executing it. "
+                    "Model switching: If the Model Switcher ability is enabled, use it to right-size "
+                    "your planning. Draft on your standard model, then assess whether the task is "
+                    "complex enough to warrant upgrading to a premium model for the final planning "
+                    "pass. If it is, propose the upgrade and wait for approval. When you deliver "
+                    "the plan, include a one-line model recommendation for execution (standard vs "
+                    "premium). See the Model Switcher skill for the full protocol."
                 ),
                 'auto': (
                     "You are in AUTO mode, running autonomously. Tools execute without confirmation, "
@@ -1271,17 +1473,58 @@ async def stream_agent_events(
             }
             _mode_tpl = _MODE_FALLBACK.get(execution_mode, _MODE_FALLBACK['ask'])
         if _mode_tpl:
-            system_prompt = (system_prompt or "") + "\n\n## Execution mode\n" + _mode_tpl
+            _capability_system_parts.append("## Execution mode\n" + _mode_tpl)
     except Exception as _moe:
         logger.warning("execution-mode prompt injection failed: %s", _moe)
 
-    # Build message list
-    messages: List[Dict[str, Any]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    if history:
-        messages.extend(history)
-    messages.append({"role": "user", "content": user_message})
+    # ── Session message cache ────────────────────────────────────────────
+    # Stable hash of the agent's system-prompt layers.  When unchanged the
+    # cache holds a byte-identical prefix, so the LLM provider's prompt cache
+    # fires (DeepSeek, Anthropic, OpenAI) — ~90 % cheaper input tokens.
+    # Includes turn_system_parts so an ability-load or tool-change mid-session
+    # invalidates the stale cached prefix.
+    _sys_hash = _cache_hash([_shared_system, _capability_system_parts,
+                             _agent_system, _turn_system_parts])
+    _sc = get_session_cache()
+    _canonical_incoming_history = [
+        item for item in (history or []) if item.get("role") != "system"
+    ]
+    _incoming_history_hash = _cache_hash(_canonical_incoming_history)
+    _cached = await _sc.get(
+        user_id, session_id, _sys_hash, _incoming_history_hash
+    )
+    if _cached is not None:
+        messages = _cached
+        # Inject fresh turn-specific context (ability hints, tools index,
+        # execution-mode guidance) BEFORE the new user message — the cached
+        # prefix stays byte-identical above this point, so prompt-cache fires.
+        if _turn_system_parts:
+            for _tp in _turn_system_parts:
+                if _tp and _tp.strip():
+                    messages.append({"role": "system", "content": _tp.strip()})
+        messages.append({"role": "user", "content": user_message})
+    else:
+        # Cache miss — build from scratch as before
+        messages = _build_layered_messages(
+            shared_system=_shared_system,
+            capability_parts=_capability_system_parts,
+            agent_system=_agent_system,
+            turn_parts=_turn_system_parts,
+            history=history,
+            user_message=user_message,
+        )
+
+    async def _store_validated_session_cache() -> None:
+        canonical_history = [
+            item for item in messages if item.get("role") != "system"
+        ]
+        await _sc.set(
+            user_id,
+            session_id,
+            messages,
+            _sys_hash,
+            _cache_hash(canonical_history),
+        )
 
     # ── Context Control: surface the live context-fill signal to the agent ──────
     # Ask whichever context-management strategy is enabled for this agent (the
@@ -1299,10 +1542,11 @@ async def stream_agent_events(
             _st = _cc_status(messages, _cc) if (_cc.get("enabled") and _cc_status) else None
             if _st:
                 _cc_line = _st["line"]
-                if messages and messages[0].get("role") == "system":
-                    messages[0]["content"] = (messages[0].get("content") or "") + "\n\n" + _cc_line
-                else:
-                    messages.insert(0, {"role": "system", "content": _cc_line})
+                # Insert as a separate system message right before the user turn
+                # so messages[0] (core system prompt) and all frozen compaction
+                # cars stay byte-identical across turns, enabling provider
+                # prefix caching (DeepSeek, Anthropic, etc.).
+                messages.insert(len(messages) - 1, {"role": "system", "content": _cc_line})
                 yield {"type": "pipeline", "level": "pipeline", "step": "context_status",
                        "tokens": _st["tokens"], "limit": _st["limit"],
                        "pct": _st["pct"], "enabled": True}
@@ -1312,6 +1556,12 @@ async def stream_agent_events(
     turn_count = 0
     original_max_turns = max_turns  # the configured block size; used to rearm at each ceiling
     last_extension_at = 0           # ceiling turn at which we last extended (0 = not yet)
+    # System pipeline sessions must obey their configured ceiling. They have no
+    # human at the keyboard during a runaway turn, so keyword-based extensions
+    # are unsafe and can silently defeat the limit.
+    _allow_turn_extension = not (
+        session_id.startswith("optimizer-") or session_id.startswith("closer-")
+    )
     empty_retry_used = False        # safety net: one retry per session for an empty LLM reply
     _tool_name_streak = 0        # consecutive same-tool-name calls (diff args)
     _last_tool_streak_name = ""  # which tool the streak is counting
@@ -1341,6 +1591,9 @@ async def stream_agent_events(
         import collections as _collections
         _loop_start_ts = time.time()
         _tool_call_counts = _collections.Counter()   # signature -> times seen
+        _tool_total_counts = _collections.Counter()  # tool name -> calls requested
+        _tool_result_counts = _collections.Counter() # (tool, normalized result hash) -> count
+        _no_progress_tools = set()
         stall_strikes = 0
         stall_stop_msg = None     # when set, break out of the loop and finalize
         input_tokens = output_tokens = llm_cost = None   # pre-init for finalize
@@ -1365,6 +1618,23 @@ async def stream_agent_events(
             _gs = _get_gs()
         except Exception:
             pass
+        _agent_meta = _agent_rec.get("metadata") if _agent_rec else {}
+        if isinstance(_agent_meta, str):
+            try:
+                _agent_meta = json.loads(_agent_meta or "{}")
+            except (TypeError, json.JSONDecodeError):
+                _agent_meta = {}
+        if not isinstance(_agent_meta, dict):
+            _agent_meta = {}
+        _tool_call_budgets = _agent_meta.get("tool_call_budgets") or {}
+        if not isinstance(_tool_call_budgets, dict):
+            _tool_call_budgets = {}
+        try:
+            _MAX_NO_PROGRESS_RESULTS = max(
+                0, int(_agent_meta.get("max_no_progress_results") or 0)
+            )
+        except (TypeError, ValueError):
+            _MAX_NO_PROGRESS_RESULTS = 0
         # data/config/debug-config.json overrides win over app-settings for the
         # debug knobs (max_tool_calls / max_wall_seconds / max_identical_tool_calls).
         try:
@@ -1466,7 +1736,7 @@ async def stream_agent_events(
                 )
                 break
             if loop_config.is_enabled("interrupt_chk"):
-                await _check_interrupt(session_id, interrupt_event)
+                await _check_interrupt(session_id, interrupt_event, db=db)
 
             # Prove liveness between turns (covers long tool executions).
             await _beat()
@@ -1485,7 +1755,9 @@ async def stream_agent_events(
             # Ask for permission to continue when the agent reaches the configured turn ceiling.
             # Rearms automatically after each granted extension (last_extension_at tracks the
             # ceiling at which we last extended, so asking fires again at each new ceiling).
-            if max_turns > 0 and loop_config.is_enabled("permission_chk") and turn_count == max_turns and last_extension_at != max_turns:
+            if (_allow_turn_extension and max_turns > 0
+                    and loop_config.is_enabled("permission_chk")
+                    and turn_count == max_turns and last_extension_at != max_turns):
                 fr = get_prompt_fragments()
                 permission_message = (fr.get("turn_permission_request") or "").strip()
                 if permission_message:
@@ -1493,7 +1765,9 @@ async def stream_agent_events(
 
             # Check if user has granted permission (looks at their most recent message).
             # Only active at the current ceiling, before we have already extended at that ceiling.
-            if max_turns > 0 and loop_config.is_enabled("permission_chk") and turn_count >= max_turns and last_extension_at < max_turns:
+            if (_allow_turn_extension and max_turns > 0
+                    and loop_config.is_enabled("permission_chk")
+                    and turn_count >= max_turns and last_extension_at < max_turns):
                 last_user_msg = next((msg for msg in reversed(messages) if msg.get("role") == "user"), None)
                 if last_user_msg:
                     user_content = last_user_msg.get("content", "").lower()
@@ -1541,26 +1815,44 @@ async def stream_agent_events(
                 _active_set_now = set(_active_tool_names)
                 _active_ability_now = set(_active_ability_names)
                 _suppressed_ability_now = set(_suppressed_ability_names)
-            tool_definitions = []
-            for name, info in tools.items():
-                # Withhold tools of a discoverable-and-unloaded ability (re-checked
-                # each iteration so a mid-turn load_ability reveals them next pass),
-                # or of an ability the user suppressed from the chat panel.
-                if _tm_tool_hidden(name, _agent_ability_modes, _active_ability_now, _active_set_now,
-                                   _suppressed_ability_now, ability_default=_agent_discovery_default):
-                    continue
-                if not _tm_is_sent(name, _agent_tool_modes, _active_set_now, _global_tool_defaults):
-                    continue
-                description = info.handler.__doc__ if hasattr(info, 'handler') and info.handler.__doc__ else f"Execute {name}"
-                description = description.split("\n")[0]
-                tool_definitions.append({
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": description,
-                        "parameters": info.parameters if hasattr(info, 'parameters') else {"type": "object", "properties": {}, "required": []},
-                    },
-                })
+
+            # ── Tool-defs cache ─────────────────────────────────────────────
+            # Tool schemas are identical across turns for the same agent + tool
+            # set.  Cache them to avoid re-iterating over every loaded tool and
+            # re-building full JSON-Schema objects each turn.
+            _td_cache = get_tool_defs_cache()
+            _td_key = compute_tool_defs_cache_key(
+                agent_id or "",
+                _active_set_now,
+                _active_ability_now,
+                _suppressed_ability_now,
+            )
+            _cached_defs = await _td_cache.get(_td_key)
+            if _cached_defs is not None:
+                tool_definitions = _cached_defs
+            else:
+                tool_definitions = []
+                for name, info in tools.items():
+                    # Withhold tools of a discoverable-and-unloaded ability (re-checked
+                    # each iteration so a mid-turn load_ability reveals them next pass),
+                    # or of an ability the user suppressed from the chat panel.
+                    if _tm_tool_hidden(name, _agent_ability_modes, _active_ability_now, _active_set_now,
+                                       _suppressed_ability_now, ability_default=_agent_discovery_default):
+                        continue
+                    if not _tm_is_sent(name, _agent_tool_modes, _active_set_now, _global_tool_defaults):
+                        continue
+                    description = info.handler.__doc__ if hasattr(info, 'handler') and info.handler.__doc__ else f"Execute {name}"
+                    description = description.split("\n")[0]
+                    tool_definitions.append({
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "description": description,
+                            "parameters": info.parameters if hasattr(info, 'parameters') else {"type": "object", "properties": {}, "required": []},
+                        },
+                    })
+                tool_definitions.sort(key=lambda td: td["function"]["name"])
+                await _td_cache.set(_td_key, tool_definitions)
 
             # ── Pipeline + log: tool definitions built ──
             logger.debug("LLM TOOL DEFINITIONS (%d): %s", len(tool_definitions),
@@ -1574,7 +1866,8 @@ async def stream_agent_events(
 
             llm_start_time = time.time()
 
-            def _build_meta(role: str, in_tok: int=None, out_tok: int=None, cost: float=None) -> str:
+            def _build_meta(role: str, in_tok: int=None, out_tok: int=None,
+                            cost: float=None, message_phase: str="pending") -> str:
                 meta = {
                     "provider": provider_name,
                     "model": model_name,
@@ -1585,16 +1878,14 @@ async def stream_agent_events(
                     "output_tokens": out_tok,
                     "role": role,
                     "streaming": True,
+                    "message_phase": message_phase,
                 }
                 if cost is not None:
                     meta["cost"] = cost
                 return json.dumps(meta)
 
             async def _persist_stream_progress(force: bool = False) -> None:
-                """Create the in-progress assistant row on first token, then
-                throttle-update its content as the answer streams. Makes the
-                partial answer durable in the DB. ``force`` bypasses the throttle
-                (used at step finalize)."""
+                """Commit the current assistant snapshot before browser emission."""
                 nonlocal streaming_asst_id, _last_stream_persist
                 # Mid-stream interrupt: lets the Stop button halt a long single
                 # completion, not just at turn boundaries. Throttled to the
@@ -1602,46 +1893,21 @@ async def stream_agent_events(
                 if loop_config.is_enabled("interrupt_chk") and not force:
                     now_i = time.monotonic()
                     if streaming_asst_id is None or (now_i - _last_stream_persist) >= _STREAM_PERSIST_INTERVAL:
-                        await _check_interrupt(session_id, interrupt_event)
+                        await _check_interrupt(session_id, interrupt_event, db=db)
                 if streaming_asst_id is None:
-                    try:
-                        # Offloaded: these writes run DURING token streaming; on the
-                        # event loop each remote round-trip would freeze the loop and
-                        # stall the live stream. See app/db/offload.py.
-                        _content_snapshot = collected_content
-                        streaming_asst_id = await db_offload(lambda: db.insert_interaction(
-                            user_id, session_id, role="assistant",
-                            content=_content_snapshot,
-                            parent_id=parent_interaction_id,
-                            channel=channel,
-                            metadata=_build_meta("assistant", input_tokens, output_tokens, llm_cost),
-                            sender_id=agent_id, receiver_id=user_id,
-                            status="streaming",
-                        ))
-                        try:
-                            _sid = streaming_asst_id
-                            await db_offload(lambda: db.run_state_set_assistant(session_id, _sid))
-                        except Exception:
-                            pass
-                    except Exception as _se:
-                        logger.debug("stream persist (create) failed: %s", _se)
-                    _last_stream_persist = time.monotonic()
-                    return
+                    raise RuntimeError("streaming assistant row was not created before LLM output")
                 now = time.monotonic()
                 if not force and (now - _last_stream_persist) < _STREAM_PERSIST_INTERVAL:
                     return
                 _last_stream_persist = now
-                try:
-                    _content_snapshot = collected_content
-                    _sid = streaming_asst_id
-                    await db_offload(lambda: db.update_interaction(_sid, content=_content_snapshot))
-                except Exception as _se:
-                    logger.debug("stream persist (update) failed: %s", _se)
+                _content_snapshot = collected_content
+                _sid = streaming_asst_id
+                await db_offload(lambda: db.update_interaction(_sid, content=_content_snapshot))
                 # Keep the liveness heartbeat fresh during a long single-turn stream.
                 await _beat()
 
             if loop_config.is_enabled("interrupt_chk"):
-                await _check_interrupt(session_id, interrupt_event)
+                await _check_interrupt(session_id, interrupt_event, db=db)
 
             # ── Process-memory guard ──────────────────────────────────────────
             # Before every LLM call, check the Python process RSS.  If it exceeds
@@ -1687,9 +1953,32 @@ async def stream_agent_events(
                 except Exception as _mce:
                     logger.warning("memory guard: compaction attempt failed: %s", _mce)
 
+            # ── Per-turn model hot-swap ──
+            # Re-read the session override here (inside the turn loop) so a model
+            # picked in the chat footer — or switched by the Model Switcher ability
+            # via set_model() — takes effect on the very next tool-call turn without
+            # needing Stop/Continue or a new user message. Only the model + effort
+            # override are re-read; the full provider/config resolution (user + agent)
+            # is unchanged from the initial apply_provider_for_run above.
+            # One lightweight DB read per turn; no-op when the override hasn't moved.
+            if session_id:
+                try:
+                    _new_config = await apply_provider_for_run(
+                        user_id, _agent_rec, session_id, apply_env=False)
+                    _new_model = _runtime_model(_new_config)
+                    if _new_model:
+                        llm_config = _new_config
+                        model_name = _new_model
+                        provider_name = llm_config.get("provider") or provider_name
+                        reasoning_effort = (llm_config.get("reasoning_effort") or "").strip().lower() or None
+                        llm_client = _client_for(llm_config)
+                except Exception:
+                    pass  # best-effort — never break the turn on a model re-read
+
             # ── Pipeline: LLM call start ──
             yield {"type": "pipeline", "level": "pipeline",
                    "step": "llm_call_start", "model": model_name,
+                   "effort": reasoning_effort,
                    "message_count": len(messages),
                    "turn": turn_count}
 
@@ -1703,12 +1992,48 @@ async def stream_agent_events(
             input_tokens = None
             output_tokens = None
             llm_cost = None
+            cached_input_tokens = 0
+            cache_write_tokens = 0
+            uncached_input_tokens = None
+            reasoning_tokens = 0
+
+            # DB-first streaming contract: no provider output is requested until
+            # the local transcript has a durable assistant destination.  Hybrid
+            # mode commits this row and its remote-sync outbox marker together.
+            try:
+                streaming_asst_id = await db_offload(lambda: db.insert_interaction(
+                    user_id, session_id, role="assistant", content="",
+                    parent_id=parent_interaction_id, channel=channel,
+                    metadata=_build_meta("assistant", input_tokens, output_tokens, llm_cost),
+                    sender_id=agent_id, receiver_id=user_id, status="streaming",
+                ))
+                await db_offload(lambda: db.run_state_set_assistant(session_id, streaming_asst_id))
+                # Sequence the row at creation, before opening the provider
+                # stream. A connection failure before the first token must not
+                # leave a permanently unsequenced error interaction.
+                yield {
+                    "type": "db", "level": "db", "op": "insert_interaction",
+                    "role": "assistant", "tool_name": None,
+                    "id": streaming_asst_id,
+                }
+            except Exception as _persist_error:
+                logger.error("cannot start LLM stream without durable assistant row: %s", _persist_error)
+                yield {"type": "error", "level": "agent",
+                       "message": f"Could not save the assistant response before streaming: {_persist_error}"}
+                return
 
             # ── Single LLM call ──
-            # The agent runs ONE resolved model: the agent's default, or the model
-            # the user picked for THIS chat (resolved into env by
-            # apply_provider_for_run before the loop began). Parallel model racing
-            # was removed — there is exactly one brain per turn.
+            # The agent runs ONE resolved model: the agent's default, the model the
+            # user picked for THIS chat (per the per-turn session-override re-read
+            # above), or the model resolved by apply_provider_for_run at loop start.
+            # Parallel model racing was removed — there is exactly one brain per turn.
+
+            # ── Snapshot the full schema sent to the LLM (messages + tools) ──
+            # Persisted in the output JSON so the UI can show "what the model saw"
+            # when the user clicks the 3-line icon above an agent bubble.
+            _sent_messages = messages.copy() if messages else []
+            _sent_tools = [td for td in tool_definitions] if tool_definitions else None
+
             _create_kwargs = dict(
                 model=model_name,
                 messages=messages,
@@ -1738,7 +2063,7 @@ async def stream_agent_events(
             _t_open0 = time.monotonic()
             try:
                 try:
-                    stream = await _open_stream(_create_kwargs, _open_s)
+                    stream = await _open_stream(_create_kwargs, _open_s, llm_client)
                     if _llm_diag_on:
                         try:
                             _msg_chars = sum(len(str(m.get("content") or "")) for m in messages)
@@ -1753,6 +2078,10 @@ async def stream_agent_events(
                                           "prompt_chars": _msg_chars,
                                           "system_chars": _sys_chars,
                                           "tool_count": len(tool_definitions or []),
+                                          "shared_core_hash": _cache_hash(_shared_system),
+                                          "capability_hash": _cache_hash(_capability_system_parts),
+                                          "agent_context_hash": _cache_hash(_agent_system),
+                                          "tool_schema_hash": _cache_hash(tool_definitions or []),
                                           "reasoning_effort": reasoning_effort or "none"},
                                   session_id=session_id, agent_id=agent_id, user_id=user_id)
                         except Exception:
@@ -1789,17 +2118,58 @@ async def stream_agent_events(
                     f"(model={model_name}); aborting so the run can recover"
                 )
             except Exception as e:
-                yield {"type": "error", "level": "agent", "message": f"LLM call failed: {e}"}
+                try:
+                    await db_offload(lambda: db.update_interaction(
+                        streaming_asst_id, status="error", content="",
+                    ))
+                except Exception:
+                    logger.exception("could not mark pre-stream assistant row as failed")
+                # Detect network-level failures (connection lost, DNS, timeout) and
+                # tag them as recoverable crashes so the self-healing layer re-ignites
+                # the turn instead of leaving a dead error bubble.
+                _llm_err = str(e)
+                _is_network_error = (
+                    "Network connection lost" in _llm_err
+                    or "APITimeoutError" in _llm_err
+                    or "APIConnectionError" in _llm_err
+                )
+                if _is_network_error:
+                    yield {"type": "error", "level": "agent",
+                           "message": "The connection to the AI model was lost — "
+                                      "the system will automatically recover and resume.",
+                           "stop_cause": "crash"}
+                else:
+                    yield {"type": "error", "level": "agent",
+                           "message": f"LLM call failed: {e}"}
+                    # Surface provider credit/billing errors as a visible system message.
+                    _llm_err_str = str(e)
+                    try:
+                        from app.util.alerts import is_provider_credit_error, persist_402_alert
+                        if is_provider_credit_error(_llm_err_str):
+                            await persist_402_alert(
+                                _llm_err_str, user_id, session_id, model_name,
+                                provider_name or "",
+                            )
+                    except Exception:
+                        pass
                 return
 
             # Per-chunk inactivity guard: if the provider keeps the stream
-            # open but stops emitting tokens, _beat() never fires and the
-            # turn would hang until the watchdog's frozen threshold (~60s+).
-            # Bounding each read makes a silent stall raise here, where the
-            # outer handler records status='error' / stop_cause='crash' — a
-            # resumable cause the self-healing layer re-ignites in seconds.
+            # open but stops emitting tokens, a silent hang results. Bounding
+            # each read makes a silent stall raise here, where the outer handler
+            # records status='error' / stop_cause='crash' — a resumable cause
+            # the self-healing layer re-ignites in seconds.
             _stall_s = _stream_stall_seconds()
             _stream_iter = stream.__aiter__()
+            # Background heartbeat keeps the liveness watchdog alive during the
+            # stream independent of token arrival. Without this, a silent stream
+            # (no tokens) also means no heartbeat, so the frozen detector misses
+            # the stall entirely. Runs at _HEARTBEAT_INTERVAL via asyncio.sleep.
+            async def _stream_heartbeat():
+                while True:
+                    await asyncio.sleep(_HEARTBEAT_INTERVAL)
+                    await _beat()
+            _hb_task = asyncio.ensure_future(_stream_heartbeat())
             # The read loop is wrapped so the HTTP stream is ALWAYS closed on
             # the way out — normal end, stall, hard-cancel (a superseding
             # message), watchdog freeze-cancel, or crash. Without the finally,
@@ -1843,8 +2213,32 @@ async def stream_agent_events(
                         input_tokens = chunk.usage.prompt_tokens
                         output_tokens = chunk.usage.completion_tokens
                         extra = getattr(chunk.usage, 'model_extra', None)
-                        if extra and 'total_cost' in extra:
-                            llm_cost = extra['total_cost']
+                        raw_cost = getattr(chunk.usage, 'cost', None)
+                        if raw_cost is None and isinstance(extra, dict):
+                            raw_cost = extra.get('total_cost', extra.get('cost'))
+                        try:
+                            if raw_cost is not None:
+                                llm_cost = float(raw_cost)
+                        except (TypeError, ValueError):
+                            pass
+                        details = getattr(chunk.usage, 'prompt_tokens_details', None)
+                        if details is None and isinstance(extra, dict):
+                            details = extra.get('prompt_tokens_details') or {}
+                        if not isinstance(details, dict):
+                            details = getattr(details, 'model_dump', lambda: {})()
+                        cached_input_tokens = int((details or {}).get('cached_tokens', 0) or 0)
+                        cache_write_tokens = int((details or {}).get('cache_write_tokens', 0) or 0)
+                        if isinstance(extra, dict):
+                            cached_input_tokens = int(extra.get('prompt_cache_hit_tokens', cached_input_tokens) or 0)
+                            _miss = extra.get('prompt_cache_miss_tokens')
+                            if _miss is not None:
+                                uncached_input_tokens = int(_miss or 0)
+                        completion_details = getattr(chunk.usage, 'completion_tokens_details', None)
+                        if completion_details is None and isinstance(extra, dict):
+                            completion_details = extra.get('completion_tokens_details') or {}
+                        if not isinstance(completion_details, dict):
+                            completion_details = getattr(completion_details, 'model_dump', lambda: {})()
+                        reasoning_tokens = int((completion_details or {}).get('reasoning_tokens', 0) or 0)
 
                     if not chunk.choices:
                         continue
@@ -1855,10 +2249,10 @@ async def stream_agent_events(
 
                     if delta.content:
                         collected_content += delta.content
-                        # Persist FIRST so the per-step assistant row exists and
-                        # streaming_asst_id is set, then tag the stream event with
-                        # it so the UI can render each step as its own bubble.
-                        await _persist_stream_progress()
+                        # The assistant row already exists before provider output.
+                        # Do not block every delta on a database round-trip.
+                        # The interval-throttled write below plus the final forced
+                        # write preserve recovery without making streaming lag.
                         stream_content = delta.content
                         if first_stream_chunk_state[0]:
                             stream_content = prefix_content(stream_content)
@@ -1867,6 +2261,7 @@ async def stream_agent_events(
                         # waste a bubble and inflate turn counts.
                         if stream_content.strip():
                             yield {"type": "stream", "level": "agent", "content": stream_content, "asst_id": streaming_asst_id}
+                        await _persist_stream_progress()
 
                     if delta.tool_calls:
                         for tc in delta.tool_calls:
@@ -1884,10 +2279,18 @@ async def stream_agent_events(
                 # Best-effort, never masks the original exit. Catches
                 # BaseException so a re-raised CancelledError from close() can't
                 # swallow the cancel that is unwinding us.
+                _hb_task.cancel()
                 try:
                     await stream.close()
                 except BaseException:
                     pass
+
+            # Interrupt check immediately after the LLM stream closes. The
+            # stream's own persist-throttled check may have missed the flag if
+            # the LLM only emitted content deltas before the interrupt was set
+            # (common for short text-only responses).
+            if loop_config.is_enabled("interrupt_chk"):
+                await _check_interrupt(session_id, interrupt_event, db=db)
 
             llm_duration = int((time.time() - llm_start) * 1000)
 
@@ -1904,32 +2307,43 @@ async def stream_agent_events(
             # cost in the stream response (includes prompt-caching discounts, volume
             # pricing, etc.), prefer it over the catalog formula. Fall back to the
             # catalog price when the provider didn't report a total.
-            if llm_cost is not None and llm_cost > 0:
-                call_cost_usd, _cost_source = float(llm_cost), "provider"
+            if llm_cost is not None and llm_cost >= 0:
+                call_cost_usd, _cost_source = float(llm_cost), "provider_actual"
             else:
                 try:
                     from app import model_catalog as _model_catalog
                     call_cost_usd, _cost_source = _model_catalog.cost_for(
-                        model_name or "", input_tokens, output_tokens, provider_name or "")
+                        model_name or "", input_tokens, output_tokens, provider_name or "",
+                        cached_input_tokens=cached_input_tokens,
+                        cache_write_tokens=cache_write_tokens,
+                        uncached_input_tokens=uncached_input_tokens)
                 except Exception:
                     call_cost_usd, _cost_source = 0.0, "unknown"
 
             # ── Pipeline: LLM call end ──
-            tool_calls_data = list(collected_tool_calls.values()) if collected_tool_calls else None
-            yield {"type": "pipeline", "level": "pipeline",
-                   "step": "llm_call_end", "duration_ms": llm_duration,
-                   "input_tokens": input_tokens, "output_tokens": output_tokens,
-                   "cost_usd": call_cost_usd, "model": model_name,
-                   "effort": reasoning_effort,
-                   "has_tool_calls": bool(tool_calls_data)}
-
-            # ── Billing: record usage + charge wallet (best-effort, never blocks chat) ──
             _billing_event = await _record_billing_usage(
                 db, agent_id, user_id, input_tokens, output_tokens, llm_cost,
                 model_name=model_name, provider_name=provider_name,
                 interaction_id=parent_interaction_id, session_id=session_id,
                 cost_usd=call_cost_usd, cost_source=_cost_source,
-            )
+                cached_input_tokens=cached_input_tokens,
+                cache_write_tokens=cache_write_tokens,
+                uncached_input_tokens=uncached_input_tokens,
+                reasoning_tokens=reasoning_tokens)
+
+            tool_calls_data = list(collected_tool_calls.values()) if collected_tool_calls else None
+            yield {"type": "pipeline", "level": "pipeline",
+                   "step": "llm_call_end", "duration_ms": llm_duration,
+                   "input_tokens": input_tokens, "output_tokens": output_tokens,
+                   "cost_usd": call_cost_usd, "model": model_name,
+                   "cached_input_tokens": cached_input_tokens,
+                   "cache_write_tokens": cache_write_tokens,
+                   "uncached_input_tokens": uncached_input_tokens,
+                   "reasoning_tokens": reasoning_tokens,
+                   "effort": reasoning_effort,
+                   "has_tool_calls": bool(tool_calls_data)}
+
+            # ── Billing: record usage + charge wallet (best-effort, never blocks chat) ──
             if _billing_event:
                 yield {"type": "billing", "level": "billing", **_billing_event}
 
@@ -1963,7 +2377,11 @@ async def stream_agent_events(
                         tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
                     except json.JSONDecodeError:
                         tool_args = {}
-                    yield {"type": "tool_call", "level": "agent", "tool": tool_name, "args": tool_args}
+                    yield {
+                        "type": "tool_call", "level": "agent",
+                        "tool": tool_name, "args": tool_args,
+                        "tool_call_id": tc.id,
+                    }
 
                 # Strip <think>...</think> before replaying to the LLM.
                 # Reasoning-model providers (e.g. Gemini 3.1 Pro via DeepInfra)
@@ -1985,16 +2403,24 @@ async def stream_agent_events(
 
                 # Persist intermediate assistant message — clean content, no tool-call echo
                 assistant_content = (collected_content or "").strip()
+                cleanup_final = _cleanup_final_step(assistant_content, collected_tool_calls)
                 # Tool calls are stored in the `output` field (line 1247 below),
                 # NOT embedded in the content string. The legacy `\n\n[Tool calls: ...]`
                 # suffix was removed because it contaminated message history: the LLM
                 # would see its own tool calls echoed as text in the next turn, causing
                 # it to write tool calls as text instead of making structured calls.
                 # session_history.py reads tool calls from the `output` field instead.
-                meta_asst = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
-                outp = json.dumps({"role": "assistant", "content": collected_content, "tool_calls": full_tool_calls})
+                meta_asst = _build_meta(
+                    "assistant", input_tokens, output_tokens, llm_cost,
+                    message_phase=("main" if cleanup_final else "progress"),
+                )
+                # Keep only structured tool calls on intermediate rows. The old
+                # payload copied the entire growing prompt + tool schema into
+                # every step, producing quadratic database growth.
+                outp = _assistant_output(tool_calls=full_tool_calls)
                 db_start = time.time()
-                if streaming_asst_id is not None:
+                _updated_streaming_row = streaming_asst_id is not None
+                if _updated_streaming_row:
                     # Finalize the in-progress row created while streaming.
                     # Offloaded: this per-step write is a ~150ms remote round-trip;
                     # keeping it off the event loop stops it freezing the live stream.
@@ -2018,15 +2444,23 @@ async def stream_agent_events(
                 # an interrupt during tool execution doesn't re-finalize it.
                 streaming_asst_id = None
                 yield {"type": "db", "level": "db",
-                       "op": "insert_interaction", "role": "assistant",
+                       "op": ("update_interaction" if _updated_streaming_row
+                              else "insert_interaction"), "role": "assistant",
                        "tool_name": None, "id": asst_id, "ms": db_dur}
                 # Finalize THIS step's bubble in the UI (it's an intermediate
                 # assistant message that precedes tool calls — shown as its own
                 # bubble so the user sees every step, not just the final answer).
                 # Skip if content is empty — no bubble to render.
                 if assistant_content.strip():
-                    yield {"type": "agent_step_end", "level": "agent",
-                           "asst_id": asst_id, "content": assistant_content}
+                    if cleanup_final:
+                        yield {"type": "response", "level": "agent",
+                               "message_phase": "main",
+                               "asst_id": asst_id,
+                               "content": prefix_content(assistant_content)}
+                    else:
+                        yield {"type": "agent_step_end", "level": "agent",
+                               "message_phase": "progress",
+                               "asst_id": asst_id, "content": assistant_content}
 
                 # ── Pipeline: validation start ──
                 yield {"type": "pipeline", "level": "pipeline",
@@ -2035,7 +2469,7 @@ async def stream_agent_events(
                 valid_calls: List[Any] = []
                 blocked_calls: List[Any] = []
                 for idx, tc in sorted(collected_tool_calls.items()):
-                    await _check_interrupt(session_id, interrupt_event)
+                    await _check_interrupt(session_id, interrupt_event, db=db)
                     
                     tool_name = tc.function.name
                     try:
@@ -2064,6 +2498,7 @@ async def stream_agent_events(
                         yield {
                             "type": "tool_result", "level": "agent",
                             "tool": tool_name,
+                            "tool_call_id": tc.id,
                             "result": error_json[:2000],
                             "error": True,
                             "error_type": "validation_error",
@@ -2095,8 +2530,14 @@ async def stream_agent_events(
                         # Block the repeat, tell it to change approach, count a
                         # strike, and move on without executing.
                         # 0 = disabled (infinite).
-                        _sig = f"{tool_name}|{tc.function.arguments or ''}"
+                        _tool_info = tools.get(tool_name)
+                        _sig = _canonical_tool_signature(
+                            tool_name,
+                            tool_args,
+                            getattr(_tool_info, "parameters", None),
+                        )
                         _tool_call_counts[_sig] += 1
+                        _tool_total_counts[tool_name] += 1
 
                         # ── Stall guard: same-tool-name streak (different args) ──
                         # Catches e.g. 19 consecutive run_python or 12 consecutive
@@ -2110,8 +2551,14 @@ async def stream_agent_events(
 
                         _hit_identical = _MAX_IDENTICAL_CALLS > 0 and _tool_call_counts[_sig] >= _MAX_IDENTICAL_CALLS
                         _hit_streak = _MAX_TOOLNAME_STREAK > 0 and _tool_name_streak >= _MAX_TOOLNAME_STREAK
+                        try:
+                            _tool_budget = max(0, int(_tool_call_budgets.get(tool_name) or 0))
+                        except (TypeError, ValueError):
+                            _tool_budget = 0
+                        _hit_budget = _tool_budget > 0 and _tool_total_counts[tool_name] > _tool_budget
+                        _hit_no_progress = tool_name in _no_progress_tools
 
-                        if _hit_identical or _hit_streak:
+                        if _hit_identical or _hit_streak or _hit_budget or _hit_no_progress:
                             stall_strikes += 1
                             if _hit_identical:
                                 _loop_warn = (
@@ -2120,6 +2567,19 @@ async def stream_agent_events(
                                     f"progress, so I did not run it again. Do NOT repeat the same "
                                     f"call — take a different approach, use a different tool, or "
                                     f"stop and give the user your best answer or a clarifying question."
+                                )
+                            elif _hit_budget:
+                                _loop_warn = (
+                                    f"Loop guard: `{tool_name}` has reached its per-turn budget "
+                                    f"of {_tool_budget} calls. I did not run it again. Synthesize "
+                                    f"what you already found, use a different tool, or give the "
+                                    f"user your best answer."
+                                )
+                            elif _hit_no_progress:
+                                _loop_warn = (
+                                    f"Loop guard: repeated `{tool_name}` calls returned the same "
+                                    f"result {_MAX_NO_PROGRESS_RESULTS} times. Further calls are "
+                                    f"blocked for this turn because they are not making progress."
                                 )
                             else:
                                 _loop_warn = (
@@ -2131,10 +2591,19 @@ async def stream_agent_events(
                                     f"or a clarifying question."
                                 )
                             yield {"type": "pipeline", "level": "pipeline",
-                                   "step": "stall_guard_loop", "tool": tool_name,
-                                   "count": _tool_call_counts[_sig], "strikes": stall_strikes}
+                                    "step": "stall_guard_loop", "tool": tool_name,
+                                    "count": _tool_call_counts[_sig],
+                                    "total_count": _tool_total_counts[tool_name],
+                                    "reason": (
+                                        "identical" if _hit_identical else
+                                        "budget" if _hit_budget else
+                                        "no_progress" if _hit_no_progress else
+                                        "name_streak"
+                                    ),
+                                    "strikes": stall_strikes}
                             yield {
                                 "type": "tool_result", "level": "agent", "tool": tool_name,
+                                "tool_call_id": tc.id,
                                 "result": json.dumps({"status": "loop_blocked", "message": _loop_warn}),
                                 "duration_ms": 0, "error": True,
                                 "error_type": "loop_blocked", "recoverable": True,
@@ -2166,12 +2635,26 @@ async def stream_agent_events(
                         # In 'plan' mode, check the tool's own destructive flag (from metadata)
                         # rather than just effective_destructive, so write_source/edit_source
                         # etc. are gated even though they're not in DESTRUCTIVE_TOOLS.
+                        #
+                        # ── Live mode re-read (mid-turn pill flip) ──
+                        # The user may flip the chat pill (Ask→Plan→Auto) while the
+                        # agent is mid-turn. Re-read the session's persisted mode here
+                        # so the change takes effect on the very next tool call without
+                        # needing a new user message. Mirrors the model hot-swap at the
+                        # top of the turn loop. One lightweight DB read per tool call.
+                        _live_mode = None
+                        if session_id:
+                            try:
+                                _live_mode = await db.get_session_execution_mode(session_id)
+                            except Exception:
+                                pass  # best-effort — never break the turn on a mode re-read
+                        _current_mode = _live_mode or execution_mode
                         ti = tools.get(tool_name)
                         is_destructive = tool_name in effective_destructive
-                        if execution_mode == 'plan':
+                        if _current_mode == 'plan':
                             # Gate if the tool is flagged destructive in its metadata
                             gate_required = bool(ti and ti.destructive) or is_destructive
-                        elif execution_mode == 'auto':
+                        elif _current_mode == 'auto':
                             gate_required = False
                         else:  # 'ask' (default)
                             gate_required = (
@@ -2189,7 +2672,7 @@ async def stream_agent_events(
                             _tgt = _MODE_ALIASES.get(
                                 str((tool_args or {}).get("mode", "")).strip().lower(), "")
                             gate_required = (
-                                _tgt == "auto" and execution_mode != "auto" and not auto_confirm)
+                                _tgt == "auto" and _current_mode != "auto" and not auto_confirm)
                         # Per-arg exemption: read-only shell commands via run_command
                         # (git status, ls, cat, ...) bypass the confirmation gate.
                         if gate_required and tool_name == "run_command" and _is_safe_shell_command(tool_args.get("command", "")):
@@ -2252,6 +2735,7 @@ async def stream_agent_events(
                                 yield {
                                     "type": "tool_result", "level": "agent",
                                     "tool": tool_name,
+                                    "tool_call_id": tc.id,
                                     "result": json.dumps({"status": "blocked", "message": f"Tool '{tool_name}' requires user confirmation before execution."}),
                                     "duration_ms": 0,
                                     "error": True,
@@ -2265,7 +2749,7 @@ async def stream_agent_events(
                                         "confirm they want you to proceed autonomously; once they clearly agree "
                                         "(\"yes\", \"go ahead\", \"switch to auto\"), call set_execution_mode(\"auto\") again."
                                     )
-                                elif execution_mode == 'plan':
+                                elif _current_mode == 'plan':
                                     _gate_help = (
                                         f"Tool '{tool_name}' is blocked because you are in PLAN mode, which is "
                                         f"read-only — it makes changes and needs the user's go-ahead. Don't retry it. "
@@ -2309,7 +2793,7 @@ async def stream_agent_events(
                             valid_calls.append((idx, tc, tool_name, tool_args))
 
                 if loop_config.is_enabled("interrupt_chk"):
-                    await _check_interrupt(session_id, interrupt_event)
+                    await _check_interrupt(session_id, interrupt_event, db=db)
 
                 if valid_calls:
                     yield {"type": "pipeline", "level": "pipeline",
@@ -2318,20 +2802,106 @@ async def stream_agent_events(
 
                     async def execute_one(name: str, args: dict, tc_id: str) -> dict:
                         start = time.time()
+                        tool_reservation = None
+                        tool_info = tools[name]
+                        side_effecting = bool(
+                            getattr(tool_info, "destructive", False)
+                            or getattr(tool_info, "requires_confirmation", False)
+                        )
+                        if side_effecting and turn_reservation_key:
+                            from app.agent.turn_reservations import reserve_tool
+                            tool_reservation = reserve_tool(
+                                turn_reservation_key,
+                                tc_id,
+                                name,
+                                args,
+                                side_effecting=True,
+                                lease_seconds=900,
+                            )
+                            if tool_reservation.state == "replay" and tool_reservation.result:
+                                return {
+                                    **tool_reservation.result,
+                                    "input_params": args,
+                                    "replayed": True,
+                                }
+                            if tool_reservation.state != "acquired":
+                                detail = tool_reservation.detail or tool_reservation.state
+                                return {
+                                    "tool_call_id": tc_id,
+                                    "tool": name,
+                                    "content": json.dumps({
+                                        "status": "recovery_required",
+                                        "message": (
+                                            "This side-effecting tool was not replayed because "
+                                            f"its durable reservation is {detail}."
+                                        ),
+                                    }),
+                                    "duration_ms": int((time.time() - start) * 1000),
+                                    "success": False,
+                                    "error": None,
+                                    "input_params": args,
+                                    "changed_paths": [],
+                                    "reservation_state": tool_reservation.state,
+                                }
+                        from app.agent.session_changes import (
+                            capture_tool_state_async,
+                            record_tool_delta,
+                        )
+                        before_changes = await capture_tool_state_async(name, args)
                         try:
                             handler = tools[name].handler if hasattr(tools[name], 'handler') else tools[name]
-                            result = await handler(**args)
+                            from app.tools.execution_context import (
+                                ToolExecutionContext,
+                                tool_execution_scope,
+                            )
+                            with tool_execution_scope(ToolExecutionContext(
+                                user_id=user_id,
+                                session_id=session_id,
+                                turn_key=turn_reservation_key or "",
+                                tool_name=name,
+                                tool_call_id=tc_id,
+                                authority_mode=getattr(db, "authority_mode", "server"),
+                                idempotency_key=(
+                                    tool_reservation.key
+                                    if tool_reservation is not None
+                                    and tool_reservation.state == "acquired"
+                                    else None
+                                ),
+                                side_effecting=side_effecting,
+                            )):
+                                result = await handler(**args)
                             result_str = str(result)
+                            after_changes = await capture_tool_state_async(name, args)
+                            changed_paths = await record_tool_delta(
+                                session_id, before_changes, after_changes
+                            )
                             duration_ms = int((time.time() - start) * 1000)
-                            return {"tool_call_id": tc_id, "tool": name, "content": result_str, "duration_ms": duration_ms, "success": True, "error": None, "input_params": args}
+                            result_record = {
+                                "tool_call_id": tc_id,
+                                "tool": name,
+                                "content": result_str,
+                                "duration_ms": duration_ms,
+                                "success": True,
+                                "error": None,
+                                "changed_paths": changed_paths,
+                            }
+                            if tool_reservation is not None:
+                                from app.agent.turn_reservations import complete
+                                complete(tool_reservation, result_record)
+                            return {**result_record, "input_params": args}
                         except Exception as e:
+                            if tool_reservation is not None:
+                                from app.agent.turn_reservations import fail
+                                # The external service may have accepted the call
+                                # before the exception reached us. Refuse replay.
+                                fail(tool_reservation, uncertain=True)
                             duration_ms = int((time.time() - start) * 1000)
                             te: ToolError = classify_tool_error(e, name, args)
                             result_str = json.dumps({
                                 "status": "error", "error_type": te.error_type, "tool": te.tool_name,
                                 "message": te.message, "recoverable": te.recoverable, "hint": te.retry_hint,
                             })
-                            return {"tool_call_id": tc_id, "tool": name, "content": result_str, "duration_ms": duration_ms, "success": False, "error": te, "input_params": args}
+                            return {"tool_call_id": tc_id, "tool": name, "content": result_str, "duration_ms": duration_ms, "success": False, "error": te, "input_params": args, "changed_paths": []}
 
                     for _, _, tool_name, _ in valid_calls:
                         yield {"type": "pipeline", "level": "pipeline",
@@ -2357,13 +2927,14 @@ async def stream_agent_events(
 
                     for (idx, tc, tool_name, tool_args), result in zip(valid_calls, results):
                         if loop_config.is_enabled("interrupt_chk"):
-                            await _check_interrupt(session_id, interrupt_event)
+                            await _check_interrupt(session_id, interrupt_event, db=db)
                         success = result["success"]
                         te = result.get("error")
 
                         yield {
                             "type": "tool_result", "level": "agent",
                             "tool": tool_name,
+                            "tool_call_id": tc.id,
                             "result": result["content"][:2000],
                             "duration_ms": result["duration_ms"],
                             "error": not success,
@@ -2394,8 +2965,19 @@ async def stream_agent_events(
                             if _newmode in ("ask", "plan", "auto") and _newmode != execution_mode:
                                 execution_mode = _newmode
                                 yield {"type": "execution_mode", "level": "pipeline",
-                                       "mode": _newmode,
-                                       "reason": (tool_args or {}).get("reason", "")}
+                                        "mode": _newmode,
+                                        "reason": (tool_args or {}).get("reason", "")}
+                        if success and _MAX_NO_PROGRESS_RESULTS > 0:
+                            _normalized_result = re.sub(
+                                r"\s+", " ", str(result.get("content") or "").strip()
+                            )
+                            _result_hash = hashlib.sha256(
+                                _normalized_result.encode("utf-8", errors="replace")
+                            ).hexdigest()
+                            _result_key = (tool_name, _result_hash)
+                            _tool_result_counts[_result_key] += 1
+                            if _tool_result_counts[_result_key] >= _MAX_NO_PROGRESS_RESULTS:
+                                _no_progress_tools.add(tool_name)
                         _ti2 = tools.get(tool_name)
                         _tid2 = getattr(_ti2, "tool_id", "") or ""
                         if _tid2.startswith("ds:"):
@@ -2409,6 +2991,7 @@ async def stream_agent_events(
                             "success": success,
                             "duration_ms": result["duration_ms"],
                             "input_params": tool_args,
+                            "changed_paths": result.get("changed_paths") or [],
                             "error_message": None if success else result["content"][:500],
                         })
 
@@ -2529,18 +3112,30 @@ async def stream_agent_events(
                     )
                     break
 
+                # ── Cleanup-final end ──
+                # The substantive answer was already persisted as `final` and
+                # emitted as a `response`; the cleanup tool(s) just ran. End the
+                # run now so the reverted model doesn't emit a redundant wrap-up
+                # line that would surface instead of the real answer.
+                if cleanup_final:
+                    try:
+                        await _store_validated_session_cache()
+                    except Exception:
+                        pass
+                    return
+
                 yield {"type": "pipeline", "level": "pipeline",
                        "step": "check_continue", "turn": turn_count,
                        "max_turns": max_turns, "will_continue": turn_count < max_turns}
                 continue
 
             # ── Empty-response safety net ──
-            # If the LLM returned nothing (no content + no tool calls), don't
-            # treat it as the final answer — it's almost always a transient
-            # provider hiccup. Nudge once and try again. Only retry on turns
-            # after the first; an empty first-turn reply is honored as-is.
-            _empty_reply = not (collected_content or "").strip()
-            if _empty_reply and turn_count > 1 and not empty_retry_used:
+            # A provider can return only hidden reasoning / whitespace.  That is
+            # not a user-visible final answer and must never close the run as
+            # successful.  Check the same display-safe text that history replays.
+            from app.agent.session_history import strip_think_blocks
+            _final_content = strip_think_blocks(collected_content or "").strip()
+            if not _final_content and not empty_retry_used:
                 yield {"type": "pipeline", "level": "pipeline",
                        "step": "empty_response_retry", "turn": turn_count,
                        "message": "LLM returned empty content + no tool calls; retrying once."}
@@ -2552,26 +3147,44 @@ async def stream_agent_events(
                 turn_count -= 1  # Don't burn a turn on the retry
                 continue
 
+            if not _final_content:
+                # Deliberately surface this as a resumable failure, rather than
+                # emitting an empty `response` event which callers interpret as
+                # successful completion.  The web runner preserves this cause and
+                # the watchdog re-ignites the task with its continue nudge.
+                yield {"type": "error", "level": "agent",
+                       "message": "The model returned no visible final response; the task will be resumed automatically.",
+                       "stop_cause": "empty_response", "asst_id": streaming_asst_id}
+                return
+
             # ── No tool calls → final response ──
             messages.append({
                 "role": "assistant",
-                "content": collected_content,
+                "content": _final_content,
             })
 
-            meta_final = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
-            outp = json.dumps({"role": "assistant", "content": collected_content})
+            meta_final = _build_meta(
+                "assistant", input_tokens, output_tokens, llm_cost,
+                message_phase="main",
+            )
+            outp = _assistant_output(
+                messages=_sent_messages,
+                tools=_sent_tools,
+                include_snapshot=True,
+            )
             db_start = time.time()
-            if streaming_asst_id is not None:
+            _updated_streaming_row = streaming_asst_id is not None
+            if _updated_streaming_row:
                 # Finalize the in-progress row created while streaming.
                 # Offloaded: final-answer write on every turn's critical path.
                 await db_offload(lambda: db.update_interaction(
-                    streaming_asst_id, content=collected_content,
+                    streaming_asst_id, content=_final_content,
                     status="complete", output_data=outp, metadata=meta_final,
                 ))
                 inter_id = streaming_asst_id
             else:
                 inter_id = await db_offload(lambda: db.insert_interaction(
-                    user_id, session_id, role="assistant", content=collected_content,
+                    user_id, session_id, role="assistant", content=_final_content,
                     parent_id=parent_interaction_id,
                     channel=channel,
                     metadata=meta_final,
@@ -2581,20 +3194,38 @@ async def stream_agent_events(
                 ))
             db_dur = int((time.time() - db_start) * 1000)
             yield {"type": "db", "level": "db",
-                   "op": "insert_interaction", "role": "assistant",
+                   "op": ("update_interaction" if _updated_streaming_row
+                          else "insert_interaction"), "role": "assistant",
                    "tool_name": None, "id": inter_id, "ms": db_dur}
 
-            yield {"type": "response", "level": "agent",
-                   "content": prefix_content(collected_content), "asst_id": inter_id}
-            if loop_config.is_enabled("fire_optimizer"):
-                _fire_optimizer(user_id, session_id, channel, agent_template_id)
+            # Interrupt check before the final response — the LLM stream may have
+            # finished before the interrupt flag was set (common for short text-only
+            # responses where the stream emits one chunk), and no other interrupt
+            # check fires in the no-tool-calls path between the stream and here.
+            if loop_config.is_enabled("interrupt_chk"):
+                await _check_interrupt(session_id, interrupt_event, db=db)
+
+            yield {"type": "response", "level": "agent", "message_phase": "main",
+                   "content": prefix_content(_final_content), "asst_id": inter_id}
+            # Cache the messages array for prompt-cache benefit on next turn
+            try:
+                await _store_validated_session_cache()
+            except Exception:
+                pass
             return
 
         # ── Stall guard stop — finalize cleanly (skip the max-turns message) ──
         if stall_stop_msg is not None:
             messages.append({"role": "assistant", "content": stall_stop_msg})
-            meta_final = _build_meta("assistant", input_tokens, output_tokens, llm_cost)
-            outp = json.dumps({"role": "assistant", "content": stall_stop_msg})
+            meta_final = _build_meta(
+                "assistant", input_tokens, output_tokens, llm_cost,
+                message_phase="main",
+            )
+            outp = _assistant_output(
+                messages=_sent_messages,
+                tools=_sent_tools,
+                include_snapshot=True,
+            )
             db_start = time.time()
             inter_id = await db.insert_interaction(
                 user_id, session_id, role="assistant", content=stall_stop_msg,
@@ -2609,10 +3240,12 @@ async def stream_agent_events(
             yield {"type": "db", "level": "db",
                    "op": "insert_interaction", "role": "assistant",
                    "tool_name": None, "id": inter_id, "ms": db_dur}
-            yield {"type": "response", "level": "agent",
+            yield {"type": "response", "level": "agent", "message_phase": "main",
                    "content": prefix_content(stall_stop_msg), "asst_id": inter_id}
-            if loop_config.is_enabled("fire_optimizer"):
-                _fire_optimizer(user_id, session_id, channel, agent_template_id)
+            try:
+                await _store_validated_session_cache()
+            except Exception:
+                pass
             return
 
         # ── Max turns reached ──
@@ -2620,16 +3253,45 @@ async def stream_agent_events(
                "step": "max_turns_reached", "turn": turn_count,
                "max_turns": max_turns,
                "message": f"Reached maximum {max_turns} turns"}
-        yield {
-            "type": "response", "level": "agent",
-            "content": prefix_content("I've reached the maximum number of turns. What would you like to do next?"),
-        }
-        if loop_config.is_enabled("fire_optimizer"):
-            _fire_optimizer(user_id, session_id, channel, agent_template_id)
+        max_turns_msg = (
+            f"I've reached the maximum number of turns ({max_turns}). "
+            "Reply 'continue' or 'keep going' and I'll pick up where I left off."
+        )
+        messages.append({"role": "assistant", "content": max_turns_msg})
+        meta_final = _build_meta(
+            "assistant", input_tokens, output_tokens, llm_cost,
+            message_phase="main",
+        )
+        outp = _assistant_output(
+            messages=_sent_messages,
+            tools=_sent_tools,
+            include_snapshot=True,
+        )
+        inter_id = await db.insert_interaction(
+            user_id, session_id, role="assistant", content=max_turns_msg,
+            parent_id=parent_interaction_id,
+            channel=channel,
+            metadata=meta_final,
+            output_data=outp,
+            sender_id=agent_id,
+            receiver_id=user_id,
+        )
+        yield {"type": "db", "level": "db",
+               "op": "insert_interaction", "role": "assistant",
+               "tool_name": None, "id": inter_id}
+        yield {"type": "response", "level": "agent", "message_phase": "main",
+               "content": prefix_content(max_turns_msg), "asst_id": inter_id}
+        try:
+            await _store_validated_session_cache()
+        except Exception:
+            pass
+        return
     except asyncio.CancelledError as e:
-        logger.info(f"Agent loop for session {session_id} cancelled: {e}")
+        logger.error("Agent loop cancelled (session=%s turn=%d, content_len=%d): %s",
+                     session_id, turn_count, len(collected_content), e)
         # Finalize any in-progress streaming answer so it isn't stranded as
         # 'streaming' forever — the partial text is kept, marked 'interrupted'.
+        _cancel_persist_error = None
         if streaming_asst_id is not None:
             # Finalize the partial answer even though we're mid-cancellation. A HARD
             # cancel (a replace past the grace window, or the watchdog frozen-kill)
@@ -2641,13 +3303,31 @@ async def stream_agent_events(
                 await asyncio.shield(db.update_interaction(
                     streaming_asst_id, content=collected_content, status="interrupted",
                 ))
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-        yield {"type": "interrupted", "level": "agent", "message": str(e), "asst_id": streaming_asst_id}
-        if loop_config.is_enabled("fire_optimizer"):
-            _fire_optimizer(user_id, session_id, channel, agent_template_id)
+            except asyncio.CancelledError as _finalize_cancelled:
+                # A second hard cancellation can interrupt the shield wait.  Do
+                # not claim the partial answer was saved: surface the exact
+                # failure to the turn runner and its durable run-state record.
+                _cancel_persist_error = (
+                    "Assistant response could not be finalized after cancellation "
+                    f"(cancellation interrupted the database write: {_finalize_cancelled!r})."
+                )
+                logger.error("%s session=%s assistant=%s", _cancel_persist_error,
+                             session_id, streaming_asst_id)
+            except Exception as _finalize_error:
+                _cancel_persist_error = (
+                    "Assistant response could not be finalized after cancellation: "
+                    f"{_finalize_error}"
+                )
+                logger.exception("%s session=%s assistant=%s", _cancel_persist_error,
+                                 session_id, streaming_asst_id)
+        if _cancel_persist_error:
+            # The caller persists this as status=error with the existing stop
+            # cause intact (for example 'frozen' or 'replaced'), and sends a red
+            # error event rather than a misleading successful interruption.
+            yield {"type": "error", "level": "agent", "message": _cancel_persist_error,
+                   "asst_id": streaming_asst_id, "persistence_failure": True}
+        else:
+            yield {"type": "interrupted", "level": "agent", "message": str(e), "asst_id": streaming_asst_id}
         return
     except Exception as e:
         logger.error(f"Agent loop error: {e}", exc_info=True)
@@ -2659,8 +3339,6 @@ async def stream_agent_events(
             except Exception:
                 pass
         yield {"type": "error", "level": "agent", "message": f"Unexpected error in agent loop: {e}", "asst_id": streaming_asst_id}
-        if loop_config.is_enabled("fire_optimizer"):
-            _fire_optimizer(user_id, session_id, channel, agent_template_id)
         return
 
 

@@ -131,6 +131,12 @@ export function renderClaudeCreateBody(body, draft) {
     checked: !!draft.append_persona,
     onChange: (on) => { draft.append_persona = on; },
   });
+  _toggleRow(list, {
+    label: 'Expose tools via MCP',
+    hint: 'Let Claude use WebAgent tools (web search, browser, genui, etc.) alongside its own.',
+    checked: !!draft.mcp_enabled,
+    onChange: (on) => { draft.mcp_enabled = on; },
+  });
 
   return () => ({
     claude_code: {
@@ -138,6 +144,7 @@ export function renderClaudeCreateBody(body, draft) {
       extra_flags: (draft.extra_flags || '').trim(),
       model: (draft.model || '').trim(),
       append_persona: !!draft.append_persona,
+      mcp_enabled: !!draft.mcp_enabled,
     },
     default_execution_mode: draft.default_execution_mode || 'auto',
   });
@@ -163,11 +170,13 @@ export function mountClaudeCardTabs(tabBar, body, agent) {
       b.classList.toggle('active', b.dataset.tab === tab));
     body.innerHTML = '';
     if (tab === 'skills') renderClaudeSkills(body, agent);
+    else if (tab === 'prompts') import('./tab-prompts.js').then(m => m._renderPromptsTab(body, agent, body.closest('.agent-detail-panel')));
+    else if (tab === 'abilities') import('./tab-abilities.js').then(m => m._renderConnectionsTab(body, agent));
     else renderClaudeSettings(body, agent);
   }
 
   tabBar.innerHTML = '';
-  [['settings', 'Settings'], ['skills', 'Skills']].forEach(([key, label]) => {
+  [['settings', 'Settings'], ['prompts', 'Prompts'], ['abilities', 'Abilities'], ['skills', 'Skills']].forEach(([key, label]) => {
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'agents-detail-tab'; b.dataset.tab = key; b.textContent = label;
     b.addEventListener('click', (e) => { e.stopPropagation(); if (active !== key) show(key); });
@@ -276,6 +285,13 @@ export function renderClaudeSettings(body, agent) {
     hint: "Send this agent's System prompt to Claude as an extra system prompt.",
     checked: (cc.append_persona != null) ? !!cc.append_persona : false,
     onSave: (on) => _save({ append_persona: on }),
+  });
+
+  _toggleRow(list, {
+    label: 'Expose tools via MCP',
+    hint: 'Let Claude use WebAgent tools (web search, browser, genui, etc.) alongside its own native tools.',
+    checked: !!cc.mcp_enabled,
+    onSave: (on) => _save({ mcp_enabled: on }),
   });
 
   // Delete lives on the distinct card itself (the normal squares' trash selection
@@ -519,7 +535,7 @@ async function _deleteClaudeAgent(agent) {
 // onSave → debounced save with the on-top green-tick overlay (the live settings
 // card). onInput → plain capture into a draft, no overlay (the create form, where
 // nothing is persisted until the "+" finalises it).
-function _field(parent, { label, value, placeholder, hint, onSave, onInput }) {
+export function _field(parent, { label, value, placeholder, hint, onSave, onInput }) {
   const wrap = document.createElement('div'); wrap.className = 'ac-cfg-field';
   const lbl = document.createElement('label'); lbl.className = 'ac-label'; lbl.textContent = label;
   const ind = document.createElement('span'); ind.className = 'ac-cfg-ind'; lbl.appendChild(ind);
@@ -545,26 +561,38 @@ function _field(parent, { label, value, placeholder, hint, onSave, onInput }) {
   return { wrap, el, ind };
 }
 
-// One option row carrying the Ask/Plan/Auto select for "Default chat mode".
+// One option row carrying the default-mode select for "Default chat mode".
 // Mirrors _toggleRow's row chrome (label + .ac-config-control) but with a <select>
 // and the shared save overlay; the hint under the label tracks the chosen mode.
-function _modeRow(list, { value, onSave, onChange }) {
+// `options` overrides the whole vocabulary ([[value, label, hint?], …]) — the
+// Codex card passes its engine-specific set (Ask read-only / Wkspc workspace /
+// Auto full); without it the native Ask/Plan/Auto set is used. The hint text
+// falls back to HINTS when an option doesn't carry its own.
+export function _modeRow(list, { value, onSave, onChange, options }) {
   const HINTS = {
     ask:  'Asks before editing files or running commands; researches freely.',
     plan: 'Read-only — Claude researches and proposes a plan instead of acting.',
     auto: 'Edits files and runs commands without asking (like running claude yourself).',
+    wkspc: 'Workspace-write — Codex can edit the repo but nothing outside it.',
   };
-  const cur = ['ask', 'plan', 'auto'].includes(value) ? value : 'auto';
+  const opts = Array.isArray(options) && options.length
+    ? options : [['ask', 'Ask'], ['plan', 'Plan'], ['auto', 'Auto']];
+  const cur = opts.some(([v]) => v === value) ? value : opts[0][0];
+  const hintFor = (v) => {
+    const o = opts.find(([ov]) => ov === v);
+    if (o && o[2]) return o[2];
+    return HINTS[v] || '';
+  };
   const row = document.createElement('div'); row.className = 'ac-ability-row';
   const lab = document.createElement('span'); lab.className = 'ac-ability-label';
   const nameEl = document.createElement('span'); nameEl.className = 'ac-ability-name'; nameEl.textContent = 'Default chat mode';
   lab.appendChild(nameEl);
-  const descEl = document.createElement('span'); descEl.className = 'ac-ability-desc'; descEl.textContent = HINTS[cur];
+  const descEl = document.createElement('span'); descEl.className = 'ac-ability-desc'; descEl.textContent = hintFor(cur);
   lab.appendChild(descEl);
   const ctrl = document.createElement('span'); ctrl.className = 'ac-config-control';
   const sel = document.createElement('select');
   sel.className = 'ac-input ac-input-sm ac-config-sel';
-  [['ask', 'Ask'], ['plan', 'Plan'], ['auto', 'Auto']].forEach(([v, t]) => {
+  opts.forEach(([v, t]) => {
     const o = document.createElement('option'); o.value = v; o.textContent = t;
     if (v === cur) o.selected = true; sel.appendChild(o);
   });
@@ -573,7 +601,7 @@ function _modeRow(list, { value, onSave, onChange }) {
   let confirmed = cur;
   sel.addEventListener('change', async () => {
     const selected = sel.value;
-    descEl.textContent = HINTS[selected] || '';
+    descEl.textContent = hintFor(selected);
     // Draft mode (create form): just record the choice, no persistence/overlay.
     if (onChange) { onChange(selected); return; }
     if (!onSave || selected === confirmed) return;
@@ -583,7 +611,7 @@ function _modeRow(list, { value, onSave, onChange }) {
     _ovFlashCheck(ctrl, ok, ok ? '' : 'Save failed');
     sel.disabled = false;
     if (ok) { confirmed = selected; }
-    else { sel.value = confirmed; descEl.textContent = HINTS[confirmed] || ''; }
+    else { sel.value = confirmed; descEl.textContent = hintFor(confirmed); }
   });
   return { row, sel, ctrl };
 }
@@ -602,7 +630,7 @@ function _modeRow(list, { value, onSave, onChange }) {
 // the same Remote Control default as a normal one. Mirrors the normal Config tab's
 // "Target device" section (tab-config.js). The fleet loads async: we paint "None"
 // (+ any saved-but-offline value) first, then fill in the rest.
-function _deviceRow(list, { value, onSave }) {
+export function _deviceRow(list, { value, onSave }) {
   const HINT_NONE   = 'By default a chat runs on whichever device is messaging the agent. Pick a machine to always run there.';
   const HINT_REMOTE = "New chats run on the chosen machine — its OWN Claude (login, files) does the work. "
     + "If it’s offline they fall back to the messaging device; you can still pick another per chat.";
@@ -698,7 +726,7 @@ function _deviceRow(list, { value, onSave }) {
   return { row, sel, ctrl };
 }
 
-function _toggleRow(list, { label, hint, checked, onSave, onChange }) {
+export function _toggleRow(list, { label, hint, checked, onSave, onChange }) {
   const row = document.createElement('div'); row.className = 'ac-ability-row';
   const lab = document.createElement('span'); lab.className = 'ac-ability-label';
   const nameEl = document.createElement('span'); nameEl.className = 'ac-ability-name'; nameEl.textContent = label;

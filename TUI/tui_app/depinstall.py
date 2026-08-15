@@ -287,7 +287,7 @@ async def run_browser(ctx: ToolContext, target: Path, log: LogFn) -> Result:
 
 
 async def run_config(ctx: ToolContext, target: Path, log: LogFn) -> Result:
-    log("Seeding configuration (.env, provider.json, local SQLite)…")
+    log("Seeding configuration (.env, local SQLite)…")
     msg = await seed_config(ctx, str(target))
     ok = msg.startswith("[seed]")
     log(msg)

@@ -12,7 +12,7 @@ This directory holds the **admin/management surfaces** of the app: provider sett
 |------|---------|
 | **`settings.py`** | Provider configuration — AI provider / API key / model selection, metadata-logging toggle, provider presets, model fetching. Also the **usage/cost endpoints** that sum `usage_events.cost_usd`: `model-usage` (per model; `scope=global` is admin-wide incl. background), `session-cost` (per session), `agent-usage` (this user's spend with one agent — scoped to the (user, agent) pair, total + per-model; its `/reset` clears only the caller's own rows), and `session-model-usage` (per model, this session). |
 | **`integrations.py`** | Admin enable/disable of integrations + abilities, OAuth credential config and redirect handling, `gather_enabled_providers` inputs, default-ability seeding. |
-| **`db_mode.py`** | Toggle between Cloud (Supabase) and Local (SQLite) database backends (`/admin/db/`). |
+| **`db_mode.py`** | Database mode status and agent prompt template lifecycle (`/admin/db/`). |
 | **`users.py`** | User administration endpoints. |
 | **`storage.py`** | Storage backend admin. |
 | **`communications.py`** | Enable/disable communication plugins (Telegram, WhatsApp) and set webhook URLs. |

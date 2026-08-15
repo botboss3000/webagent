@@ -4,7 +4,7 @@
  * Agents — shared utilities (esc, btn, autosave, debounce, etc.)
  */
 
-import { icon, claudeMark } from '../../../shared/js/icons.js';
+import { icon, claudeMark, codexMark } from '../../../shared/js/icons.js';
 import { app } from '../../../shared/js/state.js';
 import { authHeaders } from '../../../shared/js/left-login.js';
 import { _esc } from '../../../shared/js/dom-utils.js';
@@ -35,6 +35,9 @@ export function _iconColor(agent) {
   // Local Claude Code agents always wear the Claude-orange chip (matches their
   // create tile), so the spark mark reads as the real Claude brand everywhere.
   if (agent.engine === 'claude_code') return 'color-claude';
+  // Local Codex agents always wear the neutral Codex-steel chip (matches their
+  // create tile), so the knot mark reads as the real Codex brand everywhere.
+  if (agent.engine === 'codex') return 'color-codex';
   // Terminal Chat agents wear the terminal-green chip.
   if (agent.engine === 'terminal_chat') return 'color-terminal';
   if (agent.access_level === 'admin_only') return 'color-red';
@@ -89,6 +92,11 @@ export function _renderAgentIcon(agent, size) {
   // admin has picked a different icon for this one (then respect that choice).
   if (agent.engine === 'claude_code' && (!name || name === 'sparkles')) {
     return claudeMark({ size: big });
+  }
+  // Local Codex agents wear the real Codex knot mark by default (its template
+  // icon is 'code-2') — unless an admin has picked a different icon.
+  if (agent.engine === 'codex' && (!name || name === 'code-2')) {
+    return codexMark({ size: big });
   }
   // Terminal Chat agents wear the terminal icon by default.
   if (agent.engine === 'terminal_chat' && (!name || name === 'terminal')) {

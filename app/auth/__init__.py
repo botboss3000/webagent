@@ -1,11 +1,13 @@
 """Auth router — login with remember-me + recall endpoint."""
 
 import logging
+import json
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
+from pathlib import Path
 
-from app.auth.jwt import create_access_token, decode_token
+from app.auth.jwt import create_access_token, decode_signed_token, decode_token
 from app.auth.users import (
     admin_exists,
     authenticate,
@@ -35,6 +37,7 @@ class LoginRequest(BaseModel):
     email: str
     password: str
     remember_me: bool = False
+    device_id: str = ""
 
 
 class LoginResponse(BaseModel):
@@ -83,6 +86,10 @@ class AnonymousResponse(BaseModel):
     user_id: str
 
 
+class RevokeDevicesRequest(BaseModel):
+    device_ids: list[str]
+
+
 @router.post("/anonymous", response_model=AnonymousResponse)
 async def create_anonymous_session(req: AnonymousRequest):
     """Issue a JWT for an anonymous visitor on the main page.
@@ -115,7 +122,7 @@ def _record_auth_event(level: str, message: str, user_id: str | None = None) -> 
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(req: LoginRequest):
+async def login(request: Request, req: LoginRequest):
     """Authenticate with username and password.
 
     If remember_me is True, a persistent remember token is generated
@@ -125,16 +132,25 @@ async def login(req: LoginRequest):
     if user is None:
         _record_auth_event("warning", f"Failed sign-in for {req.email}")
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not user.is_approved:
+    from app.admin.settings import get_access_mode as _gam
+    if not user.is_approved and _gam() == "admin_approval":
         _record_auth_event("warning", f"Sign-in blocked (pending approval): {req.email}")
         raise HTTPException(status_code=403, detail="Account pending admin approval")
     _record_auth_event("info", f"Sign-in: {user.username}", user_id=user.user_id)
 
     # Mint the pass for the user's own chosen lifetime (Manage Account →
     # Sign-in & sessions; defaults to 30 days for accounts that haven't set one).
+    requested_device_id = req.device_id.strip()
+    if requested_device_id and (
+        len(requested_device_id) > 128
+        or not all(ch.isalnum() or ch in "-_" for ch in requested_device_id)
+    ):
+        raise HTTPException(status_code=400, detail="Invalid device identifier")
     token = create_access_token(
         user.username, user.user_id,
         expires_minutes=user.session_lifetime_minutes,
+        device_id=requested_device_id or None,
+        reauthenticated=True,
     )
     resp = LoginResponse(
         access_token=token,
@@ -147,9 +163,31 @@ async def login(req: LoginRequest):
     # on as a standing account preference — either way the silent refresh then
     # keeps the session alive so it never dies in place at the lifetime mark.
     if req.remember_me or user.auto_renew:
-        remember = await set_remember_token(req.email)
+        token_payload = decode_signed_token(token) or {}
+        remember = await set_remember_token(
+            req.email,
+            device_id=str(token_payload.get("device_id") or ""),
+        )
         if remember:
             resp.remember_token = remember
+
+    try:
+        from app.auth.device_location import location_for_ip, request_client_ip
+        from app.auth.revocation import update_device_metadata
+
+        token_payload = decode_signed_token(token) or {}
+        device_id = str(token_payload.get("device_id") or "")
+        ip_address = request_client_ip(request)
+        location = await location_for_ip(ip_address)
+        update_device_metadata(
+            user.user_id,
+            device_id,
+            ip_address=ip_address,
+            location=location,
+            user_agent=request.headers.get("user-agent", ""),
+        )
+    except Exception:
+        pass
 
     # Track user login: create/update user_profiles row
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -170,12 +208,30 @@ async def recall(req: RecallRequest):
     if user is None:
         _record_auth_event("warning", "Auto-login failed (invalid or expired remember token)")
         raise HTTPException(status_code=401, detail="Invalid or expired remember token")
-    if not user.is_approved:
+    from app.admin.settings import get_access_mode as _gam2
+    if not user.is_approved and _gam2() == "admin_approval":
         raise HTTPException(status_code=403, detail="Account pending admin approval")
+
+    from app.auth.revocation import (
+        claim_legacy_remember_token,
+        remember_token_device,
+    )
+
+    device_id = remember_token_device(user.user_id, req.remember_token)
+    if not device_id:
+        device_id = claim_legacy_remember_token(user.user_id, req.remember_token)
+    if not device_id:
+        _record_auth_event(
+            "warning",
+            "Auto-login failed (remember token device revoked or ambiguous)",
+            user_id=user.user_id,
+        )
+        raise HTTPException(status_code=401, detail="Invalid or expired remember token")
 
     token = create_access_token(
         user.username, user.user_id,
         expires_minutes=user.session_lifetime_minutes,
+        device_id=device_id,
     )
     resp = RecallResponse(
         access_token=token,
@@ -249,6 +305,18 @@ async def access_mode():
     """
     from app.admin.settings import get_access_mode as _gam
     return AccessModeResponse(access_mode=_gam())
+
+
+CHAT_UI_CONFIG_PATH = Path("data/config/chat_ui.json")
+
+def _load_chat_ui_config() -> dict:
+    """Load chat_ui.json — the source of truth for chat presentation and copy."""
+    try:
+        if CHAT_UI_CONFIG_PATH.exists():
+            return json.loads(CHAT_UI_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("Failed to load chat_ui.json, using empty default")
+    return {}
 
 
 class UiConfigResponse(BaseModel):
@@ -353,10 +421,50 @@ class UiConfigResponse(BaseModel):
     # fields below when it is True. Default False (the app behaves exactly as
     # before — one global theme).
     allow_user_appearance: bool
+    # Master on/off for the App-control point-and-share panel (long-press /
+    # right-click), app-wide. ui/shared/js/app-control-point.js reads this at boot
+    # and skips the panel entirely when False. Defaults True (the panel has always
+    # been available).
+    app_control_quick_message: bool
+    # Master on/off for the sliding session-completion notification panel
+    # (running → done/interrupted/error), app-wide.
+    # ui/chat/js/session-notification.js reads this at boot and skips the panel
+    # entirely when False. Defaults True (the panel has always been available).
+    session_completion_notifications: bool
+    # App-wide policy for browser-native vs recorded/LLM voice dictation.
+    voice_dictation_llm_enabled: bool
+    voice_dictation_mode: str
+    # Safety lock — when True, the app is starting up from a shut-down state and
+    # MUST show a confirmation modal before running any recovery/automation.
+    # Set when the server shuts down, cleared when the admin confirms.
+    safety_lock_active: bool = False
+    # Master switch for the safety lock feature. When False, the feature is
+    # completely disabled — no splash, no gate, no recovery suppression.
+    safety_lock_enabled: bool = True
+    # Hide main header when mobile on-screen keyboard is open (≤800px viewport).
+    # Default OFF; gated by the App Settings toggle (hide_header_on_keyboard).
+    hide_header_on_keyboard: bool = False
+    # Viewport height threshold for the above: 0 = always hide; only hide when
+    # remaining viewport height is below this many px.
+    hide_header_kb_threshold: int = 200
+    # Replace the main tab carousel with compact hamburger navigation.
+    mobile_mode: bool = False
+    # Master on/off for the always-on display (Screen Wake Lock), app-wide.
+    # When True, every visitor's browser keeps the screen on while the app tab
+    # is visible — the same operation as the chat wake_lock control
+    # (ui/shared/js/main.js applies it at boot; the App Settings toggle applies
+    # it live). Default OFF (screen sleeps normally).
+    always_on_display: bool = False
+    # Chat presentation + copy — served as a dict so every chat surface can be
+    # configured at boot without a server restart.
+    chat_ui: dict
+    # Chat widget config — corners, agent, prompt, detection modes.
+    # Sourced from app-settings.json; {} means use chat_ui.json defaults.
+    chat_widget: dict
 
 
 @router.get("/ui-config", response_model=UiConfigResponse)
-async def ui_config(request: Request):
+async def ui_config(request: Request, agent_id: str = Query(None)):
     """Public endpoint: app-wide UI config every visitor needs before render.
 
     Carries the admin's per-theme animated-background choice (so the background
@@ -365,6 +473,10 @@ async def ui_config(request: Request):
     recolour/resize borders and swap the UI font app-wide) — for anonymous and
     signed-in visitors alike. Also reports whether first-class genui are
     permitted (local-only safety gate; see app/visualizer + the Gen UI tab).
+
+    When ``agent_id`` is given, the returned ``chat_ui`` is the app-wide
+    chat_ui.json deep-merged with that agent's per-agent ``metadata.chat_ui``
+    override, so the chat panel renders with the agent's custom chrome.
     """
     from app.admin.settings import (
         get_background_config,
@@ -373,7 +485,17 @@ async def ui_config(request: Request):
         get_splash_enabled,
         get_hints_enabled,
         get_allow_user_appearance,
+        get_app_control_quick_message,
+        get_session_completion_notifications,
+        get_always_on_display,
+        get_voice_dictation_config,
+        get_hide_header_on_keyboard,
+        get_hide_header_kb_threshold,
+        get_mobile_mode,
+        get_safety_lock_active,
+        get_safety_lock_enabled,
         valid_background,
+        _load_app_settings,
     )
     cfg = get_background_config()
     app = get_appearance_config()
@@ -397,6 +519,7 @@ async def ui_config(request: Request):
     # personalised theme. A blank/absent token keeps the global value (fall back
     # to global); the background is re-validated against installed plugins.
     allow_user_appearance = get_allow_user_appearance()
+    voice_dictation = get_voice_dictation_config()
     if allow_user_appearance and caller_uid:
         try:
             from app.db import get_db
@@ -411,6 +534,32 @@ async def ui_config(request: Request):
             bg_light = valid_background(overrides.get("background_light"), bg_light)
         except Exception:  # noqa: BLE001 — per-user theme must never break boot config
             pass
+
+    # Build the chat_ui response — start with the global chat_ui.json, then
+    # deep-merge the agent's per-agent override when agent_id is given.
+    chat_ui = _load_chat_ui_config()
+    if agent_id:
+        try:
+            from app.api.agents import _deep_merge
+            from app.db import get_db
+            db = get_db()
+            agent = await db.get_agent_by_id(agent_id)
+            if agent:
+                meta_raw = agent.get("metadata")
+                meta = {}
+                if isinstance(meta_raw, str):
+                    try:
+                        meta = json.loads(meta_raw)
+                    except Exception:
+                        pass
+                elif isinstance(meta_raw, dict):
+                    meta = dict(meta_raw)
+                agent_cu = meta.get("chat_ui")
+                if isinstance(agent_cu, dict) and agent_cu:
+                    chat_ui = _deep_merge(chat_ui, agent_cu)
+        except Exception:  # noqa: BLE001 — per-agent override must never break boot config
+            pass
+
     # `app` (get_appearance_config) carries every appearance key — the border /
     # font knobs and the full per-theme palette — each concrete (never blank).
     # Spread it so newly-added palette tokens flow through with no per-key wiring.
@@ -418,9 +567,21 @@ async def ui_config(request: Request):
         background_dark=bg_dark,
         background_light=bg_light,
         genui_first_class=genui_first_class,
+        safety_lock_active=get_safety_lock_active(),
+        safety_lock_enabled=get_safety_lock_enabled(),
         splash_enabled=get_splash_enabled(),
         hints_enabled=get_hints_enabled(),
         allow_user_appearance=allow_user_appearance,
+        app_control_quick_message=get_app_control_quick_message(),
+        session_completion_notifications=get_session_completion_notifications(),
+        always_on_display=get_always_on_display(),
+        voice_dictation_llm_enabled=voice_dictation["llm_enabled"],
+        voice_dictation_mode=voice_dictation["mode"],
+        hide_header_on_keyboard=get_hide_header_on_keyboard(),
+        hide_header_kb_threshold=get_hide_header_kb_threshold(),
+        mobile_mode=get_mobile_mode(),
+        chat_ui=chat_ui,
+        chat_widget=_load_app_settings().get("chat_widget", {}),
         **app,
     )
 
@@ -618,12 +779,20 @@ async def guest_login(request: Request, req: GuestLoginRequest | None = None):
 
 
 @router.post("/logout")
-async def logout(req: LoginRequest | None = None):
-    """Placeholder — actual token clearing is client-side (localStorage).
-    The remember token stays valid until the user logs in again.
-    No server-side action needed; the client clears its storage.
-    """
-    return {"status": "ok", "message": "Logged out. Clear client tokens."}
+async def logout(request: Request):
+    """Sign out only the device represented by the caller's access token."""
+    _username, user_id = _require_auth(request)
+    device_id = _request_device_id(request)
+    from app.auth.revocation import revoke_device
+
+    revoked = revoke_device(user_id, device_id) if device_id else False
+    return {
+        "status": "ok",
+        "message": "Logged out on this device.",
+        "device_id": device_id,
+        "revoked": revoked,
+        "purge_browser_storage": True,
+    }
 
 
 # ── Self-service profile management ─────────────────────────────────────────
@@ -683,6 +852,25 @@ def _require_auth(request: Request) -> tuple[str, str]:
     return username, user_id
 
 
+def _signed_device_identity(request: Request) -> tuple[str, str]:
+    """Resolve only (user_id, device_id) from a signed token for purge protocol."""
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+    payload = decode_signed_token(token, verify_expiry=False) if token else None
+    user_id = str((payload or {}).get("user_id") or (payload or {}).get("sub") or "")
+    device_id = str((payload or {}).get("device_id") or "")
+    if not user_id or not device_id:
+        raise HTTPException(status_code=401, detail="Invalid device credential")
+    return user_id, device_id
+
+
+def _request_device_id(request: Request) -> str:
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+    payload = decode_signed_token(token) if token else None
+    return str((payload or {}).get("device_id") or "")
+
+
 @router.get("/me", response_model=MeResponse)
 async def get_me(request: Request):
     """Return the currently authenticated user's profile."""
@@ -696,6 +884,129 @@ async def get_me(request: Request):
         display_name=user.display_name,
         is_approved=user.is_approved,
     )
+
+
+@router.get("/me/data-export")
+async def export_me(request: Request):
+    """Export the caller's server-authority data under administrator policy."""
+    _username, user_id = _require_auth(request)
+    from app.db.browser_policy import require_export_enabled
+    try:
+        require_export_enabled()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    db = get_db()
+    exporter = getattr(db, "export_user_data", None)
+    if exporter is None:
+        raise HTTPException(
+            status_code=501,
+            detail="The active storage provider does not support scoped export",
+        )
+    payload = await exporter(user_id)
+    from app.db.user_store import export_user_store_data
+    sidecar = await export_user_store_data(user_id)
+    if sidecar is not None:
+        payload["browser_sync_store"] = sidecar
+    return payload
+
+
+@router.get("/me/devices")
+async def get_my_devices(request: Request):
+    """List opaque login-device records for the authenticated account."""
+    _username, user_id = _require_auth(request)
+    from app.auth.revocation import current_epoch, list_devices
+    auth_header = request.headers.get("Authorization", "")
+    payload = decode_token(auth_header[7:]) if auth_header.startswith("Bearer ") else None
+    current_device_id = str((payload or {}).get("device_id") or "")
+
+    return {
+        "revocation_epoch": current_epoch(user_id),
+        "current_device_id": current_device_id,
+        "devices": list_devices(user_id),
+    }
+
+
+@router.delete("/me/devices/{device_id}")
+async def delete_my_device(request: Request, device_id: str):
+    """Revoke one login pass without trusting a client-claimed user id."""
+    _username, user_id = _require_auth(request)
+    from app.auth.revocation import revoke_device
+
+    revoked = revoke_device(user_id, device_id)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Device session not found")
+    return {
+        "status": "ok",
+        "device_id": device_id,
+        "revoked": True,
+        "purge_requested": True,
+    }
+
+
+@router.post("/me/devices/revoke")
+async def revoke_my_devices(request: Request, body: RevokeDevicesRequest):
+    """Immediately invalidate several device sessions in one transaction."""
+    _username, user_id = _require_auth(request)
+    device_ids = [str(value).strip() for value in body.device_ids]
+    if not device_ids or any(
+        not value
+        or len(value) > 128
+        or not all(ch.isalnum() or ch in "-_" for ch in value)
+        for value in device_ids
+    ):
+        raise HTTPException(status_code=400, detail="Invalid device selection")
+
+    from app.auth.revocation import revoke_devices
+
+    try:
+        revoked_ids = revoke_devices(user_id, device_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not revoked_ids:
+        raise HTTPException(status_code=404, detail="Device sessions not found")
+
+    # Connected targets purge immediately. The durable purge directive remains
+    # authoritative for offline/cross-worker devices and runs on their next contact.
+    try:
+        from app.api.chat import revoke_user_device_connections
+
+        await revoke_user_device_connections(user_id, revoked_ids, {
+            "type": "device_revoked",
+            "device_ids": revoked_ids,
+            "purge_required": True,
+        })
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "revoked_device_ids": revoked_ids,
+        "revoked_count": len(revoked_ids),
+        "purge_required": True,
+    }
+
+
+@router.post("/device/purge-status")
+async def post_device_purge_status(request: Request):
+    """Check a device's purge directive even after its normal JWT was revoked."""
+    user_id, device_id = _signed_device_identity(request)
+    from app.auth.revocation import device_purge_status
+
+    return {"device_id": device_id, **device_purge_status(user_id, device_id)}
+
+
+@router.post("/device/purge-ack")
+async def post_device_purge_ack(request: Request):
+    """Acknowledge local purge using only the signed device identity."""
+    user_id, device_id = _signed_device_identity(request)
+    from app.auth.revocation import acknowledge_device_purge, device_purge_status
+
+    acknowledged = acknowledge_device_purge(user_id, device_id)
+    return {
+        "device_id": device_id,
+        "acknowledged": acknowledged,
+        **device_purge_status(user_id, device_id),
+    }
 
 
 @router.patch("/me", response_model=UpdateMeResponse)
@@ -761,7 +1072,10 @@ async def post_change_password(request: Request, body: ChangePasswordRequest):
         raise HTTPException(status_code=404, detail="User not found")
 
     # Rotate remember token so old persistent credentials can't auto-login.
-    new_remember = await set_remember_token(username) or ""
+    new_remember = await set_remember_token(
+        username,
+        device_id=_request_device_id(request),
+    ) or ""
     return ChangePasswordResponse(status="ok", remember_token=new_remember)
 
 
@@ -773,18 +1087,35 @@ async def delete_me(request: Request, body: DeleteMeRequest):
     cannot be deleted (returns 403).
     """
     username, _user_id = _require_auth(request)
+    from app.db.browser_policy import require_delete_enabled
+    try:
+        require_delete_enabled()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
 
     verified = await authenticate(username, body.password)
     if verified is None:
         raise HTTPException(status_code=401, detail="Password is incorrect")
+    if _user_id == _BOOTSTRAP_ADMIN_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="The bootstrap admin account cannot be deleted",
+        )
 
+    from app.auth.revocation import revoke_user
+    revoke_user(_user_id)
     ok, reason = await delete_user_self(username)
     if not ok:
         if reason == "protected":
             raise HTTPException(status_code=403, detail="The bootstrap admin account cannot be deleted")
         raise HTTPException(status_code=404, detail="User not found")
+    try:
+        from app.agent.turn_reservations import delete_user_reservations
+        delete_user_reservations(_user_id)
+    except Exception:
+        logger.warning("Could not remove durable turn receipts for deleted user %s", _user_id)
 
-    return {"status": "ok"}
+    return {"status": "ok", "purge_browser_storage": True}
 
 
 # ── Per-user session policy (Manage Account → Sign-in & sessions) ────────────
@@ -853,7 +1184,11 @@ async def put_my_session_policy(request: Request, body: UpdateSessionPolicyReque
     )
     remember = ""
     if updated.auto_renew:
-        remember = await set_remember_token(username) or ""
+        token_payload = decode_signed_token(token) or {}
+        remember = await set_remember_token(
+            username,
+            device_id=str(token_payload.get("device_id") or ""),
+        ) or ""
     else:
         await clear_remember_token(username)
     return UpdateSessionPolicyResponse(

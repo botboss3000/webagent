@@ -35,14 +35,13 @@ always does; it never knows which backend ran it.
    token is scoped to your account and lasts ~1 year.)
 5. Click the extension's toolbar icon → **Settings…**, paste the **Server URL**
    and **Token** from step 4, and Save.
-   - You only need a token when the server is **not** in open (single-user) access
-     mode. In open mode you can leave the token blank.
+   - A token is always required. The extension stays offline until it has been
+     paired with a signed-in account.
    - `http(s)://…` is auto-converted to `ws(s)://…`.
 6. The toolbar badge shows **ON** (green) when connected.
 
-> If the badge stays **OFF** and the page console shows the connector socket
-> returning **403**, the server isn't in open mode and the token is missing or
-> wrong — redo the “Pair extension” copy in step 4.
+> If the badge stays **OFF**, the token is missing or wrong — redo the “Pair
+> extension” copy in step 4.
 
 ## Use it
 
