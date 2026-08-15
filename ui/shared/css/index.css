@@ -167,6 +167,20 @@ body.light-mode .chat-bubble.agent { --chat-bubble-bg: var(--agent-bubble-bg, co
   border-bottom-left-radius: 5px !important;
   border-bottom-right-radius: 5px !important;
 }
+/* Schema inspect panel ("Sent to LLM") — the raw-payload overlay inserted
+   above an agent bubble. Overrides the glass bubble treatment above so it
+   reads as a SOLID, contained technical panel (opaque surface, no backdrop
+   blur, crisp border). The panel's own structural sizing/scroll lives in
+   app1.css (.schema-inspect-*); this block only wins the surface props that
+   the glass rules force with !important. */
+#chat-panel .chat-bubble.schema-inspect-bubble {
+  --chat-bubble-bg: var(--bg-elev);
+  background: var(--bg-elev) !important;
+  border: var(--border-width) solid var(--border-strong) !important;
+  border-radius: 10px !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
 /* Input row sits directly on the page background — no wrapping glass surface */
 #chat-input-area {
   background: transparent !important;
