@@ -194,7 +194,7 @@ async def _complete(provider_id: str, request: Request, code, state, error, *, f
         reauthenticated=True,
     )
     try:
-        from app.auth.device_location import location_for_ip, request_client_ip
+        from app.auth.device_location import location_for_ip, request_client_ip, request_origin
         from app.auth.jwt import decode_signed_token
         from app.auth.revocation import update_device_metadata
 
@@ -207,6 +207,7 @@ async def _complete(provider_id: str, request: Request, code, state, error, *, f
             ip_address=ip_address,
             location=await location_for_ip(ip_address),
             user_agent=request.headers.get("user-agent", ""),
+            origin=request_origin(request),
         )
     except Exception:
         pass

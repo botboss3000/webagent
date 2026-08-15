@@ -161,10 +161,16 @@ async def _start_slave_tunnel(*, job: dict, db: Any, payload: dict) -> str:
                 argv.append("--quick")
             elif opts.get("tunnel"):
                 argv += ["--name", str(opts["tunnel"])]
+                hostname = str(opts.get("hostname") or "").strip()
+                if hostname:
+                    public_url = hostname if hostname.startswith("http") else f"https://{hostname}"
+                    argv += ["--public-url", public_url]
             else:
                 raise RuntimeError("no Cloudflare quick or named tunnel is configured")
         elif opts.get("domain"):
             argv += ["--name", str(opts["domain"])]
+            domain = str(opts["domain"]).strip()
+            argv += ["--public-url", domain if domain.startswith("http") else f"https://{domain}"]
         else:
             argv.append("--quick")
 

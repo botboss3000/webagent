@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 import time
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 from fastapi import Request
@@ -34,6 +34,40 @@ def request_client_ip(request: Request) -> str:
         return str(ipaddress.ip_address(candidate))
     except ValueError:
         return ""
+
+
+def request_origin(request: Request) -> str:
+    """Best-effort origin the user signed in through (scheme://host).
+
+    Prefers the browser-supplied Origin/Referer header (the URL the user
+    actually sees, e.g. http://localhost:8080 or https://abc.trycloudflare.com),
+    falling back to the Host header with the request scheme, honoring
+    x-forwarded-proto only from trusted proxies.
+    """
+    try:
+        for header_name in ("origin", "referer"):
+            header = request.headers.get(header_name, "").strip().rstrip("/")
+            if not header:
+                continue
+            parsed = urlparse(header)
+            if parsed.scheme in ("http", "https") and parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        pass
+    scheme = "https" if request.url.scheme == "https" else "http"
+    host = request.headers.get("host", "").strip() or request.url.netloc
+    if not host:
+        return ""
+    try:
+        from app.admin.integrations import _is_trusted_proxy
+
+        if _is_trusted_proxy(request):
+            forwarded = request.headers.get("x-forwarded-proto", "").strip().lower()
+            if forwarded in ("http", "https"):
+                scheme = forwarded
+    except Exception:
+        pass
+    return f"{scheme}://{host}".rstrip("/")
 
 
 async def location_for_ip(ip_address: str) -> str:

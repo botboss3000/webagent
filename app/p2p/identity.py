@@ -1,6 +1,6 @@
 """P2P identity — a per-instance Ed25519 keypair for mutual authentication.
 
-Generated once and persisted in ``data/config/p2p/keypair.json``.  Every outbound
+Generated once and persisted in ``data/config/p2p/runtime/keypair.json``.  Every outbound
 P2P request is signed with this key; every inbound request is verified against the
 peer's stored public key.  A timestamp nonce in each signature prevents replay.
 """
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_DIR = _PROJECT_ROOT / "data" / "config" / "p2p"
-_KEYPAIR_PATH = _CONFIG_DIR / "keypair.json"
+_KEYPAIR_PATH = _CONFIG_DIR / "runtime" / "keypair.json"
 
 _KEYPAIR: Optional[Dict[str, str]] = None    # {private: b64, public: b64, id: str}
 _INSTANCE_ID: Optional[str] = None
@@ -36,7 +36,7 @@ def _ensure_keypair() -> Dict[str, str]:
     if _KEYPAIR:
         return _KEYPAIR
 
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _KEYPAIR_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     if _KEYPAIR_PATH.exists():
         try:

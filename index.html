@@ -345,7 +345,7 @@
      ============================================================ -->
 <link rel="stylesheet" href="./ui/shared/css/index.css">
 </head>
-<body>
+<body class="header-pending">
 <!-- ── Boot curtain: opaque loading cover (first child so it paints first). ──
      Critical CSS lives in <head> (search "Boot curtain"). The bot glyph mirrors
      the favicon. window.__boot below owns when it lifts. ──────────────────── -->
@@ -1135,6 +1135,12 @@
   <button type="button" id="mobile-nav-toggle" class="mobile-nav-toggle" aria-label="Open navigation" aria-controls="mobile-nav-menu" aria-expanded="false" hidden>
     <i data-lucide="menu" class="lucide-icon"></i>
   </button>
+
+  <!-- Centered brand wordmark for the compact mobile header: sits between the
+       nav toggle and the Chat button where the tab strip is hidden. Decorative
+       only — no icon, no click target (pointer-events:none), styled in
+       design-system.css (.mobile-header-brand). -->
+  <span id="mobile-header-brand" class="mobile-header-brand" aria-hidden="true">WebAgent</span>
 
   <!-- Horizontal tab strip with chevron-scroll carousel -->
   <div id="main-tabs-wrap">

@@ -172,7 +172,7 @@ async def login(request: Request, req: LoginRequest):
             resp.remember_token = remember
 
     try:
-        from app.auth.device_location import location_for_ip, request_client_ip
+        from app.auth.device_location import location_for_ip, request_client_ip, request_origin
         from app.auth.revocation import update_device_metadata
 
         token_payload = decode_signed_token(token) or {}
@@ -185,6 +185,7 @@ async def login(request: Request, req: LoginRequest):
             ip_address=ip_address,
             location=location,
             user_agent=request.headers.get("user-agent", ""),
+            origin=request_origin(request),
         )
     except Exception:
         pass

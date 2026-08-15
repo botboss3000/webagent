@@ -266,6 +266,13 @@ next_step "Cloning WebAgent repository" "${ORIGIN_URL:-$BRANCH} @ $BRANCH"
 id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"
 rm -rf "$APP_DIR"
 git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$APP_DIR"
+# P2P identities and peer authorizations are machine-local runtime state. A
+# release must not contain them, but defensively discard any accidentally
+# tracked copy before this machine starts the app and mints its own identity.
+rm -f "$APP_DIR/data/config/p2p/keypair.json"
+rm -rf "$APP_DIR/data/config/p2p/peers"
+rm -rf "$APP_DIR/data/config/p2p/runtime"
+mkdir -p "$APP_DIR/data/config/p2p/peers" "$APP_DIR/data/config/p2p/runtime"
 # The clone URL may embed the access token (private repo). Reset origin to the
 # CLEAN address so the token is never persisted in the box's .git/config; the app
 # authenticates future fetch/push with the token from its own vault instead.

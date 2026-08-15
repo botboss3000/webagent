@@ -485,6 +485,15 @@ async def tunnel_report(body: TunnelReportBody, request: Request):
         raise HTTPException(status_code=400, detail="Invalid tunnel URL")
     store.update_slave_state(port, running=state in ("starting", "running"), url=url)
 
+    # Put a newly resolved tunnel address into the same persistent URL map used
+    # by real inbound requests. The later request heartbeat updates this exact
+    # row's last_seen value instead of creating a second, legacy/new-format pair.
+    if state in ("starting", "running") and url:
+        from app.db.instance_meta import track_endpoint_url
+        from app.db.offload import db_offload
+        from app.devices import identity
+        await db_offload(lambda: track_endpoint_url(identity.device_id(), url))
+
     # Wake an immediate heartbeat. This updates a remote hub's shared presence
     # view in seconds instead of waiting for the normal 15–45 second cadence.
     from app.devices.worker import refresh_presence
@@ -869,6 +878,11 @@ async def _new_instance_deploy_events(body: NewInstanceDeployBody, source_url: s
     config["domain"] = ""
     config["embed_config"] = False
     config["forget_keys"] = False
+    # This flow cannot finish until the freshly-installed app exposes the native
+    # scoped bootstrap endpoint. The e2-micro install can take well over ten
+    # minutes while Playwright's OS packages are installed.
+    config["_require_scoped_p2p"] = True
+    config["_health_timeout_s"] = 1500
     if not str(config.get("instance_name") or "").strip():
         project_id = str(config.get("project_id") or "").strip()
         if project_id:

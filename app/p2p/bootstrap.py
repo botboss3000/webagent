@@ -286,6 +286,15 @@ async def pair_and_push(
                 "not support scoped configuration bootstrap. Update the instance "
                 "before synchronizing it."
             )
+        if (
+            str(target_status.get("instance_id") or "") == identity.instance_id()
+            or str(target_status.get("public_key") or "") == identity.public_key_hex()
+        ):
+            raise RuntimeError(
+                "The target has a cloned copy of this instance's P2P identity. "
+                "Remove data/config/p2p from the deployment repository and rotate "
+                "the exposed identity before pairing."
+            )
         response = await client.post(f"{target}/api/v1/p2p/handshake", json=handshake)
     if response.status_code != 200:
         raise RuntimeError(

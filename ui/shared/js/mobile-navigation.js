@@ -153,12 +153,21 @@ function _enableMobileNavigation() {
 export async function initMobileNavigation() {
   if (_started) return;
   _started = true;
+  // The header is kept empty (body.header-pending, set in index.html) until
+  // this config resolves, so mobile users never see the desktop tab strip
+  // flash before the mobile layout applies. Remove the gate on EVERY exit
+  // path — success, HTTP failure, and exception alike.
+  const headerReady = () => document.body.classList.remove('header-pending');
   try {
     const response = await fetch(apiPath('/api/v1/auth/ui-config'), { headers: authHeaders() });
-    if (!response.ok) return;
+    if (!response.ok) { headerReady(); return; }
     const config = await response.json();
+    // Reveal + switch layout in the same synchronous block — no intermediate
+    // paint, so the desktop strip can't flash in the gap.
+    headerReady();
     if (config.mobile_mode === true) _enableMobileNavigation();
   } catch (_) {
+    headerReady();
     // The existing carousel is the safe fallback when config is unavailable.
   }
 }

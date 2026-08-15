@@ -1622,6 +1622,7 @@ function _urlStalenessHtml(lastSeen) {
 // replaces the separate Tunnel fact row — tunnels are now part of the URL block.
 function _urlFactHtml(d) {
   var parts = [];
+  var renderedUrls = new Set();
   // URLs the admin marked hidden — collected from the urls map (or empty for
   // the fallback URL path) and rendered behind the "Hidden (N)" disclosure row
   // at the END of this section.
@@ -1643,12 +1644,14 @@ function _urlFactHtml(d) {
     var hiddenRows = [];
     urlKeys.forEach(function(url) {
       var entry = d.urls[url] || {};
+      renderedUrls.add(String(url).replace(/\/+$/, '').toLowerCase());
       if (entry.hidden) hiddenRows.push([url, entry]);
       else parts.push(_urlRowHtml(url, entry, d, false));
     });
   } else {
     var url = _displayUrl(d);
     if (url) {
+      renderedUrls.add(String(url).replace(/\/+$/, '').toLowerCase());
       parts.push(_urlRowHtml(url, { https_auto: d.endpoint_https_auto }, d, false));
     }
   }
@@ -1660,14 +1663,18 @@ function _urlFactHtml(d) {
       : (t.configured ? '<span class="inst-tun-pill inst-tun-off">Off</span>'
         : '<span class="inst-tun-pill inst-tun-na">Not ready</span>');
     var slaveUrl = (t.headful_url || t.public_url || '').trim();
-    var tunUrl = slaveUrl
-      ? '<span class="inst-url-row"><a href="' + _escAttr(_openUrl(slaveUrl)) + '" target="_blank" rel="noopener">' + _esc(slaveUrl) + '</a>'
-        + _urlActionsHtml(slaveUrl) + '</span>'
-      : '';
+    var slaveUrlKey = slaveUrl.replace(/\/+$/, '').toLowerCase();
+    // Render the provider address through the same expandable URL component as
+    // every live endpoint. The report endpoint persists this same normalized key,
+    // so a later real request refreshes its timestamp instead of adding a duplicate.
+    if (slaveUrl && !renderedUrls.has(slaveUrlKey)) {
+      parts.push(_urlRowHtml(slaveUrl, { last_seen: t.connected_at || '' }, d, false));
+      renderedUrls.add(slaveUrlKey);
+    }
     parts.push(
       '<div class="inst-url-item inst-tunnel-row">'
       + '<div class="inst-url-link">' + pill + ' <span class="inst-tun-prov">Tunnel (slave)</span>'
-      + '<span class="inst-tun-url">' + tunUrl + '</span></div>'
+      + '</div>'
       + '</div>');
   }
 
@@ -3251,6 +3258,15 @@ function _applyHeadfulUrl(iid, url) {
   inst.tunnel.headful_url = url || '';
   inst.tunnel.public_url = url || '';
   inst.tunnel.running = !!url;
+  if (url) {
+    var now = new Date().toISOString();
+    inst.tunnel.connected_at = now;
+    if (!inst.urls || typeof inst.urls !== 'object') inst.urls = {};
+    var normalized = String(url).replace(/\/+$/, '');
+    var previous = inst.urls[normalized] || inst.urls[normalized + '/'] || {};
+    delete inst.urls[normalized + '/'];
+    inst.urls[normalized] = Object.assign({}, previous, { last_seen: now });
+  }
   if (inst.instance_id === S.active) _patchUrlFact(inst);
 }
 

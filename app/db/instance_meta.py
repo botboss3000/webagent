@@ -156,11 +156,20 @@ async def track_endpoint_url(ref: str, url: str, https_auto: bool = False) -> bo
     Each URL entry: ``{"last_seen": "<ISO>", "https_auto": bool}``. An entry the
     admin flagged ``hidden`` keeps that flag — re-detecting a URL must not
     resurface it in the overview."""
+    # Request-derived base URLs and tunnel-provider output differ in whether they
+    # include a trailing slash. Store one canonical key so learning the live host
+    # after launch updates the address announced by the tunnel instead of adding
+    # a visually duplicate row.
+    url = str(url or "").strip().rstrip("/")
+    if not url:
+        return False
     existing = await get_instance(ref)
     urls: Dict[str, Dict[str, Any]] = {}
     if existing:
         urls = dict(existing.get("metadata", {}).get("urls") or {})
-    prev = urls.get(url) or {}
+    legacy_slash_url = url + "/"
+    prev = urls.get(url) or urls.get(legacy_slash_url) or {}
+    urls.pop(legacy_slash_url, None)
     urls[url] = {"last_seen": _now_iso(), "https_auto": https_auto}
     if prev.get("hidden"):
         urls[url]["hidden"] = True

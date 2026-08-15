@@ -2313,6 +2313,15 @@ class LocalBackend(StorageBackend):
             try:
                 conn.executescript(render_plane(self._schema_plane, "sqlite"))
                 ensure_sqlite_plane_columns(conn, self._schema_plane)
+                # Plane-scoped canonical SQLite handles still own/attach the
+                # centralized app, agent and user secret vault files. Fresh bare
+                # installs reach this branch before the setup page is visited;
+                # without these schemas P2P bootstrap fails on its first secret
+                # with `no such table: vault_app.auth_elements`.
+                if self._canonical_authority_plane:
+                    for _schema_ddl in _VAULT_SCHEMAS.values():
+                        conn.executescript(_schema_ddl)
+                    _migrate_auth_elements_schema_version(conn)
                 conn.commit()
             finally:
                 conn.close()

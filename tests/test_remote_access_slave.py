@@ -47,6 +47,37 @@ class TunnelSlaveTests(unittest.TestCase):
         self.assertEqual(slave.url, "https://calm-field.trycloudflare.com")
         self.assertTrue(any(item["state"] == "running" for item in snapshots))
 
+    def test_named_cloudflare_connection_uses_configured_url(self) -> None:
+        class FakeChild:
+            stdout = io.BytesIO(
+                b"INF Registered tunnel connection connIndex=0 connection=abc\n"
+            )
+
+            @staticmethod
+            def wait() -> int:
+                return 1
+
+            @staticmethod
+            def poll() -> int:
+                return 1
+
+        slave = TunnelSlave(
+            port=54320,
+            token="test",
+            provider="cloudflare",
+            quick=False,
+            name="named-tunnel",
+            public_url="https://agent.example.com/",
+        )
+        slave.url = slave.configured_url
+        slave.proc = FakeChild()  # type: ignore[assignment]
+        snapshots = []
+        slave.persist = lambda **_kwargs: snapshots.append(slave.snapshot())  # type: ignore[method-assign]
+        with redirect_stdout(io.StringIO()):
+            slave._drain_child()
+        self.assertEqual(slave.url, "https://agent.example.com")
+        self.assertTrue(any(item["state"] == "running" for item in snapshots))
+
     def test_status_file_round_trip_and_freshness(self) -> None:
         port = 50000 + (os.getpid() % 10000)
         path = status_path(port)

@@ -3092,6 +3092,114 @@ body.light-mode .chat-bubble.agent.premium {
   border-color: rgba(var(--ink-rgb), 0.12);
 }
 
+/* ── Schema inspect panel ("Sent to LLM" — the 3-line icon in the footer) ──
+   Rendered by chat-bubble-actions.js _renderSchemaBubble and inserted ABOVE
+   the agent bubble. Deliberately CONTAINED: bounded width + max-height with
+   internal scroll, so opening the raw payload never pushes the agent bubble
+   (and its footer action row) below the fold. Themed from design-system vars
+   so it tracks dark/light. */
+.chat-bubble.schema-inspect-bubble {
+  align-self: flex-end;
+  width: min(560px, 92%);
+  max-height: min(45vh, 340px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+  margin: 2px 0 6px;
+  background: var(--bg-elev);
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  cursor: default;
+}
+.schema-inspect-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: none;
+  padding: 7px 10px;
+  border-bottom: var(--border-width) solid var(--border);
+  background: rgba(var(--ink-rgb), 0.04);
+}
+.schema-inspect-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.schema-inspect-close {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--fg-3);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.schema-inspect-close:hover {
+  background: rgba(var(--ink-rgb), 0.06);
+  border-color: rgba(var(--ink-rgb), 0.12);
+  color: var(--fg-1);
+}
+.schema-inspect-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding: 8px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.schema-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  white-space: normal;
+}
+.schema-msg-role {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--brand);
+}
+.schema-msg-tool-calls {
+  font-size: 10px;
+  color: var(--fg-3);
+}
+.schema-system-fold {
+  border: var(--border-width) solid var(--border);
+  border-radius: 6px;
+  background: rgba(var(--ink-rgb), 0.03);
+}
+.schema-system-fold summary {
+  cursor: pointer;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schema-system-fold pre {
+  margin: 0;
+  padding: 8px;
+  border-top: var(--border-width) solid var(--border);
+  max-height: 180px;
+  overflow: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg-2);
+}
+
 /* ── Bubble-action confirmation notices ─────────────────────────────────────
    Small floating pills ("Copied", "Session forked", "Turn deleted", …) shown
    by chat-bubble-actions.js _showActionNotice after a footer action completes.
@@ -7228,13 +7336,16 @@ body.light-mode #user-dropdown-menu.user-dropdown-menu {
   .account-device-table-frame {
     height: 280px;
     overflow: auto;
+    scrollbar-width: none;        /* Firefox — keep scrolling, hide the bar */
+    -ms-overflow-style: none;     /* legacy Edge/IE */
     border: var(--border-width) solid var(--border);
     border-radius: 7px;
     background: var(--bg-0);
   }
+  .account-device-table-frame::-webkit-scrollbar { display: none; }  /* Chromium / WebKit */
   .account-device-table {
     width: 100%;
-    min-width: 680px;
+    min-width: 720px;
     border-collapse: collapse;
     table-layout: fixed;
     color: var(--fg-2);
@@ -7265,9 +7376,9 @@ body.light-mode #user-dropdown-menu.user-dropdown-menu {
   .account-device-table tbody tr:hover {
     background: color-mix(in oklab, var(--brand) 8%, transparent);
   }
-  .account-device-table th:nth-child(2) { width: 25%; }
-  .account-device-table th:nth-child(3) { width: 23%; }
-  .account-device-table th:nth-child(4) { width: 27%; }
+  .account-device-table th:nth-child(2) { width: 22%; }
+  .account-device-table th:nth-child(3) { width: 18%; }
+  .account-device-table th:nth-child(4) { width: 32%; }
   .account-device-table .account-device-select {
     width: 38px;
     padding-left: 12px;
@@ -7288,6 +7399,26 @@ body.light-mode #user-dropdown-menu.user-dropdown-menu {
     font-size: 11px;
     white-space: nowrap;
   }
+  /* Compact refresh icon beside the "Signed-in devices" label. Same look as the
+     chat transcript refresh button (.chat-refresh-btn); spins while the table
+     refetches (spinning class toggled in loadDevices()). */
+  .account-device-refresh-btn {
+    background: none;
+    border: none;
+    color: var(--fg-3);
+    cursor: pointer;
+    padding: 3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    border-radius: var(--r-sm);
+    line-height: 0;
+  }
+  .account-device-refresh-btn:hover { color: var(--brand); }
+  .account-device-refresh-btn:disabled { opacity: 0.5; cursor: default; }
+  .account-device-refresh-btn.spinning i,
+  .account-device-refresh-btn.spinning svg { animation: chat-refresh-spin 0.6s linear infinite; }
   .account-device-primary,
   .account-device-secondary {
     display: block;
@@ -7303,6 +7434,10 @@ body.light-mode #user-dropdown-menu.user-dropdown-menu {
     margin-top: 2px;
     color: var(--fg-3);
     font-size: 10px;
+  }
+  .account-device-origin {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: nowrap;
   }
   body.light-mode .account-pref-title { color: var(--fg-1); }
   body.light-mode .account-pref-desc { color: var(--fg-3); }

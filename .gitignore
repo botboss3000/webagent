@@ -48,6 +48,7 @@ data/config/optimizer.json
 data/config/deploy.json
 data/config/dns.json
 data/config/instance-annotations.json
+data/config/p2p/
 data/config/production-mirror.json
 data/config/git-repos.json
 data/config/local-instances.json

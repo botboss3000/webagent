@@ -107,6 +107,29 @@ function _credentialStatus(root, message, kind) {
   status.className = 'ni-status' + (kind ? ' ni-status--' + kind : '');
 }
 
+function _renderCredentialButton(root) {
+  const btn = _qs(root, 'ni-use-saved-credential');
+  const label = _qs(root, 'ni-credential-btn-label');
+  if (!btn || !label) return;
+  const provider = _currentProvider(root);
+  const active = !!(provider && (_selectedCredentials.has(provider.id) || _credentialReady.has(provider.id)));
+  label.textContent = active ? 'Reset credential' : 'Use a saved credential';
+  const ico = btn.querySelector('.ni-btn-ico');
+  if (ico) {
+    const fresh = document.createElement('i');
+    fresh.className = 'ni-btn-ico';
+    fresh.setAttribute('data-lucide', active ? 'rotate-ccw' : 'key-round');
+    ico.replaceWith(fresh);
+  }
+}
+
+function _resetCredential(root, providerId) {
+  _selectedCredentials.delete(providerId);
+  _credentialReady.delete(providerId);
+  _credentialStatus(root, 'Saved credential cleared — paste a service-account key or choose one again.', '');
+  _renderProvider(root);
+}
+
 function _renderProvider(root) {
   const select = _qs(root, 'ni-cloud-provider');
   const providers = _cloudProviders();
@@ -152,6 +175,7 @@ function _renderProvider(root) {
       return _fieldHtml(f, value);
     }).join('');
   }
+  _renderCredentialButton(root);
   _refreshLucideIcons(root);
 }
 
@@ -187,6 +211,7 @@ function _useSavedCredential(root) {
     providers: saved,
     mode: 'summary',
     summaryOnly: true,
+    popoverAlign: 'after',
     onUseSaved: (providerId, popup) => {
       const account = _accountProvider(providerId);
       if (!account) return;
@@ -218,6 +243,12 @@ async function _saveAndConnect(root) {
     _renderProvider(root);
     _credentialStatus(root, 'Connected with the saved vault credential.', 'ok');
     if (button) button.disabled = false;
+    return;
+  }
+  if (_credentialReady.has(provider.id)) {
+    // Already connected through a saved credential — the JSON field is hidden
+    // on purpose, so never demand a pasted key here.
+    _credentialStatus(root, 'Already connected with the saved vault credential.', 'ok');
     return;
   }
   if (!raw) {
@@ -386,7 +417,7 @@ function _wire(root) {
   const clone = _qs(root, 'ni-opt-clone');
   clone.addEventListener('change', () => {
     _setLocked(_qs(root, 'ni-step-2'), !clone.checked, clone.checked);
-    _setLocked(_qs(root, 'ni-step-3'), !clone.checked, false);
+    _setLocked(_qs(root, 'ni-step-3'), !clone.checked, clone.checked);
     if (clone.checked) _load(root, false);
   });
 
@@ -397,7 +428,14 @@ function _wire(root) {
     if (cloud) _load(root, false);
   });
   _qs(root, 'ni-cloud-provider').addEventListener('change', () => _renderProvider(root));
-  _qs(root, 'ni-use-saved-credential').addEventListener('click', () => _useSavedCredential(root));
+  _qs(root, 'ni-use-saved-credential').addEventListener('click', () => {
+    const provider = _currentProvider(root);
+    if (provider && (_selectedCredentials.has(provider.id) || _credentialReady.has(provider.id))) {
+      _resetCredential(root, provider.id);
+    } else {
+      _useSavedCredential(root);
+    }
+  });
   _qs(root, 'ni-save-connect').addEventListener('click', () => _saveAndConnect(root));
   _qs(root, 'ni-deploy').addEventListener('click', () => _deploy(root));
 }

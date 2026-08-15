@@ -44,6 +44,7 @@ def _connect() -> sqlite3.Connection:
             last_ip TEXT,
             last_location TEXT,
             user_agent TEXT,
+            last_origin TEXT,
             device_version INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (user_hash, device_id)
         );
@@ -70,6 +71,7 @@ def _connect() -> sqlite3.Connection:
                     "last_ip": "TEXT",
                     "last_location": "TEXT",
                     "user_agent": "TEXT",
+                    "last_origin": "TEXT",
                     "device_version": "INTEGER",
                 }
                 for column, column_type in optional_columns.items():
@@ -185,6 +187,7 @@ def update_device_metadata(
     ip_address: str = "",
     location: str = "",
     user_agent: str = "",
+    origin: str = "",
 ) -> bool:
     """Attach display-only login context to an existing device record."""
     if not user_id or not device_id:
@@ -193,10 +196,10 @@ def update_device_metadata(
     try:
         cur = conn.execute(
             """UPDATE auth_devices
-               SET last_ip=?,last_location=?,user_agent=?
+               SET last_ip=?,last_location=?,user_agent=?,last_origin=?
                WHERE user_hash=? AND device_id=?""",
             (
-                ip_address[:64], location[:160], user_agent[:512],
+                ip_address[:64], location[:160], user_agent[:512], origin[:255],
                 _user_hash(user_id), device_id,
             ),
         )
@@ -427,7 +430,7 @@ def list_devices(user_id: str) -> list[dict]:
         rows = conn.execute(
             """SELECT device_id,issued_epoch,first_seen,last_seen,revoked_at,
                       purge_requested_at,purge_acknowledged_at,last_login_at,
-                      last_ip,last_location,user_agent
+                      last_ip,last_location,user_agent,last_origin
                FROM auth_devices
                WHERE user_hash=? AND revoked_at IS NULL
                  AND purge_requested_at IS NULL
@@ -451,6 +454,7 @@ def list_devices(user_id: str) -> list[dict]:
                 "ip_address": str(row[8] or ""),
                 "location": str(row[9] or "Unknown"),
                 "user_agent": str(row[10] or ""),
+                "origin": str(row[11] or ""),
             }
             for row in rows
         ]

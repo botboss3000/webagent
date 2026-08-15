@@ -13,7 +13,7 @@
  * Bump CACHE on each release so the activate handler drops the prior cache.
  */
 
-const CACHE = "webagent-v230";
+const CACHE = "webagent-v232";
 const STATIC_PATTERN = /\.(css|js|json|svg|png|ico|woff2?)$/;
 const CODE_PATTERN = /\.(css|js|json)$/;
 // Kept for defence-in-depth only: as of the offline-vendoring change the app

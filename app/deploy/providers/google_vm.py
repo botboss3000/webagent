@@ -435,7 +435,13 @@ class GoogleVMProvider(BaseDeployProvider):
             await asyncio.sleep(2)
         return {"status": "TIMEOUT"}
 
-    async def _poll_app_health(self, ip: str, *, timeout_s: int = 600) -> str:
+    async def _poll_app_health(
+        self,
+        ip: str,
+        *,
+        timeout_s: int = 600,
+        require_scoped_p2p: bool = False,
+    ) -> str:
         """Watch a freshly-created raw-IP VM until its app actually answers.
 
         Returns one of:
@@ -451,7 +457,11 @@ class GoogleVMProvider(BaseDeployProvider):
         its failure page ``WEBAGENT-INSTALL-FAILED`` so we can tell
         install-in-progress and install-broken apart from the live app."""
         import asyncio
-        probe = f"http://{ip}/"
+        # Never probe `/` for readiness. During apt installation Caddy briefly
+        # serves its stock welcome page before our holding-page configuration is
+        # loaded; that unrelated HTTP 200 is not the WebAgent application.
+        probe_path = "/api/v1/p2p/status" if require_scoped_p2p else "/api/v1/boot"
+        probe = f"http://{ip}{probe_path}"
         deadline = time.time() + timeout_s
         async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as hc:
             while time.time() < deadline:
@@ -465,8 +475,18 @@ class GoogleVMProvider(BaseDeployProvider):
                     return "failed"
                 if "WEBAGENT-HOLDING" in body:
                     continue          # still installing — the holding page is up
-                if r.status_code < 500:
-                    return "running"  # a real (non-holding) response → the app is up
+                if require_scoped_p2p:
+                    try:
+                        capabilities = (r.json().get("capabilities") or {}) if r.status_code == 200 else {}
+                    except Exception:
+                        capabilities = {}
+                    if capabilities.get("scoped_bootstrap"):
+                        return "running"
+                    continue
+                # The boot endpoint may be auth-gated on some editions. Any
+                # non-404, non-5xx response still proves the app owns the path.
+                if r.status_code < 500 and r.status_code != 404:
+                    return "running"
         return "installing"
 
     # ── deploy ──
@@ -617,7 +637,11 @@ class GoogleVMProvider(BaseDeployProvider):
         if ip and not domain:
             yield ev("Verifying the app comes up on the server (this can take a few minutes)…", phase="verify")
             try:
-                state = await self._poll_app_health(ip)
+                state = await self._poll_app_health(
+                    ip,
+                    timeout_s=int(config.get("_health_timeout_s") or 600),
+                    require_scoped_p2p=bool(config.get("_require_scoped_p2p")),
+                )
             except Exception:
                 logger.exception("google_vm health poll failed")
                 state = "installing"

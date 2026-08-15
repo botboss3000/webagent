@@ -8,6 +8,7 @@ It deliberately does not import or participate in the app lifecycle.
 from __future__ import annotations
 
 import argparse
+import codecs
 import hmac
 import json
 import os
@@ -36,6 +37,9 @@ STATUS_FRESH_SECONDS = 60.0
 STATUS_REFRESH_SECONDS = 10.0
 _NGROK_URL_RE = re.compile(
     r"https://[^\s\"']+\.(?:ngrok(?:-free)?\.app|ngrok\.io)", re.IGNORECASE,
+)
+_CLOUDFLARE_READY_RE = re.compile(
+    r"(?:registered tunnel connection|connection[^\r\n]*registered)", re.IGNORECASE,
 )
 
 
@@ -93,18 +97,20 @@ def probe_control(port: int, *, timeout: float = 1.0) -> Optional[Dict[str, Any]
 
 class TunnelSlave:
     def __init__(self, *, port: int, token: str, provider: str, quick: bool,
-                 name: str = "", bin_path: str = "") -> None:
+                 name: str = "", bin_path: str = "", public_url: str = "") -> None:
         self.port = port
         self.token = token
         self.provider = provider
         self.quick = quick
         self.name = name
         self.bin_path = bin_path
-        self.proc: Optional[subprocess.Popen[str]] = None
+        self.configured_url = public_url.strip().rstrip("/")
+        self.proc: Optional[subprocess.Popen[bytes]] = None
         self.state = "starting"
         self.url = ""
         self.exit_code: Optional[int] = None
         self.error = ""
+        self.started_at = 0.0
         self._stop_requested = False
         self._lock = threading.RLock()
         self._quitting = threading.Event()
@@ -119,6 +125,7 @@ class TunnelSlave:
                 "pid": os.getpid(),
                 "ts": time.time(),
                 "provider": self.provider,
+                "started_at": self.started_at,
             }
             if self.exit_code is not None:
                 data["exit_code"] = self.exit_code
@@ -174,21 +181,26 @@ class TunnelSlave:
                 return
             argv = self._argv()
             self.state = "starting"
-            self.url = ""
+            self.url = self.configured_url
             self.exit_code = None
             self.error = ""
             self._stop_requested = False
+            self.started_at = time.time()
             print(f"[WebAgent] Starting {self.provider} tunnel for localhost:{self.port}", flush=True)
+            print(f"[WebAgent] Command: {subprocess.list2cmdline(argv)}", flush=True)
             self.proc = subprocess.Popen(
                 argv,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-                bufsize=1,
+                # Read raw chunks instead of text lines. cloudflared sometimes
+                # emits progress/log records without a newline when stdout is a
+                # pipe; a line iterator then leaves the visible console looking
+                # frozen even though the tunnel is healthy.
+                text=False,
+                bufsize=0,
             )
-        self.persist(report=True)
         threading.Thread(target=self._drain_child, name="tunnel-output", daemon=True).start()
+        self.persist(report=True)
 
     def _drain_child(self) -> None:
         proc = self.proc
@@ -196,16 +208,38 @@ class TunnelSlave:
             return
         try:
             if proc.stdout:
-                for raw in proc.stdout:
-                    line = raw.rstrip()
-                    if not line:
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                tail = ""
+                stream = proc.stdout
+                while True:
+                    if hasattr(stream, "read"):
+                        raw = stream.read(4096)
+                    else:  # small fake streams used by unit tests
+                        try:
+                            raw = next(stream)
+                        except StopIteration:
+                            raw = b""
+                    if not raw:
+                        break
+                    chunk = decoder.decode(raw) if isinstance(raw, bytes) else str(raw)
+                    if not chunk:
                         continue
-                    print(line, flush=True)
-                    public_url = parse_public_url(self.provider, line)
-                    if public_url and not self.url:
+                    # Mirror bytes as soon as cloudflared emits them. This keeps
+                    # its connection/retry details live in the slave console.
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                    tail = (tail + chunk)[-8192:]
+                    public_url = parse_public_url(self.provider, tail)
+                    ready = bool(public_url) or (
+                        self.provider == "cloudflare" and bool(_CLOUDFLARE_READY_RE.search(tail))
+                    )
+                    if ready and self.state != "running":
                         with self._lock:
-                            self.url = public_url
+                            if public_url:
+                                self.url = public_url.rstrip("/")
                             self.state = "running"
+                        if not chunk.endswith(("\n", "\r")):
+                            print(flush=True)
                         print(f"[WebAgent] Public URL: {self.url}", flush=True)
                         self.persist(report=True)
             code = proc.wait()
@@ -320,6 +354,7 @@ def _parse_args() -> argparse.Namespace:
     mode.add_argument("--quick", action="store_true")
     mode.add_argument("--name", default="")
     parser.add_argument("--bin", dest="bin_path", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--public-url", default="", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -335,6 +370,7 @@ def main() -> int:
         quick=bool(args.quick or not args.name),
         name=args.name,
         bin_path=args.bin_path,
+        public_url=args.public_url,
     )
     try:
         slave.serve()

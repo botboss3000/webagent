@@ -158,10 +158,12 @@ function renderTab() {
       <span id="account-session-status" class="account-status" style="display:none;"></span>
     </div>
     <div class="account-field" style="margin-top:18px;">
-      <label>Signed-in devices</label>
-      <span class="account-pref-desc" style="display:block;margin-bottom:8px;">Select device sessions to sign them out and erase their local account data.</span>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+        <label style="margin:0;">Signed-in devices</label>
+        <button id="account-devices-refresh" type="button" class="account-device-refresh-btn" title="Refresh device sessions" aria-label="Refresh device sessions"><i data-lucide="refresh-cw" style="width:14px;height:14px;"></i></button>
+      </div>
       <div id="account-device-list" class="account-device-list">
-        <span class="account-status" style="display:block;">Loading devicesâ€¦</span>
+        <span class="account-status" style="display:block;">Loading devices…</span>
       </div>
       <span id="account-device-status" class="account-status" style="display:none;"></span>
     </div>
@@ -287,6 +289,9 @@ function wireHandlers() {
   if (sessBtn) sessBtn.addEventListener('click', onSaveSessionPolicy);
   loadSessionPolicy();
   loadDevices();
+
+  const refreshDevicesBtn = document.getElementById('account-devices-refresh');
+  if (refreshDevicesBtn) refreshDevicesBtn.addEventListener('click', loadDevices);
 
   const delTrigger = document.getElementById('account-delete-trigger');
   if (delTrigger) delTrigger.addEventListener('click', () => {
@@ -525,9 +530,31 @@ function _deviceLabel(userAgent) {
   return `${browser} on ${platform}`;
 }
 
+// Human label for the origin a sign-in came through — [localhost] / [tunnel] /
+// plain URL for anything else. Only filled for logins captured after this
+// feature shipped (the origin is read from the login request).
+function _originLabel(origin) {
+  if (!origin) return '';
+  let host = origin;
+  let kind = '';
+  try {
+    const u = new URL(origin);
+    host = u.host;
+    const hostname = u.hostname.toLowerCase();
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+      kind = 'localhost';
+    } else if (/\.(trycloudflare\.com|ngrok\.(io|app|free\.app)|loca\.lt|serveo\.net|localhost\.run|tunnel\.dev)$/.test(hostname)) {
+      kind = 'tunnel';
+    }
+  } catch (_) { /* fall through to the raw origin */ }
+  return kind ? `[${kind}] ${host}` : host;
+}
+
 async function loadDevices() {
   const list = document.getElementById('account-device-list');
   if (!list) return;
+  const refreshBtn = document.getElementById('account-devices-refresh');
+  if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.classList.add('spinning'); }
   try {
     const res = await fetch('/api/v1/auth/me/devices', {
       headers: _authHeaders(),
@@ -590,11 +617,12 @@ async function loadDevices() {
       const current = device.device_id === data.current_device_id;
       const location = device.location || 'Unknown location';
       const ip = device.ip_address || '';
+      const origin = device.origin ? _originLabel(device.origin) : '';
       row.innerHTML = `
         <td class="account-device-select"></td>
         <td><span class="account-device-primary">${current ? 'This device' : _esc(_deviceLabel(device.user_agent))}</span><span class="account-device-secondary">${_esc(String(device.device_id || '').slice(0, 10))}</span></td>
         <td>${_esc(_deviceTime(device.last_login_at))}</td>
-        <td><span class="account-device-primary">${_esc(location)}</span><span class="account-device-secondary">${_esc(ip)}</span></td>
+        <td><span class="account-device-primary">${_esc(location)}</span><span class="account-device-secondary">${_esc(ip)}</span>${origin ? `<span class="account-device-secondary account-device-origin">${_esc(origin)}</span>` : ''}</td>
         <td></td>
       `;
       const checkbox = document.createElement('input');
@@ -636,6 +664,8 @@ async function loadDevices() {
     });
   } catch (_) {
     list.textContent = 'Could not load device sessions.';
+  } finally {
+    if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.classList.remove('spinning'); }
   }
 }
 

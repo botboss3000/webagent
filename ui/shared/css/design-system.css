@@ -876,6 +876,50 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
   body.mobile-mode .mobile-nav-toggle { display: inline-flex; }
 }
 
+/* Centered brand wordmark for the compact mobile header (mobile_mode=true).
+   Sits between the nav toggle and the Chat button where the tab strip is
+   hidden. Decorative only — no icon, no click target: pointer-events:none
+   so taps pass through, and it never grows to crowd the edge buttons. */
+.mobile-header-brand {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  max-width: 44vw;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  user-select: none;
+}
+@media (max-width: 800px) {
+  body.mobile-mode .mobile-header-brand { display: inline-flex; }
+}
+
+/* ── Header boot gate ────────────────────────────────────────────────
+   body.header-pending is set on <body> in index.html and removed by
+   initMobileNavigation() (ui/shared/js/mobile-navigation.js) on every
+   exit path once /api/v1/auth/ui-config resolves. Until then the header
+   stays EMPTY — the desktop tab strip (and the Chat button) can never
+   flash before the mobile layout is decided. min-height keeps the chrome
+   stable so the stage doesn't jump when content appears. */
+body.header-pending #main-tabs-wrap,
+body.header-pending #status-right {
+  display: none !important;
+}
+body.header-pending #main-header {
+  min-height: 38px;
+}
+
 .mobile-nav-menu {
   position: absolute;
   top: calc(100% + 6px);

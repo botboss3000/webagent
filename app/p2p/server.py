@@ -174,6 +174,12 @@ async def p2p_signaling(body: SignalingRequest):
     except ValueError:
         raise HTTPException(status_code=400, detail="public_key is not valid hex")
 
+    if body.instance_id == identity.instance_id() or body.public_key == identity.public_key_hex():
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot pair an instance with a cloned copy of its own P2P identity",
+        )
+
     # Store the pending answer for the WebRTC transport to pick up
     # (the transport layer polls for pending answers)
     from app.p2p.transport.signaling import _store_pending_answer

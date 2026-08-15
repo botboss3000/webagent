@@ -449,10 +449,11 @@ async function _save(opts, handle) {
 }
 
 // ── Popover positioning ─────────────────────────────────────────────────────
-// Place the fixed card near the anchor (below it, right-aligned; flips above
-// when there isn't room; clamped to the viewport). Called on open and again on
-// scroll/resize so the card tracks the trigger.
-function _positionPopover(card, anchor) {
+// Place the fixed card near the anchor (below it, right-aligned; pass
+// align='after' to open below and RIGHT of the trigger; flips above when there
+// isn't room; clamped to the viewport). Called on open and again on scroll/
+// resize so the card tracks the trigger.
+function _positionPopover(card, anchor, align) {
   if (!anchor || !anchor.getBoundingClientRect) return;
   const r = anchor.getBoundingClientRect();
   const margin = 8;
@@ -460,7 +461,7 @@ function _positionPopover(card, anchor) {
   card.style.top = 'auto';
   const cw = card.offsetWidth || 400;
   const ch = card.offsetHeight || 300;
-  let left = r.right - cw;
+  let left = align === 'after' ? r.right + margin : r.right - cw;
   let top = r.bottom + margin;
   if (left < margin) left = margin;
   if (left + cw > window.innerWidth - margin) left = window.innerWidth - margin - cw;
@@ -626,7 +627,7 @@ export function openCredentialPopup(opts) {
   // Popover: pin the card near the trigger and keep it there on scroll/resize.
   if (!isDim) {
     const card = overlay.querySelector('.crp-card');
-    const repos = function() { _positionPopover(card, opts.anchor); };
+    const repos = function() { _positionPopover(card, opts.anchor, opts.popoverAlign); };
     handle._onRepos = repos;
     window.addEventListener('scroll', repos, true);
     window.addEventListener('resize', repos);

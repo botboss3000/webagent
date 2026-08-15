@@ -98,6 +98,22 @@ class P2PBootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(should_sync_row("admin", "deploy_github_token", "default"))
         self.assertTrue(should_sync_row("admin", "llm", "default"))
 
+    def test_fresh_app_plane_initializes_attached_secret_vaults(self):
+        from app.db import local
+        from app.db import storage_layout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app_path = Path(tmp) / "app.db"
+            with patch.object(storage_layout, "APP_DB_PATH", app_path), \
+                    patch.object(local, "DEFAULT_DB_PATH", str(app_path)):
+                backend = local.LocalBackend(str(app_path), seed=False, plane="app")
+                conn = backend._get_conn()
+                try:
+                    for schema in ("vault_app", "vault_agent", "vault_user"):
+                        conn.execute(f"SELECT 1 FROM {schema}.auth_elements LIMIT 0")
+                finally:
+                    conn.close()
+
     async def test_pair_stops_with_release_guidance_when_target_has_no_p2p_routes(self):
         response = Mock(status_code=404)
         client = AsyncMock()
@@ -125,6 +141,31 @@ class P2PBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("httpx.AsyncClient", return_value=context):
             with self.assertRaisesRegex(RuntimeError, "older P2P service"):
+                await bootstrap.pair_and_push(
+                    target_url="https://new.example",
+                    source_url="https://source.example",
+                    options={"app_db": True},
+                )
+
+        client.post.assert_not_awaited()
+
+    async def test_pair_rejects_a_cloned_target_identity(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "instance_id": "source-id",
+            "public_key": "cd" * 32,
+            "capabilities": {"scoped_bootstrap": True},
+        }
+        client = AsyncMock()
+        client.get.return_value = response
+        context = AsyncMock()
+        context.__aenter__.return_value = client
+
+        with patch("httpx.AsyncClient", return_value=context), \
+                patch("app.p2p.identity.instance_id", return_value="source-id"), \
+                patch("app.p2p.identity.public_key_hex", return_value="ab" * 32), \
+                patch("app.p2p.transport.crypto.local_x25519_public_key_b64", return_value="key"):
+            with self.assertRaisesRegex(RuntimeError, "cloned copy"):
                 await bootstrap.pair_and_push(
                     target_url="https://new.example",
                     source_url="https://source.example",

@@ -10,6 +10,7 @@ are wired into app startup/shutdown.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 from typing import Optional
 
@@ -214,6 +215,7 @@ def tunnel_snapshot() -> dict:
     # Keep the compatibility field consumed by the Instances UI, but source it
     # only from a fresh slave snapshot so an old ephemeral URL never looks live.
     headful_url = ""
+    connected_at = ""
     if slave_status and slave_status.get("state") in ("starting", "running"):
         slave_provider = str(slave_status.get("provider") or "").strip()
         if slave_provider in _MANAGED:
@@ -224,6 +226,14 @@ def tunnel_snapshot() -> dict:
         # configured URL calculated above until the slave reports a replacement.
         public_url = str(slave_status.get("url") or "").strip() or public_url
         headful_url = public_url
+        try:
+            started_at = float(slave_status.get("started_at") or 0)
+            if started_at > 0:
+                connected_at = datetime.datetime.fromtimestamp(
+                    started_at, datetime.timezone.utc
+                ).isoformat()
+        except (TypeError, ValueError, OSError):
+            connected_at = ""
 
     return {
         "provider": provider,
@@ -232,6 +242,7 @@ def tunnel_snapshot() -> dict:
         "running": running,
         "public_url": public_url,
         "headful_url": headful_url,
+        "connected_at": connected_at,
     }
 
 
