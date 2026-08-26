@@ -167,13 +167,23 @@ async def _start_slave_tunnel(*, job: dict, db: Any, payload: dict) -> str:
     binary = (configured_bin if configured_bin and Path(configured_bin).is_file()
               else shutil.which(configured_bin or binary_name))
 
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("127.0.0.1", port + 1))
-    except OSError as exc:
-        # Do not start a managed tunnel when an unresponsive slave (or another
-        # service) may already own the control port: that could double-launch.
-        raise RuntimeError(f"tunnel slave control port {port + 1} is already in use") from exc
+    # A Stop response is sent just before the detached controller closes its
+    # HTTP server. Give that sibling a short grace period to release the port,
+    # so an immediate Stop -> Start from the Instances card is reliable.
+    port_deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("127.0.0.1", port + 1))
+            break
+        except OSError as exc:
+            if time.monotonic() >= port_deadline:
+                # Do not double-launch when another process owns the port.
+                raise RuntimeError(
+                    f"tunnel slave control port {port + 1} is already in use"
+                ) from exc
+            await asyncio.sleep(0.1)
 
     proc = None
     try:
