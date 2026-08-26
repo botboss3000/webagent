@@ -41,6 +41,7 @@ back to this bundled folder.
 | `is_pipeline` | bool | `false` | Part of a multi-agent pipeline. |
 | `is_admin_agent` | bool | `false` | Admin-only agent. |
 | `access_level` | string | `"all"` | Who may use it. |
+| `user_mode` | string | `"anonymous"` | Runtime audience for agents cloned from the template. The bundled `default` value is also enforced on the `shared_default` singleton at startup. |
 | `discoverable` | bool | `false` | Appears in the "New Agent" template list. |
 
 ### Model & generation
@@ -117,8 +118,10 @@ Each becomes an editable prompt slot. All default to `""`.
 
 ### Not template-seeded
 A few per-agent runtime settings are **not** taken from these files — they're set
-later in the UI per agent: `user_mode`, per-agent `allowed_tools` edits beyond
+later in the UI per agent: per-agent `allowed_tools` edits beyond
 what `tool_permissions` derives, member/authorized-user lists, and sort order.
+`user_mode` remains configurable for ordinary agents; the bundled default's
+`anonymous` value is a permanent invariant only for the shared singleton.
 
 ## Worked example — a locked-down assistant
 

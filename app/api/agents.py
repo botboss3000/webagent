@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["agents"])
 
 SHARED_DEFAULT_AGENT_ID = "shared_default"
+SHARED_DEFAULT_AGENT_USER_MODE = "anonymous"
 
 # ── Idempotent WebAgent provisioning ────────────────────────────────────────
 # The default WebAgent is one app-level singleton, not one singleton per user.
@@ -96,6 +97,34 @@ def _resource_http_error(exc: ResourceEntitlementError) -> HTTPException:
     return HTTPException(status_code=403, detail=exc.detail())
 
 
+def _guard_shared_default_user_mode(agent_id: str, user_mode: Optional[str]) -> None:
+    """Keep the shipped app-level singleton permanently available to guests."""
+    if (agent_id == SHARED_DEFAULT_AGENT_ID
+            and user_mode not in (None, SHARED_DEFAULT_AGENT_USER_MODE)):
+        raise HTTPException(
+            status_code=400,
+            detail="The shared default agent is always available to anonymous visitors.",
+        )
+
+
+async def _repair_shared_default_user_mode(db, shared: dict) -> dict:
+    mode = shared.get("user_mode") or SHARED_DEFAULT_AGENT_USER_MODE
+    if mode == SHARED_DEFAULT_AGENT_USER_MODE:
+        return shared
+    updated = await db.update_agent_fields(
+        SHARED_DEFAULT_AGENT_ID,
+        "admin",
+        {"user_mode": SHARED_DEFAULT_AGENT_USER_MODE},
+        allow_install_admin=True,
+    )
+    if updated is None:
+        raise RuntimeError(
+            "Could not restore anonymous access for the shared default agent"
+        )
+    logger.info("Restored anonymous access for the shared default agent")
+    return updated
+
+
 async def provision_default_agent(db, user_id: str) -> Optional[dict]:
     """Return the single admin-owned WebAgent shared by every app user.
 
@@ -119,19 +148,18 @@ async def provision_default_agent(db, user_id: str) -> Optional[dict]:
                 e,
             )
             shared = None
-        if shared:
-            return shared
-        try:
-            return await db.create_agent_for_user(
-                "admin", agent_id=SHARED_DEFAULT_AGENT_ID,
-            )
-        except Exception:
-            # The in-process lock cannot serialize separate server processes.
-            # If another instance won the fixed-ID insert, converge on its row.
-            shared = await db.get_agent_by_id(SHARED_DEFAULT_AGENT_ID)
-            if shared:
-                return shared
-            raise
+        if not shared:
+            try:
+                shared = await db.create_agent_for_user(
+                    "admin", agent_id=SHARED_DEFAULT_AGENT_ID,
+                )
+            except Exception:
+                # The in-process lock cannot serialize separate server processes.
+                # If another instance won the fixed-ID insert, converge on its row.
+                shared = await db.get_agent_by_id(SHARED_DEFAULT_AGENT_ID)
+                if not shared:
+                    raise
+        return await _repair_shared_default_user_mode(db, shared)
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -1085,6 +1113,7 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
         exec_mode_in = _m or "wkspc"
     updates = {k: v for k, v in payload.items()
                if k not in ("user_id",) and v is not None}
+    _guard_shared_default_user_mode(agent_id, updates.get("user_mode"))
 
     # Merge metadata-backed blobs (llm_config, chat_ui, icon, default chat mode)
     # into the agent's metadata. All are read-modify-write against the current
@@ -3373,6 +3402,7 @@ async def set_agent_user_mode(agent_id: str, req: _SetUserModeRequest, request: 
     """Set the agent's user_mode policy. Caller must be agent admin."""
     if req.user_mode not in ("anonymous", "register", "authorized"):
         raise HTTPException(status_code=400, detail="Invalid user_mode.")
+    _guard_shared_default_user_mode(agent_id, req.user_mode)
     db = get_db()
     req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):

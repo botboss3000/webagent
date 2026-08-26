@@ -34,7 +34,7 @@ def test_shared_default_creation_uses_one_fixed_admin_owned_id():
 
 
 def test_every_user_resolves_the_same_existing_shared_agent():
-    shared = {"id": agents_api.SHARED_DEFAULT_AGENT_ID}
+    shared = {"id": agents_api.SHARED_DEFAULT_AGENT_ID, "user_mode": "anonymous"}
     db = Mock()
     db.get_agent_by_id = AsyncMock(return_value=shared)
     db.create_agent_for_user = AsyncMock()
@@ -48,6 +48,54 @@ def test_every_user_resolves_the_same_existing_shared_agent():
 
     assert alice["id"] == bob["id"] == agents_api.SHARED_DEFAULT_AGENT_ID
     db.create_agent_for_user.assert_not_awaited()
+
+
+def test_existing_shared_default_is_repaired_to_anonymous():
+    shared = {"id": agents_api.SHARED_DEFAULT_AGENT_ID, "user_mode": "register"}
+    repaired = {**shared, "user_mode": "anonymous"}
+    db = Mock()
+    db.get_agent_by_id = AsyncMock(return_value=shared)
+    db.update_agent_fields = AsyncMock(return_value=repaired)
+    agents_api._provision_locks.clear()
+
+    with patch(
+        "app.admin.settings.shared_default_agent_enabled", return_value=True
+    ):
+        result = run(agents_api.provision_default_agent(db, "alice"))
+
+    assert result["user_mode"] == "anonymous"
+    db.update_agent_fields.assert_awaited_once_with(
+        agents_api.SHARED_DEFAULT_AGENT_ID,
+        "admin",
+        {"user_mode": agents_api.SHARED_DEFAULT_AGENT_USER_MODE},
+        allow_install_admin=True,
+    )
+
+
+def test_shared_default_rejects_non_anonymous_modes():
+    agents_api._guard_shared_default_user_mode(
+        agents_api.SHARED_DEFAULT_AGENT_ID, "anonymous"
+    )
+    for mode in ("register", "authorized"):
+        try:
+            agents_api._guard_shared_default_user_mode(
+                agents_api.SHARED_DEFAULT_AGENT_ID, mode
+            )
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 400
+        else:
+            raise AssertionError(f"shared default accepted {mode}")
+
+
+def test_bundled_default_declares_anonymous_mode():
+    import json
+    from pathlib import Path
+
+    seed = json.loads(
+        (Path(__file__).resolve().parents[1] / "app/defaults/agents/default.json")
+        .read_text(encoding="utf-8")
+    )
+    assert seed["user_mode"] == agents_api.SHARED_DEFAULT_AGENT_USER_MODE
 
 
 def test_disabled_shared_default_does_not_create_a_per_user_clone():
