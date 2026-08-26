@@ -1,0 +1,24 @@
+[Unit]
+Description=Cloudflare Quick Tunnel for WebAgent
+Documentation=https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+User=ar
+Group=ar
+Environment=HOME=/home/ar
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --url http://100.112.23.15:8080 --loglevel info --logfile /home/ar/.local/state/cloudflared-webagent/quick-tunnel.log
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ar/.local/state/cloudflared-webagent
+
+[Install]
+WantedBy=multi-user.target
