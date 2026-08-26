@@ -101,7 +101,7 @@ def _catalog():
 @pytest.mark.parametrize(
     ("uid", "assignment", "is_admin", "expected_main", "admin_count"),
     [
-        ("", None, False, {"agents", "wiki"}, 0),
+        ("", None, False, {"agents", "automations", "browser", "genui", "wiki"}, 0),
         ("free-user", None, False, {"agents", "browser", "wiki"}, 0),
         ("pro-user", {"tier_id": "pro", "source": "manual"}, False,
          {"agents", "automations", "browser", "genui", "wiki"}, 0),

@@ -126,13 +126,12 @@ _DEFAULT_ORDER = 100
 def _default_visibility(kind: str) -> str:
     """Default page visibility when an admin has set NO override.
 
-    Main header tabs and Admin Tools views require a signed-in (registered)
-    account by default ("auth"), so a fresh deployment never exposes a page to
-    anonymous (not-signed-in) visitors — an admin opens a page to anon
-    explicitly by setting it to "all". The public splash/landing page stays
-    world-visible ("all"), since it IS the front door an unauthenticated visitor
-    must be able to see. See the page_config visibility contract."""
-    return "all" if kind == "splash" else "auth"
+    Main header pages are visible to anonymous visitors by default. Sensitive
+    pages still carry platform-admin capabilities and are removed from the
+    caller's catalog server-side. Admin Tools sub-views remain signed-in by
+    default, while the public splash/landing page is always world-visible.
+    Explicit page-config overrides continue to take precedence."""
+    return "auth" if kind == "admin" else "all"
 
 _CATALOG: Optional[Dict[str, Dict[str, Any]]] = None
 
@@ -274,8 +273,9 @@ def _merge_kind(kind: str) -> List[Dict[str, Any]]:
         # 3-state visibility: "all" (always, incl. anonymous) / "auth" (signed-in
         # registered users only) / "off" (hidden from all but admins). Read the
         # canonical override, falling back to the legacy boolean `hidden`, then to
-        # the per-kind DEFAULT (main/admin → "auth", splash → "all") when the admin
-        # set nothing — so a fresh deployment requires sign-in for every tab. A
+        # the per-kind DEFAULT (main/splash → "all", admin → "auth") when the admin
+        # set nothing — main pages are public unless their capability gate excludes
+        # the caller, while Admin Tools sub-views still require sign-in. A
         # locked page (Admin Tools / Admin Configuration) can never be turned fully
         # "off" — that would lock the user out of the app's configuration — so we
         # clamp "off" up to "all"; it may still be "auth".

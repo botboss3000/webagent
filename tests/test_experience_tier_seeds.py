@@ -85,9 +85,11 @@ def test_locked_system_tier_advances_a_new_shipped_policy_revision():
     result = asyncio.run(provision_system_tiers(db=db))
 
     assert result == {"created": 2, "skipped": 1}
-    assert db.rows["anonymous"]["revision"] == 5
-    assert db.rows["anonymous"]["published_revision"] == 5
-    assert db.rows["anonymous"]["policy_json"]["pages"] == ["agents", "wiki"]
+    assert db.rows["anonymous"]["revision"] == 6
+    assert db.rows["anonymous"]["published_revision"] == 6
+    assert db.rows["anonymous"]["policy_json"]["pages"] == [
+        "agents", "automations", "browser", "genui", "wiki",
+    ]
     assert db.rows["anonymous"]["policy_json"]["ability_groups"] == []
 
 

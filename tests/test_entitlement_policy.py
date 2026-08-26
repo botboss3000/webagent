@@ -82,7 +82,9 @@ def test_registered_defaults_free_and_response_has_no_key():
 def test_anonymous_is_restrictive():
     result = run(resolve_capabilities("anon_123", db=FakeDB(), use_cache=False))
     assert result["tier"]["slug"] == "anonymous"
-    assert {page_id for page_id, allowed in result["pages"].items() if allowed} == {"agents", "wiki"}
+    assert {page_id for page_id, allowed in result["pages"].items() if allowed} == {
+        "agents", "automations", "browser", "genui", "wiki",
+    }
     assert result["ability_groups"] == []
     assert result["models"]["allow_byo"] is False
     assert "attachments" not in result["features"]

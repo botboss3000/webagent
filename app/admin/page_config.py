@@ -16,9 +16,10 @@ What lives here (per page id, all optional overrides):
         ``off``  — hidden from everyone but admins
       All three are EXPLICIT overrides and are stored as-is. A page with NO entry
       here falls back to its per-kind DEFAULT (decided in app/ui_pages: main
-      header tabs + admin views default to ``auth`` so a fresh deployment never
-      exposes a page to anonymous visitors; the public splash landing defaults to
-      ``all``). Locked pages can't be ``off`` (clamped up). The legacy boolean
+      header tabs and the public splash landing default to ``all``; Admin Tools
+      sub-views default to ``auth``). Sensitive main pages are still removed by
+      their server-side capability gates. Locked pages can't be ``off`` (clamped
+      up). The legacy boolean
       ``hidden`` (``hidden: true`` == ``visibility: off``) is still read for
       back-compat and migrated to ``visibility`` on the next save.
 
@@ -54,7 +55,7 @@ _VERSION = 1
 _VALID_FIELDS = ("order", "label", "icon", "hidden", "visibility")
 # 3-state page visibility. All three are explicit overrides and are persisted as
 # stored; a page with NO entry falls back to its per-kind default (see
-# app/ui_pages._default_visibility: "auth" for main/admin, "all" for splash).
+# app/ui_pages._default_visibility: "all" for main/splash, "auth" for admin).
 _VALID_VIS = ("all", "auth", "off")
 
 _lock = threading.RLock()

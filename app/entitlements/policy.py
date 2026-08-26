@@ -45,7 +45,9 @@ EMERGENCY_ANONYMOUS_POLICY: dict[str, Any] = {
     "anonymous": {
         # Public guests land on the shared Agent/Sessions experience but retain
         # a zero-ability, chat-only runtime.
-        "schema_version": 1, "pages": ["agents", "wiki"], "features": ["chat"],
+        "schema_version": 1,
+        "pages": ["agents", "automations", "browser", "genui", "wiki"],
+        "features": ["chat"],
         "ability_groups": [], "agent_templates": ["default"],
         "models": {"roster_id": "roster-anonymous", "allowed_entry_ids": [],
                    "allow_byo": False, "max_byo_entries": 0,
