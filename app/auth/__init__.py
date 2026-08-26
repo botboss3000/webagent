@@ -641,7 +641,7 @@ class UiConfigResponse(BaseModel):
     # remaining viewport height is below this many px.
     hide_header_kb_threshold: int = 200
     # Replace the main tab carousel with compact hamburger navigation.
-    mobile_mode: bool = False
+    mobile_mode: bool = True
     # Master on/off for the always-on display (Screen Wake Lock), app-wide.
     # When True, every visitor's browser keeps the screen on while the app tab
     # is visible — the same operation as the chat wake_lock control

@@ -1,15 +1,18 @@
 from app.admin import settings
 
 
-def test_mobile_mode_defaults_off(monkeypatch):
+def test_mobile_mode_defaults_on(monkeypatch):
     monkeypatch.setattr(settings, "_load_app_settings", lambda: {})
-    assert settings.get_mobile_mode() is False
-    assert settings.AppSettings().mobile_mode is False
+    assert settings.get_mobile_mode() is True
+    assert settings.AppSettings().mobile_mode is True
 
 
-def test_mobile_mode_requires_json_true(monkeypatch):
+def test_mobile_mode_accepts_explicit_boolean_override(monkeypatch):
     monkeypatch.setattr(settings, "_load_app_settings", lambda: {"mobile_mode": True})
     assert settings.get_mobile_mode() is True
+
+    monkeypatch.setattr(settings, "_load_app_settings", lambda: {"mobile_mode": False})
+    assert settings.get_mobile_mode() is False
 
     monkeypatch.setattr(settings, "_load_app_settings", lambda: {"mobile_mode": "true"})
     assert settings.get_mobile_mode() is False

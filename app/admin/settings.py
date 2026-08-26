@@ -1790,7 +1790,7 @@ class AppSettings(BaseModel):
     extend_llm_to_agents: bool = True
     access_mode: str = "public_registered"  # admin_approval | public_registered
     # Replace the main-header tab carousel with compact hamburger navigation.
-    mobile_mode: bool = False
+    mobile_mode: bool = True
     # ── User BYOD (per-user bring-your-own-database) ──
     # OFF (default): single-tenant — every user shares the one admin-configured
     # database, exactly as before (self-hosters and existing installs are
@@ -2401,8 +2401,10 @@ def get_hide_header_on_keyboard() -> bool:
 
 
 def get_mobile_mode() -> bool:
-    """Use compact hamburger navigation instead of the header carousel."""
-    return _load_app_settings().get("mobile_mode", False) is True
+    """Use compact hamburger navigation instead of the header carousel.
+
+    Ships enabled; an administrator can explicitly disable it in App Settings."""
+    return _load_app_settings().get("mobile_mode", True) is True
 
 
 def get_hide_header_kb_threshold() -> int:
