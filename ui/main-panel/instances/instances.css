@@ -398,6 +398,71 @@
   line-height: 1.35;
   color: var(--warning, var(--fg-3));
 }
+
+/* User-approved cloudflared installer. A lightweight modal popover keeps the
+   security consequence visible while the background device job downloads and
+   verifies the persistent helper binary. */
+.inst-tunnel-install-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.46);
+  backdrop-filter: blur(2px);
+}
+.inst-tunnel-install-popover {
+  position: relative;
+  width: min(440px, 100%);
+  padding: 22px;
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface, var(--bg));
+  color: var(--fg-1);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.34);
+}
+.inst-tunnel-install-popover h3 { margin: 8px 34px 8px 0; font-size: 17px; }
+.inst-tunnel-install-popover p { margin: 8px 0; color: var(--fg-3); font-size: 13px; line-height: 1.5; }
+.inst-tunnel-install-popover code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(var(--ink-rgb), 0.08);
+  color: var(--fg-1);
+}
+.inst-tunnel-install-icon {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  color: var(--primary);
+  background: rgba(var(--primary-rgb), 0.12);
+}
+.inst-tunnel-install-icon svg { width: 20px; height: 20px; }
+.inst-tunnel-install-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+}
+.inst-tunnel-install-close svg { width: 16px; height: 16px; }
+.inst-tunnel-install-warning { display: flex; gap: 8px; color: var(--warning) !important; }
+.inst-tunnel-install-warning svg { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 2px; }
+.inst-tunnel-install-status { min-height: 20px; margin-top: 12px; font-size: 12px; color: var(--fg-3); }
+.inst-tunnel-install-status.ok { color: var(--success); }
+.inst-tunnel-install-status.err { color: var(--danger); }
+.inst-tunnel-install-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.inst-tunnel-install-confirm { color: var(--primary); border-color: var(--primary); }
+.inst-tunnel-install-confirm[aria-busy="true"] svg { animation: spin 1s linear infinite; }
+
 .inst-detail-close {
   margin-left: auto; flex: 0 0 auto;
   width: 28px; height: 28px; padding: 0;

@@ -650,11 +650,12 @@ async def tunnel_control(body: TunnelBody):
         except Exception:
             caps = {}
     platform = str((caps or {}).get("platform") or "").strip().lower()
-    if action == "start" and not platform.startswith("win"):
+    if action == "start" and not (
+        platform.startswith("win") or platform.startswith("linux")
+    ):
         raise HTTPException(
             status_code=400,
-            detail="Tunnels are currently available only on Windows. "
-                   "Linux and macOS support is coming soon.",
+            detail="Automatic tunnels are currently available on Windows and Linux.",
         )
 
     payload: Dict[str, Any] = {
@@ -696,6 +697,66 @@ async def tunnel_control(body: TunnelBody):
                 "result": "", "pending": True}
 
     return {"ok": True, "job_id": job_id, "queued_for": iid}
+
+
+@router.post("/tunnel/install")
+async def tunnel_install(body: TunnelBody):
+    """Queue a user-approved cloudflared install on the selected device.
+
+    The request returns immediately. The target device downloads and verifies
+    the helper inside its persistent app-data directory, while the Instances UI
+    follows the existing device action-status endpoint.
+    """
+    await _require_admin(body.requesting_user_id)
+    from app.devices import dispatch
+
+    iid = (body.instance_id or "").strip()
+    if not iid:
+        raise HTTPException(status_code=400, detail="An instance id is required")
+    dev = await dispatch.resolve_target(iid, online_within_seconds=60)
+    if dev is None:
+        raise HTTPException(
+            status_code=404,
+            detail="That device isn't in the shared registry yet - it needs to "
+                   "check in once before it can install cloudflared.",
+        )
+    if not dev.get("online"):
+        raise HTTPException(
+            status_code=409,
+            detail="That device is offline - cloudflared can only be installed "
+                   "while WebAgent is running there.",
+        )
+
+    caps = dev.get("capabilities") or {}
+    if isinstance(caps, str):
+        try:
+            caps = json.loads(caps or "{}")
+        except Exception:
+            caps = {}
+    platform = str((caps or {}).get("platform") or "").strip().lower()
+    if not (platform.startswith("win") or platform.startswith("linux")):
+        raise HTTPException(
+            status_code=400,
+            detail="Automatic cloudflared installation currently supports "
+                   "Windows and Linux.",
+        )
+
+    job_id = await dispatch.enqueue(
+        owner_user_id=body.requesting_user_id or "",
+        prompt="",
+        target_instance=iid,
+        target_label=dev.get("label") or iid,
+        payload={
+            "action": "install_cloudflared",
+            "source": "instances_page",
+        },
+    )
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "queued_for": iid,
+        "background": True,
+    }
 
 
 # Fleet server/repo control — restart the server, or bring the target device's OWN

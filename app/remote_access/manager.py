@@ -202,12 +202,16 @@ def tunnel_snapshot() -> dict:
     public_url = (tun.public_url if tun else "") or ""
 
     configured = False
+    cloudflared_installed = False
     try:
+        cf_opts = cfg.get("cloudflare", {}) or {}
+        cloudflared_installed = tunnels.cloudflared_available(
+            cf_opts.get("bin_path", "")
+        )
         if method == "cloudflare":
-            opts = cfg.get("cloudflare", {}) or {}
-            avail = tunnels.cloudflared_available(opts.get("bin_path", ""))
+            opts = cf_opts
             runnable = bool(opts.get("quick") or opts.get("tunnel") or opts.get("hostname"))
-            configured = bool(avail and runnable)
+            configured = bool(cloudflared_installed and runnable)
             # A NAMED tunnel has a fixed hostname we can show even while it's off.
             if not public_url:
                 host = (opts.get("hostname") or "").strip()
@@ -249,6 +253,7 @@ def tunnel_snapshot() -> dict:
         "provider": provider,
         "method": method,
         "configured": configured,
+        "cloudflared_installed": cloudflared_installed,
         "running": running,
         "public_url": public_url,
         "headful_url": headful_url,

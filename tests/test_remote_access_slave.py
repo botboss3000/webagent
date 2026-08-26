@@ -17,14 +17,25 @@ from app.remote_access.slave import (
 
 
 class TunnelSlaveTests(unittest.TestCase):
-    def test_instances_tunnel_start_rejects_non_windows_device(self):
+    def test_instances_tunnel_start_reaches_linux_binary_preflight(self):
         from app.devices.actions import _start_slave_tunnel
 
         async def run():
-            with patch("sys.platform", "linux"):
+            cfg = {
+                "active_method": "cloudflare",
+                "cloudflare": {"quick": True, "bin_path": ""},
+            }
+            with (
+                patch("sys.platform", "linux"),
+                patch("app.remote_access.store.load_config", return_value=cfg),
+                patch("app.remote_access.store.load_slave_link", return_value={}),
+                patch("app.remote_access.netinfo.get_port", return_value=54320),
+                patch("app.remote_access.slave.probe_control", return_value=None),
+                patch("shutil.which", return_value=None),
+            ):
                 await _start_slave_tunnel(job={}, db=None, payload={})
 
-        with self.assertRaisesRegex(RuntimeError, "only on Windows"):
+        with self.assertRaisesRegex(RuntimeError, "cloudflared not found"):
             asyncio.run(run())
 
     def test_parses_provider_urls_from_child_output(self) -> None:

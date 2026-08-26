@@ -2307,22 +2307,25 @@ function _urlUpgradeHttps(url, anchor) {
 // detached slave owns the provider process. Off → Start; Running → Stop. iid is the
 // registry instance id to address (a cloud VM passes its fleet-twin device id).
 function _tunnelActionsHtml(d, iid, online) {
-  const t = d.tunnel;
-  if (!t || !t.provider || !iid || !online) return [];
+  const t = d.tunnel || {};
+  if (!iid || !online) return [];
   if (t.running) {
     S.tunnelStarting.delete(iid);
     return ['<button class="inst-tb-btn" data-act="tunnel-stop" data-iid="' + _escAttr(iid)
       + '"><i data-lucide="square"></i>Stop tunnel</button>'];
   }
+  const provider = t.provider || 'cloudflare';
   if (S.tunnelStarting.has(iid)) {
     return ['<button class="inst-tb-btn" data-act="tunnel-start" data-iid="' + _escAttr(iid)
+      + '" data-provider="' + _escAttr(provider)
       + '" disabled aria-busy="true"><i data-lucide="loader-circle"></i>Starting…</button>'];
   }
   const platform = d.device_platform || d.platform || '';
-  if (_platformKey(platform) !== 'win') {
-    return ['<span class="inst-tunnel-platform-notice" role="note">Tunnels are currently available only on Windows. Linux and macOS support is coming soon.</span>'];
+  if (!['win', 'linux'].includes(_platformKey(platform))) {
+    return ['<span class="inst-tunnel-platform-notice" role="note">Automatic tunnels are currently available on Windows and Linux.</span>'];
   }
   return ['<button class="inst-tb-btn" data-act="tunnel-start" data-iid="' + _escAttr(iid)
+    + '" data-provider="' + _escAttr(provider)
     + '"><i data-lucide="terminal"></i>Start tunnel</button>'];
 }
 
@@ -4286,11 +4289,134 @@ async function _doPing(address, btn) {
   } finally { if (btn) btn.disabled = false; }
 }
 
+let _cloudflaredInstallPanel = null;
+
+function _closeCloudflaredInstallPanel() {
+  if (_cloudflaredInstallPanel) _cloudflaredInstallPanel.remove();
+  _cloudflaredInstallPanel = null;
+}
+
+function _showCloudflaredInstallPanel(iid, sourceBtn) {
+  _closeCloudflaredInstallPanel();
+  const overlay = document.createElement('div');
+  overlay.className = 'inst-tunnel-install-overlay';
+  overlay.innerHTML =
+    '<section class="inst-tunnel-install-popover" role="dialog" aria-modal="true"'
+    + ' aria-labelledby="inst-tunnel-install-title">'
+    +   '<button class="inst-tunnel-install-close" type="button" aria-label="Close"><i data-lucide="x"></i></button>'
+    +   '<div class="inst-tunnel-install-icon"><i data-lucide="cloud-download"></i></div>'
+    +   '<h3 id="inst-tunnel-install-title">Install Cloudflare Tunnel?</h3>'
+    +   '<p>WebAgent needs Cloudflare\'s <code>cloudflared</code> helper to create a tunnel URL. '
+    +   'It will download the official binary into this device\'s persistent app-data folder.</p>'
+    +   '<p class="inst-tunnel-install-warning"><i data-lucide="globe-2"></i>'
+    +   '<span>Starting the quick tunnel creates a public URL that can reach this WebAgent from the internet.</span></p>'
+    +   '<div class="inst-tunnel-install-status" role="status" aria-live="polite"></div>'
+    +   '<div class="inst-tunnel-install-actions">'
+    +     '<button class="inst-tb-btn" type="button" data-install-cancel>Cancel</button>'
+    +     '<button class="inst-tb-btn inst-tunnel-install-confirm" type="button" data-install-confirm>'
+    +       '<i data-lucide="download"></i>Install cloudflared</button>'
+    +   '</div>'
+    + '</section>';
+  document.body.appendChild(overlay);
+  _cloudflaredInstallPanel = overlay;
+  _refreshLucideIcons(overlay);
+
+  const close = () => _closeCloudflaredInstallPanel();
+  overlay.querySelector('.inst-tunnel-install-close').addEventListener('click', close);
+  overlay.querySelector('[data-install-cancel]').addEventListener('click', close);
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) close();
+  });
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') close();
+  });
+
+  const installBtn = overlay.querySelector('[data-install-confirm]');
+  const cancelBtn = overlay.querySelector('[data-install-cancel]');
+  const status = overlay.querySelector('.inst-tunnel-install-status');
+  installBtn.focus();
+  installBtn.addEventListener('click', async () => {
+    installBtn.disabled = true;
+    cancelBtn.disabled = true;
+    installBtn.setAttribute('aria-busy', 'true');
+    installBtn.innerHTML = '<i data-lucide="loader-circle"></i>Installing in background…';
+    _refreshLucideIcons(installBtn);
+    status.className = 'inst-tunnel-install-status';
+    status.textContent = 'Sending the install job to this device…';
+    try {
+      const response = await _post('/admin/instances/tunnel/install', { instance_id: iid });
+      if (!response.ok) throw new Error((response.body && response.body.detail) || 'Install could not start.');
+      const jobId = (response.body && response.body.job_id) || '';
+      if (!jobId) throw new Error('The install job did not return an id.');
+      status.textContent = 'Downloading and verifying cloudflared… You can leave this panel open.';
+      const delays = [600, 1000, 1500, 2500, 4000, 6000, 8000, 10000, 12000];
+      let pollIndex = 0;
+      const poll = async () => {
+        try {
+          const result = await _get('/admin/instances/device/action-status?job_id=' + encodeURIComponent(jobId));
+          const body = result.body || {};
+          if (body.status === 'done') {
+            status.className = 'inst-tunnel-install-status ok';
+            status.textContent = body.result || 'cloudflared installed. Starting the tunnel…';
+            const inst = _find(iid);
+            if (inst) {
+              if (!inst.tunnel) inst.tunnel = {};
+              inst.tunnel.cloudflared_installed = true;
+              inst.tunnel.provider = 'cloudflare';
+              inst.tunnel.configured = true;
+            }
+            setTimeout(() => {
+              _closeCloudflaredInstallPanel();
+              _tunnelAction('start', iid, sourceBtn && sourceBtn.isConnected ? sourceBtn : null);
+            }, 700);
+            return;
+          }
+          if (body.status === 'error' || body.status === 'skipped') {
+            throw new Error(body.error || body.result || 'cloudflared installation failed.');
+          }
+        } catch (error) {
+          status.className = 'inst-tunnel-install-status err';
+          status.textContent = error.message || 'cloudflared installation failed.';
+          installBtn.disabled = false;
+          cancelBtn.disabled = false;
+          installBtn.removeAttribute('aria-busy');
+          installBtn.innerHTML = '<i data-lucide="refresh-cw"></i>Try again';
+          _refreshLucideIcons(installBtn);
+          return;
+        }
+        if (pollIndex < delays.length) {
+          setTimeout(poll, delays[pollIndex++]);
+        } else {
+          status.className = 'inst-tunnel-install-status err';
+          status.textContent = 'The install is still running. Close this panel and check again shortly.';
+          cancelBtn.disabled = false;
+        }
+      };
+      setTimeout(poll, delays[pollIndex++]);
+    } catch (error) {
+      status.className = 'inst-tunnel-install-status err';
+      status.textContent = error.message || 'cloudflared installation failed.';
+      installBtn.disabled = false;
+      cancelBtn.disabled = false;
+      installBtn.removeAttribute('aria-busy');
+      installBtn.innerHTML = '<i data-lucide="refresh-cw"></i>Try again';
+      _refreshLucideIcons(installBtn);
+    }
+  });
+}
+
 // Start / stop the detached tunnel slave through the target's device queue.
 async function _tunnelAction(action, iid, btn) {
   if (!iid) return;
   if (action === 'stop' && !window.confirm('Stop the tunnel on this instance?\n\nIts public tunnel address stops working until you start it again.')) return;
   const starting = action === 'start';
+  const provider = (btn && btn.dataset.provider) || ((_find(iid) || {}).tunnel || {}).provider || 'cloudflare';
+  const tunnel = ((_find(iid) || {}).tunnel || {});
+  if (starting && provider === 'cloudflare' && tunnel.cloudflared_installed === false) {
+    _pingStatus('cloudflared needs to be installed before this device can start a tunnel.', null);
+    _showCloudflaredInstallPanel(iid, btn);
+    return;
+  }
   if (starting) S.tunnelStarting.add(iid);
   if (btn) {
     btn.disabled = true;
@@ -4302,10 +4428,16 @@ async function _tunnelAction(action, iid, btn) {
   }
   _pingStatus(action === 'stop' ? 'Sending stop-tunnel to the device…' : 'Sending start-tunnel to the device…', null);
   try {
-    const r = await _post('/admin/instances/tunnel/control', { instance_id: iid, action });
+    const r = await _post('/admin/instances/tunnel/control', { instance_id: iid, action, provider });
     if (!r.ok) {
       if (starting) S.tunnelStarting.delete(iid);
-      _pingStatus((r.body && r.body.detail) || 'Could not send the tunnel command.', 'err');
+      const detail = (r.body && r.body.detail) || 'Could not send the tunnel command.';
+      if (starting && /cloudflared(?:\.exe)? (?:not found|not installed)/i.test(detail)) {
+        _pingStatus('cloudflared needs to be installed before this device can start a tunnel.', null);
+        _showCloudflaredInstallPanel(iid, btn);
+      } else {
+        _pingStatus(detail, 'err');
+      }
       if (btn) {
         btn.disabled = false;
         btn.removeAttribute('aria-busy');

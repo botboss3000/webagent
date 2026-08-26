@@ -48,6 +48,20 @@ async def run_device_action(name: str, *, job: dict, db: Any, payload: dict) -> 
 # singleton the local admin card / agent tool drive, so a remote Start can't
 # spawn a second cloudflared fighting the local one (see app/remote_access).
 
+async def _install_cloudflared(*, job: dict, db: Any, payload: dict) -> str:
+    """Install cloudflared without blocking the device worker's event loop."""
+    import asyncio
+
+    from app.remote_access.installer import install_cloudflared
+
+    result = await asyncio.to_thread(install_cloudflared)
+    version = str(result.get("version") or "version verified")
+    return f"cloudflared installed in persistent app data ({version})"
+
+
+register_action("install_cloudflared", _install_cloudflared)
+
+
 async def _start_tunnel(*, job: dict, db: Any, payload: dict) -> str:
     from app.remote_access import store
     from app.remote_access.manager import get_manager
@@ -118,12 +132,6 @@ async def _start_slave_tunnel(*, job: dict, db: Any, payload: dict) -> str:
     import subprocess
     import sys
     import time
-
-    if not sys.platform.startswith("win"):
-        raise RuntimeError(
-            "tunnels from the Instances page are currently available only on "
-            "Windows; Linux and macOS support is coming soon"
-        )
 
     from app.remote_access import netinfo, store
     from app.remote_access.slave import control_request, probe_control, read_status

@@ -228,6 +228,9 @@ data/agent_data/**/members/**/*.user-secrets.db*
 # home above is the new destination; this dir stays only as a fallback. Never tracked.
 data/screenshots/
 
+# App-managed helper binaries are downloaded runtime state, never source.
+data/bin/
+
 # Scratch / backup / PID files — kept on disk, never tracked
 .source-backups/
 .update-backups/

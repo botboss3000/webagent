@@ -35,6 +35,7 @@ class TunnelSnapshotTests(unittest.TestCase):
             snapshot = manager.tunnel_snapshot()
 
         self.assertFalse(snapshot["running"])
+        self.assertTrue(snapshot["cloudflared_installed"])
         self.assertEqual(snapshot["headful_url"], "")
 
     def test_live_controller_is_adopted_after_server_restart(self) -> None:
