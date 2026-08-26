@@ -35,17 +35,40 @@ LABEL description="WebAgent — FastAPI agent harness"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    git \
+    openssh-client \
+    ripgrep \
     tini \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Environment ───────────────────────────────────────────────────────────────
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    APP_PORT=8080
+    APP_PORT=8080 \
+    HOME=/home/appuser \
+    CODEX_HOME=/home/appuser/.codex
+
+# Install the official standalone Codex CLI. Its executable and packaged runtime
+# live in the image; login/config state is mounted separately at CODEX_HOME.
+ARG CODEX_RELEASE=latest
+RUN set -eu; \
+    export CODEX_RELEASE="${CODEX_RELEASE}"; \
+    export CODEX_HOME=/opt/codex; \
+    export CODEX_INSTALL_DIR=/usr/local/bin; \
+    export CODEX_NON_INTERACTIVE=true; \
+    curl -fsSL https://chatgpt.com/codex/install.sh | sh; \
+    codex --version
 
 # ── Create non-root user ──────────────────────────────────────────────────────
 RUN addgroup --system --gid 1001 appgroup && \
-    adduser --system --uid 1001 --gid 1001 --no-create-home appuser
+    adduser --system --uid 1001 --gid 1001 --home /home/appuser --no-create-home appuser && \
+    mkdir -p /home/appuser/.codex && \
+    chown -R appuser:appgroup /home/appuser
+
+# The checkout is bind-mounted from the host (uid 1000) while WebAgent and Codex
+# run as appuser (uid 1001, supplementary gid 1000).
+RUN git config --system --add safe.directory /app && \
+    git config --system --add safe.directory /workspace/webagent
 
 # ── Copy built Python packages from builder ───────────────────────────────────
 COPY --from=builder /root/.local /home/appuser/.local
