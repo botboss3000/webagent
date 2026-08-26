@@ -212,6 +212,12 @@ async def _start_slave_tunnel(*, job: dict, db: Any, payload: dict) -> str:
             popen_kwargs["creationflags"] = 0x00000010  # CREATE_NEW_CONSOLE
         else:
             popen_kwargs["start_new_session"] = True
+            # A fleet job or docker-exec launcher can have a short-lived output
+            # pipe. Detach the Linux/macOS controller from it so cloudflared
+            # cannot receive SIGPIPE after the request/launcher exits. Provider
+            # diagnostics remain available through its dedicated --logfile.
+            popen_kwargs["stdout"] = subprocess.DEVNULL
+            popen_kwargs["stderr"] = subprocess.DEVNULL
         proc = subprocess.Popen(argv, **popen_kwargs)
 
         # The controller starts serving before it launches cloudflared, but give

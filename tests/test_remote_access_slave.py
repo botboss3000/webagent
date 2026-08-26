@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 import threading
 import time
 import unittest
@@ -37,6 +38,18 @@ class TunnelSlaveTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "cloudflared not found"):
             asyncio.run(run())
+
+    def test_linux_launcher_detaches_provider_output_pipe(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "app" / "devices" / "actions.py"
+        ).read_text(encoding="utf-8")
+        launcher = source[
+            source.index('if sys.platform.startswith("win")'):
+            source.index("proc = subprocess.Popen", source.index('if sys.platform.startswith("win")'))
+        ]
+        self.assertIn('popen_kwargs["start_new_session"] = True', launcher)
+        self.assertIn('popen_kwargs["stdout"] = subprocess.DEVNULL', launcher)
+        self.assertIn('popen_kwargs["stderr"] = subprocess.DEVNULL', launcher)
 
     def test_parses_provider_urls_from_child_output(self) -> None:
         self.assertEqual(
