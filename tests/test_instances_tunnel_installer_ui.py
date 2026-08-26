@@ -19,6 +19,12 @@ def test_tunnel_button_offers_background_cloudflared_install() -> None:
     assert "_tunnelAction('start', iid" in source
     assert "cloudflared_installed === false" in source
     assert ".inst-tunnel-install-popover" in css
+    assert "function _showTunnelLifecyclePanel" in source
+    assert "Start a container tunnel?" in source
+    assert "survives WebAgent code reloads" in source
+    assert "recreating or replacing the Docker" in source
+    assert "if (starting && !lifecycleConfirmed)" in source
+    assert "_tunnelAction('start', iid, sourceBtn && sourceBtn.isConnected ? sourceBtn : null, true)" in source
 
 
 def test_linux_and_unconfigured_devices_get_the_tunnel_action() -> None:

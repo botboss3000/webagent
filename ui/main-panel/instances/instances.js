@@ -4290,14 +4290,67 @@ async function _doPing(address, btn) {
 }
 
 let _cloudflaredInstallPanel = null;
+let _tunnelLifecyclePanel = null;
 
 function _closeCloudflaredInstallPanel() {
   if (_cloudflaredInstallPanel) _cloudflaredInstallPanel.remove();
   _cloudflaredInstallPanel = null;
 }
 
+function _closeTunnelLifecyclePanel() {
+  if (_tunnelLifecyclePanel) _tunnelLifecyclePanel.remove();
+  _tunnelLifecyclePanel = null;
+}
+
+function _showTunnelLifecyclePanel(iid, sourceBtn) {
+  _closeCloudflaredInstallPanel();
+  _closeTunnelLifecyclePanel();
+  const overlay = document.createElement('div');
+  overlay.className = 'inst-tunnel-install-overlay';
+  overlay.innerHTML =
+    '<section class="inst-tunnel-install-popover" role="dialog" aria-modal="true"'
+    + ' aria-labelledby="inst-tunnel-lifecycle-title">'
+    +   '<button class="inst-tunnel-install-close" type="button" aria-label="Close"><i data-lucide="x"></i></button>'
+    +   '<div class="inst-tunnel-install-icon"><i data-lucide="triangle-alert"></i></div>'
+    +   '<h3 id="inst-tunnel-lifecycle-title">Start a container tunnel?</h3>'
+    +   '<p>WebAgent will start <code>cloudflared</code> as a sibling process beside the server '
+    +   'inside this development container.</p>'
+    +   '<p class="inst-tunnel-install-warning"><i data-lucide="container"></i>'
+    +   '<span>The tunnel survives WebAgent code reloads, but recreating or replacing the Docker '
+    +   'container stops it and invalidates its temporary public URL.</span></p>'
+    +   '<p class="inst-tunnel-install-warning"><i data-lucide="globe-2"></i>'
+    +   '<span>While running, its public URL makes this WebAgent reachable from the internet.</span></p>'
+    +   '<div class="inst-tunnel-install-actions">'
+    +     '<button class="inst-tb-btn" type="button" data-tunnel-start-cancel>Cancel</button>'
+    +     '<button class="inst-tb-btn inst-tunnel-install-confirm" type="button" data-tunnel-start-confirm>'
+    +       '<i data-lucide="terminal"></i>Start tunnel</button>'
+    +   '</div>'
+    + '</section>';
+  document.body.appendChild(overlay);
+  _tunnelLifecyclePanel = overlay;
+  _refreshLucideIcons(overlay);
+
+  const close = () => _closeTunnelLifecyclePanel();
+  overlay.querySelector('.inst-tunnel-install-close').addEventListener('click', close);
+  overlay.querySelector('[data-tunnel-start-cancel]').addEventListener('click', close);
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) close();
+  });
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') close();
+  });
+
+  const confirmBtn = overlay.querySelector('[data-tunnel-start-confirm]');
+  confirmBtn.focus();
+  confirmBtn.addEventListener('click', () => {
+    close();
+    _tunnelAction('start', iid, sourceBtn && sourceBtn.isConnected ? sourceBtn : null, true);
+  });
+}
+
 function _showCloudflaredInstallPanel(iid, sourceBtn) {
   _closeCloudflaredInstallPanel();
+  _closeTunnelLifecyclePanel();
   const overlay = document.createElement('div');
   overlay.className = 'inst-tunnel-install-overlay';
   overlay.innerHTML =
@@ -4406,7 +4459,7 @@ function _showCloudflaredInstallPanel(iid, sourceBtn) {
 }
 
 // Start / stop the detached tunnel slave through the target's device queue.
-async function _tunnelAction(action, iid, btn) {
+async function _tunnelAction(action, iid, btn, lifecycleConfirmed = false) {
   if (!iid) return;
   if (action === 'stop' && !window.confirm('Stop the tunnel on this instance?\n\nIts public tunnel address stops working until you start it again.')) return;
   const starting = action === 'start';
@@ -4415,6 +4468,10 @@ async function _tunnelAction(action, iid, btn) {
   if (starting && provider === 'cloudflare' && tunnel.cloudflared_installed === false) {
     _pingStatus('cloudflared needs to be installed before this device can start a tunnel.', null);
     _showCloudflaredInstallPanel(iid, btn);
+    return;
+  }
+  if (starting && !lifecycleConfirmed) {
+    _showTunnelLifecyclePanel(iid, btn);
     return;
   }
   if (starting) S.tunnelStarting.add(iid);
