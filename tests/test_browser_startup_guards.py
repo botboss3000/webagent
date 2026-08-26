@@ -11,7 +11,7 @@ def test_service_worker_uses_version_coherent_module_cache():
     passive_branch = source.index("STATIC_PATTERN.test(url.pathname)")
     assert code_branch < passive_branch
     assert "e.respondWith(cacheFirst(request))" in source
-    assert 'const CACHE = "webagent-v279"' in source
+    assert 'const CACHE = "webagent-v280"' in source
     cache_first = source[source.index("async function cacheFirst") : source.index("async function staleWhileRevalidate")]
     assert "const cache = await caches.open(CACHE)" in cache_first
     assert "await cache.match(request)" in cache_first

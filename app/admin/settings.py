@@ -28,6 +28,7 @@ router = APIRouter(prefix="/admin/settings", tags=["admin"])
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 METADATA_FLAG = PROJECT_ROOT / ".metadata-enabled"
 APP_SETTINGS_FILE = PROJECT_ROOT / "data" / "config" / "app-settings.json"
+APP_SETTINGS_DEFAULTS_FILE = PROJECT_ROOT / "app" / "defaults" / "app-settings.json"
 
 ANONYMOUS_KEY = "__anonymous__"
 PLATFORM_LLM_OWNER = "admin"
@@ -1692,14 +1693,29 @@ async def _ensure_tool_capable(effective: dict, user_id: str) -> dict:
     return effective
 
 
+def load_app_settings_defaults() -> dict:
+    """Load the tracked, non-secret defaults shipped with every checkout."""
+    try:
+        with open(APP_SETTINGS_DEFAULTS_FILE) as f:
+            defaults = json.load(f)
+        return defaults if isinstance(defaults, dict) else {}
+    except Exception as e:
+        logger.warning("Failed to load shipped app-settings defaults: %s", e)
+        return {}
+
+
 def _load_app_settings() -> dict:
+    """Merge persistent installation overrides over the tracked defaults."""
+    settings = load_app_settings_defaults()
     try:
         if APP_SETTINGS_FILE.exists():
             with open(APP_SETTINGS_FILE) as f:
-                return json.load(f)
+                overrides = json.load(f)
+            if isinstance(overrides, dict):
+                settings.update(overrides)
     except Exception as e:
-        logger.warning("Failed to load app-settings.json: %s", e)
-    return {}
+        logger.warning("Failed to load app-settings.json overrides: %s", e)
+    return settings
 
 
 def _save_app_settings(data: dict) -> None:

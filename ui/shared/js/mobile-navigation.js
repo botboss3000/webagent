@@ -8,7 +8,6 @@ import { apiPath } from './config.js';
 import { authHeaders } from './left-login.js';
 
 let _started = false;
-const MOBILE_VIEWPORT = '(max-width: 800px)';
 const USER_MENU_OPENING_EVENT = 'mobile-nav:user-menu-opening';
 
 function _isSourceHidden(source) {
@@ -202,10 +201,7 @@ function _enableMobileNavigation() {
   }
   window.addEventListener('admin-status-loaded', _updateBackLabel);
 
-  const viewport = window.matchMedia(MOBILE_VIEWPORT);
-  const applyViewport = () => _setMobileNavigationActive(viewport.matches);
-  applyViewport();
-  viewport.addEventListener('change', applyViewport);
+  _setMobileNavigationActive(true);
 
   toggle.addEventListener('click', (event) => {
     event.stopPropagation();

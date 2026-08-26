@@ -46,11 +46,16 @@ def _seedable() -> List[Dict[str, Any]]:
     Each ``default`` is sourced from its owning module so it stays in sync with
     the code that reads it. Imported lazily to avoid import cycles at app boot.
     """
-    from app.admin import page_config, debug_config, scheduler_config
+    from app.admin import page_config, debug_config, scheduler_config, settings
     from app.optimizer import config as optimizer_config
     from app.agent import suggestions
 
     return [
+        {
+            "name": "app-settings.json",
+            "title": "Global app settings",
+            "default": settings.load_app_settings_defaults(),
+        },
         {
             "name": "main-panel-pages.json",
             "title": "Main header tabs — per-page overrides",
@@ -91,11 +96,6 @@ _AUTO_MANAGED: List[Dict[str, str]] = [
         "name": "agent-abilities.json",
         "title": "Ability toggles + tool defaults",
         "reason": "self-seeds from the ability catalog on first run",
-    },
-    {
-        "name": "app-settings.json",
-        "title": "Global app settings",
-        "reason": "managed by the App Settings UI; absent = built-in defaults",
     },
     {
         "name": "provider.json",

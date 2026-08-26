@@ -56,7 +56,7 @@ data/local-instances/
 data/config/dashboard-layouts.json
 data/config/dashboard-default.json
 data/config/tenant_dbs.json
-app-settings.json
+/data/config/app-settings.json
 .venv
 env/
 venv/

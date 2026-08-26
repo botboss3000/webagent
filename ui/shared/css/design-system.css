@@ -950,10 +950,8 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
   border-color: rgba(var(--brand-rgb), 0.3);
   background: rgba(var(--brand-rgb), 0.12);
 }
-@media (max-width: 800px) {
-  body.mobile-mode #main-tabs-wrap { display: none; }
-  body.mobile-mode .mobile-nav-toggle { display: inline-flex; }
-}
+body.mobile-mode #main-tabs-wrap { display: none; }
+body.mobile-mode .mobile-nav-toggle { display: inline-flex; }
 
 /* "Back to main page" button for the compact mobile header (mobile_mode=true).
    Sits in normal flow directly right of the nav toggle (the hamburger) so the
@@ -982,9 +980,7 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
   user-select: none;
   border-radius: 8px;
 }
-@media (max-width: 800px) {
-  body.mobile-mode .mobile-back-main-btn { display: inline-flex; }
-}
+body.mobile-mode .mobile-back-main-btn { display: inline-flex; }
 /* Hover / focus feedback for the back-to-main-page button. */
 .mobile-back-main-btn:hover { color: var(--fg-1); }
 .mobile-back-main-btn:focus-visible {
