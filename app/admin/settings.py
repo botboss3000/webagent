@@ -1788,7 +1788,7 @@ class MetadataSetting(BaseModel):
 
 class AppSettings(BaseModel):
     extend_llm_to_agents: bool = True
-    access_mode: str = "admin_approval"  # admin_approval | public_registered
+    access_mode: str = "public_registered"  # admin_approval | public_registered
     # Replace the main-header tab carousel with compact hamburger navigation.
     mobile_mode: bool = False
     # ── User BYOD (per-user bring-your-own-database) ──
@@ -2208,10 +2208,13 @@ _LEGACY_ACCESS_MODES = {
 def normalize_access_mode(raw: str | None) -> str:
     """Map any stored/posted access_mode to one of the two canonical modes.
 
-    Unknown or empty values fall back to the default (admin_approval), so a
-    corrupted setting can never leave the app in an undefined access state.
+    An empty value means a fresh installation and defaults to Open Registration
+    so public pages are browsable. Unknown non-empty values fail closed to
+    Private, so a corrupted setting cannot silently broaden access.
     """
     val = (raw or "").strip()
+    if not val:
+        return "public_registered"
     val = _LEGACY_ACCESS_MODES.get(val, val)
     return val if val in VALID_ACCESS_MODES else "admin_approval"
 
