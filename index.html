@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
 <title>WebAgent</title>
 <!-- SEO / social-preview meta (description, canonical, Open Graph, Twitter card)
      is injected RIGHT HERE server-side by app/main.py `_render_app_shell`, and the
@@ -259,7 +259,7 @@
      resolves), so without this the browser wouldn't start downloading it until
      then; preloading lets its download overlap everything before it. -->
 <link rel="modulepreload" href="./ui/shared/js/partial-loader.js">
-<link rel="modulepreload" href="./ui/shared/js/main.js">
+<link rel="modulepreload" href="./ui/shared/js/main.js?v=260">
 <!-- Global border + font knobs from app-settings.json (via /api/v1/auth/ui-config).
      Render-blocking right after the design tokens so its CSS-variable overrides
      win the cascade and are in place before the app mounts. -->
@@ -369,15 +369,26 @@
   //   • reveal()      — forced (server-down catch / safety net).
   // splashWillShow() lets the splash claim the reveal so appReady() defers to it.
   (function () {
-    var done = false;
+    var curtainDone = false;
+    var appReadyDone = false;
     var curtain = document.getElementById('boot-curtain');
     function remove() {
       if (curtain && curtain.parentNode) curtain.parentNode.removeChild(curtain);
       curtain = null;
     }
-    function reveal() {
-      if (done) return;
-      done = true;
+    function liftCurtain() {
+      if (curtainDone) return;
+      curtainDone = true;
+      if (!curtain) return;
+      curtain.classList.add('is-revealed');
+      var t = setTimeout(remove, 700);
+      curtain.addEventListener('transitionend', function (e) {
+        if (e.propertyName === 'opacity') { clearTimeout(t); remove(); }
+      });
+    }
+    function announceAppReady() {
+      if (appReadyDone) return;
+      appReadyDone = true;
       // The curtain is lifting → the app shell + active tab are mounted and the
       // critical boot fetches are already queued. Broadcast so non-critical,
       // decorative boot work (billing pill, recorder probe, tutorial state) can
@@ -387,16 +398,17 @@
       // this; the `revealed` flag covers the race where it attaches too late.
       if (window.__boot) window.__boot.revealed = true;
       try { window.dispatchEvent(new Event('webagent-app-ready')); } catch (_) {}
-      if (!curtain) return;
-      curtain.classList.add('is-revealed');
-      var t = setTimeout(remove, 700);
-      curtain.addEventListener('transitionend', function (e) {
-        if (e.propertyName === 'opacity') { clearTimeout(t); remove(); }
-      });
+    }
+    function reveal() {
+      announceAppReady();
+      liftCurtain();
     }
     window.__boot = {
       _splashPending: false,
       revealed:       false,
+      // The minimum Account/Wiki shell is useful before catalogs, partials, or
+      // ui-config finish. Lift only the curtain; appReady() owns readiness.
+      shellReady:     liftCurtain,
       splashWillShow: function () { this._splashPending = true; },
       splashReady:    function () { reveal(); },
       appReady:       function () { if (!this._splashPending) reveal(); },
@@ -471,6 +483,7 @@
       // each). The snapshot is boot-time config, so serving it for this long is
       // safe (a genuinely changed value is picked up on the next reload).
       var BOOT_WINDOW_MS = 20000;
+      var bootWindowEndsAt = BOOT_WINDOW_MS;
       var inflight = new Map();   // key -> Promise<Response master>
       var cache = new Map();      // key -> { resp: Response master, at: ms }
       var _now = function () { return (window.performance && performance.now) ? performance.now() : 0; };
@@ -487,6 +500,17 @@
       var primed = new Map();     // normKey -> Response master (whole boot window)
       var expected = new Set();   // normKeys /boot is expected to prime
       var bootInflight = null;    // Promise for the in-flight GET /api/v1/boot
+
+      // These endpoints construct the visible/account shell. They may consume a
+      // /boot section that has already arrived, but they must never wait for the
+      // aggregate: optional roster/session work can be slow while the shell's
+      // own endpoint is ready. Normal requests preserve truthful connecting UI.
+      var shellCritical = new Set([
+        '/api/v1/auth/access-mode',
+        '/api/v1/auth/ui-config',
+        '/api/v1/pages/catalog',
+        '/api/v1/entitlements/me'
+      ]);
 
       // Canonical cache key: pathname + query, params sorted so caller ordering
       // never matters, with the caller-identity params (?token=, ?user_id=)
@@ -527,6 +551,7 @@
           suggestions_config: '/api/v1/chat/suggestions/config',
           abilities_catalog:  '/api/v1/abilities/catalog',
           pages_catalog:      '/api/v1/pages/catalog',
+          capabilities:       '/api/v1/entitlements/me',
           check_access:       '/api/v1/files/check-access'
         };
         if (uid) {
@@ -534,18 +559,6 @@
           m.profile  = '/api/v1/user/profile?user_id=' + u;
           m.agents   = '/api/v1/agents?user_id=' + u;
           m.sessions = '/api/v1/db/sessions?db=local.db&user_id=' + u + '&limit=50';
-          if (defaultAgentId) {
-            m.agent_abilities = '/api/v1/agents/' + encodeURIComponent(defaultAgentId)
-              + '/abilities?user_id=' + u;
-          }
-          // First transcript page of the session being opened — matches the
-          // common-case open in session-load.js (_OPEN_NEWEST_LIMIT=40, light).
-          // A scrolled-up session opens with an around_id key instead, which is
-          // deliberately NOT primed (it falls through to a normal fetch).
-          if (sid) {
-            m.session_messages = '/api/v1/db/session-messages?db=local.db&session_id='
-              + encodeURIComponent(sid) + '&limit=40&light=1';
-          }
         }
         return m;
       }
@@ -576,7 +589,7 @@
           } catch (_) {}
           var key = input + '\n' + authHdr;
           var now = _now();
-          var bootPhase = now < BOOT_WINDOW_MS;
+          var bootPhase = now < bootWindowEndsAt;
 
           // 0) Combined-boot cache: serve from the /boot aggregate if present, or
           // — for a key /boot will prime that raced ahead — wait for /boot rather
@@ -586,7 +599,7 @@
             var nk = normKey(input);
             var pe = primed.get(nk);
             if (pe) return Promise.resolve(pe.clone());
-            if (bootInflight && expected.has(nk)) {
+            if (bootInflight && expected.has(nk) && !shellCritical.has(nk)) {
               return bootInflight.then(function () {
                 var e2 = primed.get(nk);
                 return e2 ? e2.clone() : _native(input, init);
@@ -618,24 +631,24 @@
         }
       };
 
-      // ── Fire the combined-boot request ONCE, as early as possible ─────────
-      // Runs before any ES module loads, so `expected` is populated (and /boot is
-      // in flight) before the module boot fetches fire — those matching an
-      // expected key then wait for /boot instead of racing to the network. Skips
-      // the first-run /setup flow (nothing to prime there). Uses the native fetch
-      // directly so it is never intercepted by the wrapper above.
-      try {
-        if (location.pathname.toLowerCase().indexOf('/setup') !== 0) {
+      // ── Start combined boot only after the interactive shell is visible ───
+      // Route handlers aggregated by /boot may contain legacy synchronous DB or
+      // filesystem work. Merely adding an async timeout cannot preempt such work,
+      // so the request itself is deferred until shell readiness + an idle turn.
+      // This makes /boot opportunistic prewarm: it can accelerate later/deferred
+      // reads, but it cannot contend with account/catalog requests for first use.
+      function _startBootPrime() {
+        if (bootInflight || location.pathname.toLowerCase().indexOf('/setup') === 0) return;
+        try {
           var _uid = '', _tok = '', _sid = '';
           try { _uid = localStorage.getItem('auth_user_id') || ''; } catch (_) {}
           try { _tok = localStorage.getItem('auth_token') || ''; } catch (_) {}
-          // The session the UI will open — lets /boot prime BOTH that session's
-          // first transcript page AND its bound agent's abilities (the chained
-          // ~10s tail), instead of guessing a default agent.
+          // The session id still helps choose relevant default-agent metadata,
+          // but transcript and per-agent ability reads use normal endpoints so
+          // optional prewarm can never hold aggregate readiness.
           try { _sid = localStorage.getItem('terminalSessionId') || ''; } catch (_) {}
-          // Pre-register every key we can compute now (all but agent_abilities,
-          // whose id arrives in the /boot response) so early module fetches gate
-          // on the in-flight /boot instead of opening their own socket.
+          // Register keys for deferred callers. Shell-critical keys never wait
+          // for this promise (see shellCritical above).
           var _pre = _bootUrlMap(_uid, null, _sid);
           for (var _k in _pre) {
             if (_pre.hasOwnProperty(_k)) { try { expected.add(normKey(_pre[_k])); } catch (_) {} }
@@ -643,6 +656,7 @@
           var _bi = { cache: 'no-store' };
           if (_tok) _bi.headers = { 'Authorization': 'Bearer ' + _tok };
           var _bootUrl = '/api/v1/boot' + (_sid ? '?session_id=' + encodeURIComponent(_sid) : '');
+          bootWindowEndsAt = Math.max(bootWindowEndsAt, _now() + BOOT_WINDOW_MS);
           bootInflight = _native(_bootUrl, _bi)
             .then(function (r) { return (r && r.ok) ? r.json() : null; })
             .then(function (data) {
@@ -659,7 +673,18 @@
               return data;
             })
             .catch(function () { return null; });
+        } catch (_) { /* boot priming is optional — never block on it */ }
+      }
+      function _scheduleBootPrime() {
+        if (window.requestIdleCallback) {
+          window.requestIdleCallback(_startBootPrime, { timeout: 2000 });
+        } else {
+          setTimeout(_startBootPrime, 200);
         }
+      }
+      try {
+        if (window.__boot && window.__boot.revealed) _scheduleBootPrime();
+        else window.addEventListener('webagent-app-ready', _scheduleBootPrime, { once: true });
       } catch (_) { /* boot priming is optional — never block on it */ }
     } catch (_) { /* leave native fetch untouched on any failure */ }
   })();
@@ -756,6 +781,100 @@
           console.warn('[WebAgent] Backend unreachable during setup check — server may be down.');
         });
     })();
+  })();
+</script>
+<script>
+  // ── Boot phantom cursor ─────────────────────────────────────────────
+  // While the app boots (body.is-booting, set by the pre-paint script above
+  // and cleared by tabs.js once the tab content mounts), a boot input orbits
+  // the page and drives the animated background through its own event channel.
+  // Backgrounds therefore receive TWO stable inputs during load: the user's
+  // real pointer and this orbit. The orbit no longer impersonates pointermove,
+  // so moving the real mouse cannot make the two sources overwrite each other.
+  // It stops only when boot finishes
+  // (is-booting cleared AND the curtain removed from the DOM). Skipped under
+  // prefers-reduced-motion — the backgrounds are display:none there anyway.
+  (function () {
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    var running = false, rafId = 0, lastEmit = 0, lastFrame = 0;
+    var x = 0, y = 0;                 // current orbit point (viewport px)
+    var angle = -Math.PI / 2;         // begin at the top of the circle
+    var W = 0, H = 0;
+
+    // Still booting? True while the pre-paint boot flag is set OR the boot
+    // curtain is still in the DOM (it is removed ~700ms after reveal starts).
+    // This covers both orderings of "tab content mounted" vs "curtain lifts",
+    // so the background is never static the moment the app becomes visible.
+    function bootActive() {
+      return !!document.body && (
+        document.body.classList.contains('is-booting') ||
+        !!document.getElementById('boot-curtain')
+      );
+    }
+
+    function emit() {
+      try {
+        window.dispatchEvent(new CustomEvent('wa-boot-pointermove', {
+          detail: { clientX: x, clientY: y }
+        }));
+      } catch (_) {}
+    }
+
+    function step(now) {
+      if (!running) return;
+      // Boot finished (is-booting cleared AND the curtain removed) → stop.
+      if (!bootActive()) { stop(); return; }
+      W = window.innerWidth; H = window.innerHeight;
+      if (!lastFrame) lastFrame = now;
+
+      // One broad, steady orbit every seven seconds. The radius is based on
+      // the shorter viewport edge so the path stays circular (not elliptical)
+      // at every aspect ratio, while running close enough to the perimeter to
+      // repeatedly brush the dots/particles and trigger their normal response.
+      var elapsed = Math.min(64, now - lastFrame);
+      lastFrame = now;
+      angle = (angle + elapsed * ((Math.PI * 2) / 7000)) % (Math.PI * 2);
+      var radius = Math.max(48, Math.min(W, H) * 0.42);
+      x = W * 0.5 + Math.cos(angle) * radius;
+      y = H * 0.5 + Math.sin(angle) * radius;
+
+      // ~30 synthetic moves/s is smooth enough to visibly "touch" the
+      // background artifacts without making their particle emitters noisy.
+      if (now - lastEmit > 33) { emit(); lastEmit = now; }
+      rafId = requestAnimationFrame(step);
+    }
+
+    function start() {
+      if (running) return;
+      running = true;
+      W = window.innerWidth; H = window.innerHeight;
+      x = W * 0.5; y = H * 0.5 - Math.min(W, H) * 0.42;
+      lastFrame = 0;
+      rafId = requestAnimationFrame(step);
+    }
+
+    function stop() {
+      running = false;
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      try { window.dispatchEvent(new CustomEvent('wa-boot-pointerend')); } catch (_) {}
+    }
+
+    if (bootActive()) start();
+  })();
+</script>
+<script>
+  // Pinch-zoom guard. The viewport meta already sets user-scalable=no, but iOS
+  // Safari ignores that, so we also block the non-standard gesture events it
+  // fires before zooming, plus any multi-touch move as a backstop. Single-finger
+  // panning/scrolling is untouched.
+  (function () {
+    function blockZoom(e) { e.preventDefault(); }
+    document.addEventListener('gesturestart', blockZoom);
+    document.addEventListener('gesturechange', blockZoom);
+    document.addEventListener('gestureend', blockZoom);
+    document.addEventListener('touchmove', function (e) {
+      if (e.touches && e.touches.length > 1) e.preventDefault();
+    }, { passive: false });
   })();
 </script>
 <script>
@@ -1027,10 +1146,72 @@
       var ci = document.getElementById('chat-input');
       if (ci) setTimeout(function () { ci.focus(); }, 50);
     }
+    // The minimize bubble only exists while the panel is hidden — any path
+    // that opens the panel (toggle, tabs, agent events) clears it.
+    if (window.__refreshChatBubble) window.__refreshChatBubble();
   };
   window.__toggleChat = function () {
     window.__applyChatVisible(!window.__getChatVisible());
   };
+
+  // ── Chat minimize → floating restore bubble (desktop) ─────────────────────
+  // The minimize control in the desktop chat header (data/config/chat_ui.json
+  // → chat_desktop.chat_header) hides the side panel and floats a compact
+  // bubble (bottom-right) that restores the SAME conversation. The hide is
+  // deliberately NOT persisted, so a refresh returns to the normal panel;
+  // restoring via the bubble persists like the top Chat toggle. In the embed
+  // portal (app/main.py sets window.__CHAT_PORTAL__) the widget's own minimize
+  // already closes the portal — this handler stays out of the way.
+  window.__chatBubbleEl = null;
+  window.__chatBubbleTimer = null;
+
+  window.__removeChatBubble = function () {
+    if (window.__chatBubbleTimer) { clearInterval(window.__chatBubbleTimer); window.__chatBubbleTimer = null; }
+    if (window.__chatBubbleEl) { window.__chatBubbleEl.remove(); window.__chatBubbleEl = null; }
+  };
+
+  window.__refreshChatBubble = function () {
+    if (!window.__chatBubbleEl) return;
+    if (window.__getChatVisible()) {           // panel opened by any path
+      window.__removeChatBubble();
+      return;
+    }
+    // Pulse while the agent is working (flag set by ui/shared/js/chat-activity.js).
+    window.__chatBubbleEl.classList.toggle('working', window.__agentTurnActive === true);
+  };
+
+  window.__ensureChatBubble = function () {
+    if (window.__chatBubbleEl) return;
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.id = 'chat-minimize-bubble';
+    b.className = 'chat-minimize-bubble';
+    b.setAttribute('aria-label', 'Open chat');
+    b.title = 'Open chat';
+    b.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+    b.addEventListener('click', function () {
+      window.__applyChatVisible(true, true);   // restores; hook removes bubble
+    });
+    document.body.appendChild(b);
+    window.__chatBubbleEl = b;
+    // Poll the turn-active flag while the bubble lives (no event is fired on it).
+    window.__chatBubbleTimer = setInterval(window.__refreshChatBubble, 1500);
+    window.__refreshChatBubble();
+  };
+
+  window.__minimizeChatToBubble = function () {
+    window.__applyChatVisible(false, false);   // hide, don't persist
+    window.__ensureChatBubble();
+  };
+
+  document.addEventListener('chat-control:minimize', function () {
+    if (window.__CHAT_PORTAL__) return;        // portal owns its minimize
+    if (window.__isMobileChatLayout && window.__isMobileChatLayout()) {
+      window.__toggleChat();                    // mobile: plain hide, no bubble
+      return;
+    }
+    window.__minimizeChatToBubble();
+  });
 
   // Resolve the chat-toggle button from an event with a triple-fallback so it
   // survives Lucide's MutationObserver swapping the inner SVG mid-interaction:
@@ -1136,16 +1317,28 @@
     <i data-lucide="menu" class="lucide-icon"></i>
   </button>
 
-  <!-- Centered brand wordmark for the compact mobile header: sits between the
-       nav toggle and the Chat button where the tab strip is hidden. Decorative
-       only — no icon, no click target (pointer-events:none), styled in
-       design-system.css (.mobile-header-brand). -->
-  <span id="mobile-header-brand" class="mobile-header-brand" aria-hidden="true">WebAgent</span>
+  <!-- "Back to main page" button for the compact mobile header: sits directly
+       right of the nav toggle (the hamburger), left-aligned, so the header's
+       center stays free for the dedicated center logo label. Tapping it
+       reopens whichever main panel page was opened last (Sessions by default)
+       and the label shows that page's name; wired in
+       ui/shared/js/mobile-navigation.js, styled in design-system.css. The
+       aria-hidden is cleared by that module at init. -->
+  <span id="mobile-back-main-btn" class="mobile-back-main-btn" aria-hidden="true" title="Back to main page">WebAgent</span>
 
   <!-- Horizontal tab strip with chevron-scroll carousel -->
   <div id="main-tabs-wrap">
     <button type="button" id="main-tabs-chev-left" class="main-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button>
     <div id="main-tabs" role="tablist">
+      <!-- Static kill-switch control: stops all background activity (live agent
+           runs, revivals, watchdog sweeps, polling, workers) while leaving the
+           user's own foreground use live. Admin-only; revealed by
+           ui/shared/js/kill-switch.js. Sits directly left of the debug toggle. -->
+      <button id="kill-switch-toggle" class="kill-switch-toggle-btn" type="button" title="Stop all background activity" aria-label="Stop all background activity" aria-pressed="false" hidden>
+        <i data-lucide="power" style="width:14px;height:14px;"></i>
+        <span class="kill-switch-live" aria-live="polite">Global stop is off</span>
+      </button>
+
       <!-- Static header diagnostic control. It stays separate from the
            generated, admin-only tools group so header rebuilds and admin
            visibility rules never remove it. -->
@@ -1317,7 +1510,7 @@
        paints the strip from that cache synchronously before first paint.
        partial-loader.js then fetches the live catalog and reconciles. First-ever
        load (no cache) shows the strip a moment later, within the boot spinner. -->
-  <script src="./ui/shared/js/header-build.js"></script>
+  <script src="./ui/shared/js/header-build.js?v=3"></script>
   <script>
   (function () {
     try {
@@ -1333,8 +1526,32 @@
   })();
   </script>
 
-  <!-- User menu (right side) -->
+  <!-- User menu (right side). The connecting indicator used to live here as a
+       pulsing dot + label; it now lives on the chat icon itself (#chat-toggle-btn
+       gets .chat-aura-connecting from reconnect.js's health poll), so the header
+       status area holds persistent actions rather than carousel page tabs. -->
   <span id="status-right">
+    <!-- App Functions controls whether this is visible; this button controls
+         the actual bounded capture. It remains beside Chat on desktop/mobile. -->
+    <span id="render-recorder-control" class="render-recorder-control" hidden>
+      <button id="render-recorder-toggle" class="render-recorder-toggle-btn" type="button"
+              title="Start a chat render recording"
+              aria-label="Start a chat render recording"
+              aria-pressed="false" aria-describedby="render-recorder-popover">
+        <span class="render-recorder-label">Recorder</span>
+        <span class="render-recorder-switch" aria-hidden="true"><span></span></span>
+        <span class="render-recorder-live" aria-live="polite">Render recorder is off</span>
+      </button>
+      <span id="render-recorder-popover" class="render-recorder-popover" role="note">
+        <span class="render-recorder-popover-head">
+          <span class="render-recorder-status-dot" aria-hidden="true"></span>
+          <strong class="render-recorder-status-title">Ready to record</strong>
+          <span class="render-recorder-countdown" aria-hidden="true"></span>
+        </span>
+        <span class="render-recorder-status-detail">Toggle on, reproduce the UI issue, then toggle off.</span>
+        <span class="render-recorder-status-limits">Chat differences, loading order, errors and lag · configured safety limit</span>
+      </span>
+    </span>
     <!-- Click toggles the chat panel; LONG-PRESS starts a fresh session with the
          default agent (long-press logic + click-suppression in the chat-toggle
          script block above; new-session action = window.__startNewSessionDefault,
@@ -1374,6 +1591,31 @@
   <div id="app-restricted-overlay" style="display:none;"></div>
 
 </div><!-- /#stage -->
+
+<!-- Minimum interactive shell. This runs only after the static header and stage
+     mounts exist, and intentionally has no network dependency. The catalog
+     loader replaces/reconciles cached mounts when authority becomes ready. -->
+<script>
+  (function paintMinimumShell() {
+    try {
+      var cached = window.__readPagesCache && window.__readPagesCache();
+      var shellCatalog = cached || (window.__pagesUnavailable && window.__pagesUnavailable());
+      if (shellCatalog && Array.isArray(shellCatalog.main)) {
+        if (window.__ensurePageStyles) window.__ensurePageStyles(shellCatalog);
+        if (window.__buildHeader) window.__buildHeader(shellCatalog.main);
+      }
+      // Light the connecting aura on the chat icon immediately; reconnect.js's
+      // health poll takes over from here (orange pulse → green flash → off).
+      var chatBtn = document.getElementById('chat-toggle-btn');
+      if (chatBtn) chatBtn.classList.add('chat-aura-connecting');
+      if (window.__boot && window.__boot.shellReady) window.__boot.shellReady();
+    } catch (error) {
+      console.error('[shell] minimum shell paint failed', error);
+      // The static Account trigger remains usable even if Wiki fallback paint fails.
+      if (window.__boot && window.__boot.shellReady) window.__boot.shellReady();
+    }
+  })();
+</script>
 
 <!-- Cell editor modal (double-click popup) -->
 <div id="cell-modal">
@@ -1442,14 +1684,14 @@
     })();
     return;
   }
-  await Promise.all([
-    import('./ui/shared/js/main.js'),
-    import('./ui/shared/js/attachments.js'),
-    import('./ui/shared/js/data-sources.js'),
-  ]);
-
-  // ── Register service worker for PWA support ──
-  if ('serviceWorker' in navigator) {
+	  // ── Register service worker for PWA support ──
+	  // Do this BEFORE importing the executable application graph. If an older
+	  // worker serves a mixed module generation, the import can fail (for
+	  // example, a new importer asking for an export absent from a stale cached
+	  // dependency). Registration must still get a chance to install the worker
+	  // that repairs that cache; placing it after Promise.all made the failure
+	  // self-locking and left the boot curtain up forever.
+	  if ('serviceWorker' in navigator) {
     // Auto-reload ONCE when an UPDATED worker takes control, so an ordinary
     // reload picks up new JS/CSS without a manual hard refresh. Relying on a
     // single trigger left tabs pinned on stale cached code (the "it worked once,
@@ -1467,23 +1709,79 @@
       _swReloaded = true;
       window.location.reload();
     };
-    navigator.serviceWorker.addEventListener('controllerchange', _swReloadOnce);
-    try {
-      const reg = await navigator.serviceWorker.register('/sw.js');
-      reg.update().catch(() => {});   // proactively check for a new sw.js each load
-      reg.addEventListener('updatefound', () => {
+	    navigator.serviceWorker.addEventListener('controllerchange', _swReloadOnce);
+	    try {
+	      const registration = navigator.serviceWorker.register('/sw.js').catch(() => null);
+	      // Service-worker maintenance must not be an unbounded application boot
+	      // barrier. The registration/update continues in the background and the
+	      // controllerchange handler performs one coherent reload when it wins.
+	      const reg = await Promise.race([
+	        registration,
+	        new Promise((resolve) => setTimeout(() => resolve(null), 1000)),
+	      ]);
+	      if (!reg) {
+	        registration.then((lateReg) => { try { lateReg?.update(); } catch (_) {} });
+	      } else {
+	      // Proactively check before importing any executable modules. When an
+	      // updated worker is already installing/waiting, briefly hold the import
+	      // graph until it activates so one navigation cannot combine old cached
+	      // dependencies with new importers. The cap keeps a broken/offline worker
+	      // install from delaying the normal network-first boot indefinitely.
+	      await Promise.race([
+	        reg.update().catch(() => {}),
+	        new Promise((resolve) => setTimeout(resolve, 750)),
+	      ]);
+	      const pendingWorker = reg.installing || reg.waiting;
+	      if (pendingWorker && pendingWorker.state !== 'activated') {
+	        await Promise.race([
+	          new Promise((resolve) => {
+	            const onState = () => {
+	              if (pendingWorker.state === 'activated' || pendingWorker.state === 'redundant') {
+	                pendingWorker.removeEventListener('statechange', onState);
+	                resolve();
+	              }
+	            };
+	            pendingWorker.addEventListener('statechange', onState);
+	            onState();
+	          }),
+	          new Promise((resolve) => setTimeout(resolve, 2500)),
+	        ]);
+	      }
+	      // First install: wait briefly for claim() so the large module graph
+	      // imported below is runtime-cached on this very first online visit.
+	      // Without this, a user could complete one successful visit yet still
+	      // be missing most modules on their first offline cold start.
+	      if (!navigator.serviceWorker.controller) {
+	        await Promise.race([
+	          new Promise((resolve) => {
+	            const onControl = () => {
+	              navigator.serviceWorker.removeEventListener('controllerchange', onControl);
+	              resolve();
+	            };
+	            navigator.serviceWorker.addEventListener('controllerchange', onControl);
+	          }),
+	          new Promise((resolve) => setTimeout(resolve, 2500)),
+	        ]);
+	      }
+	      reg.addEventListener('updatefound', () => {
         const nw = reg.installing;
         if (!nw) return;
         nw.addEventListener('statechange', () => {
           if (nw.state === 'activated') _swReloadOnce();
         });
       });
-      console.log('[PWA] Service worker registered:', reg.scope);
+        console.log('[PWA] Service worker registered:', reg.scope);
+      }
     } catch (err) {
 console.warn('[PWA] Service worker registration failed:', err);
-    }
-  }
-  })();
+	    }
+	  }
+
+	  await Promise.all([
+	    import('./ui/shared/js/main.js?v=260'),
+	    import('./ui/shared/js/attachments.js'),
+	  ]);
+	  })();
 </script>
 <!-- ── Lucide icons + horizontal tab strip with carousel ───────── -->
 <script>(function () {
@@ -1520,6 +1818,51 @@ console.warn('[PWA] Service worker registration failed:', err);
     setTimeout(updateChevrons, 350); // catch end of smooth scroll
   }
 
+  // tabs.js is intentionally deferred until the minimum shell + requested
+  // partial are ready. A fast click can therefore arrive before its hidden
+  // select listener exists. Paint that intent immediately and leave a one-item
+  // handoff for initTabs() to replay; otherwise the header changes selection
+  // while the old Wiki panel remains active underneath it.
+  window.__queueEarlyMainTab = function (tabId) {
+    if (!tabId || window.__mainTabsRouterReady) return;
+    window.__pendingMainTab = tabId;
+    document.querySelectorAll('#main-panel > .tab-content').forEach(function (panel) {
+      panel.classList.remove('active');
+      panel.removeAttribute('aria-busy');
+    });
+    var target = document.getElementById('tab-' + tabId);
+    if (!target) return;
+    target.classList.add('active');
+    target.setAttribute('aria-busy', 'true');
+    var uid = (window.app && window.app.currentUserId) || '';
+    try { uid = localStorage.getItem('auth_user_id') || uid; } catch (_) {}
+    if (tabId === 'instances' && uid.indexOf('anon_') === 0) {
+      target.removeAttribute('aria-busy');
+      target.dataset.shellAccessGate = 'anonymous';
+      target.innerHTML = '<section role="status" data-page-access-state="blocked" style="max-width:460px;margin:auto;padding:36px 28px;text-align:center">'
+        + '<h2 style="font-size:18px;margin:0 0 10px">Instances are unavailable for guest chats</h2>'
+        + '<p style="margin:0;color:var(--fg-3)">Sign in with an account that has access to continue.</p></section>';
+    }
+  };
+
+  // Route by the button's page id once tabs.js is ready. Gated pages are
+  // deliberately absent from the guest <select>, so assigning their value to
+  // that select produces "" and loses the destination. The real router accepts
+  // the id directly and can render its access gate without an option.
+  window.__routeHeaderMainTab = function (tabId, selectEl) {
+    if (!tabId) return false;
+    if (window.__mainTabsRouterReady && typeof window.__routeMainTab === 'function') {
+      window.__routeMainTab(tabId, true);
+      return true;
+    }
+    window.__queueEarlyMainTab(tabId);
+    if (selectEl && selectEl.querySelector('option[value="' + tabId + '"]')) {
+      selectEl.value = tabId;
+      selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    return false;
+  };
+
   // Pick a tab — delegated on the strip so it works for buttons generated
   // (and re-generated) from the page catalog after this script runs.
   tabBar.addEventListener('click', function (e) {
@@ -1527,8 +1870,8 @@ console.warn('[PWA] Service worker registration failed:', err);
     if (!btn || !tabBar.contains(btn)) return;
     var val = btn.dataset.value;
     if (!val) return;
-    nativeSelect.value = val;
-    nativeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    e.__mainTabRouted = window.__routeHeaderMainTab(val, nativeSelect);
+    if (e.__mainTabRouted) e.stopImmediatePropagation();
     syncActive(val);
   });
 
@@ -1769,6 +2112,8 @@ console.warn('[PWA] Service worker registration failed:', err);
 
 <script type="module" src="./ui/shared/js/feedback.js"></script>
 <script type="module" src="./ui/shared/js/update-notifier.js"></script>
+<script type="module" src="./ui/shared/js/kill-switch.js"></script>
+<script type="module" src="./ui/shared/js/render-recorder-toggle.js"></script>
 <!-- ── Pull-to-refresh: touch-drag from the top zone to reload ── -->
 <script>
 (() => {

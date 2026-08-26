@@ -3,7 +3,7 @@
   "kind": "ability",
   "icon": "gauge",
   "color": "#bb9af7",
-  "description": "Tracks how full the agent's context window is and, near the limit, folds the oldest turns into frozen summary 'cars' (a compaction train) so long chats keep going — newest turns stay verbatim, and any compacted detail is still retrievable from the raw transcript.",
+  "description": "Per-agent context controls: choose the token target where compaction activates and the exact recent amount kept verbatim. Unchanged prompt blocks are reused from bounded RAM/disk caches and provider prefix caches, while the app-wide 1.05M-token maximum remains a hard safety ceiling.",
   "note": null,
   "simple": false,
   "placeholder": false,
@@ -12,7 +12,8 @@
   "protected": true,
   "context_strategy": true,
   "app_function": true,
-  "_tools_note": "The three agent-facing tools (compact_context, recall_compacted, search_this_session) are DISPLAYED under Core ▸ Base — they are always-on for every agent. Context Control itself is a background APP FUNCTION (the automatic compaction train), so its descriptor gates no tools here; its build_tools() still creates them at runtime because this ability is locked_on. See base.json + app/abilities ui_catalog().",
+  "agent_configurable": true,
+  "_tools_note": "The three agent-facing tools are displayed under Core ▸ Base and remain always-on. This dual-surface descriptor exposes per-agent target/verbatim preferences under Knowledge while App Functions owns the global safety ceiling and advanced defaults.",
   "tools": [],
   "skill_mode": "selectable",
   "skill_summary": "Your own context window: the fill gauge, the automatic background 'compaction train' (oldest turns fold into frozen summary parts; newest stay verbatim), and three tools — compact_context to deliberately fold older turns yourself at a phase checkpoint, recall_compacted to read the ORIGINAL turns behind any summary part verbatim, and search_this_session to keyword-find where a detail lives across the whole conversation. Load this whenever the user asks what you can do about your context/memory filling up, whether you can compact or summarize, or before a long multi-phase task — and, crucially, whenever you suspect a detail you need has been compacted into a summary: don't guess, recall it. NOTE: you CAN compact on demand; do not tell the user compaction is automatic-only.",
@@ -37,64 +38,116 @@
           {"value": "balanced", "label": "Balanced — only at clean phase checkpoints"},
           {"value": "eager", "label": "Eager — free room proactively between phases"}
         ],
-        "hint": "How willing the agent is to run compact_context ITSELF (separate from the always-on automatic compaction below). 'Off' tells it never to self-compact and leave it all to the automatic threshold. 'Balanced' (default) reserves the tool for a rare, deliberate fold at a finished phase of a long project. 'Eager' nudges it to proactively reclaim room at every phase boundary on big multi-step work. Affects only the agent's judgement about the manual tool; it never changes whether automatic compaction runs."
+        "hint": "How willing the agent is to run compact_context ITSELF (separate from automatic compaction).",
+        "scope": "agent"
+      },
+      {
+        "key": "tool_evidence_policy",
+        "label": "Historical Tool Evidence",
+        "type": "select",
+        "default": "current_task",
+        "options": [
+          {"value": "current_task", "label": "Quality — full current task"},
+          {"value": "recent_runs", "label": "Run window — newest runs"},
+          {"value": "token_budget", "label": "Token budget — newest that fit"},
+          {"value": "hybrid", "label": "Economy — run and token limits"},
+          {"value": "all", "label": "Archive — keep all tool evidence"}
+        ],
+        "hint": "Controls when historical tool inputs and outputs become compact retrieval receipts. User and assistant messages remain; the current run is always full. Quality compacts completed tasks, while Economy also bounds long tasks.",
+        "scope": "agent"
+      },
+      {
+        "key": "full_evidence_runs",
+        "label": "Full-Evidence Runs",
+        "type": "number",
+        "default": 2,
+        "min": 1,
+        "max": 50,
+        "step": 1,
+        "hint": "Total newest user-triggered runs kept with complete tool evidence, including the current run. Internal manager, scout, closer, and resume iterations do not create runs.",
+        "scope": "agent"
+      },
+      {
+        "key": "full_evidence_token_budget",
+        "label": "Full Tool-Evidence Token Budget",
+        "type": "number",
+        "default": 40000,
+        "min": 1000,
+        "max": 1050000,
+        "step": 5000,
+        "display": "tokens",
+        "hint": "Approximate budget for complete tool arguments and results in the active task. Whole newest runs are retained until the budget is reached; the current run is never reduced.",
+        "scope": "agent"
       },
       {
         "key": "auto_context_limit",
         "label": "Auto-Detect Window From Model",
         "type": "boolean",
         "default": true,
-        "hint": "ON (default) sizes the context budget to the ACTIVE model's real context window, looked up automatically — so the fill gauge and compaction stay correct even when a chat is switched to a model with a different window. OFF uses the fixed number below instead. When a model isn't in the catalog, the fixed number below is the fallback either way."
+        "hint": "Use the active model's published context window, capped by the app-wide maximum below.",
+        "scope": "app"
       },
       {
         "key": "token_limit",
-        "label": "Context Token Limit (fallback / manual)",
+        "label": "Maximum Context Tokens",
         "type": "number",
-        "default": 200000,
+        "default": 1050000,
         "min": 1000,
-        "max": 2000000,
-        "step": 1000,
-        "hint": "The window size to budget against when 'Auto-Detect' above is OFF, and the fallback when it's ON but the active model isn't in the catalog. The 'how full am I' gauge measures against the resulting limit, and compaction starts once the conversation passes the threshold below. 200,000 is a safe default."
+        "max": 1050000,
+        "step": 10000,
+        "hint": "App-wide hard ceiling for every agent. Auto-detected model windows and per-agent compaction targets can be smaller, never larger.",
+        "ceiling": "max",
+        "scope": "app"
       },
       {
-        "key": "compact_threshold",
-        "label": "Compact At (fraction full)",
-        "type": "number",
-        "default": 0.85,
-        "min": 0.1,
-        "max": 0.99,
-        "step": 0.05,
-        "hint": "How full the context has to get before old turns are summarized, as a fraction of the limit. 0.85 means 'start compacting at 85% full'. Lower = compacts sooner and more often (cheaper context, more summary calls); higher = waits longer (richer verbatim history, risk of bumping the limit)."
+        "key": "compact_target_tokens",
+        "label": "Compaction Target Tokens",
+        "type": "range",
+        "default": 100000,
+        "min": 10000,
+        "max": 1050000,
+        "step": 10000,
+        "display": "tokens",
+        "ceiling": "max",
+        "ceiling_key": "token_limit",
+        "hint": "Absolute assembled-context size where compaction activates. For example, 100K starts folding old turns once the live context reaches about 100,000 tokens.",
+        "scope": "both"
       },
       {
-        "key": "tail_fraction",
-        "label": "Keep Verbatim (fraction)",
-        "type": "number",
-        "default": 0.30,
-        "min": 0.05,
-        "max": 0.9,
-        "step": 0.05,
-        "hint": "How much of the limit is always kept word-for-word as the most recent 'hot tail', even after compacting. 0.30 means the latest turns filling up to ~30% of the limit stay verbatim while everything older is folded into summary parts. Higher keeps more recent detail; lower frees more room."
+        "key": "verbatim_tail_tokens",
+        "label": "Keep Verbatim Tokens",
+        "type": "range",
+        "default": 30000,
+        "min": 5000,
+        "max": 1050000,
+        "step": 5000,
+        "display": "tokens",
+        "ceiling": "max",
+        "ceiling_key": "token_limit",
+        "hint": "Absolute number of newest tokens kept word-for-word after compaction. This is clamped below the effective target at runtime.",
+        "scope": "both"
       },
       {
         "key": "segment_source_fraction",
-        "label": "Compact In Chunks Of (fraction of window)",
+        "label": "Compact In Chunks Of (fraction of target)",
         "type": "number",
         "default": 0.25,
         "min": 0.02,
         "max": 0.9,
         "step": 0.05,
-        "hint": "How big a slice of old conversation each summary 'part' is made from, as a fraction of the window. 0.25 means each frozen part is made from ~25% of the window's worth of aged-out turns. Expressed as a fraction so it scales with the model: ~25% is sensible whether the window is 32k or 1M."
+        "hint": "How big a slice of old conversation each summary part is made from.",
+        "scope": "app"
       },
       {
         "key": "segment_target_fraction",
-        "label": "Summary Part Size (fraction of window)",
+        "label": "Summary Part Size (fraction of target)",
         "type": "number",
         "default": 0.05,
         "min": 0.01,
         "max": 0.5,
         "step": 0.01,
-        "hint": "Roughly how long each frozen summary part is, as a fraction of the window. With the chunk size above, 0.25 → 0.05 is a 5:1 compression done ONCE per part and never re-summarized. Bigger keeps more detail per part but costs more context."
+        "hint": "Roughly how long each frozen summary part is, as a fraction of the agent's compaction target.",
+        "scope": "app"
       },
       {
         "key": "max_cars",
@@ -104,14 +157,16 @@
         "min": 2,
         "max": 100,
         "step": 1,
-        "hint": "How many frozen summary parts the train may hold before the OLDEST few are merged into one coarser 'ancient history' part. This bounds total summary size on very long sessions. The raw transcript is never deleted — even merged-away detail stays retrievable. 10 parts at ~5% each ≈ half the window in summaries before merging."
+        "hint": "How many frozen summary parts may accumulate before the oldest are merged.",
+        "scope": "app"
       },
       {
         "key": "summary_model",
         "label": "Summary Model (optional)",
         "type": "text",
         "default": "",
-        "hint": "Optional model id used only to write the rolling summary (a cheap, fast model is ideal here). Leave blank to reuse the app's configured chat model. Example: deepseek/deepseek-v4-flash."
+        "hint": "Optional model id used only to write compacted summaries. Leave blank to reuse the configured chat model.",
+        "scope": "app"
       }
     ]
   },

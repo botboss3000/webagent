@@ -1,0 +1,11 @@
+{
+  "id": "git",
+  "label": "Source Control",
+  "icon": "git-branch",
+  "order": 4,
+  "html": "source-control.html",
+  "mount": "#files-git-main",
+  "entry": "ui/admin-tools/git/git-view.js",
+  "start": "startView",
+  "stop": "stopView"
+}

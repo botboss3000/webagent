@@ -48,9 +48,6 @@
     "load_tools": [
       { "name": "Settings → Agent",      "type": "admin",   "desc": "Configure which tools are enabled or disabled for this agent" }
     ],
-    "data_src_load": [
-      { "name": "Agent → Data Sources",  "type": "admin",   "desc": "Attached external data sources (Postgres / docs / web search). Each adds a synthetic tool the agent can call." }
-    ],
     "integration_status": [
       { "name": "Settings → Integrations", "type": "admin", "desc": "Enable OAuth integrations for this agent in the Integrations tab" }
     ],
@@ -93,9 +90,6 @@
 
     "execute_tools": [
       { "name": "Settings → Agent",      "type": "admin",   "desc": "Tool is dispatched to its handler; result streamed back to the loop" }
-    ],
-    "data_src_exec": [
-      { "name": "Agent → Data Sources",  "type": "admin",   "desc": "Lights up when a tool came from an attached external data source. Shows source name, query/route, row count, duration." }
     ],
     "db_persist_tool": [
       { "name": "Settings → Source",     "type": "admin",   "desc": "Tool result (role=tool) is persisted to the interactions table" }
@@ -360,22 +354,6 @@
         { "key": "Dispatch", "val": "tool_name → handler lookup in tool registry" },
         { "key": "Results",  "val": "Collected into tool_results list for this turn" },
         { "key": "Errors",   "val": "Execution errors are caught and returned as error results — never raised" }
-      ]
-    },
-    "data_src_exec": {
-      "desc": "Side-channel that lights up when the executed tool came from an attached external data source (synthetic connector tool, tool_id prefix 'ds:'). Used by the UI to distinguish external-data calls from regular tool calls.",
-      "details": [
-        { "key": "Triggers", "val": "Any tool whose tool_id begins with 'ds:<source_id>:' — created by app/connectors/* via the ToolLoader synthetic-tool merge" },
-        { "key": "Events",   "val": "data_src_query_started + data_src_query_finished (with duration_ms, success)" },
-        { "key": "Sources",  "val": "sql_postgres · doc_store · web_search_domain · (later) sql_mysql / rest_api / notion / shopify" }
-      ]
-    },
-    "data_src_load": {
-      "desc": "At agent load time the per-agent data-source attachments are looked up and the connector registry is asked to materialize a tool for each one. The schema summary for each source is injected into the system prompt as [DATA SOURCES] when inject_schema_in_prompt is on.",
-      "details": [
-        { "key": "Source",   "val": "agent_data_sources × data_sources (joined)" },
-        { "key": "Tools",    "val": "Synthetic — NOT stored in the tools table; rebuilt every request so config edits apply immediately" },
-        { "key": "Prompt",   "val": "Each attachment with inject_schema_in_prompt=1 contributes a snippet to the [DATA SOURCES] block" }
       ]
     },
     "db_persist_tool": {

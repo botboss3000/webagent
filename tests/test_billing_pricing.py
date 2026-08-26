@@ -3,7 +3,7 @@
 Covers the credit model:
 - charge = provider cost × cost_multiplier (floored at min_charge_cents),
   applied ONLY to inherited (platform-key) models;
-- own-key runs (user's own LLM config, or an agent shipping its own key) are
+- own-key runs using the caller's entitled credential are
   free — the platform isn't footing the bill;
 - the trial is a credit grant that spends exactly like purchased credits and
   hands off to the wallet when the grant runs out mid-charge;
@@ -162,7 +162,7 @@ def _agent_cfg(scope, strategy=None, **kwargs):
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 @pytest.fixture
@@ -173,11 +173,16 @@ def db():
 
 
 @pytest.fixture(autouse=True)
-def _no_own_llm():
+def _no_own_llm(monkeypatch):
     """Tests never have a user-owned LLM unless they opt in."""
     async def _probe(user_id):
         return False
+    async def _allowed_capabilities(_user_id, **_kwargs):
+        return {"models": {"allow_byo": True}}
     pricing_mod._own_llm_probe = _probe
+    monkeypatch.setattr(
+        "app.entitlements.service.resolve_capabilities", _allowed_capabilities,
+    )
     yield
     pricing_mod._own_llm_probe = None
 
@@ -245,11 +250,40 @@ def test_user_own_llm_is_free(db):
     assert r.notes.get("own_llm") is True
 
 
-def test_agent_ships_key_is_free(db):
+def test_tier_denied_byo_does_not_bypass_billing(db, monkeypatch):
+    db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="credits"))
+
+    async def _probe(_user_id):
+        return True
+
+    async def denied_capabilities(_user_id, **_kwargs):
+        return {"models": {"allow_byo": False}}
+
+    pricing_mod._own_llm_probe = _probe
+    monkeypatch.setattr("app.entitlements.service.resolve_capabilities", denied_capabilities)
+    r = _run(resolve_charge(_agent(), "u1", Usage(provider_cost_cents=50), db))
+    assert r.end_user_charge_cents == 50
+    assert r.wallet_charge_cents == 50
+
+
+def test_explicit_own_llm_override_still_obeys_tier(db, monkeypatch):
+    db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="credits"))
+
+    async def denied_capabilities(_user_id, **_kwargs):
+        return {"models": {"allow_byo": False}}
+
+    monkeypatch.setattr("app.entitlements.service.resolve_capabilities", denied_capabilities)
+    r = _run(resolve_charge(
+        _agent(), "u1", Usage(provider_cost_cents=50), db, own_llm=True
+    ))
+    assert r.end_user_charge_cents == 50
+
+
+def test_agent_metadata_key_alone_does_not_bypass_billing(db):
     db.tables["billing_configs"].append(_agent_cfg("agent:agent-1", strategy="credits"))
     r = _run(resolve_charge(_agent(byo=True), "u1", Usage(provider_cost_cents=10_000), db))
-    assert r.end_user_charge_cents == 0
-    assert r.is_byo_llm is True
+    assert r.end_user_charge_cents == 10_000
+    assert r.is_byo_llm is False
 
 
 # ── Free strategy ──

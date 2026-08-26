@@ -1,0 +1,12 @@
+--- a/index.html
++++ b/index.html
+@@ -1313,7 +1313,7 @@
+ </script>
+ 
+-<!-- WebAgent chat widget — Solara Assistant (official loader) -->
+-<script src="http://localhost:8080/embed.js" data-agent="c60a68c2-98af-4509-ae40-0880f6087550" data-position="right" async></script>
++<!-- WebAgent chat widget — Solara Piano Assistant (official loader) -->
++<script src="http://localhost:8080/embed.js" data-agent="bc87ad99-6a29-45e2-86a4-f289fe620710" data-position="right" async></script>
+ 
+ </body>
+ </html>

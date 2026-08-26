@@ -1,0 +1,618 @@
+TOTAL: 272
+
+--- seq 4389 | 2026-08-17 23:46:24 | role=assistant | src=user | tool=None | status=error
+
+
+--- seq 4390 | 2026-08-17 23:48:31 | role=system | src=system:debug:recovery | tool=None | status=complete
+🔧 **Recovered and resumed** (attempt 1/3)
+• Cause: crash
+• Issue: Unexpected error in agent loop: LLM stream open stalled — no response stream for 120s (model=deepseek-v4-flash); aborting so the run can recover
+• Trigger: network_crash
+• Stopped: 2026-08-17T23:48:25.366380+00:00
+• Recovered: 2026-08-17T23:48:25.729593+00:00
+
+--- seq 4398 | 2026-08-17 23:48:34 | role=assistant | src=user | tool=None | status=complete
+Both changes are in, verified, and syntax-checked on both files.
+
+**1. Audio stops on session switch.** I found that every session switch in the app — sidebar click, sessions page, genui embed, chat widget — funnels through one function: `loadSessionChat` in `session-load.js`. It now fires a `tts:stop` event at the very top, before any load or re-render, and `chat-bubble-actions.js` listens for it and runs the full stop routine: speech queue cancelled, speaker buttons restored, highlights cleared, floating pause button removed. So the moment you switch sessions, the previous session's narration dies instantly — nothing keeps talking into the new transcript.
+
+**2. Bullets are now true paragraphs.** The previous fix split by DOM block elements, which handles markdown `<li>` bullets — but you saw output where bullets still played as one block. Root cause: the markdown renderer runs with `breaks: true`, which turns plain-text bullet lines ("• item") into `<br>`-joined text inside a *single* `<p>` — no newline, no block boundary, so they glued together. The splitter now catches three bullet forms:
+
+- **Markdown `<li>` bullets** — still split via block elements, as before.
+- **`-`, `*`, `+`, `1.` numbered lines** — a newline followed by a bullet marker starts a new paragraph (covers plain-text and pre-wrap bubbles).
+- **Inline `• ‣ ◦ ▪` glyphs mid-paragraph** — the `<br>`-joined case where the glyph itself is the only boundary; each bullet gets its own range even with no newline in the text.
+
+Each bullet now reads as its own utterance, gets its own highlight sweep, and the floating circular pause button drops beside it when that bullet starts — then rides down to the next bullet as narration advances. Cleanup on stop/switch wipes every trace.
+
+Both files pass `node --check` (native ES modules, no build step), and the wiring is confirmed: bullet detector at `chat-bubble-actions.js:289`, stop-listener at line 520, session dispatch at `session-load.js:1508`.
+
+**To see it:** hard-reload the chat page, hit the speaker on a bulleted message — each bullet should highlight and pause individually — then switch sessions mid-playback and confirm the audio cuts out immediately.
+
+One note: numbered lists with large numbers or unusual markers ("12)" etc.) are matched up to 3 digits followed by `.` or `)` and a space — well beyond typical output, but say the word if you ever see a numbered item that fails to split.
+
+--- seq 4399 | 2026-08-17 23:50:13 | role=system | src=system:summary | tool=None | status=complete
+- I made switching sessions stop any active audio by hooking the stop into `loadSessionChat`, the single funnel every session switch goes through.
+- Each bullet is now treated as its own separate paragraph with its own pause button and independent highlighting, covering both markdown `<li>` bullets and `•`-glyph bullet lines.
+- The edits are applied to `session-load.js` and `chat-bubble-actions.js`, but the syntax/consistency check was still in progress when the conversation was cut off, so I haven't confirmed the final verification.
+
+--- seq 4400 | 2026-08-17 23:50:55 | role=system | src=system:summary | tool=None | status=complete
+- Both changes are in, verified, and syntax-checked on both files.
+- Session switches now fire a `tts:stop` event at the very top of `loadSessionChat`, so the previous session's narration dies instantly.
+- The stop routine fully cleans up: queue cancelled, speaker buttons restored, highlights cleared, floating pause button removed.
+- Bullets are now true paragraphs, catching three forms: markdown `<li>` bullets, `-`/`*`/`+`/numbered lines, and inline glyphs like `• ‣ ◦ ▪`.
+- Each bullet now reads as its own utterance, gets its own highlight sweep, and gets the floating pause button as it plays.
+- Both files pass `node --check`.
+- To see it: hard-reload the chat page, play a bulleted message, then switch sessions mid-playback to confirm the audio cuts out.
+- One caveat: numbered markers up to 3 digits followed by `.` or `)` and a space are matched — tell me if you ever see a numbered item that fails to split.
+
+--- seq 4401 | 2026-08-18 09:50:23 | role=user | src=user | tool=None | status=complete
+when playing then clicking play, the audio does not resume. also, when the user engaged the speaker button, it wasn't during this audio payback mode, clicking on other bullets or paragraphs in the message needs to stop the current audio and change to play that. 
+
+also, the button is not positioned right. it needs to be asking the right side of the bubble. the bubble is about 80% of the view. the button needs to be within the remaining 20
+
+--- seq 4405 | 2026-08-18 09:50:31 | role=tool | src=user | tool=memory_search | status=complete
+{"skipped": true, "reason": "node_disabled"}
+
+--- seq 4417 | 2026-08-18 09:51:13 | role=assistant | src=user | tool=None | status=interrupted
+
+
+--- seq 4424 | 2026-08-18 09:56:07 | role=assistant | src=user | tool=None | status=error
+
+
+--- seq 4425 | 2026-08-18 10:05:09 | role=system | src=system:debug:recovery | tool=None | status=complete
+🔧 **Recovered and resumed** (attempt 1/3)
+• Cause: crash
+• Issue: Unexpected error in agent loop: 
+• Trigger: network_crash
+• Stopped: 2026-08-18T10:04:50.760805+00:00
+• Recovered: 2026-08-18T10:04:51.696731+00:00
+
+--- seq 4426 | 2026-08-18 10:17:42 | role=system | src=system:debug:recovery | tool=None | status=complete
+🔧 **Recovered and resumed** (attempt 2/3)
+• Cause: server_restart
+• Issue: Server restarted while this run was in progress.
+• Trigger: boot
+• Stopped: 2026-08-18T10:16:21.719600+00:00
+• Recovered: 2026-08-18T10:16:42.577432+00:00
+
+--- seq 4433 | 2026-08-18 10:17:48 | role=assistant | src=user | tool=None | status=complete
+Let me re-read the exact current state of the TTS code and the gutter layout so I can fix pause/resume, click-to-jump, and the button position precisely.
+
+--- seq 4490 | 2026-08-18 10:20:53 | role=tool | src=user | tool=read_source | status=complete
+ui/chat/js/chat-bubble-actions.js (2153 lines, showing 160-389)
+160	}
+161	
+162	// ── Read-aloud paragraph highlighting ───────────────────────────────────────
+163	// The bubble text is split into PARAGRAPHS (DOM block elements — markdown
+164	// <p>/<li>/<pre>/headings — or blank lines in plain pre-wrap text) and
+165	// each paragraph is spoken as its own utterance. Utterances are CHAINED (the
+166	// next is sent from the previous one's onend) rather than all enqueued up
+167	// front: Chromium's speech queue is known to drop utterances when several are
+168	// queued at once (especially on Android's Google-TTS bridge), and chaining
+169	// also isolates a failing paragraph so the rest still play. Each paragraph is
+170	// highlighted the moment its utterance starts, so the karaoke effect works on
+171	// EVERY browser that supports speechSynthesis — no word-boundary events
+172	// needed. Highlight = soft brand wash, NOT bold. Read-aloud also stops the
+173	// moment the user engages with the chat composer (focus or typing) or
+174	// switches sessions — see _initTtsComposerStop at the end of this section.
+175	const _TTS_SKIP_SELECTOR = '.label, .bubble-actions, .stop-btn, .persistence-details, .turn-gutter, .tts-pause-btn';
+176	
+177	// The bubble's text nodes in reading order — mirrors _getBubbleText's exclusions
+178	// so paragraph offsets map 1:1 onto the utterance text.
+179	function _ttsTextNodes(bubble) {
+180	  const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT, {
+181	    acceptNode(node) {
+182	      let el = node.parentElement;
+183	      while (el && el !== bubble) {
+184	        if (el.matches && el.matches(_TTS_SKIP_SELECTOR)) return NodeFilter.FILTER_REJECT;
+185	        el = el.parentElement;
+186	      }
+187	      return node.textContent ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+188	    },
+189	  });
+190	  const nodes = [];
+191	  while (walker.nextNode()) nodes.push(walker.currentNode);
+192	  return nodes;
+193	}
+194	
+195	const _TTS_BLOCK_TAGS = new Set(['P','DIV','LI','UL','OL','PRE','BLOCKQUOTE','H1','H2','H3','H4','H5','H6','TABLE','TR','TD','TH','SECTION','ARTICLE','FIGURE']);
+196	
+197	// Nearest block-level ancestor of a text node — the visual "paragraph" unit.
+198	function _ttsBlockAncestor(node) {
+199	  let el = node.parentElement;
+200	  while (el) {
+201	    if (_TTS_BLOCK_TAGS.has(el.tagName)) return el;
+202	    el = el.parentElement;
+203	  }
+204	  return null;
+205	}
+206	
+207	// Split the bubble's text into paragraph ranges [start, end) over the RAW
+208	// concatenated text (the same string the utterances are sliced from).
+209	// Paragraph boundaries come from the DOM, not from blank lines:
+210	//   1. Block-element boundaries — markdown renders each paragraph as its own
+211	//      <p>/<li>/<pre>/heading, so consecutive text runs in different blocks
+212	//      are separate paragraphs. Each <li> bullet is its own paragraph. This
+213	//      is the main path for agent replies, where textContent joins blocks
+2
+
+--- seq 4493 | 2026-08-18 10:20:56 | role=tool | src=user | tool=read_source | status=complete
+ui/chat/js/chat-bubble-actions.js (2153 lines, showing 390-549)
+390	
+391	function _ttsShowPauseBtn(bubble, token) {
+392	  _ttsHidePauseBtn();
+393	  if (!bubble || !token) return;
+394	  if (!bubble.querySelector('.tts-paragraph-active')) return;
+395	  const pb = document.createElement('button');
+396	  pb.type = 'button';
+397	  pb.className = 'tts-pause-btn';
+398	  pb.title = 'Pause reading';
+399	  pb.innerHTML = '<i data-lucide="pause" style="width:15px;height:15px;"></i>';
+400	  const setIcon = (iconName, title) => {
+401	    pb.title = title;
+402	    pb.innerHTML = '<i data-lucide="' + iconName + '" style="width:15px;height:15px;"></i>';
+403	    _renderActionIcons(pb);
+404	  };
+405	  pb.addEventListener('click', (event) => {
+406	    event.stopPropagation();
+407	    if (token.cancelled || token.finished) return;
+408	    if (token.paused) {
+409	      try { window.speechSynthesis.resume(); } catch (_) {}
+410	      token.paused = false;
+411	      setIcon('pause', 'Pause reading');
+412	    } else {
+413	      try { window.speechSynthesis.pause(); } catch (_) {}
+414	      token.paused = true;
+415	      setIcon('play', 'Resume reading');
+416	    }
+417	  });
+418	  bubble.appendChild(pb);
+419	  _ttsPauseBtn = pb;
+420	  _ttsPauseBtnBubble = bubble;
+421	  _renderActionIcons(pb);
+422	  _ttsRepositionPauseBtn();
+423	}
+424	
+425	// Stop ALL read-aloud (any bubble): mark chains dead, restore buttons, clear
+426	// highlights, then cancel the shared speech queue. Also silences fire-and-
+427	// forget speech (activity-notice rows) since it shares the same queue.
+428	function _ttsStopAll() {
+429	  if (!('speechSynthesis' in window)) return;
+430	  document.querySelectorAll('[data-speaking="true"]').forEach((other) => {
+431	    if (other.__ttsToken) {
+432	      other.__ttsToken.cancelled = true;
+433	      if (other.__ttsToken.finish) other.__ttsToken.finish();
+434	    }
+435	    delete other.dataset.speaking;
+436	    other.title = 'Read aloud';
+437	    _setActionIcon(other, 'volume-2');
+438	    const host = other.closest('.chat-bubble');
+439	    if (host) _ttsClearHighlights(host);
+440	  });
+441	  _ttsHidePauseBtn();
+442	  try { window.speechSynthesis.cancel(); } catch (_) {}
+443	}
+444	
+445	// Speak a bubble's text one paragraph at a time. Paragraphs are chained from
+446	// the previous utterance's onend (see header note on why not a single big
+447	// queue); each paragraph's highlight is applied in its onstart, so the
+448	// highlight stays in sync with the audio on every browser that supports
+449	// speechSynthesis.
+450	function _speakBubble(btn, bubble) {
+451	  if (!('speechSynthesis' in window)) {
+452	    alert('Text-to-speech is not supported in this browser.');
+453	    return;
+454	  }
+455	  if (btn.dataset.speaking === 'true') {
+456	    _ttsStopAll(); // Same-button stop: kill the whole chain + queue.
+457	    return;
+458	  }
+459	  const nodes = _ttsTextNodes(bubble);
+460	  const raw = nodes.map((n) => n.textContent).join('');
+461	  if (!raw.trim()) return;
+462	  c
+
+--- seq 4496 | 2026-08-18 10:21:07 | role=tool | src=user | tool=search_source | status=complete
+ui\chat\js\chat-bubble-actions.js:94:// and the turn-gutter footer (timestamp, model tag, buttons).
+ui\chat\js\chat-bubble-actions.js:98:  clone.querySelectorAll('.label, .bubble-actions, .stop-btn, .persistence-details, .turn-gutter, .tts-pause-btn').forEach(el => el.remove());
+ui\chat\js\chat-bubble-actions.js:175:const _TTS_SKIP_SELECTOR = '.label, .bubble-actions, .stop-btn, .persistence-details, .turn-gutter, .tts-pause-btn';
+ui\chat\js\chat-bubble-actions.js:382:  const chev = bubble.querySelector('.turn-gutter:not([hidden]) .bubble-collapse-btn, .turn-gutter:not([hidden]) .turn-gutter-btn');
+ui\chat\js\chat-bubble-actions.js:630:      if (gutter && gutter.classList.contains('turn-gutter')) {
+ui\chat\js\chat-bubble-actions.js:694:  restoreBtn.className = 'turn-gutter-btn restore-btn';
+ui\chat\js\chat-bubble-actions.js:718:  permBtn.className = 'turn-gutter-btn';
+ui\chat\js\chat-bubble-actions.js:895:    bubble.querySelectorAll('.turn-gutter.deleted').forEach(g => {
+ui\chat\js\chat-bubble-actions.js:1315:  gutter.className = 'turn-gutter';
+ui\chat\js\chat-bubble-actions.js:1324:    timeEl.className = 'turn-gutter-time bubble-time';
+ui\chat\js\chat-bubble-actions.js:1339:  copyBtn.className = 'turn-gutter-btn';
+ui\chat\js\chat-bubble-actions.js:1375:  gutter.className = 'turn-gutter notice-gutter';
+ui\chat\js\chat-bubble-actions.js:1382:    timeEl.className = 'turn-gutter-time bubble-time';
+ui\chat\js\chat-bubble-actions.js:1397:  copyBtn.className = 'turn-gutter-btn';
+ui\chat\js\chat-bubble-actions.js:1726:    if (e.target.closest('.bubble-more-menu') || e.target.closest('.turn-gutter-more')) return;
+ui\chat\js\chat-bubble-actions.js:1759:  btn.className = 'turn-gutter-btn turn-gutter-more';
+ui\chat\js\chat-bubble-actions.js:1774:// (LLM text + tool calls). Clicking an LLM section toggles a .turn-gutter
+ui\chat\js\chat-bubble-actions.js:1780:  gutter.className = 'turn-gutter';
+ui\chat\js\chat-bubble-actions.js:1795:    timeEl.className = 'turn-gutter-time bubble-time';
+ui\chat\js\chat-bubble-actions.js:1810:  collapseBtn.className = 'turn-gutter-btn bubble-collapse-btn';
+ui\chat\js\chat-bubble-actions.js:1822:  speakBtn.className = 'turn-gutter-btn';
+ui\chat\js\chat-bubble-actions.js:1834:  copyBtn.className = 'turn-gutter-btn';
+ui\chat\js\chat-bubble-actions.js:1868:  if (!gutter || !gutter.classList.contains('turn-gutter')) return;
+ui\chat\js\chat-bubble-actions.js:1883:  if (target.closest('.llm-section') || target.closest('.turn-gutter') || target.closest('.turn-gutter-btn')
+ui\chat\js\chat-bubble-actions.js:1889:  document.querySelectorAll('.turn-gutter:not([hidden])').forEach(g => {
+ui\chat\js\chat-bubble-actions.js:1915:    if (g && g.classList.contains('turn-gutter')) {
+ui\chat\js\chat-bubble-actions.js:1932:  if (!gutter || !gutter.classList.contains('turn-gutter')) {
+ui\chat\js\chat-bubble-actions.js:1963:    if (child.classList.contains('turn-section') || child.classList.contains('turn-gutter')
+ui\chat\js\chat-bubble-actions.js:19
+
+--- seq 4499 | 2026-08-18 10:21:10 | role=tool | src=user | tool=search_source | status=complete
+ui\shared\css\app1.css:3094:.turn-gutter-btn[data-speaking="true"] { color: var(--brand); }
+ui\shared\css\app1.css:3199:.chat-bubble.collapsed > :not(.bubble-actions):not(.label):not(.turn-gutter),
+ui\shared\css\app1.css:3216:.chat-bubble.collapsed .turn-gutter {
+ui\shared\css\app1.css:3224:.chat-bubble.collapsed .turn-gutter[hidden] {
+ui\shared\css\app1.css:3261:.turn-gutter {
+ui\shared\css\app1.css:3273:.turn-gutter:not([hidden]) {
+ui\shared\css\app1.css:3276:.turn-gutter[hidden] {
+ui\shared\css\app1.css:3279:.turn-gutter:hover {
+ui\shared\css\app1.css:3283:.turn-gutter-time {
+ui\shared\css\app1.css:3295:.turn-gutter-model {
+ui\shared\css\app1.css:3310:.turn-gutter-model > bdi { unicode-bidi: isolate; }
+ui\shared\css\app1.css:3312:.turn-gutter-btn {
+ui\shared\css\app1.css:3325:.turn-gutter-btn:hover {
+ui\shared\css\app1.css:3329:.turn-gutter-more.open {
+ui\shared\css\app1.css:4868:.turn-gutter.deleted > .turn-gutter-time,
+ui\shared\css\app1.css:4869:.turn-gutter.deleted > .turn-gutter-model,
+ui\shared\css\app1.css:4870:.turn-gutter.deleted > .turn-gutter-btn {
+
+--- seq 4504 | 2026-08-18 10:21:19 | role=assistant | src=user | tool=None | status=complete
+Now let me see the gutter CSS layout, the section gutter construction, and the reposition function body — plus the bubble width rules.
+
+--- seq 4551 | 2026-08-18 10:23:09 | role=tool | src=user | tool=read_source | status=complete
+ui/shared/css/app1.css (7966 lines, showing 3255-3339)
+3255	
+3256	/* Gutter — the expandable strip between sections that shows time/model/actions.
+3257	   Hidden by default; revealed when the LLM section above it is clicked.
+3258	   position:relative + z-index lifts the strip (and its buttons) above any
+3259	   following sibling — e.g. a grouped bubble pulled up by margin-top:-8px — so
+3260	   footer clicks are never swallowed by the next bubble. */
+3261	.turn-gutter {
+3262	  position: relative;
+3263	  z-index: 2;
+3264	  display: flex;
+3265	  align-items: center;
+3266	  gap: 4px;
+3267	  padding: 2px 0 2px;
+3268	  margin: 4px 0 6px;
+3269	  opacity: 0.65;
+3270	  transition: opacity 0.15s ease;
+3271	  user-select: none;
+3272	}
+3273	.turn-gutter:not([hidden]) {
+3274	  /* when visible, normal flex flow */
+3275	}
+3276	.turn-gutter[hidden] {
+3277	  display: none !important;
+3278	}
+3279	.turn-gutter:hover {
+3280	  opacity: 1;
+3281	}
+3282	
+3283	.turn-gutter-time {
+3284	  font-size: 11px;
+3285	  color: var(--fg-3);
+3286	  opacity: 0.7;
+3287	  line-height: 1;
+3288	  align-self: center;
+3289	  /* The timestamp stays left; this auto-margin right-aligns everything else
+3290	     (model tag, action buttons) in the gutter. */
+3291	  margin-right: auto;
+3292	  pointer-events: none;
+3293	}
+3294	
+3295	.turn-gutter-model {
+3296	  margin-right: auto;
+3297	  font-size: 11px;
+3298	  color: var(--fg-3);
+3299	  opacity: 0.7;
+3300	  line-height: 1;
+3301	  align-self: center;
+3302	  user-select: none;
+3303	  max-width: 45%;
+3304	  min-width: 0;
+3305	  overflow: hidden;
+3306	  white-space: nowrap;
+3307	  text-overflow: ellipsis;
+3308	  direction: rtl;
+3309	}
+3310	.turn-gutter-model > bdi { unicode-bidi: isolate; }
+3311	
+3312	.turn-gutter-btn {
+3313	  background: transparent;
+3314	  border: 1px solid transparent;
+3315	  border-radius: 5px;
+3316	  padding: 2px 5px;
+3317	  cursor: pointer;
+3318	  color: inherit;
+3319	  display: inline-flex;
+3320	  align-items: center;
+3321	  justify-content: center;
+3322	  line-height: 0;
+3323	  font-size: 13px;
+3324	}
+3325	.turn-gutter-btn:hover {
+3326	  background: rgba(var(--ink-rgb), 0.06);
+3327	  border-color: rgba(var(--ink-rgb), 0.12);
+3328	}
+3329	.turn-gutter-more.open {
+3330	  background: rgba(var(--ink-rgb), 0.06);
+3331	  border-color: rgba(var(--ink-rgb), 0.12);
+3332	}
+3333	
+3334	/* ── Per-bubble "more" menu (⋮) ────────────────────────────────────────────
+3335	   Popover from the footer's three-dot button (chat-bubble-actions.js
+3336	   _openBubbleMoreMenu). Its Context row mirrors the pill's ctx readout
+3337	   (chat-activity.js _renderCtxIndicator) — same values, both themes. */
+3338	.bubble-more-menu {
+3339	  position: fixed;
+... (4627 more lines — call read_source(path='ui/shared/css/app1.css', offset=3340, limit=85) to continue)
+
+--- seq 4554 | 2026-08-18 10:23:13 | role=tool | src=user | tool=read_source | status=complete
+ui/chat/js/chat-bubble-actions.js (2153 lines, showing 1770-1844)
+1770	}
+1771	
+1772	// ── Turn-section gutter system ────────────────────────────────────────────
+1773	// Each agent turn is ONE bubble containing multiple .turn-section blocks
+1774	// (LLM text + tool calls). Clicking an LLM section toggles a .turn-gutter
+1775	// between it and the next section, showing time, model, and action buttons.
+1776	
+1777	// Build a gutter element (hidden) for placement between turn sections.
+1778	function _buildTurnGutter(bubble, sectionIdx) {
+1779	  const gutter = document.createElement('div');
+1780	  gutter.className = 'turn-gutter';
+1781	  gutter.setAttribute('hidden', '');
+1782	  gutter.dataset.sectionIdx = sectionIdx;
+1783	
+1784	  // Find the corresponding section in the bubble to get its interaction ID
+1785	  const sections = bubble.querySelectorAll(':scope > .turn-section.llm-section');
+1786	  const section = [...sections].find(s => s.dataset.sectionIdx === String(sectionIdx));
+1787	  const sectionAnchor = (section && (section.dataset.msgId || section.dataset.turnId))
+1788	    || _bubbleAnchorId(bubble);
+1789	
+1790	  // Time
+1791	  const createdAtMs = bubble.getAttribute('data-created-at');
+1792	  const timeError = bubble.getAttribute('data-time-error');
+1793	  if (createdAtMs || (app.isDebug && timeError)) {
+1794	    const timeEl = document.createElement('span');
+1795	    timeEl.className = 'turn-gutter-time bubble-time';
+1796	    if (createdAtMs) {
+1797	      timeEl.setAttribute('data-created-at', createdAtMs);
+1798	      timeEl.textContent = _formatRelativeTime(Number(createdAtMs));
+1799	    } else {
+1800	      timeEl.setAttribute('data-time-error', timeError);
+1801	      timeEl.title = timeError;
+1802	      timeEl.textContent = `time error: ${timeError}`;
+1803	    }
+1804	    gutter.appendChild(timeEl);
+1805	  }
+1806	
+1807	  // Collapse
+1808	  const collapseBtn = document.createElement('button');
+1809	  collapseBtn.type = 'button';
+1810	  collapseBtn.className = 'turn-gutter-btn bubble-collapse-btn';
+1811	  collapseBtn.title = 'Collapse message';
+1812	  collapseBtn.innerHTML = '<i data-lucide="chevron-down" style="width:14px;height:14px;"></i>';
+1813	  collapseBtn.addEventListener('click', (e) => {
+1814	    e.stopPropagation();
+1815	    _toggleBubbleCollapse(collapseBtn, bubble);
+1816	  });
+1817	  gutter.appendChild(collapseBtn);
+1818	
+1819	  // Read aloud
+1820	  const speakBtn = document.createElement('button');
+1821	  speakBtn.type = 'button';
+1822	  speakBtn.className = 'turn-gutter-btn';
+1823	  speakBtn.title = 'Read aloud';
+1824	  speakBtn.innerHTML = '<i data-lucide="volume-2" style="width:14px;height:14px;"></i>';
+1825	  speakBtn.addEventListener('click', (e) => {
+1826	    e.stopPropagation();
+1827	    _speakBubble(speakBtn, bubble);
+1828	  });
+1829	  gutter.appendChild(speakBtn);
+1830	
+1831	  // Copy
+1832	  const copyBtn = document.createElement('button');
+1833	  copyBtn.type = 'button';
+1834	  copyBtn.className = 'turn-gutter-btn';
+1835	 
+
+--- seq 4557 | 2026-08-18 10:23:18 | role=tool | src=user | tool=read_source | status=complete
+ui/chat/js/chat-bubble-actions.js (2153 lines, showing 371-390)
+371	function _ttsRepositionPauseBtn() {
+372	  if (!_ttsPauseBtn || !_ttsPauseBtnBubble) return;
+373	  const bubble = _ttsPauseBtnBubble;
+374	  const span = bubble.querySelector('.tts-paragraph-active');
+375	  if (!span) { _ttsHidePauseBtn(); return; }
+376	  const bRect = bubble.getBoundingClientRect();
+377	  const sRect = span.getBoundingClientRect();
+378	  const w = _ttsPauseBtn.offsetWidth || 26;
+379	  const h = _ttsPauseBtn.offsetHeight || 26;
+380	  const top = Math.max(2, (sRect.top - bRect.top) + sRect.height / 2 - h / 2);
+381	  let left = bRect.width - w - 10;
+382	  const chev = bubble.querySelector('.turn-gutter:not([hidden]) .bubble-collapse-btn, .turn-gutter:not([hidden]) .turn-gutter-btn');
+383	  if (chev) {
+384	    const cRect = chev.getBoundingClientRect();
+385	    left = (cRect.left - bRect.left) + cRect.width / 2 - w / 2;
+386	  }
+387	  _ttsPauseBtn.style.top = top + 'px';
+388	  _ttsPauseBtn.style.left = left + 'px';
+389	}
+390	
+... (1763 more lines — call read_source(path='ui/chat/js/chat-bubble-actions.js', offset=391, limit=20) to continue)
+
+--- seq 4560 | 2026-08-18 10:23:21 | role=tool | src=user | tool=search_source | status=complete
+ui\shared\css\app1.css:134:  @media (max-width: 800px) {
+ui\shared\css\app1.css:425:@media (max-width: 800px) {
+ui\shared\css\app1.css:447:@media (max-width: 800px) and (hover: none) and (pointer: coarse) {
+ui\shared\css\app1.css:2871:.chat-bubble {
+ui\shared\css\app1.css:2886:.chat-bubble a { cursor: text; }
+ui\shared\css\app1.css:2887:.chat-bubble.recovery-notice > summary { cursor: text; }
+ui\shared\css\app1.css:2934:.chat-bubble.user {
+ui\shared\css\app1.css:2941:.chat-bubble.agent {
+ui\shared\css\app1.css:2949:.chat-bubble.agent.streaming {
+ui\shared\css\app1.css:2959:.chat-bubble.agent.premium {
+ui\shared\css\app1.css:3001:.chat-bubble.agent.grouped-cont {
+ui\shared\css\app1.css:3006:.chat-bubble.agent.grouped-open {
+ui\shared\css\app1.css:3073:.chat-bubble:hover .bubble-actions,
+ui\shared\css\app1.css:3074:.chat-bubble:focus-within .bubble-actions { opacity: 1; }
+ui\shared\css\app1.css:3075:.chat-bubble.user .bubble-actions { justify-content: flex-end; }
+ui\shared\css\app1.css:3109:.chat-bubble:has(.tts-pause-btn) { position: relative; }
+ui\shared\css\app1.css:3149:.chat-bubble.error {
+ui\shared\css\app1.css:3159:.chat-bubble.agent.session-deleted-notice {
+ui\shared\css\app1.css:3175:.chat-bubble.agent.git-watch-notice {
+ui\shared\css\app1.css:3188:.chat-bubble .label {
+ui\shared\css\app1.css:3196:.chat-bubble.collapsed {
+ui\shared\css\app1.css:3199:.chat-bubble.collapsed > :not(.bubble-actions):not(.label):not(.turn-gutter),
+ui\shared\css\app1.css:3200:.chat-bubble.collapsed > .bubble-body,
+ui\shared\css\app1.css:3201:.chat-bubble.collapsed > .md-body,
+ui\shared\css\app1.css:3202:.chat-bubble.collapsed > .turn-section {
+ui\shared\css\app1.css:3205:.chat-bubble.collapsed > .label {
+ui\shared\css\app1.css:3208:.chat-bubble.collapsed .bubble-actions {
+ui\shared\css\app1.css:3216:.chat-bubble.collapsed .turn-gutter {
+ui\shared\css\app1.css:3224:.chat-bubble.collapsed .turn-gutter[hidden] {
+ui\shared\css\app1.css:3403:.chat-bubble.schema-inspect-bubble {
+ui\shared\css\app1.css:3515:  max-width: 80vw;
+ui\shared\css\app1.css:3542:.chat-bubble.interrupted {
+ui\shared\css\app1.css:3552:.chat-bubble.recovery-notice {
+ui\shared\css\app1.css:3560:.chat-bubble.recovery-notice > summary {
+ui\shared\css\app1.css:3565:.chat-bubble.recovery-notice > summary::-webkit-details-marker { display: none; }
+ui\shared\css\app1.css:3566:.chat-bubble.recovery-notice > summary::before { content: '✓ '; }
+ui\shared\css\app1.css:3567:.chat-bubble.recovery-notice > dl {
+ui\shared\css\app1.css:3575:.chat-bubble.recovery-notice > dl > dt { color: var(--fg-3); }
+ui\shared\css\app1.css:3576:.chat-bubble.recovery-notice > dl > dd { margin: 0; overflow-wrap: anywhere; }
+ui\shared\css\app1.css:3580:.chat-bubble.connection-lost-global {
+ui\shared\css\app1.css:3591:.chat-bubble.user.pending {
+ui\shared\css\app1.css:3595:.chat-bubble.user.pending .label {
+ui\shared\css\app1.css:3598:.chat-bubble.user.pending .label::after {
+ui\shared\css\app1.css:3602:.chat-bubble.user.pending.sav
+
+--- seq 4565 | 2026-08-18 10:23:29 | role=assistant | src=user | tool=None | status=complete
+Now I have the full picture: the gutter is a strip inside the bubble, and the current pause button positions *inside* the bubble over the text. Let me read the exact pause-button CSS block so I can convert it to a fixed right-column button.
+
+--- seq 4629 | 2026-08-18 10:28:17 | role=tool | src=user | tool=read_source | status=complete
+ui/shared/css/app1.css (7966 lines, showing 3103-3164)
+3103	/* Floating pause/resume control for read-aloud: a circular button that hovers
+3104	   at the right edge of the bubble (center-x aligned with the gutter chevron
+3105	   buttons) and rides the vertical center of the paragraph currently being
+3106	   read, dropping down as the highlight advances. Toggles pause ↔ play;
+3107	   removed when playback stops or the highlight moves on. position:absolute
+3108	   anchors to .chat-bubble via the :has() rule below. */
+3109	.chat-bubble:has(.tts-pause-btn) { position: relative; }
+3110	.tts-pause-btn {
+3111	  position: absolute;
+3112	  z-index: 3;
+3113	  display: inline-flex;
+3114	  align-items: center;
+3115	  justify-content: center;
+3116	  width: 26px;
+3117	  height: 26px;
+3118	  padding: 0;
+3119	  border: 1px solid rgba(var(--brand-rgb), 0.35);
+3120	  border-radius: 50%;
+3121	  background: rgba(var(--brand-rgb), 0.14);
+3122	  color: inherit;
+3123	  box-shadow: 0 1px 4px rgba(var(--ink-rgb), 0.25);
+3124	  cursor: pointer;
+3125	}
+3126	.tts-pause-btn:hover {
+3127	  background: rgba(var(--brand-rgb), 0.28);
+3128	}
+3129	.tts-pause-btn:active {
+3130	  transform: scale(0.94);
+3131	}
+3132	.tts-pause-btn:focus-visible {
+3133	  outline: 2px solid rgba(var(--brand-rgb), 0.5);
+3134	  outline-offset: 1px;
+3135	}
+3136	.tts-pause-btn svg {
+3137	  width: 15px;
+3138	  height: 15px;
+3139	}
+3140	/* Per-turn delete button — danger-tinted on hover, filled when armed (⚠️). */
+3141	.bubble-action-btn.bubble-collapse-btn:hover { color: var(--brand); }
+3142	.bubble-action-btn.bubble-delete-btn:hover { color: var(--danger); }
+3143	.bubble-action-btn.bubble-delete-btn.warning {
+3144	  color: var(--danger);
+3145	  background: var(--danger-soft);
+3146	  border-color: var(--danger-mid);
+3147	}
+3148	
+3149	.chat-bubble.error {
+3150	    background: var(--error-bubble-bg);
+3151	    border: 1px solid var(--error-bubble-border);
+3152	    color: var(--danger);
+3153	    align-self: flex-start;
+3154	  }
+3155	/* "Session not found" — shown in place of the transcript when the open session
+3156	   was permanently deleted elsewhere (agentWs.js 'session_deleted'). Reuses the
+3157	   error-bubble palette (correct in both themes) but centres itself as a standalone
+3158	   notice rather than a left-aligned reply. */
+3159	.chat-bubble.agent.session-deleted-notice {
+3160	    background: var(--error-bubble-bg);
+3161	    border: 1px solid var(--error-bubble-border);
+3162	    color: var(--danger);
+3163	    align-self: center;
+3164	    text-align: center;
+... (4802 more lines — call read_source(path='ui/shared/css/app1.css', offset=3165, limit=62) to continue)
+
+--- seq 4634 | 2026-08-18 10:28:26 | role=assistant | src=user | tool=None | status=complete
+All exact text confirmed. Applying the five edits — robust pause/resume via cancel+respeak, click-to-jump between paragraphs, fixed-position button in the right 20% column, and scroll/resize re-anchoring:
+
+--- seq 4635 | 2026-08-18 11:23:15 | role=system | src=system:debug:recovery | tool=None | status=complete
+🔧 **Recovered and resumed** (attempt 3/3)
+• Cause: server_restart
+• Issue: Server restarted while this run was in progress.
+• Trigger: boot
+• Stopped: 2026-08-18T11:21:41.228913+00:00
+• Recovered: 2026-08-18T11:21:45.066110+00:00
+
+--- seq 4642 | 2026-08-18 11:23:27 | role=assistant | src=user | tool=None | status=complete
+Continuing where I left off — applying the fixes now. First edit: add the click-to-offset helper (for jumping to a clicked paragraph).
+
+--- seq 4684 | 2026-08-18 11:27:26 | role=tool | src=user | tool=edit_source | status=complete
+Updated C:\Users\Alex R\Projects\webagent-dev\ui\chat\js\chat-bubble-actions.js. Backup: C:\Users\Alex R\Projects\webagent-dev\.source-backups\chat-bubble-actions.js.1787052443.bak
+
+--- seq 4689 | 2026-08-18 11:27:33 | role=assistant | src=user | tool=None | status=complete
+Helper added. Now the reposition function — fixed positioning in the right 20% band, outside the bubble:
+
+--- seq 4722 | 2026-08-18 11:29:22 | role=tool | src=user | tool=edit_source | status=complete
+Updated C:\Users\Alex R\Projects\webagent-dev\ui\chat\js\chat-bubble-actions.js. Backup: C:\Users\Alex R\Projects\webagent-dev\.source-backups\chat-bubble-actions.js.1787052558.bak
+
+--- seq 4727 | 2026-08-18 11:29:32 | role=assistant | src=user | tool=None | status=complete
+Now the pause button click handler — route through the token's pause/resume (cancel+replay, which actually works):
+
+--- seq 4764 | 2026-08-18 11:31:35 | role=tool | src=user | tool=edit_source | status=complete
+Updated C:\Users\Alex R\Projects\webagent-dev\ui\chat\js\chat-bubble-actions.js. Backup: C:\Users\Alex R\Projects\webagent-dev\.source-backups\chat-bubble-actions.js.1787052686.bak
+
+--- seq 4769 | 2026-08-18 11:31:46 | role=assistant | src=user | tool=None | status=complete
+Now the core rewrite of `_speakBubble` — reliable pause/resume, jump-to-paragraph, and the click binding:
+
+--- seq 4809 | 2026-08-18 11:33:35 | role=tool | src=user | tool=edit_source | status=complete
+Updated C:\Users\Alex R\Projects\webagent-dev\ui\chat\js\chat-bubble-actions.js. Backup: C:\Users\Alex R\Projects\webagent-dev\.source-backups\chat-bubble-actions.js.1787052811.bak
+
+--- seq 4814 | 2026-08-18 11:33:45 | role=assistant | src=user | tool=None | status=complete
+Now the scroll re-anchoring listener (JS) and the fixed-position CSS (different files — batching):
+
+--- seq 4852 | 2026-08-18 11:35:48 | role=tool | src=user | tool=edit_source | status=complete
+Updated C:\Users\Alex R\Projects\webagent-dev\ui\chat\js\chat-bubble-actions.js. Backup: C:\Users\Alex R\Projects\webagent-dev\.source-backups\chat-bubble-actions.js.1787052942.bak
+
+--- seq 4855 | 2026-08-18 11:35:57 | role=tool | src=user | tool=edit_source | status=complete
+Updated C:\Users\Alex R\Projects\webagent-dev\ui\shared\css\app1.css. Backup: C:\Users\Alex R\Projects\webagent-dev\.source-backups\app1.css.1787052943.bak
+
+--- seq 4860 | 2026-08-18 11:36:20 | role=assistant | src=user | tool=None | status=complete
+All edits applied. Verifying syntax and consistency:
+
+--- seq 4861 | 2026-08-18 12:42:30 | role=system | src=system:error | tool=None | status=complete
+❌ **Run failed after 3 recovery attempts**
+• Cause: server_restart
+• Last failure: Server restarted while this run was in progress.
+• Attempts: 3/3
+• Recovery stopped because the retry budget was exhausted.
+• Send a new message to start a fresh run after correcting the failure above.

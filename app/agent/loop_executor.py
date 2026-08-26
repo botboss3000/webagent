@@ -38,14 +38,15 @@ DEFAULT_NODE_ORDER: List[str] = [
     "load_context", "copy_defaults", "skip_gate", "memory_search", "resolve_attach",
     "attachment_describe", "build_prompt", "build_history",
     # LOOP INIT (stream_agent_events, before while-loop)
-    "load_provider", "load_tools", "data_src_load", "integration_status", "assemble_msgs",
+    "load_provider", "load_tools", "integration_status", "assemble_msgs",
     # INFERENCE (per-turn while-loop)
     "interrupt_chk", "turn_counter", "permission_chk", "build_tool_defs",
     "llm_call",
     # ROUTING (validate + guard, per tool call)
-    "db_persist_asst", "validate_tools", "destructive_chk", "guardrails", "post_val_chk",
+    "db_persist_asst", "validate_tools", "destructive_chk", "guardrails",
+    "contract_chk", "manager_chk", "post_val_chk",
     # EXECUTION (per tool result)
-    "execute_tools", "data_src_exec", "db_persist_tool", "delegation_chk", "skill_track",
+    "execute_tools", "db_persist_tool", "delegation_chk", "skill_track",
     # CONTINUE?
     "check_continue",
     # OUTPUT
@@ -69,13 +70,14 @@ GATED_NODES: frozenset = frozenset({
     "interrupt_chk",   # Skip interrupt checks (batch / automated agents)
     "permission_chk",  # Skip turn-limit gate (long-running / headless agents)
     "guardrails",      # Skip destructive-tool confirmation (admin agents)
+    "contract_chk",    # Skip the per-agent run contract (mechanical rules)
+    "manager_chk",     # Skip supervisory Manager checks without disabling contracts
     "delegation_chk",  # Skip agent-delegation detection
     "skill_track",     # Skip skill-execution DB writes (lightweight agents)
     "memory_search",   # Skip brain context lookup (lightweight / tool-only agents)
     "memory_save",     # Skip post-chat memory upsert (ephemeral agents)
 
     "copy_defaults",   # Skip copying default context docs on first use
-    "data_src_load",   # Skip per-agent external data-source tool injection
     "attachment_describe",  # Skip describing images for non-multimodal models
 })
 

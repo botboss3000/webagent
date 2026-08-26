@@ -207,6 +207,19 @@ body.cw-dragging .cw-header { cursor: grabbing; }
 }
 
 .cw-bubble.streaming { opacity: 0.9; }
+.cw-bubble.scout-preview {
+  border-color: rgba(var(--brand-rgb), 0.28);
+  border-style: dashed;
+  opacity: 0.88;
+}
+.cw-bubble.scout-preview::before {
+  content: 'Scout · provisional';
+  display: block;
+  margin-bottom: 5px;
+  color: var(--fg-3, var(--fg-2));
+  font-size: 10px;
+  font-weight: 600;
+}
 .cw-bubble.cw-error {
   border-color: var(--danger);
   color: var(--danger);

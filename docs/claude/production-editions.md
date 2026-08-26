@@ -948,7 +948,7 @@ per-agent Abilities tab) is misleading. A descriptor opts out with
   `context_strategy` / `build_tools` / service+router hooks and behaves identically.
 - **The App Functions table** lives in **App Settings** (not Agent Settings):
   a `.ac-category-group` shell (`#ac-app-functions-list`) in
-  `ui/admin-tools/app-config/app-settings/app-settings.html`, rendered by
+  `ui/main-panel/instances/settings/app-settings/app-settings.html`, rendered by
   `app-functions.js` from the catalog's `app_functions` list. Each entry is an
   expandable `.ac-row` with an on/off toggle and (for a non-`simple` function) a
   settings body. It **reuses the same endpoints and shared helpers** as the admin
@@ -1045,5 +1045,5 @@ All are **fail-open** (unknown → kept) and **no-op for `full`**.
 - `app/features/editions.json` — committed edition manifest.
 - `app/features/catalog.py` — scans the plugin folders, builds the catalog.
 - `app/api/features.py` — `GET /api/v1/features` (admin-only).
-- `ui/admin-tools/app-config/features/features.html` (container) + `app-config/nav.js` (`_renderFeaturesCatalog`) — the
+- `ui/main-panel/instances/settings/features/features.html` (container) + `app-config/nav.js` (`_renderFeaturesCatalog`) — the
   Features report panel.

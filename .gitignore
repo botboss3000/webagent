@@ -97,6 +97,7 @@ _envdump.txt
 # stays in app/db/. Covers local.db, logs.db, recordings.db, vault.db, tests.db,
 # and the optimizer/closer scratch DBs + their WAL/SHM/journal sidecars.
 data/db/
+data/cache/
 local.db
 
 # Company-wide Wiki: the wiki.db file itself IS tracked (committed to the repo),
@@ -219,6 +220,10 @@ data/user_data/admin/chrome-profile/
 data/user_data/**/*.db-wal
 data/user_data/**/*.db-shm
 data/user_data/**/*.db-journal
+# Agent-owned credential vaults are runtime secrets. The hyphenated names are
+# used by agent/member authority workspaces; include SQLite sidecars via `*`.
+data/agent_data/**/*.agent-secrets.db*
+data/agent_data/**/members/**/*.user-secrets.db*
 # Browser-tool screenshots — runtime output (legacy/fallback pile). The per-user
 # home above is the new destination; this dir stays only as a fallback. Never tracked.
 data/screenshots/
@@ -253,5 +258,5 @@ cookies.txt
 # Pre-admin-rename DB backup (kept on disk, never committed — contains 166MB+ DBs)
 data/db.bak-pre-admin-rename/
 
-# DB backup embeds (*.bak-embed) � can exceed GitHub's 100 MB file limit
+# DB backup embeds (*.bak-embed) — can exceed GitHub's 100 MB file limit
 *.bak-embed

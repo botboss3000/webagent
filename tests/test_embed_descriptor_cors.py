@@ -13,9 +13,11 @@ embeddable by default (embed.enabled defaults to False).
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import FastAPI
+from starlette.requests import Request
 from starlette.testclient import TestClient
 
 from app.api import agents as agents_module
@@ -108,6 +110,57 @@ class EmbedDescriptorCorsTests(unittest.TestCase):
 
 
 class EmbedDefaultContractTests(unittest.TestCase):
+    def test_embed_document_uses_standalone_profile_aware_client(self):
+        from app.main import _render_embed_chat_document
+
+        agent = _agent_row()
+        cfg = public_embed_config(agent)
+        html = _render_embed_chat_document(AGENT_ID, agent, cfg)
+
+        self.assertIn(f'"agentId":"{AGENT_ID}"', html)
+        self.assertIn('window.__EMBED__=', html)
+        self.assertIn('/ui/embed/embed-chat.js', html)
+        self.assertIn('id="ec-send"', html)
+        self.assertNotIn('window.__CHAT_PORTAL__', html)
+        self.assertNotIn('id="main-content"', html)
+
+    def test_nested_agent_shell_rootifies_relative_assets(self):
+        """Nested /embed/{id} must resolve page assets from the root."""
+        from app.main import _render_app_shell
+
+        request = Request({
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": f"/embed/{AGENT_ID}",
+            "raw_path": f"/embed/{AGENT_ID}".encode(),
+            "query_string": b"",
+            "headers": [],
+            "server": ("testserver", 80),
+            "client": ("127.0.0.1", 1234),
+            "root_path": "",
+        })
+        response = _render_app_shell(
+            request,
+            agent_id=AGENT_ID,
+            agent_name="Test Assistant",
+            chat_portal=True,
+            chat_portal_config={},
+        )
+        html = response.body.decode("utf-8")
+        self.assertNotIn('"./ui/', html)
+        self.assertNotIn("'./ui/", html)
+        self.assertIn('href="/ui/vendor/fonts/fonts.css"', html)
+        self.assertLess(html.index('<base href="/">'), html.index('href="/ui/'))
+        self.assertEqual(html.count('<base href="/">'), 1)
+
+    def test_embed_portal_is_a_root_api_shell_alias(self):
+        config_js = (
+            Path(__file__).resolve().parents[1] / "ui/shared/js/config.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("_EMBED_PATH_RE.test(path)", config_js)
+
     def test_embed_defaults_to_disabled(self):
         """A fresh agent with no embed config is NOT embeddable — off by default."""
         agent = {"id": AGENT_ID, "name": "Fresh", "user_mode": "anonymous", "metadata": {}}

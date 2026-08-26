@@ -19,6 +19,7 @@ authoritative (and migrates a legacy provider.json-only token into it once).
 
 import asyncio
 import base64
+import functools
 import logging
 import os
 import re
@@ -27,6 +28,7 @@ import subprocess
 import threading
 import time
 import json
+import uuid
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -35,6 +37,8 @@ from app.auth.identity import request_user_id
 from app.db import get_db
 from app import production_mirror
 from app import git_repos
+from app.git_executor import run_git_job as _run_git_job
+from app.runtime_mode import data_root
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +48,7 @@ router = APIRouter(prefix="/api/v1/github")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # ── Token storage (single shared token in provider.json) ──
-_TOKEN_FILE = _PROJECT_ROOT / "data" / "config" / "provider.json"
+_TOKEN_FILE = data_root() / "config" / "provider.json"
 
 
 def _get_token() -> str:
@@ -142,7 +146,8 @@ async def _prime_shared_token_from_vault() -> str:
             _mirror_token(tok)   # keep the local fallback in step with the vault
         # Also record this app's own repo address (clean) in the shared vault row,
         # so a device / new deployment sharing the vault knows the repo URL too.
-        await _save_repo_url_to_vault(git_repos._builtin_origin())
+        origin = await _run_git_job(git_repos._builtin_origin)
+        await _save_repo_url_to_vault(origin)
         return tok
     except Exception as e:  # noqa: BLE001
         logger.debug("prime shared token failed: %s", e)
@@ -201,6 +206,78 @@ _ACTIVE_REPO: Path = _PROJECT_ROOT
 # more than once on the same worker thread.
 _GIT_COMMAND_LOCK = threading.RLock()
 
+# Git is an independent contention domain. Never put Git subprocess work on
+# asyncio's shared default executor: a slow fetch plus lock waiters can otherwise
+# occupy every worker needed by SQLite, schema, and ordinary request handlers.
+_GIT_READ_CACHE: dict[tuple, tuple[float, dict]] = {}
+_GIT_READ_REFRESHES: dict[tuple, asyncio.Task] = {}
+
+# StreamingResponse cancels its response iterator when a browser, reverse proxy,
+# or tunnel drops the body stream. The Git operation must not share that lifetime:
+# a disconnect just after `git commit` used to cancel the generator before
+# `git push`, leaving a real local commit while the UI reported only the browser's
+# opaque "Error in input stream". Keep each operation in its own task and retain
+# completed records briefly so a reconnecting client can recover the result.
+_COMMIT_OPERATIONS: dict[str, dict] = {}
+_COMMIT_OPERATION_TTL = 300.0
+
+
+def _git_read_cache_key(kind: str, *variant) -> tuple:
+    try:
+        repo_id = git_repos.load_config().get("active_id") or str(_PROJECT_ROOT)
+    except Exception:  # noqa: BLE001
+        repo_id = str(_PROJECT_ROOT)
+    return (kind, str(repo_id), *variant)
+
+
+def _with_git_cache_meta(payload: dict, *, stale: bool, refreshing: bool,
+                         age_s: float) -> dict:
+    result = dict(payload)
+    result["_cache"] = {
+        "stale": bool(stale),
+        "refreshing": bool(refreshing),
+        "age_ms": max(0, round(age_s * 1000)),
+    }
+    return result
+
+
+async def _cached_git_read(key: tuple, loader, *, wait: bool = False) -> dict:
+    """Serve the last good read immediately and coalesce its refresh."""
+    now = time.monotonic()
+    cached = _GIT_READ_CACHE.get(key)
+    task = _GIT_READ_REFRESHES.get(key)
+    if task is None or task.done():
+        async def _refresh():
+            try:
+                value = await _run_git_job(loader)
+                _GIT_READ_CACHE[key] = (time.monotonic(), value)
+                return value
+            finally:
+                current = asyncio.current_task()
+                if _GIT_READ_REFRESHES.get(key) is current:
+                    _GIT_READ_REFRESHES.pop(key, None)
+
+        task = asyncio.create_task(_refresh(), name=f"git-read:{key[0]}")
+        _GIT_READ_REFRESHES[key] = task
+
+    if cached is not None and not wait:
+        cached_at, payload = cached
+
+        def _consume(done: asyncio.Task) -> None:
+            if not done.cancelled():
+                try:
+                    done.exception()
+                except Exception:
+                    pass
+
+        task.add_done_callback(_consume)
+        return _with_git_cache_meta(
+            payload, stale=True, refreshing=True, age_s=now - cached_at
+        )
+
+    value = await task
+    return _with_git_cache_meta(value, stale=False, refreshing=False, age_s=0)
+
 
 def _use_active_repo() -> None:
     """Point subsequent git calls at the user's currently selected repo + key + git
@@ -240,10 +317,11 @@ def _pin_to_project_root() -> None:
     _GIT_USER_EMAIL = email_out.strip()
 
 
-def _index_lock_signature() -> tuple[int, int, int, int] | None:
-    """Return an identity for the active repo's index lock, if one exists."""
+def _index_lock_signature(repo: Path | None = None) -> tuple[int, int, int, int] | None:
+    """Return an identity for a repo's index lock, if one exists."""
+    target = (repo or _ACTIVE_REPO) / ".git" / "index.lock"
     try:
-        stat = (_ACTIVE_REPO / ".git" / "index.lock").stat()
+        stat = target.stat()
         return stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size
     except OSError:
         return None
@@ -275,10 +353,11 @@ def _terminate_git_process_tree(proc: subprocess.Popen) -> None:
 
 
 def _cleanup_timed_out_index_lock(
-        args: list[str], before: tuple[int, int, int, int] | None) -> None:
+        args: list[str], before: tuple[int, int, int, int] | None,
+        repo: Path | None = None) -> None:
     """Remove only an index lock created or changed by our timed-out command."""
-    lock_path = _ACTIVE_REPO / ".git" / "index.lock"
-    after = _index_lock_signature()
+    lock_path = (repo or _ACTIVE_REPO) / ".git" / "index.lock"
+    after = _index_lock_signature(repo)
     if after is None or after == before:
         return
     try:
@@ -289,14 +368,83 @@ def _cleanup_timed_out_index_lock(
         logger.warning("Could not remove timed-out git index lock: %s", exc)
 
 
-def _run_git(args: list[str], timeout: int = 15) -> tuple[str, str, int]:
+def _git_lock_contended(err: str) -> bool:
+    """True when a git error means another process currently holds index.lock."""
+    low = (err or "").lower()
+    return "index.lock" in low and "unable to create" in low
+
+
+def _sweep_orphaned_index_lock(max_age_s: float = 180.0) -> bool:
+    """Remove .git/index.lock only when it is provably orphaned.
+
+    The process-wide lock serializes git calls INSIDE this server, but the same
+    working tree is shared with external tools (the Codex desktop app, parallel
+    MCP agent processes, a user's terminal). If one of them is killed mid-write
+    it can strand index.lock forever — and the old signature-based cleanup only
+    removed locks our OWN timed-out commands left behind. Sweep only when the
+    lock is older than any legitimate git writer could hold it (the add/commit
+    budget here is 120s) AND no git process is alive, so we never delete a live
+    lock mid-commit."""
+    lock_path = _ACTIVE_REPO / ".git" / "index.lock"
+    try:
+        st = lock_path.stat()
+    except OSError:
+        return False
+    if time.time() - st.st_mtime < max_age_s:
+        return False
+    try:
+        if os.name == "nt":
+            check = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq git.exe"],
+                capture_output=True, text=True, timeout=10, check=False)
+            alive = "git.exe" in check.stdout
+        else:
+            check = subprocess.run(
+                ["pgrep", "-x", "git"], capture_output=True, timeout=10, check=False)
+            alive = check.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if alive:
+        return False
+    try:
+        lock_path.unlink()
+        logger.warning(
+            "Removed orphaned .git/index.lock (age %.0fs)", time.time() - st.st_mtime)
+        return True
+    except OSError:
+        return False
+
+
+def _run_git_retry_on_lock(
+        args: list[str], timeout: int = 120,
+        retries: int = 4, base_delay: float = 0.5) -> tuple[str, str, int]:
+    """Run a git writer, retrying briefly when another process holds index.lock.
+
+    Losing the lock race fails INSTANTLY with 'Unable to create .../index.lock:
+    File exists' — no wait, no partial state (the commit/add never started). A
+    short backoff loop lets the concurrent winner finish, then we proceed, so a
+    commit racing the Codex app or a parallel agent no longer surfaces as a hard
+    'git commit failed' error."""
+    out, err, code = "", "", -1
+    for attempt in range(retries + 1):
+        out, err, code = _run_git(args, timeout=timeout)
+        if code != 0 and _git_lock_contended(err):
+            time.sleep(base_delay * (attempt + 1))
+            continue
+        return out, err, code
+    return out, err, code
+
+
+def _run_git(args: list[str], timeout: int = 15,
+             cwd: Path | None = None) -> tuple[str, str, int]:
     """Run one Git subprocess without overlapping another WebAgent Git call."""
     with _GIT_COMMAND_LOCK:
-        return _run_git_locked(args, timeout)
+        return _run_git_locked(args, timeout, cwd)
 
 
-def _run_git_locked(args: list[str], timeout: int) -> tuple[str, str, int]:
-    """Run a git command in the active repo (the project root by default).
+def _run_git_locked(args: list[str], timeout: int,
+                    cwd: Path | None = None) -> tuple[str, str, int]:
+    """Run a git command in a repo (the active repo, or ``cwd`` if given).
     Returns (stdout, stderr, returncode).
 
     Auth is injected DIRECTLY: the stored GitHub token is carried as an HTTP
@@ -337,7 +485,8 @@ def _run_git_locked(args: list[str], timeout: int) -> tuple[str, str, int]:
             "-c", "credential.helper=",
             "-c", f"http.extraHeader=Authorization: Basic {basic}",
         ]
-    lock_before = _index_lock_signature()
+    repo = cwd or _ACTIVE_REPO
+    lock_before = _index_lock_signature(repo)
     popen_kwargs = {}
     if os.name == "nt":
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -346,7 +495,7 @@ def _run_git_locked(args: list[str], timeout: int) -> tuple[str, str, int]:
     try:
         proc = subprocess.Popen(
             ["git"] + config_args + args,
-            cwd=str(_ACTIVE_REPO),
+            cwd=str(repo),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -365,7 +514,7 @@ def _run_git_locked(args: list[str], timeout: int) -> tuple[str, str, int]:
                 proc.communicate(timeout=5)
             except (subprocess.SubprocessError, OSError):
                 pass
-        _cleanup_timed_out_index_lock(args, lock_before)
+        _cleanup_timed_out_index_lock(args, lock_before, repo)
         return "", "git command timed out", -1
     except FileNotFoundError:
         return "", "git not found on this system", -1
@@ -439,6 +588,14 @@ def _push_failure_hint(stderr: str, stdout: str) -> str:
         hint = ("The push didn't finish in time — the machine is usually busy "
                 "or the connection to GitHub is slow. Check your connection "
                 "and try again; the stored token is still configured.")
+    elif ("refusing to allow a personal access token" in low
+          and (".github/workflows/" in low or "workflow" in low)):
+        hint = ("GitHub accepted the token, but it cannot create or update GitHub "
+                "Actions workflow files. Update the saved GitHub key for this "
+                "repository: a fine-grained token needs both 'Contents: Read and "
+                "write' and 'Workflows: Read and write'; a classic token needs "
+                "both the 'repo' and 'workflow' scopes. Then replace the saved key "
+                "and press Push — do not create another commit.")
     elif ("write access" in low or "not granted" in low or "403" in low
           or ("permission" in low and "denied" in low)):
         hint = ("Your saved GitHub token doesn't have WRITE access to this "
@@ -594,7 +751,7 @@ async def check_access(request: Request):
 
 
 @router.get("/status")
-async def get_status(request: Request, fetch: bool = True):
+async def get_status(request: Request, fetch: bool = True, wait: bool = False):
     """Return repo status: branch, remote, file status, ahead/behind info.
 
     `fetch=1` (default) refreshes remote refs from origin first so ahead/behind
@@ -607,7 +764,8 @@ async def get_status(request: Request, fetch: bool = True):
     worker thread (`asyncio.to_thread`) — otherwise it freezes the server's
     single event loop for its whole duration, stalling every other request.
     """
-    return await asyncio.to_thread(_status_payload, fetch)
+    key = _git_read_cache_key("status")
+    return await _cached_git_read(key, functools.partial(_status_payload, fetch), wait=wait)
 
 
 def _status_payload(fetch: bool) -> dict:
@@ -826,7 +984,7 @@ async def get_chat_changes(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     claims = set(await db.get_session_change_claims(session_id))
-    payload = await asyncio.to_thread(_chat_changes_payload, claims)
+    payload = await _run_git_job(_chat_changes_payload, claims)
     dirty = {file["path"] for file in payload["files"]}
     stale = sorted(claims - dirty)
     if stale:
@@ -900,7 +1058,7 @@ async def undo_chat_changes(req: PathScopedChangesRequest, request: Request):
                 else:
                     candidate.unlink()
         return {"status": "undone", "paths": paths}
-    result = await asyncio.to_thread(_undo)
+    result = await _run_git_job(_undo)
     await db.clear_session_change_claims(req.session_id, paths)
     return result
 
@@ -925,7 +1083,7 @@ async def commit_chat_changes(req: PathScopedChangesRequest, request: Request):
         if add_rc != 0:
             raise HTTPException(status_code=500, detail=add_err.strip() or "git add failed")
         message = req.message.strip() or _fallback_commit_message("", paths)
-        msg_file = _PROJECT_ROOT / "data" / "tmp" / "_chat_commit_msg.txt"
+        msg_file = data_root() / "tmp" / "_chat_commit_msg.txt"
         msg_file.parent.mkdir(parents=True, exist_ok=True)
         msg_file.write_text(message, encoding="utf-8")
         try:
@@ -937,13 +1095,15 @@ async def commit_chat_changes(req: PathScopedChangesRequest, request: Request):
             raise HTTPException(status_code=500, detail=commit_err.strip() or "git commit failed")
         head, _, _ = _run_git(["rev-parse", "--short", "HEAD"], timeout=10)
         return {"status": "committed", "paths": paths, "hash": head.strip(), "title": message.splitlines()[0]}
-    result = await asyncio.to_thread(_commit)
+    result = await _run_git_job(_commit)
     await db.clear_session_change_claims(req.session_id, paths)
     return result
 
 
 @router.get("/log-graph")
-async def get_log_graph(request: Request, limit: int = 80, fetch: bool = True):
+async def get_log_graph(
+    request: Request, limit: int = 80, fetch: bool = True, wait: bool = False
+):
     """Return a commit graph across **all** local + remote branches.
 
     Output is shaped so the frontend can draw a VS Code style graph:
@@ -965,7 +1125,10 @@ async def get_log_graph(request: Request, limit: int = 80, fetch: bool = True):
     Offloaded to a worker thread (`asyncio.to_thread`): the graph walk is a chain
     of blocking git subprocesses that would otherwise freeze the event loop.
     """
-    return await asyncio.to_thread(_log_graph_payload, limit, fetch)
+    clamped = max(1, min(int(limit), 500))
+    key = _git_read_cache_key("log-graph", clamped)
+    loader = functools.partial(_log_graph_payload, clamped, fetch)
+    return await _cached_git_read(key, loader, wait=wait)
 
 
 def _log_graph_payload(limit: int, fetch: bool) -> dict:
@@ -1190,6 +1353,11 @@ async def get_commit_detail(commit_hash: str, request: Request):
     if not commit_hash or len(commit_hash) > 64 or not all(c in "0123456789abcdefABCDEF" for c in commit_hash):
         raise HTTPException(status_code=400, detail="Invalid commit hash")
 
+    return await _run_git_job(_commit_detail_payload, commit_hash)
+
+
+def _commit_detail_payload(commit_hash: str) -> dict:
+
     _use_active_repo()
 
     # Metadata + full body
@@ -1389,7 +1557,7 @@ async def get_line_stats(request: Request):
     Pinned to THIS app's own repo (the file tree's root) so the counts always
     line up with the tree even when Source Control has another repo selected.
     Read-only — the Files page is already admin-gated."""
-    return await asyncio.to_thread(_project_line_stats_payload)
+    return await _run_git_job(_project_line_stats_payload)
 
     stats: dict[str, dict[str, int]] = {}
 
@@ -1634,10 +1802,14 @@ async def get_git_status(request: Request):
         huge ignored folder (node_modules, .venv, …) stays a single entry.
 
     Read-only — the Files page is already admin-gated."""
-    _pin_to_project_root()
-    tracked, ignored, is_repo = _git_status_sets()
+    def _payload():
+        _pin_to_project_root()
+        tracked, ignored, is_repo = _git_status_sets()
+        return tracked, ignored, is_repo, str(_ACTIVE_REPO).replace("\\", "/")
+
+    tracked, ignored, is_repo, repo_root = await _run_git_job(_payload)
     return {
-        "repo_root": str(_ACTIVE_REPO).replace("\\", "/"),
+        "repo_root": repo_root,
         "is_repo": is_repo,
         "tracked": tracked,
         "ignored": ignored,
@@ -1662,25 +1834,29 @@ async def set_git_ignore(req: GitIgnoreRequest, request: Request):
     .git/info/exclude and the git index are touched, never working-tree files.
     """
     _require_admin(request)
-    _pin_to_project_root()
-    try:
-        rel = _repo_rel_safe(req.path)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    is_dir = (_ACTIVE_REPO / rel).is_dir()
-    try:
-        if req.tracked:
-            _make_tracked(rel, is_dir)
-        else:
-            _make_ignored(rel, is_dir)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("git-ignore toggle failed for %s: %s", rel, e)
-        raise HTTPException(status_code=500,
-                            detail=f"Could not update git ignore state: {e}")
-    tracked, ignored, _ = _git_status_sets()
+    def _update():
+        _pin_to_project_root()
+        try:
+            rel = _repo_rel_safe(req.path)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        is_dir = (_ACTIVE_REPO / rel).is_dir()
+        try:
+            if req.tracked:
+                _make_tracked(rel, is_dir)
+            else:
+                _make_ignored(rel, is_dir)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("git-ignore toggle failed for %s: %s", rel, e)
+            raise HTTPException(status_code=500,
+                                detail=f"Could not update git ignore state: {e}") from e
+        tracked, ignored, _ = _git_status_sets()
+        return tracked, ignored, str(_ACTIVE_REPO).replace("\\", "/")
+
+    tracked, ignored, repo_root = await _run_git_job(_update)
     return {
         "status": "ok",
-        "repo_root": str(_ACTIVE_REPO).replace("\\", "/"),
+        "repo_root": repo_root,
         "tracked": tracked,
         "ignored": ignored,
     }
@@ -1691,14 +1867,14 @@ async def push_to_remote(request: Request):
     """Push commits to the remote."""
     _require_admin(request)
     await _prime_shared_token_from_vault()   # refresh the shared key from the vault
-    _use_active_repo()
+    await _run_git_job(_use_active_repo)
 
     # Run the push OFF the event loop with the same generous budget as
     # /commit-and-push (120s). On a busy machine (concurrent agent streams,
     # git subprocesses starved for CPU) a plain `git push` can take far longer
     # than the old 30s cap, and the old synchronous call blocked the entire
     # event loop for that duration — stalling every other request while it ran.
-    stdout, stderr, rc = await asyncio.to_thread(_git_push, 120)
+    stdout, stderr, rc = await _run_git_job(_git_push, 120)
     if rc != 0:
         raise HTTPException(status_code=500, detail=_push_failure_hint(stderr, stdout))
 
@@ -1980,7 +2156,10 @@ async def _commit_and_push_events(message: str = "", *, skip_push: bool = False,
     # "Starting…" and then nothing until the (often slow) push finished. Running git
     # off-loop lets each step's event reach the browser the moment it's produced.
     async def _git(args, timeout=15):
-        return await asyncio.to_thread(_run_git, args, timeout=timeout)
+        return await _run_git_job(_run_git, args, timeout=timeout)
+
+    async def _git_retry(args, timeout=120):
+        return await _run_git_job(_run_git_retry_on_lock, args, timeout=timeout)
 
     # 1. Repo state — bail early if clean.
     yield {"phase": "analyzing"}
@@ -2049,14 +2228,18 @@ async def _commit_and_push_events(message: str = "", *, skip_push: bool = False,
     # Large working trees (especially runtime DB/screenshot folders) can take
     # substantially longer than a status/diff read. Cutting this off at 30s was
     # the source of orphaned Windows git children and recurring index.lock errors.
-    _, add_err, add_code = await _git(["add", "-A" if include_untracked else "-u"], timeout=120)
+    # Sweep any lock stranded by an external/crashed git process, then retry
+    # briefly if another process (Codex app, parallel agent) wins the lock race.
+    await _run_git_job(_sweep_orphaned_index_lock)
+    _, add_err, add_code = await _git_retry(
+        ["add", "-A" if include_untracked else "-u"], timeout=120)
     if add_code != 0:
         yield {"phase": "done", "result": {
             "status": "error", "message": f"git add failed: {add_err.strip()}"}}
         return
 
     # 6. Commit (via -F file so a multi-line body survives).
-    msg_file = _PROJECT_ROOT / "data" / "tmp" / "_commit_msg.txt"
+    msg_file = data_root() / "tmp" / "_commit_msg.txt"
     msg_file.parent.mkdir(parents=True, exist_ok=True)
     msg_file.write_text(commit_msg, encoding="utf-8")
     # Hooks are part of `git commit` and may legitimately take a while. Give them
@@ -2064,7 +2247,7 @@ async def _commit_and_push_events(message: str = "", *, skip_push: bool = False,
     # commit completion, so remember HEAD and reconcile it before reporting an
     # error; otherwise a completed commit gets stranded without its push.
     before_head, _, _ = await _git(["rev-parse", "HEAD"], timeout=10)
-    _, commit_err, commit_code = await _git(
+    _, commit_err, commit_code = await _git_retry(
         ["commit", "-F", str(msg_file)], timeout=120)
     try:
         msg_file.unlink()
@@ -2089,7 +2272,7 @@ async def _commit_and_push_events(message: str = "", *, skip_push: bool = False,
     else:
         yield {"phase": "pushing"}
         await asyncio.sleep(0)
-        push_out, push_err, push_code = await asyncio.to_thread(_git_push, timeout=120)
+        push_out, push_err, push_code = await _run_git_job(_git_push, timeout=120)
         push = {"attempted": True, "ok": push_code == 0,
                 "detail": "Push successful." if push_code == 0
                 else _push_failure_hint(push_err, push_out)}
@@ -2123,6 +2306,93 @@ async def commit_and_push_repo(message: str = "", *, skip_push: bool = False,
     return result
 
 
+def _prune_commit_operations() -> None:
+    """Drop completed reconnect records after their short recovery window."""
+    now = time.monotonic()
+    for operation_id, record in list(_COMMIT_OPERATIONS.items()):
+        finished_at = record.get("finished_at")
+        if finished_at is not None and now - finished_at > _COMMIT_OPERATION_TTL:
+            _COMMIT_OPERATIONS.pop(operation_id, None)
+
+
+def _start_commit_operation(message: str, *, skip_push: bool,
+                            include_untracked: bool) -> tuple[str, dict]:
+    """Start a commit job whose lifetime is independent of its HTTP stream."""
+    _prune_commit_operations()
+    operation_id = uuid.uuid4().hex
+    record = {
+        "queue": asyncio.Queue(),
+        "last_event": None,
+        "result": None,
+        "finished_at": None,
+        "task": None,
+    }
+    _COMMIT_OPERATIONS[operation_id] = record
+
+    async def _run() -> None:
+        try:
+            async for event in _commit_and_push_events(
+                    message, skip_push=skip_push,
+                    include_untracked=include_untracked):
+                record["last_event"] = event
+                if event.get("phase") == "done":
+                    record["result"] = event.get("result")
+                await record["queue"].put(event)
+        except asyncio.CancelledError:
+            event = {"phase": "done", "result": {
+                "status": "error",
+                "message": ("Commit cancelled. A Git command that was already "
+                            "running may still have completed; refresh Source "
+                            "Control to verify the repository state."),
+            }}
+            record["last_event"] = event
+            record["result"] = event["result"]
+            await record["queue"].put(event)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("commit-and-push operation crashed")
+            event = {"phase": "done", "result": {
+                "status": "error", "message": str(e) or "commit+push failed"}}
+            record["last_event"] = event
+            record["result"] = event["result"]
+            await record["queue"].put(event)
+        finally:
+            record["finished_at"] = time.monotonic()
+            await record["queue"].put(None)
+
+    record["task"] = asyncio.create_task(
+        _run(), name=f"git-commit-push:{operation_id[:8]}")
+    return operation_id, record
+
+
+@router.get("/commit-and-push/{operation_id}/status")
+async def commit_and_push_status(operation_id: str, request: Request):
+    """Return recovery state after the original NDJSON connection was lost."""
+    _require_admin(request)
+    _prune_commit_operations()
+    record = _COMMIT_OPERATIONS.get(operation_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Commit operation not found")
+    task = record["task"]
+    return {
+        "status": "done" if task.done() else "running",
+        "last_event": record.get("last_event"),
+        "result": record.get("result"),
+    }
+
+
+@router.post("/commit-and-push/{operation_id}/cancel")
+async def cancel_commit_and_push(operation_id: str, request: Request):
+    """Cancel an explicitly user-aborted detached commit operation."""
+    _require_admin(request)
+    record = _COMMIT_OPERATIONS.get(operation_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Commit operation not found")
+    task = record["task"]
+    if not task.done():
+        task.cancel()
+    return {"status": "cancel_requested" if not task.done() else "done"}
+
+
 @router.post("/commit-and-push")
 async def commit_and_push(req: CommitPushRequest, request: Request):
     """One-shot: stage all → auto-write a commit message (unless one is supplied)
@@ -2140,21 +2410,24 @@ async def commit_and_push(req: CommitPushRequest, request: Request):
     _require_admin(request)
     # Commit + push the repo the user currently has selected (with its own key).
     await _prime_shared_token_from_vault()   # refresh the shared key from the vault
-    _use_active_repo()
+    await _run_git_job(_use_active_repo)
 
     if req.stream:
+        operation_id, operation = _start_commit_operation(
+            req.message or "",
+            skip_push=req.skip_push,
+            include_untracked=req.include_untracked,
+        )
+
         async def _event_stream():
-            try:
-                async for ev in _commit_and_push_events(
-                        req.message or "",
-                        skip_push=req.skip_push,
-                        include_untracked=req.include_untracked):
-                    yield json.dumps(ev) + "\n"
-            except Exception as e:  # never leave the client's reader hanging
-                logger.exception("commit-and-push stream crashed")
-                yield json.dumps({"phase": "done", "result": {
-                    "status": "error",
-                    "message": str(e) or "commit+push failed"}}) + "\n"
+            # Do not cancel the operation task if this observer disappears. The
+            # browser can reconnect through /status; only the explicit /cancel
+            # endpoint is allowed to stop the job.
+            while True:
+                ev = await operation["queue"].get()
+                if ev is None:
+                    break
+                yield json.dumps(ev) + "\n"
         # no-cache + X-Accel-Buffering tell intermediaries (nginx, tunnels) NOT to
         # buffer the response, so the per-phase NDJSON lines arrive live instead of
         # all-at-once at the end.
@@ -2164,6 +2437,7 @@ async def commit_and_push(req: CommitPushRequest, request: Request):
             headers={
                 "Cache-Control": "no-cache, no-transform",
                 "X-Accel-Buffering": "no",
+                "X-Git-Operation-ID": operation_id,
             },
         )
 
@@ -2225,6 +2499,10 @@ async def pull_repo() -> dict:
     turns an error into an HTTP 500; the device action lets the error land on the
     job row for the Instances page to poll).
     """
+    return await _run_git_job(_pull_repo_payload)
+
+
+def _pull_repo_payload() -> dict:
     before = _head_hash()
     stdout, stderr, rc = _run_git(["pull"], timeout=30)
     if rc != 0:
@@ -2255,7 +2533,7 @@ async def pull_from_remote(request: Request):
     """
     _require_admin(request)
     await _prime_shared_token_from_vault()   # refresh the shared key from the vault
-    _use_active_repo()
+    await _run_git_job(_use_active_repo)
 
     result = await pull_repo()
     if result.get("status") == "error":
@@ -2271,6 +2549,11 @@ async def list_branches(request: Request):
     each, includes the short hash and whether a local checkout exists.
     """
     _require_admin(request)
+
+    return await _run_git_job(_list_branches_payload)
+
+
+def _list_branches_payload() -> dict:
 
     # Local branches
     local_out, _, _ = _run_git(
@@ -2327,11 +2610,16 @@ async def checkout_branch(req: BranchRequest, request: Request):
     tracking branch from origin/<name>.
     """
     _require_admin(request)
-    _use_active_repo()
 
     branch = req.branch.strip()
     if not branch:
         raise HTTPException(status_code=400, detail="Branch name required.")
+
+    return await _run_git_job(_checkout_branch_payload, branch)
+
+
+def _checkout_branch_payload(branch: str) -> dict:
+    _use_active_repo()
 
     dirty, dirty_paths = _working_tree_dirty()
     if dirty:
@@ -2382,11 +2670,16 @@ async def merge_branch(req: BranchRequest, request: Request):
     conflicting files so the caller can show them.
     """
     _require_admin(request)
-    _use_active_repo()
 
     branch = req.branch.strip()
     if not branch:
         raise HTTPException(status_code=400, detail="Branch name required.")
+
+    return await _run_git_job(_merge_branch_payload, branch)
+
+
+def _merge_branch_payload(branch: str) -> dict:
+    _use_active_repo()
 
     dirty, dirty_paths = _working_tree_dirty()
     if dirty:
@@ -2474,8 +2767,11 @@ async def token_status():
 async def set_remote_url(req: RemoteUrlRequest, request: Request):
     """Change the git remote URL for origin (on the active repo)."""
     _require_admin(request)
-    _use_active_repo()
-    stdout, stderr, rc = _run_git(["remote", "set-url", "origin", req.url], timeout=10)
+    def _set_url():
+        _use_active_repo()
+        return _run_git(["remote", "set-url", "origin", req.url], timeout=10)
+
+    stdout, stderr, rc = await _run_git_job(_set_url)
     if rc != 0:
         raise HTTPException(status_code=500, detail=stderr.strip() or "Failed to set remote URL")
     git_repos.invalidate_origin_cache()   # the built-in repo's cached origin just changed
@@ -2483,7 +2779,7 @@ async def set_remote_url(req: RemoteUrlRequest, request: Request):
     # so the saved entry and the repo's git config don't drift apart. When the
     # built-in repo is active, mirror the new clean address into the shared vault.
     try:
-        active = git_repos.get_active_full()
+        active = await _run_git_job(git_repos.get_active_full)
         if not active.get("builtin"):
             git_repos.update_repo(active["id"], remote_url=req.url)
         else:
@@ -2508,7 +2804,7 @@ async def list_git_repos(request: Request):
     """All configured repos (WebAgent first), each with active/builtin flags. The
     raw key is never returned — only a ``has_token`` flag."""
     _require_admin(request)
-    return {"repos": git_repos.list_repos()}
+    return {"repos": await _run_git_job(git_repos.list_repos)}
 
 
 @router.get("/repos/validate")
@@ -2516,7 +2812,7 @@ async def validate_git_repo(request: Request, path: str = ""):
     """Check a folder is a git repo; return its branch + origin so the Add form can
     pre-fill them and warn early on a non-repo folder."""
     _require_admin(request)
-    return git_repos.validate_folder(path)
+    return await _run_git_job(git_repos.validate_folder, path)
 
 
 @router.post("/repos")
@@ -2524,7 +2820,8 @@ async def add_git_repo(req: RepoAddRequest, request: Request):
     """Register a new local repo (folder + GitHub remote + key)."""
     _require_admin(request)
     try:
-        entry = git_repos.add_repo(
+        entry = await _run_git_job(
+            git_repos.add_repo,
             label=req.label, folder=req.folder,
             remote_url=req.remote_url, token=req.token,
             git_user_name=req.git_user_name,
@@ -2532,7 +2829,8 @@ async def add_git_repo(req: RepoAddRequest, request: Request):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"status": "ok", "repo": entry, "repos": git_repos.list_repos()}
+    return {"status": "ok", "repo": entry,
+            "repos": await _run_git_job(git_repos.list_repos)}
 
 
 @router.post("/repos/select")
@@ -2540,12 +2838,31 @@ async def select_git_repo(req: RepoSelectRequest, request: Request):
     """Choose which repo the Git page operates on."""
     _require_admin(request)
     try:
-        git_repos.set_active(req.id)
+        await _run_git_job(git_repos.set_active, req.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # Re-point immediately so a follow-up status/graph call uses the new repo.
+    await _run_git_job(_use_active_repo)
+    return {"status": "ok", "repos": await _run_git_job(git_repos.list_repos)}
+
+
+def _set_builtin_origin(url: str) -> tuple[str, str, int]:
+    _pin_to_project_root()
+    stdout, stderr, rc = _run_git(["remote", "set-url", "origin", url], timeout=10)
+    if rc != 0 and "no such remote" in (stderr or "").lower():
+        stdout, stderr, rc = _run_git(["remote", "add", "origin", url], timeout=10)
+    if rc != 0:
+        _use_active_repo()
+    return stdout, stderr, rc
+
+
+def _set_builtin_identity(name: str, email: str) -> None:
+    _pin_to_project_root()
+    if name:
+        _run_git(["config", "user.name", name], timeout=10)
+    if email:
+        _run_git(["config", "user.email", email], timeout=10)
     _use_active_repo()
-    return {"status": "ok", "repos": git_repos.list_repos()}
 
 
 @router.post("/repos/{repo_id}")
@@ -2563,14 +2880,10 @@ async def update_git_repo(repo_id: str, req: RepoUpdateRequest, request: Request
         # Edit the GitHub address (origin) on this app's own repo, regardless of
         # which repo is currently selected on the page.
         if req.remote_url is not None and req.remote_url.strip():
-            _pin_to_project_root()
-            stdout, stderr, rc = _run_git(
-                ["remote", "set-url", "origin", req.remote_url.strip()], timeout=10)
-            if rc != 0 and "no such remote" in (stderr or "").lower():
-                stdout, stderr, rc = _run_git(
-                    ["remote", "add", "origin", req.remote_url.strip()], timeout=10)
+            stdout, stderr, rc = await _run_git_job(
+                _set_builtin_origin, req.remote_url.strip()
+            )
             if rc != 0:
-                _use_active_repo()
                 raise HTTPException(status_code=400,
                                     detail=stderr.strip() or "Failed to set remote URL")
             git_repos.invalidate_origin_cache()   # built-in origin just changed
@@ -2579,16 +2892,16 @@ async def update_git_repo(repo_id: str, req: RepoUpdateRequest, request: Request
         if req.token:
             await _save_shared_token(req.token)
         # Set git user name/email on the built-in repo so commits don't fail.
-        if req.git_user_name is not None and req.git_user_name.strip():
-            _pin_to_project_root()
-            _run_git(["config", "user.name", req.git_user_name.strip()], timeout=10)
-        if req.git_user_email is not None and req.git_user_email.strip():
-            _pin_to_project_root()
-            _run_git(["config", "user.email", req.git_user_email.strip()], timeout=10)
-        _use_active_repo()
-        return {"status": "ok", "repos": git_repos.list_repos()}
+        name = (req.git_user_name or "").strip() if req.git_user_name is not None else ""
+        email = (req.git_user_email or "").strip() if req.git_user_email is not None else ""
+        if name or email:
+            await _run_git_job(_set_builtin_identity, name, email)
+        else:
+            await _run_git_job(_use_active_repo)
+        return {"status": "ok", "repos": await _run_git_job(git_repos.list_repos)}
     try:
-        entry = git_repos.update_repo(
+        entry = await _run_git_job(
+            git_repos.update_repo,
             repo_id, label=req.label, folder=req.folder,
             remote_url=req.remote_url, token=req.token,
             git_user_name=req.git_user_name,
@@ -2596,7 +2909,8 @@ async def update_git_repo(repo_id: str, req: RepoUpdateRequest, request: Request
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"status": "ok", "repo": entry, "repos": git_repos.list_repos()}
+    return {"status": "ok", "repo": entry,
+            "repos": await _run_git_job(git_repos.list_repos)}
 
 
 @router.delete("/repos/{repo_id}")
@@ -2604,11 +2918,11 @@ async def delete_git_repo(repo_id: str, request: Request):
     """Forget a registered repo (the built-in WebAgent repo can't be removed)."""
     _require_admin(request)
     try:
-        git_repos.remove_repo(repo_id)
+        await _run_git_job(git_repos.remove_repo, repo_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _use_active_repo()
-    return {"status": "ok", "repos": git_repos.list_repos()}
+    await _run_git_job(_use_active_repo)
+    return {"status": "ok", "repos": await _run_git_job(git_repos.list_repos)}
 
 
 # ── Production mirror (dual-repo "Release to production") ────────────────────
@@ -2685,7 +2999,7 @@ async def set_production_exclude_bulk(req: ProdExcludeBulkRequest, request: Requ
 async def get_production_status(request: Request):
     """Lightweight status for the Production section of the Git page."""
     _require_admin(request)
-    return production_mirror.production_status()
+    return await _run_git_job(production_mirror.production_status)
 
 
 @router.get("/production/diff")
@@ -2696,7 +3010,7 @@ async def get_production_diff(request: Request):
     shipping set, so it runs in a worker thread to keep the event loop free."""
     _require_admin(request)
     import asyncio
-    return await asyncio.to_thread(production_mirror.diff_status)
+    return await _run_git_job(production_mirror.diff_status)
 
 
 @router.post("/production/release")

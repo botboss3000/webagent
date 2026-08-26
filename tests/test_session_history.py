@@ -10,6 +10,7 @@ from app.agent.session_history import (
     interactions_to_openai_messages,
 )
 from app.agent.compaction import maybe_compact
+from app.agent.context_control import estimate_tokens
 from app.models.schemas import InteractionRecord
 
 
@@ -103,6 +104,232 @@ class InteractionsToOpenaiMessagesTests(unittest.TestCase):
         })
 
 
+class OffTaskToolHidingTests(unittest.TestCase):
+    """Closed-task tool results degrade to a placeholder in the model payload;
+    current-task results stay in full. The DB keeps full output either way."""
+
+    def setUp(self) -> None:
+        import app.agent.session_history as sh
+        self._sh = sh
+        self._prev = sh._HIDE_OFF_TASK_TOOL_OUTPUTS
+        sh._HIDE_OFF_TASK_TOOL_OUTPUTS = True
+
+    def tearDown(self) -> None:
+        self._sh._HIDE_OFF_TASK_TOOL_OUTPUTS = self._prev
+
+    @staticmethod
+    def _asst(iid: str, tool_id: str, arguments: str = '{"q":"x"}') -> InteractionRecord:
+        calls = [{
+            "id": tool_id, "type": "function",
+            "function": {"name": "web_search", "arguments": arguments},
+        }]
+        return _ir(iid, "assistant", "", output=json.dumps({"tool_calls": calls}))
+
+    def test_old_task_tool_output_replaced_with_placeholder(self) -> None:
+        rows = [
+            _ir("u1", "user", "fix the login bug"),
+            self._asst("a1", "call_old"),
+            _ir("t1", "tool", "login source: " + "x" * 500,
+                tool_name="read_source", tool_call_id="call_old"),
+            _ir("u2", "user", "now write a poem about the sea"),
+            self._asst("a2", "call_new"),
+            _ir("t2", "tool", "poem draft", tool_name="generate",
+                tool_call_id="call_new"),
+        ]
+        out = interactions_to_openai_messages(rows)
+
+        old = next(m for m in out if m.get("tool_call_id") == "call_old")
+        new = next(m for m in out if m.get("tool_call_id") == "call_new")
+        old_call = next(tc for m in out for tc in m.get("tool_calls", [])
+                        if tc.get("id") == "call_old")
+        old_args = json.loads(old_call["function"]["arguments"])
+        self.assertIn("[tool result hidden — completed in an earlier task]", old["content"])
+        self.assertIn("read_source", old["content"])
+        self.assertIn("Result interaction: t1", old["content"])
+        self.assertNotIn("login source", old["content"])
+        self.assertEqual(old_args["_context_reduced"], True)
+        self.assertEqual(old_args["interaction_id"], "a1")
+        self.assertEqual(old_args["tool_call_id"], "call_old")
+        self.assertEqual(new["content"], "poem draft")
+
+    def test_excluded_live_user_still_closes_the_previous_task(self) -> None:
+        huge_arguments = json.dumps({"document": "secret old input " + "z" * 5000})
+        rows = [
+            _ir("u1", "user", "fix the login bug"),
+            self._asst("a1", "call_old", huge_arguments),
+            _ir("t1", "tool", "old source payload",
+                tool_name="read_source", tool_call_id="call_old"),
+            _ir("u2", "user", "write an unrelated poem about the sea"),
+        ]
+
+        out = interactions_to_openai_messages(
+            rows, exclude_interaction_ids={"u2"},
+        )
+
+        call = out[1]["tool_calls"][0]
+        reduced = json.loads(call["function"]["arguments"])
+        self.assertTrue(reduced["_context_reduced"])
+        self.assertEqual(reduced["original_argument_chars"], len(huge_arguments))
+        self.assertNotIn("secret old input", call["function"]["arguments"])
+        self.assertIn("Result interaction: t1", out[2]["content"])
+
+    def test_same_task_tool_outputs_stay_in_full(self) -> None:
+        # "yes go ahead" is a reaction → same task; nothing may be hidden.
+        rows = [
+            _ir("u1", "user", "fix the login bug"),
+            self._asst("a1", "call_1"),
+            _ir("t1", "tool", "first result payload",
+                tool_name="read_source", tool_call_id="call_1"),
+            _ir("u2", "user", "yes go ahead"),
+            self._asst("a2", "call_2"),
+            _ir("t2", "tool", "second result payload",
+                tool_name="read_source", tool_call_id="call_2"),
+        ]
+        out = interactions_to_openai_messages(rows)
+
+        contents = [m["content"] for m in out if m.get("role") == "tool"]
+        self.assertEqual(contents, ["first result payload", "second result payload"])
+        calls = [tc for m in out for tc in m.get("tool_calls", [])]
+        self.assertEqual(
+            [tc["function"]["arguments"] for tc in calls],
+            ['{"q":"x"}', '{"q":"x"}'],
+        )
+
+    def test_recent_runs_bounds_evidence_inside_one_long_task(self) -> None:
+        rows = []
+        prompts = [
+            "fix the login bug", "yes go ahead", "yes go ahead",
+            "yes go ahead",
+        ]
+        for index, prompt in enumerate(prompts, 1):
+            rows.extend([
+                _ir(f"u{index}", "user", prompt),
+                self._asst(f"a{index}", f"call_{index}"),
+                _ir(f"t{index}", "tool", f"full result {index}",
+                    tool_name="read_source", tool_call_id=f"call_{index}"),
+            ])
+
+        out = interactions_to_openai_messages(rows, evidence_settings={
+            "tool_evidence_policy": "recent_runs",
+            "full_evidence_runs": 2,
+        })
+
+        contents = {
+            m["tool_call_id"]: m["content"] for m in out if m.get("role") == "tool"
+        }
+        self.assertIn("full-evidence run window", contents["call_1"])
+        self.assertIn("full-evidence run window", contents["call_2"])
+        self.assertEqual(contents["call_3"], "full result 3")
+        self.assertEqual(contents["call_4"], "full result 4")
+
+    def test_budget_keeps_current_run_even_when_it_exceeds_budget(self) -> None:
+        rows = []
+        for index, prompt in enumerate(
+                ["fix the login bug", "yes go ahead"], 1):
+            rows.extend([
+                _ir(f"u{index}", "user", prompt),
+                self._asst(f"a{index}", f"call_{index}"),
+                _ir(f"t{index}", "tool", str(index) * 5000,
+                    tool_name="read_source", tool_call_id=f"call_{index}"),
+            ])
+
+        out = interactions_to_openai_messages(rows, evidence_settings={
+            "tool_evidence_policy": "token_budget",
+            "full_evidence_token_budget": 1000,
+        })
+        contents = {
+            m["tool_call_id"]: m["content"] for m in out if m.get("role") == "tool"
+        }
+        self.assertIn("full-evidence run window", contents["call_1"])
+        self.assertEqual(contents["call_2"], "2" * 5000)
+
+    def test_all_policy_keeps_closed_task_evidence(self) -> None:
+        rows = [
+            _ir("u1", "user", "fix the login bug"),
+            self._asst("a1", "call_old"),
+            _ir("t1", "tool", "login source", tool_name="read_source",
+                tool_call_id="call_old"),
+            _ir("u2", "user", "write an unrelated poem about the sea"),
+        ]
+        out = interactions_to_openai_messages(
+            rows, evidence_settings={"tool_evidence_policy": "all"})
+        old = next(m for m in out if m.get("tool_call_id") == "call_old")
+        self.assertEqual(old["content"], "login source")
+
+    def test_context_estimate_counts_the_reduced_provider_payload(self) -> None:
+        rows = [
+            _ir("u1", "user", "fix the login bug"),
+            self._asst("a1", "call_old", json.dumps({"source": "x" * 8000})),
+            _ir("t1", "tool", "y" * 8000, tool_name="read_source",
+                tool_call_id="call_old"),
+            _ir("u2", "user", "write an unrelated poem about the sea"),
+        ]
+        full = interactions_to_openai_messages(
+            rows, evidence_settings={"tool_evidence_policy": "all"})
+        reduced = interactions_to_openai_messages(
+            rows, evidence_settings={"tool_evidence_policy": "current_task"})
+
+        # Context Control's composer/pipeline gauge receives this exact message
+        # list, so its estimate reflects compacted arguments and results.
+        self.assertLess(estimate_tokens(reduced), estimate_tokens(full) // 10)
+
+    def test_anaphoric_followup_keeps_prior_tool_output_in_full(self) -> None:
+        rows = [
+            _ir("u1", "user", "summarize the project README"),
+            self._asst("a1", "call_1"),
+            _ir("t1", "tool", "project setup details",
+                tool_name="read_source", tool_call_id="call_1"),
+            _ir("u2", "user", "What does that imply for local setup?"),
+        ]
+
+        out = interactions_to_openai_messages(rows)
+
+        tool_result = next(m for m in out if m.get("tool_call_id") == "call_1")
+        self.assertEqual(tool_result["content"], "project setup details")
+        self.assertEqual(
+            out[1]["tool_calls"][0]["function"]["arguments"],
+            '{"q":"x"}',
+        )
+
+    def test_synthetic_user_rows_never_open_a_boundary(self) -> None:
+        # An orchestration wake-up mid-task must not split the task.
+        rows = [
+            _ir("u1", "user", "fix the login bug"),
+            self._asst("a1", "call_1"),
+            _ir("t1", "tool", "first result payload",
+                tool_name="read_source", tool_call_id="call_1"),
+            _ir("u2", "user", "[orchestration event] helper finished",
+                tool_call_id=None),
+            self._asst("a2", "call_2"),
+            _ir("t2", "tool", "second result payload",
+                tool_name="read_source", tool_call_id="call_2"),
+        ]
+        out = interactions_to_openai_messages(rows)
+
+        contents = [m["content"] for m in out if m.get("role") == "tool"]
+        self.assertEqual(contents, ["first result payload", "second result payload"])
+
+    def test_disabled_keeps_everything_in_full(self) -> None:
+        self._sh._HIDE_OFF_TASK_TOOL_OUTPUTS = False
+        rows = [
+            _ir("u1", "user", "fix the login bug"),
+            self._asst("a1", "call_old"),
+            _ir("t1", "tool", "login source " + "y" * 300,
+                tool_name="read_source", tool_call_id="call_old"),
+            _ir("u2", "user", "now write a poem about the sea"),
+            self._asst("a2", "call_new"),
+            _ir("t2", "tool", "poem draft", tool_name="generate",
+                tool_call_id="call_new"),
+        ]
+        out = interactions_to_openai_messages(rows)
+
+        old = next(m for m in out if m.get("tool_call_id") == "call_old")
+        self.assertIn("login source", old["content"])
+        old_call = next(tc for m in out for tc in m.get("tool_calls", [])
+                        if tc.get("id") == "call_old")
+        self.assertEqual(old_call["function"]["arguments"], '{"q":"x"}')
+
+
 class LargeSessionAssemblyTests(unittest.IsolatedAsyncioTestCase):
     async def test_compacted_prefix_is_never_materialized(self) -> None:
         tail = [_ir("tail-user", "user", "latest request")]
@@ -175,8 +402,8 @@ class LargeSessionAssemblyTests(unittest.IsolatedAsyncioTestCase):
             "enabled": True,
             "compaction_enabled": True,
             "token_limit": 1_000_000,
-            "compact_threshold": 0.85,
-            "tail_fraction": 0.30,
+            "compact_target_tokens": 850_000,
+            "verbatim_tail_tokens": 300_000,
         })
 
         self.assertIsNone(changed)

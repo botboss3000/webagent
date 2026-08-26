@@ -1,7 +1,7 @@
 {
   "format": "webagent-browser-storage-inventory",
   "version": 1,
-  "schema_version": 6,
+  "schema_version": 7,
   "databases": [
     {
       "name_pattern": "webagent_session_db_<tenant_scope>",
@@ -14,7 +14,7 @@
         {
           "name": "sessions",
           "purpose": "Session metadata and validated server-cache manifests",
-          "schema_version": 6,
+          "schema_version": 7,
           "classification": "cache",
           "data_categories": ["session identifiers", "titles", "agent identifiers", "authority revision and content hash"],
           "identifiers": ["id", "agent_id"],
@@ -35,7 +35,7 @@
         {
           "name": "interactions",
           "purpose": "Chat turns for browser authority or a validated transcript cache",
-          "schema_version": 6,
+          "schema_version": 7,
           "classification": "cache",
           "data_categories": ["message content", "tool protocol rows", "timestamps"],
           "identifiers": ["id", "session_id", "session_seq"],
@@ -56,7 +56,7 @@
         {
           "name": "agent_config",
           "purpose": "Short-lived allowlisted browser agent configuration",
-          "schema_version": 6,
+          "schema_version": 7,
           "classification": "derived",
           "data_categories": ["agent display metadata", "visible tool and ability metadata"],
           "identifiers": ["id", "config_hash"],
@@ -77,7 +77,7 @@
         {
           "name": "session_runs",
           "purpose": "Ephemeral turn coordination and partial recovery events",
-          "schema_version": 6,
+          "schema_version": 7,
           "classification": "receipt",
           "data_categories": ["turn state", "partial events", "error summaries"],
           "identifiers": ["id", "session_id"],
@@ -98,7 +98,7 @@
         {
           "name": "memories",
           "purpose": "User memory pages produced during chat",
-          "schema_version": 6,
+          "schema_version": 7,
           "classification": "authority",
           "data_categories": ["memory text", "memory type and slug"],
           "identifiers": ["slug"],
@@ -119,7 +119,7 @@
         {
           "name": "genui_pages",
           "purpose": "Generated UI page metadata",
-          "schema_version": 6,
+          "schema_version": 7,
           "classification": "derived",
           "data_categories": ["generated titles", "descriptions", "agent identifiers"],
           "identifiers": ["slug"],
@@ -140,7 +140,7 @@
         {
           "name": "genui_html",
           "purpose": "Generated active HTML kept separate from page metadata",
-          "schema_version": 6,
+          "schema_version": 7,
           "classification": "derived",
           "data_categories": ["active generated HTML"],
           "identifiers": ["slug"],
@@ -161,7 +161,7 @@
         {
           "name": "user_files",
           "purpose": "User-created files and binary content",
-          "schema_version": 6,
+          "schema_version": 7,
           "classification": "authority",
           "data_categories": ["user file bytes", "filenames", "MIME metadata"],
           "identifiers": ["path", "room"],
@@ -182,7 +182,7 @@
         {
           "name": "sync_outbox",
           "purpose": "Pending mutations, conflicts, and tombstones",
-          "schema_version": 6,
+          "schema_version": 7,
           "classification": "receipt",
           "data_categories": ["pending operations", "revision receipts", "tombstones"],
           "identifiers": ["session_id", "mutation_id"],
@@ -203,7 +203,7 @@
         {
           "name": "tool_details",
           "purpose": "Disabled legacy cache for potentially sensitive tool output",
-          "schema_version": 6,
+          "schema_version": 7,
           "classification": "derived",
           "data_categories": ["tool arguments and results"],
           "identifiers": ["id"],
@@ -220,6 +220,27 @@
           "logout_purge": true,
           "remote_invalidation": "schema and policy epoch",
           "migration": "clear"
+        },
+        {
+          "name": "app_cache",
+          "purpose": "Generic key-value cache — per-entity rows migrated from legacy localStorage blobs (chat focus, manifests, seq cursors, persistence receipts, chat outbox, chat draft) plus UI state",
+          "schema_version": 7,
+          "classification": "cache",
+          "data_categories": ["per-session chat bookkeeping", "UI state", "cursor positions", "recovery receipts"],
+          "identifiers": ["key"],
+          "tenant_key": "physical database tenant scope",
+          "sensitivity": "moderate",
+          "secrets_forbidden": true,
+          "writers": ["ui/chat/js/storage/kv-cache.js", "ui/chat/js/storage/indexeddb.js"],
+          "readers": ["ui/chat/js/storage/kv-cache.js", "ui/chat/js/storage/indexeddb.js"],
+          "sync_destination": null,
+          "retention": "per-row TTL via by_expiry index; no expiry rows swept only with the tenant database",
+          "quota": "shared max_cache_bytes",
+          "export": "JSON",
+          "erasure": "tenant database deletion",
+          "logout_purge": true,
+          "remote_invalidation": "policy epoch",
+          "migration": "IndexedDB version upgrade; one-time seed from legacy localStorage blobs"
         }
       ]
     },

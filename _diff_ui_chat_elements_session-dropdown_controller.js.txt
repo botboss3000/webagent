@@ -1,0 +1,38 @@
+diff --git a/ui/chat/elements/session-dropdown/controller.js b/ui/chat/elements/session-dropdown/controller.js
+index cc37e206..45a90266 100644
+--- a/ui/chat/elements/session-dropdown/controller.js
++++ b/ui/chat/elements/session-dropdown/controller.js
+@@ -29,7 +29,6 @@ import {
+   _sessionsCache,
+   populateSessionSelect,
+   refreshSessionMetadata,
+-  hasFreshSessionMetadataCache,
+   _renderSessionRows,
+   _setTriggerLabel,
+   _setShowHidden, _getShowHidden,
+@@ -310,11 +309,20 @@ export function mountSessionDropdown(root, opts = {}) {
+ 
+   function _loadSessionList() {
+     if (!app.currentUserId) return;
+-    const cacheWasFresh = hasFreshSessionMetadataCache(app.currentUserId);
+-    populateSessionSelect(app.currentUserId, { preferCache: true });
+-    // A fresh page/dropdown cache already has this metadata, so don't follow
+-    // it with a second refresh request that defeats the fast open.
+-    if (!cacheWasFresh) refreshSessionMetadata(app.currentUserId);
++    // Instant paint from the warm cache (fast open) — returns true when the
++    // menu was painted from the active-session cache (no network used).
++    const paintedFromCache = populateSessionSelect(app.currentUserId, { preferCache: true });
++    // Then ALWAYS refresh, never trust the cache alone. The warm cache can be
++    // up to 30s stale (15s background poll + 30s cache TTL), so an open must
++    // re-check: run status, queue positions and titles need to be accurate the
++    // moment the menu appears, not "sometime in the next 30s".
++    refreshSessionMetadata(app.currentUserId);
++    // Force a fresh fetch (bypassing preferCache) so the open itself becomes
++    // the poll — progress and queues are current on arrival. Safe mid-rename:
++    // _renderSessionRows and _setTriggerLabel both skip their rebuilds while
++    // a rename input is live, so a refresh landing mid-edit paints nothing
++    // and the rename's own commit re-renders with this fresh data.
++    if (paintedFromCache) populateSessionSelect(app.currentUserId);
+   }
+ 
+   function _finishMenuClose() {

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, List, Optional, Set
 
@@ -55,6 +56,129 @@ def _bounded_tool_content(content: Optional[str]) -> str:
         return value
     omitted = len(value) - TOOL_RESULT_MAX_CHARS
     return f"{value[:TOOL_RESULT_MAX_CHARS]}\n\n[tool output truncated: {omitted:,} characters omitted]"
+
+
+# ── Off-task tool-output hiding (task-scoped context economy) ────────────────
+# Sessions accumulate tool results across many user requests ("tasks"). Every
+# turn re-sends ALL of them to the model provider — results from tasks that are
+# already finished are pure token waste. The task-grouping classifier
+# (app/admin/tasks.py — the same boundary inference behind the admin dashboard
+# and the chat task-frame overlay) decides where one task ends and the next
+# begins: a fast text rule for the easy cases, refined by the LLM tie-breaker
+# on ambiguous ones. The runtime reuses the tie-breaker's memoised verdicts
+# synchronously (`cached_llm_verdict`); `build_openai_history_from_session`
+# refreshes them asynchronously once per build, so the hot path never awaits.
+# Tool calls belonging to a CLOSED (earlier) task keep their protocol shape but
+# reduce their arguments to retrieval metadata, and their results become small
+# placeholders. Calls and results of the CURRENT task stay in full.
+# The DB keeps the complete output either way — only the provider payload
+# shrinks. Set HIDE_OFF_TASK_TOOL_OUTPUTS=0 to disable (default: on).
+_HIDE_OFF_TASK_TOOL_OUTPUTS = os.environ.get(
+    "HIDE_OFF_TASK_TOOL_OUTPUTS", "1"
+).strip().lower() not in ("0", "false", "no", "off")
+
+_OFF_TASK_TOOL_PLACEHOLDER = (
+    "[tool result hidden — completed in an earlier task]\n"
+    "Tool: {tool}\n"
+    "Result interaction: {interaction_id}\n"
+    "Output length: {chars} characters\n"
+    "If current state matters, re-run a safe read. If this historical output "
+    "matters, call recall_compacted(interaction_id=\"{interaction_id}\"). "
+    "Do not repeat mutations merely to recover their output."
+)
+
+def off_task_hiding_enabled() -> bool:
+    """Whether closed-task tool outputs are replaced with placeholders in the
+    model context. LIVE gate (no restart): the `hide_off_task_outputs` knob on
+    the Task Grouping app function (App Settings ▸ App Functions) wins; the
+    HIDE_OFF_TASK_TOOL_OUTPUTS env var overrides it; the default is ON."""
+    env = os.environ.get("HIDE_OFF_TASK_TOOL_OUTPUTS")
+    if env and env.strip().lower() in ("0", "false", "no", "off"):
+        return False
+    try:
+        from app.admin.ability_config import get_ability_config
+        v = get_ability_config("task_grouping").get("hide_off_task_outputs")
+        if v is not None:
+            return str(v).strip().lower() in ("1", "true", "yes", "on", "enabled")
+    except Exception:  # pragma: no cover - best-effort; falls back to the default
+        pass
+    return _HIDE_OFF_TASK_TOOL_OUTPUTS
+
+
+def _task_index_map(rows: List[InteractionRecord]) -> Dict[str, Optional[int]]:
+    """Map interaction id -> 0-based task index using the task-grouping
+    classifier's boundary inference — the SAME boundaries the admin dashboard
+    and the chat task-frame overlay draw. A fast text rule decides the easy
+    cases; on the ambiguous fall-through (the text rule would OPEN a new task)
+    any memoised LLM tie-breaker verdict (`cached_llm_verdict`) is consulted
+    synchronously and can glue the turn back into the current task. Synthetic
+    user rows (orchestration/event wake-ups) never open a boundary. Tool rows
+    inherit the task of the user turn they hang under; rows before the first
+    user turn are treated as part of the current task.
+
+    The LAST task in the set is the current one; every earlier task is closed.
+    Pure string ops plus a dict lookup — no LLM calls, so the hiding itself
+    adds zero provider cost and never awaits.
+    """
+    try:
+        from app.admin.tasks import _decide_boundary, _is_synthetic_user, cached_llm_verdict
+    except Exception as exc:  # pragma: no cover - classifier import is best-effort
+        logger.debug("off-task hiding: classifier unavailable (%s) — nothing hidden", exc)
+        return {}
+
+    task_idx = 0
+    out: Dict[str, Optional[int]] = {}
+    # (prompt, last assistant reply) per user turn, oldest first — the same
+    # context the LLM tie-breaker saw when it computed its (memoised) verdict.
+    turns: List[List[str]] = []
+    for r in rows:
+        if r.role == "user":
+            if not _is_synthetic_user(r.content or "", getattr(r, "source", None)):
+                is_new, _, _ = _decide_boundary({"prompt": r.content or ""})
+                if is_new:
+                    # Ambiguous fall-through: reuse the tie-breaker's verdict if
+                    # it is already memoised (the async refresh in
+                    # build_openai_history_from_session computes it per build).
+                    prior_users = [t[0] for t in turns]
+                    prior_asst = [t[1] for t in turns]
+                    if cached_llm_verdict(prior_users, prior_asst, r.content or "") is True:
+                        is_new = False
+                if is_new:
+                    task_idx += 1
+                turns.append([r.content or "", ""])
+            # Included even when this user row is excluded from the provider
+            # transcript because it is sent separately as the live prompt. Its
+            # task index still defines which preceding tool exchanges are closed.
+            out[r.id] = task_idx
+        elif r.role == "assistant":
+            if (r.content or "").strip() and turns:
+                turns[-1][1] = r.content
+            out[r.id] = task_idx
+        else:
+            out[r.id] = task_idx
+    return out
+
+
+def _run_index_map(rows: List[InteractionRecord]) -> Dict[str, int]:
+    """Map rows to genuine user-triggered runs.
+
+    A run advances only for a real user turn. Manager/scout wake-ups and other
+    synthetic user rows inherit the active run, so an agent's evidence window
+    is stable regardless of how many internal loop iterations a task needed.
+    """
+    try:
+        from app.admin.tasks import _is_synthetic_user
+    except Exception:  # pragma: no cover - same best-effort fallback as tasks
+        _is_synthetic_user = lambda _content, _source: False
+    run_idx = -1
+    out: Dict[str, int] = {}
+    for row in rows:
+        if (row.role == "user"
+                and not _is_synthetic_user(
+                    row.content or "", getattr(row, "source", None))):
+            run_idx += 1
+        out[row.id] = max(0, run_idx)
+    return out
 
 
 def _is_parallel_loser(metadata_str: Optional[str]) -> bool:
@@ -159,10 +283,44 @@ def _extract_tool_calls_from_output(output_str: Optional[str]) -> Optional[List[
     return None
 
 
+def _extract_reasoning_content(output_str: Optional[str]) -> Optional[str]:
+    """Pull DeepSeek thinking-mode ``reasoning_content`` persisted in the output
+    JSON. DeepSeek requires the field to be passed back on multi-turn requests;
+    a row written before reasoning capture has no key and replays without it
+    (the loop's sanitized retry covers those legacy rows)."""
+    if not output_str:
+        return None
+    try:
+        parsed = json.loads(output_str)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    rc = parsed.get("reasoning_content")
+    return rc if isinstance(rc, str) and rc.strip() else None
+
+
+def _assistant_message(
+    content: Optional[str],
+    reasoning: Optional[str] = None,
+    tool_calls: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Build an assistant message dict, attaching DeepSeek thinking-mode
+    ``reasoning_content`` when the row carried it (the API 400s any replay
+    that omits it)."""
+    msg: Dict[str, Any] = {"role": "assistant"}
+    if content is not None:
+        msg["content"] = content
+    if reasoning:
+        msg["reasoning_content"] = reasoning
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+    return msg
+
+
 def interactions_to_openai_messages(
     interactions: List[InteractionRecord],
     *,
     exclude_interaction_ids: Optional[Set[str]] = None,
+    evidence_settings: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Convert interaction rows (ordered oldest-first) into OpenAI-style chat messages.
@@ -175,17 +333,14 @@ def interactions_to_openai_messages(
     """
     exclude = exclude_interaction_ids or set()
     filtered: List[InteractionRecord] = []
+    task_rows: List[InteractionRecord] = []
     for r in interactions:
-        if r.id in exclude:
-            continue
         # Legacy parallel-racing LOSER rows (metadata.parallel_loser=True) from
         # older DBs are NOT part of the real conversation — replaying them feeds
         # the model conflicting answers to the same turn (and any legacy
         # "[Tool calls: …]" suffix), training it to emit tool calls as plain text.
         # Racing is gone, but the guard stays for historical rows.
         if r.role == "assistant" and _is_parallel_loser(r.metadata):
-            continue
-        if r.role == "tool" and r.tool_name in INTERNAL_TOOL_NAMES:
             continue
         # Terminal-tunnel traffic (the user driving a program directly through
         # chat) is persisted for the transcript/record but must stay OUT of the
@@ -200,7 +355,136 @@ def interactions_to_openai_messages(
             continue
         if r.role == "assistant" and (r.content or "").startswith("Stats:"):
             continue
+        # Boundary inference must still see an excluded current user row. Native
+        # runs send that row separately as the live prompt, but it may be the row
+        # that closes every preceding task for context-reduction purposes.
+        task_rows.append(r)
+        if r.id in exclude:
+            continue
+        if r.role == "tool" and r.tool_name in INTERNAL_TOOL_NAMES:
+            continue
         filtered.append(r)
+
+    # ── Off-task tool exchange reduction ──
+    # Map every row to its task (text-rule boundaries, zero LLM cost) and let
+    # CLOSED-task calls/results degrade to retrieval metadata in the model
+    # payload. Their full persisted input/output stays in the DB / transcript.
+    from app.agent.context_control import normalize_tool_evidence_settings
+    _evidence = normalize_tool_evidence_settings(evidence_settings)
+    _policy = _evidence["tool_evidence_policy"]
+    _hide_off_task = off_task_hiding_enabled() and _policy != "all"
+    _task_of = _task_index_map(task_rows) if _hide_off_task else {}
+    _run_of = _run_index_map(task_rows) if _hide_off_task else {}
+    _current_task = max((v for v in _task_of.values() if v is not None), default=0)
+    _current_run = max(_run_of.values(), default=0)
+
+    # Decide which runs in the active semantic task retain full evidence. Closed
+    # tasks compact immediately in every bounded policy. Budget selection walks
+    # newest-to-oldest and keeps whole runs, avoiding half-compacted workflows.
+    _current_task_runs = sorted({
+        _run_of[row.id] for row in task_rows
+        if _task_of.get(row.id) == _current_task and row.id in _run_of
+    }, reverse=True)
+    _count_kept = set(_current_task_runs[:_evidence["full_evidence_runs"]])
+    _budget_kept: Set[int] = {_current_run}
+    if _policy in ("token_budget", "hybrid"):
+        chars_by_run: Dict[int, int] = {}
+        for row in task_rows:
+            if _task_of.get(row.id) != _current_task:
+                continue
+            run = _run_of.get(row.id, 0)
+            if row.role == "tool":
+                chars_by_run[run] = chars_by_run.get(run, 0) + len(row.content or "")
+            elif row.role == "assistant":
+                # ``output`` contains modern tool-call arguments; legacy calls
+                # live in content after TOOL_MARKER. Counting the whole persisted
+                # field is conservative and avoids reparsing provider variants.
+                chars_by_run[run] = chars_by_run.get(run, 0) + len(row.output or "")
+                if TOOL_MARKER in (row.content or ""):
+                    chars_by_run[run] += len(row.content or "")
+        budget_chars = _evidence["full_evidence_token_budget"] * 4
+        used = chars_by_run.get(_current_run, 0)
+        for run in _current_task_runs:
+            if run == _current_run:
+                continue
+            cost = chars_by_run.get(run, 0)
+            if used + cost > budget_chars:
+                break
+            _budget_kept.add(run)
+            used += cost
+
+    if _policy == "current_task":
+        _kept_runs = set(_current_task_runs)
+    elif _policy == "recent_runs":
+        _kept_runs = _count_kept
+    elif _policy == "token_budget":
+        _kept_runs = _budget_kept
+    elif _policy == "hybrid":
+        _kept_runs = _count_kept & _budget_kept
+    else:
+        _kept_runs = set(_current_task_runs)
+
+    def _is_reduced(row: InteractionRecord) -> bool:
+        t = _task_of.get(row.id)
+        if not _hide_off_task or t is None:
+            return False
+        return t != _current_task or _run_of.get(row.id, 0) not in _kept_runs
+
+    def _reduction_reason(row: InteractionRecord) -> str:
+        return ("completed earlier task" if _task_of.get(row.id) != _current_task
+                else "outside this agent's full-evidence run window")
+
+    def _compact_tool_calls(
+        calls: List[Dict[str, Any]], assistant_row: InteractionRecord,
+    ) -> List[Dict[str, Any]]:
+        """Keep historical calls protocol-valid while removing bulky inputs."""
+        if not _is_reduced(assistant_row):
+            return calls
+        compacted: List[Dict[str, Any]] = []
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+            raw_args = fn.get("arguments", call.get("arguments", ""))
+            if isinstance(raw_args, str):
+                argument_chars = len(raw_args)
+            else:
+                try:
+                    argument_chars = len(json.dumps(raw_args, ensure_ascii=False))
+                except (TypeError, ValueError):
+                    argument_chars = len(str(raw_args))
+            call_id = str(call.get("id") or "")
+            reduced_args = json.dumps({
+                "_context_reduced": True,
+                "reason": _reduction_reason(assistant_row),
+                "interaction_id": assistant_row.id,
+                "tool_call_id": call_id,
+                "original_argument_chars": argument_chars,
+            }, ensure_ascii=False, separators=(",", ":"))
+            compacted.append({
+                "id": call_id,
+                "type": call.get("type") or "function",
+                "function": {
+                    "name": str(fn.get("name") or call.get("name") or "tool"),
+                    "arguments": reduced_args,
+                },
+            })
+        return compacted
+
+    def _tool_content(tr: InteractionRecord) -> str:
+        if _is_reduced(tr):
+            placeholder = _OFF_TASK_TOOL_PLACEHOLDER.format(
+                tool=tr.tool_name or "tool",
+                interaction_id=tr.id,
+                chars=f"{len(tr.content or ''):,}",
+            )
+            if _task_of.get(tr.id) == _current_task:
+                placeholder = placeholder.replace(
+                    "completed in an earlier task",
+                    "outside this agent's full-evidence run window",
+                )
+            return placeholder
+        return _bounded_tool_content(tr.content)
 
     out: List[Dict[str, Any]] = []
     i = 0
@@ -213,6 +497,9 @@ def interactions_to_openai_messages(
             i += 1
         elif r.role == "assistant":
             content = strip_think_blocks(r.content)
+            # DeepSeek thinking-mode: the row's output JSON may carry
+            # reasoning_content — replay it with the message or the API 400s.
+            reasoning = _extract_reasoning_content(r.output)
 
             # NEW: try clean path first — read tool calls from the output field
             tool_calls_from_output = _extract_tool_calls_from_output(r.output)
@@ -240,8 +527,8 @@ def interactions_to_openai_messages(
                 # Peek ahead at following tool rows to find which tool_call_ids
                 # have a result row (rows with status='deleted' are already
                 # excluded by fetch_interactions). Only include tool calls that
-                # are answered, so intentionally deleted tool calls don't produce
-                # spurious "[interrupted — no result]" placeholders.
+                # are answered, so an interruption never leaks a dangling call
+                # into the replayed history.
                 _answered_ids: Set[str] = set()
                 _j = i + 1
                 while _j < n and filtered[_j].role == "tool":
@@ -250,11 +537,12 @@ def interactions_to_openai_messages(
                     _j += 1
                 _filtered_calls = [tc for tc in tool_calls_from_output
                                    if tc.get("id") in _answered_ids or not tc.get("id")]
+                _filtered_calls = _compact_tool_calls(_filtered_calls, r)
 
                 if not _filtered_calls:
                     # All tool calls were deleted — emit nothing or just text
                     if _clean:
-                        out.append({"role": "assistant", "content": _clean})
+                        out.append(_assistant_message(_clean, reasoning))
                     i += 1
                     while i < n and filtered[i].role == "tool":
                         i += 1
@@ -263,28 +551,21 @@ def interactions_to_openai_messages(
                 if (not _clean and not _filtered_calls) and not _is_remote_placeholder:
                     i += 1
                     continue
-                out.append({
-                    "role": "assistant",
-                    "content": _clean,
-                    "tool_calls": _filtered_calls,
-                })
+                out.append(_assistant_message(_clean, reasoning, _filtered_calls))
                 i += 1
                 # Consume following tool rows, pairing by tool_call_id
                 answered: Set[str] = set()
                 while i < n and filtered[i].role == "tool":
                     tr = filtered[i]
                     if tr.tool_call_id:
-                        out.append({"role": "tool", "content": _bounded_tool_content(tr.content), "tool_call_id": tr.tool_call_id})
+                        out.append({"role": "tool", "content": _tool_content(tr), "tool_call_id": tr.tool_call_id})
                         answered.add(tr.tool_call_id)
                     i += 1
-                # Self-repair: if the turn was interrupted mid-tool-execution, some
-                # tool_calls may have no result row. OpenAI-style APIs reject an
-                # assistant message whose tool_calls aren't ALL answered, so emit a
-                # synthetic placeholder for any unanswered id.
-                for _tc in _filtered_calls:
-                    _tid = _tc.get("id")
-                    if _tid and _tid not in answered:
-                        out.append({"role": "tool", "content": "[interrupted — no result]", "tool_call_id": _tid})
+                # Interrupted mid-tool-execution: some tool_calls may have no
+                # result row. No synthetic "[interrupted]" placeholder is emitted —
+                # the resumed agent must not see an interruption marker. The final
+                # _ensure_no_orphaned_tool_calls pass strips any unanswered calls
+                # so the model API never sees an invalid tool_calls list.
                 continue
 
             # Remote placeholder skeleton — output has tool names + IDs only,
@@ -301,7 +582,7 @@ def interactions_to_openai_messages(
                     while i < n and filtered[i].role == "tool":
                         i += 1
                     continue
-                out.append({"role": "assistant", "content": _clean})
+                out.append(_assistant_message(_clean, reasoning))
                 i += 1
                 while i < n and filtered[i].role == "tool":
                     i += 1
@@ -317,7 +598,7 @@ def interactions_to_openai_messages(
                         raise ValueError("tool calls payload is not a list")
                 except (json.JSONDecodeError, ValueError) as e:
                     logger.warning("Could not parse tool calls from assistant row %s: %s", r.id, e)
-                    out.append({"role": "assistant", "content": content})
+                    out.append(_assistant_message(content, reasoning))
                     i += 1
                     continue
 
@@ -342,34 +623,27 @@ def interactions_to_openai_messages(
                         "function": {"name": name, "arguments": args},
                     })
 
-                out.append({
-                    "role": "assistant",
-                    "content": base.strip() if base.strip() else None,
-                    "tool_calls": tool_calls,
-                })
+                tool_calls = _compact_tool_calls(tool_calls, r)
+
+                out.append(_assistant_message(
+                    base.strip() if base.strip() else None, reasoning, tool_calls))
                 for j in range(pair_n):
                     tr = tool_rows[j]
                     if tr.tool_call_id:
                         out.append({
                             "role": "tool",
-                            "content": _bounded_tool_content(tr.content),
+                            "content": _tool_content(tr),
                             "tool_call_id": tr.tool_call_id,
                         })
                 # Skip extra tool rows beyond pair_n — they have no matching
                 # tool_call in spec and would be orphaned (model API rejects them).
-                # Also add synthetic placeholders for any unanswered calls.
-                for _tc in spec:
-                    _tid = _tc.get("id") if isinstance(_tc, dict) else None
-                    _answered = any(
-                        tr.tool_call_id == _tid for tr in tool_rows[:pair_n]
-                    ) if _tid else True
-                    if _tid and not _answered:
-                        out.append({"role": "tool", "content": "[interrupted — no result]", "tool_call_id": _tid})
+                # No synthetic "[interrupted]" placeholder for unanswered calls —
+                # the resumed agent must not see an interruption marker.
             else:
                 # Guard: skip empty assistant messages (no tool calls, no content).
                 # The model API rejects {"role":"assistant","content":""}.
                 if content.strip():
-                    out.append({"role": "assistant", "content": content})
+                    out.append(_assistant_message(content, reasoning))
                 i += 1
         elif r.role == "tool":
             # Skip orphan tool rows — a tool message must follow an assistant
@@ -386,7 +660,7 @@ def interactions_to_openai_messages(
                         _prev_asst = _pm
                         break
                 if _prev_asst and _prev_asst.get("tool_calls"):
-                    out.append({"role": "tool", "content": _bounded_tool_content(r.content), "tool_call_id": r.tool_call_id})
+                    out.append({"role": "tool", "content": _tool_content(r), "tool_call_id": r.tool_call_id})
                 else:
                     logger.debug("Skipping orphan tool row id=%s tool_call_id=%s — no preceding assistant tool_calls",
                                  r.id, r.tool_call_id)
@@ -498,6 +772,22 @@ def trim_history_for_resume(
     return _ensure_no_orphaned_tool_calls(out)
 
 
+async def _maybe_refresh_task_verdicts(rows) -> None:
+    """Best-effort, async pre-warm for off-task hiding: ask the task-grouping
+    LLM tie-breaker to refine this session's ambiguous boundaries so the sync
+    `_task_index_map` below reuses its memoised verdicts (SAME glues a turn
+    back into the current task → its tool results stay in context). Memoised by
+    message text, so steady-state builds add ~0 calls. Never raises; any
+    failure leaves the text rule in charge."""
+    if not off_task_hiding_enabled():
+        return
+    try:
+        from app.admin.tasks import refresh_task_grouping_verdicts
+        await refresh_task_grouping_verdicts(rows)
+    except Exception as exc:  # pragma: no cover - best-effort
+        logger.debug("off-task hiding: task verdict refresh skipped: %s", exc)
+
+
 async def build_openai_history_from_session(
     db: StorageBackend,
     user_id: str,
@@ -516,19 +806,9 @@ async def build_openai_history_from_session(
         ``[summary] + [verbatim tail]`` instead of the full transcript. The raw
         rows are never deleted — they stay searchable.
     """
-    # Count first. A compacted session's raw prefix remains searchable, but it
-    # must not re-enter Python merely to discover the hot-tail boundary.
-    row_count = await db.count_interactions(user_id, session_id)
-    if row_count < HISTORY_FULL_PATH_FLOOR:
-        rows = await db.fetch_interactions(user_id, session_id)
-        return interactions_to_openai_messages(
-            rows, exclude_interaction_ids=exclude_interaction_ids)
-
-    # Context-management strategy (write side) — only for agent-loop callers that
-    # pass an agent_id. Whichever strategy is enabled (default: Context Control)
-    # gets to persist any reshaping of the history before it is read back; the
-    # default folds older turns into a rolling summary when over threshold. Other
-    # callers (suggestions, webhooks) skip this and still get the passive read.
+    # Resolve the agent policy before the fast path too: most conversations are
+    # below the compaction floor, but their tool-evidence window must still match
+    # the agent's Knowledge settings.
     strategy = None
     settings: Dict[str, Any] = {}
     if agent_id:
@@ -537,10 +817,30 @@ async def build_openai_history_from_session(
             strategy = await context_strategy_for_agent(agent_id)
             if strategy is not None:
                 _get = getattr(strategy, "CONTEXT_SETTINGS", None)
-                _compact = getattr(strategy, "CONTEXT_COMPACT", None)
                 settings = (await _get(db, agent_id, session_id, user_id)) if _get else {}
-                if settings.get("enabled") and settings.get("compaction_enabled", True) and _compact:
-                    await _compact(db, user_id, session_id, settings)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("context strategy settings skipped: %s", e)
+
+    # Count first. A compacted session's raw prefix remains searchable, but it
+    # must not re-enter Python merely to discover the hot-tail boundary.
+    row_count = await db.count_interactions(user_id, session_id)
+    if row_count < HISTORY_FULL_PATH_FLOOR:
+        rows = await db.fetch_interactions(user_id, session_id)
+        await _maybe_refresh_task_verdicts(rows)
+        return interactions_to_openai_messages(
+            rows, exclude_interaction_ids=exclude_interaction_ids,
+            evidence_settings=settings)
+
+    # Context-management strategy (write side) — only for agent-loop callers that
+    # pass an agent_id. Whichever strategy is enabled (default: Context Control)
+    # gets to persist any reshaping of the history before it is read back; the
+    # default folds older turns into a rolling summary when over threshold. Other
+    # callers (suggestions, webhooks) skip this and still get the passive read.
+    if strategy is not None:
+        try:
+            _compact = getattr(strategy, "CONTEXT_COMPACT", None)
+            if settings.get("enabled") and settings.get("compaction_enabled", True) and _compact:
+                await _compact(db, user_id, session_id, settings)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("context strategy (write side) skipped: %s", e)
 
@@ -582,12 +882,17 @@ async def build_openai_history_from_session(
         car_msgs = [render_segment_message(s, i + 1, total) for i, s in enumerate(segments)]
         tail = await db.fetch_interactions_from_offset(
             user_id, session_id, covered)
+        await _maybe_refresh_task_verdicts(tail)
         msgs = interactions_to_openai_messages(
-            tail, exclude_interaction_ids=exclude_interaction_ids)
+            tail, exclude_interaction_ids=exclude_interaction_ids,
+            evidence_settings=settings)
         return _ensure_no_orphaned_tool_calls(car_msgs + msgs)
 
     rows = await db.fetch_interactions(user_id, session_id)
-    return _ensure_no_orphaned_tool_calls(interactions_to_openai_messages(rows, exclude_interaction_ids=exclude_interaction_ids))
+    await _maybe_refresh_task_verdicts(rows)
+    return _ensure_no_orphaned_tool_calls(interactions_to_openai_messages(
+        rows, exclude_interaction_ids=exclude_interaction_ids,
+        evidence_settings=settings))
 
 
 # ── Engine compact-and-restart recap (shared by the Claude + Codex engines) ──

@@ -2,8 +2,8 @@
 
 Context Control is a *context-management strategy*: it decides how the stored
 transcript is shaped into the message list sent to the model, and surfaces a
-"how full is my context" gauge each turn. Near the limit it folds the oldest
-turns into a rolling summary (compaction). Nothing is ever deleted — the raw
+"how full is my context" gauge each turn. At the configured target it folds the
+oldest turns into a rolling summary (compaction). Nothing is ever deleted — the raw
 turns stay in the ``interactions`` table and remain searchable.
 
 This file is the **plugin shell**: it exposes the *context-strategy contract*
@@ -96,7 +96,10 @@ def CONTEXT_STATUS(
         return None
     tokens = estimate_tokens(messages)
     return {
-        "line": status_line(tokens, limit),
+        "line": status_line(
+            tokens, limit,
+            int(settings.get("compact_target_tokens") or 100_000),
+        ),
         "tokens": tokens,
         "limit": limit,
         "pct": context_pct(tokens, limit),
@@ -190,6 +193,8 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
     # keyword-finds where a detail lives so it can then be recalled.
     _RECALL_MAX_MSGS = 40
     _RECALL_MSG_CHARS = 2000
+    _DIRECT_RECALL_DEFAULT_CHARS = 8000
+    _DIRECT_RECALL_MAX_CHARS = 20000
     _SNIPPET_PAD = 240
 
     def _render_rows(span, *, start_n: int):
@@ -200,13 +205,19 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
                 content = content[:_RECALL_MSG_CHARS] + " …[truncated — narrow the range to see more]"
             out.append({
                 "n": start_n + off,
+                "interaction_id": getattr(r, "id", None),
                 "role": getattr(r, "role", "?"),
                 "tool": getattr(r, "tool_name", None),
+                "tool_call_id": getattr(r, "tool_call_id", None),
                 "content": content,
             })
         return out
 
-    async def recall_compacted(segment: int = 0, start: int = 0, end: int = 0) -> str:
+    async def recall_compacted(
+        segment: int = 0, start: int = 0, end: int = 0,
+        interaction_id: str = "", tool_call_id: str = "",
+        offset: int = 0, max_chars: int = _DIRECT_RECALL_DEFAULT_CHARS,
+    ) -> str:
         """Read the ORIGINAL messages behind a compacted summary, verbatim.
 
         Use this when a detail you need has aged into one of the "EARLIER
@@ -214,7 +225,10 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         ``segment=k`` (the PART number shown on that summary block) to get the exact
         turns it stands in for, or pass ``start``/``end`` message numbers for a
         precise window. Nothing was ever deleted — this reads the stored transcript.
-        Large spans are returned a page at a time; narrow start/end to see more.
+        Large spans are returned a page at a time. A reduced historical tool
+        message carries an ``interaction_id``; pass it here for an indexed,
+        character-paginated read. For a reduced assistant tool input, also pass
+        its ``tool_call_id`` to recover that call's original arguments.
         """
         if not (user_id and session_id):
             return json.dumps({"status": "error",
@@ -222,6 +236,83 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
         try:
             from app.db import get_db
             db = get_db()
+        except Exception as e:
+            return json.dumps({"status": "error", "error": f"could not open transcript: {e}"})
+
+        requested_id = str(interaction_id or "").strip()
+        requested_call_id = str(tool_call_id or "").strip()
+        if requested_id:
+            try:
+                fetch_one = getattr(db, "fetch_session_interaction", None)
+                if callable(fetch_one):
+                    row = await fetch_one(user_id, session_id, requested_id)
+                else:  # compatibility for third-party/lightweight backends
+                    all_rows = await db.fetch_interactions(user_id, session_id)
+                    row = next((r for r in all_rows if str(getattr(r, "id", "")) == requested_id), None)
+            except Exception as e:
+                return json.dumps({"status": "error", "error": f"could not read interaction: {e}"})
+            if row is None:
+                return json.dumps({
+                    "status": "error",
+                    "error": "No visible interaction with that id exists in this session.",
+                    "interaction_id": requested_id,
+                })
+
+            payload = str(getattr(row, "content", "") or "")
+            payload_kind = "content"
+            if requested_call_id:
+                if str(getattr(row, "role", "") or "") != "assistant":
+                    return json.dumps({
+                        "status": "error",
+                        "error": "tool_call_id can only select arguments from an assistant interaction.",
+                        "interaction_id": requested_id,
+                    })
+                try:
+                    stored = json.loads(getattr(row, "output", "") or "{}")
+                except (TypeError, ValueError):
+                    stored = {}
+                calls = stored.get("tool_calls") if isinstance(stored, dict) else None
+                selected = next((c for c in (calls or [])
+                                 if isinstance(c, dict) and str(c.get("id") or "") == requested_call_id), None)
+                if selected is None:
+                    return json.dumps({
+                        "status": "error",
+                        "error": "That tool call is not stored on the requested assistant interaction.",
+                        "interaction_id": requested_id,
+                        "tool_call_id": requested_call_id,
+                    })
+                fn = selected.get("function") if isinstance(selected.get("function"), dict) else {}
+                raw_arguments = fn.get("arguments", selected.get("arguments", ""))
+                payload = (raw_arguments if isinstance(raw_arguments, str)
+                           else json.dumps(raw_arguments, ensure_ascii=False, default=str))
+                payload_kind = "tool_arguments"
+
+            char_offset = max(0, int(offset or 0))
+            page_chars = max(1, min(
+                int(max_chars or _DIRECT_RECALL_DEFAULT_CHARS),
+                _DIRECT_RECALL_MAX_CHARS,
+            ))
+            content_chars = len(payload)
+            chunk = payload[char_offset:char_offset + page_chars]
+            next_offset = char_offset + len(chunk)
+            if next_offset >= content_chars:
+                next_offset = None
+            return json.dumps({
+                "status": "ok",
+                "interaction_id": requested_id,
+                "role": getattr(row, "role", "?"),
+                "tool": getattr(row, "tool_name", None),
+                "tool_call_id": requested_call_id or getattr(row, "tool_call_id", None),
+                "created_at": str(getattr(row, "created_at", "") or ""),
+                "payload_kind": payload_kind,
+                "content_chars": content_chars,
+                "offset": char_offset,
+                "returned_chars": len(chunk),
+                "next_offset": next_offset,
+                "content": chunk,
+            }, default=str)
+
+        try:
             rows = await db.fetch_interactions(user_id, session_id)
         except Exception as e:
             return json.dumps({"status": "error", "error": f"could not read transcript: {e}"})
@@ -243,7 +334,7 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
             e_idx = int(end) if end else n
         else:
             return json.dumps({"status": "error",
-                               "error": "Pass segment=<PART number> or start/end message numbers."})
+                                "error": "Pass interaction_id, segment=<PART number>, or start/end message numbers."})
         s_idx = max(0, min(s_idx, n))
         e_idx = max(s_idx, min(e_idx, n))
         span = rows[s_idx:e_idx]
@@ -300,8 +391,10 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
                 snippet = ("…" if a > 0 else "") + content[a:b] + ("…" if b < len(content) else "")
             matches.append({
                 "n": idx + 1,
+                "interaction_id": getattr(r, "id", None),
                 "role": getattr(r, "role", "?"),
                 "tool": tool or None,
+                "tool_call_id": getattr(r, "tool_call_id", None),
                 "snippet": snippet,
             })
             if len(matches) >= max(1, int(limit or 10)):
@@ -322,6 +415,10 @@ def build_tools(*, user_id: str = "", session_id: str = "", agent_id: str = "",
                             "description": "The PART number shown on an 'EARLIER CONVERSATION — PART k' summary block; reads the exact turns it replaces."},
                 "start": {"type": "integer", "description": "1-based message number to start from (use instead of/with end for a precise window)."},
                 "end": {"type": "integer", "description": "1-based message number to end at (inclusive)."},
+                "interaction_id": {"type": "string", "description": "Exact stored interaction id from a reduced historical tool message or search result."},
+                "tool_call_id": {"type": "string", "description": "With an assistant interaction_id, select and recover this tool call's original arguments."},
+                "offset": {"type": "integer", "description": "0-based character offset for direct interaction retrieval."},
+                "max_chars": {"type": "integer", "description": "Characters to return for direct retrieval (default 8000, maximum 20000)."},
             },
             "required": [],
         },

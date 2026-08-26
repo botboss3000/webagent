@@ -47,6 +47,7 @@ function savePageState(){
   if(STATE.openItem)o.openItem=STATE.openItem;
   if(STATE.itemQ)o.itemQ=STATE.itemQ;
   if(STATE.itemSearchOpen)o.itemSearchOpen=STATE.itemSearchOpen;
+  if(STATE.view==='feature')o.view='feature';
   o.scroll=GenUIState.scrollY();o.scrollLeft=GenUIState.scrollX();
   GenUIState.save(SLUG,o);
 }
@@ -56,6 +57,7 @@ function loadPageState(){
   STATE.openItem=s.openItem||null;
   STATE.itemQ=s.itemQ||'';
   STATE.itemSearchOpen=!!s.itemSearchOpen;
+  STATE.view=s.view==='feature'?'feature':'project';
   return s;
 }
 

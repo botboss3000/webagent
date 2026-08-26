@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/bg_panel">
+
+    <!-- Panel header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="@dimen/space_l"
+        android:paddingEnd="@dimen/space_s"
+        android:paddingVertical="@dimen/space_m">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/cfg_title"
+            android:textColor="@color/fg_1"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/config_close"
+            style="@style/FooterIconButton"
+            android:src="@drawable/ic_close"
+            android:contentDescription="@string/dlg_cancel" />
+    </LinearLayout>
+
+    <View android:layout_width="match_parent" android:layout_height="1dp"
+        android:background="@color/border_soft" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="@dimen/space_l">
+
+            <!-- ===== Startup ===== -->
+            <TextView style="@style/SectionHeader" android:text="@string/cfg_startup" />
+
+            <TextView style="@style/FieldLabel" android:text="@string/cfg_default_dir" />
+            <EditText
+                android:id="@+id/config_default_dir"
+                style="@style/PanelInput"
+                android:hint="@string/cfg_default_dir_hint"
+                android:inputType="textNoSuggestions"
+                android:maxLines="1" />
+
+            <TextView style="@style/FieldLabel" android:text="@string/cfg_startup_cmd" />
+            <EditText
+                android:id="@+id/config_startup_cmd"
+                style="@style/PanelInput"
+                android:hint="@string/cfg_startup_cmd_hint"
+                android:inputType="textNoSuggestions"
+                android:maxLines="1" />
+
+            <!-- ===== Appearance ===== -->
+            <TextView style="@style/SectionHeader" android:text="@string/cfg_appearance"
+                android:layout_marginTop="@dimen/space_l" />
+
+            <TextView style="@style/FieldLabel" android:text="@string/cfg_accent" />
+            <LinearLayout
+                android:id="@+id/config_accent_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginBottom="@dimen/space_s" />
+
+            <TextView style="@style/FieldLabel" android:text="@string/cfg_font_size" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="@dimen/space_s">
+
+                <ImageButton
+                    android:id="@+id/config_font_minus"
+                    style="@style/FooterIconButton"
+                    android:src="@drawable/ic_arrow_down"
+                    android:contentDescription="Smaller" />
+
+                <TextView
+                    android:id="@+id/config_font_value"
+                    android:layout_width="56dp"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:textColor="@color/fg_1"
+                    android:textSize="16sp"
+                    tools:text="14sp" />
+
+                <ImageButton
+                    android:id="@+id/config_font_plus"
+                    style="@style/FooterIconButton"
+                    android:src="@drawable/ic_arrow_up"
+                    android:contentDescription="Larger" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/cfg_light_mode"
+                    android:textColor="@color/fg_1"
+                    android:textSize="15sp" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/config_light_mode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <!-- ===== Footer shortcuts ===== -->
+            <TextView style="@style/SectionHeader" android:text="@string/cfg_shortcuts"
+                android:layout_marginTop="@dimen/space_l" />
+
+            <LinearLayout
+                android:id="@+id/config_rows_editor"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+            <Button
+                android:id="@+id/config_add_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_s"
+                android:text="@string/cfg_add_row"
+                android:textColor="@color/fg_1"
+                android:background="@drawable/bg_shortcut"
+                android:drawableStart="@drawable/ic_add"
+                android:drawablePadding="@dimen/space_s"
+                android:paddingHorizontal="@dimen/space_m" />
+
+            <Space android:layout_width="match_parent" android:layout_height="24dp" />
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

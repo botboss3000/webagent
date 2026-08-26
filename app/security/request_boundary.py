@@ -19,7 +19,7 @@ UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 DEFAULT_CSP = (
     "default-src 'self'; "
-    "base-uri 'none'; "
+    "base-uri 'self'; "
     "object-src 'none'; "
     "frame-ancestors 'self'; "
     "form-action 'self'; "

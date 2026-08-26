@@ -12,6 +12,7 @@ const proto = () => (location.protocol === 'https:' ? 'wss:' : 'ws:');
  * project site: /webagent). Empty string when served at the domain root.
  */
 const _UUID_PATH_RE = /^\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const _EMBED_PATH_RE = /^\/embed\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Server routes that serve the SAME single-page app shell as the domain root
 // (see app/main.py: app_shell_direct `/app`, plus the `/setup` setup flow). These
@@ -31,6 +32,10 @@ export function appBasePath() {
   }
   // Public agent URLs (/{uuid}) are not a subdirectory base — treat as root
   if (_UUID_PATH_RE.test(path)) return '';
+  // The standalone widget portal is another root-served shell alias. Without
+  // this, apiPath('/api/...') becomes /embed/{uuid}/api/... and every fetch and
+  // WebSocket handshake fails even though the page's static assets loaded.
+  if (_EMBED_PATH_RE.test(path)) return '';
   // Known app-shell alias routes are root-served, not a subdirectory.
   if (_SHELL_ROUTES.has(path.toLowerCase())) return '';
   return path === '/' ? '' : path;
@@ -58,4 +63,8 @@ export function browserWsUrl() {
 
 export function browserScreencastWsUrl() {
   return `${proto()}//${location.host}${apiPath('/api/v1/browser/screencast')}`;
+}
+
+export function desktopControlWsUrl() {
+  return `${proto()}//${location.host}${apiPath('/api/v1/control/desktop')}`;
 }

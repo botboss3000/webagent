@@ -208,6 +208,16 @@ class StoragePlaneRoutingTests(unittest.TestCase):
                 "INSERT INTO sessions (id,user_id,title,agent_id,participants) "
                 "VALUES ('session-1','admin','Split session','agent-1','[]')"
             )
+            conn.executemany(
+                "INSERT INTO interactions (id,session_id,role,content,created_at) "
+                "VALUES (?, 'session-1', ?, 'hello', ?)",
+                [
+                    ('user-1', 'user', '2026-08-21 10:00:00'),
+                    ('assistant-1', 'assistant', '2026-08-21 10:00:01'),
+                    ('tool-1', 'tool', '2026-08-21 10:00:02'),
+                    ('user-2', 'user', '2026-08-21 10:00:03'),
+                ],
+            )
             conn.commit()
             conn.close()
 
@@ -256,6 +266,7 @@ class StoragePlaneRoutingTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in result["sessions"]], ["session-1"])
         self.assertEqual(result["sessions"][0]["agent_name"], "Split Agent")
         self.assertEqual(result["sessions"][0]["agent_engine"], "standard")
+        self.assertEqual(result["sessions"][0]["activity_count"], 2)
 
     def test_session_picker_query_failure_is_not_reported_as_empty(self):
         from fastapi import HTTPException

@@ -41,7 +41,17 @@ TIER_1_ALWAYS_ON = {
     "set_execution_mode",
     "get_time", "get_date", "calculate", "read_attachment",
     "register_user",
+    "request_agent_login",
 }
+
+# Anonymous web visitors are deliberately plain-chat callers. Discovery,
+# self-editing, attachments, memory/session search, and every ability-backed
+# tool are omitted entirely so the model cannot enumerate or activate them.
+ANONYMOUS_CHAT_TOOLS = frozenset({"get_time", "get_date", "calculate", "request_agent_login"})
+
+
+def _is_anonymous_user_id(user_id: Optional[str]) -> bool:
+    return bool(user_id) and str(user_id).startswith("anon_")
 
 
 # ── Built-in tool metadata ────────────────────────────────────────────────────
@@ -257,7 +267,7 @@ class ToolLoader:
     def __init__(self):
         self._client = get_db().get_raw_client()
 
-    async def load_tools(self, user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, session_id: str = "", gate_caller_access: bool = False) -> Dict[str, 'ToolInfo']:
+    async def load_tools(self, user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, session_id: str = "", gate_caller_access: bool = False, turn_id: str = "") -> Dict[str, 'ToolInfo']:
         """
         Load all active tools for a user from the tools table.
         Each tool's `code` field contains the full async function to execute.
@@ -327,12 +337,30 @@ class ToolLoader:
         # `user_id` is the live chatter; the config/preview endpoints (Tools panel,
         # schema preview) leave it False so they always show the agent's full
         # configured set regardless of who is viewing.
+        caller_entitlement_groups: set[str] | None = None
         if gate_caller_access:
             try:
                 from app.agent.ability_access import filter_abilities_for_caller
                 enabled_providers = await filter_abilities_for_caller(agent_id, enabled_providers, user_id)
-            except Exception:
-                pass
+                from app.entitlements.service import resolve_capabilities
+                _caps = await resolve_capabilities(user_id)
+                caller_entitlement_groups = set(_caps.get("ability_groups") or [])
+            except Exception as exc:
+                # Entitlement resolution is an authorization boundary. Preserve
+                # only the reviewed minimal core if the shared filter fails.
+                from app.entitlements.abilities import filter_abilities_by_groups
+                logger.warning("Ability entitlement filter failed; restricting to chat_core: %s", exc)
+                enabled_providers = filter_abilities_by_groups(
+                    set(enabled_providers), {"chat_core"},
+                )
+                caller_entitlement_groups = {"chat_core"}
+
+            # Database-authored executable tools are the output of the
+            # tool-creation capability. They are not attached to a plugin
+            # descriptor, so enforce that group explicitly at their shared
+            # materialization boundary.
+            if "tool_creation" not in caller_entitlement_groups:
+                tools = {name: info for name, info in tools.items() if not info.tool_id}
 
         # ── Inject built-in tools (override any DB versions) ──
         self._inject_builtin_tools(
@@ -342,13 +370,6 @@ class ToolLoader:
             enabled_providers=enabled_providers,
             session_id=session_id,
         )
-
-        # ── Inject synthetic tools from per-agent attached data sources ──
-        if agent_id:
-            try:
-                await self._inject_data_source_tools(tools, agent_id)
-            except Exception as e:
-                logger.warning("data source tool injection failed for agent %s: %s", agent_id, e)
 
         # ── Inject OAuth-integration tools (Gmail, Calendar, Drive, …) ──
         try:
@@ -360,76 +381,6 @@ class ToolLoader:
             logger.warning("integration tool injection failed for agent %s: %s", agent_id, e)
 
         return tools
-
-    async def _inject_data_source_tools(self, tools: Dict[str, ToolInfo], agent_id: str) -> None:
-        """Merge synthetic tools from all enabled data sources attached to this agent.
-
-        Synthetic tools are rebuilt fresh on every load() so config edits take
-        effect immediately. They are NOT persisted in the `tools` table.
-        """
-        from app.db import get_db
-        from app.connectors import get_connector
-
-        db = get_db()
-        attachments = await db.agent_data_source_list(agent_id, enabled_only=True)
-        if not attachments:
-            return
-
-        # Build the auth resolver once — caches lookups for the duration of load.
-        auth_cache: Dict[str, Optional[dict]] = {}
-
-        async def _lookup(aid: Optional[str]) -> Optional[dict]:
-            if not aid:
-                return None
-            if aid in auth_cache:
-                return auth_cache[aid]
-            try:
-                client = db.get_raw_client()
-                res = client.table("auth_elements").select("*").eq("id", aid).limit(1).execute()
-                row = res.data[0] if res.data else None
-            except Exception:
-                row = None
-            auth_cache[aid] = row
-            return row
-
-        for att in attachments:
-            ds = {
-                "id": att.get("data_source_id"),
-                "user_id": att.get("owner_user_id"),
-                "name": att.get("name"),
-                "type": att.get("type"),
-                "config": att.get("config") or {},
-                "auth_element_id": att.get("auth_element_id"),
-                "schema_cache": att.get("schema_cache") or {},
-                "safety_policy": att.get("safety_policy") or {},
-                "status": att.get("status"),
-            }
-            try:
-                connector = get_connector(ds["type"])
-            except Exception as e:
-                logger.warning("connector missing for type %s: %s", ds.get("type"), e)
-                continue
-            # Pre-resolve credential into the closure to avoid event-loop juggling.
-            auth_row = await _lookup(ds.get("auth_element_id"))
-
-            def _resolver(_aid, _cached=auth_row):
-                return _cached
-
-            try:
-                generated = connector.generated_tools(ds, att, _resolver)
-            except Exception as e:
-                logger.warning("generated_tools failed for %s: %s", ds.get("name"), e)
-                continue
-            for gt in generated:
-                if gt.name in tools:
-                    logger.debug("data source tool %s overrides existing entry", gt.name)
-                tools[gt.name] = ToolInfo(
-                    name=gt.name,
-                    handler=gt.handler,
-                    parameters=gt.parameters,
-                    tool_id=f"ds:{ds.get('id','')}:{gt.name}",
-                    requires_confirmation=bool(gt.destructive),
-                )
 
     def _inject_builtin_tools(self, tools: Dict[str, ToolInfo], user_id: str, agent_id: str = "", agent_template_id: Optional[str] = None, enabled_providers: Optional[set] = None, session_id: str = "") -> None:
         """Inject built-in tools that are always available regardless of DB state.
@@ -525,6 +476,79 @@ class ToolLoader:
             name="read_attachment",
             handler=_builtin_read_attachment,
             parameters=_ATTACH_TOOL_DEF["parameters"],
+        )
+
+        async def _request_agent_login(mode: str = "login"):
+            """Ask the client to render a non-transcript authentication card."""
+            from app.agent.profiles import auth_policy
+            policy = await auth_policy(agent_id)
+            return json.dumps({
+                "status": "ok", "ui": "agent_auth", "agent_id": agent_id,
+                "mode": mode if mode in {"login", "register", "app"} else "login",
+                "app_login_enabled": policy["app_login_enabled"],
+                "local_signup_mode": policy["local_signup_mode"],
+            })
+
+        tools["request_agent_login"] = ToolInfo(
+            name="request_agent_login",
+            handler=_request_agent_login,
+            parameters={"type": "object", "properties": {
+                "mode": {"type": "string", "enum": ["login", "register", "app"],
+                         "description": "Authentication view to show in a secure chat card."}
+            }},
+        )
+
+        async def _manage_agent_profiles(action: str = "list", profile: Optional[dict] = None,
+                                           member_id: str = "", profile_slug: str = "",
+                                           enabled: Optional[bool] = None,
+                                           auth_updates: Optional[dict] = None,
+                                           max_uses: int = 1, expires_at: str = ""):
+            from app.agent import profiles as agent_profiles
+            principal = await agent_profiles.resolve_member(agent_id, user_id, auto_link_app=False)
+            if not principal or not principal.get("is_agent_admin"):
+                return json.dumps({"status": "error", "message": "Agent administrator access required"})
+            if action == "list":
+                return json.dumps({
+                    "status": "ok", "ui": "agent_profile_admin", "agent_id": agent_id,
+                    "profiles": await agent_profiles.list_profiles(agent_id),
+                    "members": [agent_profiles.safe_principal(m) for m in await agent_profiles.list_members(agent_id)],
+                    "auth_policy": await agent_profiles.auth_policy(agent_id),
+                })
+            if action == "save_profile" and profile:
+                row = await agent_profiles.upsert_profile(
+                    agent_id, slug=str(profile.get("slug") or ""),
+                    name=str(profile.get("name") or ""),
+                    description=str(profile.get("description") or ""),
+                    policy=profile.get("policy") if isinstance(profile.get("policy"), dict) else {},
+                )
+                return json.dumps({"status": "ok", "profile": row})
+            if action == "assign_profile":
+                row = await agent_profiles.assign_profile(agent_id, member_id, profile_slug)
+                return json.dumps({"status": "ok", "principal": agent_profiles.safe_principal(row)})
+            if action == "set_administrator" and enabled is not None:
+                row = await agent_profiles.set_member_admin(agent_id, member_id, enabled)
+                return json.dumps({"status": "ok", "principal": agent_profiles.safe_principal(row)})
+            if action == "auth_policy" and auth_updates is not None:
+                row = await agent_profiles.update_auth_policy(agent_id, auth_updates)
+                return json.dumps({"status": "ok", "auth_policy": row})
+            if action == "create_invite":
+                row = await agent_profiles.create_invite(
+                    agent_id, profile_slug or agent_profiles.MEMBER, max_uses, expires_at or None,
+                )
+                return json.dumps({"status": "ok", **row})
+            return json.dumps({"status": "error", "message": "Invalid profile administration action"})
+
+        tools["manage_agent_profiles"] = ToolInfo(
+            name="manage_agent_profiles", handler=_manage_agent_profiles,
+            requires_confirmation=True, destructive=True,
+            parameters={"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["list", "save_profile", "assign_profile", "set_administrator", "auth_policy", "create_invite"]},
+                "profile": {"type": "object"}, "member_id": {"type": "string"},
+                "profile_slug": {"type": "string"}, "enabled": {"type": "boolean"},
+                "auth_updates": {"type": "object"},
+                "max_uses": {"type": "integer", "minimum": 1},
+                "expires_at": {"type": "string"},
+            }, "required": ["action"]},
         )
 
         # ── Communication plugin tools (Telegram, WhatsApp, etc.) ──
@@ -981,12 +1005,26 @@ class ToolLoader:
             if session_id:
                 try:
                     from app.db import get_db as _gd
-                    await _gd().set_session_execution_mode(session_id, m, reason or "")
+                    _dbm = _gd()
+                    await _dbm.set_session_execution_mode(session_id, m, reason or "")
+                    # Durable twin of the live WS notice: persist a system:mode
+                    # row so the flip shows on cold reload (and in the IndexedDB
+                    # cache). initiator='agent' — the row carries its own
+                    # provenance even though the set_execution_mode tool call is
+                    # visible in the transcript. Best-effort — the switch itself
+                    # already succeeded.
+                    try:
+                        await _dbm.add_execution_mode_notice(
+                            user_id, session_id, m, reason or "",
+                            turn_id=turn_id or None,
+                            initiator="agent", tool="set_execution_mode")
+                    except Exception as _pe:
+                        logger.debug("persist execution-mode notice failed: %s", _pe)
                 except Exception as e:
                     logger.debug("set_session_execution_mode failed: %s", e)
             _label = {"ask": "ASK", "plan": "PLAN", "auto": "AUTO"}[m]
             _posture = {
-                "ask": "Read/research freely; destructive or write actions still need the user's confirmation.",
+                "ask": "Read/research freely and deliver a proposal; destructive or write actions are unavailable.",
                 "plan": "Research with read-only tools; do not make changes — produce a plan and get approval.",
                 "auto": "You may now act autonomously — tools run without per-step confirmation. Proceed and report what you did.",
             }[m]
@@ -1005,7 +1043,7 @@ class ToolLoader:
                     "mode": {
                         "type": "string",
                         "enum": ["ask", "plan", "auto"],
-                        "description": "The mode to switch to. 'auto' = act without per-step confirmation (use after the user approves a plan); 'plan' = read-only planning; 'ask' = confirm before writes.",
+                        "description": "The mode to switch to. 'auto' = write-capable execution (use after approval); 'plan' = read-only planning; 'ask' = read-only proposal.",
                     },
                     "reason": {
                         "type": "string",
@@ -1644,6 +1682,7 @@ async def load_tools(
     custom_tool_ids: Optional[List[str]] = None,
     session_id: str = "",
     gate_caller_access: bool = False,
+    turn_id: str = "",
 ) -> Dict[str, ToolInfo]:
     """
     Load all active tools for a user.
@@ -1660,7 +1699,43 @@ async def load_tools(
     Returns:
         Dictionary mapping tool names to ToolInfo objects.
     """
-    tools = await _tool_loader.load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id, session_id=session_id, gate_caller_access=gate_caller_access)
+    tools = await _tool_loader.load_tools(
+        user_id, agent_id=agent_id, agent_template_id=agent_template_id,
+        session_id=session_id, turn_id=turn_id,
+        gate_caller_access=gate_caller_access,
+    )
+
+    # This is stricter than an ability-group filter: the core discovery and
+    # self-improvement tools are not owned by an ability, so they would otherwise
+    # let a guest learn privileged skill names or inspect the shared agent prompt.
+    if gate_caller_access and _is_anonymous_user_id(user_id):
+        public_policy = None
+        try:
+            agent = await get_db().get_agent_by_id(agent_id) if agent_id else None
+            if agent:
+                from app.agent.public_policy import normalize_public_access
+                public_policy = normalize_public_access(agent)
+        except Exception:
+            public_policy = None
+        caps = (public_policy or {}).get("capabilities") or {}
+        if caps.get("mode") == "showcase" or not public_policy:
+            allowed_public_tools = set(ANONYMOUS_CHAT_TOOLS)
+        else:
+            configured = set(caps.get("tools") or [])
+            from app.agent.public_policy import NON_DELEGABLE_TOOLS
+            allowed_public_tools = (configured - NON_DELEGABLE_TOOLS) | set(ANONYMOUS_CHAT_TOOLS)
+        tools = {
+            name: info for name, info in tools.items()
+            if name in allowed_public_tools
+        }
+
+    if gate_caller_access and agent_id:
+        try:
+            from app.agent.profiles import filter_profile_tools
+            tools, _member = await filter_profile_tools(agent_id, user_id, tools)
+        except Exception as exc:
+            logger.warning("agent profile tool gate failed closed for %s: %s", agent_id, exc)
+            tools = {name: info for name, info in tools.items() if name in ANONYMOUS_CHAT_TOOLS}
 
     # Propagate requires_confirmation and destructive from BUILTIN_TOOL_METADATA
     # to built-in ToolInfo entries. DB tools already have these set from their row;
@@ -1707,5 +1782,15 @@ async def load_tools(
         for name in list(tools.keys()):
             if name not in _opt_keep:
                 del tools[name]
+
+    # Contract children have a process-local immutable ceiling. This final
+    # filter also removes Tier-1/bootstrap tools that ordinary allowed_tools
+    # intentionally cannot hide.
+    try:
+        from app.agent.contract_permissions import filter_tools
+        tools = filter_tools(tools)
+    except Exception:
+        if os.environ.get("WEBAGENT_CONTRACT_SUBPROCESS") == "1":
+            tools = {}
 
     return tools

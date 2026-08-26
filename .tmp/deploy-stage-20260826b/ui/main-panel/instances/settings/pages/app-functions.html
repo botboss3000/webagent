@@ -1,0 +1,751 @@
+<template data-slot="#settings-page-slot-app-functions">
+<div class="settings-page" id="settings-page-app-functions" data-pa-page="app_settings" hidden>
+<div class="ac-category-group" id="ac-app-functions-card" data-pa-area="app_functions">
+    <div class="ac-category-summary" class="ac-cursor-default">
+      <i data-lucide="cog" class="lucide-icon" class="ac-ico-16 ac-fg-accent"></i>
+      <span class="ac-category-title">App Functions</span>
+    </div>
+    <div class="ac-category-body">
+      <div class="ac-hint" class="ac-mb8">
+        Background services the app runs on its own — not tools an agent chooses to use. Turn one off to stop that automatic behaviour app-wide.
+      </div>
+      <div id="ac-app-functions-list" class="ac-list"></div>
+
+      <!-- Static app-function rows (not ability-catalog entries). A separate
+           `.ac-list` below the catalog-driven list above (which app-functions.js
+           clears + repopulates, so static rows can't live inside it). -->
+      <div class="ac-list" class="ac-mt8">
+
+        <!-- ── Row · Safety Switch (simple on/off) ──
+             Master switch for the restart safety lock. When ON, every server
+             restart shows a confirmation splash before background services
+             start. OFF = normal boot, no splash. Wired in app-settings.js
+             (_initSafetySwitch). Default OFF. -->
+        <div class="ac-ability-row" id="ac-safety-switch-row">
+          <span class="ac-ability-icon"><i data-lucide="shield-alert" class="lucide-icon" class="ac-ico-18 ac-fg-accent"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Safety Switch</div>
+            <div class="ac-ability-desc">When on, every server restart shows a confirmation splash that pauses background services until an admin approves. Off = normal boot with no splash.</div>
+          </div>
+          <span class="ac-config-control">
+            <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+              <input type="checkbox" id="ac-safety-switch" class="conn-toggle">
+              <span class="conn-toggle-track"></span>
+            </label>
+          </span>
+        </div>
+
+        <!-- ── Row · App control quick message (simple on/off) ──
+             The user-facing half of App Control: long-press or right-click
+             anywhere to point at an element and hand it to the chat. App-wide
+             switch saved server-side (app_control_quick_message in
+             app-settings.json); OFF removes the point-and-share panel platform-
+             wide. Wired in app-settings.js (_initAppControlPoint). -->
+        <div class="ac-ability-row" id="ac-app-control-point-row">
+          <span class="ac-ability-icon"><i data-lucide="mouse-pointer-click" class="lucide-icon" class="ac-ico-18 ac-fg-accent"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">App control quick message</div>
+            <div class="ac-ability-desc">Long-press (touch) or right-click anywhere in the app to point at an element and send it to the chat, with a one-click question panel and message box. Off removes the point-and-share panel app-wide.</div>
+          </div>
+          <span class="ac-config-control">
+            <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+              <input type="checkbox" id="ac-app-control-point" class="conn-toggle">
+              <span class="conn-toggle-track"></span>
+            </label>
+          </span>
+        </div>
+
+        <!-- ── Row · Session completion notifications (simple on/off) ──
+             The sliding notification panel that appears when a background
+             session finishes (running → done / interrupted / error). App-wide
+             switch saved server-side (session_completion_notifications in
+             app-settings.json); OFF hides the panel app-wide — completed
+             sessions still show in the session list. Wired in app-settings.js
+             (_initSessionNotifications). -->
+        <div class="ac-ability-row" id="ac-session-notifications-row">
+          <span class="ac-ability-icon"><i data-lucide="bell" class="lucide-icon" class="ac-ico-18 ac-fg-accent"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Session completion notifications</div>
+            <div class="ac-ability-desc">Shows a sliding notification panel when a background session finishes, with one-click return to that session. Off hides the panel app-wide — completed sessions still appear in the session list.</div>
+          </div>
+          <span class="ac-config-control">
+            <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+              <input type="checkbox" id="ac-session-notifications" class="conn-toggle">
+              <span class="conn-toggle-track"></span>
+            </label>
+          </span>
+        </div>
+
+        <!-- ── Row · Always-on display (simple on/off) ──
+             Keeps the device screen on while the app tab is visible, using the
+             Screen Wake Lock API (ui/shared/js/screen-wake.js).
+             Saved server-side (always_on_display in app-settings.json); served
+             via /api/v1/auth/ui-config and applied at boot by
+             ui/shared/js/main.js so every visitor's browser honours it. Wired in
+             app-settings.js (_initAlwaysOnDisplay); state loaded in
+             _loadAppSettings. Default OFF (screen sleeps normally). -->
+        <div class="ac-ability-row" id="ac-always-on-display-row">
+          <span class="ac-ability-icon"><i data-lucide="sun-moon" class="lucide-icon" class="ac-ico-18 ac-fg-accent"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Always-on display</div>
+            <div class="ac-ability-desc">Keeps the device screen on while the app is open in the browser. Off lets the screen sleep normally.</div>
+          </div>
+          <span class="ac-config-control">
+            <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+              <input type="checkbox" id="ac-always-on-display" class="conn-toggle">
+              <span class="conn-toggle-track"></span>
+            </label>
+          </span>
+        </div>
+
+        <!-- ── Row · Voice dictation (expandable policy) ──
+             The toggle allows recorded audio to leave the browser for
+             transcription by the configured LLM provider. Expand to choose
+             browser-native-first with LLM fallback, or LLM for every dictation.
+             OFF is browser-native only. -->
+        <div class="ac-row" id="ac-voice-dictation-row">
+          <div class="ac-ability-row">
+            <span class="ac-row-chevron ac-row-chevron--left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+            <span class="ac-ability-icon"><i data-lucide="mic" class="lucide-icon" class="ac-ico-18 ac-fg-accent"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">LLM voice dictation</div>
+              <div class="ac-ability-desc">Allow recorded speech to be transcribed by the configured AI provider. Off permits browser-native dictation only.</div>
+            </div>
+            <span class="ac-config-control">
+              <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+                <input type="checkbox" id="ac-voice-dictation-llm" class="conn-toggle">
+                <span class="conn-toggle-track"></span>
+              </label>
+            </span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              Choose when WebAgent records audio and sends it to the configured transcription provider. Browser-native dictation does not use your configured LLM.
+            </div>
+            <label class="ac-label" for="ac-voice-dictation-mode" class="ac-mt10">Dictation engine</label>
+            <span class="ac-config-control" class="ac-inline-flex-mt6">
+              <select id="ac-voice-dictation-mode" class="ac-input ac-config-sel">
+                <option value="browser_then_llm">Browser if available, LLM otherwise</option>
+                <option value="llm_only">Always use LLM transcription</option>
+              </select>
+            </span>
+          </div>
+        </div>
+
+        <!-- ── Row · Widget launcher button (expandable config) ──
+             The floating bot button (bottom-right) that opens the chat widget panel.
+             Master toggle. Expand to configure: corner buttons, agent, prompt,
+             and detection modes (12-o'clock pickup, surroundings).
+             Saved server-side (widget_launcher_visible + chat_widget in
+             app-settings.json); served via /api/v1/auth/ui-config and read by
+             ui/chat-widget/js/webagent-launcher.js. Default HIDDEN. -->
+        <div class="ac-row" id="ac-widget-launcher-row">
+          <div class="ac-ability-row">
+            <span class="ac-row-chevron ac-row-chevron--left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+            <span class="ac-ability-icon"><i data-lucide="bot" class="lucide-icon" class="ac-ico-18 ac-fg-accent"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Widget launcher button</div>
+              <div class="ac-ability-desc">The floating bot icon in the bottom-right corner that opens the chat widget panel. On when an admin wants users to see and use the widget; off hides it app-wide. Expand to configure corners, agent, prompt and detection.</div>
+            </div>
+            <span class="ac-config-control">
+              <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+                <input type="checkbox" id="ac-widget-launcher" class="conn-toggle">
+                <span class="conn-toggle-track"></span>
+              </label>
+            </span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              Configure what the widget shows, which agent it routes to, and how it detects elements around it. Every setting applies app-wide.
+            </div>
+
+            <!-- ── Corner Buttons ── -->
+            <div class="ac-mt10 ac-mb4">
+              <span class="ac-ability-name">Corner buttons</span>
+              <span class="ac-ability-desc">Hover-activated action buttons that appear around the launcher icon.</span>
+            </div>
+            <div class="ac-flex-gap8 ac-mt6">
+              <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+                <input type="checkbox" id="ac-chatwidget-corners-enabled" class="conn-toggle">
+                <span class="conn-toggle-track"></span>
+              </label>
+              <label for="ac-chatwidget-corners-enabled" class="ac-label">Enable corner buttons</label>
+            </div>
+            <div class="ac-flex-gap8 ac-mt6 ac-mb6">
+              <label class="ac-label ac-mr4">Hover delay</label>
+              <input type="number" id="ac-chatwidget-corners-delay" class="ac-input ac-w80" min="0" max="2000" step="50" value="200">
+              <span class="ac-hint">ms</span>
+            </div>
+            <!-- Top-left corner -->
+            <div class="ac-flex-gap8 ac-mt4">
+              <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+                <input type="checkbox" id="ac-chatwidget-corner-tl" class="conn-toggle">
+                <span class="conn-toggle-track"></span>
+              </label>
+              <span class="ac-label ac-w60">Top left</span>
+              <select id="ac-chatwidget-corner-tl-type" class="ac-input ac-config-sel ac-w140">
+                <option value="sessions">Sessions</option>
+                <option value="new_session">New session</option>
+                <option value="open_all">Open all</option>
+                <option value="close_all">Close all</option>
+                <option value="element_pickup">Element pickup</option>
+              </select>
+              <input type="text" id="ac-chatwidget-corner-tl-icon" class="ac-input ac-w80" placeholder="icon" value="list">
+              <input type="text" id="ac-chatwidget-corner-tl-tooltip" class="ac-input ac-w120" placeholder="tooltip" value="Show sessions">
+            </div>
+            <!-- Top-right corner -->
+            <div class="ac-flex-gap8 ac-mt4">
+              <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+                <input type="checkbox" id="ac-chatwidget-corner-tr" class="conn-toggle">
+                <span class="conn-toggle-track"></span>
+              </label>
+              <span class="ac-label ac-w60">Top right</span>
+              <select id="ac-chatwidget-corner-tr-type" class="ac-input ac-config-sel ac-w140">
+                <option value="sessions">Sessions</option>
+                <option value="new_session" selected>New session</option>
+                <option value="open_all">Open all</option>
+                <option value="close_all">Close all</option>
+                <option value="element_pickup">Element pickup</option>
+              </select>
+              <input type="text" id="ac-chatwidget-corner-tr-icon" class="ac-input ac-w80" placeholder="icon" value="plus">
+              <input type="text" id="ac-chatwidget-corner-tr-tooltip" class="ac-input ac-w120" placeholder="tooltip" value="New session">
+            </div>
+            <!-- Bottom-left corner -->
+            <div class="ac-flex-gap8 ac-mt4">
+              <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+                <input type="checkbox" id="ac-chatwidget-corner-bl" class="conn-toggle">
+                <span class="conn-toggle-track"></span>
+              </label>
+              <span class="ac-label ac-w60">Bottom left</span>
+              <select id="ac-chatwidget-corner-bl-type" class="ac-input ac-config-sel ac-w140">
+                <option value="sessions">Sessions</option>
+                <option value="new_session">New session</option>
+                <option value="open_all">Open all</option>
+                <option value="close_all">Close all</option>
+                <option value="element_pickup" selected>Element pickup</option>
+              </select>
+              <input type="text" id="ac-chatwidget-corner-bl-icon" class="ac-input ac-w80" placeholder="icon" value="crosshair">
+              <input type="text" id="ac-chatwidget-corner-bl-tooltip" class="ac-input ac-w120" placeholder="tooltip" value="Toggle element pickup">
+            </div>
+            <!-- Bottom-right corner -->
+            <div class="ac-flex-gap8 ac-mt4">
+              <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+                <input type="checkbox" id="ac-chatwidget-corner-br" class="conn-toggle">
+                <span class="conn-toggle-track"></span>
+              </label>
+              <span class="ac-label ac-w60">Bottom right</span>
+              <select id="ac-chatwidget-corner-br-type" class="ac-input ac-config-sel ac-w140">
+                <option value="sessions">Sessions</option>
+                <option value="new_session">New session</option>
+                <option value="open_all" selected>Open all</option>
+                <option value="close_all">Close all</option>
+                <option value="element_pickup">Element pickup</option>
+              </select>
+              <input type="text" id="ac-chatwidget-corner-br-icon" class="ac-input ac-w80" placeholder="icon" value="maximize-2">
+              <input type="text" id="ac-chatwidget-corner-br-tooltip" class="ac-input ac-w120" placeholder="tooltip" value="Open all minimized">
+            </div>
+
+            <!-- ── Agent ── -->
+            <div class="ac-mt14 ac-mb4">
+              <span class="ac-ability-name">Agent</span>
+              <span class="ac-ability-desc">Which agent the widget routes messages to. Leave blank for the default WebAgent.</span>
+            </div>
+            <div class="ac-flex-gap8 ac-mt4">
+              <input type="text" id="ac-chatwidget-agent-id" class="ac-input ac-w200" placeholder="Agent ID (blank = default WebAgent)">
+            </div>
+
+            <!-- ── Prompt ── -->
+            <div class="ac-mt14 ac-mb4">
+              <span class="ac-ability-name">Prompt</span>
+              <span class="ac-ability-desc">Injected at the top of every message sent from the widget. Leave blank for no injection.</span>
+            </div>
+            <div class="ac-mt4">
+              <textarea id="ac-chatwidget-prompt" class="ac-input ac-w100p" rows="3" placeholder="Instructions prepended to every widget message…"></textarea>
+            </div>
+
+            <!-- ── Detection ── -->
+            <div class="ac-mt14 ac-mb4">
+              <span class="ac-ability-name">Element detection</span>
+              <span class="ac-ability-desc">What the widget can detect around it on the page and report to the agent.</span>
+            </div>
+            <div class="ac-flex-gap8 ac-mt4">
+              <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+                <input type="checkbox" id="ac-chatwidget-pickup-12" class="conn-toggle" checked>
+                <span class="conn-toggle-track"></span>
+              </label>
+              <span class="ac-label">12-o'clock pickup — detects the element directly above the widget centre</span>
+            </div>
+            <div class="ac-flex-gap8 ac-mt4">
+              <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+                <input type="checkbox" id="ac-chatwidget-pickup-surroundings" class="conn-toggle">
+                <span class="conn-toggle-track"></span>
+              </label>
+              <span class="ac-label">Detect surroundings — samples N/E/S/W around the widget (~60px radius)</span>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- ── Row · Hide header during keyboard [smaller screens] ──
+             When ON and the chat input is focused on a narrow screen (≤800px),
+             the main app header and chat panel header collapse so the keyboard
+             doesn't crowd the input. Saved server-side (hide_header_on_keyboard
+             in app-settings.json); served via /api/v1/auth/ui-config. Default
+             OFF — the header stays visible. Expand for threshold config. -->
+        <div class="ac-row" id="ac-hide-header-kb-row">
+          <div class="ac-ability-row">
+            <span class="ac-row-chevron ac-row-chevron--left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+            <span class="ac-ability-icon"><i data-lucide="panel-top-close" class="lucide-icon" class="ac-ico-18 ac-fg-accent"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Hide header during keyboard <span class="ac-fw400-fg3-fs12">[smaller screens]</span></div>
+              <div class="ac-ability-desc">When on and the chat input is focused on a narrow screen (&le;800px), collapse the header and chat panel title to reclaim vertical space from the on-screen keyboard. Off keeps the header visible at all times.</div>
+            </div>
+            <span class="ac-config-control">
+              <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+                <input type="checkbox" id="ac-hide-header-kb" class="conn-toggle">
+                <span class="conn-toggle-track"></span>
+              </label>
+            </span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              Choose <strong>Always</strong> to hide the header whenever the keyboard is open on a narrow screen. Or set a pixel threshold &mdash; the header only hides when the remaining viewport height falls below that value.
+            </div>
+            <label class="ac-label" class="ac-mt10">Hide when viewport below</label>
+            <div class="ac-flex-gap8">
+              <input type="number" id="ac-hide-header-kb-threshold" class="ac-input" min="0" max="9999" step="10" class="ac-w120" value="200">
+              <span class="ac-hint">px (0 = always hide)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Row · Stream Buffer (in-memory per-turn event log for WS replay) ──
+             MOVED here from the retired Advanced group. Control ids unchanged
+             (`ac-storage-sbuf-*`) so ui/shared/js/storage.js keeps binding. -->
+        <div class="ac-row" id="ac-row-streambuffer">
+          <div class="ac-ability-row">
+            <span class="ac-row-chevron ac-row-chevron--left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+            <span class="ac-ability-icon"><i data-lucide="activity" class="lucide-icon" class="ac-ico-18 ac-fg-accent"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Stream Buffer</div>
+              <div class="ac-ability-desc">How long each chat turn's events stay in memory for replay after a refresh.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-storage-sbuf-badge"></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              Each chat turn keeps its events (stream tokens, tool calls, results) in memory so a refresh or session switch can replay what was missed. Buffer is dropped this many seconds after the turn finishes. 0 = drop immediately. Max 3600.
+            </div>
+            <label class="ac-label" class="ac-mt10">Retention seconds</label>
+            <div class="ac-flex-gap8">
+              <input type="number" id="ac-storage-sbuf-seconds" class="ac-input" min="0" max="3600" step="1" class="ac-w120" value="60">
+              <button id="ac-storage-sbuf-save" class="ac-btn ac-btn-primary">Save</button>
+              <span id="ac-storage-sbuf-status" class="ac-hint" class="ac-ml6"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Row · Active session limit (concurrency cap + FIFO queue) ──
+             App-wide cap on how many sessions may be actively running a turn
+             at the same time. Sessions beyond the cap wait in a first-come
+             queue and start only after an active session completes. 0 =
+             unlimited (default). Saved server-side (max_active_sessions in
+             app-settings.json); enforced by app/agent/session_gate.py. Wired
+             in app-settings.js (_initMaxActiveSessions). -->
+        <div class="ac-row" id="ac-max-active-sessions-row">
+          <div class="ac-ability-row">
+            <span class="ac-row-chevron ac-row-chevron--left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+            <span class="ac-ability-icon"><i data-lucide="list-ordered" class="lucide-icon" class="ac-ico-18 ac-fg-accent"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Active session limit</div>
+              <div class="ac-ability-desc">Cap how many sessions can run at the same time, app-wide. Sessions above the cap queue up and start only after an active session finishes. 0 = unlimited.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-max-active-sessions-badge"></span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              When the cap is reached, new sessions that try to run wait in line (first come, first served) and begin as soon as an active session completes. Each session occupies one slot only while its turn is actually running — a session is considered active between the moment its turn starts and the moment that turn finishes.
+            </div>
+            <label class="ac-label" class="ac-mt10">Concurrent sessions</label>
+            <div class="ac-flex-gap8">
+              <input type="number" id="ac-max-active-sessions" class="ac-input" min="0" max="9999" step="1" class="ac-w120" value="0">
+              <button id="ac-max-active-sessions-save" class="ac-btn ac-btn-primary">Save</button>
+              <span id="ac-max-active-sessions-status" class="ac-hint" class="ac-ml6"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Row · Anonymous Limits ─────────────────────────────────────
+             Origin-enforced anonymous identity, registration, chat-rate and
+             hard-budget controls. The control ids are preserved so the
+             existing app-settings.js save/hydration bindings remain intact. -->
+        <div class="ac-row" id="ac-anonymous-limits-row">
+          <div class="ac-ability-row">
+            <span class="ac-row-chevron ac-row-chevron--left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+            <span class="ac-ability-icon"><i data-lucide="shield-alert" class="lucide-icon ac-ico-18 ac-fg-accent"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Anonymous Limits</div>
+              <div class="ac-ability-desc">Control anonymous identity creation, registration farming, message rates, daily allowances, distributed circuit breakers, and the hard app-wide guest budget.</div>
+            </div>
+            <span class="ac-ability-status" id="ac-anonymous-limits-badge">Origin enforced</span>
+          </div>
+          <div class="ac-ability-body">
+            <div class="ac-hint">
+              These limits apply only to anonymous visitors. Registered accounts remain available when an anonymous threshold, cooldown, or hard budget is reached. Durable origin counters continue working across app workers and restarts; values of 0 disable the corresponding check where noted.
+            </div>
+            <div class="ac-hint" class="ac-mt12">
+              Rate-limit anonymous session creation per client IP. Anonymous users (website embed widget / public URLs) hit this limit when minting new chat tokens too fast. The env vars <code>WEBAGENT_ANON_SESSION_MAX</code> and <code>WEBAGENT_ANON_SESSION_WINDOW</code> override these values when set.
+            </div>
+            <label class="ac-label" class="ac-mt10">Anonymous session rate limit</label>
+            <div class="ac-flex-gap8" class="ac-mb4">
+              <span class="ac-hint" class="ac-self-center">Max</span>
+              <input type="number" id="ac-anon-session-max" class="ac-input" min="0" max="9999" step="1" class="ac-w80" value="10">
+              <span class="ac-hint" class="ac-self-center">sessions per</span>
+              <input type="number" id="ac-anon-session-window" class="ac-input" min="1" max="3600" step="1" class="ac-w80" value="60">
+              <span class="ac-hint" class="ac-self-center">seconds</span>
+              <button id="ac-anon-session-save" class="ac-btn ac-btn-primary">Save</button>
+              <span id="ac-anon-session-status" class="ac-hint" class="ac-ml6"></span>
+            </div>
+            <label class="ac-label ac-mt6">Distinct anonymous identities — per network</label>
+            <div class="ac-flex-gap8 ac-mb4">
+              <span class="ac-hint ac-self-center">Max</span>
+              <input type="number" id="ac-anon-identity-max" class="ac-input ac-w80" min="0" max="9999" step="1" value="5">
+              <span class="ac-hint ac-self-center">identities per</span>
+              <input type="number" id="ac-anon-identity-window" class="ac-input ac-w120" min="1" max="604800" step="1" value="86400">
+              <span class="ac-hint ac-self-center">seconds</span>
+            </div>
+            <div class="ac-hint">
+              Default: up to 5 browser identities per network per day. A source is a one-way keyed fingerprint of the network prefix; raw IP addresses are not stored. Browsers keep separate guest identities while sharing one lifetime $0.25 network credit allowance that never renews. Clearing browser storage consumes another identity slot and cannot recover the old guest without its recovery credential.
+            </div>
+            <label class="ac-label ac-mt6">Global anonymous identity circuit breaker</label>
+            <div class="ac-flex-gap8 ac-mb4">
+              <span class="ac-hint ac-self-center">Max</span>
+              <input type="number" id="ac-anon-global-session-max" class="ac-input ac-w80" min="0" max="999999" step="1" value="25">
+              <span class="ac-hint ac-self-center">new identities per</span>
+              <input type="number" id="ac-anon-global-session-window" class="ac-input ac-w120" min="1" max="604800" step="1" value="3600">
+              <span class="ac-hint ac-self-center">seconds, app-wide</span>
+            </div>
+            <div class="ac-hint">Stops distributed identity farming across unrelated networks. Set 0 to disable; <code>WEBAGENT_ANON_GLOBAL_SESSION_MAX</code> and <code>_WINDOW</code> override.</div>
+            <label class="ac-label ac-mt6">Public account creation</label>
+            <div class="ac-flex-gap8 ac-mb4">
+              <span class="ac-hint ac-self-center">Max</span>
+              <input type="number" id="ac-public-registration-ip-max" class="ac-input ac-w80" min="0" max="999999" step="1" value="5">
+              <span class="ac-hint ac-self-center">per IP and</span>
+              <input type="number" id="ac-public-registration-global-max" class="ac-input ac-w80" min="0" max="999999" step="1" value="100">
+              <span class="ac-hint ac-self-center">app-wide per</span>
+              <input type="number" id="ac-public-registration-window" class="ac-input ac-w120" min="1" max="604800" step="1" value="3600">
+              <span class="ac-hint ac-self-center">seconds</span>
+            </div>
+            <div class="ac-hint">Origin backstop for registration farming. A server-validated edge challenge is still recommended. Env overrides: <code>WEBAGENT_PUBLIC_REGISTRATION_IP_MAX</code>, <code>_GLOBAL_MAX</code>, and <code>_WINDOW</code>.</div>
+            <div class="ac-hint" class="ac-mt12">
+              Rate-limit how fast an anonymous user can send chat messages. The per-identity limit caps one guest's message rate; the per-IP limit catches a single IP cycling through many minted tokens. Set any limit to 0 to disable that check. Env vars <code>WEBAGENT_ANON_CHAT_MAX</code> / <code>_WINDOW</code> and <code>WEBAGENT_ANON_CHAT_IP_MAX</code> / <code>_WINDOW</code> override these values when set.
+            </div>
+            <label class="ac-label" class="ac-mt10">Message rate limit — per identity</label>
+            <div class="ac-flex-gap8" class="ac-mb4">
+              <span class="ac-hint" class="ac-self-center">Max</span>
+              <input type="number" id="ac-anon-chat-max" class="ac-input" min="0" max="9999" step="1" class="ac-w80" value="5">
+              <span class="ac-hint" class="ac-self-center">messages per</span>
+              <input type="number" id="ac-anon-chat-window" class="ac-input" min="1" max="3600" step="1" class="ac-w80" value="300">
+              <span class="ac-hint" class="ac-self-center">seconds</span>
+              <button id="ac-anon-chat-save" class="ac-btn ac-btn-primary">Save</button>
+              <span id="ac-anon-chat-status" class="ac-hint" class="ac-ml6"></span>
+            </div>
+            <label class="ac-label ac-mt6">Daily anonymous allowance — per identity</label>
+            <div class="ac-flex-gap8 ac-mb4">
+              <span class="ac-hint ac-self-center">Max</span>
+              <input type="number" id="ac-anon-daily-chat-max" class="ac-input ac-w80" min="0" max="999999" step="1" value="10">
+              <span class="ac-hint ac-self-center">messages per</span>
+              <input type="number" id="ac-anon-daily-chat-window" class="ac-input ac-w120" min="1" max="604800" step="1" value="86400">
+              <span class="ac-hint ac-self-center">seconds</span>
+            </div>
+            <label class="ac-label ac-mt6">Global anonymous chat circuit breaker</label>
+            <div class="ac-flex-gap8 ac-mb4">
+              <span class="ac-hint ac-self-center">Max</span>
+              <input type="number" id="ac-anon-global-chat-max" class="ac-input ac-w80" min="0" max="999999" step="1" value="50">
+              <span class="ac-hint ac-self-center">messages per</span>
+              <input type="number" id="ac-anon-global-chat-window" class="ac-input ac-w120" min="1" max="604800" step="1" value="300">
+              <span class="ac-hint ac-self-center">seconds, app-wide</span>
+            </div>
+            <label class="ac-label ac-mt6">Hard anonymous-use budget — app-wide</label>
+            <div class="ac-flex-gap8 ac-mb4">
+              <span class="ac-hint ac-self-center">Max</span>
+              <input type="number" id="ac-anon-budget-max" class="ac-input ac-w80" min="0" max="999999999" step="1" value="100">
+              <span class="ac-hint ac-self-center">admitted chat turns per</span>
+              <input type="number" id="ac-anon-budget-window" class="ac-input ac-w120" min="1" max="31536000" step="1" value="86400">
+              <span class="ac-hint ac-self-center">seconds</span>
+            </div>
+            <div class="ac-hint">A durable pre-model ceiling across every anonymous identity and network. Once exhausted, only anonymous access closes and guests are invited to register. Set 0 to disable the budget. The Instances Overview kill switch can close anonymous access immediately.</div>
+            <label class="ac-label" class="ac-mt6">Message rate limit — per IP</label>
+            <div class="ac-flex-gap8" class="ac-mb4">
+              <span class="ac-hint" class="ac-self-center">Max</span>
+              <input type="number" id="ac-anon-chat-ip-max" class="ac-input" min="0" max="9999" step="1" class="ac-w80" value="10">
+              <span class="ac-hint" class="ac-self-center">messages per</span>
+              <input type="number" id="ac-anon-chat-ip-window" class="ac-input" min="1" max="3600" step="1" class="ac-w80" value="300">
+              <span class="ac-hint" class="ac-self-center">seconds</span>
+              <button id="ac-anon-chat-ip-save" class="ac-btn ac-btn-primary">Save</button>
+              <span id="ac-anon-chat-ip-status" class="ac-hint" class="ac-ml6"></span>
+            </div>
+          </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Design (Startup & Boot + Appearance, one unified table) ── -->
+  <!-- The old "Startup & Boot" and "Appearance" groups were merged into a single
+       "Design" category whose body is ONE `.ac-list` table (#ac-design-list) — no
+       subsection headings. The Appearance theme rows come first, then the
+       Startup & Boot config rows below, flowing as one continuous table. No JS change was
+       needed — every element id is preserved, so app-settings.js wiring
+       (_initBoot*, _initAppearance, _loadAppearance) keeps working untouched. -->
+  <div class="ac-category-group" data-pa-area="design">
+    <div class="ac-category-summary" class="ac-cursor-default">
+      <i data-lucide="palette" class="lucide-icon" class="ac-ico-16 ac-fg-accent"></i>
+      <span class="ac-category-title">Design</span>
+      <!-- Quick LIVE theme switch (Light · Dark · System) — same per-browser
+           toggle as the user-menu dropdown, surfaced here so you can flip the
+           active theme while editing the two palettes below. Reuses the shared
+           `.theme-option` buttons so highlight stays synced with the dropdown;
+           wired in app-settings.js (_initThemeSwitch) via user-panel.js setTheme.
+           SISTER-CONTROL of the #user-dropdown theme-toggle-group in index.html. -->
+      <div class="ac-theme-switch" role="group" aria-label="Theme">
+        <button class="theme-option" data-theme="light" title="Light" aria-label="Light theme">
+          <i data-lucide="sun" class="lucide-icon" class="ac-ico-14"></i>
+        </button>
+        <button class="theme-option" data-theme="dark" title="Dark" aria-label="Dark theme">
+          <i data-lucide="moon" class="lucide-icon" class="ac-ico-14"></i>
+        </button>
+        <button class="theme-option" data-theme="system" title="System" aria-label="Follow system theme">
+          <i data-lucide="monitor" class="lucide-icon" class="ac-ico-14"></i>
+        </button>
+      </div>
+    </div>
+    <div class="ac-category-body">
+      <!-- ONE UNIFIED TABLE — the Startup/Boot config rows and the Appearance
+           theme rows live in a SINGLE `.ac-list` (#ac-design-list) so the whole
+           Design category reads as one continuous table, not split subsections.
+           STANDARD CONFIG ROWS — every setting is a flush `.ac-ability-row`
+           (icon + name + one-line description) with its control in a right-
+           aligned `.ac-config-control` slot: a `.conn-toggle` switch (the same
+           switch the ability tables use) for on/off settings, or an inline
+           `.ac-input.ac-config-sel` dropdown for a choice. No expandable bodies
+           here — the controls are simple enough to sit inline, so the whole
+           group reads as one uniform table (matches Appearance's border/font
+           rows below). Welcome screen + Show tooltips save app-wide (server,
+           via POST /admin/settings/app); Boot animation + Mobile boot save per
+           browser (localStorage). All four are wired in the sibling
+           app-settings.js — element ids unchanged. -->
+      <div class="ac-list" id="ac-design-list">
+
+        <!-- ── Appearance rows (theme palette · background · fonts & borders) ──
+             Appearance comes FIRST in the table; the Startup & Boot rows follow
+             below. Same `.ac-list` table — no separate container.
+             The whole app's look is two INDEPENDENT palettes (dark + light), shown
+             as two EXPANDABLE ability-rows (Light + Dark) that expand to reveal that
+             theme's one-click presets, the animated background, and the full palette
+             of colour swatches — injected by app-settings.js (_buildThemeCard) into
+             the row's .ac-ability-body. The three static rows after them are the
+             theme-independent knobs (border thickness + the two fonts), select +
+             green auto-save check on the right. Every control auto-saves per theme to
+             app settings, previews live in the admin's own window, and applies
+             app-wide for every visitor via the public /api/v1/auth/ui-config:
+               • palette + border + fonts → ui/shared/js/appearance.js
+               • background                → ui/background/_engine/manager.js
+             Border thickness applies to BOTH themes (Off = no borders). Extra
+             theme-independent knobs (roundness, shadow depth, UI scale, reduce
+             motion, cursor glow) are JSON-ONLY — edit data/config/app-settings.json. -->
+        <div class="ac-row" id="ac-theme-row-light" data-theme="light">
+          <div class="ac-ability-row">
+            <span class="ac-row-chevron ac-row-chevron--left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+            <span class="ac-ability-icon"><i data-lucide="sun" class="lucide-icon" class="ac-ico-18"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Light mode</div>
+              <div class="ac-ability-desc">Preset themes, the animated background and the full colour palette for light mode.</div>
+            </div>
+          </div>
+          <div class="ac-ability-body" id="ac-theme-body-light"></div>
+        </div>
+        <div class="ac-row" id="ac-theme-row-dark" data-theme="dark">
+          <div class="ac-ability-row">
+            <span class="ac-row-chevron ac-row-chevron--left"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
+            <span class="ac-ability-icon"><i data-lucide="moon" class="lucide-icon" class="ac-ico-18"></i></span>
+            <div class="ac-ability-label">
+              <div class="ac-ability-name">Dark mode</div>
+              <div class="ac-ability-desc">Preset themes, the animated background and the full colour palette for dark mode.</div>
+            </div>
+          </div>
+          <div class="ac-ability-body" id="ac-theme-body-dark"></div>
+        </div>
+        <!-- Allow per-user themes — app-WIDE setting saved server-side
+             (allow_user_appearance in app-settings.json), mirroring the Welcome
+             screen / Show tooltips switches. When on, every signed-in user gets a
+             "My appearance" editor on their account page whose choices layer on
+             top of the theme above. Wired in app-settings.js (_initAllowUserAppearance);
+             state loaded in _loadAppSettings. -->
+        <div class="ac-ability-row" id="ac-allow-user-appearance-row">
+          <span class="ac-ability-icon"><i data-lucide="user-pen" class="lucide-icon" class="ac-ico-18"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Allow per-user themes</div>
+            <div class="ac-ability-desc">Let each signed-in person set their own colours, background and fonts from their account page. Their choices layer on top of the theme above — anything they don't change still follows it. Off hides the editor and ignores any saved personal themes.</div>
+          </div>
+          <span class="ac-config-control">
+            <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+              <input type="checkbox" id="ac-allow-user-appearance" class="conn-toggle">
+              <span class="conn-toggle-track"></span>
+            </label>
+          </span>
+        </div>
+        <div class="ac-ability-row ac-row-static" id="ac-border-row">
+          <span class="ac-ability-icon"><i data-lucide="square-dashed" class="lucide-icon" class="ac-ico-18"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Border thickness</div>
+            <div class="ac-ability-desc">Outline weight for cards, tables and dividers across both themes. Off removes every border.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-border-width" class="ac-input ac-config-sel">
+              <option value="0">Off — no borders</option>
+              <option value="1px">Thin</option>
+              <option value="2px">Medium</option>
+              <option value="3px">Thick</option>
+            </select>
+          </span>
+        </div>
+        <div class="ac-ability-row ac-row-static" id="ac-font-sans-row">
+          <span class="ac-ability-icon"><i data-lucide="type" class="lucide-icon" class="ac-ico-18"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">App font</div>
+            <div class="ac-ability-desc">Typeface for all interface text, in both light and dark.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-font-sans" class="ac-input ac-config-sel">
+              <option value="'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">Inter (default)</option>
+              <option value="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">System</option>
+              <option value="'Trebuchet MS', 'Segoe UI', Verdana, sans-serif">Rounded</option>
+              <option value="Georgia, 'Times New Roman', serif">Serif</option>
+            </select>
+          </span>
+        </div>
+        <div class="ac-ability-row ac-row-static" id="ac-font-mono-row">
+          <span class="ac-ability-icon"><i data-lucide="code" class="lucide-icon" class="ac-ico-18"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Code font</div>
+            <div class="ac-ability-desc">Monospace typeface for code blocks, the terminal and logs.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-font-mono" class="ac-input ac-config-sel">
+              <option value="'JetBrains Mono', 'Fira Code', Menlo, ui-monospace, monospace">JetBrains Mono (default)</option>
+              <option value="ui-monospace, Menlo, Consolas, monospace">System mono</option>
+              <option value="'Courier New', Courier, monospace">Courier</option>
+            </select>
+          </span>
+        </div>
+
+        <!-- ── Startup & Boot rows (below Appearance, same table) ──
+             STANDARD CONFIG ROWS — each is a flush `.ac-ability-row` with its
+             control in a right-aligned `.ac-config-control` slot: a `.conn-toggle`
+             switch for on/off, or an inline `.ac-input.ac-config-sel` dropdown for a
+             choice. Welcome screen + Show tooltips save app-wide (server, via POST
+             /admin/settings/app); Boot animation + Mobile boot save per browser
+             (localStorage). All four are wired in the sibling app-settings.js —
+             element ids unchanged. -->
+        <div class="ac-ability-row" id="ac-boot-splash-row">
+          <span class="ac-ability-icon"><i data-lucide="sparkles" class="lucide-icon" class="ac-ico-18"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Welcome landing page</div>
+            <div class="ac-ability-desc">Show a public welcome page at your web address — new visitors see it first and click Enter to reach the app (the installed app opens straight to the workspace). Off: the app loads directly at the front door. Each person can still skip it for themselves from the page or their account.</div>
+          </div>
+          <span class="ac-config-control">
+            <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+              <input type="checkbox" id="ac-boot-splash-enabled" class="conn-toggle">
+              <span class="conn-toggle-track"></span>
+            </label>
+          </span>
+        </div>
+        <div class="ac-ability-row" id="ac-boot-anim-row">
+          <span class="ac-ability-icon"><i data-lucide="play" class="lucide-icon" class="ac-ico-18"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Boot animation</div>
+            <div class="ac-ability-desc">How the chat shrinks and the saved page appears when the app first loads. Saved per browser; applied on the next reload.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-boot-animation" class="ac-input ac-config-sel">
+              <option value="chat-slide-right">Chat slides right</option>
+              <option value="page-slide-in">Page slides in</option>
+              <option value="crossfade">Crossfade</option>
+            </select>
+          </span>
+        </div>
+        <div class="ac-ability-row" id="ac-boot-tooltip-row">
+          <span class="ac-ability-icon"><i data-lucide="help-circle" class="lucide-icon" class="ac-ico-18"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Show tooltips</div>
+            <div class="ac-ability-desc">Show the small hint bubbles that guide visitors through the app. Each person can still turn the tour off for themselves from their account page.</div>
+          </div>
+          <span class="ac-config-control">
+            <label class="conn-toggle-wrap ac-ability-toggle-wrap">
+              <input type="checkbox" id="ac-boot-show-tooltips" class="conn-toggle">
+              <span class="conn-toggle-track"></span>
+            </label>
+          </span>
+        </div>
+
+        <!-- ── Chat panel layout rows (same Design table) ──
+             Two app-WIDE appearance keys saved via the merge-friendly POST
+             /admin/settings/app and served to every visitor through
+             /api/v1/auth/ui-config:
+               • Chat position    → injected as a #stage flex rule by appearance.js
+                                    (right = default; left reverses the desktop split)
+               • Chat at startup  → seeds the first-visit desktop default (read at
+                                    boot by index.html __chatVisibilityDefault); once
+                                    a visitor toggles the chat their own choice wins.
+             Wired in the sibling app-settings.js (_wireChatLayout); values loaded
+             in _loadAppearance. Ids: ac-chat-position / ac-chat-default-visible. -->
+        <div class="ac-ability-row ac-row-static" id="ac-chat-position-row">
+          <span class="ac-ability-icon"><i data-lucide="panel-right" class="lucide-icon" class="ac-ico-18"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Chat position</div>
+            <div class="ac-ability-desc">Which side the chat panel sits on, beside the main panel. Applies app-wide on wider screens.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-chat-position" class="ac-input ac-config-sel">
+              <option value="right">Right (default)</option>
+              <option value="left">Left</option>
+            </select>
+          </span>
+        </div>
+        <div class="ac-ability-row ac-row-static" id="ac-chat-default-visible-row">
+          <span class="ac-ability-icon"><i data-lucide="message-square" class="lucide-icon" class="ac-ico-18"></i></span>
+          <div class="ac-ability-label">
+            <div class="ac-ability-name">Chat at startup</div>
+            <div class="ac-ability-desc">Whether the chat panel is open the first time someone visits. Each person can still show or hide it themselves afterwards.</div>
+          </div>
+          <span class="ac-config-control">
+            <select id="ac-chat-default-visible" class="ac-input ac-config-sel">
+              <option value="visible">Visible (default)</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       PAGE-ASSISTANT CHAT PILL — the markup now lives ONE LEVEL UP, in
+       settings.html as a sibling BELOW #app-config-content (the scroller),
+       NOT inside this section. Why: a pill floating INSIDE the scroller always
+       has page rows scrolling behind it. By placing it under the scroller (the
+       container is a flex column, so the scroller shrinks to sit above it) the
+       scroll viewport ENDS above the pill — content can never render behind it,
+       and the transparent gap around the pill shows the page background
+       gradient. It is scoped to show only while THIS section is active via a
+       CSS `:has()` rule (see #ac-pa-bar in app3.css). Everything else is
+       unchanged: the wiring (_initPageAssistant in the sibling app-settings.js)
+       still finds it by id, and the per-area placeholder swap still works
+       because that mouseover listener is bound to THIS section (the
+       data-pa-area groups above), independent of where the pill renders. -->
+</section>
+</template>
+</div>
+</div>
+</template>

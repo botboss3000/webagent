@@ -1,0 +1,76 @@
+<template data-slot="#main-panel">
+  <div id="app-config-container" hidden>
+    <!-- Settings — JSON-index-driven configuration area (settings-index.json).
+         Landing list (#settings-list, rendered from the index) + one page per
+         section (page partials injected into the #settings-page-slot-* slots by
+         the partial loader) + the unified search/chat pill below the scroller.
+
+         The container ids (#app-config-container / #app-config-content /
+         #ac-unified-pa-*) are KEPT from the old app-config shell on purpose:
+         instances.js (this device tile's Settings tab), instances.css and
+         app3.css bind to them. -->
+
+    <!-- Page chrome shown while a single section page is open (back → list). -->
+    <div id="settings-topbar" class="settings-topbar" hidden>
+      <button type="button" id="settings-back-btn" class="settings-back-btn" title="Back to all settings">
+        <i data-lucide="arrow-left" class="lucide-icon ac-ico-16"></i>
+        <span>All settings</span>
+      </button>
+      <span id="settings-topbar-title" class="settings-topbar-title"></span>
+    </div>
+
+    <!-- Non-scrolling wrapper that sizes the rounded scroll-corner mask (see
+         #app-config-scroll-wrap in app3.css). The scroller keeps its side
+         margins inside it. -->
+    <div id="app-config-scroll-wrap">
+      <div id="app-config-content" class="rounded-scroll-corners">
+        <!-- Landing list (rendered from settings-index.json by settings.js) -->
+        <div id="settings-list" class="settings-list" aria-label="Settings sections"></div>
+        <!-- No-match state while searching -->
+        <div id="settings-search-empty" class="ac-search-empty" role="status" hidden></div>
+        <!-- Per-section page slots (10 pages; the 7 integration categories
+             render inside the Agent Tools page). -->
+        <div id="settings-page-slot-app-access"></div>
+        <div id="settings-page-slot-storage-routing"></div>
+        <div id="settings-page-slot-main-panel-pages"></div>
+        <div id="settings-page-slot-admin-panel-pages"></div>
+        <div id="settings-page-slot-app-functions"></div>
+        <div id="settings-page-slot-browser-session-management"></div>
+        <div id="settings-page-slot-design"></div>
+        <div id="settings-page-slot-models"></div>
+        <div id="settings-page-slot-agent-tools"></div>
+        <div id="settings-page-slot-templates-prompts"></div>
+        <div id="settings-page-slot-automation-engine"></div>
+        <div id="settings-page-slot-entitlements"></div>
+      </div>
+    </div><!-- /app-config-scroll-wrap -->
+
+    <!-- ════════════════════════════════════════════════════════════════
+         UNIFIED SEARCH/CHAT PILL — one pill for the whole Settings area.
+         Typing opens every matching section page directly (results appear
+         as opened pages, stacked); Enter/attach chats with WebAgent the
+         manager, the message wrapped with the context of the page/area the
+         mouse is over. Sibling of the scroller, not a child, so the scroll
+         viewport ends above the pill. Wired by settings.js via the shared
+         page-assistant engine; prompts from app/defaults/app-prompts.json →
+         page_assistants.<page>. -->
+    <div id="ac-unified-pa-bar">
+      <div id="ac-unified-pa-preview-bar" class="ac-pa-preview-bar ac-pa-hidden"></div>
+      <div id="ac-unified-pa-bar-row" class="chat-pill chat-pill-1line">
+        <button type="button" id="ac-unified-pa-attach" class="chat-pill-attach" title="Attach files">
+          <i data-lucide="plus" class="dash-ico-18"></i>
+        </button>
+        <textarea id="ac-unified-pa-input" class="chat-pill-input" rows="1"
+          placeholder="Search or ask how to configure something or customize the app"
+          autocomplete="off"
+          title="Type to search settings; press Enter to ask WebAgent"></textarea>
+        <button type="button" id="ac-unified-pa-voice" class="chat-pill-voice" title="Record voice">
+          <i data-lucide="mic" class="dash-ico-18"></i>
+        </button>
+        <button type="button" id="ac-unified-pa-send" class="chat-pill-send" title="Send to WebAgent">
+          <i data-lucide="send" class="dash-ico-16"></i>
+        </button>
+      </div>
+    </div>
+  </div><!-- /app-config-container -->
+</template>

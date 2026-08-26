@@ -5808,6 +5808,58 @@ body.light-mode .session-nav-btn { color: var(--fg-3); }
         color: var(--brand);
         animation: session-radial-spin 0.8s linear infinite;
       }
+    /* SHARED-DELETE-CONTROL — deleting (busy) state: pulsing-aura trash. While
+       a delete is in flight delete-control.js swaps the loader spinner for a
+       trash icon wrapped in .delete-pulse-aura; this pulses a danger ring
+       around it (plus a soft icon fade) so the state reads "deleting", not
+       "loading". Themed via --danger, so it holds in both light and dark. */
+    .delete-pulse-aura {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--danger);
+    }
+    .delete-pulse-aura::before,
+    .delete-pulse-aura::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: 2px solid var(--danger);
+      opacity: 0;
+      animation: delete-aura-ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+    }
+    .delete-pulse-aura::after { animation-delay: 0.7s; }
+    .delete-pulse-aura > * { animation: delete-aura-icon-pulse 1.4s ease-in-out infinite; }
+    /* Undoing (restore) variant — the same pulsing aura but green, used when a
+       delete is being undone. Reuses the ring/icon pulse animations above. */
+    .delete-pulse-aura.undo { color: var(--success); }
+    .delete-pulse-aura.undo::before,
+    .delete-pulse-aura.undo::after { border-color: var(--success); }
+    /* Arming feedback: one single delete pulse (one expanding ring, static
+       icon) plays while the button transitions trash → hazard, replacing the
+       old spinner. Duration matches ARM_DELAY_MS so the ring lands exactly as
+       the hazard appears. */
+    .delete-pulse-aura.arm::before,
+    .delete-pulse-aura.arm::after { animation: delete-aura-ping 0.4s ease-out 1; }
+    .delete-pulse-aura.arm::after { animation: none; }
+    .delete-pulse-aura.arm > * { animation: none; }
+    @keyframes delete-aura-ping {
+      0%   { transform: scale(0.55); opacity: 0.85; }
+      70%  { transform: scale(1.9);  opacity: 0; }
+      100% { transform: scale(1.9);  opacity: 0; }
+    }
+    @keyframes delete-aura-icon-pulse {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.45; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .delete-pulse-aura::before,
+      .delete-pulse-aura::after,
+      .delete-pulse-aura > * { animation: none; }
+      .delete-pulse-aura::before { opacity: 0.35; }
+    }
 /* Completed time status — green timestamp (header trigger) */
 .session-dropdown-status.session-status-completed {
     color: var(--success);

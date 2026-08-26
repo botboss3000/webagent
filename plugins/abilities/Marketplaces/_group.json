@@ -1,7 +1,0 @@
-{
-  "name": "Marketplaces",
-  "icon": "shopping-bag",
-  "color": "#e0af68",
-  "desc": "App-level credentials for e-commerce platform OAuth. Sellers connect their accounts from the agent's Abilities tab.",
-  "order": 6
-}

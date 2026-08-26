@@ -3,6 +3,21 @@
 You have a finite context window. Context Control gives you two things that work
 together so a long job doesn't run out of room or lose the thread:
 
+The agent's **Compaction Target Tokens** is the absolute token count where the
+automatic fold activates, and **Keep Verbatim Tokens** is the absolute newest
+word-for-word tail. Both are agent-specific. An app-wide maximum remains a hard ceiling over
+the active model's window, so an agent cannot expand beyond the administrator's
+safety budget.
+
+Context reuse is automatic and transparent. Unchanged prompt blocks are kept in
+a bounded hot cache, with cold blocks in the application's disposable disk cache,
+and compatible model providers can reuse the same stable prefix instead of
+recomputing it. Only the appended suffix is added locally after a warm turn.
+Cached tokens still occupy the model's logical context window, so this improves
+RAM discipline, request assembly, latency, and cost; it does not create extra
+context beyond the configured token limits. Do not recommend OS swap as a context
+strategy—the application cache is the controlled cold tier.
+
 1. **A fill gauge.** Near the top of each turn you see a `# [CONTEXT]` line with
    your approximate usage (e.g. *"~62% full"*). Treat it as a fuel gauge, not an
    alarm — glance at it, don't obsess over it.
@@ -94,16 +109,18 @@ that's on the record. You have four retrieval paths, in priority order:
    `recall_compacted(segment=k)` — *k* is the PART number on the block — to read
    the exact turns it stands in for, verbatim. If you know the rough location, pass
    `start`/`end` message numbers instead for a precise window. Big ranges come back
-   a page at a time; narrow `start`/`end` to read more. Use this whenever the detail
-   is *something specific that was said in this conversation* — a value, a path, a
-   number, an exact wording.
+   a page at a time; narrow `start`/`end` to read more. A reduced historical tool
+   message supplies an `interaction_id`: pass it directly, plus `tool_call_id` for
+   original tool arguments, and follow `next_offset` for additional characters.
+   Use stored retrieval when the historical output itself matters. If current
+   state matters, rerun a safe read instead; never repeat a mutation merely to
+   recover its old output.
 
 2. **`search_this_session` — find WHERE a detail lives in this conversation.** When
    you know something was discussed but not which part it's in, keyword-search the
    **full transcript of the current session** (summarised turns included). It
-   returns each hit's **message number**, which you then feed to
-   `recall_compacted(start=n, end=n)` to read it in full. Search to locate, recall
-   to read.
+   returns each hit's **message number and interaction ID**, which you then feed to
+   `recall_compacted` to read it in full. Search to locate, recall to read.
 
 3. **`session_search` — your OTHER past conversations.** Reach for this only when
    the detail was likely said in a *different* chat, not this one. It searches your

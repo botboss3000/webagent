@@ -1,0 +1,14 @@
+{
+  "display_name": "Output Closer",
+  "kind": "ability",
+  "icon": "scroll-text",
+  "color": "#9ece6a",
+  "description": "When an agent's final response is sent, a separate parallel LLM loop reads all of the agent's messages from that run (no tool calls), audits the run against the configured checklist, and appends a concise 'Closer' bubble after the response. The agent's normal response stays untouched; the closer renders as its own bubble with a 'Closer' lane label. When a checklist is configured and the audit fails, the feedback is sent back to the agent to finish the missing items (bounded rounds). When off, no extra model calls are made. Takes effect immediately.",
+  "simple": true,
+  "app_function": true,
+  "default_enabled": true,
+  "status": "stable",
+  "order": 2,
+  "tools": [],
+  "_note": "App function (background service), not an agent ability. Its runtime lives in app/agent/output_closer.py, which gates the close-out loop on app_function_enabled('output_closer') and reads its prompt from app_level_prompts.output_closer in app-prompts.json. Descriptor-only by design — no <id>.py. (Legacy ids 'output_summarizer' / 'output_overviewer' and sources 'system:summary' / 'system:overview' are still honoured on read paths for pre-rename rows; the old module app/agent/output_summarizer.py remains as a re-export shim.)"
+}

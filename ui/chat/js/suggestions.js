@@ -16,12 +16,22 @@
 import { app } from '../../shared/js/state.js';
 import { apiPath } from '../../shared/js/config.js';
 import { authHeaders } from '../../shared/js/left-login.js';
+import {
+  DEFAULT_WEBAGENT_SUGGESTION_PROMPTS,
+  getAgentChatUi,
+} from '../../shared/js/app-prompts.js';
 
 let _mode = 'on';
 let _idleSeconds = 25;
 let _idleTimer = null;
 let _inFlight = false;
 let _row = null;
+let _transcriptObserver = null;
+let _refreshQueued = false;
+let _emptyPositioned = false;
+let _normalBottomValue = '';
+let _normalBottomPriority = '';
+let _centerRaf = 0;
 
 function _canChat() {
   // Mirror chat.js gating: only suggest when the visitor can actually chat.
@@ -36,21 +46,103 @@ function _clearChips() {
   if (_row) _row.innerHTML = '';
 }
 
-function _renderChips(items) {
+function _isEmptyConversation() {
+  if (!app.chatMessages) return true;
+  return !app.chatMessages.querySelector(
+    '.chat-bubble.user:not(.session-placeholder), .chat-bubble.agent:not(.session-placeholder)'
+  );
+}
+
+function _starterPrompts() {
+  const agentId = app.currentAgentId || '';
+  let configured;
+  try {
+    const agents = window.__agentsSharedData && window.__agentsSharedData.agents;
+    const agent = Array.isArray(agents) ? agents.find(item => item && item.id === agentId) : null;
+    configured = agent?.chat_ui?.chat_common?.suggestion_prompts;
+  } catch (_) { /* fall through to the merged profile */ }
+  if (!Array.isArray(configured)) {
+    configured = getAgentChatUi(agentId)?.chat_common?.suggestion_prompts;
+  }
+  if (!Array.isArray(configured) && (agentId === 'shared_default' || agentId === 'default')) {
+    configured = DEFAULT_WEBAGENT_SUGGESTION_PROMPTS;
+  }
+  if (!Array.isArray(configured)) return [];
+  return configured
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function _syncEmptyState() {
+  const panel = document.getElementById('chat-panel');
+  const area = document.getElementById('chat-input-area');
+  const empty = _isEmptyConversation();
+  if (panel) panel.classList.toggle('chat-empty-session', empty);
+
+  // Footer profiles own an inline !important bottom offset, so stylesheet
+  // rules alone cannot centre the empty composer. Temporarily replace that
+  // offset, remembering the latest active/idle value for a clean restore when
+  // the first real message arrives. Boot positioning remains CSS-owned.
+  if (area && empty && !document.body.classList.contains('is-booting')) {
+    const currentBottom = area.style.getPropertyValue('bottom');
+    if (!_emptyPositioned || (currentBottom && currentBottom !== 'auto')) {
+      _normalBottomValue = currentBottom;
+      _normalBottomPriority = area.style.getPropertyPriority('bottom');
+    }
+    area.style.setProperty('bottom', 'auto', 'important');
+    _emptyPositioned = true;
+    _scheduleEmptyCenter();
+  } else if (area && !empty && _emptyPositioned) {
+    if (_normalBottomValue) {
+      area.style.setProperty('bottom', _normalBottomValue, _normalBottomPriority || 'important');
+    } else {
+      area.style.removeProperty('bottom');
+    }
+    area.style.removeProperty('--chat-empty-pill-offset');
+    _emptyPositioned = false;
+  }
+  return empty;
+}
+
+function _scheduleEmptyCenter(immediate = false) {
+  if (_centerRaf) cancelAnimationFrame(_centerRaf);
+  const update = () => {
+    _centerRaf = 0;
+    const panel = document.getElementById('chat-panel');
+    const area = document.getElementById('chat-input-area');
+    const pill = document.getElementById('chat-input-row');
+    if (!panel?.classList.contains('chat-empty-session') || !area || !pill) return;
+    const areaRect = area.getBoundingClientRect();
+    const pillRect = pill.getBoundingClientRect();
+    // Position the PILL itself on the panel midpoint; starter prompts remain
+    // immediately above it without pulling the composer below centre.
+    const offset = pillRect.top - areaRect.top + (pillRect.height / 2);
+    if (Number.isFinite(offset) && offset > 0) {
+      area.style.setProperty('--chat-empty-pill-offset', `${offset}px`);
+    }
+  };
+  if (immediate) update();
+  else _centerRaf = requestAnimationFrame(update);
+}
+
+function _renderChips(items, kind = 'reply') {
   if (!_row) return;
   _row.innerHTML = '';
+  _row.dataset.suggestionKind = kind;
   if (!items || !items.length) return;
   // Don't clobber text the user is actively composing.
   if (app.chatInput && app.chatInput.value.trim()) return;
   for (const text of items) {
     const chip = document.createElement('button');
     chip.type = 'button';
-    chip.className = 'chat-suggest-chip';
+    chip.className = `chat-suggest-chip${kind === 'starter' ? ' chat-starter-prompt' : ''}`;
     chip.textContent = text;
     chip.title = text;
     chip.addEventListener('click', () => _applyChip(text));
     _row.appendChild(chip);
   }
+  _scheduleEmptyCenter(true);
 }
 
 function _applyChip(text) {
@@ -63,6 +155,12 @@ function _applyChip(text) {
 }
 
 async function refreshSuggestions() {
+  // A brand-new conversation uses the agent-authored starter prompts. An
+  // explicitly empty array means this agent wants a clean composer with none.
+  if (_syncEmptyState()) {
+    _renderChips(_starterPrompts(), 'starter');
+    return;
+  }
   if (_mode === 'off') { _clearChips(); return; }
   if (_inFlight) return;
   if (!app.currentUserId) return;
@@ -115,8 +213,27 @@ function _wireIdleResetters() {
   if (app.chatInput) {
     app.chatInput.addEventListener('input', () => {
       if (app.chatInput.value.trim()) _clearChips();
+      else refreshSuggestions();
+      queueMicrotask(_syncEmptyState);
     });
+    // Footer idle/active mode swaps also rewrite the inline bottom offset.
+    // Re-assert centring just after those focus handlers have run.
+    app.chatInput.addEventListener('focus', () => queueMicrotask(_syncEmptyState));
+    app.chatInput.addEventListener('blur', () => queueMicrotask(_syncEmptyState));
   }
+}
+
+function _wireTranscriptObserver() {
+  if (!app.chatMessages || _transcriptObserver) return;
+  _transcriptObserver = new MutationObserver(() => {
+    if (_refreshQueued) return;
+    _refreshQueued = true;
+    queueMicrotask(() => {
+      _refreshQueued = false;
+      if (!(app.chatInput && app.chatInput.value.trim())) refreshSuggestions();
+    });
+  });
+  _transcriptObserver.observe(app.chatMessages, { childList: true });
 }
 
 export async function initSuggestions() {
@@ -126,6 +243,12 @@ export async function initSuggestions() {
   // Expose so chat.js can refresh after a reply finalizes, and clear on send.
   app.refreshSuggestions = refreshSuggestions;
   app.clearSuggestions = _clearChips;
+
+  // Establish the empty-session layout synchronously, before initTabs clears
+  // the boot class and measures the FLIP destination in the side panel.
+  _wireIdleResetters();
+  _wireTranscriptObserver();
+  refreshSuggestions();
 
   // Load current mode/idle from the server.
   try {
@@ -137,10 +260,7 @@ export async function initSuggestions() {
     }
   } catch (_) { /* keep defaults */ }
 
-  if (_mode === 'off') return;
-
-  _wireIdleResetters();
-  _resetIdleTimer();
-  // First suggestion pass once the user/session are known.
+  if (_mode !== 'off') _resetIdleTimer();
+  // Reconcile after the server config arrives as well.
   refreshSuggestions();
 }

@@ -58,6 +58,4 @@ def test_stripe_webhook_rejects_bad_signature():
     if not proc.is_configured():
         pytest.skip("stripe not configured (no STRIPE_SECRET_KEY)")
     with pytest.raises(Exception):
-        asyncio.get_event_loop().run_until_complete(
-            proc.verify_webhook(headers={}, body=b"{}")
-        )
+        asyncio.run(proc.verify_webhook(headers={}, body=b"{}"))

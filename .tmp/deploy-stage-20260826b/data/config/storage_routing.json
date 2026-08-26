@@ -1,0 +1,10 @@
+{
+  "agent_data": "server",
+  "attachments": "server",
+  "genui_pages": "server",
+  "session_cache": "browser",
+  "session_data": "server",
+  "session_tools": "server",
+  "user_data": "server",
+  "vault": "server"
+}

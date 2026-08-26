@@ -228,6 +228,7 @@ export function createChatWidget(opts = {}) {
     floating: false,           // user has dragged/resized → fixed positioning
     hadTurn: false,            // at least one turn has run (controls Continue)
     settled: true,             // current turn has reached a terminal state
+    stopPending: false,        // stop clicked — pin "Stopping…" until a terminal state
     unregister: null,
     ready: null,               // promise resolving when agentId is known
     turnBuffers: new Map(),    // key -> accumulated/absolute stream text
@@ -423,6 +424,10 @@ export function createChatWidget(opts = {}) {
     const wrap = bar?.parentElement;  // .chat-above-pill or .cw-actions
     const text = bar?.querySelector('.chat-activity-text');
     if (!bar || !wrap || !text) return;
+    // While a stop is pending, the activity text stays pinned to "Stopping…" —
+    // the backend keeps emitting pipeline/tool events as it unwinds, and none
+    // of them may show over the stopping note.
+    if (st.stopPending) note = 'Stopping…';
     if (note && note !== st.activityNote) {
       st.activityNote = note;
       st.activityStartedAt = performance.now();
@@ -453,16 +458,26 @@ export function createChatWidget(opts = {}) {
       memory_search_start: 'Searching memory', build_prompt: 'Preparing', attachment: 'Reading attachment',
       load_tools: 'Building tools', turn_start: 'Thinking…', llm_call_start: 'Thinking…',
       memory_save_start: 'Saving memory',
+      closer_start: 'Sending to Closer…', closer_audit_start: 'Closer auditing…',
+      closer_llm_start: 'Closer writing…',
     })[step] || '';
   }
 
   function _setStatus(status) {
     if (st.closed) return;
     st.status = status;
+    // A terminal state ends any pending stop — the label may revert to normal.
+    if (status === 'done' || status === 'interrupted' || status === 'error' || status === 'idle') {
+      st.stopPending = false;
+    }
     const { dot, statusEl, pill, stopBtn, contBtn, sendBtn, input, root, actions, spinner } = st.els;
     dot.className = 'cw-dot ' + status;
-    statusEl.textContent = STATUS_LABEL[status] || '';
     const busy = status === 'running' || status === 'starting';
+    // While a stop is pending, keep "Stopping…" pinned — the backend is still
+    // unwinding (stream tail, tool results, reconcile polls) and nothing may
+    // flip the label back to "Working…" until a terminal state arrives.
+    const stopping = st.stopPending && busy;
+    statusEl.textContent = stopping ? 'Stopping…' : (STATUS_LABEL[status] || '');
     pill.classList.toggle('thinking', busy);
     spinner.style.display = busy ? '' : 'none';
     if (busy) _setActivity(st.activityNote || 'Thinking…');
@@ -490,6 +505,38 @@ export function createChatWidget(opts = {}) {
     const b = appendChatSurfaceBubble(st.els.body, role, text || '');
     b.classList.add('cw-bubble');
     return b;
+  }
+
+  function _showScoutResponse(ev) {
+    const owner = String(ev.turn_id || '');
+    if (ev.phase === 'starting' && owner) {
+      st.els.body.querySelectorAll('.cw-bubble.agent.scout-preview').forEach(candidate => {
+        if ((candidate.dataset.scoutOwner || '') !== owner) candidate.remove();
+      });
+    }
+    const selector = owner
+      ? `.cw-bubble.agent.scout-preview[data-scout-owner="${CSS.escape(owner)}"]`
+      : '.cw-bubble.agent.scout-preview';
+    let bubble = st.els.body.querySelector(selector);
+    if (ev.phase === 'end' || !(ev.content || '').trim()) {
+      if (bubble) bubble.remove();
+      return;
+    }
+    if (!bubble) {
+      bubble = _addBubble('agent', ev.content || '');
+      bubble.classList.add('scout-preview');
+      if (owner) bubble.dataset.scoutOwner = owner;
+    } else {
+      while (bubble.firstChild) bubble.removeChild(bubble.firstChild);
+      _fillAgentBubble(bubble, ev.content || '');
+    }
+    bubble.dataset.provisional = 'true';
+    bubble.setAttribute('aria-label', 'Provisional Scout response');
+    _scrollToBottom();
+  }
+
+  function _dismissScoutResponse(owner) {
+    _showScoutResponse({ turn_id: owner, phase: 'end', content: '' });
   }
 
   // SET absolute streaming text for `key` (idempotent). Creates the bubble if
@@ -598,6 +645,7 @@ export function createChatWidget(opts = {}) {
 
   function _beginTurn() {
     st.settled = false;
+    st.stopPending = false;    // a fresh turn — any earlier stop is moot
     st.toolCalls = [];
     st.toolGroup = null;
     st.usage?.begin();
@@ -646,6 +694,9 @@ export function createChatWidget(opts = {}) {
     if (ev.type === 'pipeline') {
       const note = _pipelineActivity(ev.step);
       if (note) _setActivity(note);
+      // Closer steps end with a matching *_end pipeline event — settle the
+      // activity note then so it doesn't stick on "Closer writing…".
+      else if (/^closer_.*_end$/.test(ev.step || '')) _clearActivity();
     }
     switch (ev.type) {
       case 'user_message': {
@@ -672,12 +723,18 @@ export function createChatWidget(opts = {}) {
       }
       case 'stream': {
         if (!key) break;
+        _dismissScoutResponse(ev.turn_id);
         _setActivity('Writing reply…');
         st.usage?.stream(ev.content || '');
         _seedStreaming(key, (st.turnBuffers.get(key) || '') + (ev.content || ''));
         _setStatus('running');
         break;
       }
+      case 'scout_response':
+        _showScoutResponse(ev);
+        _setActivity(ev.phase === 'ready' ? 'Scout oriented…' : 'Gathering context…');
+        _setStatus('running');
+        break;
       case 'agent_step_end':
         _finalizeKey(key, ev.content || st.turnBuffers.get(key) || '');
         st.hadTurn = true;
@@ -707,6 +764,7 @@ export function createChatWidget(opts = {}) {
         break;
       }
       case 'response':
+        _dismissScoutResponse(ev.turn_id);
         _finalizeKey(key, ev.content || st.turnBuffers.get(key) || '');
         _settleTurn(ev.content || '');
         break;
@@ -720,6 +778,7 @@ export function createChatWidget(opts = {}) {
         break;
       case 'resumed':
         st.settled = false;
+        st.stopPending = false;   // the run continues — stop no longer applies
         _setStatus('running');
         _startReconcile();
         break;
@@ -792,6 +851,7 @@ export function createChatWidget(opts = {}) {
       if (st.closed || !data || data.restricted) return;
 
       let maxSeq = st.lastSeq;
+      let sawInterrupted = false;
       const msgs = Array.isArray(data.messages) ? data.messages : [];
       for (const msg of msgs) {
         if (typeof msg.session_seq === 'number') maxSeq = Math.max(maxSeq, msg.session_seq);
@@ -801,7 +861,7 @@ export function createChatWidget(opts = {}) {
         const key = msg.id;
         const text = _stripToolCalls(msg.content || '');
         if (msg.status === 'streaming') _seedStreaming(key, text);
-        else if (msg.status === 'interrupted') _markInterruptedKey(key);
+        else if (msg.status === 'interrupted') { sawInterrupted = true; _markInterruptedKey(key); }
         else if (msg.status === 'error') _finalizeKey(key, text);
         else _finalizeKey(key, text);                  // 'complete' / legacy null
       }
@@ -813,7 +873,16 @@ export function createChatWidget(opts = {}) {
 
       // Server marked the run finished — settle even if the WS response was lost.
       if (run && run.active === false && !st.settled && st.hadTurn) {
-        if (st.status !== 'interrupted' && st.status !== 'error') _settleTurn(st.lastAgentText);
+        if (sawInterrupted) {
+          // The DB row says the turn was stopped — settle to "Stopped" (which
+          // also releases the stop-pin) rather than the generic "Done".
+          st.usage?.finish();
+          _setStatus('interrupted');
+          st.settled = true;
+          _stopReconcile();
+        } else if (st.status !== 'interrupted' && st.status !== 'error') {
+          _settleTurn(st.lastAgentText);
+        }
       }
     } finally {
       st.reconcileInFlight = false;
@@ -955,7 +1024,9 @@ export function createChatWidget(opts = {}) {
     // Optimistic: reflect "stopping" immediately; the interrupted WS event or
     // the DB poll confirms the final state. Keep the reconcile loop running so
     // a cross-process stop still lands.
+    st.stopPending = true;   // pin "Stopping…" — no progress note may replace it
     if (st.els.statusEl) st.els.statusEl.textContent = 'Stopping…';
+    _setActivity('Stopping…');
     try {
       await fetch(apiPath('/api/v1/chat/interrupt'), {
         method: 'POST',

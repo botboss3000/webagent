@@ -5,18 +5,19 @@ import { apiPath } from './config.js';
 import { authHeaders } from './left-login.js';
 import { copyText } from './clipboard.js';
 import { renderVaultCredentialCard } from '../../vault-credential/vault-credential-card.js';
+import { renderSshConnectionCard } from '../../ssh-control/ssh-connection-card.js';
 
-// When the agent's request_credential tool (Visualizer ability) returns, its
-// result carries ui:"vault_credential_form" — pop the secure entry card so the
-// user can type the secret straight into the vault (never back through the agent).
-// Live events only (historical session loads don't replay through here), so a
-// reload won't re-pop a stale card.
-function _maybeShowVaultCard(event) {
-  if (!event || event.tool !== 'request_credential' || event.error) return;
+// Secure credential/connection tool results carry a `ui` discriminator. Pop the
+// corresponding browser-to-vault card without routing any entered secret back
+// through the agent. Live events only, so history reloads never reopen stale cards.
+function _maybeShowSecureCard(event) {
+  if (!event || event.error) return;
   try {
     const payload = typeof event.result === 'string' ? JSON.parse(event.result) : event.result;
-    if (payload && payload.ui === 'vault_credential_form' && payload.key_id) {
+    if (event.tool === 'request_credential' && payload && payload.ui === 'vault_credential_form' && payload.key_id) {
       renderVaultCredentialCard(payload);
+    } else if (event.tool === 'ssh_request_connection' && payload && payload.ui === 'ssh_connection_form') {
+      renderSshConnectionCard(payload);
     }
   } catch (_) { /* not a card payload — ignore */ }
 }
@@ -47,7 +48,7 @@ function _maybeShowChatComponent(event) {
 // forwards every current-session event to app._chatActivityHandler). Decoupled
 // from the chat bubble pipeline: chat.js just calls app.chatActivityStart()/
 // Stop() for instant feedback on send + HTTP-error paths that never produce a
-// WebSocket terminal event.
+// WebSocket system event.
 
 let rootEl = null;   // #chat-activity (container)
 let pillEl = null;   // #chat-input-row (the .chat-pill — glows)
@@ -60,16 +61,17 @@ let tokenBarEl = null;   // #chat-token-bar
 let tokensInEl = null;   // #chat-tokens-in
 let tokensOutEl = null;  // #chat-tokens-out
 let tokenSpinnerEl = null; // #chat-token-spinner
-let footerLeftEl = null;  // #chat-pill-stats — click target for the context panel (contains tokens/ctx/cost)
-let footerRowEl = null;   // #chat-pill-stats — measured to fit the stats (FOOTER-STATS-FIT)
+let footerLeftEl = null;  // #chat-pill-stats — click target for the context panel
 let modelBtnEl = null;   // #chat-model-btn — dedicated "switch model" button below the pill
 let modelCtxEl = null;   // #chat-model-ctx (live context tokens / model's max limit)
 let costEl = null;       // #chat-cost (session cost so far)
-let _footerFitPending = false; // rAF debounce flag for _fitFooterStats
-let _lastFitRowWidth = -1;     // last observed row width (ignore height-only RO ticks)
 let _modelListPanelEl = null; // model list panel element (hoisted for cross-function access)
 let _modelListPanelList = null;
-let _contextTokens = 0;  // live assembled context tokens (from context_status events)
+let _contextTokens = 0;  // most recent provider-reported prompt tokens sent this session
+let _contextRevision = 0; // guards a slow ledger fetch from overwriting a newer live event
+// (exact per-llm-call input_tokens — the ACTUAL context sent to the provider,
+// so it reflects compaction: after a fold the next call reports the reduced
+// prompt and this adopts it. Not a monotonic high-water mark.)
 let _modelContextLimit = null; // model's context window limit (from current-model-info)
 let _costInput = null;   // active model's USD price per 1M input tokens (from current-model-info)
 let _costOutput = null;  // active model's USD price per 1M output tokens (from current-model-info)
@@ -118,6 +120,7 @@ function _loadTokenCache() {
 // call (never totals × current rate) keeps it accurate across model switches.
 // Reconciled against /session-cost on session load.
 let _sessionCostUsd = 0;
+let _sessionHasUnknownPriced = false;  // any call ran on a model with no published price → show n/a, not $0
 let _streamCharCount = 0;     // chars streamed in current ongoing LLM call
 let _pendingOutEstimate = 0;  // estimated output tokens for current streaming call
 let _pendingCtxEstimate = 0;  // estimated ctx tokens during thinking ramp (replaced by real data)
@@ -127,19 +130,22 @@ let active = false;     // a turn is in progress
 let resting = false;    // turn ended but tool calls remain to inspect
 let expanded = false;   // panel open
 let currentNote = '';
+let _noteSessionId = '';  // session the current note belongs to — the transcript
+                          // mirror must never paint another session's progress
+let _noteTurnId = '';     // durable user-turn id for the mirrored run bubble
 let clearTimer = null;  // delayed text-clear after a no-tools fade-out
-let endTimer = null;    // delayed stop() after a terminal Error/Stopped note
+let endTimer = null;    // delayed stop() after a system Error/Stopped note
 let watchdog = null;    // safety auto-stop if a turn never reports completion
 
 // POST-TURN HOUSEKEEPING SETTLE ──────────────────────────────────────────────
-// A turn's terminal event (`response`/`interrupted`/`error`) is NOT the last
+// A turn's system event (`response`/`interrupted`/`error`) is NOT the last
 // thing the backend emits: fire-and-forget background steps run AFTER it — the
 // memory upsert (memory_save_start/_end), turn hooks, the optimizer, etc. Each
 // emits a `*_start` note that re-lights the bar, but the bar's only general way
-// to clear an active note is a terminal event or the 3-min watchdog — so a
-// post-turn `*_start` with no recognised terminal would hang the chip (e.g.
+// to clear an active note is a system event or the 3-min watchdog — so a
+// post-turn `*_start` with no recognised system event would hang the chip (e.g.
 // "Saving memory") for three minutes. `_turnEnded` marks that we're past the
-// turn's terminal event; while set, a re-light uses the short backstop below
+// turn's system event; while set, a re-light uses the short backstop below
 // and any matching `*_end`/completion step clears the bar promptly. Reset at the
 // next real turn boundary (user_message / new turn / session switch).
 let _turnEnded = false;
@@ -271,10 +277,6 @@ function _startThinkingRamp() {
     const bump = Math.min(8, 2 + Math.floor(_pendingOutEstimate / 50));
     _pendingOutEstimate += bump;
     _updateOutDisplay();
-    // Also ramp the ctx counter so it counts up during thinking too
-    const ctxBump = Math.min(15, 4 + Math.floor(_pendingCtxEstimate / 60));
-    _pendingCtxEstimate += ctxBump;
-    _renderCtxIndicator();
   }, 800);
 }
 
@@ -310,7 +312,6 @@ function _animateCountUp(el, target, durationMs = 300) {
       requestAnimationFrame(step);
     } else {
       el.textContent = target; // ensure exact final value
-      _scheduleFooterFit();    // its width may have grown — re-fit the stats pill
     }
   }
 
@@ -325,7 +326,17 @@ function _setSpinnerDir(dir) {
 }
 
 function _updateTokenBar() {
-  if (tokenBarEl) tokenBarEl.classList.toggle('active', active || cumulativeIn > 0 || cumulativeOut > 0);
+  if (!tokenBarEl) return;
+  // Token bar is an optional stat: when it's not in the configured stats list,
+  // keep it hidden even if CSS display rules would resurrect it; when it IS
+  // enabled, clear any inline 'none' left by a previous disabled pass.
+  const cfg = _statsConfig();
+  if (cfg && !cfg.some(e => e.type === 'token-bar')) {
+    tokenBarEl.style.display = 'none';
+    return;
+  }
+  if (cfg) tokenBarEl.style.display = '';
+  tokenBarEl.classList.toggle('active', active || cumulativeIn > 0 || cumulativeOut > 0);
 }
 
 function _updateOutDisplay() {
@@ -379,11 +390,22 @@ function addTokens(inputTokens, outputTokens, callCostUsd) {
 
 // ── Active-model context indicator (next to in/out counters) ────────────────
 
-function _fmtCtxNum(n) {
+/** The stats config resolved by applyStatsConfig (chat-pill-config.js) from
+ *  chat_ui.json → controls.stats.visible: [{ type, decimals, el }]. Null until
+ *  the config system applies — renderers then fall back to the compact ctx +
+ *  cost defaults so the pill still works on the legacy path. */
+function _statsConfig() {
+  const el = document.getElementById('chat-pill-stats');
+  return (el && Array.isArray(el._statsConfig)) ? el._statsConfig : null;
+}
+
+/** Format a context/token count for the pill: x.xk below 1M (1 decimal),
+ *  x.xxM at/above 1M (2 decimals). An explicit `decimals` overrides the
+ *  default for both ranges (config: stats entry "decimals"). */
+function _fmtCtxNum(n, decimals) {
   if (!n || typeof n !== 'number') return '';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 10_000) return `${(n / 1000).toFixed(1)}K`;
-  return `${n}`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(decimals == null ? 2 : decimals)}M`;
+  return `${(n / 1000).toFixed(decimals == null ? 1 : decimals)}k`;
 }
 
 /** Best-effort context window for a Claude Code model id, by family. The local
@@ -437,10 +459,13 @@ async function refreshModelContext() {
   } catch (e) {
     _altEngine = false;   // unknown engine ⇒ assume normal billing, don't strand the price hidden
     _altEngineId = '';
-    modelCtxEl.style.display = 'none';
-    modelCtxEl.innerHTML = '';
+    // Re-render from the data we already hold rather than force-hiding: a
+    // transient model-info failure must not wipe a valid ctx readout (the ctx
+    // number comes from llm_call_end / setContextTokens, NOT from this fetch)
+    // or strand the cost chip in its pre-fetch alt-engine state.
+    _renderCtxIndicator();
+    _renderCost();
     _renderModelBtn();
-    _scheduleFooterFit();
   }
 }
 
@@ -468,8 +493,17 @@ function _renderModelBtn() {
     modelBtnEl.title = title;
     return;
   }
+  // Agent-driven override (Model Switcher): show the real model + warning color
+  // on the dedicated model button too, until the run ends (backend cleanup).
+  if (_agentOverride) {
+    modelBtnEl.classList.add('agent-override');
+    modelBtnEl.textContent = _agentOverride.model.length > 16 ? '…' + _agentOverride.model.slice(-15) : _agentOverride.model;
+    modelBtnEl.title = `Model: ${_agentOverride.model} (agent-set) — click to switch model for this chat`;
+    return;
+  }
+  modelBtnEl.classList.remove('agent-override');
   const slot = _allSlots.find(s => {
-    const ref = s.type === 'role' ? `role:${s.role}` : `custom:${s.position}`;
+    const ref = _slotRef(s);
     return ref === _currentSlotRef;
   });
   const name = (slot && slot.model) || '';
@@ -488,61 +522,73 @@ function _renderModelBtn() {
     : 'Click to switch model for this chat';
 }
 
-/** Format a USD amount for the footer: 2 decimals at/above $1, 4 below so
- *  sub-cent sessions still read as a non-zero number. */
-function _fmtCost(usd) {
-  if (usd >= 1) return `$${usd.toFixed(2)}`;
-  return `$${usd.toFixed(4)}`;
+/** Format a USD amount for the footer. Rounds UP to the configured decimals
+ *  (default 2 = cents) so the very first charge — however small — reads as
+ *  "$0.01": an indicator that billing has started, never a trailing "$0.00".
+ *  `decimals` comes from the config entry (stats "decimals" override). */
+function _fmtCost(usd, decimals) {
+  const dp = (decimals == null) ? 2 : decimals;
+  const scale = Math.pow(10, dp);
+  return `$${(Math.ceil(usd * scale) / scale).toFixed(dp)}`;
 }
 
 /** Render the session-cost chip from the running per-call total (_sessionCostUsd).
  *  Each call was priced at its own model's rate the moment it finished, so the
  *  total stays accurate across mid-session model switches — unlike the old
  *  "cumulative tokens × current model rate", which re-priced earlier calls.
- *  Always shown — displays "$0" before any cost accrues (e.g. all models so far
- *  were free or had no published price). Resets on session switch; reconciled
- *  from /session-cost on load. */
+ *  Config-driven: hidden when the "cost" stat is disabled, when the session is
+ *  on an alternate engine (Local Claude Code — not billed on the app's model),
+ *  or while the total is still zero (billing hasn't started — hidden away, not
+ *  "$0"). Shows "n/a" when calls ran on models with no published price (a $0
+ *  would falsely read as free). Resets on session switch; reconciled from
+ *  /session-cost on load. */
 function _renderCost() {
   if (!costEl) return;
+  const cfg = _statsConfig();
+  const entry = cfg ? cfg.find(e => e.type === 'cost') : null;
+  if (cfg && !entry) {
+    costEl.hidden = true;
+    costEl.style.display = 'none';   // hidden attr alone loses to .chat-cost { display:flex }
+    costEl.innerHTML = '';
+    return;
+  }
+  const decimals = entry ? entry.decimals : null;
   // Alternate-engine agents (e.g. Local Claude Code) aren't billed on the app's
   // model, so a price here would be misleading — hide it, keep the counters.
   if (_altEngine) {
     costEl.style.display = 'none';
     costEl.innerHTML = '';
-    _scheduleFooterFit();
     return;
   }
   const total = _sessionCostUsd;
-  costEl.innerHTML = (total > 0) ? `${_fmtCost(total)}` : '$0';
+  let label;
+  if (total > 0) {
+    label = _fmtCost(total, decimals);
+    costEl.style.display = '';
+  } else if (_sessionHasUnknownPriced) {
+    label = 'n/a';
+    costEl.style.display = '';
+  } else {
+    label = '';
+    costEl.style.display = 'none';
+  }
+  costEl.innerHTML = label;
   costEl.title = 'Session cost so far — each call billed at the model it ran on, '
     + 'summed across any model switches'
-    + (_currentModelName ? ` (now: ${_currentModelName})` : '');
-  costEl.style.display = '';
-  _scheduleFooterFit();
+    + (_currentModelName ? ` (now: ${_currentModelName})` : '')
+    + (_sessionHasUnknownPriced && total <= 0 ? ' — some calls have no published price' : '');
 }
 
-/** Estimate context tokens from an array of message objects (chars/4 heuristic). */
-function _estimateContextFromMessages(messages) {
-  if (!messages || !messages.length) return 0;
-  let totalChars = 0;
-  for (const m of messages) {
-    const c = m.content;
-    if (typeof c === 'string') totalChars += c.length;
-    else if (c) totalChars += String(c).length;
-    // Also count tool_calls payload if present
-    if (m.tool_calls) {
-      try { totalChars += JSON.stringify(m.tool_calls).length; }
-      catch (_) { totalChars += String(m.tool_calls).length; }
-    }
-  }
-  return Math.max(0, Math.round(totalChars / 4));
-}
-
-/** Set the live context from an array of messages (called on session load). */
+/** Called on session load and repeatedly as messages stream in / windows load
+ *  (cache append, tail-poll, reposition, …). Deliberately does NOT touch the ctx
+ *  readout: a chars/4 estimate of whatever window the browser currently holds
+ *  under-reports long sessions and was the source of the counter's "drops" (a
+ *  partial-window re-estimate stomping the exact count). The ctx pill is exact
+ *  counts only — setContextTokens (server LATEST) and llm_call_end (live, exact).
+ *  Here we only clear a stale ramp and restore the IN/OUT token cache, which is
+ *  unrelated to the ctx number. */
 function setContextFromMessages(messages) {
-  _contextTokens = _estimateContextFromMessages(messages);
   _pendingCtxEstimate = 0; // clear any stale ramp from a previous session
-  _renderCtxIndicator();
   // Restore cached counters instantly; session-load then applies the one
   // authoritative ledger payload without issuing another aggregate request.
   _loadTokenCache();
@@ -552,7 +598,11 @@ function setSessionUsage(usage) {
   if (!usage || typeof usage !== 'object') return;
   cumulativeIn = Number(usage.input_tokens) || 0;
   cumulativeOut = Number(usage.output_tokens) || 0;
-  _sessionCostUsd = Number(usage.total_cost_usd) || 0;
+  // Catch-up only, never down: a zeroed/stale load payload must not wipe a
+  // live total mid-session (resetTokens zeroes both on a genuine session
+  // switch first, so cross-session contamination isn't possible).
+  _sessionCostUsd = Math.max(_sessionCostUsd, Number(usage.total_cost_usd) || 0);
+  if (usage.has_unknown === true) _sessionHasUnknownPriced = true;
   _animateCountUp(tokensInEl, cumulativeIn);
   _animateCountUp(tokensOutEl, cumulativeOut);
   _updateTokenBar();
@@ -560,13 +610,16 @@ function setSessionUsage(usage) {
   _saveTokenCache();
 }
 
-/** Set the ctx indicator from a precomputed whole-session token estimate. Used
- *  by the loader after setContextFromMessages: the open fetch is now a small
- *  window, so counting only its messages would under-report — the server sends
- *  a whole-session total, which this applies on top. */
-function setContextTokens(tokens) {
+/** Set the ctx indicator from the server's whole-session value — the most recent
+ *  provider-reported prompt token count for this session (the LAST chat usage
+ *  row's input_tokens — the actual context sent, reflecting compaction).
+ *  Applied by the loader after setContextFromMessages, since the open fetch is a
+ *  small window whose messages alone would under-report. */
+function setContextTokens(tokens, model = '') {
   if (typeof tokens !== 'number' || tokens < 0) return;
   _contextTokens = tokens;
+  if (model) _currentModelName = String(model);
+  _contextRevision += 1;
   _pendingCtxEstimate = 0; // clear the thinking ramp when real data arrives
   _renderCtxIndicator();
 }
@@ -576,64 +629,53 @@ function _displayedCtx() {
   return (_contextTokens || 0) + _pendingCtxEstimate;
 }
 
-/** Render the ctx indicator: live context tokens / model's max context limit */
+/** Render the ctx indicator from the config-driven stats set. Two modes:
+ *  "ctx" (the default) shows just the current context — "77.2k" — while
+ *  "ctx-max" shows the full "ctx 77.2k / 200k" current/max readout. Hidden
+ *  while the current context is zero (or would render as "0.0k") or nothing
+ *  is known yet; the hover tooltip always keeps the exact counts and the
+ *  model's window. */
 function _renderCtxIndicator() {
   if (!modelCtxEl) return;
+  const cfg = _statsConfig();
+  let entry = null;
+  let full = false;
+  if (cfg) {
+    entry = cfg.find(e => e.type === 'ctx') || cfg.find(e => e.type === 'ctx-max');
+    full = !!cfg.find(e => e.type === 'ctx-max');
+    if (!entry) {
+      modelCtxEl.hidden = true;
+      modelCtxEl.style.display = 'none';   // hidden attr alone loses to .chat-model-ctx { display:flex }
+      modelCtxEl.innerHTML = '';
+      modelCtxEl.title = "Active model's context window and max output";
+      return;
+    }
+  }
+  const decimals = entry ? entry.decimals : null;
   const ctx = _displayedCtx();
   const max = _modelContextLimit;
-  if (!max && !_contextTokens && !_pendingCtxEstimate) { modelCtxEl.style.display = 'none'; modelCtxEl.innerHTML = ''; _scheduleFooterFit(); return; }
-  modelCtxEl.innerHTML = `<span class="chat-token-label">ctx</span> ${_fmtCtxNum(ctx)} <span class="chat-ctx-sep">/</span> ${_fmtCtxNum(max)}`;
+  const num = _fmtCtxNum(ctx, decimals);
+  // Nothing known yet, or the value would render as a zero — hide it entirely
+  // (an empty chip would otherwise sit in the strip with a stray tooltip).
+  if (!num || num.startsWith('0.0')) {
+    modelCtxEl.hidden = true;
+    modelCtxEl.style.display = 'none';
+    modelCtxEl.innerHTML = '';
+    modelCtxEl.title = "Active model's context window and max output";
+    return;
+  }
+  modelCtxEl.innerHTML = full
+    ? `<span class="chat-token-label">ctx</span> ${num} <span class="chat-ctx-sep">/</span> ${_fmtCtxNum(max, decimals) || '?'}`
+    : num;
   const ctxSlot = _allSlots.find(s => {
-    const ref = s.type === 'role' ? 'role:' + s.role : 'custom:' + s.position;
+    const ref = _slotRef(s);
     return ref === _currentSlotRef;
   });
-  modelCtxEl.title = `${(ctxSlot && ctxSlot.model) || '??'} — ctx ${(_contextTokens || 0).toLocaleString()} / max ${max ? max.toLocaleString() : '?'} — click to switch model`;
+  modelCtxEl.title = `${(ctxSlot && ctxSlot.model) || _currentModelName || '??'} — ctx ${(_contextTokens || 0).toLocaleString()} / max ${max ? max.toLocaleString() : '?'} — click to switch model`;
+  modelCtxEl.hidden = false;
   modelCtxEl.style.display = '';
   // Keep the open Claude panel's context section in step with live updates.
   if (_claudePanelEl && _claudePanelEl.style.display !== 'none') _renderClaudeContext();
-  _scheduleFooterFit();
-}
-
-// ── Footer stats fit (FOOTER-STATS-FIT) ─────────────────────────────────────
-// Priority ladder for the left stats pill, LEAST → MOST useful. Each entry is a
-// class on #chat-pill-stats that hides one piece (see app1.css). _fitFooterStats
-// adds them one at a time, lowest first, only as far as needed to stop the pill's
-// content from overflowing the space the right-side buttons leave it. To change
-// what survives a squeeze, reorder this array — the CSS keys off these names.
-const _FOOTER_SHED = [
-  'fs-hide-tok-labels', // 1. "in" / "out" labels
-  'fs-hide-ctx-label',  // 2. "ctx" label
-  'fs-hide-cost',       // 3. session cost (least useful feature)
-  'fs-hide-tokbar',     // 4. in/out token bar
-  'fs-hide-ctx',        // 5. ctx readout (last to go; also hides the empty pill)
-];
-
-/** Shed footer stats in priority order until the left pill fits the space left
- *  by the right-side buttons. Measures REAL rendered widths (locale-formatted
- *  numbers, the active font) rather than guessing pixel breakpoints, so each
- *  element is always either fully shown or fully hidden — never half-clipped
- *  under the buttons (the bug the old @container thresholds caused). */
-function _fitFooterStats() {
-  if (!footerRowEl || !footerLeftEl) return;
-  // Start from a clean slate so a widening panel restores what it can.
-  for (const c of _FOOTER_SHED) footerRowEl.classList.remove(c);
-  if (!footerRowEl.clientWidth) return;       // row hidden / not laid out yet
-  // The left pill is a flex item with min-width:0, so it shrinks to the space
-  // the (flex-shrink:0) right buttons leave it; its nowrap children then spill
-  // past that box → scrollWidth exceeds clientWidth. Shed until it fits.
-  let i = 0;
-  while (footerLeftEl.scrollWidth > footerLeftEl.clientWidth + 1 && i < _FOOTER_SHED.length) {
-    footerRowEl.classList.add(_FOOTER_SHED[i]);
-    i++;
-  }
-}
-
-/** rAF-debounced wrapper: content renders and resizes can fire many times per
- *  frame; collapse them into a single fit pass. */
-function _scheduleFooterFit() {
-  if (_footerFitPending) return;
-  _footerFitPending = true;
-  requestAnimationFrame(() => { _footerFitPending = false; _fitFooterStats(); });
 }
 
 // ── Context panel (click ctx indicator) ─────────────────────────────────────
@@ -648,31 +690,91 @@ let _allSlots = [];              // fetched slot list: [{type, role?, position?,
 let _allEffortMap = {};          // per-slot effort: {"role:standard": "high", "custom:2": "low"}
 let _currentSlotRef = '';        // the currently-selected slot ref (e.g. "role:text", "custom:2")
 let _currentModelName = '';      // the resolved model name (fallback display — set by refreshModelContext and WS)
+let _agentOverride = null;       // {model: '<id>'} when the AGENT switched this session's model
+                                 //   (Model Switcher: set_model / use_premium_model); null otherwise.
+                                 //   Refreshed from /admin/settings/agent-models (agent_override)
+                                 //   and the live 'model_override' WS event; cleared at run end by
+                                 //   the backend cleanup (runner._finish_run) → pill returns to normal.
+
+function _slotRef(slot) {
+  if (!slot) return '';
+  if (slot.type === 'role') return 'role:' + (slot.role || '');
+  return slot.entry_id ? 'entry:' + slot.entry_id : 'custom:' + (slot.position || 0);
+}
+
+// Agent identity cards are intentionally separate from generic chat components:
+// password fields never enter component state, transcript persistence, or model
+// context. The full credential form is used by the standalone embed; inside the
+// signed-in app this card proves and links the already-authenticated app account.
+function _maybeShowAgentProfileCard(event) {
+  if (!event || event.error) return;
+  let payload;
+  try { payload = typeof event.result === 'string' ? JSON.parse(event.result) : event.result; }
+  catch (_) { return; }
+  if (!payload || !['agent_auth', 'agent_profile_admin'].includes(payload.ui)
+      || !app.addChatBubble) return;
+  const bubble = app.addChatBubble('agent', '', 'agent-profile-card');
+  const text = bubble?.querySelector('.chat-bubble-text') || bubble;
+  if (!text) return;
+  text.textContent = '';
+  const card = document.createElement('section');
+  card.style.cssText = 'display:grid;gap:8px;padding:4px;min-width:260px';
+  const title = document.createElement('strong');
+  title.textContent = payload.ui === 'agent_auth' ? 'Agent sign-in' : 'Agent profile administration';
+  card.appendChild(title);
+  if (payload.ui === 'agent_auth') {
+    const note = document.createElement('small');
+    note.textContent = 'Use your signed-in app account for this agent. The app credential is verified but never copied into the agent database.';
+    const button = document.createElement('button');
+    button.type = 'button'; button.textContent = 'Use app account';
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const response = await fetch(apiPath(`/api/v1/agents/${encodeURIComponent(payload.agent_id)}/auth/app-link`), {
+          method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: '{}',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || 'Agent sign-in failed.');
+        note.textContent = `Signed in with the ${data.principal?.profile?.name || 'Member'} profile.`;
+        button.remove();
+      } catch (error) { note.textContent = error.message; button.disabled = false; }
+    });
+    card.append(note, button);
+  } else {
+    const profiles = document.createElement('div');
+    profiles.textContent = `Profiles: ${(payload.profiles || []).map((p) => p.name).join(', ') || 'none'}`;
+    const members = document.createElement('div');
+    members.textContent = `Members: ${(payload.members || []).length}`;
+    const note = document.createElement('small');
+    note.textContent = 'Profile and member changes made through this protected tool are checked again by the server against your agent-administrator role.';
+    card.append(profiles, members, note);
+  }
+  text.appendChild(card);
+}
 
 function _buildModelPicker() {
   if (_modelPickerEl) return;
   const picker = document.createElement('div');
   picker.className = 'chat-model-picker';
   // ── Context-compaction section ──
-  // Two sliders tune THIS chat's compaction — "compact at % full" (when older turns
-  // start folding into summaries) and "keep verbatim %" (how much recent history
-  // stays word-for-word) — saved as a per-session override. "Compact now" folds the
+  // Two sliders tune THIS chat's absolute token budgets — activation target and
+  // verbatim hot tail — saved as a per-session override. "Compact now" folds the
   // conversation immediately by sending /compact through the normal pipeline.
   const compact = document.createElement('div');
   compact.className = 'cmp-compact';
   compact.innerHTML =
       `<div class="cmp-cc-head">Context compaction</div>`
     + `<div class="cmp-cc-row">`
-    +   `<div class="cmp-cc-top"><span class="cmp-cc-label">Compact at</span>`
-    +     `<span class="cmp-cc-val" data-val="threshold">85%</span></div>`
-    +   `<input type="range" class="cmp-cc-slider" data-key="threshold" min="10" max="99" step="1" value="85">`
-    +   `<div class="cmp-cc-hint">How full this chat gets before older turns are auto-summarized.</div>`
+    +   `<div class="cmp-cc-top"><span class="cmp-cc-label">Target</span>`
+    +     `<span class="cmp-cc-val" data-val="threshold">100K tokens</span></div>`
+    +   `<input type="range" class="cmp-cc-slider" data-key="threshold" min="10000" max="1050000" step="10000" value="100000">`
+    +   `<div class="cmp-cc-hint">Absolute context size where older turns start auto-compacting.</div>`
     + `</div>`
     + `<div class="cmp-cc-row">`
     +   `<div class="cmp-cc-top"><span class="cmp-cc-label">Keep verbatim</span>`
-    +     `<span class="cmp-cc-val" data-val="tail">30%</span></div>`
-    +   `<input type="range" class="cmp-cc-slider" data-key="tail" min="5" max="90" step="1" value="30">`
-    +   `<div class="cmp-cc-hint">Share of the window always kept word-for-word (newest turns).</div>`
+    +     `<span class="cmp-cc-val" data-val="tail">30K tokens</span></div>`
+    +   `<input type="range" class="cmp-cc-slider" data-key="tail" min="5000" max="1050000" step="5000" value="30000">`
+    +   `<div class="cmp-cc-hint">Absolute newest-token budget kept word-for-word.</div>`
     + `</div>`
     + `<button type="button" class="cmp-cc-btn">`
     +   `<span class="cmp-cc-btn-label">Compact now</span>`
@@ -683,7 +785,7 @@ function _buildModelPicker() {
   _modelPickerEl = picker;
   _compactEl = compact;
 
-  // Slider "input" updates the live % label; "change" (on release) saves it.
+  // Slider "input" updates the live token label; "change" (on release) saves it.
   compact.querySelectorAll('.cmp-cc-slider').forEach(sl => {
     sl.addEventListener('input', () => _onCompactSlide(sl));
     sl.addEventListener('change', () => _onCompactCommit(sl));
@@ -741,6 +843,11 @@ async function _fetchModelsForPicker() {
         _allSlots = slots.map(s => ({ ...s, context: null }));
         _allEffortMap = data.model_effort || {};
         activeSlotData = data.active_slot || null;
+        // Agent-driven concrete-model override (Model Switcher ability) — the
+        // footer shows it warning-colored until the run ends and the backend
+        // clears it (see _syncModelChanger). User slot picks never set this.
+        const ao = data.agent_override;
+        _agentOverride = (ao && ao.model) ? { model: ao.model } : null;
       }
     } catch (_) { /* best-effort */ }
   }
@@ -768,10 +875,14 @@ async function _fetchModelsForPicker() {
   if (activeSlotData) {
     _currentSlotRef = activeSlotData.type === 'role'
       ? 'role:' + (activeSlotData.role || 'standard')
-      : 'custom:' + (activeSlotData.custom_position || 1);
+      : (activeSlotData.entry_id
+          ? 'entry:' + activeSlotData.entry_id
+          : 'custom:' + (activeSlotData.custom_position || 1));
   } else if (_allSlots.length) {
     const first = _allSlots[0];
-    _currentSlotRef = first.type === 'role' ? 'role:' + first.role : 'custom:' + first.position;
+    _currentSlotRef = first.type === 'role'
+      ? 'role:' + first.role
+      : (first.entry_id ? 'entry:' + first.entry_id : 'custom:' + first.position);
   } else {
     _currentSlotRef = '';
   }
@@ -780,19 +891,47 @@ async function _fetchModelsForPicker() {
 /** Reconcile the running session-cost chip AND the IN/OUT token counters against
  *  the authoritative backend (sum of every call's locked-in usage for this session).
  *  Called on session load so a reload / session switch shows the true accumulated
- *  cost and tokens, not zero. Best-effort: leaves live accumulators untouched on
- *  failure. */
+ *  cost and tokens, not zero, plus periodically to self-heal dropped SSE events.
+ *  Catch-up only: the ledger can briefly lag a just-finished call (the billing
+ *  write lands after the llm_call_end event), so the live total is never stepped
+ *  DOWN mid-session — a reload applies the ledger exactly. Best-effort: leaves
+ *  live accumulators untouched on failure. */
 async function _fetchSessionCost() {
   const sid = app.currentSessionId || '';
-  if (!sid) { _sessionCostUsd = 0; _renderCost(); return; }
+  // No session id yet (boot / mid-navigation): skip rather than wipe — the
+  // load path applies the authoritative ledger, and zeroing here would clear
+  // the chips on a session we're merely switching between.
+  if (!sid) return;
+  const requestedRevision = _contextRevision;
   const headers = { ...authHeaders() };
   try {
     const res = await fetch(apiPath(`/admin/settings/session-cost?session_id=${encodeURIComponent(sid)}`), { headers });
     if (res.ok) {
       const d = await res.json();
+      if (app.currentSessionId !== sid) return;  // switched sessions mid-fetch — don't cross-contaminate
       if (d && typeof d.total_cost_usd === 'number') {
-        _sessionCostUsd = d.total_cost_usd;
+        _sessionCostUsd = Math.max(_sessionCostUsd, d.total_cost_usd);
         _renderCost();
+      }
+      if (d && typeof d.has_unknown === 'boolean') {
+        // Monotonic within a session: a live llm_call_end may have flagged an
+        // unknown-priced call that the ledger snapshot (taken a moment earlier)
+        // doesn't yet include. Never step that flag back down on a stale poll —
+        // resetTokens clears it on session switch.
+        _sessionHasUnknownPriced = _sessionHasUnknownPriced || d.has_unknown;
+        _renderCost();
+      }
+      // The ledger is authoritative for a restored session, including legitimate
+      // downward movement after task/tool reduction. Replace cached/open-payload
+      // values, but never overwrite an llm_call_end that arrived after this
+      // request began.
+      if (d && typeof d.context_tokens === 'number' && d.context_tokens > 0
+          && _contextRevision === requestedRevision) {
+        _contextTokens = d.context_tokens;
+        if (d.context_model) _currentModelName = String(d.context_model);
+        _contextRevision += 1;
+        _pendingCtxEstimate = 0;
+        _renderCtxIndicator();
       }
       // Also seed the IN/OUT token counters from the per-model breakdown
       if (d && d.by_model) {
@@ -831,7 +970,9 @@ async function _selectModel(slotRef) {
 
     // Resolve slot ref to selection_type + role/position.
     const slot = _allSlots.find(s => {
-      const ref = s.type === 'role' ? 'role:' + s.role : 'custom:' + s.position;
+      const ref = s.type === 'role'
+        ? 'role:' + s.role
+        : (s.entry_id ? 'entry:' + s.entry_id : 'custom:' + s.position);
       return ref === slotRef;
     });
     if (!slot) return false;
@@ -845,6 +986,7 @@ async function _selectModel(slotRef) {
       selection_type: selectionType,
       role: role,
       custom_position: customPos,
+      entry_id: slot.entry_id || '',
     };
 
     if (sid) {
@@ -854,6 +996,19 @@ async function _selectModel(slotRef) {
       });
       if (postRes.ok) {
         // Session endpoint succeeded — model saved on the server session.
+        // Announce the switch in the transcript (user-initiated: the footer
+        // picker has no tool call, so the notice + persisted row must carry
+        // initiator='user' themselves).
+        try {
+          const label = slot.type === 'role'
+            ? `Switched to the ${slot.role} model`
+            : `Switched to custom model slot ${slot.position}`;
+          if (typeof app.notifyModelSwitch === 'function') {
+            app.notifyModelSwitch(label, {
+              initiator: 'user', slot: slotRef, model: slot.model || '',
+            });
+          }
+        } catch (_) { /* best-effort */ }
       } else {
         // Session endpoint failed (e.g. session doesn't exist on server yet —
         // common before the first message is sent). Store the pending selection
@@ -893,19 +1048,26 @@ async function _selectModel(slotRef) {
 
 // Map a slider's data-key to the label + save field it drives.
 const _CC_FIELDS = {
-  threshold: { valSel: 'threshold', field: 'compact_threshold_pct' },
-  tail: { valSel: 'tail', field: 'tail_fraction_pct' },
+  threshold: { valSel: 'threshold', field: 'compact_target_tokens' },
+  tail: { valSel: 'tail', field: 'verbatim_tail_tokens' },
 };
 
 function _ccValEl(key) {
   return _compactEl ? _compactEl.querySelector(`.cmp-cc-val[data-val="${key}"]`) : null;
 }
 
+function _fmtCompactTokens(value) {
+  const n = Math.max(0, Number(value) || 0);
+  if (n >= 1000000) return `${(n / 1000000).toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}M tokens`;
+  if (n >= 1000) return `${Math.round(n / 1000)}K tokens`;
+  return `${Math.round(n).toLocaleString()} tokens`;
+}
+
 // Live label update while dragging (no save yet).
 function _onCompactSlide(slider) {
   const key = slider.dataset.key;
   const el = _ccValEl(key);
-  if (el) el.textContent = slider.value + '%';
+  if (el) el.textContent = _fmtCompactTokens(slider.value);
 }
 
 // Persist on release. Flash the label to confirm the save landed.
@@ -922,9 +1084,9 @@ async function _onCompactCommit(slider) {
   }
 }
 
-/** POST one compaction field (a whole percent) for this session. Returns true on a
+/** POST one absolute compaction token field for this session. Returns true on a
  *  confirmed save; no-op (false) outside a chat session. */
-async function _saveCompaction(field, pct) {
+async function _saveCompaction(field, tokens) {
   const sid = app.currentSessionId || '';
   if (!sid) return false;
   try {
@@ -934,7 +1096,7 @@ async function _saveCompaction(field, pct) {
       body: JSON.stringify({
         user_id: app.currentUserId || '',
         session_id: sid,
-        [field]: pct,
+        [field]: tokens,
       }),
     });
     return res.ok;
@@ -958,14 +1120,16 @@ async function _loadCompactionSettings() {
       { headers: { ...authHeaders() } });
     if (!res.ok) return;
     const d = await res.json();
-    const set = (key, pct) => {
+    const limit = Number(d.token_limit) || 1050000;
+    const set = (key, tokens) => {
       const sl = _compactEl.querySelector(`.cmp-cc-slider[data-key="${key}"]`);
       const el = _ccValEl(key);
-      if (sl && typeof pct === 'number') sl.value = String(pct);
-      if (el && typeof pct === 'number') el.textContent = pct + '%';
+      if (sl) sl.max = String(limit);
+      if (sl && typeof tokens === 'number') sl.value = String(tokens);
+      if (el && typeof tokens === 'number') el.textContent = _fmtCompactTokens(tokens);
     };
-    set('threshold', d.compact_threshold_pct);
-    set('tail', d.tail_fraction_pct);
+    set('threshold', d.compact_target_tokens);
+    set('tail', d.verbatim_tail_tokens);
   } catch (_) { /* best-effort — sliders keep their defaults */ }
 }
 
@@ -979,8 +1143,13 @@ function _runCompactNow(btn) {
     return;
   }
   if (_modelPickerEl) _modelPickerEl.style.display = 'none';
-  app.chatInput.value = '/compact';
-  try { app.sendChatMessage(); }
+  // One compaction at a time — don't stack another /compact while one runs.
+  if (app._composerLocked) return;
+  // Fire "/compact" DIRECTLY, without staging it in the pill: the user's
+  // in-progress text stays exactly as typed. The "Compacting…" progress note is
+  // shown on the activity bar above the pill by the send pipeline (blocking
+  // commands get that note instead of "Sending…"), not in the placeholder.
+  try { app.sendChatMessage('/compact'); }
   catch (e) { console.warn('Compact-now send failed:', e); }
 }
 
@@ -1401,14 +1570,20 @@ function resetTokens() {
   cumulativeIn = 0;
   cumulativeOut = 0;
   _sessionCostUsd = 0;
+  _sessionHasUnknownPriced = false;
   _pendingOutEstimate = 0;
   _streamCharCount = 0;
   _pendingCtxEstimate = 0;
+  _contextTokens = 0; // new session — never carry the previous session's high-water mark
+  _contextRevision += 1;
   _setSpinnerDir(null);
   if (tokensInEl) tokensInEl.textContent = '0';
   if (tokensOutEl) tokensOutEl.textContent = '0';
   _updateTokenBar();
   _renderCost();
+  // Re-render the ctx readout too, so a reset can't leave the previous
+  // session's stale ctx (e.g. "88K") showing beside a freshly-zeroed cost.
+  _renderCtxIndicator();
   try { localStorage.removeItem(_TOKEN_CACHE_KEY); } catch (_) {}
 }
 
@@ -1421,7 +1596,7 @@ function resetTokens() {
 let _stageTimer = null;   // setInterval handle ticking the elapsed suffix
 let _stageStart = 0;      // performance.now() when the current stage began
 
-// Terminal/one-shot notes that shouldn't carry a running clock.
+// System/one-shot notes that shouldn't carry a running clock.
 const _NO_CLOCK_NOTES = new Set(['Error', 'Stopped', 'Blocked for safety']);
 
 function _clearStageTimer() {
@@ -1437,14 +1612,26 @@ function _renderNote() {
     if (secs >= 0.3) txt += '  ·  ' + secs.toFixed(1) + 's';
   }
   textEl.textContent = txt;
+  // Duplicate the same text into the transcript as an agent bubble
+  // (mirror_activity_in_transcript) — the bar above the pill stays untouched.
+  // The note is session-scoped: mirrorActivityNote re-checks the session id and
+  // refuses to paint when it doesn't match the session on screen.
+  if (app.mirrorActivityNote) {
+    try { app.mirrorActivityNote(txt, _noteSessionId, _noteTurnId); } catch (_) { /* non-fatal */ }
+  }
 }
 
 function setNote(text) {
   // Dedupe identical notes — this also tames the per-chunk spam from `stream`
   // events, which would otherwise re-fire on every token.
   if (!text || text === currentNote) return;
+  // While a stop was requested, keep "Stopping…" pinned. The backend is still
+  // unwinding (stream tail, tool results, restore notes from the reconcile
+  // poll) and none of that may replace the stopping note — only system
+  // events, which clear _stopPending before calling setNote, may override it.
+  if (app._stopPending && text !== 'Stopping…') return;
   currentNote = text;
-  // Begin a fresh stage clock (unless this is a terminal note), then refresh on
+  // Begin a fresh stage clock (unless this is a system note), then refresh on
   // a light interval so the elapsed seconds tick up live next to the label.
   _clearStageTimer();
   if (active && !_NO_CLOCK_NOTES.has(text)) {
@@ -1498,11 +1685,13 @@ function _activate() {
 }
 
 function start(initialNote) {
+  _acquireElements();   // self-heal refs if init ran before the panel partial landed
   _clearTextTimer();
   _clearEndTimer();
   _turnEnded = false;   // user just sent — a fresh turn is beginning
   if (!active) { _resetForNewTurn(); _activate(); }
   _armWatchdog();
+  _noteSessionId = app.currentSessionId;   // the note belongs to the session being sent from
   setNote(initialNote || 'Thinking…');
 }
 
@@ -1517,7 +1706,7 @@ function stop() {
   if (pillEl) pillEl.classList.remove('thinking');
   _setSpinnerDir(null);
 
-  // A terminal response proves the agent has progressed past every tool call in
+  // A system response proves the agent has progressed past every tool call in
   // this inference turn.  A dropped WebSocket `tool_result` must therefore not
   // leave a permanent "running…" card in the transcript.  Keep the call for
   // auditability, but settle its presentation; a reload can still hydrate the
@@ -1546,6 +1735,11 @@ function stop() {
   clearTimer = setTimeout(() => { if (textEl) textEl.textContent = ''; }, 260);
   _updateBarAffordance();
   _updateTokenBar();
+  // Settle the transcript mirror: remove the live note row; keep the bubble
+  // only if it carries this turn's tool calls / updates.
+  if (app.mirrorActivityEnd) {
+    try { app.mirrorActivityEnd(); } catch (_) { /* non-fatal */ }
+  }
 }
 
 // Show a final note (Error / Stopped) briefly, then settle.
@@ -1562,7 +1756,11 @@ export function chatActivitySessionChanged() {
   _stopThinkingRamp();
   _clearTextTimer();
   _clearEndTimer();
+  _clearStageTimer();   // a stale per-stage tick must not keep re-painting
   active = false;
+  // A stop requested on the previous session must not pin "Stopping…" (or
+  // swallow notes) on the session the user just switched to.
+  app._stopPending = false;
   try { window.__agentTurnActive = false; } catch (_) {}
   resting = false;
   _turnEnded = false;
@@ -1570,11 +1768,22 @@ export function chatActivitySessionChanged() {
   currentToolAnchor = null;
   currentTurn = 0;
   currentNote = '';
+  _noteSessionId = '';
   app._activeToolGroupBubble = null;
   app._turnHasBubble = false;
+  // The viewed session is not processing until proven otherwise. Resetting this
+  // lets the reconcile poll treat the newly-opened session as fresh, so a run
+  // already in progress for it (automation / another device) is restored
+  // instead of being skipped by the wasProcessing gate.
+  app.isProcessing = false;
   closePanel();
   renderPanel();
   _updateBarAffordance();
+  // A mirror bubble left over from the previous session must not linger on the
+  // session the user just switched to (same cleanup as stop()).
+  if (app.mirrorActivityEnd) {
+    try { app.mirrorActivityEnd(); } catch (_) { /* non-fatal */ }
+  }
   if (pillEl) pillEl.classList.remove('thinking');
   if (rootEl) rootEl.classList.remove('visible', 'resting');
   if (textEl) textEl.textContent = '';
@@ -1593,12 +1802,14 @@ export function chatActivitySessionChanged() {
 // run.current_op; null/absent means "active but between tools" → generic note.
 // Live WS events then take over and update it as the turn continues.
 function chatActivityRestore(op) {
+  _acquireElements();   // self-heal refs if init ran before the panel partial landed
   let data = op;
   if (typeof op === 'string') {
     try { data = JSON.parse(op); } catch (_) { data = null; }
   }
   _turnEnded = false;   // restoring an in-flight turn — not post-turn
   _activate();
+  _noteSessionId = app.currentSessionId;   // restoring the CURRENT session's run
   if (data && typeof data.turn === 'number' && data.turn > 0) currentTurn = data.turn;
   if (data && data.tool) addToolCall(data.tool, data.args || {});
   setNote((data && data.note) || 'Working…');
@@ -2155,6 +2366,11 @@ function togglePanel() {
 // as-is (so internal/no-op steps don't blank out a meaningful note mid-turn).
 function eventToNote(event) {
   const type = event.type;
+  if (type === 'scout_response') {
+    if (event.phase === 'starting') return 'Gathering context…';
+    if (event.phase === 'ready') return 'Scout oriented…';
+    return null;
+  }
   if (type === 'stream') return 'Writing reply…';
   if (type === 'pipeline') {
     switch (event.step) {
@@ -2166,12 +2382,22 @@ function eventToNote(event) {
       case 'attachment':                return 'Reading attachment';
       case 'attachment_describe_start': return 'Looking at image';
       case 'load_tools':                return 'Building tools';
-      case 'data_src_loaded':           return 'Loading data';
       case 'turn_start':
       case 'llm_call_start':            return 'Thinking…';
       case 'guardrail_blocked':         return 'Blocked for safety';
       case 'agent_delegation':          return 'Handing off';
       case 'memory_save_start':         return 'Saving memory';
+      case 'closer_start':              return 'Sending to Closer…';
+      case 'closer_audit_start':        return 'Closer auditing…';
+      case 'closer_contract_start':     return 'Starting independent reviews…';
+      case 'contract_start':            return 'Running contract review…';
+      case 'contract_pass':             return 'Contract review passed';
+      case 'contract_block':            return 'Contract review found changes';
+      case 'contract_correction':       return 'Sending contract fixes back…';
+      case 'contract_timeout':          return 'Contract review timed out';
+      case 'contract_skipped':          return 'Contract review skipped';
+      case 'contract_stale_discard':    return 'Discarded stale review';
+      case 'closer_llm_start':          return 'Closer writing…';
       default:                          return null;
     }
   }
@@ -2183,12 +2409,26 @@ function eventToNote(event) {
 function _ensureActive(note) {
   _clearEndTimer();
   if (!active) { _resetForNewTurn(); _activate(); }
-  // A re-light AFTER the turn's terminal event is background housekeeping (memory
+  // A re-light AFTER the turn's system event is background housekeeping (memory
   // save, turn hooks, …). Settle it on the short backstop, never the in-turn
   // watchdog, so it can't hang the chip; the step's `*_end` clears it sooner.
   if (_turnEnded) _armPostTurnSettle();
   else _armWatchdog();
   setNote(note);
+}
+
+// Signal session pre-warming (session-prewarm.js) that this session's run has
+// just ended (response / error / interrupted). The pre-warm module pulls the
+// finished transcript into the IndexedDB cache so re-opening the session is an
+// instant, offline-capable cache hit. Fire-and-forget; no listeners = no-op.
+function _dispatchTurnCompleted(sid) {
+  const sessionId = sid || app.currentSessionId;
+  if (!sessionId) return;
+  try {
+    window.dispatchEvent(new CustomEvent('webagent-turn-completed', {
+      detail: { sessionId },
+    }));
+  } catch (_) { /* CustomEvent unsupported — ignore */ }
 }
 
 function handleEvent(event) {
@@ -2198,6 +2438,10 @@ function handleEvent(event) {
   // untagged event from elsewhere shouldn't hijack the indicator.
   const sid = event.session_id || event.sessionId || '';
   if (sid && app.currentSessionId && sid !== app.currentSessionId) return;
+  // Tag the note with the session it belongs to (untagged → current session).
+  // The transcript mirror uses this to refuse painting into another view.
+  _noteSessionId = sid || app.currentSessionId;
+  if (event.turn_id) _noteTurnId = String(event.turn_id);
 
   // Track the inference-turn number — turn_start (and several other in-loop
   // events) carry `turn`. tool_call/tool_result don't, so they inherit the
@@ -2237,13 +2481,13 @@ function handleEvent(event) {
     return;
   }
 
-  // Terminal events end the turn. Mark _turnEnded so anything the backend emits
+  // System events end the turn. Mark _turnEnded so anything the backend emits
   // AFTER this (background memory save, turn hooks, …) is treated as post-turn
   // housekeeping that self-clears, rather than re-lighting the bar indefinitely.
   // Also clear the stop-pending flag so the next turn starts clean.
-  if (type === 'response')    { _turnEnded = true; app._stopPending = false; stop(); return; }
-  if (type === 'error')       { _turnEnded = true; app._stopPending = false; if (active) setNote('Error');   _endSoon(); return; }
-  if (type === 'interrupted') { _turnEnded = true; app._stopPending = false; if (active) setNote('Stopped'); _endSoon(); return; }
+  if (type === 'response')    { _turnEnded = true; app._stopPending = false; stop(); _dispatchTurnCompleted(sid); return; }
+  if (type === 'error')       { _turnEnded = true; app._stopPending = false; if (active) setNote('Error');   _endSoon(); _dispatchTurnCompleted(sid); return; }
+  if (type === 'interrupted') { _turnEnded = true; app._stopPending = false; if (active) setNote('Stopped'); _endSoon(); _dispatchTurnCompleted(sid); return; }
 
   // In-turn signals can never be post-turn housekeeping. If one arrives while we
   // still think the turn ended — e.g. an event/automation run that reused the
@@ -2268,6 +2512,7 @@ function handleEvent(event) {
     app._stopPending = false; // never carry a stale stop into a new turn
     app._turnHasBubble = false;   // new exchange — needs its own fresh bubble
     currentTurn = 0;          // new exchange — turn_start will set it to 1
+    _noteTurnId = String(event.turn_id || event.id || event.interaction_id || '');
     _activate();
     _armWatchdog();
     setNote('Thinking…');
@@ -2308,8 +2553,9 @@ function handleEvent(event) {
     _ensureActive(_turnPrefix() + (event.error ? 'Error ' : 'Done ') + (event.tool || 'tool'));
     resolveToolResult(event.tool, event.result, event.duration_ms, !!event.error,
                       event.error_type, event.tool_call_id);
-    _maybeShowVaultCard(event);
+    _maybeShowSecureCard(event);
     _maybeShowChatComponent(event);
+    _maybeShowAgentProfileCard(event);
     return;
   }
 
@@ -2328,12 +2574,23 @@ function handleEvent(event) {
   // Capture token usage from pipeline llm_call_end events
   if (type === 'pipeline' && event.step === 'llm_call_end') {
     if (typeof event.input_tokens === 'number' || typeof event.output_tokens === 'number') {
+      // A call that ran on a model with no published price → show n/a instead
+      // of a misleading $0 (distinguish "free" from "we don't know").
+      if (event.cost_source === 'unknown') _sessionHasUnknownPriced = true;
       addTokens(event.input_tokens || 0, event.output_tokens || 0, event.cost_usd);
     }
     // This is the provider's exact prompt-token count for the call that just
-    // completed. It supersedes the pre-call estimate emitted for compaction.
+    // completed — the single source of truth for the ctx readout. Adopt it
+    // directly: it IS the actual context sent to the provider. That means the
+    // readout reflects compaction immediately — after a fold the next call
+    // reports the reduced prompt (summary cars replace the older turns) and
+    // this drops to it, instead of holding a stale high-water mark.
     if (typeof event.input_tokens === 'number') {
-      _contextTokens = event.input_tokens;
+      const inTok = Math.max(0, event.input_tokens);
+      if (inTok > 0) {
+        _contextTokens = inTok;   // exact count — the real context sent this call
+        _contextRevision += 1;
+      }
       _pendingCtxEstimate = 0;
       _renderCtxIndicator();
     }
@@ -2363,13 +2620,13 @@ function handleEvent(event) {
     }
   }
 
-  // Live context size from pipeline context_status events
+  // Live context gauge from pipeline context_status events. This is a chars/4
+  // ESTIMATE of the assembled context, so it no longer drives the pill's ctx
+  // readout — that stays on the provider-exact llm_call_end count (the actual
+  // context sent, so compaction drops show immediately).
+  // (chat-surface.js reads this event itself for its own context readout.)
   if (type === 'pipeline' && event.step === 'context_status') {
-    if (typeof event.tokens === 'number') {
-      _contextTokens = event.tokens;
-      _pendingCtxEstimate = 0; // real data replaces the thinking ramp
-      _renderCtxIndicator();
-    }
+    // intentionally ignored here — keep the pill on exact counts only
   }
 
   // Loop-node memory tools have no normal tool_call event, so they ride the
@@ -2387,7 +2644,7 @@ function handleEvent(event) {
   }
 
   // Post-turn background steps (memory save, …) finish with an `*_end`/completion
-  // pipeline step. Once the turn's terminal event has fired, treat that as a
+  // pipeline step. Once the turn's system event has fired, treat that as a
   // settle signal so the bar clears the moment the work is actually done, instead
   // of lingering on its `*_start` note. Guarded by _turnEnded so in-turn `*_end`
   // steps (llm_call_end fires every LLM call) can't clear a live turn.
@@ -2405,7 +2662,7 @@ function handleEvent(event) {
   }
   // When a stop was requested, let the backend's activity events still tick over
   // (watchdog, token counters) but don't replace "Stopping…" with "Writing reply…"
-  // or any other mid-stream note — only terminal events clear the stop state.
+  // or any other mid-stream note — only system events clear the stop state.
   if (app._stopPending) return;
   _ensureActive(note);
 }
@@ -2416,7 +2673,15 @@ function handleEvent(event) {
 
 export { _buildRow as buildToolRow };
 
-export function initChatActivity() {
+// ── Element acquisition ─────────────────────────────────────────────────────
+// The chat panel partial (chat-side-panel.html) is injected asynchronously at
+// boot (partialsReady). If initChatActivity() ran before it landed — an
+// intermittent race — every lookup below returns null and the activity bar is
+// silently dead for the whole page load (start()/setNote() no-op when textEl
+// is missing). Re-acquiring lazily on the send/restore paths self-heals that
+// load: by the time the user sends, the partial is in the DOM, the refs come
+// back live, and progress notes render immediately — no refresh needed.
+function _acquireElements() {
   rootEl = document.getElementById('chat-above-pill');
   pillEl = document.getElementById('chat-input-row');
   barEl = document.getElementById('chat-activity-bar');
@@ -2426,37 +2691,33 @@ export function initChatActivity() {
   tokensInEl = document.getElementById('chat-tokens-in');
   tokensOutEl = document.getElementById('chat-tokens-out');
   tokenSpinnerEl = document.getElementById('chat-token-spinner');
-  // Stats are now inside the pill (cell 2,1) — no more separate footer-left pill.
   footerLeftEl = document.getElementById('chat-pill-stats');
-  // The stats row is now inside #chat-pill-stats, not a separate #chat-footer-row.
-  // FOOTER-STATS-FIT still works on this element for shedding content.
-  footerRowEl = document.getElementById('chat-pill-stats');
   modelBtnEl = document.getElementById('chat-model-btn');
   modelCtxEl = document.getElementById('chat-model-ctx');
   costEl = document.getElementById('chat-cost');
+  return textEl;
+}
+
+// Idempotent init: element refs are re-acquired on every call (self-heals the
+// boot race and any mid-session control rebuild), but the one-shot wiring
+// (cost poll, resize observer, model-sync hook) runs only once so a re-init
+// never double-registers intervals/listeners.
+let _activityWired = false;
+
+export function initChatActivity() {
+  _acquireElements();
   // Always show the session cost (starts at $0), not gated on a non-zero total.
   _renderCost();
+  if (_activityWired) return;
+  _activityWired = true;
 
-  // FOOTER-STATS-FIT: re-fit when the footer row's width changes (panel resize,
-  // chat-pill drag, window resize). Content-driven width changes (token counts,
-  // ctx, cost) call _scheduleFooterFit from their render paths instead, since
-  // those don't change the row's own box and so don't trip the observer. The
-  // badge module (abilities.js) calls app.fitFooterStats when its count widens.
-  if (footerRowEl && typeof ResizeObserver !== 'undefined') {
-    try {
-      // Width-only guard: the final shed step collapses the left pill, which can
-      // change the row's HEIGHT — re-firing the observer and (without this) the
-      // fit, on a loop. The row's width is parent-driven and unaffected by our
-      // class toggles, so keying off width alone is both sufficient and safe.
-      new ResizeObserver(entries => {
-        const w = Math.round(entries[0].contentRect.width);
-        if (w === _lastFitRowWidth) return;
-        _lastFitRowWidth = w;
-        _scheduleFooterFit();
-      }).observe(footerRowEl);
-    } catch (_) { /* ResizeObserver unavailable — render-path + badge hooks still fit */ }
-  }
-  _scheduleFooterFit();
+  // Periodic reconcile: the live total only self-heals on session load, so also
+  // refresh it from /session-cost every few minutes and whenever the tab regains
+  // focus — closes the SSE-drift window mid-session (catch-up only, never down).
+  setInterval(() => { _fetchSessionCost(); }, 5 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') _fetchSessionCost();
+  });
 
   // The agent Config tab's "Query CLI for latest model options" button broadcasts
   // this after a successful force re-query — drop our page cache so the next
@@ -2507,8 +2768,19 @@ export function initChatActivity() {
         return;
       }
       _changerEl.classList.remove('saving');
+      // Agent-driven override (Model Switcher: set_model / use_premium_model):
+      // the pill is showing a model the USER didn't pick, so display the real
+      // model in warning color. The backend clears the override at run end and
+      // emits 'model_override' (active:false) → this branch drops → normal.
+      if (_agentOverride) {
+        _changerEl.classList.add('agent-override');
+        _changerEl.style.display = '';
+        _changerName.textContent = _shortTail(_agentOverride.model) || 'Model';
+        return;
+      }
+      _changerEl.classList.remove('agent-override');
       const slot = _allSlots.find(s => {
-        const ref = s.type === 'role' ? 'role:' + s.role : 'custom:' + s.position;
+        const ref = _slotRef(s);
         return ref === _currentSlotRef;
       });
       const model = (slot && slot.model) || '';
@@ -2562,7 +2834,7 @@ export function initChatActivity() {
     if (!_changerEl) return;
     // Resolve the slot so we can show the label *after* the check animation.
     const slot = _allSlots.find(s => {
-      const ref = s.type === 'role' ? 'role:' + s.role : 'custom:' + s.position;
+      const ref = _slotRef(s);
       return ref === slotRef;
     });
     const nextLabel = slot
@@ -2604,14 +2876,14 @@ export function initChatActivity() {
     if (!list.length) { _changerEl.classList.remove('saving'); return; }
     const cur = _currentSlotRef || '';
     let idx = list.findIndex(s => {
-      const ref = s.type === 'role' ? 'role:' + s.role : 'custom:' + s.position;
+      const ref = _slotRef(s);
       return ref === cur;
     });
     if (idx === -1) idx = 0;
     idx = (idx + dir + list.length) % list.length;
     const next = list[idx];
     if (!next) { _changerEl.classList.remove('saving'); return; }
-    const nextRef = next.type === 'role' ? 'role:' + next.role : 'custom:' + next.position;
+    const nextRef = _slotRef(next);
     if (nextRef === cur) { _changerEl.classList.remove('saving'); return; }
     _saveModelWithFeedback(nextRef).then(ok => {
       if (!ok) _changerEl.classList.remove('saving');
@@ -2707,7 +2979,7 @@ export function initChatActivity() {
     });
   }
   function _getModelRole(slot) {
-    const slotRef = slot.type === 'role' ? 'role:' + slot.role : 'custom:' + slot.position;
+    const slotRef = _slotRef(slot);
     const isActive = slotRef === _currentSlotRef;
     if (isActive) return 'active';
     // Role slots get named badges; custom are 'plain'.
@@ -2788,7 +3060,7 @@ export function initChatActivity() {
       return;
     }
     list.forEach((s, i) => {
-      const slotRef = s.type === 'role' ? 'role:' + s.role : 'custom:' + s.position;
+      const slotRef = _slotRef(s);
       const role = _getModelRole(s);
       const baseClass = 'cml-item cml-' + role;
       const item = document.createElement('div');
@@ -2901,11 +3173,15 @@ export function initChatActivity() {
   app.chatActivityStart = start;
   app.chatActivityStop = stop;
   app.chatActivityRestore = chatActivityRestore;
+  // Exposed so loadSessionChat can reset activity state on EVERY switch path
+  // (Sessions page / genui / optimizer stats set currentSessionId directly and
+  // call loadSessionChat without going through switchToSession).
+  app.chatActivitySessionChanged = chatActivitySessionChanged;
   // Let Settings re-pull the footer context indicator after a model change.
   app.refreshModelContext = refreshModelContext;
-  // Let the abilities badge (abilities.js) re-fit the stats when its count
-  // widens — that lives in the right-side group and eats the stats' space.
-  app.fitFooterStats = _scheduleFooterFit;
+  // Exposed so session-load.js can self-heal cost + ctx right after each
+  // navigation, instead of waiting up to 5 minutes for the poll to fire.
+  app.fetchSessionCost = _fetchSessionCost;
 
   // Receive every current-session agent event from the per-user WebSocket.
   app._chatActivityHandler = handleEvent;
@@ -2913,7 +3189,36 @@ export function initChatActivity() {
   const _origHandler = app._chatActivityHandler;
   app._chatActivityHandler = function(event) {
     const ret = _origHandler.apply(this, arguments);
-    if (event && event.model) {
+    if (event && event.type === 'model_override') {
+      // Agent-driven model override turned on/off (Model Switcher tools, the
+      // new-user-message reset, or the run-end backend cleanup). Update the
+      // cached state and re-render both model selectors (warning color while
+      // active, normal when cleared).
+      const hadOverride = !!_agentOverride;
+      _agentOverride = event.active ? { model: event.model || '' } : null;
+      Promise.resolve().then(() => { _syncModelChanger(); _renderModelBtn(); });
+      // Live transcript notice for the switch, anchored to the running turn so
+      // it lands between that turn's tool calls (mirrors the mode notice).
+      // Replayed events are stale — never re-announce an old switch.
+      try {
+        if (!event.replayed && typeof app.notifyModelSwitch === 'function') {
+          if (event.active && event.model) {
+            app.notifyModelSwitch(`Switched to ${event.model}`, {
+              initiator: 'agent', tool: 'set_model', model: event.model,
+              turnId: event.turn_id || undefined,
+            });
+          } else if (!event.active && hadOverride) {
+            // Only announce the revert when an override WAS active — the
+            // backend now emits active:false only on a real reset, but stay
+            // defensive against redundant clears.
+            app.notifyModelSwitch('Reverted to the default model', {
+              initiator: 'agent', tool: 'reset',
+              turnId: event.turn_id || undefined,
+            });
+          }
+        }
+      } catch (_) { /* best-effort */ }
+    } else if (event && event.model) {
       Promise.resolve().then(() => _syncModelChanger());
     }
     return ret;
@@ -2922,4 +3227,44 @@ export function initChatActivity() {
   app.setContextFromMessages = setContextFromMessages;
   app.setContextTokens = setContextTokens;
   app.setSessionUsage = setSessionUsage;
+  // Per-bubble "more" menu reads the SAME ctx readout the pill renders
+  // (_renderCtxIndicator): displayed ctx (real count + thinking ramp), the
+  // model's window, the model name, and pre-formatted labels so the menu text
+  // matches the pill exactly (same _fmtCtxNum / decimals rules).
+  app.getContextStats = function() {
+    let entry = null;
+    const cfg = _statsConfig();
+    if (cfg) entry = cfg.find(e => e.type === 'ctx') || cfg.find(e => e.type === 'ctx-max');
+    const decimals = entry ? entry.decimals : null;
+    return {
+      ctx: _displayedCtx(),
+      rawCtx: _contextTokens || 0,
+      max: _modelContextLimit || 0,
+      model: _currentModelName || '',
+      ctxLabel: _fmtCtxNum(_displayedCtx(), decimals),
+      maxLabel: _fmtCtxNum(_modelContextLimit, decimals),
+    };
+  };
+  // Per-bubble "more" menu Model row: resolve the roster POSITION label for a
+  // model id — "Standard" / "Premium" / "Vision" / "Image" for role slots,
+  // "Custom N" for custom slots — from the SAME slot list the pill's model
+  // picker uses (_allSlots). Matches by full id or short name. Returns null
+  // when the model isn't on the roster (agent override, legacy model).
+  app.getModelRosterInfo = function(modelId) {
+    if (!modelId || !_allSlots || !_allSlots.length) return null;
+    const short = (name) => String(name || '').includes('/')
+      ? String(name).slice(String(name).lastIndexOf('/') + 1)
+      : String(name || '');
+    const target = short(modelId);
+    const slot = _allSlots.find(s => {
+      if (!s || !s.model) return false;
+      return String(s.model) === String(modelId) || short(s.model) === target;
+    });
+    if (!slot) return null;
+    if (slot.type === 'role') {
+      const labels = {standard: 'Standard', premium: 'Premium', image_in: 'Vision', image_out: 'Image'};
+      return { position: labels[slot.role] || slot.role, ref: 'role:' + slot.role };
+    }
+    return { position: 'Custom ' + (slot.position || 1), ref: _slotRef(slot) };
+  };
 }

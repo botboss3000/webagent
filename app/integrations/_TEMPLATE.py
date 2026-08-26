@@ -9,7 +9,7 @@ The app *discovers* plugin files at runtime — you register nothing by hand.
   • This folder (app/integrations/)  → OAuth / API integrations (this template)
   • app/events/sources/              → "when X happens" event sources
   • app/communications/plugins/      → message channels (telegram, slack, …)
-  • app/connectors/                  → per-agent external data sources
+  • plugins/abilities/Memory/       → connected knowledge sources
   • app/secrets/                     → secrets vaults
   • app/encryption/                  → encryption methods
   • plugins/billing/processors/      → payment processors

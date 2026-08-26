@@ -34,12 +34,6 @@
 /* Slim scrollbars matching the rest of the app (agents page baseline:
    width 5px, thumb var(--bg-tint), transparent track). Applied to the table area,
    per-cell overflow scrollbars, and the sidebar table list. */
-#db-table-data,
-#db-table-data *,
-#db-table-list {
-    scrollbar-width: thin;
-    scrollbar-color: var(--bg-tint) transparent;
-  }
 #db-table-data::-webkit-scrollbar,
 #db-table-data *::-webkit-scrollbar,
 #db-table-list::-webkit-scrollbar {
@@ -71,11 +65,6 @@
    `#db-table-data *` rule (descendant scrollbars like .db-cell) doesn't keep
    the dark thumb color on a light background. Uses the warm peach used by
    the rest of the light theme. */
-body.light-mode #db-table-data,
-body.light-mode #db-table-data *,
-body.light-mode #db-table-list {
-    scrollbar-color: var(--bg-tint) transparent;
-  }
 body.light-mode #db-table-data::-webkit-scrollbar-thumb,
 body.light-mode #db-table-data *::-webkit-scrollbar-thumb,
 body.light-mode #db-table-list::-webkit-scrollbar-thumb {
@@ -922,8 +911,6 @@ body.light-mode .ac-tab.active .ac-tab-count-badge {
   display: flex;
   flex-direction: column;
   gap: 40px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border, var(--bg-tint)) transparent;
 }
 #app-config-content::-webkit-scrollbar { width: 5px; }
 #app-config-content::-webkit-scrollbar-thumb {
@@ -1383,7 +1370,7 @@ live/scheduled) */
 /* ── Optimizer Runs dashboard ───────────────────────────────────────
    Sortable / filterable runs table + expandable per-stage detail. Built on
    .ac-stats-table; all colours derive from the design-system palette. Markup:
-   ui/admin-tools/instances/app-config/optimizer/optimizer.html · logic: optimizer-stats.js */
+   ui/main-panel/instances/settings/optimizer/optimizer-stats.js · logic: optimizer-stats.js */
 .ac-opt-toolbar {
   display: flex; align-items: center; justify-content: space-between;
   gap: 10px; flex-wrap: wrap; margin-bottom: 10px;
@@ -1866,6 +1853,25 @@ live/scheduled) */
    stand taller than on/off rows, breaking the uniform table rhythm. */
 .ac-config-control > select.ac-config-sel { min-width: 132px; padding: 5px 10px; font-size: 12px; }
 .ac-config-control > input.ac-config-key { width: 168px; }
+.ac-range-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 210px;
+}
+.ac-config-range {
+  width: 158px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.ac-config-range:disabled { cursor: default; opacity: 0.6; }
+.ac-range-value {
+  min-width: 38px;
+  color: var(--fg-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
 /* Optional schema note rendered under an ability's settings list. */
 .ac-config-note { font-size: 11px; color: var(--fg-muted, var(--fg-3)); margin: 8px 2px 2px; }
 /* The transient auto-save check OVERLAYS the control's right edge rather than
@@ -2129,6 +2135,17 @@ live/scheduled) */
 .ac-sr-check-cell.disabled:hover {
   border-color: var(--border);
   background: transparent;
+}
+.ac-sr-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.ac-sr-desc {
+  font-size: 10.5px;
+  color: var(--fg-muted, var(--fg-3));
+  line-height: 1.35;
 }
 
 /* ── Roles more-button + floating popover ─────────────────────────────────
@@ -3214,6 +3231,71 @@ body.light-mode .ac-ability-desc {
   align-items: center;
   padding-top: 3px;   /* centres 13px SVG with the 18px icon */
 }
+
+/* ── "More" (⋯) column — mirrors the LEFT chevron column geometry ────────────
+   An ability row's control column now holds just the toggle + a ⋯ button. The
+   button's 13px slot is the exact mirror of the left chevron slot: flex-shrink
+   0, align-self flex-start, padding-top 3px, and a -10px margin that cancels
+   the flex column-gap so it sits flush against the toggle (the chevron uses
+   margin-right:-10px to sit flush against the icon). The 4px right margin
+   matches the admin group-delete button so both tables' right edges align.
+   (SISTER-PANEL: AGENT-ABILITY-TABLE.) */
+.ac-row-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  min-width: 13px;
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 3px 0 0;
+  margin: 0 4px 0 -10px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg-muted, var(--fg-3));
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.ac-row-more:hover { color: var(--fg-1); background: rgba(var(--brand-rgb), 0.08); }
+.ac-row-more:disabled { opacity: 0.4; cursor: default; }
+
+/* ── Group status card (replaces the group tri — read-only) ──────────────────
+   The group head's Off·Mixed·On tri-toggle is gone; a small status pill
+   summarises the group: Disabled (off) · Partial (mixed) · Enabled (on), or "—"
+   when the group has no on/off members (credential/integration groups — the
+   host page paints its own configured-count onto those). Theme-safe via
+   design-system tokens. (SISTER-PANEL: AGENT-ABILITY-TABLE.) */
+.ac-group-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 2px 9px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.5;
+  border-radius: 10px;
+  border: var(--border-width) solid var(--border);
+  background: var(--bg-1);
+  color: var(--fg-3);
+  white-space: nowrap;
+  cursor: default;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.ac-group-status[data-state="mixed"] {
+  color: var(--warning);
+  border-color: var(--warning-soft);
+  background: var(--warning-soft);
+}
+.ac-group-status[data-state="on"] {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
 body.light-mode .ac-list,
 body.light-mode .ac-abilities-compact {
   background: var(--bg-elev);
@@ -3557,7 +3639,7 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
    ║  >>> If you restyle these groups, change them HERE only. Do not fork    ║
    ║  >>> per-page copies — every page reads from this single block so the   ║
    ║  >>> whole app stays visually coherent. The matching markup contract    ║
-   ║  >>> is documented in ui/admin-tools/instances/app-config/agent-settings/agent-settings.html (search   ║
+   ║  >>> is documented in ui/main-panel/instances/settings/pages/agent-tools.html (search   ║
    ║  >>> "COLLAPSIBLE SECTION PATTERN").                                    ║
    ║                                                                        ║
    ║  STICKY-NAV PAGES (App/Agent Settings · Data Management · Features —    ║
@@ -3712,7 +3794,7 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
 .qr-pop {
   position: fixed; z-index: 1000;
   display: flex; flex-direction: column;
-  width: 104px;
+  width: 208px;
   background: var(--bg-elev, var(--bg-0));
   border: var(--border-width) solid var(--border);
   border-radius: 8px;
@@ -3739,7 +3821,7 @@ body.light-mode .ac-soon-pill { background: rgba(var(--ink-rgb), 0.08); border-c
 .qr-pop-close > svg, .qr-pop-close > .lucide-icon { width: 12px; height: 12px; }
 /* White plate — the QR renders dark-on-light so it scans in either theme. */
 .qr-pop-plate {
-  background: #ffffff; padding: 4px; align-self: stretch;
+  background: #ffffff; padding: 8px; align-self: stretch;
   cursor: grab;
   -webkit-user-drag: none; user-select: none; -webkit-user-select: none;
 }
@@ -4256,7 +4338,7 @@ textarea.ac-dropzone.is-dragover {
 /* ── ADVANCED SCROLL: sticky section navigator (opt-in via .ac-stickynav) ────
    A config page opts in by adding `ac-stickynav` to its `<section>` and calling
    initStickyNav() from its module (shared code in
-   ui/admin-tools/instances/app-config/sticky-nav.js). On those pages the section headings
+   ui/main-panel/instances/settings/sticky-nav.js). On those pages the section headings
    stay on screen the WHOLE time you scroll: a heading whose table you've
    scrolled past pins to the TOP of the list, a heading whose table is still
    coming up pins to the BOTTOM, and the one you're reading sits between them
@@ -5449,6 +5531,57 @@ body {
 .debug-console-toggle-btn.has-errors:hover {
   color: var(--danger);
   background: rgba(var(--danger-rgb), 0.18);
+}
+/* Kill-switch button in header (left of the debug toggle). Same static shell
+   treatment; turns danger-red while engaged and shows a stronger fill while
+   armed for its two-tap confirm. Admin-only (revealed by kill-switch.js). */
+.kill-switch-toggle-btn {
+  background: none;
+  border: 0;
+  color: var(--fg-3);
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+.kill-switch-toggle-btn[hidden] { display: none; }
+.kill-switch-toggle-btn:hover {
+  color: var(--fg-1);
+  background: rgba(var(--brand-rgb), 0.08);
+}
+.kill-switch-toggle-btn.active {
+  color: var(--danger);
+  background: rgba(var(--danger-rgb), 0.14);
+}
+.kill-switch-toggle-btn.active:hover {
+  color: var(--danger);
+  background: rgba(var(--danger-rgb), 0.2);
+}
+.kill-switch-toggle-btn.is-armed {
+  color: var(--danger);
+  background: rgba(var(--danger-rgb), 0.22);
+  animation: kill-switch-arm-pulse 0.8s ease-in-out infinite;
+}
+.kill-switch-toggle-btn.is-busy {
+  cursor:wait;
+  opacity:0.78;
+}
+.kill-switch-live {
+  position:absolute;
+  width:1px;
+  height:1px;
+  padding:0;
+  margin:-1px;
+  overflow:hidden;
+  clip:rect(0,0,0,0);
+  white-space:nowrap;
+  border:0;
+}
+@keyframes kill-switch-arm-pulse {
+  0%, 100% { background: rgba(var(--danger-rgb), 0.22); }
+  50% { background: rgba(var(--danger-rgb), 0.4); }
 }
 /* Update-available notifier (header, next to the debug toggle). Same static
    shell treatment as the debug toggle; the icon is `hidden` unless an update

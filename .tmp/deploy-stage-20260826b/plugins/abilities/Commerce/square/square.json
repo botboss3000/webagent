@@ -1,0 +1,12 @@
+{
+  "display_name": "Square",
+  "kind": "placeholder",
+  "icon": "square",
+  "color": "#e0af68",
+  "description": "Square Online catalog, inventory, orders, customers, and checkout.",
+  "note": "Coming soon — connects through Square OAuth; transaction fees still apply.",
+  "simple": false,
+  "placeholder": true,
+  "tools": [],
+  "order": 4
+}

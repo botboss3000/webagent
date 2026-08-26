@@ -8,7 +8,7 @@ import { _refreshLucideIcons } from '../../shared/js/dom-utils.js';
 import { app } from '../../shared/js/state.js';
 import { apiPath } from '../../shared/js/config.js';
 import { addAttachmentsToMessage, getPendingAttachments, renderAttachmentElement } from '../../shared/js/attachments.js';
-import { getAccessMode, fetchAccessMode, authHeaders } from '../../shared/js/left-login.js';
+import { getAccessMode, fetchAccessMode, authHeaders, showLeftOverlay } from '../../shared/js/left-login.js';
 import { addChatBubble } from './chat-bubble.js';
 import { _addBubbleActions, _getBubbleText } from './chat-bubble-actions.js';
 import { startReconcileLoop } from './chat-reconcile.js';
@@ -16,6 +16,19 @@ import { _transcriptChangedRemotely } from './chat-message-cache.js';
 import { agentChatMsg } from '../../shared/js/app-prompts.js';
 import { storageAdapter } from './storage/storage-adapter.js';
 import browserRouter from './storage/browser-router.js';
+import { kvCache } from './storage/kv-cache.js';
+import { browserPersistenceAllowed } from '../../shared/js/browser-storage-policy.js';
+
+// After a tenant purge/logout the old tenant's outbox/draft must not be written
+// back to the shared localStorage bucket or IndexedDB — the next tenant's boot
+// would migrate them into THEIR database (the synchronous mirrors below bypass
+// kvCache's own epoch guard, so chat-send keeps its own latch, mirroring
+// chat-message-cache). The page reloads after logout, so the latch never needs
+// re-arming.
+let _purged = false;
+if (typeof window !== 'undefined') {
+  window.addEventListener('webagent-browser-storage-purge', () => { _purged = true; });
+}
 
 // ── Chat gate ──────────────────────────────────────────────────────────────
 
@@ -49,9 +62,10 @@ function applyChatGate() {
       // A blocking built-in command (e.g. /compact) is running synchronously.
       // Keep the pill USABLE so the user can type and queue a message; it will
       // be sent automatically when the command finishes. The Stop button stays
-      // live as the escape hatch. Placeholder hints that compaction is underway.
+      // live as the escape hatch. Progress (e.g. "Compacting…") is shown on the
+      // activity bar above the pill, NOT in the placeholder — the user's
+      // in-progress text must stay untouched.
       app.chatInput.disabled = false;
-      app.chatInput.placeholder = app.chatInput.placeholder || 'Compacting context… type to queue';
       app.chatSend.disabled = !app.chatInput.value.trim();
       _updateInputRowState();
       return;
@@ -203,15 +217,21 @@ function _isSystemSlashCommand(text) {
   return /^\/[a-zA-Z]/.test((text || '').trim());
 }
 
-// Message queued while a blocking command (e.g. /compact) is running — sent
-// automatically when the command finishes. Cleared on Stop/abort.
-let _queuedMessage = null;
+// Messages typed while a blocking command (e.g. /compact) is running are
+// deferred DURABLY, not held in memory: _queueMessageDuringCommand writes the
+// entry to the outbox (IndexedDB + localStorage mirror — survives refresh and
+// tab close) and surfaces it as a pending "You (queued…)" bubble. It is POSTed
+// when the command finishes; if the server is still compacting at that point
+// (e.g. after a reload), the server persists it as status='queued' with
+// metadata queued_for='compact' and runs it when the compaction drains — so a
+// server restart in between cannot lose it either (boot recovery drains the
+// leftover rows). Stop/abort discards deferred entries via _discardDeferredMessages.
 
 // A message sent while a blocking command (e.g. /compact) is running is
 // surfaced as a "You (queued…)" bubble — the same pending look used for
 // gate-queued messages — instead of an announcement in the pill placeholder.
-// The queue holds at most one message, so a newer send replaces the older
-// bubble (mirrors _queuedMessage being overwritten).
+// At most one deferred message is shown at a time; a newer send replaces the
+// older bubble (mirrors the outbox holding at most one deferred entry).
 function _renderQueuedBubble(text) {
   if (!app.chatMessages) return;
   app.chatMessages.querySelectorAll(':scope > .chat-bubble.user[data-blocked-queued]')
@@ -224,10 +244,187 @@ function _renderQueuedBubble(text) {
   if (label) label.textContent = 'You (queued\u2026)';
 }
 
-// Lock the pill while a blocking built-in runs; Stop stays clickable.
-function _lockComposerForCommand(hint) {
+// Defer a message typed while a blocking command (e.g. /compact) is running.
+// The entry goes into the durable outbox with defer_while_locked so the poll
+// holds it until the composer unlocks; the pending bubble is rendered now and
+// the pill is cleared (the message is queued — not still being typed).
+function _queueMessageDuringCommand(text) {
+  const entry = {
+    id: 'msg_' + Date.now() + '_' + (++_outboxIdCounter),
+    text: String(text || ''),
+    session_id: app.currentSessionId,
+    user_id: app.currentUserId,
+    agent_id: app.currentAgentId,
+    timestamp: new Date().toISOString(),
+    defer_while_locked: true,  // skip the outbox poll until the command finishes
+  };
+  if (app.targetDevice) entry.target_device = app.targetDevice;
+  _addToOutbox(entry);
+  _renderQueuedBubble(text);
+  if (app.chatInput) {
+    app.chatInput.value = '';
+    if (app.chatSend) app.chatSend.disabled = true;
+    _updateInputRowState();
+    _autoResizePill(app.chatInput);
+  }
+  _clearDraft();
+}
+
+function _setOfflineComposerNotice(message) {
+  const notice = document.getElementById('offline-reader-composer-notice');
+  if (notice) notice.textContent = message;
+}
+
+function _renderOfflineQueuedBubble(entry) {
+  if (!app.chatMessages || !entry?.id) return null;
+  const existing = app.chatMessages.querySelector(
+    `:scope > .chat-bubble.user[data-pending-id="${CSS.escape(entry.id)}"]`,
+  );
+  if (existing) return existing;
+  const bubble = addChatBubble(
+    'user', entry.text, undefined, undefined, undefined, undefined, entry.timestamp,
+  );
+  if (!bubble) return null;
+  bubble.setAttribute('data-pending-id', entry.id);
+  bubble.setAttribute('data-offline-queued', '1');
+  bubble.classList.add('pending', 'saving');
+  let label = bubble.querySelector('.label');
+  if (!label) {
+    label = document.createElement('span');
+    label.className = 'label';
+    bubble.insertBefore(label, bubble.firstChild);
+  }
+  label.textContent = 'You (queued offline…)';
+  return bubble;
+}
+
+function _queueMessageOffline(text, textOverride) {
+  if (app.tunnel?.active || app.terminalChat?.active) {
+    _setOfflineComposerNotice('Offline · terminal commands cannot be queued');
+    return false;
+  }
+  if (!app.currentUserId || !app.currentAgentId || !app.currentSessionId) {
+    _setOfflineComposerNotice('Offline · open a cached session before queuing a message');
+    return false;
+  }
+  if (String(app.currentSessionId).startsWith('codex:')) {
+    _setOfflineComposerNotice('Offline · Codex task messages cannot be queued safely');
+    return false;
+  }
+  if (getPendingAttachments().length > 0) {
+    _setOfflineComposerNotice('Offline · remove attachments before queuing this message');
+    return false;
+  }
+  const entry = {
+    id: 'msg_' + Date.now() + '_' + (++_outboxIdCounter),
+    text: String(text || ''),
+    session_id: app.currentSessionId,
+    user_id: app.currentUserId,
+    agent_id: app.currentAgentId,
+    execution_mode: app.executionMode || 'ask',
+    timestamp: new Date().toISOString(),
+    queued_offline: true,
+    transport: storageAdapter.isBrowser ? 'browser' : 'server',
+  };
+  if (app.pendingAppControl) {
+    entry.app_control = app.pendingAppControl;
+    app.pendingAppControl = null;
+  }
+  if (app.targetDevice) entry.target_device = app.targetDevice;
+  _addToOutbox(entry);
+  _renderOfflineQueuedBubble(entry);
+  _recordPersistence(entry.id, 'queued', 'Queued offline; waiting for confirmed server reconnection.');
+  if (typeof textOverride !== 'string' && app.chatInput) {
+    app.chatInput.value = '';
+    if (app.chatSend) app.chatSend.disabled = true;
+    _updateInputRowState();
+    _autoResizePill(app.chatInput);
+    _clearDraft();
+    if (typeof app.clearSuggestions === 'function') {
+      try { app.clearSuggestions(); } catch (_) {}
+    }
+  }
+  _setOfflineComposerNotice('Offline · message queued and will send after reconnect');
+  return true;
+}
+
+// Stop/abort escape hatch: drop messages deferred behind a blocking command
+// (mirrors the old "Stop clears the queued message" behaviour).
+function _discardDeferredMessages() {
+  const q = _readOutbox();
+  const kept = q.filter(e => !e.defer_while_locked);
+  if (kept.length !== q.length) _writeOutbox(kept);
+  if (app.chatMessages) {
+    app.chatMessages.querySelectorAll(':scope > .chat-bubble.user[data-blocked-queued]')
+      .forEach(el => el.remove());
+  }
+}
+
+// Composer lock + "Compacting…" progress, driven by the server's agent_status
+// 'compacting'/'compact_done' broadcasts or by transcript restore (a durable
+// queued_for='compact' row). Uses the same _composerLocked flag as the live
+// /compact path, so the pill stays usable (type + queue) with Stop live as the
+// escape hatch.
+app._lockComposerForCompaction = () => {
+  if (app._composerLocked) return;
   app._composerLocked = true;
-  if (app.chatInput) app.chatInput.placeholder = hint || 'Working… click Stop to cancel';
+  applyChatGate();
+  if (app.chatActivityStart) app.chatActivityStart('Compacting\u2026');
+};
+app._unlockComposerForCompaction = () => {
+  if (!app._composerLocked) return;
+  app._composerLocked = false;
+  applyChatGate();
+  if (app.chatActivityStop) app.chatActivityStop();
+  // A compaction just finished — flush any deferred messages now.
+  _flushOutbox().catch(() => { /* retried by the outbox poll */ });
+};
+
+// Register a server-persisted compaction-queued message (status='queued',
+// metadata queued_for='compact') in the gate-queue state so the 'running'
+// broadcast clears it, stamp the pending bubble with the real turn id, and
+// lock the composer until the drain runs. On a fresh page there may be no
+// deferred bubble in the DOM (the entry was flushed by the outbox poll) — one
+// is created here; the reconcile loop adopts it by id when it renders the row.
+function _stampCompactionQueued(entry, turnId) {
+  const sid = String(entry.session_id || app.currentSessionId || '');
+  if (turnId) {
+    _gateQueueBySession.set(sid, {
+      turnId,
+      queuePosition: null,
+      text: String(entry.text || ''),
+    });
+    let qb = app.chatMessages
+      ? app.chatMessages.querySelector(':scope > .chat-bubble.user[data-blocked-queued]')
+      : null;
+    if (!qb && sid === String(app.currentSessionId || '') && entry.text && app.chatMessages) {
+      qb = addChatBubble('user', String(entry.text || ''));
+      if (qb) {
+        qb.setAttribute('data-blocked-queued', '1');
+        qb.classList.add('pending', 'saving');
+        const lbl = qb.querySelector('.label');
+        if (lbl) lbl.textContent = 'You (queued\u2026)';
+      }
+    }
+    if (qb) {
+      qb.setAttribute('data-msg-id', String(turnId));
+      qb.setAttribute('data-gate-queued', '1');
+    }
+  }
+  // Only lock the composer when the queued message belongs to the session
+  // currently on screen — a deferred entry flushed from another session (user
+  // switched away mid-compaction) must not lock the wrong view.
+  if (sid === String(app.currentSessionId || '')
+      && typeof app._lockComposerForCompaction === 'function') {
+    try { app._lockComposerForCompaction(); } catch (_) { /* ignore */ }
+  }
+}
+
+// Lock the pill while a blocking built-in runs; Stop stays clickable. The pill
+// keeps its normal placeholder and the user's in-progress text untouched —
+// progress (e.g. "Compacting…") is shown on the activity bar above the pill.
+function _lockComposerForCommand() {
+  app._composerLocked = true;
   applyChatGate();
 }
 function _unlockComposer() {
@@ -235,21 +432,19 @@ function _unlockComposer() {
   app._composerLocked = false;
   applyChatGate();
   // Any bubble queued behind the blocking command is stale the moment the
-  // composer unlocks: either the message is sent below (the normal send
+  // composer unlocks: the deferred message is sent below (the normal send
   // pipeline renders a fresh bubble) or the user stopped/aborted and the
-  // queue was cleared. Drop it either way — never leave a phantom "queued"
+  // queue was discarded. Drop it either way — never leave a phantom "queued"
   // bubble in the transcript.
   if (app.chatMessages) {
     app.chatMessages.querySelectorAll(':scope > .chat-bubble.user[data-blocked-queued]')
       .forEach(el => el.remove());
   }
-  // If a message was queued during the blocking command, send it now.
-  if (_queuedMessage) {
-    const msg = _queuedMessage;
-    _queuedMessage = null;
-    app.chatInput.value = msg;
-    sendMessage();
-  }
+  // Send messages deferred behind the blocking command (durable outbox entries
+  // written by _queueMessageDuringCommand). Fire-and-forget: the POST happens
+  // here; the reply arrives via the normal WS / reconcile path. If the server
+  // is somehow still compacting it answers 'queued' and the drain runs it.
+  _flushOutbox().catch(() => { /* retried by the outbox poll */ });
 }
 app._unlockComposer = _unlockComposer;
 
@@ -277,27 +472,45 @@ function _updateInputRowState() {
 }
 
 // ── session_seq persistence ──
-const _LAST_SEQ_LS_KEY = 'webagent.lastSessionSeq.v1';
+// Migrated from the localStorage blob 'webagent.lastSessionSeq.v1' (a map of
+// sessionId → seq) to one app_cache row per session ('chat:lastSeq:<sessionId>').
+// The module-scope load below runs before storage hydration, so kvCache reads
+// the registered legacy blob until the migration copies it into IndexedDB.
+kvCache.registerLegacyMap('webagent.lastSessionSeq.v1', 'chat:lastSeq:');
 function _persistLastSessionSeq() {
-  try {
-    localStorage.setItem(_LAST_SEQ_LS_KEY, JSON.stringify(app.lastSessionSeq || {}));
-  } catch (_) { /* quota / private mode — non-fatal */ }
+  kvCache.setAll('chat:lastSeq:', app.lastSessionSeq || {});
 }
 function _loadLastSessionSeq() {
-  try {
-    const raw = localStorage.getItem(_LAST_SEQ_LS_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') {
-      app.lastSessionSeq = parsed;
-    }
-  } catch (_) { /* corrupt — drop silently */ }
+  const parsed = kvCache.getAll('chat:lastSeq:');
+  if (parsed && typeof parsed === 'object' && Object.keys(parsed).length) {
+    app.lastSessionSeq = { ...(app.lastSessionSeq || {}), ...parsed };
+  }
 }
 _loadLastSessionSeq();
 
+// Boot-time load runs before hydration; re-merge persisted rows once storage
+// is ready, preferring any newer in-memory values captured this page's lifetime.
+if (typeof window !== 'undefined') {
+  window.addEventListener('webagent-kv-cache-hydrated', () => {
+    const parsed = kvCache.getAll('chat:lastSeq:');
+    app.lastSessionSeq = { ...parsed, ...(app.lastSessionSeq || {}) };
+  });
+}
+
 // ── Outgoing message queue (outbox) ─────────────────────────────────
+// Migrated from the localStorage blob 'webagent.pendingMessages.v1' to a single
+// app_cache row 'chat:outbox' (the whole queue — order matters for FIFO flush).
+// registerLegacyValue keeps boot-time reads working until hydration migrates the
+// blob; the synchronous localStorage mirror below preserves the old crash-
+// durability guarantee (an async IndexedDB flush can be lost if the tab dies
+// first), and migrateLegacyValue treats any surviving mirror as authoritative
+// on the next boot.
 const _OUTBOX_LS_KEY = 'webagent.pendingMessages.v1';
-const _PERSISTENCE_RECEIPTS_LS_KEY = 'webagent.messagePersistenceReceipts.v1';
+const _OUTBOX_CACHE_KEY = 'chat:outbox';
+kvCache.registerLegacyValue(_OUTBOX_LS_KEY, _OUTBOX_CACHE_KEY, { parseJson: true });
+// Persistence receipts were migrated to app_cache rows ('chat:receipt:<msgId>')
+// with a 24h TTL.
+const _PERSISTENCE_RECEIPTS_TTL_MS = 24 * 60 * 60 * 1000;
 let _outboxIdCounter = 0;
 // Queue status travels over the websocket independently of the send response.
 // Keep the small amount of state needed to reconnect the two paths: an event
@@ -323,48 +536,40 @@ const _outboxInFlight = new Set();
 
 function _recordPersistence(id, state, detail) {
   try {
-    const all = JSON.parse(localStorage.getItem(_PERSISTENCE_RECEIPTS_LS_KEY) || '{}');
-    const receipt = all[id] || { events: [] };
-    receipt.events.push({ state, detail, at: new Date().toISOString() });
+    const current = kvCache.get('chat:receipt:' + id);
+    const events = Array.isArray(current?.events) ? current.events : [];
+    events.push({ state, detail, at: new Date().toISOString() });
     // Retain a compact audit trail for recent messages without allowing this
-    // browser-side recovery aid to grow without bound.
-    receipt.events = receipt.events.slice(-12);
-    all[id] = receipt;
-    const ids = Object.keys(all);
-    if (ids.length > 100) {
-      ids.sort((a, b) => Date.parse(all[a].events?.at(-1)?.at || 0) - Date.parse(all[b].events?.at(-1)?.at || 0));
-      ids.slice(0, ids.length - 100).forEach(old => delete all[old]);
-    }
-    localStorage.setItem(_PERSISTENCE_RECEIPTS_LS_KEY, JSON.stringify(all));
-  } catch (_) { /* localStorage is a recovery aid, never a send blocker */ }
+    // browser-side recovery aid to grow without bound. TTL sweeps stale rows.
+    kvCache.set('chat:receipt:' + id, { events: events.slice(-12) }, { ttlMs: _PERSISTENCE_RECEIPTS_TTL_MS });
+  } catch (_) { /* receipts are a recovery aid, never a send blocker */ }
 }
 
 function _persistenceDetails(id) {
   try {
-    const all = JSON.parse(localStorage.getItem(_PERSISTENCE_RECEIPTS_LS_KEY) || '{}');
-    return all[id]?.events || [];
+    const current = kvCache.get('chat:receipt:' + id);
+    return Array.isArray(current?.events) ? current.events : [];
   } catch (_) { return []; }
 }
 
 function _readOutbox() {
-  let q;
-  try {
-    const raw = localStorage.getItem(_OUTBOX_LS_KEY);
-    q = raw ? JSON.parse(raw) : [];
-  } catch (_) { return []; }
-  if (!Array.isArray(q) || q.length === 0) return Array.isArray(q) ? q : [];
+  const q = kvCache.get(_OUTBOX_CACHE_KEY);
   // Never silently discard unsaved user text. The explicit dismiss control is
   // the only removal path other than a durable server acknowledgement.
-  return q;
+  return Array.isArray(q) ? q : [];
 }
 
 function _writeOutbox(queue) {
+  if (_purged) return; // tenant gone — never write old-tenant outbox to the next tenant
+  const q = Array.isArray(queue) ? queue : [];
+  if (q.length === 0) kvCache.del(_OUTBOX_CACHE_KEY);
+  else kvCache.set(_OUTBOX_CACHE_KEY, q);
+  // Synchronous crash-durability mirror (see header). Skipped in
+  // memory_only/disabled where nothing persists anyway.
+  if (!browserPersistenceAllowed()) return;
   try {
-    if (!queue || queue.length === 0) {
-      localStorage.removeItem(_OUTBOX_LS_KEY);
-    } else {
-      localStorage.setItem(_OUTBOX_LS_KEY, JSON.stringify(queue));
-    }
+    if (q.length === 0) localStorage.removeItem(_OUTBOX_LS_KEY);
+    else localStorage.setItem(_OUTBOX_LS_KEY, JSON.stringify(q));
   } catch (_) { /* quota / private mode — non-fatal */ }
 }
 
@@ -392,16 +597,37 @@ function _outboxHasPending() {
 }
 
 async function _retryEntry(entry, manual = false) {
+  // Reachability alone is insufficient: cached-reader mode clears only after
+  // authoritative permission/catalog reconciliation has completed.
+  if (window.__webagentOfflineReadOnly === true) return false;
   if (entry.manual_only && !manual) return false;
+  // Deferred entries (typed while a blocking command like /compact is running)
+  // are held until the command finishes — the composer lock is the gate. A
+  // manual retry always goes through.
+  if (entry.defer_while_locked && !manual && app._composerLocked) return false;
   if (_outboxInFlight.has(entry.id)) return false;
   _outboxInFlight.add(entry.id);
   try {
     _recordPersistence(entry.id, 'retrying', manual ? 'Manual database-save retry requested.' : 'Automatic database-save retry started.');
+    if (entry.transport === 'browser') {
+      await browserRouter.sendMessage(entry.session_id, entry.text, {
+        userInteractionId: entry.id,
+        idempotencyKey: entry.id,
+      });
+      _removeFromOutbox(entry.id);
+      _recordPersistence(entry.id, 'saved', 'Offline-queued browser message completed after reconnect.');
+      document.querySelectorAll(`.chat-bubble.user.pending[data-pending-id="${CSS.escape(entry.id)}"]`)
+        .forEach(el => _markBubbleSaved(el, entry.id, entry.id));
+      if (app.currentSessionId === entry.session_id && typeof app.loadSessionChat === 'function') {
+        await app.loadSessionChat(entry.session_id, { refresh: true });
+      }
+      return true;
+    }
     const payload = {
       message: entry.text,
       session_id: entry.session_id || app.currentSessionId,
       user_id: entry.user_id || app.currentUserId,
-      execution_mode: app.executionMode || 'ask',
+      execution_mode: entry.execution_mode || app.executionMode || 'ask',
       // Idempotency key: the outbox entry id rides along on every retry so the
       // server can recognise a re-send of an already-accepted message and skip
       // the duplicate insert / second run (see app/api/chat.py _find_interaction_by_cmid).
@@ -417,6 +643,14 @@ async function _retryEntry(entry, manual = false) {
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(payload),
     });
+    const registrationDetail = await _anonymousRegistrationDetail(resp);
+    if (registrationDetail) {
+      _removeFromOutbox(entry.id);
+      document.querySelectorAll(`.chat-bubble.user.pending[data-pending-id="${CSS.escape(entry.id)}"]`)
+        .forEach(el => el.remove());
+      _showAnonymousRegistrationRequired(registrationDetail.message);
+      return false;
+    }
     if (resp.status === 402) {
       // Billing denial is permanent until account state changes. Retrying it
       // would reopen the paywall on every recovery poll.
@@ -426,8 +660,19 @@ async function _retryEntry(entry, manual = false) {
       return false;
     }
     if (resp.ok) {
-      _removeFromOutbox(entry.id);
       const data = await resp.json().catch(() => ({}));
+      if (data && data.status === 'queued') {
+        // The server accepted the message but a compaction is still running —
+        // it persisted the row durably as status='queued' (queued_for='compact')
+        // and will start the turn when the compaction drains. The outbox copy is
+        // no longer needed; keep the pending bubble + composer lock until the
+        // drain's 'running' broadcast clears it.
+        _removeFromOutbox(entry.id);
+        _recordPersistence(entry.id, 'queued', 'Persisted as queued (compaction in progress); runs when compaction finishes.');
+        _stampCompactionQueued(entry, data.turn_id);
+        return true;
+      }
+      _removeFromOutbox(entry.id);
       _recordPersistence(entry.id, 'saved', `Database acknowledged the message${data.turn_id ? ` as ${data.turn_id}` : ''}.`);
       document.querySelectorAll(`.chat-bubble.user.pending[data-pending-id="${CSS.escape(entry.id)}"]`)
         .forEach(el => {
@@ -436,6 +681,14 @@ async function _retryEntry(entry, manual = false) {
             el.setAttribute('data-msg-id', data.turn_id);
           }
         });
+      // A deferred message that was finally sent resolves its queued bubble.
+      if (app.chatMessages) {
+        app.chatMessages.querySelectorAll(':scope > .chat-bubble.user[data-blocked-queued]')
+          .forEach(el => {
+            _markBubbleSaved(el, data && data.turn_id, entry.id);
+            if (data && data.turn_id) el.setAttribute('data-msg-id', data.turn_id);
+          });
+      }
       if (typeof app.populateSessionSelect === 'function') {
         app.populateSessionSelect(app.currentUserId);
       }
@@ -457,6 +710,23 @@ async function _retryEntry(entry, manual = false) {
     _outboxInFlight.delete(entry.id);
   }
   return false;
+}
+
+async function _anonymousRegistrationDetail(response) {
+  if (!response || response.status !== 429) return null;
+  try {
+    const body = await response.clone().json();
+    const detail = body && body.detail;
+    return detail && detail.code === 'registration_required' ? detail : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _showAnonymousRegistrationRequired(message) {
+  const text = message || 'Anonymous chat is unavailable. Register and sign in to continue.';
+  addChatBubble('agent', text, 'info');
+  showLeftOverlay();
 }
 
 async function _flushOutbox() {
@@ -655,28 +925,49 @@ function _stopOutboxPoll() {
 }
 
 function _renderPendingBubbles() {
-  if (!app.isDebug) return;
+  const queue = _readOutbox();
+  if (!app.isDebug) {
+    // Offline-queued messages are user-facing in every mode. Leave ordinary
+    // in-flight optimistic bubbles untouched; their debug rendering contract
+    // remains unchanged.
+    document.querySelectorAll('.chat-bubble.user.pending[data-offline-queued]')
+      .forEach(el => el.remove());
+    for (const entry of queue) {
+      if (entry.queued_offline) _renderOfflineQueuedBubble(entry);
+    }
+    return;
+  }
   document.querySelectorAll('.chat-bubble.user.pending')
     .forEach(el => { if (!el.hasAttribute('data-blocked-queued')) el.remove(); });
-  const queue = _readOutbox();
   for (const entry of queue) {
-    _renderPendingBubble(entry);
+    // Deferred entries have their own visible "You (queued…)" bubble.
+    if (entry.defer_while_locked) continue;
+    if (entry.queued_offline) _renderOfflineQueuedBubble(entry);
+    else if (app.isDebug) _renderPendingBubble(entry);
   }
 }
 
 // ── chat draft persistence ──
+// Migrated from the localStorage blob 'webagent.chatDraft.v1' to the app_cache
+// row 'chat:draft' (a raw string — parseJson:false). Same mirror contract as
+// the outbox: synchronous localStorage write for crash durability, treated as
+// authoritative on the next boot, then migrated into IndexedDB.
 const _DRAFT_LS_KEY = 'webagent.chatDraft.v1';
+const _DRAFT_CACHE_KEY = 'chat:draft';
+kvCache.registerLegacyValue(_DRAFT_LS_KEY, _DRAFT_CACHE_KEY, { parseJson: false });
 function _saveDraft() {
   _debouncedSaveDraft();
 }
 function _clearDraft() {
   if (_draftTimer) { clearTimeout(_draftTimer); _draftTimer = null; }
+  if (_purged) return; // tenant gone — never write old-tenant draft to the next tenant
+  kvCache.del(_DRAFT_CACHE_KEY);
   try { localStorage.removeItem(_DRAFT_LS_KEY); } catch (_) { /* non-fatal */ }
 }
 function _restoreDraft() {
   try {
-    const v = localStorage.getItem(_DRAFT_LS_KEY);
-    if (!v || !app.chatInput) return;
+    const v = kvCache.get(_DRAFT_CACHE_KEY);
+    if (!v || typeof v !== 'string' || !app.chatInput) return;
     if (app.chatInput.value) return;
     if (!_canChat()) return;
     app.chatInput.value = v;
@@ -691,12 +982,36 @@ function _debouncedSaveDraft() {
   if (_draftTimer) clearTimeout(_draftTimer);
   _draftTimer = setTimeout(() => {
     _draftTimer = null;
+    if (_purged) return; // tenant gone — never write old-tenant draft to the next tenant
     try {
       const v = app.chatInput ? app.chatInput.value : '';
+      if (v) kvCache.set(_DRAFT_CACHE_KEY, v);
+      else kvCache.del(_DRAFT_CACHE_KEY);
+      if (!browserPersistenceAllowed()) return;
       if (v) localStorage.setItem(_DRAFT_LS_KEY, v);
       else localStorage.removeItem(_DRAFT_LS_KEY);
     } catch (_) { /* quota / private mode — non-fatal */ }
   }, 150);
+}
+
+// On a cold load the legacy blobs are gone, so the boot-time _restoreDraft and
+// outbox check (which run before storage hydration resolves) see nothing. Re-run
+// both once hydration completes so a persisted draft/outbox repopulates from the
+// IndexedDB rows. Both are idempotent (draft skips a non-empty input; the poll
+// timer is already guarded).
+if (typeof window !== 'undefined') {
+  window.addEventListener('webagent-kv-cache-hydrated', () => {
+    _restoreDraft();
+    if (_outboxHasPending()) {
+      _renderPendingBubbles();
+      _startOutboxPoll();
+    }
+  });
+  window.addEventListener('webagent-offline-readonly-changed', (event) => {
+    if (event?.detail?.active !== false) return;
+    _setOfflineComposerNotice('');
+    _flushOutbox().catch(() => { /* the normal poll retains and retries failures */ });
+  });
 }
 
 // ── Send / Stop / Abort ────────────────────────────────────────────────────
@@ -704,8 +1019,8 @@ function _debouncedSaveDraft() {
 async function sendStopMessage() {
   // Stop is the escape hatch from a composer-locking command (e.g. /compact):
   // hand control back to the user immediately, even if the server is still busy.
-  // Clear any queued message — the user chose to abort.
-  _queuedMessage = null;
+  // Discard any deferred messages — the user chose to abort.
+  _discardDeferredMessages();
   _unlockComposer();
 
   // Flag that a stop was requested so late-arriving WS stream events don't
@@ -721,35 +1036,45 @@ async function sendStopMessage() {
   }
 
   try {
-    await fetch(apiPath('/api/v1/chat/interrupt'), {
+    const isPortal = typeof app.currentSessionId === 'string' && app.currentSessionId.startsWith('codex:');
+    await fetch(apiPath(isPortal
+      ? `/api/v1/engines/codex/portal/threads/${encodeURIComponent(app.currentSessionId)}/interrupt`
+      : '/api/v1/chat/interrupt'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ session_id: app.currentSessionId }),
+      body: JSON.stringify(isPortal
+        ? { user_id: app.currentUserId, agent_id: app.currentAgentId }
+        : { session_id: app.currentSessionId }),
     });
   } catch (e) {
     addChatBubble('agent', 'Cannot stop: ' + e.message, 'error');
   }
 }
 
-async function sendMessage() {
+async function sendMessage(textOverride) {
   if (!_canChat()) { applyChatGate(); return; }
-  const text = app.chatInput.value.trim();
+  // A string argument sends that exact text WITHOUT touching the pill (used by
+  // the footer's "Compact now", which fires "/compact" directly so the user's
+  // in-progress draft is never staged into the input or cleared). Non-string
+  // args (e.g. the click Event) fall through to the pill's current value.
+  const text = (typeof textOverride === 'string' && textOverride.trim())
+    ? textOverride.trim()
+    : (app.chatInput.value || '').trim();
   if (!text) return;
 
+  if (window.__webagentOfflineReadOnly === true) {
+    _queueMessageOffline(text, textOverride);
+    return;
+  }
+
   // If a blocking command (e.g. /compact) is already running, queue this message
-  // instead of interrupting it. It will be sent automatically when the command
-  // finishes. The Stop button clears the queue.
+  // DURABLY (outbox + pending bubble) instead of interrupting it. It is POSTed
+  // when the command finishes; if the server is still compacting, the message is
+  // persisted as status='queued' (queued_for='compact') and runs when the
+  // compaction drains — surviving refresh, session switches and server restarts.
+  // The Stop button discards the deferred message.
   if (app._composerLocked && !_isBlockingCommand(text)) {
-    _queuedMessage = text;
-    app.chatInput.value = '';
-    app.chatSend.disabled = true;
-    _updateInputRowState();
-    _autoResizePill(app.chatInput);
-    _clearDraft();
-    // Surface the queue on the message BUBBLE (same look as gate-queued
-    // messages) rather than on the pill — the pill keeps its plain
-    // "compacting" hint and never claims the message is queued.
-    _renderQueuedBubble(text);
+    _queueMessageDuringCommand(text);
     return;
   }
 
@@ -802,6 +1127,148 @@ async function sendMessage() {
     if (!app.currentAgentId) return;
   }
 
+  let activeAgent = (() => {
+    try {
+      const rows = window.__agentsSharedData && window.__agentsSharedData.agents;
+      return Array.isArray(rows) ? rows.find(row => row && row.id === app.currentAgentId) : null;
+    } catch (_) { return null; }
+  })();
+  // The Agents page and chat panel share a deliberately cacheable list. A
+  // warm page can therefore have a lean/stale entry from before engine-specific
+  // fields were hydrated. First-send routing must not depend on that cache:
+  // refresh the selected agent when Codex metadata is absent, otherwise a
+  // Portal prompt silently falls through to the ordinary WebAgent session path.
+  try {
+    const detailRes = await fetch(apiPath(
+      `/api/v1/agents/${encodeURIComponent(app.currentAgentId)}`
+      + `?user_id=${encodeURIComponent(app.currentUserId)}`
+    ), { headers: authHeaders() });
+    if (detailRes.ok) {
+      const detail = await detailRes.json();
+      if (detail && detail.agent) activeAgent = detail.agent;
+    }
+  } catch (_) { /* the normal send path still handles non-Portal agents */ }
+  const isPortalAgent = !!(activeAgent && activeAgent.engine === 'codex'
+    && activeAgent.codex_code && activeAgent.codex_code.context_mode === 'codex_portal');
+  const hasNativePortalSession = typeof app.currentSessionId === 'string'
+    && app.currentSessionId.startsWith('codex:');
+  // Fresh chats can render before the cacheable agent list includes engine
+  // defaults, leaving the pill on its generic Ask fallback. The authoritative
+  // detail above owns the initial Portal mode; once linked, the per-task pill
+  // remains authoritative for later turns.
+  const configuredPortalMode = ['ask', 'wkspc', 'auto'].includes(activeAgent && activeAgent.default_execution_mode)
+    ? activeAgent.default_execution_mode : 'auto';
+  const portalExecutionMode = !hasNativePortalSession
+    ? configuredPortalMode : (app.executionMode || 'ask');
+
+  // A fresh chat starts life with a client-side UUID.  Portal agents must
+  // replace that placeholder with a native Codex task before the first turn;
+  // otherwise the message falls into /chat/send and is correctly rejected by
+  // the no-duplicate-persistence fence.
+  if (isPortalAgent && !hasNativePortalSession) {
+    try {
+      const created = await fetch(apiPath('/api/v1/engines/codex/portal/threads'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          user_id: app.currentUserId,
+          agent_id: app.currentAgentId,
+          execution_mode: portalExecutionMode,
+        }),
+      });
+      const data = await created.json().catch(() => ({}));
+      if (!created.ok || !data.session_id) {
+        throw new Error(data.detail || `Codex Portal returned HTTP ${created.status}`);
+      }
+      app.currentSessionId = data.session_id;
+      localStorage.setItem('terminalSessionId', app.currentSessionId);
+      if (typeof app.populateSessionSelect === 'function') app.populateSessionSelect(app.currentUserId);
+    } catch (error) {
+      addChatBubble('agent', '❌ Could not start Codex task: ' + (error.message || error), 'error');
+      return;
+    }
+  }
+
+  // A Portal task is not a WebAgent session. Keep it completely outside the
+  // outbox, attachments, /chat/send, websocket reconciliation, and interaction
+  // persistence paths; Codex App Server is the sole transcript authority.
+  if (typeof app.currentSessionId === 'string' && app.currentSessionId.startsWith('codex:')) {
+    if (typeof textOverride !== 'string') {
+      app.chatInput.value = '';
+      app.chatSend.disabled = true;
+      _updateInputRowState();
+      _autoResizePill(app.chatInput);
+      _clearDraft();
+    }
+    _removeSessionPlaceholders();
+    const portalUserBubble = addChatBubble('user', text, undefined, undefined, undefined, undefined, new Date().toISOString());
+    app.isProcessing = true;
+    if (app.chatActivityStart) app.chatActivityStart('Codex is working…');
+    const portalSessionId = app.currentSessionId;
+    let portalRefreshBusy = false;
+    let portalRefreshPromise = null;
+    // Re-read Codex's own task while it runs. Commentary and tool items appear
+    // live without creating a parallel WebAgent event transcript.
+    const portalRefreshTimer = setInterval(async () => {
+      if (portalRefreshBusy || app.currentSessionId !== portalSessionId || typeof app.loadSessionChat !== 'function') return;
+      portalRefreshBusy = true;
+      const refresh = app.loadSessionChat(portalSessionId, { refresh: true });
+      portalRefreshPromise = refresh;
+      try { await refresh; } catch (_) { /* next tick retries */ }
+      finally {
+        portalRefreshBusy = false;
+        if (portalRefreshPromise === refresh) portalRefreshPromise = null;
+      }
+    }, 1200);
+    let portalError = null;
+    try {
+      const response = await fetch(apiPath(`/api/v1/engines/codex/portal/threads/${encodeURIComponent(app.currentSessionId)}/turns`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          user_id: app.currentUserId,
+          agent_id: app.currentAgentId,
+          message: text,
+          execution_mode: portalExecutionMode,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      clearInterval(portalRefreshTimer);
+      const pendingRefresh = portalRefreshPromise;
+      if (pendingRefresh) await pendingRefresh.catch(() => {});
+      if (!response.ok) throw new Error(data.detail || `Codex Portal returned HTTP ${response.status}`);
+      if (data.status === 'queued') {
+        // A transcript refresh may have replaced the optimistic bubble while
+        // the request was pending. Restore it before showing queue status.
+        if (!portalUserBubble || !portalUserBubble.isConnected) {
+          addChatBubble('user', text, undefined, undefined, undefined, undefined, new Date().toISOString());
+        }
+        addChatBubble('info', 'Message queued in the active Codex task. It will run after the current turn finishes.');
+        if (typeof app.populateSessionSelect === 'function') app.populateSessionSelect(app.currentUserId);
+        return;
+      }
+      if (typeof app.loadSessionChat === 'function') {
+        await app.loadSessionChat(app.currentSessionId, { refresh: true });
+      }
+      if (typeof app.populateSessionSelect === 'function') app.populateSessionSelect(app.currentUserId);
+    } catch (error) {
+      clearInterval(portalRefreshTimer);
+      const pendingRefresh = portalRefreshPromise;
+      if (pendingRefresh) await pendingRefresh.catch(() => {});
+      portalError = error;
+    } finally {
+      clearInterval(portalRefreshTimer);
+      app.isProcessing = false;
+      _unlockComposer();
+      app.chatSend.disabled = false;
+      if (app.chatActivityStop) app.chatActivityStop();
+    }
+    // A transcript refresh replaces the chat DOM. Render failures only after
+    // every in-flight refresh settles so the error cannot be silently erased.
+    if (portalError) addChatBubble('agent', '❌ ' + (portalError.message || portalError), 'error');
+    return;
+  }
+
   // App Control point-and-share stages a fingerprint of the clicked element on
   // app.pendingAppControl; it rides along with THIS send only (consumed + cleared
   // now), so the backend can render it as a foldable app_control tool chip and fold
@@ -824,13 +1291,19 @@ async function sendMessage() {
   _outboxInFlight.add(outboxEntry.id);
   _addToOutbox(outboxEntry);
 
-  app.chatInput.value = '';
-  app.chatSend.disabled = true;
-  _updateInputRowState();
-  _autoResizePill(app.chatInput);
-  _clearDraft();
-  if (typeof app.clearSuggestions === 'function') {
-    try { app.clearSuggestions(); } catch (_) { /* best-effort */ }
+  // Staged command sends (a string override, e.g. "/compact") must NOT touch
+  // the pill: the user's in-progress draft stays exactly as typed. Any other
+  // call (click Event, Enter keydown, plain send) clears the pill normally —
+  // the text has been sent.
+  if (typeof textOverride !== 'string') {
+    app.chatInput.value = '';
+    app.chatSend.disabled = true;
+    _updateInputRowState();
+    _autoResizePill(app.chatInput);
+    _clearDraft();
+    if (typeof app.clearSuggestions === 'function') {
+      try { app.clearSuggestions(); } catch (_) { /* best-effort */ }
+    }
   }
 
   window.__chatPollLastAt = new Date().toISOString();
@@ -852,6 +1325,9 @@ async function sendMessage() {
     // optimistic user-bubble flow) — tagging it with the client id early would
     // defeat that adoption and produce a duplicate notice.
     _userBubble = addChatBubble('info', _genuiLabel, 'system-genui', undefined, undefined, undefined, outboxEntry.timestamp);
+    if (_userBubble && typeof app._addBubbleActions === 'function') {
+      try { app._addBubbleActions(_userBubble); } catch (_) { /* reconcile heals later */ }
+    }
     if (app.isDebug && (text || '').trim()) {
       addChatBubble('info', 'Raw prompt:\n' + text, 'system-debug', undefined, undefined, undefined, outboxEntry.timestamp);
     }
@@ -876,7 +1352,7 @@ async function sendMessage() {
   // Synchronous built-ins (e.g. /compact) block the send POST until done — lock
   // the pill so nothing can be queued mid-run; Stop remains live to bail out.
   if (_isBlockingCommand(text)) {
-    _lockComposerForCommand('Compacting context… click Stop to cancel');
+    _lockComposerForCommand();
   }
   // Prime WS-liveness from "now" so the DB-reconcile poll counts its silence
   // window from send. If the WS delivers (same-process) it keeps this fresh and
@@ -897,7 +1373,11 @@ async function sendMessage() {
       if (typeof app.refreshChat === 'function') app.refreshChat();
     }
   }, 60000);
-  if (app.chatActivityStart) app.chatActivityStart('Sending\u2026');
+  if (app.chatActivityStart) {
+    // Blocking built-ins (e.g. /compact) surface their progress on the activity
+    // bar above the pill; ordinary sends show the plain "Sending…" note.
+    app.chatActivityStart(_isBlockingCommand(text) ? 'Compacting\u2026' : 'Sending\u2026');
+  }
 
   const base = {
     message: text,
@@ -942,7 +1422,10 @@ async function sendMessage() {
         },
         onResponse: (content) => {
           if (_isSlash) {
-            addChatBubble('info', content);
+            const _ib = addChatBubble('info', content);
+            if (_ib && typeof app._addBubbleActions === 'function') {
+              try { app._addBubbleActions(_ib); } catch (_) { /* ignore */ }
+            }
           } else if (_assistantBubble) {
             const textEl = _assistantBubble.querySelector('.chat-bubble-text');
             if (textEl) textEl.textContent = content;
@@ -989,13 +1472,24 @@ async function sendMessage() {
     _outboxInFlight.delete(outboxEntry.id);
 
     if (!resp.ok) {
+      const registrationDetail = await _anonymousRegistrationDetail(resp);
+      if (registrationDetail) {
+        _removeFromOutbox(outboxEntry.id);
+        if (_userBubble) _userBubble.remove();
+        _showAnonymousRegistrationRequired(registrationDetail.message);
+        app.isProcessing = false;
+        _unlockComposer();
+        app.chatSend.disabled = false;
+        if (app._healingTimer) { clearTimeout(app._healingTimer); app._healingTimer = null; }
+        if (app.chatActivityStop) app.chatActivityStop();
+        return;
+      }
       if (resp.status === 402) {
         // The global billing interceptor has already recorded the terminal trial
         // state. Discard the rejected optimistic turn and its retry journal entry.
         _removeFromOutbox(outboxEntry.id);
         if (_userBubble) _userBubble.remove();
         app.isProcessing = false;
-        _queuedMessage = null;
         _unlockComposer();
         applyChatGate();
         if (app._healingTimer) { clearTimeout(app._healingTimer); app._healingTimer = null; }
@@ -1015,6 +1509,29 @@ async function sendMessage() {
     }
 
     const data = await resp.json().catch(() => ({}));
+
+    if (data.status === 'queued') {
+      // A compaction is running on the server (e.g. started from another
+      // device/tab). The message was persisted durably as status='queued'
+      // (queued_for='compact') and runs when the compaction drains. Keep the
+      // pending bubble and the composer lock — the drain's 'running'
+      // broadcast (or compact_done) clears both.
+      _removeFromOutbox(outboxEntry.id);
+      _recordPersistence(outboxEntry.id, 'queued', 'Persisted as queued (compaction in progress); runs when compaction finishes.');
+      if (!_isGenuiSend && _userBubble) {
+        if (data.turn_id) _userBubble.setAttribute('data-msg-id', String(data.turn_id));
+        _userBubble.setAttribute('data-gate-queued', '1');
+      }
+      if (data.turn_id) {
+        _gateQueueBySession.set(String(outboxEntry.session_id || app.currentSessionId || ''), {
+          turnId: data.turn_id, queuePosition: null, text: text,
+        });
+      }
+      if (typeof app._lockComposerForCompaction === 'function') {
+        try { app._lockComposerForCompaction(); } catch (_) { /* ignore */ }
+      }
+      return;
+    }
 
     if (data.status === 'ok' && data.reply) {
       _removeFromOutbox(outboxEntry.id);
@@ -1075,7 +1592,7 @@ function abortChatStream() {
   app.agentBuffer = '';
   app.isProcessing = false;
   app._stopPending = false;
-  _queuedMessage = null;
+  _discardDeferredMessages();
   _unlockComposer();
   if (app.chatSend) app.chatSend.disabled = false;
 }
@@ -1122,6 +1639,16 @@ app.refreshChat = async () => {
   }
 };
 
+function _resolvePillMaxWidth(rawValue, availableW) {
+  const value = String(rawValue || '').trim();
+  if (value.endsWith('%')) {
+    const percentage = parseFloat(value);
+    return Number.isFinite(percentage) ? availableW * percentage / 100 : availableW;
+  }
+  const pixels = parseFloat(value);
+  return Number.isFinite(pixels) ? pixels : availableW;
+}
+
 // Needed by chat-ui.js for auto-resize
 function _autoResizePill(el) {
   if (!el || el.tagName !== 'TEXTAREA') return;
@@ -1165,9 +1692,10 @@ function _autoResizePill(el) {
   const inputArea = pill.closest('#chat-input-area');
   const padX = 24; // 12px left + 12px right on #chat-input-area
   const availableW = inputArea ? inputArea.clientWidth - padX : 600;
-  const configuredMaxW = parseFloat(
-    getComputedStyle(pill).getPropertyValue('--chat-surface-max-width')
-  ) || availableW;
+  const configuredMaxW = _resolvePillMaxWidth(
+    getComputedStyle(pill).getPropertyValue('--chat-surface-max-width'),
+    availableW,
+  );
   const maxPillW = Math.min(availableW, configuredMaxW);
   const configuredPillW = parseFloat(
     getComputedStyle(pill).getPropertyValue('--chat-pill-width')
@@ -1274,7 +1802,7 @@ function _updateScrollIndicator(_el) {
 // ── Prewarm ──────────────────────────────────────────────────────────────────
 // While the user is typing (or the moment they focus the pill), ask the server
 // to build the read-only prep for the NEXT send — the agent's tool set, the chat
-// history, the attached data sources. On a remote DB those reads cost seconds;
+// history, and supporting metadata. On a remote DB those reads cost seconds;
 // doing them during the typing window means the send can skip them. Best-effort:
 // throttled per session, fire-and-forget, and a failure just means the turn
 // builds the prep live as before. Backend: POST /api/v1/chat/prewarm.
@@ -1341,6 +1869,28 @@ function _applyGateQueuedStyle(bubble, state) {
 function _restoreGateQueueBubble(bubble, turnId) {
   const state = _queuedStateFor(app.currentSessionId, turnId);
   if (state) _applyGateQueuedStyle(bubble, state);
+}
+
+// Reload / navigate-back restore: re-apply the queued bubble + Force run
+// button from a persisted message that either carries the durable
+// status='queued' marker (DB fix) or was annotated with live gate queue info
+// by /session-messages (in-memory backup). Registers the state in
+// _gateQueueBySession so the WS "running" event (clearBubbleQueued) and a
+// later force-run clean it up exactly like the live path. Safe to call on any
+// session's transcript; only affects the current one.
+function restoreGateQueueBubble(bubble, state) {
+  if (!bubble || !state) return;
+  const sid = String(app.currentSessionId || '');
+  const turnId = state.turnId || null;
+  const remembered = _gateQueueBySession.get(sid);
+  if (!remembered || (turnId && remembered.turnId && String(remembered.turnId) !== String(turnId))) {
+    _gateQueueBySession.set(sid, {
+      turnId,
+      queuePosition: Number.isFinite(state.queuePosition) ? state.queuePosition : null,
+      text: (state.text || remembered?.text || ''),
+    });
+  }
+  _applyGateQueuedStyle(bubble, state);
 }
 
 function markBubbleQueued(turnId, queuePosition, sessionId = app.currentSessionId) {
@@ -1451,6 +2001,7 @@ function clearBubbleQueued(turnId, sessionId = app.currentSessionId) {
 
 app.markBubbleQueued = markBubbleQueued;
 app.clearBubbleQueued = clearBubbleQueued;
+app.restoreGateQueueBubble = restoreGateQueueBubble;
 
 export {
   sendMessage,
@@ -1469,4 +2020,5 @@ export {
   _startOutboxPoll,
   _outboxHasPending,
   _restorePersistenceStatus,
+  restoreGateQueueBubble,
 };

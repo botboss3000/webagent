@@ -310,10 +310,11 @@ export class BrowserRouter {
     const session = await defaultSessionDB.getSession(sessionId);
     const historyRevision = Number(session?.authority_revision || 0);
     const historyToken = session?.history_token || null;
-    const idempotencyKey = randomUUID();
+    const idempotencyKey = opts.idempotencyKey || randomUUID();
 
     // 2. Save the user message locally
     await defaultSessionDB.addInteraction(sessionId, {
+      id: opts.userInteractionId || undefined,
       role: 'user',
       content: message,
       status: 'complete',

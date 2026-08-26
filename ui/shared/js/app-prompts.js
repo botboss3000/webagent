@@ -20,6 +20,7 @@
 
 import { apiPath } from './config.js';
 import { app } from './state.js';
+import { authHeaders } from './left-login.js';
 
 // Fallback defaults — KEEP IN SYNC with chat_ui.json chat_common.messages.
 const _DEFAULTS = {
@@ -30,6 +31,14 @@ const _DEFAULTS = {
   pill_locked_placeholder: 'Sign in to chat — this app does not allow anonymous use.',
   session_deleted_notice: 'Session not found — it was deleted.',
 };
+
+// The live shared_default singleton predates template-level chat_ui metadata on
+// many installs. Keep its effective starter prompts available client-side until
+// an admin explicitly saves an override (including [] to show none).
+export const DEFAULT_WEBAGENT_SUGGESTION_PROMPTS = Object.freeze([
+  'Help me plan what to work on next',
+  'Review this project and suggest the highest-impact improvement',
+]);
 
 // The FULL app-wide chat_ui.json (all surfaces). Loaded once at boot.
 // Stays null until the server responds — the pipeline MUST wait for agents
@@ -85,6 +94,37 @@ function _deepMerge(base, overrides) {
   return out;
 }
 
+function _applyEnforcedTierGate(config) {
+  const enforced = config?._tier_enforced;
+  if (!enforced || enforced.denied) return config;
+  let out = _deepMerge(config || {}, enforced.override || {});
+  const denied = new Set(enforced.controls || []);
+  const walk = (value) => {
+    if (Array.isArray(value)) return value.filter(item => !(typeof item === 'string' && denied.has(item))).map(walk);
+    if (!value || typeof value !== 'object') return value;
+    const next = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'controls' && child && typeof child === 'object' && !Array.isArray(child)) {
+        next[key] = {};
+        for (const [name, cfg] of Object.entries(child)) {
+          const resolved = walk(cfg);
+          next[key][name] = denied.has(name)
+            ? _deepMerge(resolved && typeof resolved === 'object' ? resolved : {}, { enabled: false })
+            : resolved;
+        }
+      } else if (denied.has(key)) {
+        // Named booleans such as session_dropdown.menu.session_id are controls
+        // too; clamp them after per-agent overrides just like controls maps.
+        next[key] = false;
+      } else {
+        next[key] = walk(child);
+      }
+    }
+    return next;
+  };
+  return walk(out);
+}
+
 // Per-agent override cache: agentId → chat_ui override dict (from agents list).
 const _agentOverrideCache = new Map();
 
@@ -134,9 +174,9 @@ export function getAgentChatUi(agentId) {
     // always has chat_common so the pipeline doesn't bail early.
     const base = _fullChatUi || {};
     if (!base.chat_common) base.chat_common = {};
-    return base;
+    return _applyEnforcedTierGate(base);
   }
-  const merged = _deepMerge(_fullChatUi || {}, override);
+  const merged = _applyEnforcedTierGate(_deepMerge(_fullChatUi || {}, override));
   // Surface-only overrides (chat_mobile/chat_desktop without chat_common)
   // must still carry chat_common so mergeProfile() has a base to build from.
   if (!merged.chat_common) merged.chat_common = {};
@@ -178,7 +218,7 @@ export async function loadUiMessages(agentId) {
     const url = agentId
       ? apiPath('/api/v1/auth/ui-config?agent_id=' + encodeURIComponent(agentId))
       : apiPath('/api/v1/auth/ui-config');
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: { ...authHeaders() }, cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
     const ui = data?.chat_ui;

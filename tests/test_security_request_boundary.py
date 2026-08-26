@@ -206,6 +206,10 @@ class HttpRequestBoundaryTests(unittest.IsolatedAsyncioTestCase):
             "object-src 'none'",
             response.headers["content-security-policy-report-only"],
         )
+        self.assertIn(
+            "base-uri 'self'",
+            response.headers["content-security-policy-report-only"],
+        )
         self.assertNotIn("unsafe-eval", response.headers[
             "content-security-policy-report-only"
         ])

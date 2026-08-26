@@ -1,0 +1,21 @@
+{
+  "display_name": "Code Index",
+  "kind": "ability",
+  "icon": "database",
+  "color": "#e0af68",
+  "description": "Index the codebase for fast lookup. Five tools that read/write a persistent code index at data/db/index.db — find symbols, API routes, UI components, feature tags, and opportunities across the repo without reading every file.",
+  "skill_summary": "How to index a codebase and keep the index alive: discover unindexed files, spawn parallel indexer helpers, tag features, log opportunities, query the index, and — most importantly — update the index every time you read or edit a file so it stays accurate through normal work. Load before any indexing, searching, code editing, or opportunity-review task.",
+  "skill_mode": "selectable",
+  "note": null,
+  "simple": true,
+  "placeholder": false,
+  "default_enabled": false,
+  "tools": [
+    "index_lookup",
+    "index_store",
+    "index_progress",
+    "index_features",
+    "index_opportunity"
+  ],
+  "order": 3
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 13px/1.4 system-ui, sans-serif; width: 260px; margin: 0; padding: 14px; }
+    h1 { font-size: 13px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #9ca3af; }
+    .dot.on { background: #16a34a; } .dot.connecting { background: #d97706; } .dot.paused { background: #d97706; }
+    .row { display: flex; justify-content: space-between; margin: 6px 0; color: #666; }
+    .row b { color: inherit; font-weight: 600; }
+    button { font: inherit; padding: 6px 10px; border-radius: 7px; border: 1px solid #8884; background: #8881; cursor: pointer; }
+    button:hover { background: #8882; }
+    .actions { display: flex; gap: 8px; margin-top: 12px; }
+    .actions button { flex: 1; }
+    a { color: #2563eb; font-size: 12px; }
+    .muted { color: #999; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <h1><span id="dot" class="dot"></span> WebAgent Connector</h1>
+  <div class="row"><span>Status</span><b id="status">…</b></div>
+  <div class="row"><span>Running</span><b id="inflight">0</b></div>
+  <div class="row"><span>Server</span><b id="server" class="muted">—</b></div>
+  <div class="actions">
+    <button id="pause">Pause</button>
+    <button id="conn">Connect</button>
+  </div>
+  <div style="margin-top:12px"><a href="#" id="opts">Settings…</a></div>
+  <script src="popup.js"></script>
+</body>
+</html>

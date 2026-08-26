@@ -8,6 +8,7 @@ an include_router() for a genuinely new core subsystem. See CLAUDE.md
 ("Core vs. plugins") and docs/claude/production-editions.md.
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -24,13 +25,15 @@ _DOTENV_PATH = _APP_DIR.parent / ".env"
 
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=_DOTENV_PATH)
+from app.runtime_mode import data_root, performance_test_mode
 
 # Consume a one-shot Danger-Zone reset marker BEFORE the DB / stores open, so the
 # selected data groups (database / vault / attachments / genui / logs) can be
 # wiped while nothing holds them. A missing marker is a no-op; any error is
 # swallowed so a bad marker can never brick boot. See app/util/reset_boot.py.
 from app.util.reset_boot import run_pending_reset
-run_pending_reset()
+if not performance_test_mode():
+    run_pending_reset()
 
 import traceback
 from fastapi import FastAPI, Request
@@ -130,120 +133,16 @@ class StaticGzipMiddleware:
         await self.app(scope, receive, _send)
 
 from app.api.chat import router as chat_router
-from app.api.terminal import router as terminal_router
 from app.api.agent import router as agent_router
-from app.api.browser_stream import router as browser_stream_router
-from app.api.connector_ws import router as connector_ws_router
-from app.api.uploads import router as uploads_router
-from app.api.transcription import router as transcription_router
-from app.api.db_viewer import router as db_viewer_router
-from app.api.tenant_db import router as tenant_db_router
-from app.api.diagnostics import router as diagnostics_router
-from app.api.features import router as features_router
-from app.api.boot import router as boot_router  # GET /api/v1/boot — read-only page-boot aggregator
-from app.api.browser_log import router as browser_log_router
-try:
-    from app.admin.review import router as admin_router
-    from app.admin.db_mode import router as admin_db_router
-    from app.admin.storage import router as admin_storage_router
-except ImportError:
-    admin_router = admin_db_router = admin_storage_router = None
-from app.api.webhooks import router as webhooks_router
-from app.api.webhooks_generic import router as webhooks_generic_router
-from app.api.events import router as events_router
-from app.api.remote_access import router as remote_access_router
-try:
-    from app.admin.remote_access import router as admin_remote_access_router
-except ImportError:
-    admin_remote_access_router = None
-try:
-    from app.api.deploy import router as deploy_router
-except ImportError:
-    deploy_router = None
-try:
-    from app.api.dns import router as dns_router
-except ImportError:
-    dns_router = None
-try:
-    from app.admin.tunnel_link import router as admin_tunnel_link_router
-except ImportError:
-    admin_tunnel_link_router = None
-try:
-    from plugins.admin.source import router as admin_source_router
-    _HAS_SOURCE_TOOLS = True
-except ImportError:
-    _HAS_SOURCE_TOOLS = False
-    admin_source_router = None
-
-try:
-    from app.admin.settings import router as admin_settings_router
-    _HAS_SETTINGS = True
-except ImportError:
-    _HAS_SETTINGS = False
-    admin_settings_router = None
-
-try:
-    from app.admin.communications import router as admin_communications_router
-    from app.admin.webhooks_admin import router as admin_webhooks_router
-    from app.admin.events_admin import router as admin_events_router
-    from app.admin.scheduler_config import router as scheduler_admin_router
-except ImportError:
-    admin_communications_router = admin_webhooks_router = admin_events_router = scheduler_admin_router = None
 from app.api.agents import router as agents_router, agent_pages_router
-from app.api.data_sources import router as data_sources_router
-from app.api.files import router as files_router
-try:
-    from app.admin.users import router as admin_users_router
-except ImportError:
-    admin_users_router = None
-from plugins.billing.api import router as billing_router
-
-# ── Auth ──
+from app.api.agent_profiles import router as agent_profiles_router
+from app.api.db_viewer import router as session_router
 from app.auth import router as auth_router
-
-# ── Social sign-in (drop-in providers under plugins/auth_providers/) ──
-from app.api.social_auth import router as social_auth_router
-
-# ── GitHub ──
-from app.api.github import router as github_router
-
-# ── Local Claude Code engine sign-in (in-app `claude setup-token`) ──
-from app.api.claude_auth import router as claude_auth_router
-from app.api.codex_auth import router as codex_auth_router
-# ── Local Claude Code engine skills (Skills tab on the Claude agent card) ──
-from app.api.claude_skills import router as claude_skills_router
-# ── Alternate-engine REST API (live model catalog from the local CLI) — lives
-#    in the plugin; only the mount is here (mirrors the billing plugin seam). ──
-from plugins.engines.api import router as engines_router
-
-# ── Feedback (relayed to GitHub issues) ──
-from app.api.feedback import router as feedback_router
-
-# ── Integrations & OAuth ──
-try:
-    from app.admin.integrations import router as integrations_router
-except ImportError:
-    integrations_router = None
-from app.api.oauth import router as oauth_router
-
-# ── Optimizer ──
-try:
-    from app.admin.optimizer import router as optimizer_router
-    optimizer_router.prefix = "/api/v1"
-except ImportError:
-    optimizer_router = None
-
-# ── Task grouping (derive-at-read-time, no migration) ──
-try:
-    from app.admin.tasks import router as tasks_router
-except ImportError:
-    tasks_router = None
-from app.api.genui import router as genui_router
-from app.api.devices import router as devices_router
+from app.api.boot import router as boot_router
+from app.api.entitlements import router as entitlements_router
+from app.api.status import router as status_router
 from app.api.wiki import router as wiki_router
-from app.api.ability_delete import router as ability_delete_router
-from app.api.browser_storage import router as browser_router
-from app.api.storage_routing import router as storage_routing_router
+from app.optional_routes import OPTIONAL_ROUTES, load_billing_extension_routers, load_optional_router
 
 # Configure logging
 # Level precedence: data/config/debug-config.json (the consolidated debug knobs)
@@ -282,6 +181,41 @@ app = FastAPI(
     description="WebAgent — FastAPI service with tool-calling agent loop and WebSocket streaming",
     version="0.1.0"
 )
+
+# The HTTP server must become useful before optional integrations, repair jobs,
+# and remote housekeeping finish. Keep a small, explicitly serial queue for
+# those tasks: it prevents a restart from stampeding SQLite/vault resources,
+# while exposing truthful progress to the client via /health.
+app.state.startup_phase = "starting"
+app.state.startup_pending = []
+app.state.startup_deferred_queue = []
+app.state.startup_deferred_task = None
+app.state.startup_active_detail = ""
+
+
+def _queue_deferred_startup(label: str, operation) -> None:
+    """Queue one non-critical startup operation for the post-ready worker.
+
+    ``operation`` is a zero-argument async callable. The queue is drained in
+    order, not with ``gather()``, because several legacy operations open the
+    same SQLite files and vaults. A failure is recorded and the next item still
+    runs, so one optional integration cannot keep the app in "connecting".
+    """
+    app.state.startup_deferred_queue.append((label, operation))
+
+
+async def _drain_deferred_startup() -> None:
+    queue = list(app.state.startup_deferred_queue)
+    app.state.startup_pending = [label for label, _ in queue]
+    for label, operation in queue:
+        try:
+            await operation()
+        except Exception as exc:  # a deferred task must never take down serving
+            logger.warning("Deferred startup task %s failed: %s", label, exc)
+        finally:
+            app.state.startup_pending = [item for item in app.state.startup_pending if item != label]
+    app.state.startup_phase = "ready"
+    logger.info("Deferred startup complete")
 
 
 @app.exception_handler(Exception)
@@ -331,6 +265,27 @@ async def _access_log_middleware(request: Request, call_next):
                 )
         except Exception:
             pass
+
+
+# Settings are inspectable by every caller, including anonymous visitors, but
+# every mutation underneath an admin route must be made by a verified app admin.
+# This is a server-side boundary: browser visibility is presentation, not auth.
+@app.middleware("http")
+async def _admin_settings_mutation_guard(request: Request, call_next):
+    unsafe = request.method.upper() not in {"GET", "HEAD", "OPTIONS"}
+    if unsafe and request.url.path.startswith("/admin/"):
+        from app.auth.identity import request_user_id
+        caller_id = request_user_id(request)
+        if not caller_id:
+            return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+        try:
+            from app.db import get_db
+            allowed = await get_db().is_user_admin(caller_id)
+        except Exception:
+            allowed = False
+        if not allowed:
+            return JSONResponse(status_code=403, content={"detail": "App admin access required."})
+    return await call_next(request)
 
 
 # ── Favicon ──
@@ -499,177 +454,99 @@ except Exception as _httpdiag_err:  # never let diagnostics wiring break boot
 
 # Include routers
 app.include_router(chat_router)
-app.include_router(terminal_router)
 app.include_router(agent_router)
-app.include_router(browser_stream_router)
-app.include_router(connector_ws_router)
-app.include_router(uploads_router)
-app.include_router(transcription_router)
-app.include_router(db_viewer_router)
-app.include_router(tenant_db_router)
-app.include_router(diagnostics_router)
-app.include_router(browser_log_router)
-# NOTE: the render-recording API (/api/v1/recordings) is no longer wired here —
-# it now ships inside the Render Recorder drop-in ability
-# (plugins/abilities/Administrator/render_recorder/) and is auto-mounted by the
-# generic ability-router loop further below. Delete that folder and the routes
-# (and the whole feature) vanish with no edit here.
-app.include_router(features_router)
-app.include_router(boot_router)
-for _admin_r in (admin_router, admin_db_router, admin_storage_router):
-    if _admin_r is not None:
-        app.include_router(_admin_r)
-if _HAS_SOURCE_TOOLS and admin_source_router is not None:
-    app.include_router(admin_source_router)
-
-if _HAS_SETTINGS and admin_settings_router is not None:
-    app.include_router(admin_settings_router)
-
-# Register communications / webhook / event / scheduler admin routers (skipped if app/admin/ removed)
-for _admin_r in (admin_communications_router, admin_webhooks_router, admin_events_router, scheduler_admin_router):
-    if _admin_r is not None:
-        app.include_router(_admin_r)
 app.include_router(agents_router)
+app.include_router(agent_profiles_router)
 app.include_router(agent_pages_router)
-app.include_router(data_sources_router)
-app.include_router(files_router)
-if admin_users_router is not None:
-    app.include_router(admin_users_router)
-app.include_router(billing_router)
-# Mount any optional billing-extension routes, discovered generically from
-# plugins/<group>/billing/. None exist in a standard build, so this is a no-op.
-try:
-    from plugins.billing.extensions import load_billing_extensions
-    for _ext_mod in load_billing_extensions():
-        _ext_router = getattr(_ext_mod, "router", None)
-        if _ext_router is not None:
-            app.include_router(_ext_router)
-except Exception as _bext_err:
-    logging.getLogger(__name__).warning("billing extension mount skipped: %s", _bext_err)
-app.include_router(feedback_router)
-
-# Register auth router
+app.include_router(session_router)
+app.include_router(boot_router)
+app.include_router(entitlements_router)
+app.include_router(status_router)
 app.include_router(auth_router)
-app.include_router(social_auth_router)
-
-# Register generic webhook router (more specific paths first)
-app.include_router(webhooks_generic_router)
-
-# Register communication plugin webhook router (for Telegram, WhatsApp, SMS etc.)
-app.include_router(webhooks_router)
-
-# Register event trigger intake (Gmail Pub/Sub, Graph subscriptions, etc.)
-app.include_router(events_router)
-
-# Register Remote Access (signpost endpoints + admin config API)
-app.include_router(remote_access_router)
-if admin_remote_access_router is not None:
-    app.include_router(admin_remote_access_router)
-
-# Register Deploy (App Settings → Deploy: live one-click cloud deploy)
-if deploy_router is not None:
-    app.include_router(deploy_router)
-
-# Register Domains (Data Settings → Domains: point a domain at a server via the
-# admin's DNS provider — Cloudflare/Namecheap/… drop-ins under app/dns/providers/)
-if dns_router is not None:
-    app.include_router(dns_router)
-
-# Register Tunnel Link (App Settings → Tunnel; talks to the hosted relay)
-if admin_tunnel_link_router is not None:
-    app.include_router(admin_tunnel_link_router)
-
-# Register integrations & OAuth routers
-if integrations_router is not None:
-    app.include_router(integrations_router)
-app.include_router(oauth_router)
-
-# Register GitHub router
-app.include_router(github_router)
-
-# Register Local Claude Code sign-in router
-app.include_router(claude_auth_router)
-app.include_router(codex_auth_router)
-# Register Local Claude Code skills router (Skills tab on the Claude agent card)
-app.include_router(claude_skills_router)
-# Register alternate-engine API (live CLI model catalog for footer + Config tab)
-app.include_router(engines_router)
-
-# Register optimizer admin router
-if optimizer_router is not None:
-    app.include_router(optimizer_router)
-
-# Register task-grouping admin router
-if tasks_router is not None:
-    app.include_router(tasks_router)
-
-# Register Gen UI router
-app.include_router(genui_router)
-
-# Register Devices router (presence list for the target-device picker)
-app.include_router(devices_router)
-
-# Register ability deletion API
-app.include_router(ability_delete_router)
-
-# Register the browser-authority storage router (IndexedDB-backed sessions)
-app.include_router(browser_router)
-
-# Register storage routing admin config (Browser / Server / Postgres routing table)
-app.include_router(storage_routing_router)
-
-# Register the company-wide Wiki router
 app.include_router(wiki_router)
 
-# ── Drop-in page backends ──
-# A main-panel / admin page folder may carry its own API (a ``server.py`` named
-# in its page.json ``router`` field) exposing a FastAPI ``router``. They are
-# discovered + mounted here so a page's endpoints come and go with its folder —
-# adding or removing a page needs NO edit above. Each is isolated: a broken
-# page backend is skipped, never failing app boot.
-try:
-    from app import ui_pages as _ui_pages
-    for _pid, _page_router in _ui_pages.discover_routers():
+
+async def _mount_optional_routers() -> None:
+    """Import and attach non-interactive APIs after core readiness.
+
+    Each implementation import runs in a worker thread so Python's synchronous
+    import machinery cannot freeze health, chat, or cached-session requests.
+    Routers attach one at a time, which lets capabilities become available as
+    soon as their own import completes instead of waiting for the whole bundle.
+    """
+    if getattr(app.state, "optional_routers_mounted", False):
+        return
+    mounted: list[str] = []
+    failed: list[str] = []
+    for spec in OPTIONAL_ROUTES:
+        app.state.startup_active_detail = f"route:{spec.label}"
         try:
-            app.include_router(_page_router)
-            logger.info("Registered drop-in page backend: %s", _pid)
-        except Exception as _e:
-            logger.warning("Could not mount page backend %s: %s", _pid, _e)
-except Exception as _e:
-    logger.warning("Page backend discovery failed: %s", _e)
+            router = await asyncio.to_thread(load_optional_router, spec)
+            app.include_router(router)
+            mounted.append(spec.label)
+            if spec.label == "billing":
+                for extension_router in await asyncio.to_thread(load_billing_extension_routers):
+                    app.include_router(extension_router)
+        except Exception as exc:
+            failed.append(spec.label)
+            logger.warning("Optional API %s did not mount: %s", spec.label, exc)
+    app.state.startup_active_detail = ""
+    app.state.optional_routers_mounted = True
+    # A client may have opened /docs while optional APIs were still loading.
+    # Invalidate that core-only snapshot so the next schema request is complete.
+    app.openapi_schema = None
+    logger.info("Optional APIs mounted=%d failed=%s", len(mounted), failed)
 
-# ── P2P Mirror — instance-to-instance data sync ──
-try:
-    from app.p2p.server import router as p2p_router
-    app.include_router(p2p_router)
-except Exception as _p2p_err:
-    logger.warning("P2P mirror router not mounted: %s", _p2p_err)
+async def _mount_dropin_page_backends() -> None:
+    """Mount optional page APIs after the interactive core is available.
 
-# ── P2P Admin API — invite generation, peer management ──
-try:
-    from app.api.admin_p2p import router as admin_p2p_router
-    app.include_router(admin_p2p_router)
-    logger.info("P2P admin API mounted")
-except Exception as _p2p_admin_err:
-    logger.warning("P2P admin API not mounted: %s", _p2p_admin_err)
+    Discovering a page backend executes arbitrary drop-in Python modules.  That
+    work used to happen while importing ``app.main``, which meant a visitor
+    could wait behind admin-only/optional page code before the real API even
+    became ready.  These routes are deliberately additive, so mounting them
+    once from the deferred startup queue preserves their behaviour without
+    putting them on the cold-path for chat, auth, Agents, or Wiki.
+    """
+    if getattr(app.state, "dropin_page_backends_mounted", False):
+        return
+    try:
+        from app import ui_pages as _ui_pages
+        # Module execution and filesystem discovery can be slow on a cold
+        # Windows disk.  Do that work outside the serving event loop; mounting
+        # the finished routers below is in-memory and deliberately tiny.
+        discovered = await asyncio.to_thread(_ui_pages.discover_routers)
+        for _pid, _page_router in discovered:
+            try:
+                app.include_router(_page_router)
+                logger.info("Registered drop-in page backend: %s", _pid)
+            except Exception as _e:
+                logger.warning("Could not mount page backend %s: %s", _pid, _e)
+        app.state.dropin_page_backends_mounted = True
+    except Exception as _e:
+        logger.warning("Page backend discovery failed: %s", _e)
 
-# ── Drop-in ability routers ──
-# An ability folder (plugins/abilities/<group>/<id>/) may ship its own FastAPI
-# ``router`` — a browser-intake / admin-read API that comes and goes with the
-# folder, needing NO include_router() line above. Discovered + mounted generically
-# here (the HTTP twin of the "ability-background" service loop). Shipped consumer:
-# the Render Recorder ability's /api/v1/recordings endpoints. Each is isolated: a
-# broken ability API is skipped, never failing app boot.
-try:
-    from app import abilities as _abilities_mgr
-    for _spec in _abilities_mgr.ability_routers():
-        try:
-            app.include_router(_spec["router"])
-            logger.info("Registered drop-in ability backend: %s", _spec["id"])
-        except Exception as _e:
-            logger.warning("Could not mount ability backend %s: %s", _spec.get("id"), _e)
-except Exception as _e:
-    logger.warning("Ability backend discovery failed: %s", _e)
+async def _mount_dropin_ability_backends() -> None:
+    """Mount optional ability APIs after core readiness.
+
+    Ability-router discovery imports every installed ability runtime.  It is
+    useful work, but not a prerequisite for a cached session, sign-in, chat,
+    or the public Wiki.  Keeping it behind readiness avoids making the shell
+    wait for optional integrations and makes its progress visible in /health.
+    """
+    if getattr(app.state, "dropin_ability_backends_mounted", False):
+        return
+    try:
+        from app import abilities as _abilities_mgr
+        discovered = await asyncio.to_thread(_abilities_mgr.ability_routers)
+        for _spec in discovered:
+            try:
+                app.include_router(_spec["router"])
+                logger.info("Registered drop-in ability backend: %s", _spec["id"])
+            except Exception as _e:
+                logger.warning("Could not mount ability backend %s: %s", _spec.get("id"), _e)
+        app.state.dropin_ability_backends_mounted = True
+    except Exception as _e:
+        logger.warning("Ability backend discovery failed: %s", _e)
 
 # ── Restart endpoint ──
 # POST /api/v1/restart uses the supervisor-cooperative relauncher.  This lets
@@ -693,7 +570,7 @@ async def restart_server():
 app.include_router(restart_router)
 
 # ── Static file mounts ──
-_SCREENSHOTS_DIR = _APP_DIR.parent / "data" / "screenshots"
+_SCREENSHOTS_DIR = data_root() / "screenshots"
 _SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/screenshots", StaticFiles(directory=str(_SCREENSHOTS_DIR)), name="screenshots")
 
@@ -1020,13 +897,18 @@ def _render_app_shell(
             f"<script>window.__agentId = {json.dumps(agent_id)}; "
             f"window.__agentName = {json.dumps(agent_name or 'Agent')};</script>\n"
         )
+        # Public agent and embed routes are nested paths. Rootify the static
+        # shell assets and set a same-origin base before any markup that can
+        # resolve page-relative dynamic URLs (backgrounds/partials). The CSP
+        # permits only a same-origin base, never an attacker-controlled origin.
+        html = html.replace('"./ui/', '"/ui/').replace("'./ui/", "'/ui/")
+        html = html.replace("<head>", '<head>\n<base href="/">', 1)
     else:
         # Brand identity (Organisation + WebSite) for the indexable app home. A
         # public agent link is noindex, so it skips this.
         meta += _home_jsonld(origin)
     if chat_portal:
         meta += (
-            '<base href="/">\n'
             '<script>document.documentElement.classList.add("chat-portal"); '
             'window.__CHAT_PORTAL__ = true; '
             f'window.__CHAT_PORTAL_CONFIG__ = {json.dumps(chat_portal_config or {}).replace("<", "\\u003c")};</script>\n'
@@ -1125,6 +1007,21 @@ def _render_landing_page(request: Request):
 @app.on_event("shutdown")
 async def shutdown():
     """Close browser instances and persistent terminal session on server shutdown."""
+    app.state.startup_phase = "stopping"
+    if performance_test_mode():
+        app.state.startup_phase = "stopped"
+        return
+    # A deferred seed/migration may still own a SQLite connection or vault handle.
+    # Cancel it before the normal shutdown sequence closes those resources.
+    _deferred = getattr(app.state, "startup_deferred_task", None)
+    if _deferred is not None and not _deferred.done():
+        _deferred.cancel()
+        try:
+            await _deferred
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
     try:
         from app.tools.browser import close_all
         await close_all()
@@ -1352,7 +1249,16 @@ async def termux_installer():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    # Liveness stays 200 while optional services are connecting: a restart would
+    # only throw away the work already in progress. Clients receive the phase
+    # and pending work so they can keep cached/read-only UI usable and honestly
+    # show "connecting" instead of implying that every integration is ready.
+    return {
+        "status": "healthy",
+        "initialization": getattr(app.state, "startup_phase", "starting"),
+        "pending": list(getattr(app.state, "startup_pending", [])),
+        "active_detail": getattr(app.state, "startup_active_detail", "") or None,
+    }
 
 
 @app.get("/health/ready", include_in_schema=False)
@@ -1556,6 +1462,33 @@ _AGENT_UUID_RE = _re.compile(
 _EMBED_DIR = _APP_DIR.parent / "ui" / "embed"
 
 
+def _render_embed_chat_document(agent_id: str, agent: dict, pub_cfg: dict) -> str:
+    """Render the small, profile-aware iframe client for one public agent."""
+    import json
+    from html import escape as _esc
+
+    template = _EMBED_DIR / "embed-chat.html"
+    if not template.is_file():
+        return ""
+    document = template.read_text(encoding="utf-8")
+    title = pub_cfg.get("title") or agent.get("name") or "Chat"
+    boot = {
+        "agentId": agent_id,
+        "agentName": agent.get("name") or "Agent",
+        "enabled": bool(pub_cfg.get("enabled")),
+        "embeddable": True,
+        "config": pub_cfg,
+    }
+    payload = json.dumps(boot, separators=(",", ":")).replace("<", "\\u003c")
+    document = document.replace("__EMBED_TITLE__", _esc(str(title), quote=True), 1)
+    return document.replace(
+        '<script type="module" src="/ui/embed/embed-chat.js"></script>',
+        f"<script>window.__EMBED__={payload};</script>\n"
+        '<script type="module" src="/ui/embed/embed-chat.js"></script>',
+        1,
+    )
+
+
 @app.get("/embed.js", include_in_schema=False)
 async def embed_loader_js():
     """Serve the website-embed loader script.
@@ -1580,10 +1513,10 @@ async def embed_loader_js():
 
 @app.get("/embed/{agent_id}", response_class=HTMLResponse, include_in_schema=False)
 async def embed_chat_page(agent_id: str, request: Request):
-    """Serve the real chat panel in widget-portal mode for an agent.
+    """Serve the standalone profile-aware chat panel for an agent.
 
-    The customer's iframe boots the same panel DOM and modules as the app, with
-    the surrounding application shell hidden. It is guarded per-agent by a
+    The customer's iframe boots the small embed client rather than the complete
+    application shell. It is guarded per-agent by a
     Content-Security-Policy `frame-ancestors`
     directive built from the owner's allowed-domains list, so an owner who locks
     the widget to their domain can't have it re-hosted elsewhere. When no domains
@@ -1622,15 +1555,10 @@ async def embed_chat_page(agent_id: str, request: Request):
             headers={"Content-Security-Policy": csp},
         )
 
-    # Render the real application chat panel as a portal. This keeps transcript,
-    # streaming, tools/updates, and composer behavior on the exact panel codepath.
-    response = _render_app_shell(
-        request,
-        agent_id=agent_id,
-        agent_name=agent.get("name") or "Agent",
-        chat_portal=True,
-        chat_portal_config=pub_cfg,
-    )
+    document = _render_embed_chat_document(agent_id, agent, pub_cfg)
+    if not document:
+        return HTMLResponse("<p>Embed client missing</p>", status_code=500)
+    response = HTMLResponse(content=document)
     response.headers["Content-Security-Policy"] = csp
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
@@ -1682,6 +1610,23 @@ class _SafetyLockGate(Exception):
 @app.on_event("startup")
 async def startup():
     """Register communication webhooks or start polling on server start."""
+    # Lifespan can be re-entered by test clients and reloaders. Never retain
+    # deferred closures from a prior boot.
+    app.state.startup_phase = "starting"
+    app.state.startup_pending = []
+    app.state.startup_deferred_queue = []
+    app.state.startup_deferred_task = None
+    app.state.startup_active_detail = ""
+    if performance_test_mode():
+        # Performance tests profile the HTTP/bootstrap path in isolation. They
+        # must never join leader election, start pollers, touch live vaults, or
+        # run migrations against the operator's data.
+        app.state.startup_phase = "ready"
+        logger.warning(
+            "PERFORMANCE TEST MODE: isolated data=%s; background services disabled",
+            data_root(),
+        )
+        return
     # ── Safety lock: set the persistent flag on EVERY boot ──
     # This ensures the lock is always active, even after a crash where the
     # shutdown handler never ran (e.g. taskkill /F). The in-memory session
@@ -1689,9 +1634,17 @@ async def startup():
     # process without clearing the disk flag.
     try:
         from app.admin.settings import set_safety_lock_active
-        set_safety_lock_active()
+        await asyncio.to_thread(set_safety_lock_active)
     except Exception:
         pass
+    # ── Kill switch: read the persisted state so the background-service gates
+    # below honour an engaged switch across a restart. Must run before any
+    # resume / polling / watchdog code path.
+    try:
+        from app import kill_switch as _kill_switch
+        await asyncio.to_thread(_kill_switch.init)
+    except Exception as _ks_init_err:
+        logger.warning("Kill switch init failed: %s", _ks_init_err)
     # ── Full-DB encryption reconcile (MUST be first) ──
     # Before ANY store opens its SQLite files, bring each database file into line
     # with the configured at-rest encryption state (encrypt newly-enabled files,
@@ -1702,7 +1655,7 @@ async def startup():
     # + every backend below open already-correct files.
     try:
         from app.db import db_crypto
-        _enc_actions = db_crypto.reconcile()
+        _enc_actions = await asyncio.to_thread(db_crypto.reconcile)
         _changed = [a for a in _enc_actions if a.get("action") in ("encrypted", "decrypted")]
         if _changed:
             logger.info("Full-DB encryption reconcile: %s", _changed)
@@ -1714,10 +1667,13 @@ async def startup():
 
     # Start the diagnostic flight-recorder's background batch-writer + pruner.
     try:
-        from app.agent.diagnostics import start_recorder, record_run_lifecycle  # noqa: F401
-        start_recorder()
-        from app.agent.diagnostics import record as _diag_record
-        _diag_record("info", "server", "Server starting up", source="startup")
+        from app.agent.diagnostics import get_recorder, record_run_lifecycle  # noqa: F401
+        # Recorder construction reads settings/drop-in metadata and its first
+        # durable flush initializes logs.db. Resolve the singleton off-loop so
+        # bootstrap /health and /app remain responsive on a cold disk.
+        _diag_recorder = await asyncio.to_thread(get_recorder)
+        _diag_recorder.start()
+        _diag_recorder.record("info", "server", "Server starting up", source="startup")
     except Exception as _diag_err:
         logger.warning("Diagnostic recorder failed to start: %s", _diag_err)
 
@@ -1736,13 +1692,12 @@ async def startup():
     except Exception as _embed_warm_err:
         logger.warning("Embed warmup scheduling failed: %s", _embed_warm_err)
 
-    # Launch the terminal idle-session GC. Reaps PTYs whose WebSocket has
-    # been detached longer than TERMINAL_IDLE_TIMEOUT_HOURS (default 24h).
-    try:
+    # Terminal support is not part of the first interactive experience. Import
+    # and start its idle-session GC after readiness with the terminal API.
+    async def _start_terminal_gc():
         from app.api.terminal import start_idle_gc
         start_idle_gc()
-    except Exception as _gc_err:
-        logger.warning("Failed to start terminal idle GC: %s", _gc_err)
+    _queue_deferred_startup("terminal_idle_gc", _start_terminal_gc)
 
     # First-boot: provision from a bootstrap.json dropped next to the clone (an
     # encrypted setup bundle → DB + vault + LLM + admin). Runs BEFORE the security
@@ -1758,11 +1713,17 @@ async def startup():
     except Exception as _boot_err:
         logger.warning("Bootstrap-file provisioning at startup failed: %s", _boot_err)
 
-    # Seed agent templates from JSON (manifest-gated short-circuit makes this
-    # cheap when unchanged). LocalBackend self-seeds in __init__, so this call
-    # is mainly the trigger for the remote backend; for Local it's still a
-    # belt-and-braces no-op when the hash matches.
-    try:
+    # Optional APIs used to be imported while ``app.main`` was loading. Mount
+    # them after the interactive core (auth/chat/sessions/Agents/Wiki/catalog)
+    # is serving. Progress remains visible through /health.
+    _queue_deferred_startup("optional_routes", _mount_optional_routers)
+    _queue_deferred_startup("page_backend_discovery", _mount_dropin_page_backends)
+    _queue_deferred_startup("ability_backend_discovery", _mount_dropin_ability_backends)
+
+    # Seed agent templates from JSON after readiness. This is manifest-gated and
+    # idempotent; existing installs already have a usable template catalog, and
+    # a fresh install retains the safe shell until this completes.
+    async def _seed_agent_templates():
         from app.db import get_db as _get_db_seed
         _seed_db = _get_db_seed()
         _seed_summary = await _seed_db.seed_agent_templates(force=False)
@@ -1775,17 +1736,12 @@ async def startup():
                 _seed_summary.get("skipped_admin"),
                 _seed_summary.get("templates"),
             )
-    except Exception as _seed_err:
-        logger.warning("Agent template seed at startup failed: %s", _seed_err)
+    _queue_deferred_startup("agent_templates", _seed_agent_templates)
 
-    # Migrate per-agent authority stores: create/refresh an agent_data/<id>.db
-    # for every active agent. Idempotent — safe to run on every boot.
-    # Account store: one-time import of the legacy app/auth/users.json into the
-    # central user_accounts DB table (kept as a .bak backup), then create the
-    # admin from BOOTSTRAP_ADMIN_PASSWORD if set and none exists. Runs here (not
-    # at import) because the account store is now async/DB-backed. Both steps are
-    # self-gating no-ops once done, so this is safe on every boot.
-    try:
+    # Account migration and environment-admin repair are idempotent background
+    # maintenance. Normal account endpoints remain the authority; a visitor can
+    # use the cached shell while this catches an old install up.
+    async def _migrate_accounts_and_bootstrap_admin():
         from app.auth import users as _auth_users
         _migrated = await _auth_users.migrate_legacy_file()
         if _migrated:
@@ -1797,50 +1753,45 @@ async def startup():
         # Tools. Runs AFTER apply_boot_file activated that shared DB above.
         if await _auth_users.ensure_admin_privilege():
             logger.info("Account store: ensured bootstrap admin has is_admin=1 in the active control DB")
-    except Exception as _acct_err:
-        logger.warning("Account store migration/bootstrap at startup failed: %s", _acct_err)
+    _queue_deferred_startup("accounts_and_admin_repair", _migrate_accounts_and_bootstrap_admin)
 
-    # Converge the JWT signing secret onto ONE value shared via the vault, so a
-    # fresh deploy / redeploy stops inventing its own key and silently 401-ing
-    # every login pass a browser already holds. Runs AFTER apply_boot_file set
-    # the vault provider above, so get_secrets() points at the shared vault.
-    try:
+    # The process already has its locally cached signing key at import time.
+    # Sharing/reconciling it with the vault can happen after the app is serving.
+    async def _reconcile_shared_jwt_secret():
         from app.auth import jwt as _auth_jwt
         await _auth_jwt.ensure_shared_jwt_secret()
-    except Exception as _jwt_err:
-        logger.warning("JWT secret vault reconcile at startup failed: %s", _jwt_err)
+    _queue_deferred_startup("jwt_secret_reconcile", _reconcile_shared_jwt_secret)
 
-    # First-boot: enable all admin Agent Tools so the app ships ready to "do
-    # everything". Runs once (marker-guarded) so later admin disables persist.
-    try:
+    # First-boot ability/security defaults are idempotent. They are not a
+    # prerequisite for serving cached sessions or the public Wiki.
+    async def _seed_default_abilities():
         from app.admin.integrations import seed_default_abilities
         _ab_seed = await seed_default_abilities()
         if _ab_seed.get("seeded"):
             logger.info("Default admin abilities seeded ON: %s", _ab_seed.get("enabled"))
-    except Exception as _ab_err:
-        logger.warning("Default ability seed at startup failed: %s", _ab_err)
+    _queue_deferred_startup("default_abilities", _seed_default_abilities)
 
     # First-boot: on a FRESH, keyring-capable install, turn on the OS-keyring
     # secrets vault + per-tenant field encryption by default. Strictly guarded
     # (no-op if anything's already configured, no keyring, or secrets already
     # exist) so it never disturbs an existing install. See
     # app/encryption/defaults.py for the full guard list.
-    try:
+    async def _seed_security_defaults():
         from app.encryption.defaults import seed_security_defaults
         _sec_seed = await seed_security_defaults()
         if _sec_seed.get("seeded"):
             logger.info("Security defaults seeded ON (os_keyring + field encryption)")
         else:
             logger.info("Security defaults not seeded: %s", _sec_seed.get("reason"))
-    except Exception as _sec_err:
-        logger.warning("Security-defaults seed at startup failed: %s", _sec_err)
+    _queue_deferred_startup("security_defaults", _seed_security_defaults)
 
-    # Build trigger routing index from agent_templates
-    try:
+    # Trigger routes are rebuilt after the template seed so the first request
+    # never pays an entire schema/index scan. Requests without a trigger remain
+    # fully usable during this short connecting period.
+    async def _build_trigger_index():
         from app.agent import trigger_index
-        trigger_index.build()
-    except Exception as _ti_err:
-        logger.warning("Failed to build trigger index on startup: %s", _ti_err)
+        await asyncio.to_thread(trigger_index.build)
+    _queue_deferred_startup("trigger_index", _build_trigger_index)
 
     # ── Self-healing recovery (step 1 of 2): mark mid-flight runs as resumable ──
     # A server restart is the one thing that ends an in-flight run. On boot we
@@ -1848,60 +1799,60 @@ async def startup():
     # 'server_restart' (and streaming assistant rows to 'interrupted'). That tags
     # them as resume candidates; the actual re-ignition happens in step 2 below,
     # after the scheduler/event runtimes are up. See app/agent/runner.py.
-    try:
+    async def _mark_orphans_for_resume():
         from app.db import get_db as _get_db_orphan
-        _n_orphan = await _get_db_orphan().mark_orphans_for_resume()
+        _orphan_db = _get_db_orphan()
+        _n_orphan = await _orphan_db.mark_orphans_for_resume()
         if _n_orphan:
             logger.info("Marked %d orphaned agent run(s) for resume (left by previous process)", _n_orphan)
-    except Exception as _orphan_err:
-        logger.warning("Orphaned-run marking failed: %s", _orphan_err)
+        from app.agent.subagent_contracts import recover_orphaned_contract_checks
+        _n_contracts = await recover_orphaned_contract_checks(_orphan_db)
+        if _n_contracts:
+            logger.info("Finalized %d fenced orphan contract check(s)", _n_contracts)
+    _queue_deferred_startup("orphaned_run_recovery", _mark_orphans_for_resume)
 
-    try:
+    async def _start_communications():
         from app.communications.manager import get_plugin_manager
+        from app.communications import registry
         pm = get_plugin_manager()
 
         # Detected URL from communications registry
         base_url = registry.get("webhook_base_url", "").rstrip("/")
-
         _local_hints = ("localhost", "127.0.0.1", "0.0.0.0")
         is_public = bool(base_url) and not any(h in base_url for h in _local_hints)
 
         if is_public:
-            # Register webhook for all enabled plugins that support it
             for plugin in pm.get_enabled_plugins():
                 if hasattr(plugin, "set_webhook_url"):
                     await plugin.set_webhook_url(base_url)
                     logger.info("Registered webhook for %s at %s", plugin.name, base_url)
         else:
-            # No reachable public URL — start polling (local dev only)
+            # No reachable public URL — start polling (local dev only).
             await pm.start_polling_for_offline_plugins()
-    except Exception as e:
-        logger.warning("Failed to register/poll on startup: %s", e)
+    _queue_deferred_startup("communications", _start_communications)
 
     # ── Backfill admin_users for existing agents ──
-    try:
+    async def _backfill_agent_admin_users():
         from app.db import get_db as _get_db_backfill
         _db_bf = _get_db_backfill()
         _n = await _db_bf.backfill_agent_admin_users()
         if _n:
             logger.info("Backfilled admin_users for %d agents", _n)
-    except Exception as _bf_err:
-        logger.warning("admin_users backfill failed: %s", _bf_err)
+    _queue_deferred_startup("agent_admin_backfill", _backfill_agent_admin_users)
 
     # ── Shared default agent (app-level single row, admin-owned) ──────────────
     # When shared_default_agent_enabled is on, ensure ONE shared agent row exists
     # (id="shared_default") owned by the app admin. Every user sees this agent in
     # their roster instead of getting a private clone. Idempotent — skips if the
     # row already exists.
-    try:
+    async def _provision_shared_default_agent():
         from app.admin.settings import shared_default_agent_enabled as _sd_on
         if _sd_on():
             from app.api.agents import provision_default_agent as _ensure_shared_default
             from app.db import get_db as _get_db_shared_default
             _sd_agent = await _ensure_shared_default(_get_db_shared_default(), "admin")
             logger.info("Shared default agent ready: %s", _sd_agent.get("id"))
-    except Exception as _sd_err:
-        logger.warning("Shared default agent seed failed: %s", _sd_err)
+    _queue_deferred_startup("shared_default_agent", _provision_shared_default_agent)
 
     # ── App Functions gate — admin on/off for the wired-in background services ──
     # Each singleton below (sync engine, scheduler, event runtime, watchdog,
@@ -1934,16 +1885,17 @@ async def startup():
     # pulls money/identity tables). No-op unless the active db is a HybridBackend.
     # The engine binds to THIS machine's local outbox, so it runs per-process (not
     # via the cluster leader, which would wrongly elect a single device for everyone).
-    try:
+    async def _start_hybrid_sync_engine():
         from app.db import get_db as _get_db_sync
         from app.db.hybrid import hybrid_enabled as _hybrid_on, HybridBackend
+        from app.kill_switch import is_engaged as _ks_engaged
         _sync_db = _get_db_sync()
         # Reach the HybridBackend — it's either the active backend directly, or
         # wrapped by the encryption decorator (composition is Enc(Hybrid(...))).
         _inner = _sync_db
         if not isinstance(_inner, HybridBackend):
             _inner = getattr(_sync_db, "_inner", None)
-        if _hybrid_on() and isinstance(_inner, HybridBackend) and _appfn_on("hybrid_sync"):
+        if _hybrid_on() and isinstance(_inner, HybridBackend) and _appfn_on("hybrid_sync") and not _ks_engaged():
             from app.db.sync import SyncEngine
             _engine = SyncEngine(_inner, pull_enabled=True)
             _engine.start()
@@ -1953,16 +1905,16 @@ async def startup():
             # mirror (created before it joined the shared DB, or during a Postgres
             # outage) up to the authority, so they stop being invisible to other
             # devices. Enqueues into the outbox the engine just started draining.
-            try:
+            async def _reconcile_hybrid_agents():
                 _recon = await _inner.reconcile_local_only_agents()
                 if _recon.get("pushed") or _recon.get("skipped_dup_default"):
                     logger.info("Hybrid startup agent reconcile: %s", _recon)
-            except Exception as _recon_err:
-                logger.warning("Hybrid startup agent reconcile failed: %s", _recon_err)
+            # Keep reconciliation serial with the startup queue instead of
+            # competing with the first foreground request.
+            await _reconcile_hybrid_agents()
         elif _hybrid_on() and isinstance(_inner, HybridBackend):
             logger.info("Hybrid sync engine disabled via App Functions (hybrid_sync) — skipping")
-    except Exception as _sync_err:
-        logger.warning("Hybrid sync engine failed to start: %s", _sync_err)
+    _queue_deferred_startup("hybrid_sync", _start_hybrid_sync_engine)
 
     # ── Singleton background services, gated by a single-worker leader ──
     # The scheduler, event runtime, ability pollers, boot orphan-resume, watchdog
@@ -2067,6 +2019,24 @@ async def startup():
         else:
             logger.info("Run watchdog disabled via App Functions (watchdog) — not registered")
 
+        # Run Scout recovery is independent of main-run recovery: the main
+        # response may have completed just before a process restart while its
+        # parallel intake analysis had not.  This bounded sweep revives only
+        # unfinished Scout revisions and never revives a user-stopped starter.
+        async def _start_run_scout_sweep():
+            from app.agent.run_scout import start_sweep
+            await start_sweep()
+
+        async def _stop_run_scout_sweep():
+            from app.agent.run_scout import stop_sweep
+            await stop_sweep()
+
+        if _appfn_on("run_manager"):
+            _leader.register("run-scout-sweep",
+                             _start_run_scout_sweep, _stop_run_scout_sweep)
+        else:
+            logger.info("Run Scout sweep disabled via App Functions (run_manager) — not registered")
+
         # Session Namer recovery sweep — the watchdog-analog for the auto-titler:
         # periodically re-triggers naming for sessions still stuck on a fallback
         # "New: …" title (their original turn-hook attempt failed or never ran).
@@ -2086,6 +2056,26 @@ async def startup():
         else:
             logger.info("Session Namer sweep disabled via App Functions (session_titler) — not registered")
 
+        # Output Closer recovery sweep — the watchdog-analog for the
+        # close-out loop: periodically re-fires the close-out for final
+        # assistant responses that never got one (their live hook failed,
+        # crashed, or never ran). Bounded and cooldown-aware (see
+        # output_closer.py); runs only while the Output Closer app
+        # function itself is enabled.
+        async def _start_closer_sweep():
+            from app.agent.output_closer import start_sweep
+            await start_sweep()
+
+        async def _stop_closer_sweep():
+            from app.agent.output_closer import stop_sweep
+            await stop_sweep()
+
+        if _appfn_on("output_closer"):
+            _leader.register("closer-sweep",
+                             _start_closer_sweep, _stop_closer_sweep)
+        else:
+            logger.info("Output Closer sweep disabled via App Functions (output_closer) — not registered")
+
         async def _start_remote():
             from app.remote_access import start_remote_access
             await start_remote_access()
@@ -2099,7 +2089,19 @@ async def startup():
         else:
             logger.info("Remote access disabled via App Functions (remote_access) — not registered")
 
-        await _leader.start()
+        # Kill switch: services are REGISTERED (so the header toggle can re-enable
+        # them later without a restart) but NOT started while engaged.
+        from app.kill_switch import is_engaged as _ks_engaged
+        if _ks_engaged():
+            logger.info(
+                "Kill switch engaged — leader services registered but NOT started"
+            )
+        else:
+            # Start after orphan marking in the same bounded deferred queue, so
+            # boot recovery cannot race a leader's one-shot resume service.
+            async def _start_leader_services():
+                await _leader.start()
+            _queue_deferred_startup("leader_services", _start_leader_services)
     except _SafetyLockGate:
         pass  # Safety lock active — intentional
     except Exception as _leader_err:
@@ -2112,72 +2114,107 @@ async def startup():
     # GLOBAL singletons elected to one worker; this one is per-device by design).
     # See app/devices/. Harmless on a single, unshared instance — there are simply
     # no other devices, so it just heartbeats itself.
-    try:
-        if _appfn_on("device_worker"):
+    async def _start_device_worker_after_ready():
+        from app.kill_switch import is_engaged as _ks_engaged
+        if _appfn_on("device_worker") and not _ks_engaged():
             from app.devices import start_device_worker
             await start_device_worker()
+        elif _ks_engaged():
+            logger.info("Kill switch engaged — device worker not started")
         else:
             logger.info("Multi-device worker disabled via App Functions (device_worker) — skipping")
-    except Exception as _dev_err:
-        logger.warning("Failed to start device worker: %s", _dev_err)
+    _queue_deferred_startup("device_worker", _start_device_worker_after_ready)
 
     # ── P2P Mirror worker — runs on every instance ──
-    try:
-        if _appfn_on("p2p"):
+    async def _start_p2p_worker_after_ready():
+        from app.kill_switch import is_engaged as _ks_engaged
+        if _appfn_on("p2p") and not _ks_engaged():
             from app.p2p.worker import start_worker as start_p2p_worker
             await start_p2p_worker()
+        elif _ks_engaged():
+            logger.info("Kill switch engaged — P2P worker not started")
         else:
             logger.info("P2P mirror worker disabled via App Functions (p2p) — skipping")
-    except Exception as _p2p_err:
-        logger.warning("Failed to start P2P worker: %s", _p2p_err)
+    _queue_deferred_startup("p2p_worker", _start_p2p_worker_after_ready)
 
-    # ── Seed LLM config from env vars into auth_elements (cloud-first deploy) ──
-    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
-    if api_key:
-        try:
-            from app.db import get_db as _get_db_llm_seed
-            db = _get_db_llm_seed()
+    # ── Provision named platform rosters (cloud-first + legacy migration) ──
+    async def _provision_platform_rosters():
+        api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+        from app.db import get_db as _get_db_llm_seed
+        from app.entitlements.rosters import provision_system_rosters
+        from app.entitlements.tiers import provision_system_tiers
+
+        db = _get_db_llm_seed()
+        env_config = None
+        if api_key:
+            env_config = {
+                "provider": os.environ.get("LLM_PROVIDER", ""),
+                "base_url": os.environ.get("LLM_BASE_URL", ""),
+                "api_key": api_key,
+                "model": os.environ.get("LLM_MODEL", ""),
+                "providers": {},
+                "multi_providers": [],
+            }
+        roster_seed = await provision_system_rosters(db=db, env_config=env_config)
+        if roster_seed["created"] or roster_seed["migrated"]:
+            logger.info(
+                "Platform model rosters provisioned: created=%d migrated=%d",
+                roster_seed["created"], roster_seed["migrated"],
+            )
+        tier_seed = await provision_system_tiers(db=db)
+        if tier_seed["created"]:
+            logger.info(
+                "Experience tiers provisioned: created=%d skipped=%d",
+                tier_seed["created"], tier_seed["skipped"],
+            )
+
+        # Preserve the old admin row during the compatibility window so older
+        # workers and the existing Models UI continue to operate. New runtime
+        # resolution prefers the named roster seeded above.
+        if env_config:
             existing = await db.auth_element_get("admin", "llm", "default")
-            if existing and existing.get("secret_ref"):
-                logger.info("LLM config already in auth_elements, skipping seed")
-            else:
-                config = {
-                    "provider": os.environ.get("LLM_PROVIDER", ""),
-                    "base_url": os.environ.get("LLM_BASE_URL", ""),
-                    "model": os.environ.get("LLM_MODEL", ""),
-                    "providers": {},
-                }
-                await db.auth_element_set(
-                    user_id="admin",
-                    service="llm",
-                    config=config,
-                    secret_ref=api_key,
-                )
-                logger.info("LLM config seeded into auth_elements from env vars")
-        except Exception as e:
-            logger.warning("Failed to seed LLM config: %s", e)
+            if not (existing and existing.get("secret_ref")):
+                from app.admin.settings import _persist_llm_config
+                await _persist_llm_config("admin", env_config)
+                logger.info("Seeded legacy admin LLM compatibility row from environment")
+    _queue_deferred_startup("platform_rosters", _provision_platform_rosters)
 
     # ── Scrub any plaintext LLM key (old config-blob copies) into
     #    the encrypted vault. Idempotent; no-op once nothing plaintext remains. ──
-    try:
+    async def _migrate_llm_secrets():
         from app.admin.settings import migrate_llm_secrets
         await migrate_llm_secrets()
-    except Exception as _mig_err:
-        logger.warning("LLM secret migration skipped: %s", _mig_err)
+    _queue_deferred_startup("llm_secret_migration", _migrate_llm_secrets)
 
     # ── Prime the shared Git-page GitHub token from the encrypted vault (and
     #    migrate a legacy plaintext provider.json token into it once), so every
     #    device signed into the same vault resolves the same key and the agent's
     #    Git Control ability has it before any UI request runs. ──
-    try:
+    async def _prime_github_token():
         from app.api.github import _prime_shared_token_from_vault
         await _prime_shared_token_from_vault()
-    except Exception as _gh_err:
-        logger.warning("Git token vault prime skipped: %s", _gh_err)
+    _queue_deferred_startup("github_token_prime", _prime_github_token)
+
+    # Core persistence/authentication are now ready. The queue begins only after
+    # FastAPI finishes this lifespan hook, letting /app render its cached shell
+    # and the client represent the remaining work as "connecting".
+    app.state.startup_phase = "connecting"
+    app.state.startup_pending = [
+        label for label, _operation in app.state.startup_deferred_queue
+    ]
+    app.state.startup_deferred_task = asyncio.create_task(
+        _drain_deferred_startup(), name="deferred_startup"
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
 
     _port = int(os.environ.get("PORT", "8080"))
-    uvicorn.run("app.main:app", host="0.0.0.0", port=_port, reload=True)
+    uvicorn.run(
+        "app.bootstrap_asgi:bootstrap_app",
+        host="0.0.0.0",
+        port=_port,
+        reload=True,
+        access_log=False,
+    )

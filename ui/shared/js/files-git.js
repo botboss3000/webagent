@@ -110,6 +110,7 @@ let _state = {
   err: null,
   graphErr: null,
 };
+let _remoteRefreshPromise = null;
 
 // Production-mirror status (the "Release to production" panel). Loaded lazily on
 // open + after a release + on the manual refresh — NOT on every auto-poll tick,
@@ -266,7 +267,7 @@ function renderGitPanel(rootEl) {
       `<div class="fg-error fg-click-copy">${_esc(_state.err)}</div>
       <button class="fg-btn" data-act="retry">Retry</button>`;
     const r = body.querySelector('[data-act="retry"]');
-    if (r) r.addEventListener('click', () => refreshGit(rootEl));
+    if (r) r.addEventListener('click', () => refreshGit(rootEl, { remote: true }));
     wireRepoSelector(rootEl);
     if (window.lucide) window.lucide.createIcons({ nodes: Array.from(body.querySelectorAll('[data-lucide]:not(.lucide)')) });
     return;
@@ -402,6 +403,7 @@ function renderRepoForm() {
           <li>Open <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">github.com/settings/tokens</a></li>
           <li>Click <strong>Generate new token (classic)</strong></li>
           <li>Select the <strong>repo</strong> scope (full control)</li>
+          <li>Select the <strong>workflow</strong> scope if this repo contains files under <code>.github/workflows/</code></li>
           <li>Generate, copy it, and paste it above</li>
         </ol>
         <p class="fg-token-help-h">Or a <strong>fine-grained</strong> token</p>
@@ -409,6 +411,7 @@ function renderRepoForm() {
           <li>Open <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">tokens (fine-grained)</a></li>
           <li>Select this repository only</li>
           <li>Permissions → <strong>Contents: Read and write</strong></li>
+          <li>Permissions → <strong>Workflows: Read and write</strong> if this repo contains GitHub Actions workflows</li>
           <li>Generate, copy it, and paste it above</li>
         </ol>
       </div>
@@ -1296,7 +1299,45 @@ const _COMMIT_PHASE_LABELS = {
 // Degrades gracefully: a backend that ignores `stream` (e.g. not yet restarted)
 // answers with a single JSON object, which we deliver as one
 // {phase:'done', result:<obj>} so callers see one consistent shape either way.
+async function cancelCommitOperation(operationId) {
+  if (!operationId) return;
+  await ghFetch('/api/v1/github/commit-and-push/' + encodeURIComponent(operationId) + '/cancel', {
+    method: 'POST',
+  }).catch(() => {});
+}
+
+async function recoverCommitOperation(operationId, onEvent, signal, originalError) {
+  if (!operationId) throw originalError || new Error('The Git response ended before a result was received.');
+  onEvent({ phase: 'reconnecting' });
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    if (signal && signal.aborted) {
+      await cancelCommitOperation(operationId);
+      throw originalError || new Error('Commit cancelled.');
+    }
+    try {
+      const state = await ghFetch('/api/v1/github/commit-and-push/' + encodeURIComponent(operationId) + '/status');
+      if (state && state.status === 'done') {
+        onEvent({ phase: 'done', result: state.result || {
+          status: 'error', message: 'Commit operation ended without a result.'
+        }});
+        return;
+      }
+    } catch (_) {
+      // The connection may still be returning; retry until the bounded deadline.
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  throw new Error('Connection interrupted; the Git operation is still running. Refresh Source Control to check its result.');
+}
+
 async function streamCommitPush(payload, onEvent, signal) {
+  let operationId = '';
+  let sawDone = false;
+  const dispatch = (event) => {
+    if (event && event.phase === 'done') sawDone = true;
+    onEvent(event);
+  };
   const res = await fetch(apiPath('/api/v1/github/commit-and-push'), {
     method: 'POST',
     headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
@@ -1309,11 +1350,12 @@ async function streamCommitPush(payload, onEvent, signal) {
     catch (_) { try { detail = await res.text(); } catch (_) {} }
     throw new Error(detail || ('HTTP ' + res.status));
   }
+  operationId = res.headers.get('x-git-operation-id') || '';
   const ctype = res.headers.get('content-type') || '';
   if (!ctype.includes('ndjson') || !res.body || !res.body.getReader) {
     // No streaming available — treat the whole JSON body as the final result.
     const obj = await res.json();
-    onEvent({ phase: 'done', result: obj });
+    dispatch({ phase: 'done', result: obj });
     return;
   }
   const reader = res.body.getReader();
@@ -1325,17 +1367,37 @@ async function streamCommitPush(payload, onEvent, signal) {
     while ((nl = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
-      if (line) { try { onEvent(JSON.parse(line)); } catch (_) {} }
+      if (line) { try { dispatch(JSON.parse(line)); } catch (_) {} }
     }
   };
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    drain(dec.decode(value, { stream: true }));
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      drain(dec.decode(value, { stream: true }));
+    }
+  } catch (error) {
+    if (signal && signal.aborted) {
+      // The response AbortSignal is already aborted, so cancellation needs a
+      // fresh request. This preserves the button's explicit Cancel semantics.
+      await cancelCommitOperation(operationId);
+      throw error;
+    }
+    // A tunnel/browser can lose a streaming body while ordinary short requests
+    // still work. The server keeps the Git job alive; recover its terminal result
+    // instead of turning a successful commit into "Error in input stream".
+    await recoverCommitOperation(operationId, dispatch, signal, error);
+    return;
   }
   drain(dec.decode());
   const tail = buf.trim();
-  if (tail) { try { onEvent(JSON.parse(tail)); } catch (_) {} }
+  if (tail) { try { dispatch(JSON.parse(tail)); } catch (_) {} }
+  // Some intermediaries turn a reset body into a clean EOF. Missing the required
+  // terminal event is still a disconnect, so reconcile it exactly like a thrown
+  // reader error.
+  if (!sawDone && operationId) {
+    await recoverCommitOperation(operationId, dispatch, signal);
+  }
 }
 
 // Render one streamed phase event into the status line. Goes through the sticky
@@ -1346,6 +1408,10 @@ function onCommitPhase(rootEl, ev, progressOpts = { spin: true }) {
   const set = (msg, tone) => setStickyResult(rootEl, 'fg-commit-result', msg, tone, progressOpts);
   if (phase === 'message') {
     set(ev.source === 'user' ? 'Using your message...' : 'Writing a commit message...', 'info');
+    return;
+  }
+  if (phase === 'reconnecting') {
+    set('Connection interrupted — checking the Git operation...', 'warning');
     return;
   }
   if (phase === 'message_ready') {
@@ -1748,9 +1814,11 @@ async function handoffToSourceController(rootEl) {
 // subprocesses, so they can't truly overlap), and parallel requests would let the
 // heavier graph block the status response — making both appear together. A graph
 // failure doesn't take down the panel.
-async function _loadGit(rootEl, remote) {
-  const statusUrl = '/api/v1/github/status' + (remote ? '' : '?fetch=0');
-  const graphUrl = '/api/v1/github/log-graph?limit=80' + (remote ? '' : '&fetch=0');
+async function _loadGit(rootEl, remote, waitForFresh = false) {
+  const remoteArgs = waitForFresh ? '?wait=1' : '';
+  const statusUrl = '/api/v1/github/status' + (remote ? remoteArgs : '?fetch=0');
+  const graphUrl = '/api/v1/github/log-graph?limit=80' +
+    (remote ? (waitForFresh ? '&wait=1' : '') : '&fetch=0');
 
   // Clear the loading flag on the first paint so renderGitPanel shows the
   // error+retry state (not a stuck "Loading…") if a read failed with no cached
@@ -1791,11 +1859,18 @@ async function _loadGit(rootEl, remote) {
   }
 }
 
-// Refresh the git sidebar. By default (open / lazy-load) this paints instantly
-// from local state, then refreshes remote-dependent bits (ahead/behind, origin/*
-// branch tips) in the background. Pass { remote: true } when the user explicitly
-// asked for fresh remote state (Refresh button, post commit/push/pull) to skip
-// straight to a live fetch.
+async function _guardRemoteRefresh(operation) {
+  if (_remoteRefreshPromise) return _remoteRefreshPromise;
+  _remoteRefreshPromise = Promise.resolve().then(operation);
+  try {
+    return await _remoteRefreshPromise;
+  } finally {
+    _remoteRefreshPromise = null;
+  }
+}
+
+// Refresh the git sidebar. Panel-open is local-only; a live remote fetch happens
+// only after an explicit action or the bounded low-frequency background poll.
 async function refreshGit(rootEl, { remote = false, localOnly = false } = {}) {
   if (!rootEl) return;
   _state.loading = true;
@@ -1818,19 +1893,15 @@ async function refreshGit(rootEl, { remote = false, localOnly = false } = {}) {
   }
 
   if (remote) {
-    // Explicit refresh — go straight to a live fetch.
-    await _loadGit(rootEl, true);
+    // Explicit refresh waits for fresh data, with one in-flight request globally.
+    await _guardRemoteRefresh(() => _loadGit(rootEl, true, true));
     _state.loading = false;
     return;
   }
 
-  // Stage 1: fast local-only read so the panel paints immediately.
+  // Open/lazy-load: cached/local state only. Never trigger remote I/O here.
   await _loadGit(rootEl, false);
   _state.loading = false;
-
-  // Stage 2: background live refresh so ahead/behind + branch tips catch up.
-  _loadGit(rootEl, true)
-    .catch(() => { /* offline: keep the local view we already painted */ });
 }
 
 let _opened = false;
@@ -1863,7 +1934,7 @@ export async function openGitPanel(rootEl) {
 // ONLY when the data actually changed AND the user isn't mid-interaction
 // (typing a commit note, editing the remote URL inline, or with a branch /
 // merge menu open) — so the poll never steals focus or wipes a draft. Every
-// REMOTE_EVERY ticks it also does a live fetch so ahead/behind + origin tips
+// REMOTE_EVERY ticks it also requests a background refresh so ahead/behind + origin tips
 // catch up. Polling pauses while the browser tab is hidden and whenever the
 // view isn't the active git view. Started/stopped from files.js
 // applySidebarView as the view shows / hides.
@@ -1873,7 +1944,7 @@ let _autoRootEl = null;
 let _autoTickCount = 0;
 let _autoSig = '';
 const AUTO_REFRESH_MS = 15000;
-const REMOTE_EVERY = 4;   // ~ every 60s do a live fetch for ahead/behind
+const REMOTE_EVERY = 20;  // ~ every 5m request a coalesced remote refresh
 
 // A compact fingerprint of the bits we render — branch, sync counts, the
 // change list, the commit graph head + branch tips. Identical fingerprints
@@ -1928,9 +1999,13 @@ async function _autoTick() {
   const graphUrl = '/api/v1/github/log-graph?limit=80' + (remote ? '' : '&fetch=0');
 
   let s, g;
+  const load = async () => {
+    const status = await ghFetch(statusUrl);
+    const graph = await ghFetch(graphUrl);
+    return [status, graph];
+  };
   try {
-    s = await ghFetch(statusUrl);
-    g = await ghFetch(graphUrl);
+    [s, g] = remote ? await _guardRemoteRefresh(load) : await load();
   } catch (_) {
     return;   // transient (offline / mid-operation) — keep the last good view
   }

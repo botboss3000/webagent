@@ -17,6 +17,27 @@ from app.db.system_prompt_fragments import (
 
 logger = logging.getLogger(__name__)
 
+
+_ANONYMOUS_AGENT_PROMPT = """You are a helpful conversational assistant.
+Answer the user's questions clearly and directly using the information already
+available in this conversation and your general knowledge. If a request requires
+an action outside this conversation, say that you cannot perform that action and
+offer a useful explanation or alternative."""
+
+
+def _is_anonymous_user(user_id: Optional[str]) -> bool:
+    return bool(user_id) and str(user_id).startswith("anon_")
+
+
+def _anonymous_showcase(user_id: Optional[str], agent: Optional[dict]) -> bool:
+    if not _is_anonymous_user(user_id):
+        return False
+    try:
+        from app.agent.public_policy import is_showcase_policy
+        return is_showcase_policy(agent or {})
+    except Exception:
+        return True
+
 _VISION_INLINE_MAX_BYTES = 20 * 1024 * 1024
 _VISION_INLINE_MIMES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
@@ -50,11 +71,102 @@ def _row_content(doc: Dict) -> str:
     return (doc.get("content") or "").strip()
 
 
+# ── Role-directive injection (grep ROLE-DIRECTIVE-INJECT; was PREMIUM-DIRECTIVE-INJECT) ──
+# Roster-role prompt directives: the agent's admin authors PER-AGENT prompt
+# directives — one per fixed roster role (standard / premium / image_in /
+# image_out / system / voice) plus one per custom roster slot, stored in the
+# agent's own metadata['llm_config']['model_directives'] (app/admin/settings.py
+# get_agent_model_directives; written via the agent-admin-gated PUT /agents).
+# The directive for the session's ACTIVE slot rides into the assembled system
+# prompt exactly like a loaded skill — triggered by the session's model
+# CLASSIFICATION (the roster slot the picker / mode selector wrote), never by
+# parsing a model name. Custom slots each carry their own injection keyed by
+# slot_ref ('custom:<position>').
+#
+# The premium role additionally keeps the legacy agent-authored "Model Upgrade
+# Directive" slot (self-authored via edit_own_prompt): when authored, that
+# agent-level content WINS over the admin's premium directive.
+_PREMIUM_DIRECTIVE_SLOT = "Model Upgrade Directive"
+
+
+async def _session_slot(
+    session_id: Optional[str],
+    user_id: Optional[str],
+    agent_id: Optional[str],
+) -> Optional[dict]:
+    """The session's ACTIVE roster slot as {"role": ..., "slot_ref": ...} —
+    whose admin directive should ride into this turn's system prompt (grep
+    ROLE-DIRECTIVE-INJECT). Pure slot logic, delegated to
+    app.admin.settings.session_active_slot (the same resolver family the
+    footer picker uses): the model-id string is never read for this decision.
+    None when no slot resolves (no roster) — no directive rides in."""
+    if not session_id:
+        return None
+    try:
+        from app.admin.settings import session_active_slot
+        from app.db import get_db
+        agent_rec = None
+        if agent_id:
+            try:
+                agent_rec = await get_db().get_agent_by_id(agent_id)
+            except Exception:  # noqa: BLE001
+                agent_rec = None
+        return await session_active_slot(user_id or "", agent_rec=agent_rec,
+                                         session_id=session_id)
+    except Exception:  # noqa: BLE001 — gate failure = no directive
+        return None
+
+
+async def _agent_directive(
+    agent_id: Optional[str],
+    role: Optional[str],
+    slot_ref: Optional[str] = None,
+) -> str:
+    """This agent's admin-authored directive for a roster slot ('' when
+    unset). Custom slots read model_directives.custom[slot_ref] — so custom 1,
+    custom 2, ... each carry their own injection; fixed roles read their key."""
+    if not role or not agent_id:
+        return ""
+    try:
+        from app.admin.settings import get_agent_model_directives
+        d = await get_agent_model_directives(agent_id)
+    except Exception:  # noqa: BLE001
+        return ""
+    if role == "custom":
+        custom = d.get("custom") or {}
+        return str(custom.get(slot_ref or "") or "").strip()
+    return str(d.get(role) or "").strip()
+
+
+async def _premium_directive_content(
+    docs: List[Dict],
+    agent_id: Optional[str],
+    user_id: Optional[str],
+) -> str:
+    """The directive slot's content — from the caller's resolved docs when the
+    slot survived filtering, else a targeted DB read. Empty when not authored."""
+    for doc in docs:
+        if (doc.get("context_type") or doc.get("slot_name")) == _PREMIUM_DIRECTIVE_SLOT:
+            return _row_content(doc)
+    if not agent_id:
+        return ""
+    try:
+        from app.db import get_db
+        slots = await get_db().resolve_prompts(agent_id, user_id=user_id)
+        for s in slots:
+            if s.get("slot_name") == _PREMIUM_DIRECTIVE_SLOT:
+                return (s.get("content") or "").strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 async def build_system_prompt(
     docs: List[Dict],
     brain_context: Optional[str] = None,
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> str:
     """Backward-compatible flattened prompt builder."""
     return (
@@ -63,6 +175,7 @@ async def build_system_prompt(
             brain_context=brain_context,
             user_id=user_id,
             agent_id=agent_id,
+            session_id=session_id,
         )
     ).render()
 
@@ -72,6 +185,7 @@ async def build_system_prompt_parts(
     brain_context: Optional[str] = None,
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> SystemPromptParts:
     """Assemble the final system prompt from resolved slot docs + brain context.
 
@@ -80,10 +194,32 @@ async def build_system_prompt_parts(
     in the admin's chosen order. We concatenate the contents as-is so admins
     keep full control over headings and formatting.
 
-    When `agent_id` is provided, any external data sources attached to that
-    agent (with inject_schema_in_prompt = 1) get summarized into a
-    `# [DATA SOURCES]` section.
+    `session_id`, when provided, enables the role-directive injection
+    (grep ROLE-DIRECTIVE-INJECT): the admin's directive for the session's
+    ACTIVE roster role is appended (the premium role also keeps the legacy
+    agent-authored "Model Upgrade Directive" slot, which wins when authored) —
+    mirroring how a loaded skill renders, but triggered by the model
+    classification instead of a load_skill call.
     """
+    # The shared default agent is also used by public guests. Its admin-authored
+    # persona, bootstrap slots, directives, and learned prompt
+    # fragments may describe privileged capabilities. Anonymous callers receive
+    # a deliberately self-contained chat persona instead, so forbidden abilities
+    # are absent from the model context rather than merely denied at execution.
+    if _is_anonymous_user(user_id) and (not agent_id or agent_id == "shared_default"):
+        return SystemPromptParts(agent_context=_ANONYMOUS_AGENT_PROMPT)
+    if agent_id:
+        try:
+            from app.agent.profiles import resolve_member, VISITOR
+            _visitor_member = await resolve_member(agent_id, user_id, auto_link_app=False)
+            if (((_visitor_member or {}).get("profile") or {}).get("slug") == VISITOR):
+                _visitor_overlay = str((((_visitor_member.get("profile") or {}).get("policy") or {}).get("prompt_overlay") or "")).strip()
+                return SystemPromptParts(agent_context="\n\n".join(
+                    part for part in (_ANONYMOUS_AGENT_PROMPT, _visitor_overlay) if part
+                ))
+        except Exception:
+            pass
+
     shared_sections: List[str] = []
     agent_sections: List[str] = []
     turn_sections: List[str] = []
@@ -99,16 +235,74 @@ async def build_system_prompt_parts(
     except Exception:  # noqa: BLE001 — baseline is best-effort, never fatal
         pass
 
+    # Role-directive gate: decide once which roster slot's directive rides in
+    # this turn (the session's model classification — never a model name).
+    # (grep ROLE-DIRECTIVE-INJECT)
+    active_slot = None
+    if session_id:
+        try:
+            active_slot = await _session_slot(session_id, user_id, agent_id)
+        except Exception:  # noqa: BLE001 — gate failure = no directive
+            active_slot = None
+    premium_active = bool(active_slot and active_slot.get("role") == "premium")
+
     doc_sections = 0
+    directive_content = ""
     for doc in docs:
+        slot_name = doc.get("context_type") or doc.get("slot_name") or ""
         # The `__skills__` slot holds skills as raw JSON — never dump it into the
         # prompt; it's rendered separately by append_skills_section().
-        if (doc.get("context_type") or doc.get("slot_name")) == "__skills__":
+        if slot_name == "__skills__":
+            continue
+        if slot_name == _PREMIUM_DIRECTIVE_SLOT:
+            # Never unconditional — handled by the premium gate below.
+            if premium_active:
+                directive_content = _row_content(doc)
             continue
         content = _row_content(doc)
         if content:
             agent_sections.append(content)
             doc_sections += 1
+
+    if active_slot:
+        role = active_slot.get("role")
+        slot_ref = active_slot.get("slot_ref")
+        if role == "premium":
+            # Legacy agent-authored slot wins; else the admin's per-agent
+            # premium directive.
+            if not directive_content:
+                directive_content = await _premium_directive_content(docs, agent_id, user_id)
+            if not directive_content:
+                directive_content = await _agent_directive(agent_id, role, slot_ref)
+        else:
+            directive_content = await _agent_directive(agent_id, role, slot_ref)
+        if directive_content:
+            agent_sections.append(directive_content)
+
+    # ── Tool-result update directive (grep OFF-TASK-HIDING) ──
+    # When off-task tool-output hiding is on (see app/agent/session_history.py),
+    # tool results from closed tasks appear as placeholders in the model
+    # context. This directive tells the agent to narrate tool results / next
+    # steps / reasoning after every call and how to handle a hidden result.
+    # Text: the `updates_directive` knob on the Task Grouping app function
+    # (App Settings ▸ App Functions) wins; the `tool_result_updates_directive`
+    # runtime fragment is the fallback. Rides in the agent block so the
+    # provider prompt-cache prefix stays stable. Best-effort — never breaks.
+    try:
+        from app.agent.session_history import off_task_hiding_enabled as _off_task_on
+        if _off_task_on():
+            _dir = ""
+            try:
+                from app.admin.ability_config import get_ability_config
+                _dir = (get_ability_config("task_grouping").get("updates_directive") or "").strip()
+            except Exception:  # pragma: no cover - config read is best-effort
+                pass
+            if not _dir:
+                _dir = (get_prompt_fragments().get("tool_result_updates_directive") or "").strip()
+            if _dir:
+                agent_sections.append(_dir)
+    except Exception:  # pragma: no cover - directive is best-effort, never fatal
+        pass
 
     fr = get_prompt_fragments()
 
@@ -122,9 +316,14 @@ async def build_system_prompt_parts(
             agent_sections.append(fallback)
 
     if agent_id:
-        ds_block = await format_data_sources_for_prompt(agent_id)
-        if ds_block:
-            agent_sections.append(ds_block)
+        try:
+            from app.agent.profiles import resolve_member
+            _member = await resolve_member(agent_id, user_id)
+            _overlay = str((((_member or {}).get("profile") or {}).get("policy") or {}).get("prompt_overlay") or "").strip()
+            if _overlay:
+                agent_sections.append(_overlay)
+        except Exception:  # profile prompt overlay is best-effort
+            pass
 
     if brain_context:
         turn_sections.append("# [BRAIN CONTEXT]")
@@ -161,6 +360,12 @@ async def append_skills_section(
     gate) are stripped, so the agent isn't told about tools it doesn't have this
     turn. The actual tool boundary is enforced in `loader.load_tools`.
     """
+    # Authored skills are not necessarily tagged with an ability id and can
+    # contain privileged operating instructions. Guests get no skill catalog;
+    # their runtime tool surface is independently reduced in tools.loader.
+    if _anonymous_showcase(caller_user_id, agent):
+        return system_prompt
+
     from app.agent.skills import format_skills_section
 
     agent_id = (agent or {}).get("id")
@@ -256,43 +461,6 @@ async def append_skills_section(
     if not section:
         return system_prompt
     return f"{system_prompt}\n\n{section}".strip() if system_prompt else section
-
-
-async def format_data_sources_for_prompt(agent_id: str) -> str:
-    """Build the `# [DATA SOURCES]` block for an agent's enabled attachments.
-
-    Returns "" when the agent has no attached sources or every attachment has
-    inject_schema_in_prompt = 0.
-    """
-    from app.db import get_db
-    from app.connectors import get_connector
-
-    db = get_db()
-    try:
-        attachments = await db.agent_data_source_list(agent_id, enabled_only=True)
-    except Exception:
-        return ""
-    snippets: List[str] = []
-    for att in attachments:
-        if not att.get("inject_schema_in_prompt"):
-            continue
-        ds = {
-            "id": att.get("data_source_id"),
-            "name": att.get("name"),
-            "type": att.get("type"),
-            "config": att.get("config") or {},
-            "schema_cache": att.get("schema_cache") or {},
-        }
-        try:
-            connector = get_connector(ds["type"])
-            snippet = connector.prompt_snippet(ds, att)
-        except Exception:
-            snippet = ""
-        if snippet:
-            snippets.append(snippet.strip())
-    if not snippets:
-        return ""
-    return "# [DATA SOURCES]\n\n" + "\n\n".join(snippets)
 
 
 def format_attachments_for_prompt(attachments: List[Dict]) -> str:

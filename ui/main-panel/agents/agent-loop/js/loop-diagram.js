@@ -5,7 +5,6 @@
 // Consumed by loop-logic.js (live runtime view) and agents.js (config/test view).
 //
 // 9 stages  ·  34 nodes  ·  matches app/api/chat.py + app/agent/loop.py exactly
-// (data_src_load + data_src_exec added for per-agent external data sources)
 
 export const LOOP_W = 1560;
 const LOOP_H = 400;
@@ -62,7 +61,6 @@ export const LOOP_NODES = [
   // ── LOOP INIT  (once per request, before the while loop) ─────────────────────
   { id: 'load_provider',       label: 'Load Provider',      type: 'process',  cx: 578,  cy: 138, hw: 60, hh: 13 },
   { id: 'load_tools',          label: 'Load Tools',         type: 'process',  cx: 578,  cy: 172, hw: 60, hh: 13 },
-  { id: 'data_src_load',       label: 'Data Sources',       type: 'process',  cx: 578,  cy: 206, hw: 60, hh: 13 },
   { id: 'integration_status',  label: 'Integration Status', type: 'process',  cx: 578,  cy: 240, hw: 66, hh: 13 },
   { id: 'assemble_msgs',       label: 'Assemble Msgs',      type: 'process',  cx: 578,  cy: 274, hw: 60, hh: 13 },
 
@@ -81,7 +79,6 @@ export const LOOP_NODES = [
 
   // ── EXECUTION  (per tool result) ─────────────────────────────────────────────
   { id: 'execute_tools',   label: 'Execute Tools',    type: 'process',  cx: 1145, cy: 140, hw: 62, hh: 16 },
-  { id: 'data_src_exec',   label: 'Data Src Query',   type: 'process',  cx: 1145, cy: 188, hw: 62, hh: 13 },
   { id: 'db_persist_tool', label: 'Persist Tool',     type: 'process',  cx: 1145, cy: 222, hw: 62, hh: 13 },
   { id: 'delegation_chk',  label: 'Delegation Chk',   type: 'process',  cx: 1145, cy: 256, hw: 62, hh: 13 },
   { id: 'skill_track',     label: 'Skill Track',      type: 'process',  cx: 1145, cy: 290, hw: 62, hh: 13 },
@@ -120,8 +117,7 @@ const LOOP_EDGES = [
 
   // LOOP INIT chain
   { from: 'load_provider',      to: 'load_tools',          vertical: true                          },
-  { from: 'load_tools',         to: 'data_src_load',       vertical: true                          },
-  { from: 'data_src_load',      to: 'integration_status',  vertical: true                          },
+  { from: 'load_tools',         to: 'integration_status',  vertical: true                          },
   { from: 'integration_status', to: 'assemble_msgs',      vertical: true                          },
 
   // LOOP INIT → INFERENCE
@@ -151,8 +147,7 @@ const LOOP_EDGES = [
   { from: 'post_val_chk',    to: 'execute_tools'                                                },
 
   // EXECUTION chain
-  { from: 'execute_tools',   to: 'data_src_exec',   vertical: true                              },
-  { from: 'data_src_exec',   to: 'db_persist_tool', vertical: true                              },
+  { from: 'execute_tools',   to: 'db_persist_tool', vertical: true                              },
   { from: 'db_persist_tool', to: 'delegation_chk',  vertical: true                              },
   { from: 'delegation_chk',  to: 'skill_track',     vertical: true                              },
 
@@ -179,13 +174,13 @@ const _H_GROUPS = [
     left: 159,  right: 275  },
   { nodeIds: ['load_context','memory_search','resolve_attach','attachment_describe','build_prompt','build_history'],
     left: 336,  right: 456  },
-  { nodeIds: ['load_provider','load_tools','data_src_load','integration_status','assemble_msgs'],
+  { nodeIds: ['load_provider','load_tools','integration_status','assemble_msgs'],
     left: 518,  right: 638  },
   { nodeIds: ['interrupt_chk','turn_counter','build_tool_defs','llm_call'],
     left: 704,  right: 820  },
   { nodeIds: ['db_persist_asst','validate_tools','destructive_chk','guardrails','post_val_chk'],
     left: 897,  right: 1017 },
-  { nodeIds: ['execute_tools','data_src_exec','db_persist_tool','delegation_chk','skill_track'],
+  { nodeIds: ['execute_tools','db_persist_tool','delegation_chk','skill_track'],
     left: 1083, right: 1207 },
   { nodeIds: ['check_continue'],
     left: 1258, right: 1374 },
@@ -235,7 +230,7 @@ function buildHorizontalLayout(availableWidth) {
 
 // ── buildVerticalLayout ───────────────────────────────────────────────────────
 // All 35 nodes stacked in a single column, stages as horizontal bands.
-// (data_src_load + data_src_exec + attachment_describe added — every node from
+// (attachment_describe added — every node from
 //  the inserted node onward shifts down by 34, stage bands extended accordingly.)
 function buildVerticalLayout(availableWidth) {
   const w  = Math.max(availableWidth > 0 ? availableWidth : 360, 260);
@@ -258,7 +253,6 @@ function buildVerticalLayout(availableWidth) {
     // LOOP INIT  (+34 from attachment_describe shift)
     { id: 'load_provider',      label: 'Load Provider',      type: 'process',  cx,        cy: 628,  hw: 60, hh: 13 },
     { id: 'load_tools',         label: 'Load Tools',         type: 'process',  cx,        cy: 662,  hw: 60, hh: 13 },
-    { id: 'data_src_load',      label: 'Data Sources',       type: 'process',  cx,        cy: 696,  hw: 60, hh: 13 },
     { id: 'integration_status', label: 'Integration Status', type: 'process',  cx,        cy: 730,  hw: 66, hh: 13 },
     { id: 'assemble_msgs',      label: 'Assemble Msgs',      type: 'process',  cx,        cy: 764,  hw: 60, hh: 13 },
     // INFERENCE
@@ -274,7 +268,6 @@ function buildVerticalLayout(availableWidth) {
     { id: 'post_val_chk',    label: 'Post-Val Chk',     type: 'process',  cx,        cy: 1210, hw: 60, hh: 13 },
     // EXECUTION
     { id: 'execute_tools',   label: 'Execute Tools',    type: 'process',  cx,        cy: 1278, hw: 62, hh: 16 },
-    { id: 'data_src_exec',   label: 'Data Src Query',   type: 'process',  cx,        cy: 1328, hw: 62, hh: 13 },
     { id: 'db_persist_tool', label: 'Persist Tool',     type: 'process',  cx,        cy: 1362, hw: 62, hh: 13 },
     { id: 'delegation_chk',  label: 'Delegation Chk',   type: 'process',  cx,        cy: 1396, hw: 62, hh: 13 },
     { id: 'skill_track',     label: 'Skill Track',      type: 'process',  cx,        cy: 1430, hw: 62, hh: 13 },

@@ -1,0 +1,455 @@
+================================================================================
+DIFF: chat/js/chat-send.js (271 lines)
+================================================================================
+--- 
++++ 
+@@ -31,4 +31,5 @@
+ // (chat_ui.chat_common.messages) → a built-in fallback. agentChatMsg() walks that chain.
+ function applyChatGate() {
++  _syncBillingPanel();
+   if (!app.chatInput || !app.chatSend) return;
+   const billingBlock = app._billingBlocked;
+@@ -38,5 +39,5 @@
+     app.chatInput.disabled = true;
+     app.chatInput.value = '';
+-    app.chatInput.placeholder = 'Trial ended — subscribe to keep chatting.';
++    app.chatInput.placeholder = 'Your trial has ended — pick an option above.';
+     app.chatSend.disabled = true;
+     _updateInputRowState();
+@@ -77,7 +78,114 @@
+     agentId: detail.agentId || app.currentAgentId || null,
+     reason: detail.reason,
++    accepted: detail.accepted || null,
+   };
+   applyChatGate();
+ });
++
++// ── Trial-ended billing panel ─────────────────────────────────────────────
++// When a user's trial is exhausted the composer is disabled and this panel
++// appears above the pill: a "Buy credits" button (opens the buy-credits modal,
++// which offers the agent's accepted processors — Bitcoin in this deployment)
++// and a "Continue using for free" button that expands info about bringing your
++// own LLM. Hidden whenever the current agent is not trial-blocked.
++function _syncBillingPanel() {
++  const panel = document.getElementById('chat-billing-panel');
++  if (!panel) return;
++  const billingBlock = app._billingBlocked;
++  const blockedHere = billingBlock
++    && billingBlock.reason === 'trial_expired'
++    && (!billingBlock.agentId || billingBlock.agentId === app.currentAgentId);
++  if (!blockedHere) {
++    panel.hidden = true;
++    panel.innerHTML = '';
++    return;
++  }
++  const agentKey = billingBlock.agentId || '';
++  if (panel.dataset.renderedFor === agentKey && panel.innerHTML) return;
++  panel.dataset.renderedFor = agentKey;
++  panel.innerHTML = '';
++  panel.hidden = false;
++
++  const card = _bEl('div', { class: 'billing-panel-card' });
++  card.appendChild(_bEl('div', { class: 'billing-panel-title' }, 'Your trial has ended'));
++  card.appendChild(_bEl('div', { class: 'billing-panel-desc' },
++    'This agent’s free trial is over. Pick how you’d like to keep chatting.'));
++
++  card.appendChild(_bEl('button', {
++    type: 'button',
++    class: 'billing-panel-btn billing-panel-btn-primary',
++    onclick: () => window.AppBilling.openBuyCreditsModal({
++      agentId: billingBlock.agentId,
++      reason: 'trial_expired',
++      accepted: billingBlock.accepted,
++    }),
++  }, 'Buy credits'));
++
++  card.appendChild(_bEl('button', {
++    type: 'button',
++    class: 'billing-panel-btn',
++    onclick: () => { info.hidden = !info.hidden; },
++  }, 'Continue using for free'));
++
++  const info = _bEl('div', { class: 'billing-panel-info', hidden: true });
++  info.appendChild(_bEl('div', { class: 'billing-panel-info-title' }, 'Use your own LLM — free'));
++  info.appendChild(_bEl('div', { class: 'billing-panel-info-text' },
++    'You can keep chatting with this agent for free by bringing your own LLM. ' +
++    'Connect your own model provider (OpenAI, Anthropic, or any OpenAI-compatible API) ' +
++    'with your own key, and your messages run on your key instead of this agent’s credits. ' +
++    'Use the model picker in the chat footer to switch to your own model.'));
++  info.appendChild(_bEl('div', { class: 'billing-panel-info-text', style: { marginTop: '8px' } },
++    'Once your key is connected — or after buying credits — press “Check again” below.'));
++  card.appendChild(info);
++
++  // Re-evaluate access without sending a message. The composer is disabled while
++  // blocked, so this is the recovery path after the user buys credits (balance
++  // > 0) or connects their own LLM key (own-llm allow). On success the block is
++  // cleared and the gate re-applied, re-enabling the composer.
++  const checkBtn = _bEl('button', {
++    type: 'button',
++    class: 'billing-panel-btn billing-panel-btn-ghost',
++  }, 'Check again');
++  checkBtn.addEventListener('click', async () => {
++    checkBtn.disabled = true;
++    checkBtn.textContent = 'Checking…';
++    try {
++      const decision = await window.AppBilling.checkAccess(billingBlock.agentId);
++      if (decision && decision.allow) {
++        app._billingBlocked = null;
++      } else {
++        // Still blocked: re-assert the current block so the panel stays put.
++        app._billingBlocked = billingBlock;
++      }
++    } catch (_) {
++      app._billingBlocked = billingBlock; // couldn't check — keep blocking
++    } finally {
++      checkBtn.disabled = false;
++      checkBtn.textContent = 'Check again';
++      applyChatGate();
++    }
++  });
++  card.appendChild(checkBtn);
++
++  panel.appendChild(card);
++}
++
++// Minimal DOM builder for the billing panel (kept local — chat-send.js does
++// not import the shared _el helper).
++function _bEl(tag, attrs = {}, ...children) {
++  const e = document.createElement(tag);
++  for (const [k, v] of Object.entries(attrs)) {
++    if (k === 'class') e.className = v;
++    else if (k === 'hidden') { if (v) e.hidden = true; }
++    else if (k.startsWith('on') && typeof v === 'function') e.addEventListener(k.slice(2), v);
++    else if (v === false || v == null) continue;
++    else e.setAttribute(k, v);
++  }
++  for (const c of children) {
++    if (c == null) continue;
++    e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
++  }
++  return e;
++}
+ 
+ // Built-in commands that run SYNCHRONOUSLY on the server (the /chat/send POST
+@@ -192,4 +300,21 @@
+ const _PERSISTENCE_RECEIPTS_LS_KEY = 'webagent.messagePersistenceReceipts.v1';
+ let _outboxIdCounter = 0;
++// Queue status travels over the websocket independently of the send response.
++// Keep the small amount of state needed to reconnect the two paths: an event
++// can beat the acknowledgement, a reconcile can replace the optimistic node,
++// or an ephemeral/GenUI send may not have created a normal user bubble at all.
++const _gateQueueBySession = new Map();
++const _recentOutgoingBySession = new Map();
++
++function _rememberOutgoingMessage(sessionId, text, bubble = null) {
++  if (!sessionId) return;
++  _recentOutgoingBySession.set(String(sessionId), { text: String(text || ''), bubble });
++}
++
++function _queuedStateFor(sessionId, turnId) {
++  const state = _gateQueueBySession.get(String(sessionId || ''));
++  return state && (!turnId || !state.turnId || String(state.turnId) === String(turnId))
++    ? state : null;
++}
+ // Entries currently being POSTed by this page. The recovery poll must not retry
+ // a request merely because its first acknowledgement is taking longer than the
+@@ -442,4 +567,5 @@
+     if (turnId) bubble.setAttribute('data-msg-id', turnId);
+     _addBubbleActions(bubble);
++    _restoreGateQueueBubble(bubble, turnId);
+     return;
+   }
+@@ -452,4 +578,5 @@
+   _addBubbleActions(bubble);
+   _attachPersistenceDetails(bubble, messageId);
++  _restoreGateQueueBubble(bubble, turnId);
+ }
+ 
+@@ -733,4 +860,9 @@
+     _markBubbleSaving(_userBubble, outboxEntry);
+   }
++  // This is deliberately independent of outbox persistence. A gate-status
++  // websocket event may arrive before the send POST resolves (or after a
++  // renderer has briefly replaced this node), so retain the actual message as
++  // a recovery source for the queued-state renderer.
++  _rememberOutgoingMessage(outboxEntry.session_id, text, _userBubble);
+   // ── Render pending attachments into the user bubble ──
+   const _pendingAtts = getPendingAttachments();
+@@ -1179,6 +1311,6 @@
+ // same pending (dashed-border + ⏳) look used for outbox-retry messages.
+ 
+-function markBubbleQueued(turnId, queuePosition) {
+-  if (!app.chatMessages) return;
++function _findGateQueuedBubble(turnId) {
++  if (!app.chatMessages) return null;
+   let bubble = null;
+   if (turnId) {
+@@ -1187,16 +1319,13 @@
+     );
+   }
+-  // Race fallback: the queued broadcast can arrive before the POST response
+-  // stamped data-msg-id on the optimistic bubble. Match the last user bubble
+-  // that has no id yet — that's the message we just sent.
+-  if (!bubble) {
+-    const cands = app.chatMessages.querySelectorAll('.chat-bubble.user:not([data-msg-id])');
+-    if (cands.length) bubble = cands[cands.length - 1];
+-  }
+-  if (!bubble) return;
++  return bubble;
++}
++
++function _applyGateQueuedStyle(bubble, state) {
++  if (!bubble || !state) return null;
+   // Don't re-mark a bubble that's already in save-error state
+-  if (bubble.classList.contains('save-error')) return;
++  if (bubble.classList.contains('save-error')) return null;
+   bubble.classList.add('pending', 'saving');
+-  bubble.setAttribute('data-gate-queued', String(queuePosition || '1'));
++  bubble.setAttribute('data-gate-queued', String(state.queuePosition || '1'));
+   let label = bubble.querySelector('.label');
+   if (!label) {
+@@ -1205,6 +1334,45 @@
+     bubble.insertBefore(label, bubble.firstChild);
+   }
+-  label.textContent = 'You (queued' + (queuePosition ? ' #' + queuePosition : '') + '\u2026)';
+-  _addForceRunButton(bubble, turnId);
++  label.textContent = 'You (queued' + (state.queuePosition ? ' #' + state.queuePosition : '') + '\u2026)';
++  _addForceRunButton(bubble, state.turnId);
++  return bubble;
++}
++
++function _restoreGateQueueBubble(bubble, turnId) {
++  const state = _queuedStateFor(app.currentSessionId, turnId);
++  if (state) _applyGateQueuedStyle(bubble, state);
++}
++
++function markBubbleQueued(turnId, queuePosition, sessionId = app.currentSessionId) {
++  const sid = String(sessionId || app.currentSessionId || '');
++  if (!sid) return;
++  const remembered = _recentOutgoingBySession.get(sid);
++  const state = {
++    turnId: turnId || null,
++    queuePosition: Number.isFinite(queuePosition) ? queuePosition : null,
++    text: remembered?.text || '',
++  };
++  _gateQueueBySession.set(sid, state);
++
++  // Do not touch a different session's transcript. Its title-bar queue state
++  // is updated by the dropdown cache; when this session is opened, a normal
++  // persisted user message can still be styled by a later status event.
++  if (sid !== String(app.currentSessionId || '')) return;
++
++  let bubble = _findGateQueuedBubble(turnId);
++  // Prefer the bubble registered by this send over an unqualified DOM scan:
++  // an ephemeral/GenUI turn can otherwise accidentally mark an older user
++  // bubble while its own node is still being reconciled.
++  if (!bubble && remembered?.bubble?.isConnected
++      && remembered.bubble.classList.contains('user')) {
++    bubble = remembered.bubble;
++  }
++  // Last-resort rendering is intentional: GenUI and ephemeral messages may
++  // have no durable user node at the instant the queue event arrives. Showing
++  // the queued turn is more useful than silently dropping its only feedback.
++  if (!bubble && app.chatMessages && state.text) {
+================================================================================
+DIFF: shared/js/chat-activity.js (45 lines)
+================================================================================
+--- 
++++ 
+@@ -532,26 +532,14 @@
+ }
+ 
+-/** Estimate context tokens from an array of message objects (chars/4 heuristic). */
+-function _estimateContextFromMessages(messages) {
+-  if (!messages || !messages.length) return 0;
+-  let totalChars = 0;
+-  for (const m of messages) {
+-    const c = m.content;
+-    if (typeof c === 'string') totalChars += c.length;
+-    else if (c) totalChars += String(c).length;
+-    // Also count tool_calls payload if present
+-    if (m.tool_calls) {
+-      try { totalChars += JSON.stringify(m.tool_calls).length; }
+-      catch (_) { totalChars += String(m.tool_calls).length; }
+-    }
+-  }
+-  return Math.max(0, Math.round(totalChars / 4));
+-}
+-
+-/** Set the live context from an array of messages (called on session load). */
++/** Called on session load and repeatedly as messages stream in / windows load
++ *  (cache append, tail-poll, reposition, …). Deliberately does NOT touch the ctx
++ *  readout: a chars/4 estimate of whatever window the browser currently holds
++ *  under-reports long sessions and was the source of the counter's "drops" (a
++ *  partial-window re-estimate stomping the exact count). The ctx pill is exact
++ *  counts only — setContextTokens (server MAX) and llm_call_end (live, monotonic).
++ *  Here we only clear a stale ramp and restore the IN/OUT token cache, which is
++ *  unrelated to the ctx number. */
+ function setContextFromMessages(messages) {
+-  _contextTokens = _estimateContextFromMessages(messages);
+   _pendingCtxEstimate = 0; // clear any stale ramp from a previous session
+-  _renderCtxIndicator();
+   // Restore cached counters instantly; session-load then applies the one
+   // authoritative ledger payload without issuing another aggregate request.
+@@ -1431,4 +1419,7 @@
+   _updateTokenBar();
+   _renderCost();
++  // Re-render the ctx readout too, so a reset can't leave the previous
++  // session's stale ctx (e.g. "88K") showing beside a freshly-zeroed cost.
++  _renderCtxIndicator();
+   try { localStorage.removeItem(_TOKEN_CACHE_KEY); } catch (_) {}
+ }
+================================================================================
+DIFF: chat/js/chat-stream.js (80 lines)
+================================================================================
+--- 
++++ 
+@@ -462,5 +462,5 @@
+ }
+ 
+-function markAgentInterrupted(asstId, createdAt, interactionSeq, ownerTurnId, terminalLabel) {
++function markAgentInterrupted(asstId, createdAt, interactionSeq, ownerTurnId, statusLabel) {
+   _dropPendingStreamRender(asstId);
+   const draft = asstId ? _findAgentBubbleForTurn(asstId) : null;
+@@ -475,7 +475,7 @@
+   }
+   entries.push({
+-    kind: 'terminal',
++    kind: 'system',
+     id: 'stopped-' + (asstId || ownerTurnId || Date.now()),
+-    label: terminalLabel || 'Stopped',
++    label: statusLabel || 'Stopped',
+     content: '',
+   });
+@@ -555,5 +555,5 @@
+   const rows = Array.from(panel.children);
+   const n = rows.filter(row => !row.classList.contains('ca-progress-row')
+-    && !row.classList.contains('ca-terminal-row')).length;
++    && !row.classList.contains('ca-system-row')).length;
+   const updates = rows.filter(row => row.classList.contains('ca-progress-row')).length;
+   head.innerHTML = (n === 1 ? '1 tool call' : n + ' tool calls')
+@@ -755,6 +755,6 @@
+ function _buildActivityEntryRow(entry) {
+   const row = document.createElement('div');
+-  const terminal = entry.kind === 'terminal';
+-  row.className = 'ca-tool-row ' + (terminal ? 'ca-terminal-row' : 'ca-progress-row');
++  const statusRow = entry.kind === 'system';
++  row.className = 'ca-tool-row ' + (statusRow ? 'ca-system-row' : 'ca-progress-row');
+   if (entry.id) row.dataset.activityEntryId = String(entry.id);
+ 
+@@ -763,8 +763,8 @@
+   const icon = document.createElement('span');
+   icon.className = 'ca-activity-entry-icon';
+-  icon.textContent = terminal ? '?' : '?';
++  icon.textContent = statusRow ? '?' : '?';
+   const label = document.createElement('span');
+   label.className = 'ca-activity-entry-label';
+-  label.textContent = terminal ? (entry.label || 'Stopped') : 'Agent update';
++  label.textContent = statusRow ? (entry.label || 'Stopped') : 'Agent update';
+   head.append(icon, label);
+   row.appendChild(head);
+@@ -772,5 +772,5 @@
+   const body = document.createElement('div');
+   body.className = 'ca-activity-entry-body';
+-  if (terminal && !(entry.content || '').trim()) {
++  if (statusRow && !(entry.content || '').trim()) {
+     body.textContent = entry.label || 'Stopped';
+   } else {
+@@ -781,5 +781,5 @@
+   // Updates are assistant messages in their own right. Give each one the
+   // response-style footer, rather than placing a footer above the disclosure.
+-  if (!terminal) {
++  if (!statusRow) {
+     const footer = document.createElement('div');
+     footer.className = 'turn-gutter ca-activity-entry-footer';
+@@ -836,5 +836,5 @@
+   calls.forEach((entry, i) => {
+     const rowEntry = { ...entry, open: !!entry.open };
+-    if (entry && (entry.kind === 'progress' || entry.kind === 'terminal')) {
++    if (entry && (entry.kind === 'progress' || entry.kind === 'system')) {
+       panel.appendChild(_buildActivityEntryRow(entry));
+       return;
+@@ -1280,5 +1280,5 @@
+ 
+   if (isToolOnlyTurn) {
+-    // A terminal marker belongs after the calls that were in flight when the
++    // A status marker belongs after the calls that were in flight when the
+     // user stopped the run. Never absorb those calls into the "Stopped"/error
+     // bubble; create or reuse their own durably anchored disclosure before it.
+@@ -1338,4 +1338,5 @@
+ export {
+   _stripToolCalls,
++  _isSubstantiveAnswer,
+   appendStreamToActiveBubble,
+   finalizeAgentResponse,
+================================================================================
+DIFF: chat/js/session-load.js (68 lines)
+================================================================================
+--- 
++++ 
+@@ -284,7 +284,8 @@
+ // Shared by the windowed initial render and the append-newer (scroll-down) path.
+ function _messagePhase(msg, legacyFinalIds) {
+-  // Persisted terminal status wins over stale metadata left behind when a
+-  // streaming row crashes before its metadata can be finalized.
+-  if (msg.status === 'interrupted' || msg.status === 'error') return 'terminal';
++  // A persisted stopped/error status wins over stale metadata left behind
++  // when a streaming row crashes before its metadata can be finalized. It
++  // classifies as 'system' so the UI renders a Stopped/Error status row.
++  if (msg.status === 'interrupted' || msg.status === 'error') return 'system';
+   if (msg.status === 'streaming') return 'pending';
+   let explicit = String(msg.message_phase || '').toLowerCase();
+@@ -429,8 +430,8 @@
+     group.entries.push(...calls);
+     group.calls.push(...calls);
+-    if (phase === 'terminal') {
++    if (phase === 'system') {
+       group.entries.push({
+-        kind: 'terminal',
+-        id: 'terminal-' + (msg.id || group.entries.length),
++        kind: 'system',
++        id: 'status-' + (msg.id || group.entries.length),
+         label: msg.status === 'error' ? 'Error' : 'Stopped',
+         content: '',
+@@ -774,4 +775,5 @@
+       maxSeq: data.max_session_seq || 0,
+       contextTokens: data.context_tokens || 0,
++      usage: data.usage || null,
+       manifest: data.manifest || null,
+       loadedAt: Date.now(),
+@@ -881,4 +883,5 @@
+       maxSeq: data.max_session_seq || 0,
+       contextTokens: data.context_tokens || 0,
++      usage: data.usage || null,
+       manifest: data.manifest || null,
+       loadedAt: Date.now(),
+@@ -1301,4 +1304,13 @@
+     if (scroller4) scroller4.scrollTop = Math.max(0, anchorEl.offsetTop - 8);
+   }
++
++  // Swipe-committed load: fade the freshly rendered transcript in over the
++  // loading spinner. Flag set by session-swipe.js _commitSwipe, consumed here.
++  if (app._swipeFadeIn) {
++    app._swipeFadeIn = false;
++    container.classList.remove('chat-messages-fadein');
++    void container.offsetWidth; // restart the animation if it ran before
++    container.classList.add('chat-messages-fadein');
++  }
+ }
+ 
+@@ -1396,4 +1408,9 @@
+       if (cached.contextTokens && typeof app.setContextTokens === 'function') {
+         app.setContextTokens(cached.contextTokens);
++      }
++      // Restore the session's cost + token usage from cache too — otherwise a
++      // cache-hit load re-shows ctx but leaves the cost chip at $0.
++      if (cached.usage && typeof app.setSessionUsage === 'function') {
++        app.setSessionUsage(cached.usage);
+       }
+       // Record the manifest from the cache so a later refresh check is cheap.
+@@ -1529,4 +1546,5 @@
+       maxSeq: data.max_session_seq || 0,
+       contextTokens: data.context_tokens || 0,
++      usage: data.usage || null,
+       manifest: data.manifest || null,
+       loadedAt: Date.now(),

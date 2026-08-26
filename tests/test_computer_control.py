@@ -432,3 +432,77 @@ def test_key_chord_attempts_release_when_key_down_fails(monkeypatch):
 
     assert len(batches) == 2
     assert all(event[2] & module._KEY_UP for event in batches[1])
+
+
+def test_desktop_stream_frame_keeps_native_coordinates_and_scales_transport(monkeypatch):
+    abilities.reload()
+    module = abilities.ability_module("computer_control")
+    from PIL import Image
+    import io
+
+    source = Image.new("RGB", (3200, 1200), "navy")
+    output = io.BytesIO()
+    source.save(output, format="PNG")
+    source.close()
+    capture = module._DesktopCapture(
+        png=output.getvalue(),
+        width=3200,
+        height=1200,
+        virtual_left=-1280,
+        virtual_top=0,
+        native_width=3200,
+        native_height=1200,
+    )
+    monkeypatch.setattr(module, "_capture_desktop", lambda: capture)
+
+    observed, jpeg = module.capture_desktop_stream_frame(
+        max_width=1600, max_height=900, quality=55
+    )
+
+    assert observed is capture
+    with Image.open(io.BytesIO(jpeg)) as frame:
+        assert frame.format == "JPEG"
+        assert frame.size == (1600, 600)
+
+
+def test_desktop_stream_input_uses_shared_native_lock_and_invalidates_agent_view(monkeypatch):
+    abilities.reload()
+    module = abilities.ability_module("computer_control")
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    events = []
+    monkeypatch.setattr(module, "_send_mouse_events", lambda batch: events.extend(batch))
+    module._HOST_ACTION_GENERATION = 11
+    capture = module._DesktopCapture(
+        png=b"png",
+        width=1920,
+        height=1080,
+        native_width=1920,
+        native_height=1080,
+    )
+
+    module.dispatch_desktop_stream_input(
+        capture, {"kind": "mousedown", "x": 960, "y": 540, "button": "left"}
+    )
+
+    assert len(events) == 2
+    assert events[0][3] & module._MOUSE_ABSOLUTE
+    assert events[1][3] == module._MOUSE_LEFT_DOWN
+    assert module._HOST_ACTION_GENERATION == 12
+
+
+def test_desktop_stream_input_rejects_coordinates_outside_latest_frame(monkeypatch):
+    abilities.reload()
+    module = abilities.ability_module("computer_control")
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    capture = module._DesktopCapture(
+        png=b"png", width=100, height=50, native_width=100, native_height=50
+    )
+
+    try:
+        module.dispatch_desktop_stream_input(
+            capture, {"kind": "click", "x": 100, "y": 10}
+        )
+    except module._PointerControlError as exc:
+        assert exc.code == "coordinates_out_of_bounds"
+    else:
+        raise AssertionError("Out-of-bounds remote desktop input was accepted")

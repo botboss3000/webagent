@@ -29,9 +29,20 @@ from app.agent.cache_profiles import stable_hash as _cache_hash
 from app.agent.error_classifier import classify_tool_error, ToolError
 from app.agent.loop_executor import LoopConfig
 from app.agent.session_cache import (
+    CachedMessageList,
     get_session_cache,
     get_tool_defs_cache,
     compute_tool_defs_cache_key,
+)
+from app.agent.provider_cache import merge_extra_body, prompt_cache_controls
+from app.agent.response_chaining import (
+    build_responses_request,
+    is_missing_response_error,
+    is_unsupported_responses_error,
+    open_responses_stream,
+    response_chain_capability,
+    response_chain_history_hash,
+    response_chain_identity,
 )
 from app.db import get_db
 from app.db.offload import db_offload
@@ -203,18 +214,59 @@ def _assistant_output(
     messages: Optional[List[Dict[str, Any]]] = None,
     tools: Optional[List[Dict[str, Any]]] = None,
     include_snapshot: bool = False,
+    reasoning_content: Optional[str] = None,
 ) -> str:
     """Serialize the minimal durable assistant payload.
 
     ``content`` is intentionally absent because it already lives in the
-    interaction's dedicated content column.
+    interaction's dedicated content column. ``reasoning_content`` (DeepSeek
+    thinking mode) is stored here so history replay can pass it back — the
+    API 400s any later request whose assistant turns lack it.
     """
     payload: Dict[str, Any] = {"role": "assistant"}
     if tool_calls:
         payload["tool_calls"] = tool_calls
+    if reasoning_content:
+        payload["reasoning_content"] = reasoning_content
     if include_snapshot:
         payload.update(_bounded_turn_snapshot(messages, tools))
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _strip_reasoning_content_for_provider(
+    messages: List[Dict[str, Any]],
+    model_name: Optional[str],
+    provider_name: Optional[str],
+) -> List[Dict[str, Any]]:
+    """DeepSeek's thinking mode REQUIRES assistant ``reasoning_content`` to be
+    replayed back for multi-turn continuity; other OpenAI-compatible providers
+    may reject the field outright. Strip it from the outgoing request unless the
+    active model is a DeepSeek model. Returns a new list — the caller's
+    ``messages`` is untouched."""
+    ident = f"{provider_name or ''} {model_name or ''}".lower()
+    if "deepseek" in ident:
+        return messages
+    out: List[Dict[str, Any]] = []
+    for m in messages:
+        if isinstance(m, dict) and "reasoning_content" in m:
+            m = dict(m)
+            m.pop("reasoning_content", None)
+        out.append(m)
+    return out
+
+
+def _sanitize_history_for_deepseek(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Legacy-history recovery for DeepSeek's thinking-mode continuity rule.
+
+    Rows written before reasoning capture can never carry their original
+    ``reasoning_content`` back to the API, so the request would 400 forever.
+    Drop every assistant/tool turn (a system+user-only history is valid) and
+    retry once — a stuck legacy session resumes instead of crash-looping. New
+    turns capture reasoning end-to-end and never need this path."""
+    out = [m for m in messages if m.get("role") not in ("assistant", "tool")]
+    if not any(m.get("role") == "user" for m in out):
+        out.append({"role": "user", "content": "Continue the task."})
+    return out
 
 # ── Destructive tools that require confirmation (hardcoded baseline) ──
 # These are always treated as destructive regardless of agent safety_policy.
@@ -229,6 +281,17 @@ def _assistant_output(
 # What remains gated: arbitrary shell commands (with read-only exemption)
 # and server restart.
 DESTRUCTIVE_TOOLS = frozenset({"run_command", "restart_server"})
+
+# ── Model-switch exemption (plan + ask modes) ──
+# The Model Switcher ability marks set_model / use_premium_model / set_effort as
+# DESTRUCTIVE (they can raise spend), which would put them behind the plan/ask
+# confirmation gate. That gate is wrong for these tools: right-sizing the model
+# (draft cheap → upgrade to premium / a vision model) is core agent behaviour,
+# and these tools only write THIS session's model override — no user data. So in
+# plan AND ask modes they run free. Auto mode was never gated, so this makes
+# model switching unrestricted everywhere. (grep MODEL-SWITCH-EXEMPT for the
+# guardrail + index spots.)
+_MODEL_SWITCH_TOOLS = frozenset({"set_model", "use_premium_model", "set_effort"})
 
 # ── run_command per-arg exemption: read-only shell commands skip the gate ──
 # `run_command` is destructive by default (it can do anything), but inspect-only
@@ -323,15 +386,16 @@ def _effort_raises_spend(tool_args: Any, current_effort: Optional[str]) -> bool:
 
 
 # ── Cleanup-tool finalization (model-switcher revert) ────────────────────────
-# The two-phase model protocol tells the agent to write its final answer, then
-# call reset_to_default (or set_model/set_effort back to default) to drop back
-# to the cheaper model. Because that revert is a tool call, the loop otherwise
-# treats the turn as still working: the substantive answer is stamped `progress`
-# (so the UI buries it in the tools/updates panel) and the loop takes one more
-# LLM step on the now-default model, which emits a redundant wrap-up line that
-# becomes the visible "final" bubble. These helpers recognize the revert as
-# housekeeping so the real answer is finalized and the loop ends without that
-# extra step.
+# Model-switch overrides are cleaned up automatically by the backend when the
+# run ends (runner._finish_run), so the skills no longer mandate a closing
+# reset_to_default(). An agent may still choose to revert MID-RUN (set_model /
+# set_effort back to default, or reset_to_default). Because such a revert is a
+# tool call, the loop would otherwise treat the turn as still working: a
+# substantive answer preceding it would be stamped `progress` (buried in the
+# tools/updates panel) and the loop would take one more LLM step on the
+# now-default model, emitting a redundant wrap-up line that becomes the visible
+# "final" bubble. These helpers recognize the revert as housekeeping so the
+# real answer is finalized and the loop ends without that extra step.
 _CLEANUP_EFFORT_LEVELS = frozenset({"", "default", "reset"})
 
 
@@ -750,32 +814,50 @@ async def validate_tool_call(name: str, args: dict, tools: Dict[str, Any],
 
 def _check_user_confirmed(messages: List[Dict[str, Any]], tool_name: str) -> bool:
     """
-    Check if the user confirmed a destructive tool call.
-    Scans recent conversation for confirmation-seeking language from the model
-    followed by user approval.
+    Check if the user confirmed a gated tool call (plan/ask modes).
+
+    A confirmation ONLY counts when the user's approving message FOLLOWS the
+    agent's approval-seeking message. The user's original task message can
+    never authorize execution — it predates any request for approval. (This is
+    the PLAN-MODE-APPROVAL rule: without it, a task message containing "ok" as
+    a substring was read as standing approval and silently bypassed the plan
+    gate.) Keywords are matched on word boundaries so "ok" can't match inside
+    "looking at".
     """
-    last_assistant_content = ""
-    last_user_content = ""
-    for msg in reversed(messages):
-        if msg.get("role") == "user" and not last_user_content:
-            last_user_content = (msg.get("content") or "").lower()
-        if msg.get("role") == "assistant" and not last_assistant_content:
-            last_assistant_content = (msg.get("content") or "").lower()
+    import re as _re
 
-    ask_keywords = ["would you like me to", "should i", "shall i",
-                     "let me know if", "do you want me to",
-                     "confirm", "approve", "ok to", "okay to",
-                     "proceed", "go ahead and"]
-    model_asked = any(kw in last_assistant_content for kw in ask_keywords)
-
-    confirm_keywords = ["yes", "go ahead", "proceed", "approved", "ok", "okay",
+    ask_keywords = ("would you like me to", "should i", "shall i",
+                    "let me know if", "do you want me to",
+                    "confirm", "approve", "ok to", "okay to",
+                    "proceed", "go ahead and")
+    confirm_keywords = ("yes", "go ahead", "proceed", "approved", "ok", "okay",
                         "sure", "do it", "confirm", "go for it", "please do",
-                        "continue"]
+                        "continue")
 
-    if not model_asked:
-        return any(kw in last_user_content for kw in confirm_keywords)
+    # Anchor: the LAST assistant message that explicitly asked for approval,
+    # plus the LAST user message. A tool call may only pass if the user's
+    # message comes strictly AFTER that ask — i.e. approval arrived in a
+    # following message, never the original request.
+    ask_idx = None
+    last_user_idx = None
+    for i, msg in enumerate(messages):
+        role = msg.get("role")
+        if role == "user":
+            last_user_idx = i
+        elif role == "assistant":
+            content = (msg.get("content") or "").lower()
+            if any(_re.search(r"\b" + _re.escape(kw) + r"\b", content) for kw in ask_keywords):
+                ask_idx = i
 
-    return any(kw in last_user_content for kw in confirm_keywords)
+    # No approval request yet, or no user message after it → not confirmed.
+    if ask_idx is None or last_user_idx is None or last_user_idx <= ask_idx:
+        return False
+
+    last_user_content = (messages[last_user_idx].get("content") or "").lower()
+    for kw in confirm_keywords:
+        if _re.search(r"\b" + _re.escape(kw) + r"\b", last_user_content):
+            return True
+    return False
 
 
 def _build_layered_messages(
@@ -800,11 +882,157 @@ def _build_layered_messages(
         )
         if turn_content:
             messages.append({"role": "system", "content": turn_content})
-    messages.append({"role": "user", "content": user_message})
+    # user_message=None means "no trailing user turn" (resume-without-nudge):
+    # the history is replayed exactly as it ended and the model continues.
+    if user_message is not None:
+        messages.append({"role": "user", "content": user_message})
     return messages
 
 
-async def stream_agent_events(
+def _filter_history_for_available_tools(
+    messages: Optional[List[Dict[str, Any]]],
+    available_tools: set[str],
+) -> List[Dict[str, Any]]:
+    """Remove historical calls/results for tools absent from this turn.
+
+    Besides preventing invalid provider histories, this is an authorization
+    boundary when a caller's tier becomes more restrictive: old discovery-tool
+    output must not keep advertising a capability that is no longer available.
+    If every call on an assistant progress message is forbidden, the whole
+    message is dropped because its prose commonly announces the forbidden tool.
+    """
+    if not messages:
+        return []
+    out: List[Dict[str, Any]] = []
+    allowed_call_ids: set[str] = set()
+    for original in messages:
+        msg = dict(original)
+        if msg.get("role") == "assistant" and isinstance(msg.get("tool_calls"), list):
+            kept_calls = []
+            for call in msg["tool_calls"]:
+                fn = call.get("function") if isinstance(call, dict) else None
+                name = fn.get("name") if isinstance(fn, dict) else None
+                if name in available_tools:
+                    kept_calls.append(call)
+                    if call.get("id"):
+                        allowed_call_ids.add(str(call["id"]))
+            if not kept_calls:
+                continue
+            msg["tool_calls"] = kept_calls
+        elif msg.get("role") == "tool":
+            call_id = str(msg.get("tool_call_id") or "")
+            name = str(msg.get("name") or msg.get("tool_name") or "")
+            # OpenAI tool-result messages only require ``tool_call_id`` and
+            # ``content``.  DB-replayed history intentionally uses that canonical
+            # shape, so it usually has no redundant tool name.  The matching
+            # assistant call above is the authority for both the name and whether
+            # the call is still available this turn.  Requiring a name here drops
+            # valid results and leaves an assistant ``tool_calls`` message
+            # unanswered, which providers reject with HTTP 400.
+            if call_id:
+                if call_id not in allowed_call_ids:
+                    continue
+            elif name not in available_tools:
+                continue
+        out.append(msg)
+    return out
+
+
+def _schedule_output_closer(
+    *,
+    user_id: str,
+    session_id: str,
+    agent_id: Optional[str],
+    final_asst_id: Optional[str],
+    parent_interaction_id: Optional[str],
+    db: Optional[Any],
+    channel: Optional[str],
+    audit_eligible: bool = False,
+    execution_mode: Optional[str] = None,
+    starting_execution_mode: Optional[str] = None,
+) -> None:
+    """Fire the Output Closer (close-out loop) in the background.
+
+    Runs as a separate parallel task right after the final ``response`` event
+    is yielded — or after an interrupted/errored run finalizes its partial
+    answer — so it never delays or blocks the answer delivery. The worker
+    gates itself on the app_function toggle; any error is swallowed there.
+
+    ``audit_eligible`` marks a COMPLETED run (clean final response) so the
+    checklist-auditor stage may run; partial endings (interrupt, error,
+    stall-guard, max-turns, pre-cleanup) pass False and get the plain summary
+    only. ``execution_mode`` is the run's resolved mode, carried so a
+    checklist send-back re-runs the agent under the SAME mode the original
+    run used (never silently escalated, never silently demoted to ask).
+    """
+    try:
+        from app.agent.output_closer import run_output_closer
+        asyncio.create_task(run_output_closer(
+            user_id=user_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            final_asst_id=final_asst_id,
+            parent_interaction_id=parent_interaction_id,
+            db=db,
+            channel=channel,
+            audit_eligible=audit_eligible,
+            execution_mode=execution_mode,
+            starting_execution_mode=starting_execution_mode,
+        ))
+    except Exception:
+        pass
+
+
+def _schedule_manager_check(
+    kind: str,
+    *,
+    user_id: str,
+    session_id: str,
+    agent_id: Optional[str] = None,
+    agent_rec: Optional[dict] = None,
+    final_asst_id: Optional[str] = None,
+    parent_interaction_id: Optional[str] = None,
+    db: Optional[Any] = None,
+    channel: Optional[str] = None,
+    execution_mode: Optional[str] = None,
+    extra: str = "",
+    max_checks: Optional[int] = None,
+    check_index: Optional[int] = None,
+    kind_max_checks: Optional[int] = None,
+    kind_check_index: Optional[int] = None,
+) -> Optional["asyncio.Task"]:
+    """Fire a Manager trigger check in the background (advisory triggers:
+    watchdog, commit_gate, and async plan/edit gates).
+
+    Runs as a parallel task like the closer, so it never delays or blocks the
+    main response. The Manager gates itself on the ``run_manager`` app
+    function and the per-run check cap; any error is swallowed there — a
+    Manager hiccup must never break a turn.
+    """
+    try:
+        from app.agent.manager import run_manager_check
+        return asyncio.create_task(run_manager_check(
+            kind,
+            user_id=user_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            agent_rec=agent_rec,
+            final_asst_id=final_asst_id,
+            parent_interaction_id=parent_interaction_id,
+            db=db,
+            channel=channel,
+            execution_mode=execution_mode,
+            extra=extra,
+            max_checks=max_checks,
+            check_index=check_index,
+            kind_max_checks=kind_max_checks,
+            kind_check_index=kind_check_index,
+        ))
+    except Exception:
+        return None
+
+
+async def _stream_agent_events_impl(
     user_id: str,
     session_id: str,
     user_message: Any,
@@ -851,12 +1079,18 @@ async def stream_agent_events(
             set_verified_caller_uid(user_id)
     except Exception:  # noqa: BLE001 — never let routing setup break a turn
         pass
-    # Normalize the execution mode to the canonical Ask/Plan/Auto set, accepting
-    # the legacy Read/Write/Auto names so in-flight sessions, saved DB values and
-    # the TUI bridge keep working. Anything unrecognized falls back to 'ask'.
-    _MODE_ALIASES = {'read': 'plan', 'write': 'ask', 'plan': 'plan', 'ask': 'ask', 'auto': 'auto',
-                     'wkspc': 'wkspc'}  # codex-engine mode (workspace-write); passed through to engines
-    execution_mode = _MODE_ALIASES.get(str(execution_mode or '').strip().lower(), 'ask')
+    # Normalize the execution-mode id, accepting legacy Read/Write names so
+    # in-flight sessions and saved DB values keep working. Valid custom slugs
+    # pass through and are resolved against the agent after its record loads.
+    from app.agent.execution_modes import (
+        accumulated_contract, contract_for_mode, normalize_mode_id,
+        resolve_execution_mode,
+    )
+    _raw_execution_mode = str(execution_mode or '').strip().lower()
+    # wkspc is retained for the Codex engine; native/custom mode ids use the
+    # shared slug normalizer (legacy read/write aliases remain supported).
+    execution_mode = 'wkspc' if _raw_execution_mode == 'wkspc' else normalize_mode_id(execution_mode)
+    _run_start_execution_mode = execution_mode
     # Normalize the turn ceiling up front: 0 means UNLIMITED. Guard against a
     # NULL in the DB (which makes agent.get("max_turn_count", 0) return None, not
     # 0), negatives, or a stray string — any of which would otherwise crash the
@@ -902,11 +1136,23 @@ async def stream_agent_events(
         _agent_rec = await db_offload(lambda: db.get_agent_by_id(agent_id))
         if _agent_rec and _agent_rec.get("name"):
             agent_name = _agent_rec["name"]
+    _mode_entry = resolve_execution_mode(_agent_rec, execution_mode)
+    _permission_policy = _mode_entry.get("permission_policy", "read_only")
+    try:
+        _mode_history = await db.get_session_execution_mode_history(session_id)
+    except Exception:
+        _mode_history = []
+    _active_mode_contract = contract_for_mode(_mode_entry)
+    _accumulated_mode_contract = accumulated_contract(
+        _agent_rec, _mode_history, execution_mode,
+    )
+    _requires_plan_document = bool(_active_mode_contract.get("require_plan_document"))
     if system_prompt_parts is not None:
         try:
             from app.agent.cache_profiles import (
                 profile_from_metadata as _profile_from_metadata,
                 profile_layer_blocks as _profile_layer_blocks,
+                profile_abilities as _profile_abilities,
             )
             _profile_meta = (_agent_rec or {}).get("metadata") or {}
             if isinstance(_profile_meta, str):
@@ -916,12 +1162,52 @@ async def stream_agent_events(
                 if isinstance(_profile_meta, dict)
                 else []
             )
+            from app.agent.ability_access import filter_abilities_for_caller as _filter_profile
+            _profile_name = _profile_from_metadata(_profile_meta)
+            _profile_ids = set(_profile_abilities(_profile_name, _profile_extensions))
+            _allowed_profile_ids = await _filter_profile(
+                agent_id or "", _profile_ids, user_id, db=db,
+            )
             _capability_system_parts.extend(_profile_layer_blocks(
-                _profile_from_metadata(_profile_meta),
+                _profile_name,
                 _profile_extensions,
+                allowed_abilities=_allowed_profile_ids,
             ))
         except Exception as _cpe:
             logger.warning("capability cache layers build failed: %s", _cpe)
+
+    # ── Run contract + Manager config (per-agent) ──────────────────────────
+    # The contract is the working agent's MECHANICAL discipline (metadata
+    # ['contract']) — flags/counters enforced synchronously, zero LLM calls.
+    # The Manager is the opt-in SUPERVISORY layer (metadata['manager']) — one
+    # bounded LLM call per trigger (plan_gate / edit_gate / watchdog /
+    # commit_gate). Both fail open: a missing/broken config disables the rule.
+    _contract: Dict[str, Any] = {}
+    _contract_state: Dict[str, Any] = {}
+    _manager_cfg: Dict[str, Any] = {}
+    _manager_state: Dict[str, Any] = {
+        "plan_gate_done": False,
+        "block_count": 0,
+        "checks_used": 0,
+        "checks_used_by_kind": {},
+        "changed_paths": set(),
+        "edit_events": [],
+        "verification_events": [],
+        "starter_write_checked": False,
+    }
+    try:
+        from app.agent.contracts import parse_contract, new_contract_state
+        _contract = parse_contract(_agent_rec) or {}
+        _contract_state = new_contract_state()
+    except Exception:
+        _contract = {}
+        _contract_state = {}
+    try:
+        from app.agent.manager import resolve_manager_config, trigger_enabled
+        _manager_cfg = resolve_manager_config(_agent_rec, execution_mode) or {}
+        _manager_state["watchdog_enabled"] = trigger_enabled(_manager_cfg, "watchdog")
+    except Exception:
+        _manager_cfg = {}
 
     # ── Alternate engine dispatch ────────────────────────────────────────────
     # An agent may declare a non-default runtime in metadata.engine (e.g. a Local
@@ -953,6 +1239,10 @@ async def stream_agent_events(
                 user_message=user_message, agent_rec=_agent_rec, db=db,
                 system_prompt=system_prompt, channel=channel,
                 parent_interaction_id=parent_interaction_id,
+                # Already excludes the current user row and has run WebAgent's
+                # compaction/task-hiding pipeline. Stateless engine wrappers can
+                # render it directly instead of repeating DB work.
+                history=history,
                 interrupt_event=interrupt_event,
                 # Raw attachment rows (images + files) for engines that read them
                 # off disk via their own tools — the default loop instead gets
@@ -1057,7 +1347,9 @@ async def stream_agent_events(
     load_start = time.time()
     tools = await load_tools(user_id, agent_id=agent_id, agent_template_id=agent_template_id,
                               allowed_tools=allowed_tools, session_id=session_id,
+                              turn_id=parent_interaction_id or "",
                               gate_caller_access=True)
+    history = _filter_history_for_available_tools(history, set(tools))
     load_duration = int((time.time() - load_start) * 1000)
 
     # ── Pipeline: tools loaded ──
@@ -1375,13 +1667,11 @@ async def stream_agent_events(
                 "mode": _tm_resolve(_tn, _agent_tool_modes, _global_tool_defaults),
                 "active": _tn in _active_set,
             })
-        # Which loaded tools are confirmation-gated in the CURRENT mode, mirroring
-        # the runtime gate: plan → any tool flagged destructive (or in the ask
-        # set); ask → the ask set (unless the agent auto-confirms); auto → none.
-        if execution_mode == 'plan':
-            _ask_names = {n for n, ti in tools.items() if getattr(ti, 'destructive', False)} | set(effective_destructive)
-        elif execution_mode == 'ask' and not auto_confirm:
-            _ask_names = set(effective_destructive)
+        # Which loaded tools are confirmation-gated in the current policy.
+        # Read-only modes gate every mutating tool; write-capable modes gate none.
+        # Model-switch tools remain exempt (MODEL-SWITCH-EXEMPT).
+        if _permission_policy == 'read_only':
+            _ask_names = ({n for n, ti in tools.items() if getattr(ti, 'destructive', False)} | set(effective_destructive)) - _MODEL_SWITCH_TOOLS
         else:
             _ask_names = set()
         _tools_index = _tm_render(_idx_entries, ask_names=_ask_names, denied_names=_denied_names)
@@ -1429,6 +1719,43 @@ async def stream_agent_events(
     except Exception as _tie:
         logger.warning("tools index build failed: %s", _tie)
 
+    # ── Starter handoff: optional first-write readiness + seeded context ────
+    # The Scout normally remains a truly parallel second opinion. Agents that
+    # explicitly opt into wait_before_write pay the latency once, before the
+    # main model can select its first tool, so the allowed objective/plan/
+    # checklist and prior-run relationship are part of that inference.
+    try:
+        from app.agent.run_scout import (
+            artifact_for_turn as _starter_for_turn,
+            seeded_context_for_turn as _starter_seeded_context,
+        )
+        _starter_row = _starter_for_turn(db, parent_interaction_id) or {}
+        _starter_settings = (
+            _starter_row.get("starter_config")
+            if isinstance(_starter_row.get("starter_config"), dict) else {}
+        )
+        # Never delay read/research inference. If the parallel result already
+        # exists, include it now; otherwise the first-write gate below waits.
+        _starter_seed = _starter_seeded_context(db, parent_interaction_id)
+        if _starter_seed.get("ready"):
+            _seed_payload = {
+                key: _starter_seed.get(key) for key in (
+                    "objective", "relationship", "linked_prior_task_id",
+                    "linked_capsule_id", "relationship_confidence",
+                    "relationship_reason", "plan", "checklist",
+                ) if _starter_seed.get(key) not in (None, "", [], 0.0)
+            }
+            if _seed_payload:
+                _capability_system_parts.append(
+                    "## Run Starter handoff\n"
+                    "This tool-free parallel intake is advisory run context. "
+                    "Use it to stay linked to the right prior task and contract; "
+                    "the selected execution mode remains the permission authority.\n"
+                    + json.dumps(_seed_payload, ensure_ascii=False, default=str)
+                )
+    except Exception as _sse:
+        logger.debug("run starter context unavailable: %s", _sse)
+
     # ── Execution-mode guidance: append the active mode's prompt + guardrail ──
     # The chat pill (Ask / Plan / Auto) sets execution_mode; each mode carries its
     # own posture. Plan tells the agent to research freely, think deeply, ask
@@ -1436,28 +1763,22 @@ async def stream_agent_events(
     # executing. Loaded from app/defaults/app-prompts.json (editable) with an
     # inline fallback so a missing/broken file never breaks a run.
     try:
-        import json as _jmode
-        from app.util.paths import app_prompts_path
-        _mode_tpl = ""
-        try:
-            _mdata = _jmode.loads(app_prompts_path().read_text(encoding="utf-8"))
-            _mentry = _mdata.get("execution_modes", {}).get(execution_mode, {})
-            _mode_tpl = _mentry.get("template") or _mentry.get("text", "")
-        except Exception:
-            _mode_tpl = ""
+        _mode_tpl = str(_mode_entry.get("prompt") or "").strip()
         if not _mode_tpl:
             _MODE_FALLBACK = {
                 'plan': (
                     "You are in PLAN mode. Research freely with read-only tools without asking "
-                    "permission, but do not make changes — any edit needs the user's confirmation. "
+                    "permission, but do not make changes, even after per-step approval. "
                     "Think deeply and verify against the real code. When a guess could change your "
                     "whole approach, STOP and ask the user a clarifying question, then wait. Collect "
                     "smaller unknowns in an \"Open questions / assumptions\" section, and deliver a "
                     "clear step-by-step plan rather than executing it. "
+                    "The Plan checklist describes future implementation and stays unchecked here. "
+                    "When the user wants execution, have them approve a switch to a write-capable mode. "
                     "Model switching: If the Model Switcher ability is enabled, use it to right-size "
-                    "your planning. Draft on your standard model, then assess whether the task is "
-                    "complex enough to warrant upgrading to a premium model for the final planning "
-                    "pass. If it is, propose the upgrade and wait for approval. When you deliver "
+                    "your planning. Draft on your standard model, then upgrade to a premium model "
+                    "(or a vision model, if the work needs sight) for the final planning pass — "
+                    "model-switch tools run freely in plan mode, no approval needed. When you deliver "
                     "the plan, include a one-line model recommendation for execution (standard vs "
                     "premium). See the Model Switcher skill for the full protocol."
                 ),
@@ -1467,29 +1788,101 @@ async def stream_agent_events(
                     "and report what you did, calling out any irreversible or high-impact operations."
                 ),
                 'ask': (
-                    "You are in ASK mode. Read and research freely, but before any action that changes "
-                    "files, state, or external systems, propose it to the user and wait for confirmation."
+                    "You are in ASK mode. Read and research freely, then deliver a concrete proposal. "
+                    "Do not change files, state, or external systems in this mode, even after per-step "
+                    "approval; execution requires a write-capable mode. "
+                    "Model switching is exempt: if the Model Switcher ability is enabled, you may call "
+                    "set_model / use_premium_model / set_effort freely to right-size this task — they "
+                    "run without confirmation."
                 ),
             }
             _mode_tpl = _MODE_FALLBACK.get(execution_mode, _MODE_FALLBACK['ask'])
         if _mode_tpl:
-            _capability_system_parts.append("## Execution mode\n" + _mode_tpl)
+            _capability_system_parts.append(
+                f"## Execution mode: {_mode_entry.get('label') or execution_mode}\n" + _mode_tpl
+            )
+        _mode_checklist = [
+            item.get("label") for item in _accumulated_mode_contract.get("checklist", [])
+            if isinstance(item, dict) and item.get("label")
+        ]
+        if _mode_checklist:
+            _capability_system_parts.append(
+                "## Accumulated mode completion contract\n"
+                "These requirements survive mode changes within this session. Complete every item before finishing:\n"
+                + "\n".join(f"- {item}" for item in _mode_checklist)
+            )
+        if _requires_plan_document:
+            _capability_system_parts.append(
+                "## Required Plan workspace\n"
+                "Before you may finish this turn, you MUST call `present_plan` with both a task-specific "
+                "overview and a concrete checklist. This writes the persistent Plan Overview document and "
+                "Plan Checklist. A text-only plan does not satisfy this contract. Update the same workspace "
+                "as your understanding changes; it will be preserved if the session later switches modes."
+            )
+        # A plan workspace is session state, not mode-local scratch. Surface its
+        # current document/checklist after a Plan→Ask/Auto transition so the
+        # executing mode keeps working against the exact same artifacts.
+        try:
+            from app.chat_components import list_components as _list_chat_components
+            _plan_components = await _list_chat_components(user_id, session_id)
+            _plan_overview = next((c for c in _plan_components if c.get("id") == "plan-overview"), None)
+            _plan_checklist = next((c for c in _plan_components if c.get("id") == "plan-checklist"), None)
+            _plan_lines = []
+            if _plan_overview:
+                _markdown = str((_plan_overview.get("data") or {}).get("markdown") or "").strip()
+                if _markdown:
+                    _plan_lines.append("### Plan document\n" + _markdown)
+            if _plan_checklist:
+                _items = (_plan_checklist.get("data") or {}).get("items") or []
+                if _items:
+                    _plan_lines.append("### Plan checklist\n" + "\n".join(
+                        f"- [{'x' if item.get('done') else ' '}] {item.get('label')}"
+                        for item in _items if item.get("label")
+                    ))
+            if _plan_lines:
+                _capability_system_parts.append(
+                    "## Preserved session plan workspace\n"
+                    "This workspace remains authoritative after mode changes. Maintain it and complete its open items.\n\n"
+                    + "\n\n".join(_plan_lines)
+                )
+        except Exception as _pce:
+            logger.debug("plan workspace context unavailable: %s", _pce)
     except Exception as _moe:
         logger.warning("execution-mode prompt injection failed: %s", _moe)
+
+    # ── Run-contract prompt block ──
+    # Active mechanical contract rules injected so the agent KNOWS its
+    # contract — the same visibility pattern as the execution-mode block above.
+    # Enforcement happens at the contract_chk node regardless; this only tells
+    # the agent what is being enforced.
+    try:
+        if _contract:
+            from app.agent.contracts import contract_prompt_block
+            _contract_block = contract_prompt_block(_contract)
+            if _contract_block:
+                _capability_system_parts.append("## Contract\n" + _contract_block)
+    except Exception as _cte:
+        logger.warning("contract prompt injection failed: %s", _cte)
 
     # ── Session message cache ────────────────────────────────────────────
     # Stable hash of the agent's system-prompt layers.  When unchanged the
     # cache holds a byte-identical prefix, so the LLM provider's prompt cache
     # fires (DeepSeek, Anthropic, OpenAI) — ~90 % cheaper input tokens.
-    # Includes turn_system_parts so an ability-load or tool-change mid-session
-    # invalidates the stale cached prefix.
-    _sys_hash = _cache_hash([_shared_system, _capability_system_parts,
-                             _agent_system, _turn_system_parts])
+    # Turn-specific parts are deliberately excluded: they are appended after the
+    # reusable conversation prefix and filtered out of the stored snapshot. A
+    # changing wiki retrieval, context gauge, or ability hint therefore changes
+    # only the suffix instead of invalidating a million-token stable prefix.
+    _sys_hash = _cache_hash([
+        _shared_system, _capability_system_parts, _agent_system,
+    ])
     _sc = get_session_cache()
     _canonical_incoming_history = [
         item for item in (history or []) if item.get("role") != "system"
     ]
     _incoming_history_hash = _cache_hash(_canonical_incoming_history)
+    _incoming_response_history_hash = response_chain_history_hash(
+        _canonical_incoming_history
+    )
     _cached = await _sc.get(
         user_id, session_id, _sys_hash, _incoming_history_hash
     )
@@ -1502,7 +1895,10 @@ async def stream_agent_events(
             for _tp in _turn_system_parts:
                 if _tp and _tp.strip():
                     messages.append({"role": "system", "content": _tp.strip()})
-        messages.append({"role": "user", "content": user_message})
+        # user_message=None (resume-without-nudge) → no trailing user turn; the
+        # cached prefix already ends where the conversation really ended.
+        if user_message is not None:
+            messages.append({"role": "user", "content": user_message})
     else:
         # Cache miss — build from scratch as before
         messages = _build_layered_messages(
@@ -1514,14 +1910,95 @@ async def stream_agent_events(
             user_message=user_message,
         )
 
+    try:
+        _context_cache_stats = await _sc.stats()
+        yield {
+            "type": "pipeline", "level": "pipeline", "step": "context_cache",
+            "hit": _cached is not None,
+            "hot_bytes": _context_cache_stats.get("hot_bytes", 0),
+            "hot_max_bytes": _context_cache_stats.get("hot_max_bytes", 0),
+            "disk_max_bytes": _context_cache_stats.get("disk_max_bytes", 0),
+            "estimated_tokens": _context_cache_stats.get("estimated_tokens", 0),
+        }
+    except Exception:
+        pass
+
+    # Stateful Responses is a provider optimisation layered over the durable
+    # local transcript. Resume only when the provider/model identity and exact
+    # portable history match; edits, compaction, and provider switches therefore
+    # rebase automatically instead of inheriting stale remote state.
+    _response_chain_id: Optional[str] = None
+    _response_chain_identity: Optional[str] = None
+    _response_chain_checkpoint = 0
+    _saved_response_chain: Optional[dict] = None
+    try:
+        _get_chain = getattr(db, "get_session_response_chain", None)
+        if _get_chain and session_id:
+            _saved_response_chain = await db_offload(lambda: _get_chain(session_id))
+    except Exception:
+        _saved_response_chain = None
+
+    _initial_chain_cap = response_chain_capability(
+        provider=provider_name,
+        base_url=str(llm_config.get("base_url") or ""),
+        model=model_name,
+        mode=llm_config.get("stateful_responses", "auto"),
+    )
+    _initial_chain_identity = response_chain_identity(
+        provider=provider_name,
+        base_url=str(llm_config.get("base_url") or ""),
+        model=model_name,
+    )
+    if (
+        _initial_chain_cap.enabled
+        and isinstance(_saved_response_chain, dict)
+        and _saved_response_chain.get("identity") == _initial_chain_identity
+        and _saved_response_chain.get("history_hash") == _incoming_response_history_hash
+        and _saved_response_chain.get("previous_response_id")
+        and user_message is not None
+    ):
+        _response_chain_id = str(_saved_response_chain["previous_response_id"])
+        _response_chain_identity = _initial_chain_identity
+        # The fresh user turn is the final message; current system layers remain
+        # outside input and are resent through Responses ``instructions``.
+        _response_chain_checkpoint = max(0, len(messages) - 1)
+
+    _volatile_cache_system_contents = {
+        str(part).strip() for part in _turn_system_parts if str(part or "").strip()
+    }
+
     async def _store_validated_session_cache() -> None:
+        def _cacheable(item: Dict[str, Any]) -> bool:
+            return not (
+                item.get("role") == "system"
+                and str(item.get("content") or "").strip()
+                in _volatile_cache_system_contents
+            )
+
+        cacheable_messages = [item for item in messages if _cacheable(item)]
+        if isinstance(messages, CachedMessageList):
+            # Preserve the structural-sharing marker when filtering only the
+            # newly appended volatile tail. If an older build cached a volatile
+            # hint inside the prefix, stop reuse at that first removed item.
+            safe_prefix = messages.stable_prefix
+            for index, item in enumerate(messages[:messages.stable_prefix]):
+                if not _cacheable(item):
+                    safe_prefix = index
+                    break
+            shared = CachedMessageList(
+                cacheable_messages,
+                cache_key=messages.cache_key,
+                block_ids=messages.block_ids,
+            )
+            shared.stable_prefix = safe_prefix
+            cacheable_messages = shared
         canonical_history = [
-            item for item in messages if item.get("role") != "system"
+            item for item in cacheable_messages if item.get("role") != "system"
         ]
         await _sc.set(
             user_id,
             session_id,
-            messages,
+            cacheable_messages,
             _sys_hash,
             _cache_hash(canonical_history),
         )
@@ -1542,6 +2019,7 @@ async def stream_agent_events(
             _st = _cc_status(messages, _cc) if (_cc.get("enabled") and _cc_status) else None
             if _st:
                 _cc_line = _st["line"]
+                _volatile_cache_system_contents.add(_cc_line.strip())
                 # Insert as a separate system message right before the user turn
                 # so messages[0] (core system prompt) and all frozen compaction
                 # cars stay byte-identical across turns, enabling provider
@@ -1563,6 +2041,9 @@ async def stream_agent_events(
         session_id.startswith("optimizer-") or session_id.startswith("closer-")
     )
     empty_retry_used = False        # safety net: one retry per session for an empty LLM reply
+    plan_document_retry_used = False  # one mechanical retry when Plan omitted present_plan
+    plan_document_updated = False
+    asst_id: Optional[str] = None   # latest persisted assistant row; Manager anchor
     _tool_name_streak = 0        # consecutive same-tool-name calls (diff args)
     _last_tool_streak_name = ""  # which tool the streak is counting
 
@@ -1709,6 +2190,334 @@ async def stream_agent_events(
             _HEARTBEAT_INTERVAL = 5.0
         _last_heartbeat = 0.0
 
+        # ── Integrated Manager watchdog ─────────────────────────────────────
+        # Mechanical sensors remain in this loop. Suspicious events are handed
+        # to the Manager as compact JSON, and completed background verdicts are
+        # drained into the active in-memory conversation before the next model
+        # turn (in addition to the durable system:manager DB note).
+        from app.agent.run_health import RunHealthTracker, health_event
+        _wd_cfg = _manager_cfg.get("watchdog") or {}
+        _health = RunHealthTracker(
+            error_window=(
+                _wd_cfg.get("error_window", 8)
+                if isinstance(_wd_cfg, dict) else 8
+            )
+        )
+        _manager_tasks: set = set()
+
+        def _deliver_manager_feedback(task: "asyncio.Task") -> None:
+            """Deliver a completed advisory verdict at the next safe loop await."""
+            _manager_tasks.discard(task)
+            try:
+                verdict = task.result()
+            except Exception:
+                verdict = None
+            try:
+                from app.agent.manager import manager_feedback_message
+                note = manager_feedback_message(verdict)
+            except Exception:
+                note = ""
+            if note:
+                # The event loop is single-threaded: callbacks run between await
+                # boundaries, so this cannot interleave with synchronous list work.
+                # If an LLM request is already streaming, the note naturally lands
+                # in the following inference; otherwise it is included immediately.
+                messages.append({"role": "system", "content": note})
+
+        _default_manager_kind_caps = {
+            "plan_gate": 1,
+            "edit_gate": 4,
+            "watchdog": 3,
+            "commit_gate": 1,
+        }
+
+        def _manager_kind_cap(kind: str) -> int:
+            configured = _manager_cfg.get("max_checks_by_kind")
+            raw_cap = (
+                configured.get(kind)
+                if isinstance(configured, dict) and kind in configured
+                else _default_manager_kind_caps.get(kind, 1)
+            )
+            try:
+                return max(0, int(raw_cap))
+            except (TypeError, ValueError):
+                return _default_manager_kind_caps.get(kind, 1)
+
+        def _reserve_manager_check(kind: str) -> Optional[tuple]:
+            """Atomically reserve the overall lane and this trigger's lane.
+
+            This function contains no await and runs on the single event-loop
+            thread, so background and blocking checks cannot observe a partial
+            reservation. Separate lanes keep frequent edit reviews from
+            consuming the plan, watchdog, or commit allowance.
+            """
+            if not loop_config.is_enabled("manager_chk"):
+                return None
+            try:
+                cap = max(1, int(_manager_cfg.get("max_checks") or 9))
+            except (TypeError, ValueError):
+                cap = 9
+            kind_cap = _manager_kind_cap(kind)
+            used = int(_manager_state.get("checks_used") or 0)
+            used_by_kind = _manager_state.setdefault("checks_used_by_kind", {})
+            kind_used = int(used_by_kind.get(kind) or 0)
+            if used >= cap or kind_used >= kind_cap:
+                return None
+            used += 1
+            kind_used += 1
+            _manager_state["checks_used"] = used
+            used_by_kind[kind] = kind_used
+            return used, kind_used, kind_cap
+
+        def _release_manager_check(kind: str, reservation: tuple) -> None:
+            """Release a reservation when no Manager task could be created."""
+            check_index, kind_check_index, _ = reservation
+            _manager_state["checks_used"] = max(
+                0, min(int(_manager_state.get("checks_used") or 0), check_index) - 1
+            )
+            used_by_kind = _manager_state.setdefault("checks_used_by_kind", {})
+            used_by_kind[kind] = max(
+                0, min(int(used_by_kind.get(kind) or 0), kind_check_index) - 1
+            )
+
+        def _launch_manager_check(kind: str, *, anchor_id: Optional[str], extra: str) -> bool:
+            if not anchor_id:
+                return False
+            reservation = _reserve_manager_check(kind)
+            if reservation is None:
+                return False
+            check_index, kind_check_index, kind_cap = reservation
+            task = _schedule_manager_check(
+                kind,
+                user_id=user_id, session_id=session_id,
+                agent_id=agent_id, agent_rec=_agent_rec,
+                final_asst_id=anchor_id,
+                parent_interaction_id=parent_interaction_id,
+                db=db, channel=channel,
+                execution_mode=execution_mode,
+                extra=extra,
+                max_checks=_manager_cfg.get("max_checks"),
+                check_index=check_index,
+                kind_max_checks=kind_cap,
+                kind_check_index=kind_check_index,
+            )
+            if task is None:
+                _release_manager_check(kind, reservation)
+                return False
+            _manager_tasks.add(task)
+            task.add_done_callback(_deliver_manager_feedback)
+            return True
+
+        def _launch_health_watchdog(event: Dict[str, Any], *, anchor_id: Optional[str]) -> bool:
+            if (not anchor_id or not _manager_state.get("watchdog_enabled")
+                    or not isinstance(_wd_cfg, dict)):
+                return False
+            cooldown = int(_wd_cfg.get("cooldown_turns") or 0)
+            if not _health.allow_watchdog(turn=turn_count, cooldown_turns=cooldown):
+                return False
+            return _launch_manager_check(
+                "watchdog", anchor_id=anchor_id,
+                extra=json.dumps(event, sort_keys=True, default=str)[:3000],
+            )
+
+        async def _run_blocking_manager_check(
+            kind: str, *, anchor_id: Optional[str], extra: str,
+        ) -> Optional[Dict[str, Any]]:
+            if not anchor_id:
+                return None
+            reservation = _reserve_manager_check(kind)
+            if reservation is None:
+                return None
+            check_index, kind_check_index, kind_cap = reservation
+            try:
+                from app.agent.manager import run_manager_check
+                return await run_manager_check(
+                    kind,
+                    user_id=user_id, session_id=session_id,
+                    agent_id=agent_id, agent_rec=_agent_rec,
+                    final_asst_id=anchor_id,
+                    parent_interaction_id=parent_interaction_id,
+                    db=db, channel=channel,
+                    execution_mode=execution_mode,
+                    extra=extra,
+                    max_checks=_manager_cfg.get("max_checks"),
+                    check_index=check_index,
+                    kind_max_checks=kind_cap,
+                    kind_check_index=kind_check_index,
+                )
+            except Exception:
+                return None
+
+        def _commit_manager_context(
+            tool_name: str, tool_args: Dict[str, Any],
+        ) -> str:
+            """Build commit evidence from safe run metadata, never raw output."""
+            changed_paths = sorted(
+                str(path) for path in (_manager_state.get("changed_paths") or set())
+                if path
+            )
+            edit_events = list(_manager_state.get("edit_events") or [])
+            verification_events = list(
+                _manager_state.get("verification_events") or []
+            )
+            evidence = {
+                "tool": tool_name,
+                "intended_commit_arguments": tool_args,
+                "change_inventory": {
+                    "changed_path_count": len(changed_paths),
+                    "changed_paths": changed_paths[:100],
+                    "successful_edit_count": len(edit_events),
+                    "recent_edits": edit_events[-12:],
+                    "truncated": len(changed_paths) > 100,
+                },
+                "verification_summary": {
+                    "attempted": len(verification_events),
+                    "passed": sum(
+                        1 for event in verification_events if event.get("success")
+                    ),
+                    "failed": sum(
+                        1 for event in verification_events
+                        if not event.get("success")
+                    ),
+                    "recent_checks": verification_events[-12:],
+                },
+            }
+            return json.dumps(evidence, sort_keys=True, default=str)[:6000]
+
+        async def _evaluate_manager_gates(
+            tool_name: str,
+            tool_args: Dict[str, Any],
+            *,
+            tool_call_id: str,
+            anchor_id: Optional[str],
+            current_mode: str,
+        ) -> Optional[Dict[str, Any]]:
+            """Run/schedule the configured gates for one otherwise-valid call."""
+            from app.agent.contracts import is_commit_tool, is_edit_tool
+
+            # Starter wait_before_write is independent of Manager trigger
+            # policy. Reads remain lightning-fast and parallel. On the first
+            # proposed edit, wait for the one-shot, inject its allowed durable
+            # fields, and ask the main model to reconsider that edit once with
+            # the newly available task linkage/plan/checklist.
+            if is_edit_tool(tool_name) and not _manager_state.get("starter_write_checked"):
+                _manager_state["starter_write_checked"] = True
+                try:
+                    from app.agent.run_scout import (
+                        artifact_for_turn as _starter_for_write,
+                        await_write_ready as _await_starter_for_write,
+                    )
+                    _starter_row = _starter_for_write(db, parent_interaction_id) or {}
+                    _starter_cfg = (_starter_row.get("starter_config")
+                                    if isinstance(_starter_row.get("starter_config"), dict)
+                                    else {})
+                    if _starter_cfg.get("wait_before_write"):
+                        _seed = await _await_starter_for_write(db, parent_interaction_id)
+                        if _seed.get("ready"):
+                            _payload = {
+                                key: _seed.get(key) for key in (
+                                    "objective", "relationship", "linked_prior_task_id",
+                                    "linked_capsule_id", "relationship_confidence",
+                                    "relationship_reason", "plan", "checklist",
+                                ) if _seed.get(key) not in (None, "", [], 0.0)
+                            }
+                            if _payload:
+                                messages.append({
+                                    "role": "system",
+                                    "content": (
+                                        "Run Starter context became ready before the first write. "
+                                        "Re-evaluate the proposed edit against this context; the "
+                                        "execution mode still controls permissions.\n"
+                                        + json.dumps(_payload, ensure_ascii=False, default=str)
+                                    ),
+                                })
+                                return {
+                                    "verdict": "revise",
+                                    "reason": "starter_context_ready",
+                                    "feedback": (
+                                        "The Run Starter handoff is now available. Review its "
+                                        "objective, prior-task linkage, plan, and checklist, then "
+                                        "retry the edit if it still fits."
+                                    ),
+                                }
+                except Exception as exc:
+                    logger.debug("run starter first-write gate failed open: %s", exc)
+
+            if not loop_config.is_enabled("manager_chk") or not _manager_cfg:
+                return None
+
+            affected_paths = [
+                str(value) for key, value in tool_args.items()
+                if key.lower() in {"path", "file", "filename", "target", "destination"}
+                and isinstance(value, (str, int))
+            ]
+            context_payload = {
+                "tool_call_id": tool_call_id,
+                "tool": tool_name,
+                "args": tool_args,
+                "argument_hash": "sha256:" + hashlib.sha256(
+                    json.dumps(tool_args, sort_keys=True, separators=(",", ":"), default=str)
+                    .encode("utf-8")
+                ).hexdigest(),
+                "affected_paths": affected_paths[:30],
+                "generation": parent_interaction_id or "",
+                "turn_reservation_key": turn_reservation_key or "",
+            }
+            if turn_reservation_key:
+                from app.agent.turn_reservations import stable_key as _reservation_key
+                context_payload["tool_reservation_id"] = _reservation_key(
+                    "tool", turn_reservation_key, tool_name, tool_args,
+                )
+            context = json.dumps(context_payload, default=str)
+            if len(context) > 6000:
+                context_payload["args"] = {"preview": str(tool_args)[:3000]}
+                context_payload["arguments_truncated"] = True
+                context = json.dumps(context_payload, default=str)
+            if is_edit_tool(tool_name):
+                # Plan gate is once per run. Edit gate is per edit, as its name
+                # promises, rather than sharing the old first-edit flag.
+                plan_mode = _manager_cfg.get("plan_gate")
+                if not _manager_state.get("plan_gate_done"):
+                    if plan_mode == "blocking":
+                        verdict = await _run_blocking_manager_check(
+                            "plan_gate", anchor_id=anchor_id, extra=context,
+                        )
+                        if verdict and verdict.get("verdict") in ("block", "revise"):
+                            return verdict
+                        if verdict and verdict.get("verdict") == "approve":
+                            _manager_state["block_count"] = 0
+                        _manager_state["plan_gate_done"] = True
+                    elif plan_mode == "async":
+                        _manager_state["plan_gate_done"] = True
+                        _launch_manager_check("plan_gate", anchor_id=anchor_id, extra=context)
+
+                edit_mode = _manager_cfg.get("edit_gate")
+                if edit_mode == "blocking":
+                    verdict = await _run_blocking_manager_check(
+                        "edit_gate", anchor_id=anchor_id, extra=context,
+                    )
+                    if verdict and verdict.get("verdict") in ("block", "revise"):
+                        return verdict
+                    if verdict and verdict.get("verdict") == "approve":
+                        _manager_state["block_count"] = 0
+                elif edit_mode == "async":
+                    _launch_manager_check("edit_gate", anchor_id=anchor_id, extra=context)
+
+            if is_commit_tool(tool_name):
+                context = _commit_manager_context(tool_name, tool_args)
+                commit_mode = _manager_cfg.get("commit_gate")
+                if commit_mode == "blocking":
+                    verdict = await _run_blocking_manager_check(
+                        "commit_gate", anchor_id=anchor_id, extra=context,
+                    )
+                    if verdict and verdict.get("verdict") in ("block", "revise"):
+                        return verdict
+                    if verdict and verdict.get("verdict") == "approve":
+                        _manager_state["block_count"] = 0
+                elif commit_mode == "async":
+                    _launch_manager_check("commit_gate", anchor_id=anchor_id, extra=context)
+            return None
+
         async def _beat() -> None:
             nonlocal _last_heartbeat
             _hb_now = time.monotonic()
@@ -1744,6 +2553,21 @@ async def stream_agent_events(
             turn_count += 1
             if agent_id:
                 await db_offload(lambda: db.increment_agent_turn_count(agent_id))
+
+            # ── Manager watchdog (periodic, async) ──
+            # Every N turns (metadata['manager'].watchdog.every_n_turns), fire a
+            # background on-track check. Advisory only — never blocks the turn;
+            # a verdict of off_track/stuck lands as a self-note the agent's next
+            # turn sees. Gated on the run_manager app function inside the check.
+            if (loop_config.is_enabled("manager_chk")
+                    and _manager_state.get("watchdog_enabled")):
+                _wd_cfg = _manager_cfg.get("watchdog") or {}
+                _every = _wd_cfg.get("every_n_turns") if isinstance(_wd_cfg, dict) else 0
+                if _every and turn_count % _every == 0:
+                    _launch_manager_check(
+                        "watchdog", anchor_id=asst_id,
+                        extra=json.dumps(health_event("periodic", turn=turn_count)),
+                    )
 
             # Reset stream chunk tracker for new turn
             first_stream_chunk_state[0] = True
@@ -1975,18 +2799,41 @@ async def stream_agent_events(
                 except Exception:
                     pass  # best-effort — never break the turn on a model re-read
 
+            _chain_capability = response_chain_capability(
+                provider=provider_name,
+                base_url=str(llm_config.get("base_url") or ""),
+                model=model_name,
+                mode=llm_config.get("stateful_responses", "auto"),
+            )
+            _turn_chain_identity = response_chain_identity(
+                provider=provider_name,
+                base_url=str(llm_config.get("base_url") or ""),
+                model=model_name,
+            )
+            if _response_chain_identity and _response_chain_identity != _turn_chain_identity:
+                # A provider/model hot-swap cannot inherit another service's ID.
+                _response_chain_id = None
+                _response_chain_checkpoint = 0
+            _response_chain_identity = _turn_chain_identity if _chain_capability.enabled else None
+
             # ── Pipeline: LLM call start ──
             yield {"type": "pipeline", "level": "pipeline",
                    "step": "llm_call_start", "model": model_name,
                    "effort": reasoning_effort,
                    "message_count": len(messages),
-                   "turn": turn_count}
+                   "turn": turn_count,
+                   "transport": _chain_capability.transport,
+                   "response_chain_resumed": bool(_response_chain_id)}
 
             # ── Stream the LLM response ──
             llm_start = time.time()
 
             collected_content = ""
             collected_tool_calls: Dict[int, Any] = {}
+            # DeepSeek thinking-mode reasoning arrives as delta.reasoning_content
+            # and MUST be replayed with the assistant message on later turns —
+            # the API 400s requests whose assistant turns lack it.
+            collected_reasoning = ""
             streaming_asst_id = None   # new in-progress assistant row per step
             _last_stream_persist = 0.0
             input_tokens = None
@@ -2036,7 +2883,7 @@ async def stream_agent_events(
 
             _create_kwargs = dict(
                 model=model_name,
-                messages=messages,
+                messages=_strip_reasoning_content_for_provider(messages, model_name, provider_name),
                 tools=tool_definitions if tool_definitions else None,
                 tool_choice="auto" if tool_definitions else None,
                 temperature=0.0,
@@ -2044,12 +2891,65 @@ async def stream_agent_events(
                 stream=True,
                 stream_options={"include_usage": True},
             )
+            _prompt_cache = prompt_cache_controls(
+                provider=provider_name,
+                base_url=str(llm_config.get("base_url") or ""),
+                model=model_name,
+                user_id=user_id,
+                system_hash=_sys_hash,
+            )
+            if _prompt_cache.get("extra_body"):
+                _create_kwargs["extra_body"] = merge_extra_body(
+                    _create_kwargs.get("extra_body"), _prompt_cache["extra_body"],
+                )
+            yield {
+                "type": "pipeline", "level": "pipeline", "step": "prompt_cache",
+                "enabled": bool(_prompt_cache.get("enabled")),
+                "strategy": _prompt_cache.get("strategy"),
+                "provider_family": _prompt_cache.get("family"),
+            }
             # Apply the per-session reasoning-effort hint, if any. Sent via the
             # OpenRouter-normalised `extra_body.reasoning.effort`; a provider that
             # rejects it (or the level) gets the call retried once without it, so an
             # unsupported effort never breaks the turn.
             if reasoning_effort:
-                _create_kwargs["extra_body"] = {"reasoning": {"effort": reasoning_effort}}
+                _create_kwargs["extra_body"] = merge_extra_body(
+                    _create_kwargs.get("extra_body"),
+                    {"reasoning": {"effort": reasoning_effort}},
+                )
+            _responses_body = None
+            if _chain_capability.enabled:
+                _responses_body = build_responses_request(
+                    model=model_name,
+                    messages=messages,
+                    tools=tool_definitions if tool_definitions else None,
+                    max_output_tokens=_max_output_tokens(),
+                    previous_response_id=_response_chain_id,
+                    delta_start=_response_chain_checkpoint if _response_chain_id else 0,
+                    reasoning_effort=reasoning_effort,
+                    prompt_cache_key=_prompt_cache.get("cache_key"),
+                    provider_family_name=_chain_capability.family,
+                    session_key=f"wa-{hashlib.sha256(f'{user_id}:{session_id}'.encode()).hexdigest()[:40]}",
+                )
+                # A chained retry containing only a new system instruction has
+                # no input item. Rebase from the local transcript in that case.
+                if _response_chain_id and not _responses_body.get("input"):
+                    _response_chain_id = None
+                    _response_chain_checkpoint = 0
+                    _responses_body = build_responses_request(
+                        model=model_name,
+                        messages=messages,
+                        tools=tool_definitions if tool_definitions else None,
+                        max_output_tokens=_max_output_tokens(),
+                        reasoning_effort=reasoning_effort,
+                        prompt_cache_key=_prompt_cache.get("cache_key"),
+                        provider_family_name=_chain_capability.family,
+                        session_key=f"wa-{hashlib.sha256(f'{user_id}:{session_id}'.encode()).hexdigest()[:40]}",
+                    )
+            # One-shot legacy-history recovery per turn: DeepSeek thinking-mode
+            # replay rejection (assistant turns missing their original
+            # reasoning_content) triggers a single sanitized retry below.
+            _reasoning_sanitized = False
             # Bound the stream-OPEN call (see _stream_open_seconds). A hung connect
             # otherwise freezes the turn indefinitely; the per-chunk stall guard
             # below only covers reads AFTER the stream object exists.
@@ -2063,7 +2963,20 @@ async def stream_agent_events(
             _t_open0 = time.monotonic()
             try:
                 try:
-                    stream = await _open_stream(_create_kwargs, _open_s, llm_client)
+                    if _responses_body is not None:
+                        _responses_open = open_responses_stream(
+                            base_url=str(llm_config.get("base_url") or ""),
+                            api_key=str(llm_config.get("api_key") or ""),
+                            family=_chain_capability.family,
+                            body=_responses_body,
+                            timeout=max(60.0, _open_s or 60.0),
+                        )
+                        stream = await (
+                            asyncio.wait_for(_responses_open, timeout=_open_s)
+                            if _open_s and _open_s > 0 else _responses_open
+                        )
+                    else:
+                        stream = await _open_stream(_create_kwargs, _open_s, llm_client)
                     if _llm_diag_on:
                         try:
                             _msg_chars = sum(len(str(m.get("content") or "")) for m in messages)
@@ -2082,18 +2995,89 @@ async def stream_agent_events(
                                           "capability_hash": _cache_hash(_capability_system_parts),
                                           "agent_context_hash": _cache_hash(_agent_system),
                                           "tool_schema_hash": _cache_hash(tool_definitions or []),
-                                          "reasoning_effort": reasoning_effort or "none"},
+                                          "reasoning_effort": reasoning_effort or "none",
+                                          "prompt_cache_strategy": _prompt_cache.get("strategy"),
+                                          "prompt_cache_keyed": bool(_prompt_cache.get("cache_key"))},
                                   session_id=session_id, agent_id=agent_id, user_id=user_id)
                         except Exception:
                             pass
                 except asyncio.TimeoutError:
                     raise  # an open stall, NOT an effort rejection — handled below
                 except Exception as e_eff:
-                    if "extra_body" in _create_kwargs:
-                        logger.info("reasoning effort '%s' rejected (%s) — retrying without it",
-                                    reasoning_effort, e_eff)
+                    _eff_err = str(e_eff)
+                    if (
+                            _responses_body is not None
+                            and _response_chain_id
+                            and is_missing_response_error(e_eff)):
+                        # Remote state expired or was evicted. Reconstruct the
+                        # complete active context locally and start a fresh chain.
+                        logger.info("response chain unavailable — rebasing from local context: %s", e_eff)
+                        _response_chain_id = None
+                        _response_chain_checkpoint = 0
+                        _responses_body = build_responses_request(
+                            model=model_name,
+                            messages=messages,
+                            tools=tool_definitions if tool_definitions else None,
+                            max_output_tokens=_max_output_tokens(),
+                            reasoning_effort=reasoning_effort,
+                            prompt_cache_key=_prompt_cache.get("cache_key"),
+                            provider_family_name=_chain_capability.family,
+                            session_key=f"wa-{hashlib.sha256(f'{user_id}:{session_id}'.encode()).hexdigest()[:40]}",
+                        )
+                        stream = await open_responses_stream(
+                            base_url=str(llm_config.get("base_url") or ""),
+                            api_key=str(llm_config.get("api_key") or ""),
+                            family=_chain_capability.family,
+                            body=_responses_body,
+                            timeout=max(60.0, _open_s or 60.0),
+                        )
+                    elif ("reasoning_content" in _eff_err
+                            and "passed back" in _eff_err
+                            and not _reasoning_sanitized):
+                        # DeepSeek thinking-mode continuity rule: assistant turns
+                        # must carry their original reasoning_content back. Rows
+                        # written before reasoning capture can never satisfy it —
+                        # drop the assistant/tool history once and retry so a
+                        # stuck legacy session resumes instead of crash-looping.
+                        logger.warning("DeepSeek thinking-mode replay rejected (%s) — "
+                                       "retrying with assistant history sanitized", e_eff)
+                        _reasoning_sanitized = True
+                        _sanitized_msgs = _sanitize_history_for_deepseek(messages)
+                        _create_kwargs["messages"] = _sanitized_msgs
+                        messages[:] = _sanitized_msgs
+                        stream = await _open_stream(_create_kwargs, _open_s, llm_client)
+                    elif _responses_body is not None and is_unsupported_responses_error(e_eff):
+                        # A nominally compatible proxy may not expose /responses.
+                        # Auto mode degrades to the universal Chat Completions
+                        # path for this turn without losing local continuity.
+                        logger.info("Responses endpoint unsupported — using chat completions: %s", e_eff)
+                        _responses_body = None
+                        _response_chain_id = None
+                        _response_chain_checkpoint = 0
+                        stream = await _open_stream(_create_kwargs, _open_s, llm_client)
+                    elif _responses_body is not None and (
+                            "reasoning" in _responses_body
+                            or "prompt_cache_key" in _responses_body):
+                        logger.info(
+                            "optional Responses controls rejected (%s) — retrying without them",
+                            e_eff,
+                        )
+                        _responses_body.pop("reasoning", None)
+                        _responses_body.pop("prompt_cache_key", None)
+                        stream = await open_responses_stream(
+                            base_url=str(llm_config.get("base_url") or ""),
+                            api_key=str(llm_config.get("api_key") or ""),
+                            family=_chain_capability.family,
+                            body=_responses_body,
+                            timeout=max(60.0, _open_s or 60.0),
+                        )
+                    elif "extra_body" in _create_kwargs:
+                        logger.info(
+                            "optional provider controls rejected (%s) — retrying without them",
+                            e_eff,
+                        )
                         _create_kwargs.pop("extra_body", None)
-                        stream = await _open_stream(_create_kwargs, _open_s)
+                        stream = await _open_stream(_create_kwargs, _open_s, llm_client)
                     else:
                         raise
             except asyncio.TimeoutError:
@@ -2124,6 +3108,23 @@ async def stream_agent_events(
                     ))
                 except Exception:
                     logger.exception("could not mark pre-stream assistant row as failed")
+                # Durable flight-recorder entry — the error event yielded below
+                # is consumed by buffered wrappers and frequently lost, so
+                # without this the failure is invisible to post-hoc diagnosis
+                # (an audit re-run whose LLM open failed left no trace at all).
+                try:
+                    from app.agent.diagnostics import record as _diag
+                    _diag("error", "loop",
+                          f"LLM call failed before stream: {e}",
+                          source="llm_call_error",
+                          detail={"model": model_name, "provider": provider_name,
+                                  "turn": turn_count,
+                                  "reasoning_effort": reasoning_effort or "none"},
+                          session_id=session_id, agent_id=agent_id, user_id=user_id)
+                except Exception:
+                    pass
+                logger.error("LLM call failed before stream (session=%s model=%s): %s",
+                             session_id, model_name, e, exc_info=True)
                 # Detect network-level failures (connection lost, DNS, timeout) and
                 # tag them as recoverable crashes so the self-healing layer re-ignites
                 # the turn instead of leaving a dead error bubble.
@@ -2247,6 +3248,20 @@ async def stream_agent_events(
                     if not delta:
                         continue
 
+                    # DeepSeek thinking-mode: hidden reasoning streams as
+                    # `delta.reasoning_content` (the OpenAI SDK surfaces unknown
+                    # fields via getattr / model_extra). Capture it — it must be
+                    # persisted and replayed with the assistant message, or the
+                    # API 400s the next request.
+                    _rc = getattr(delta, "reasoning_content", None)
+                    if _rc is None:
+                        try:
+                            _rc = (getattr(delta, "model_extra", None) or {}).get("reasoning_content")
+                        except Exception:
+                            _rc = None
+                    if _rc:
+                        collected_reasoning += _rc
+
                     if delta.content:
                         collected_content += delta.content
                         # The assistant row already exists before provider output.
@@ -2284,6 +3299,16 @@ async def stream_agent_events(
                     await stream.close()
                 except BaseException:
                     pass
+
+            if _responses_body is not None:
+                _new_response_id = getattr(stream, "response_id", None)
+                if _new_response_id:
+                    _response_chain_id = str(_new_response_id)
+                    _response_chain_identity = _turn_chain_identity
+                    # Everything currently in messages was consumed. Assistant
+                    # output is represented by the new response id and is skipped
+                    # from the next delta after it is appended below.
+                    _response_chain_checkpoint = len(messages)
 
             # Interrupt check immediately after the LLM stream closes. The
             # stream's own persist-throttled check may have missed the flag if
@@ -2330,12 +3355,37 @@ async def stream_agent_events(
                 cache_write_tokens=cache_write_tokens,
                 uncached_input_tokens=uncached_input_tokens,
                 reasoning_tokens=reasoning_tokens)
+            if await _agent_profile_visitor(agent_id, user_id):
+                try:
+                    from app.api.rate_limit import record_anonymous_actual_usage
+                    _anon_usage = await asyncio.to_thread(
+                        record_anonymous_actual_usage,
+                        user_id, input_tokens or 0, output_tokens or 0,
+                        call_cost_usd or 0.0,
+                    )
+                    if _anon_usage.get("exhausted"):
+                        _scope = str(_anon_usage.get("scope") or "cost")
+                        _where = "network" if _scope == "cost_source" else (
+                            "anonymous service" if _scope == "cost_global" else "guest"
+                        )
+                        yield {
+                            "type": "error", "level": "agent",
+                            "code": "registration_required",
+                            "scope": f"anonymous_actual_{_scope}_budget",
+                            "message": (
+                                f"The {_where} anonymous credit allowance has been used. "
+                                "Register and sign in to continue on account credits."
+                            ),
+                        }
+                        return
+                except Exception:
+                    logger.debug("Anonymous usage telemetry write failed", exc_info=True)
 
             tool_calls_data = list(collected_tool_calls.values()) if collected_tool_calls else None
             yield {"type": "pipeline", "level": "pipeline",
                    "step": "llm_call_end", "duration_ms": llm_duration,
                    "input_tokens": input_tokens, "output_tokens": output_tokens,
-                   "cost_usd": call_cost_usd, "model": model_name,
+                   "cost_usd": call_cost_usd, "cost_source": _cost_source, "model": model_name,
                    "cached_input_tokens": cached_input_tokens,
                    "cache_write_tokens": cache_write_tokens,
                    "uncached_input_tokens": uncached_input_tokens,
@@ -2395,15 +3445,27 @@ async def stream_agent_events(
                 # the empty bubble is never rendered in the UI.
                 if replay_content is not None and not replay_content.strip():
                     replay_content = None
-                messages.append({
+                _asst_msg: Dict[str, Any] = {
                     "role": "assistant",
                     "content": replay_content,
                     "tool_calls": full_tool_calls,
-                })
+                }
+                if collected_reasoning:
+                    # DeepSeek thinking mode: the reasoning must travel with the
+                    # assistant message on the next request, or the API 400s.
+                    _asst_msg["reasoning_content"] = collected_reasoning
+                messages.append(_asst_msg)
+                if _response_chain_id:
+                    # The remote response already contains this assistant tool
+                    # call. Only function_call_output items appended after this
+                    # checkpoint belong in the next chained request.
+                    _response_chain_checkpoint = len(messages)
 
                 # Persist intermediate assistant message — clean content, no tool-call echo
                 assistant_content = (collected_content or "").strip()
                 cleanup_final = _cleanup_final_step(assistant_content, collected_tool_calls)
+                if _requires_plan_document and not plan_document_updated:
+                    cleanup_final = False
                 # Tool calls are stored in the `output` field (line 1247 below),
                 # NOT embedded in the content string. The legacy `\n\n[Tool calls: ...]`
                 # suffix was removed because it contaminated message history: the LLM
@@ -2417,7 +3479,10 @@ async def stream_agent_events(
                 # Keep only structured tool calls on intermediate rows. The old
                 # payload copied the entire growing prompt + tool schema into
                 # every step, producing quadratic database growth.
-                outp = _assistant_output(tool_calls=full_tool_calls)
+                outp = _assistant_output(
+                    tool_calls=full_tool_calls,
+                    reasoning_content=collected_reasoning or None,
+                )
                 db_start = time.time()
                 _updated_streaming_row = streaming_asst_id is not None
                 if _updated_streaming_row:
@@ -2457,6 +3522,22 @@ async def stream_agent_events(
                                "message_phase": "main",
                                "asst_id": asst_id,
                                "content": prefix_content(assistant_content)}
+                        # Cleanup-final IS a completed run: the substantive answer
+                        # is already persisted and emitted, and the cleanup tools
+                        # (reset_to_default / set_effort→default / set_model→default)
+                        # are model/effort reversion — housekeeping, not checklist-
+                        # relevant work. So the checklist audit is safe here, and
+                        # required — otherwise any run that ends by reverting its
+                        # model would silently skip the auditor.
+                        _schedule_output_closer(
+                            user_id=user_id, session_id=session_id,
+                            agent_id=agent_id, final_asst_id=asst_id,
+                            parent_interaction_id=parent_interaction_id,
+                            db=db, channel=channel,
+                            audit_eligible=True,
+                            execution_mode=execution_mode,
+                            starting_execution_mode=_run_start_execution_mode,
+                        )
                     else:
                         yield {"type": "agent_step_end", "level": "agent",
                                "message_phase": "progress",
@@ -2468,6 +3549,7 @@ async def stream_agent_events(
 
                 valid_calls: List[Any] = []
                 blocked_calls: List[Any] = []
+                validated_tool_context: Dict[str, Dict[str, Any]] = {}
                 for idx, tc in sorted(collected_tool_calls.items()):
                     await _check_interrupt(session_id, interrupt_event, db=db)
                     
@@ -2523,6 +3605,17 @@ async def stream_agent_events(
                         yield {"type": "db", "level": "db",
                                "op": "insert_interaction", "role": "tool",
                                "tool_name": tool_name, "id": inter_id, "ms": db_dur}
+                        _validation_event = _health.record_outcome(
+                            False, turn=turn_count, tool=tool_name,
+                            error_type="validation_error",
+                            threshold=(_wd_cfg.get("on_errors", 0) if isinstance(_wd_cfg, dict) else 0),
+                        )
+                        if _validation_event:
+                            stall_strikes += 1
+                            yield {"type": "pipeline", "level": "pipeline",
+                                   "step": "watchdog_trigger", "reason": _validation_event["reason"],
+                                   "severity": _validation_event["severity"], "strikes": stall_strikes}
+                            _launch_health_watchdog(_validation_event, anchor_id=asst_id)
                     else:
                         # ── Stall guard: identical-call loop detection ──────────
                         # If the agent calls the SAME tool with the SAME arguments
@@ -2538,6 +3631,9 @@ async def stream_agent_events(
                         )
                         _tool_call_counts[_sig] += 1
                         _tool_total_counts[tool_name] += 1
+                        _oscillation_event = _health.record_request(
+                            tool_name, turn=turn_count, signature=_sig
+                        )
 
                         # ── Stall guard: same-tool-name streak (different args) ──
                         # Catches e.g. 19 consecutive run_python or 12 consecutive
@@ -2558,7 +3654,8 @@ async def stream_agent_events(
                         _hit_budget = _tool_budget > 0 and _tool_total_counts[tool_name] > _tool_budget
                         _hit_no_progress = tool_name in _no_progress_tools
 
-                        if _hit_identical or _hit_streak or _hit_budget or _hit_no_progress:
+                        if (_hit_identical or _hit_streak or _hit_budget
+                                or _hit_no_progress or _oscillation_event):
                             stall_strikes += 1
                             if _hit_identical:
                                 _loop_warn = (
@@ -2581,6 +3678,13 @@ async def stream_agent_events(
                                     f"result {_MAX_NO_PROGRESS_RESULTS} times. Further calls are "
                                     f"blocked for this turn because they are not making progress."
                                 )
+                            elif _oscillation_event:
+                                _loop_warn = (
+                                    "Loop guard: the recent tool sequence is alternating between "
+                                    f"the same two actions ({_oscillation_event['evidence']['pattern']}). "
+                                    "I did not run this call. Re-plan with a materially different "
+                                    "approach, or ask the user for missing information."
+                                )
                             else:
                                 _loop_warn = (
                                     f"Loop guard: you have called `{tool_name}` for "
@@ -2598,9 +3702,29 @@ async def stream_agent_events(
                                         "identical" if _hit_identical else
                                         "budget" if _hit_budget else
                                         "no_progress" if _hit_no_progress else
+                                        "oscillation" if _oscillation_event else
                                         "name_streak"
                                     ),
                                     "strikes": stall_strikes}
+                            if isinstance(_wd_cfg, dict) and _wd_cfg.get("on_stall", True):
+                                _stall_reason = (
+                                    "identical_call" if _hit_identical else
+                                    "tool_budget" if _hit_budget else
+                                    "same_result" if _hit_no_progress else
+                                    "alternating_tool_loop" if _oscillation_event else
+                                    "same_tool_streak"
+                                )
+                                _stall_event = _oscillation_event or health_event(
+                                    _stall_reason,
+                                    turn=turn_count,
+                                    tool=tool_name,
+                                    severity=2,
+                                    signature_count=_tool_call_counts[_sig],
+                                    tool_total=_tool_total_counts[tool_name],
+                                    tool_name_streak=_tool_name_streak,
+                                    stall_strikes=stall_strikes,
+                                )
+                                _launch_health_watchdog(_stall_event, anchor_id=asst_id)
                             yield {
                                 "type": "tool_result", "level": "agent", "tool": tool_name,
                                 "tool_call_id": tc.id,
@@ -2628,13 +3752,12 @@ async def stream_agent_events(
                         # effective_destructive merges the hardcoded baseline with the
                         # agent's safety_policy.destructive_tools and per-tool flags.
                         # auto_confirm skips the gate (useful for automation agents).
-                        # execution_mode controls the overall policy:
-                        #   'plan' — require confirmation for ANY write/edit (leans read-only)
-                        #   'ask'  — require user confirmation for destructive tools
-                        #   'auto' — allow all, no gate
-                        # In 'plan' mode, check the tool's own destructive flag (from metadata)
-                        # rather than just effective_destructive, so write_source/edit_source
-                        # etc. are gated even though they're not in DESTRUCTIVE_TOOLS.
+                        # The selected mode's permission_policy controls the boundary:
+                        #   read_only — block every write/edit or destructive tool
+                        #   write     — allow tools without per-step confirmation
+                        # Model-switch tools (set_model/use_premium_model/set_effort) are
+                        # exempt in plan AND ask — see the guardrail_skip below
+                        # (MODEL-SWITCH-EXEMPT).
                         #
                         # ── Live mode re-read (mid-turn pill flip) ──
                         # The user may flip the chat pill (Ask→Plan→Auto) while the
@@ -2649,19 +3772,76 @@ async def stream_agent_events(
                             except Exception:
                                 pass  # best-effort — never break the turn on a mode re-read
                         _current_mode = _live_mode or execution_mode
+                        _current_mode_entry = resolve_execution_mode(_agent_rec, _current_mode)
+                        _current_policy = _current_mode_entry.get("permission_policy", "read_only")
                         ti = tools.get(tool_name)
+
+                        # ── contract_chk node: mechanical contract rules ──
+                        # The per-agent run contract (metadata['contract']) is
+                        # enforced synchronously here with ZERO LLM calls — flags
+                        # and counters the loop already keeps. A violation blocks
+                        # the call with an actionable message, exactly like the
+                        # guardrail/validation paths (error_type
+                        # "contract_blocked"), so the agent sees why and adjusts.
+                        # Disabled via loop_logic (contract_chk) or when no
+                        # contract is configured.
+                        if loop_config.is_enabled("contract_chk") and _contract:
+                            from app.agent.contracts import mechanical_check
+                            _contract_msg = mechanical_check(
+                                _contract, _contract_state,
+                                tool_name=tool_name, tool_args=tool_args,
+                                execution_mode=("auto" if _current_policy == "write" else "plan"))
+                            if _contract_msg:
+                                yield {"type": "pipeline", "level": "pipeline",
+                                       "step": "contract_blocked", "tool": tool_name,
+                                       "message": _contract_msg[:300]}
+                                yield {
+                                    "type": "tool_result", "level": "agent",
+                                    "tool": tool_name,
+                                    "tool_call_id": tc.id,
+                                    "result": json.dumps({"status": "contract_blocked", "message": _contract_msg}),
+                                    "duration_ms": 0, "error": True,
+                                    "error_type": "contract_blocked", "recoverable": True,
+                                }
+                                tool_msg = {"role": "tool", "content": _contract_msg, "tool_call_id": tc.id}
+                                messages.append(tool_msg)
+                                outp = json.dumps({"role": "tool", "content": _contract_msg, "tool_call_id": tc.id, "name": tool_name, "success": False})
+                                db_start = time.time()
+                                inter_id = await db.insert_interaction(
+                                    user_id, session_id, role="tool", content=_contract_msg,
+                                    parent_id=asst_id, tool_call_id=tc.id, tool_name=tool_name,
+                                    channel=channel,
+                                    metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "contract_blocked"}),
+                                    output_data=outp,
+                                    sender_id=agent_id, receiver_id=agent_id,
+                                )
+                                db_dur = int((time.time() - db_start) * 1000)
+                                yield {"type": "db", "level": "db",
+                                       "op": "insert_interaction", "role": "tool",
+                                       "tool_name": tool_name, "id": inter_id, "ms": db_dur}
+                                # A blocked call counts as a failed outcome so
+                                # the max_tool_errors soft strike stays honest.
+                                _contract_state["consecutive_errors"] = int(
+                                    _contract_state.get("consecutive_errors") or 0) + 1
+                                _contract_event = _health.record_outcome(
+                                    False, turn=turn_count, tool=tool_name,
+                                    error_type="contract_blocked",
+                                    threshold=(_wd_cfg.get("on_errors", 0) if isinstance(_wd_cfg, dict) else 0),
+                                )
+                                if _contract_event:
+                                    stall_strikes += 1
+                                    yield {"type": "pipeline", "level": "pipeline",
+                                           "step": "watchdog_trigger", "reason": _contract_event["reason"],
+                                           "severity": _contract_event["severity"], "strikes": stall_strikes}
+                                    _launch_health_watchdog(_contract_event, anchor_id=asst_id)
+                                continue
+
                         is_destructive = tool_name in effective_destructive
-                        if _current_mode == 'plan':
-                            # Gate if the tool is flagged destructive in its metadata
+                        if _current_policy == 'read_only':
+                            # Read-only policy gates every tool flagged as mutating.
                             gate_required = bool(ti and ti.destructive) or is_destructive
-                        elif _current_mode == 'auto':
+                        else:
                             gate_required = False
-                        else:  # 'ask' (default)
-                            gate_required = (
-                                loop_config.is_enabled("guardrails")
-                                and is_destructive
-                                and not auto_confirm
-                            )
                         # Switching INTO auto mode is a privilege escalation — it turns
                         # the per-step confirmation gate OFF for the rest of the run — so
                         # it ALWAYS needs the user's explicit go-ahead, whatever the
@@ -2669,10 +3849,11 @@ async def stream_agent_events(
                         # per-tool and shouldn't promote at all). Other mode switches
                         # (→Plan / →Ask only tighten safety) are never gated.
                         if tool_name == "set_execution_mode":
-                            _tgt = _MODE_ALIASES.get(
-                                str((tool_args or {}).get("mode", "")).strip().lower(), "")
+                            _tgt = normalize_mode_id((tool_args or {}).get("mode", ""), "")
+                            _target_policy = resolve_execution_mode(_agent_rec, _tgt).get(
+                                "permission_policy", "read_only")
                             gate_required = (
-                                _tgt == "auto" and _current_mode != "auto" and not auto_confirm)
+                                _target_policy == "write" and _current_policy != "write" and not auto_confirm)
                         # Per-arg exemption: read-only shell commands via run_command
                         # (git status, ls, cat, ...) bypass the confirmation gate.
                         if gate_required and tool_name == "run_command" and _is_safe_shell_command(tool_args.get("command", "")):
@@ -2690,6 +3871,20 @@ async def stream_agent_events(
                                    "step": "guardrail_skip", "tool": tool_name,
                                    "status": "effort_not_raised",
                                    "message": "Lowering/clearing reasoning effort — confirmation skipped"}
+                        # Per-mode exemption: model switching (set_model /
+                        # use_premium_model / set_effort) in PLAN and ASK modes.
+                        # These write only THIS session's model override — no user
+                        # data — and right-sizing the model (upgrade to
+                        # premium/vision) is core agent behaviour, so both gated
+                        # modes run them free. Auto was never gated, so model
+                        # switching is unrestricted everywhere.
+                        # (MODEL-SWITCH-EXEMPT)
+                        if gate_required and _current_policy == 'read_only' and tool_name in _MODEL_SWITCH_TOOLS:
+                            gate_required = False
+                            yield {"type": "pipeline", "level": "pipeline",
+                                   "step": "guardrail_skip", "tool": tool_name,
+                                   "status": "model_switch_exempt",
+                                   "message": "Model switch — confirmation skipped (unrestricted in plan/ask)"}
                         # Per-arg exemption: read-only git operations via git_tool
                         # (status, log, diff, …) skip the gate; mutating ops confirm.
                         if gate_required and tool_name == "git_tool" and _is_safe_git_operation(tool_args):
@@ -2718,13 +3913,40 @@ async def stream_agent_events(
                                    "status": "safe_read_only",
                                    "action": str(tool_args.get("action", ""))[:24],
                                    "message": "Read-only browser action — confirmation skipped"}
+                        # Persist the exact prospective authority with the tool
+                        # result so the detached Closer can reconstruct which
+                        # mode segment performed mutating work without receiving
+                        # raw tool logs. Safe per-argument operations and mode/
+                        # model controls are not implementation mutations.
+                        _mutating_call = bool((ti and ti.destructive) or is_destructive)
+                        if tool_name in _MODEL_SWITCH_TOOLS or tool_name == "set_execution_mode":
+                            _mutating_call = False
+                        elif tool_name == "run_command" and _is_safe_shell_command(tool_args.get("command", "")):
+                            _mutating_call = False
+                        elif tool_name == "git_tool" and _is_safe_git_operation(tool_args):
+                            _mutating_call = False
+                        elif tool_name == "http_request" and _is_safe_http_request(tool_args):
+                            _mutating_call = False
+                        elif tool_name == "browser_action" and _is_safe_browser_action(tool_args):
+                            _mutating_call = False
+                        validated_tool_context[str(tc.id)] = {
+                            "execution_mode": _current_mode,
+                            "mutating": _mutating_call,
+                        }
                         if gate_required:
                             yield {"type": "pipeline", "level": "pipeline",
                                    "step": "guardrail_check", "tool": tool_name,
                                    "status": "requires_confirmation",
                                    "message": f"Tool '{tool_name}' requires user confirmation per system prompt"}
 
-                            user_confirmed = _check_user_confirmed(messages, tool_name)
+                            # A read-only policy is a hard capability boundary,
+                            # not a per-step approval mode. The only confirmed
+                            # transition allowed through this branch is a switch
+                            # into a write-capable execution mode.
+                            user_confirmed = (
+                                _check_user_confirmed(messages, tool_name)
+                                if tool_name == "set_execution_mode" else False
+                            )
 
                             if not user_confirmed:
                                 yield {"type": "pipeline", "level": "pipeline",
@@ -2736,7 +3958,10 @@ async def stream_agent_events(
                                     "type": "tool_result", "level": "agent",
                                     "tool": tool_name,
                                     "tool_call_id": tc.id,
-                                    "result": json.dumps({"status": "blocked", "message": f"Tool '{tool_name}' requires user confirmation before execution."}),
+                                    "result": json.dumps({"status": "blocked", "message": (
+                                        f"Tool '{tool_name}' is unavailable under the read-only permission policy. "
+                                        "Select and approve a write-capable mode before execution."
+                                    )}),
                                     "duration_ms": 0,
                                     "error": True,
                                     "error_type": "guardrail_blocked",
@@ -2757,13 +3982,17 @@ async def stream_agent_events(
                                         f"ask for their explicit go-ahead to switch to Auto, then call set_execution_mode(\"auto\") "
                                         f"and carry out the plan."
                                     )
-                                else:  # ask
+                                elif _current_mode == 'ask':
                                     _gate_help = (
-                                        f"Tool '{tool_name}' is blocked — in ASK mode, each write/destructive action needs the "
-                                        f"user's confirmation. Don't retry it yet. Tell the user what this specific step will do "
-                                        f"and ask them to approve it, then proceed. Keep asking per step — do NOT switch to Auto "
-                                        f"in Ask mode. If they'd rather you run the whole task unattended, they can set the chat "
-                                        f"to Auto themselves."
+                                        f"Tool '{tool_name}' is blocked because ASK mode is proposal-only and read-only. "
+                                        f"Do not execute the change in this mode, even after per-step approval. Finish the "
+                                        f"proposal and ask the user to select a write-capable mode when they want it executed."
+                                    )
+                                else:
+                                    _gate_help = (
+                                        f"Tool '{tool_name}' is blocked because {_current_mode_entry.get('label', _current_mode)} "
+                                        "uses the read-only permission policy. Finish that mode's deliverable, then have the "
+                                        "user select a write-capable mode before execution."
                                     )
                                 tool_msg = {"role": "tool", "content": _gate_help, "tool_call_id": tc.id}
                                 messages.append(tool_msg)
@@ -2784,16 +4013,131 @@ async def stream_agent_events(
                                 yield {"type": "db", "level": "db",
                                        "op": "insert_interaction", "role": "tool",
                                        "tool_name": tool_name, "id": inter_id, "ms": db_dur}
+                                _guard_event = _health.record_outcome(
+                                    False, turn=turn_count, tool=tool_name,
+                                    error_type="guardrail_blocked",
+                                    threshold=(_wd_cfg.get("on_errors", 0) if isinstance(_wd_cfg, dict) else 0),
+                                )
+                                if _guard_event:
+                                    stall_strikes += 1
+                                    yield {"type": "pipeline", "level": "pipeline",
+                                           "step": "watchdog_trigger", "reason": _guard_event["reason"],
+                                           "severity": _guard_event["severity"], "strikes": stall_strikes}
+                                    _launch_health_watchdog(_guard_event, anchor_id=asst_id)
+                                continue
                             else:
                                 yield {"type": "pipeline", "level": "pipeline",
                                        "step": "guardrail_override", "tool": tool_name,
                                        "status": "confirmed", "by": "user"}
-                                valid_calls.append((idx, tc, tool_name, tool_args))
-                        else:
-                            valid_calls.append((idx, tc, tool_name, tool_args))
+
+                        # Mechanical accounting and Manager judgment happen after
+                        # the confirmation gate, so confirmed edits are supervised
+                        # exactly like edits that needed no confirmation.
+                        if loop_config.is_enabled("contract_chk") and _contract_state:
+                            from app.agent.contracts import mark_tool_scheduled
+                            mark_tool_scheduled(_contract_state)
+
+                        _mv = await _evaluate_manager_gates(
+                            tool_name, tool_args,
+                            tool_call_id=tc.id,
+                            anchor_id=asst_id, current_mode=_current_mode,
+                        )
+                        if _mv and _mv.get("verdict") in ("block", "revise"):
+                            _starter_revise = _mv.get("reason") == "starter_context_ready"
+                            if not _starter_revise:
+                                _manager_state["block_count"] = int(
+                                    _manager_state.get("block_count") or 0
+                                ) + 1
+                            try:
+                                _max_manager_blocks = max(
+                                    1, int(_manager_cfg.get("max_blocks") or 3)
+                                )
+                            except (TypeError, ValueError):
+                                _max_manager_blocks = 3
+                            _m_feedback = (
+                                _mv.get("feedback") or _mv.get("reason")
+                                or "The Manager did not approve this action."
+                            )
+                            yield {"type": "pipeline", "level": "pipeline",
+                                   "step": ("starter_write_gate" if _starter_revise
+                                            else "manager_blocked"), "tool": tool_name,
+                                   "verdict": _mv.get("verdict"),
+                                   "message": _m_feedback[:300]}
+                            yield {
+                                "type": "tool_result", "level": "agent",
+                                "tool": tool_name, "tool_call_id": tc.id,
+                                "result": json.dumps({
+                                    "status": ("starter_context_ready" if _starter_revise
+                                               else "manager_blocked"),
+                                    "message": _m_feedback,
+                                }),
+                                "duration_ms": 0, "error": True,
+                                "error_type": ("starter_write_gate" if _starter_revise
+                                               else "manager_blocked"), "recoverable": True,
+                            }
+                            tool_msg = {"role": "tool", "content": _m_feedback, "tool_call_id": tc.id}
+                            messages.append(tool_msg)
+                            outp = json.dumps({"role": "tool", "content": _m_feedback, "tool_call_id": tc.id, "name": tool_name, "success": False})
+                            inter_id = await db.insert_interaction(
+                                user_id, session_id, role="tool", content=_m_feedback,
+                                parent_id=asst_id, tool_call_id=tc.id, tool_name=tool_name,
+                                channel=channel,
+                                metadata=json.dumps({"success": False, "duration_ms": 0, "input_params": tool_args, "error_message": "manager_blocked"}),
+                                output_data=outp,
+                                sender_id=agent_id, receiver_id=agent_id,
+                            )
+                            yield {"type": "db", "level": "db",
+                                   "op": "insert_interaction", "role": "tool",
+                                   "tool_name": tool_name, "id": inter_id, "ms": 0}
+                            _manager_event = _health.record_outcome(
+                                False, turn=turn_count, tool=tool_name,
+                                error_type="manager_blocked",
+                                threshold=(_wd_cfg.get("on_errors", 0) if isinstance(_wd_cfg, dict) else 0),
+                            )
+                            if _manager_event:
+                                stall_strikes += 1
+                                yield {"type": "pipeline", "level": "pipeline",
+                                       "step": "watchdog_trigger", "reason": _manager_event["reason"],
+                                       "severity": _manager_event["severity"], "strikes": stall_strikes}
+                                _launch_health_watchdog(_manager_event, anchor_id=asst_id)
+                            if _manager_state["block_count"] >= _max_manager_blocks:
+                                yield {
+                                    "type": "pipeline", "level": "pipeline",
+                                    "step": "manager_escalation_stop",
+                                    "reason": "repeated_manager_blocks",
+                                    "blocks": _manager_state["block_count"],
+                                    "max_blocks": _max_manager_blocks,
+                                    "turn": turn_count,
+                                }
+                                stall_stop_msg = (
+                                    "I stopped after the Manager repeatedly rejected "
+                                    "proposed actions. Continuing to retry would risk "
+                                    "drifting from your request. Please clarify the "
+                                    "intended change or approve a revised approach."
+                                )
+                                valid_calls.clear()
+                                break
+                            continue
+
+                        # A valid verdict authorizes only this still-current
+                        # generation. Stop/replacement is durable and wins even
+                        # when the optional interrupt loop node is disabled.
+                        from app.agent.run_fence import side_effects_allowed
+                        if not await side_effects_allowed(
+                            db, session_id,
+                            expected_turn_id=parent_interaction_id,
+                        ):
+                            raise asyncio.CancelledError(
+                                "Turn stopped or replaced after Manager review."
+                            )
+
+                        valid_calls.append((idx, tc, tool_name, tool_args))
 
                 if loop_config.is_enabled("interrupt_chk"):
                     await _check_interrupt(session_id, interrupt_event, db=db)
+
+                if stall_stop_msg is not None:
+                    break
 
                 if valid_calls:
                     yield {"type": "pipeline", "level": "pipeline",
@@ -2808,6 +4152,15 @@ async def stream_agent_events(
                             getattr(tool_info, "destructive", False)
                             or getattr(tool_info, "requires_confirmation", False)
                         )
+                        if side_effecting:
+                            from app.agent.run_fence import side_effects_allowed
+                            if not await side_effects_allowed(
+                                db, session_id,
+                                expected_turn_id=parent_interaction_id,
+                            ):
+                                raise asyncio.CancelledError(
+                                    "Side effect fenced by Stop or replacement."
+                                )
                         if side_effecting and turn_reservation_key:
                             from app.agent.turn_reservations import reserve_tool
                             tool_reservation = reserve_tool(
@@ -2869,6 +4222,15 @@ async def stream_agent_events(
                                 ),
                                 side_effecting=side_effecting,
                             )):
+                                if side_effecting:
+                                    from app.agent.run_fence import side_effects_allowed
+                                    if not await side_effects_allowed(
+                                        db, session_id,
+                                        expected_turn_id=parent_interaction_id,
+                                    ):
+                                        raise asyncio.CancelledError(
+                                            "Side effect fenced immediately before invocation."
+                                        )
                                 result = await handler(**args)
                             result_str = str(result)
                             after_changes = await capture_tool_state_async(name, args)
@@ -2906,13 +4268,6 @@ async def stream_agent_events(
                     for _, _, tool_name, _ in valid_calls:
                         yield {"type": "pipeline", "level": "pipeline",
                                "step": "execute_start", "tool": tool_name}
-                        # data_src_exec light-up: detect connector-generated tools.
-                        _ti = tools.get(tool_name)
-                        _tid = getattr(_ti, "tool_id", "") or ""
-                        if _tid.startswith("ds:"):
-                            yield {"type": "pipeline", "level": "pipeline",
-                                   "step": "data_src_query_started",
-                                   "tool": tool_name, "tool_id": _tid}
 
                     if concurrent_limit and len(valid_calls) > 1:
                         # Throttle parallel execution to safety_policy.max_concurrent_tools
@@ -2967,6 +4322,8 @@ async def stream_agent_events(
                                 yield {"type": "execution_mode", "level": "pipeline",
                                         "mode": _newmode,
                                         "reason": (tool_args or {}).get("reason", "")}
+                        if tool_name == "present_plan" and success:
+                            plan_document_updated = True
                         if success and _MAX_NO_PROGRESS_RESULTS > 0:
                             _normalized_result = re.sub(
                                 r"\s+", " ", str(result.get("content") or "").strip()
@@ -2978,26 +4335,81 @@ async def stream_agent_events(
                             _tool_result_counts[_result_key] += 1
                             if _tool_result_counts[_result_key] >= _MAX_NO_PROGRESS_RESULTS:
                                 _no_progress_tools.add(tool_name)
-                        _ti2 = tools.get(tool_name)
-                        _tid2 = getattr(_ti2, "tool_id", "") or ""
-                        if _tid2.startswith("ds:"):
-                            yield {"type": "pipeline", "level": "pipeline",
-                                   "step": "data_src_query_finished",
-                                   "tool": tool_name, "tool_id": _tid2,
-                                   "duration_ms": result["duration_ms"],
-                                   "success": success}
-
+                        _validated_ctx = validated_tool_context.get(str(tc.id), {})
                         tool_exec_meta = json.dumps({
                             "success": success,
                             "duration_ms": result["duration_ms"],
                             "input_params": tool_args,
                             "changed_paths": result.get("changed_paths") or [],
+                            "execution_mode": _validated_ctx.get("execution_mode", execution_mode),
+                            "mutating": bool(_validated_ctx.get("mutating", False)),
                             "error_message": None if success else result["content"][:500],
                         })
 
                         tool_msg = {"role": "tool", "content": result["content"][:10000], "tool_call_id": tc.id}
                         messages.append(tool_msg)
-                        
+
+                        # ── contract state + integrated error watchdog ──
+                        # Contract counters remain optional. Run-health outcomes
+                        # are always tracked so Manager supervision does not vanish
+                        # when the mechanical contract node is disabled.
+                        from app.agent.contracts import (
+                            is_edit_tool, is_verify_tool,
+                        )
+                        _result_changed_paths = [
+                            str(path) for path in (result.get("changed_paths") or [])
+                            if path
+                        ]
+                        if success and _result_changed_paths:
+                            _manager_state.setdefault("changed_paths", set()).update(
+                                _result_changed_paths
+                            )
+                        if success and is_edit_tool(tool_name):
+                            _edit_events = _manager_state.setdefault("edit_events", [])
+                            _edit_events.append({
+                                "tool": tool_name,
+                                "turn": turn_count,
+                                "changed_paths": _result_changed_paths[:25],
+                                "changed_path_count": len(_result_changed_paths),
+                            })
+                            del _edit_events[:-50]
+                        if is_verify_tool(tool_name, tool_args):
+                            _verification_events = _manager_state.setdefault(
+                                "verification_events", []
+                            )
+                            _verification_events.append({
+                                "tool": tool_name,
+                                "turn": turn_count,
+                                "success": bool(success),
+                                "duration_ms": int(result.get("duration_ms") or 0),
+                                "error_type": te.error_type if te else None,
+                            })
+                            del _verification_events[:-50]
+                        if loop_config.is_enabled("contract_chk") and _contract_state:
+                            from app.agent.contracts import (
+                                mark_tool_outcome, mark_edit_executed,
+                                mark_verify_executed,
+                            )
+                            mark_tool_outcome(_contract_state, success)
+                            if success and is_edit_tool(tool_name):
+                                mark_edit_executed(_contract_state)
+                            elif success and is_verify_tool(tool_name, tool_args):
+                                mark_verify_executed(_contract_state)
+                        _on_err = _wd_cfg.get("on_errors") if isinstance(_wd_cfg, dict) else 0
+                        _error_event = _health.record_outcome(
+                            success,
+                            turn=turn_count,
+                            tool=tool_name,
+                            error_type=(te.error_type if te else ""),
+                            threshold=_on_err,
+                        )
+                        if _error_event:
+                            stall_strikes += 1
+                            yield {"type": "pipeline", "level": "pipeline",
+                                   "step": "watchdog_trigger", "reason": _error_event["reason"],
+                                   "severity": _error_event["severity"], "strikes": stall_strikes}
+                            _launch_health_watchdog(_error_event, anchor_id=asst_id)
+
                         outp = json.dumps({"role": "tool", "content": result["content"][:10000], "tool_call_id": tc.id, "name": tool_name, "success": success, "duration_ms": result["duration_ms"]})
                         db_start = time.time()
                         # Offloaded: the tool-result row is the highest-frequency
@@ -3060,6 +4472,7 @@ async def stream_agent_events(
                                 from app.tools.loader import load_tools as _load_tools
                                 tools = await _load_tools(user_id, agent_id=agent_id, agent_template_id=_tpl_id,
                                                           allowed_tools=allowed_tools, session_id=session_id,
+                                                          turn_id=parent_interaction_id or "",
                                                           gate_caller_access=True)
 
                                 # Inject new agent's resolved prompts as a system message
@@ -3106,9 +4519,10 @@ async def stream_agent_events(
                            "step": "stall_guard_stop", "reason": "repeated_loops",
                            "strikes": stall_strikes, "turn": turn_count}
                     stall_stop_msg = (
-                        "I stopped because I kept repeating the same step without making "
-                        "progress and I didn't want to spin in a loop. Could you clarify "
-                        "what you'd like, or point me at the specific file or area to change?"
+                        "I stopped because the run accumulated repeated loop or failure "
+                        "signals without making reliable progress. I didn't want to keep "
+                        "spinning or making unsafe guesses. Could you clarify the missing "
+                        "information, or point me at the specific area to change?"
                     )
                     break
 
@@ -3157,20 +4571,61 @@ async def stream_agent_events(
                        "stop_cause": "empty_response", "asst_id": streaming_asst_id}
                 return
 
+            # Plan-mode contract: a prose plan alone is not enough. Require the
+            # durable Plan Overview + Plan Checklist produced by present_plan.
+            if _requires_plan_document and not plan_document_updated:
+                if not plan_document_retry_used:
+                    yield {"type": "pipeline", "level": "pipeline",
+                           "step": "mode_contract_blocked", "turn": turn_count,
+                           "message": "Plan document contract missing; requesting present_plan."}
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "MODE CONTRACT BLOCKED COMPLETION: You have not called present_plan. "
+                            "Call present_plan now with a task-specific overview AND checklist, then "
+                            "return your final planning response. A prose-only plan is not accepted."
+                        ),
+                    })
+                    plan_document_retry_used = True
+                    turn_count -= 1
+                    continue
+                yield {"type": "error", "level": "agent",
+                       "message": "Plan mode could not complete because the required Plan document and checklist were not created.",
+                       "stop_cause": "contract_blocked", "asst_id": streaming_asst_id}
+                return
+
             # ── No tool calls → final response ──
-            messages.append({
-                "role": "assistant",
-                "content": _final_content,
-            })
+            _final_asst: Dict[str, Any] = {"role": "assistant", "content": _final_content}
+            if collected_reasoning:
+                # DeepSeek thinking mode: the reasoning must travel with the
+                # assistant message on the next request, or the API 400s.
+                _final_asst["reasoning_content"] = collected_reasoning
+            messages.append(_final_asst)
 
             meta_final = _build_meta(
                 "assistant", input_tokens, output_tokens, llm_cost,
                 message_phase="main",
             )
+            # Compact durable evidence for independent close contracts. Tool
+            # bodies stay bounded; reviewers receive paths/outcomes rather than
+            # the main loop's full raw tool transcript.
+            meta_final["contract_evidence"] = {
+                "changed_paths": sorted(
+                    str(path) for path in (_manager_state.get("changed_paths") or set())
+                    if path
+                )[:100],
+                "edit_events": list(_manager_state.get("edit_events") or [])[-20:],
+                "verification_events": list(
+                    _manager_state.get("verification_events") or []
+                )[-20:],
+                "manager_checks_used": int(_manager_state.get("checks_used") or 0),
+                "manager_blocks": int(_manager_state.get("block_count") or 0),
+            }
             outp = _assistant_output(
                 messages=_sent_messages,
                 tools=_sent_tools,
                 include_snapshot=True,
+                reasoning_content=collected_reasoning or None,
             )
             db_start = time.time()
             _updated_streaming_row = streaming_asst_id is not None
@@ -3193,6 +4648,30 @@ async def stream_agent_events(
                     receiver_id=user_id,
                 ))
             db_dur = int((time.time() - db_start) * 1000)
+
+            # Persist the continuation handle only after the matching assistant
+            # message is durable locally. A future turn validates this history
+            # hash before using the provider-side state; failed validation simply
+            # starts a fresh chain from WebAgent's transcript.
+            try:
+                _set_chain = getattr(db, "set_session_response_chain", None)
+                if _set_chain and session_id:
+                    if _response_chain_id and _response_chain_identity:
+                        _chain_state = {
+                            "transport": "responses",
+                            "family": _chain_capability.family,
+                            "identity": _response_chain_identity,
+                            "model": model_name,
+                            "previous_response_id": _response_chain_id,
+                            "history_hash": response_chain_history_hash(messages),
+                            "updated_at": time.time(),
+                        }
+                        await db_offload(lambda: _set_chain(session_id, _chain_state))
+                    elif _saved_response_chain:
+                        await db_offload(lambda: _set_chain(session_id, None))
+            except Exception as _chain_save_error:
+                logger.warning("response chain state save failed: %s", _chain_save_error)
+
             yield {"type": "db", "level": "db",
                    "op": ("update_interaction" if _updated_streaming_row
                           else "insert_interaction"), "role": "assistant",
@@ -3207,6 +4686,15 @@ async def stream_agent_events(
 
             yield {"type": "response", "level": "agent", "message_phase": "main",
                    "content": prefix_content(_final_content), "asst_id": inter_id}
+            _schedule_output_closer(
+                user_id=user_id, session_id=session_id,
+                agent_id=agent_id, final_asst_id=inter_id,
+                parent_interaction_id=parent_interaction_id,
+                db=db, channel=channel,
+                audit_eligible=True,  # completed run — checklist audit may fire
+                execution_mode=execution_mode,  # send-back re-runs under the same mode
+                starting_execution_mode=_run_start_execution_mode,
+            )
             # Cache the messages array for prompt-cache benefit on next turn
             try:
                 await _store_validated_session_cache()
@@ -3242,6 +4730,12 @@ async def stream_agent_events(
                    "tool_name": None, "id": inter_id, "ms": db_dur}
             yield {"type": "response", "level": "agent", "message_phase": "main",
                    "content": prefix_content(stall_stop_msg), "asst_id": inter_id}
+            _schedule_output_closer(
+                user_id=user_id, session_id=session_id,
+                agent_id=agent_id, final_asst_id=inter_id,
+                parent_interaction_id=parent_interaction_id,
+                db=db, channel=channel,
+            )
             try:
                 await _store_validated_session_cache()
             except Exception:
@@ -3281,6 +4775,12 @@ async def stream_agent_events(
                "tool_name": None, "id": inter_id}
         yield {"type": "response", "level": "agent", "message_phase": "main",
                "content": prefix_content(max_turns_msg), "asst_id": inter_id}
+        _schedule_output_closer(
+            user_id=user_id, session_id=session_id,
+            agent_id=agent_id, final_asst_id=inter_id,
+            parent_interaction_id=parent_interaction_id,
+            db=db, channel=channel,
+        )
         try:
             await _store_validated_session_cache()
         except Exception:
@@ -3328,6 +4828,19 @@ async def stream_agent_events(
                    "asst_id": streaming_asst_id, "persistence_failure": True}
         else:
             yield {"type": "interrupted", "level": "agent", "message": str(e), "asst_id": streaming_asst_id}
+        # Fire the closer for the interrupted run too — the user must still
+        # get a Summary covering everything since the last summary (the partial
+        # answer is already persisted above with the collected content, and a
+        # new user message that caused the interrupt is already in the DB). A
+        # run cancelled before any assistant row existed (streaming_asst_id is
+        # None) has nothing to close out and is skipped.
+        if streaming_asst_id is not None:
+            _schedule_output_closer(
+                user_id=user_id, session_id=session_id,
+                agent_id=agent_id, final_asst_id=streaming_asst_id,
+                parent_interaction_id=parent_interaction_id,
+                db=db, channel=channel,
+            )
         return
     except Exception as e:
         logger.error(f"Agent loop error: {e}", exc_info=True)
@@ -3339,7 +4852,93 @@ async def stream_agent_events(
             except Exception:
                 pass
         yield {"type": "error", "level": "agent", "message": f"Unexpected error in agent loop: {e}", "asst_id": streaming_asst_id}
+        # Same as the cancel path: an errored run still deserves a Summary of
+        # what was completed before the failure (the partial answer above).
+        if streaming_asst_id is not None:
+            _schedule_output_closer(
+                user_id=user_id, session_id=session_id,
+                agent_id=agent_id, final_asst_id=streaming_asst_id,
+                parent_interaction_id=parent_interaction_id,
+                db=db, channel=channel,
+            )
         return
+
+
+async def stream_agent_events(*args, **kwargs) -> AsyncGenerator[Dict[str, Any], None]:
+    """Run the agent loop under the native anonymous concurrency lease.
+
+    Keeping the lease around the generator—not the HTTP request—also covers
+    background `/send`, browser-authority streaming, resumed runs, and callers
+    that invoke the loop without an HTTP response lifecycle.
+    """
+    user_id = str(kwargs.get("user_id") or (args[0] if args else ""))
+    session_id = str(kwargs.get("session_id") or (args[1] if len(args) > 1 else ""))
+    lease_id = None
+    anonymous_error = ""
+    agent_id = str(kwargs.get("agent_id") or (args[4] if len(args) > 4 else ""))
+    is_visitor = await _agent_profile_visitor(agent_id, user_id)
+    if is_visitor:
+        from app.api.rate_limit import begin_anonymous_run
+        pool_key = "platform"
+        public_maximum = None
+        if agent_id and agent_id != "shared_default":
+            try:
+                from app.db import get_db
+                from app.agent.public_policy import normalize_public_access
+                public_agent = await get_db().get_agent_by_id(agent_id)
+                public_policy = normalize_public_access(public_agent or {})
+                pool_key = f"agent:{agent_id}"
+                public_maximum = int(public_policy["usage"]["concurrent_runs"])
+            except Exception:
+                # The earlier funding gate is authoritative. Falling back to the
+                # restrictive platform pool cannot grant extra concurrency.
+                pool_key, public_maximum = "platform", None
+        try:
+            lease_id = await asyncio.to_thread(
+                begin_anonymous_run, user_id, session_id, pool_key, public_maximum,
+            )
+        except RuntimeError as exc:
+            if str(exc) == "anonymous_concurrency_limit":
+                yield {
+                    "type": "error",
+                    "level": "agent",
+                    "code": "registration_required",
+                    "scope": "anonymous_concurrency",
+                    "message": (
+                        "Anonymous chat is at its concurrent-run limit. "
+                        "Wait for a run to finish or register and sign in."
+                    ),
+                }
+                return
+
+            raise
+    try:
+        async for event in _stream_agent_events_impl(*args, **kwargs):
+            if event.get("type") == "error" and event.get("code") != "registration_required":
+                anonymous_error = str(event.get("message") or event.get("code") or "agent error")
+            yield event
+    finally:
+        if anonymous_error and is_visitor:
+            from app.api.rate_limit import record_anonymous_run_error
+            await asyncio.to_thread(
+                record_anonymous_run_error, user_id, anonymous_error,
+            )
+        if lease_id:
+            from app.api.rate_limit import end_anonymous_run
+            await asyncio.to_thread(end_anonymous_run, lease_id)
+
+
+async def _agent_profile_visitor(agent_id: str, user_id: str) -> bool:
+    if str(user_id or "").startswith("anon_"):
+        return True
+    if not agent_id:
+        return False
+    try:
+        from app.agent.profiles import resolve_member, VISITOR
+        member = await resolve_member(agent_id, user_id, auto_link_app=False)
+        return ((member or {}).get("profile") or {}).get("slug") == VISITOR
+    except Exception:
+        return False
 
 
 async def run_agent_loop_buffered(
@@ -3402,13 +5001,33 @@ async def run_agent_loop_buffered(
                 final_response = event["content"]
             elif event["type"] == "error":
                 if not final_response:
-                    final_response = f"I encountered an error: {event['message']}"
+                    # Honest failure, not a fake success: log the REAL error text
+                    # (the loop's error event otherwise never reaches server.log —
+                    # the observability gap that hid a crashed fix-loop) and
+                    # return "" so every caller sees the failure. Supervisors
+                    # classify empty as a resumable failure; the old fabricated
+                    # "I encountered an error: …" was recorded as 'complete' and
+                    # could never be revived.
+                    logger.error(
+                        "Agent loop error (session=%s): %s", session_id,
+                        event.get("message") or "unknown error",
+                    )
+                    return ""
             elif event["type"] == "interrupted":
                 if not final_response:
+                    logger.warning(
+                        "Agent loop interrupted (session=%s): %s", session_id,
+                        event.get("message") or "interrupted",
+                    )
                     final_response = f"I was interrupted: {event['message']}"
 
-        if not final_response:
-            final_response = "I completed the analysis but produced no output."
+        # No terminal event (response / error / interrupted) was seen — the
+        # loop ended without producing anything. Return "" so every caller can
+        # distinguish "no output" from a real completion: a fabricated
+        # success-looking string here let failures pass as 'complete' (the
+        # audit re-run classifier trusted it), stranding the task with an
+        # errored bubble and no resume. Callers that deliver to users guard
+        # against empty; supervisors classify empty as a resumable failure.
 
     if timeout_seconds is not None:
         import asyncio as _asyncio

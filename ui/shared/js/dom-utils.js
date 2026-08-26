@@ -67,7 +67,7 @@ export async function loadAbilityCatalog() {
   if (_abilityCatPromise) return _abilityCatPromise;
   _abilityCatPromise = (async () => {
     try {
-      const res = await fetch('/api/v1/abilities/catalog');
+      const res = await fetch('/api/v1/abilities/catalog', { headers: { ...authHeaders() } });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const cat = await res.json();
       if (!cat || !Array.isArray(cat.groups) || !cat.groups.length) {
@@ -182,6 +182,82 @@ export function _chevronSvg() {
   return '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
 }
 
+// ── "More" (⋯) row control + group status card (SISTER-PANEL) ─────────────────
+// Two shared builders used by BOTH ability tables (agent-ability-table.js and
+// admin-ability-table.js) — keep them mirrored:
+//   • `_buildMoreButton` — the ⋯ button that sits in a row's RIGHT slot, the
+//     exact mirror of the LEFT chevron column (13px, flex-shrink:0, align-self:
+//     flex-start, padding-top:3px, and a -10px margin cancelling the flex
+//     column-gap so it sits flush against the toggle). Opens the shared floating
+//     menu (`openFloatingMenu`) with items built fresh on every open.
+//   • `_buildGroupStatusCard` / `_paintGroupStatus` — the read-only group status
+//     pill (Disabled · Partial · Enabled) that replaced the interactive group
+//     tri-toggle; bulk group toggling is intentionally gone.
+// Styling: `.ac-row-more` / `.ac-group-status` in app3.css.
+
+/** Inline SVG for the three-dot "more" glyph (13px, matches `_chevronSvg`). */
+function _moreDotsSvg() {
+  return '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>';
+}
+
+/**
+ * Build a "more" (⋯) button for the RIGHT side of an `.ac-ability-row`.
+ * Clicking it opens the shared floating menu (`openFloatingMenu`) built from
+ * `items` — a function called fresh on EVERY open (so the menu reflects the
+ * row's live state) or a static array. Items follow the floating-menu spec:
+ * { icon, label, action, danger?, checked?, disabled? } | { separator: true }.
+ *
+ * @param {() => object[] | object[]} items
+ * @param {object} [opts]  { title }  hover/aria label
+ * @returns {HTMLButtonElement} the `.ac-row-more` button
+ */
+export function _buildMoreButton(items, opts = {}) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'ac-row-more';
+  const title = opts.title || 'More options';
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.innerHTML = _moreDotsSvg();
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (btn.disabled) return;
+    const list = typeof items === 'function' ? items() : items;
+    if (!list || !list.length) return;
+    const r = btn.getBoundingClientRect();
+    // Anchor the menu's right edge at the button's right edge (menu width 180).
+    openFloatingMenu(list, r.bottom + 4, r.right - 180);
+  });
+  return btn;
+}
+
+/**
+ * Build a read-only group status card — Disabled · Partial · Enabled — that
+ * replaces the old interactive group tri-toggle on an ability group head.
+ * `state`: 'off' → Disabled, 'mixed' → Partial, 'on' → Enabled, 'na' → "—"
+ * (group has no on/off members; e.g. credential/integration groups, which the
+ * host page may re-paint with its own configured-count).
+ * @param {string} id      element id (e.g. `ac-group-status-<groupId>`)
+ * @param {'off'|'mixed'|'on'|'na'} [state]
+ * @param {string} [title] hover text
+ */
+export function _buildGroupStatusCard(id, state = 'off', title) {
+  const card = document.createElement('span');
+  card.className = 'ac-group-status';
+  card.id = id;
+  card.dataset.state = state;
+  if (title) card.title = title;
+  _paintGroupStatus(card);
+  return card;
+}
+
+/** Paint a group status card's label from its `data-state` ('off'|'mixed'|'on'|'na'). */
+export function _paintGroupStatus(card) {
+  if (!card) return;
+  const s = card.dataset.state || 'off';
+  card.textContent = s === 'on' ? 'Enabled' : (s === 'mixed' ? 'Partial' : (s === 'na' ? '—' : 'Disabled'));
+}
+
 // ── Number stepper (horizontal arrows) ──────────────────────────────────────────
 // A `.ac-config-num` field renders as a STEPPER: a back (left) + forward (right)
 // Lucide arrow sit INSIDE the field at its two edges, replacing the browser's
@@ -246,6 +322,35 @@ function _ensureNumStepperWiring() {
     const input = wrap && wrap.querySelector('input.ac-config-num');
     _stepNumberInput(input, btn.classList.contains('ac-num-up') ? 1 : -1);
   }, true);
+}
+
+let _configRangeWired = false;
+
+function _rangeDisplay(value, mode) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? '');
+  if (mode === 'percent') return `${Math.round(n * 100)}%`;
+  if (mode === 'tokens') {
+    if (n >= 1000000) {
+      const m = (n / 1000000).toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+      return `${m}M`;
+    }
+    if (n >= 1000) return `${Math.round(n / 1000)}K`;
+    return Math.round(n).toLocaleString();
+  }
+  return String(n);
+}
+
+/** Keep the live value badge beside descriptor-driven range controls current. */
+function _ensureConfigRangeWiring() {
+  if (_configRangeWired || typeof document === 'undefined') return;
+  _configRangeWired = true;
+  document.addEventListener('input', (e) => {
+    const input = e.target && e.target.closest && e.target.closest('input.ac-config-range');
+    if (!input) return;
+    const output = input.closest('.ac-range-control')?.querySelector('.ac-range-value');
+    if (output) output.textContent = _rangeDisplay(input.value, input.dataset.display);
+  });
 }
 
 /** Wrap a number `<input>` ELEMENT in a left/right arrow stepper; returns the wrapper. */
@@ -667,6 +772,26 @@ function _renderSettingInput(field, currentValue, cls, keyAttr) {
                  class="ac-input ac-input-sm ac-config-num ${cls}"
                  ${keyAttr}="${_esc(field.key)}"
                  value="${_esc(String(raw))}"${numAttrs}${ceilAttr}>${up}</span>`;
+  }
+  if (field.type === 'range') {
+    const rangeAttrs = (field.min != null ? ` min="${_esc(String(field.min))}"` : '')
+      + (field.max != null ? ` max="${_esc(String(field.max))}"` : '')
+      + (field.step != null ? ` step="${_esc(String(field.step))}"` : '');
+    const display = String(field.display || 'number');
+    _ensureConfigRangeWiring();
+    return `<span class="ac-range-control"><input type="range"
+                 class="ac-config-range ${cls}"
+                 ${keyAttr}="${_esc(field.key)}"
+                 data-display="${_esc(display)}"
+                 aria-label="${_esc(field.label || field.key)}"
+                 value="${_esc(String(raw))}"${rangeAttrs}${ceilAttr}>
+              <output class="ac-range-value">${_esc(_rangeDisplay(raw, display))}</output></span>`;
+  }
+  if (field.type === 'textarea') {
+    const rows = Number.isFinite(Number(field.rows)) ? Math.max(2, Math.min(16, Number(field.rows))) : 5;
+    return `<textarea class="ac-input ac-input-sm ac-config-key ${cls}" ${keyAttr}="${_esc(field.key)}"` +
+      ` rows="${rows}" style="resize:vertical;font-family:monospace;font-size:11px;width:100%;min-width:240px;line-height:1.4;"${ceilAttr}>` +
+      _esc(String(raw)) + '</textarea>';
   }
   return `<input type="text"
                  class="ac-input ac-input-sm ac-config-key ${cls}"
@@ -1161,7 +1286,9 @@ export function buildCredentialsSection(abilityId, opts = {}) {
     } catch (_) { data = null; }
     if (!data || !Array.isArray(data.fields) || !data.fields.length) { wrap.remove(); return; }
 
-    const canEdit = data.can_edit !== false;
+    // A host can impose a stricter read-only surface than the credential's own
+    // scope (the All Agents global table does this for every non-app-admin).
+    const canEdit = opts.canEdit !== false && data.can_edit !== false;
     const values = data.values || {};
     const secretsSet = data.secrets_set || {};
 

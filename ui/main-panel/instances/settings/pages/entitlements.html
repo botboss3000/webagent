@@ -1,0 +1,30 @@
+<template data-slot="#settings-page-slot-entitlements">
+<div class="settings-page" id="settings-page-entitlements" data-pa-page="app_settings" hidden>
+  <section class="ent-page" data-pa-area="experience-tiers" aria-labelledby="ent-title">
+    <header class="ent-page-head">
+      <div>
+        <h2 id="ent-title">Experience tiers</h2>
+        <p>Build platform model rosters, then publish the exact app experience and usage limits assigned to each tier.</p>
+      </div>
+      <div class="ent-segmented" role="tablist" aria-label="Entitlement editor">
+        <button type="button" class="ent-tab is-active" role="tab" aria-selected="true" data-ent-tab="rosters">Model rosters</button>
+        <button type="button" class="ent-tab" role="tab" aria-selected="false" data-ent-tab="tiers">Experience tiers</button>
+      </div>
+    </header>
+
+    <div id="ent-status" class="ent-status" role="status" aria-live="polite"></div>
+    <div class="ent-workspace">
+      <aside class="ent-sidebar" aria-label="Saved entitlement records">
+        <div class="ent-sidebar-head">
+          <strong id="ent-list-title">Model rosters</strong>
+          <button type="button" id="ent-create" class="ac-btn ac-btn-primary">New roster</button>
+        </div>
+        <div id="ent-record-list" class="ent-record-list"></div>
+      </aside>
+      <div id="ent-editor" class="ent-editor">
+        <div class="ent-empty">Select a model roster, or create a new one.</div>
+      </div>
+    </div>
+  </section>
+</div>
+</template>

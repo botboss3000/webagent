@@ -1,0 +1,149 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ─────────────────────────────────────────────────────────────────────────────
+# WebAgent TUI — one-shot Termux installer (Android).
+#
+# Installs the standalone Server Manager TUI directly in Termux (no proot). This
+# is the lightweight manager — NOT the full WebAgent server. For running the
+# whole server on Android, see launcher_android/ instead.
+#
+# Run it one of two ways (either is a single paste):
+#
+#   git  :  pkg install -y git \
+#             && git clone --depth 1 https://github.com/botboss3000/webagent ~/webagent \
+#             && bash ~/webagent/TUI/install-termux.sh
+#
+#   curl :  pkg install -y curl && curl -fsSL https://webagent.live/termux | bash
+#
+# What it does, in order:
+#   1. installs Termux's python + git
+#   2. finds the checkout it's running inside, or clones one into ~/webagent
+#   3. installs the TUI — a clean editable install on Python 3.11/3.12, or a
+#      deps-only "run from source" fallback on newer Python (so the version pin
+#      never blocks the install)
+#   4. drops a `webagent` command on PATH + a Termux:Widget home-screen shortcut
+#   5. tells you how to add an LLM API key if one isn't present
+#
+# Safe to re-run (idempotent).
+# ─────────────────────────────────────────────────────────────────────────────
+set -u
+
+REPO_URL="https://github.com/botboss3000/webagent"
+TARGET_DEFAULT="$HOME/webagent"
+
+say()  { printf '\033[1;32m[webagent]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[webagent]\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31m[webagent] %s\033[0m\n' "$*" >&2; exit 1; }
+
+# ── 0. Sanity: this is a Termux-only installer ───────────────────────────────
+if [ -z "${PREFIX:-}" ] || ! command -v pkg >/dev/null 2>&1; then
+  die "This installer is for Termux on Android (no 'pkg'/\$PREFIX found). On desktop use TUI/run.bat or 'pip install -e .'."
+fi
+
+# ── 1. Base packages ─────────────────────────────────────────────────────────
+# A deleted/unreadable current directory makes git abort with "Unable to read
+# current working directory". Move somewhere that definitely exists first.
+cd "$HOME" 2>/dev/null || cd / 2>/dev/null || true
+say "Installing base packages (python, git)…"
+pkg install -y python git >/dev/null 2>&1 \
+  || pkg install -y python git \
+  || die "Could not install python+git. Try 'pkg update && pkg upgrade' first, then re-run."
+command -v python >/dev/null 2>&1 || die "python not found after install."
+command -v git    >/dev/null 2>&1 || die "git not found after install."
+
+# ── 2. Locate the checkout we're inside, or fetch one ────────────────────────
+REPO=""
+SRC="${BASH_SOURCE[0]:-$0}"
+if [ -f "$SRC" ]; then
+  CAND="$(cd "$(dirname "$SRC")/.." 2>/dev/null && pwd)"
+  if [ -n "$CAND" ] && [ -f "$CAND/run.py" ] && [ -d "$CAND/TUI" ]; then
+    REPO="$CAND"
+  fi
+fi
+if [ -z "$REPO" ]; then
+  if [ -f "$TARGET_DEFAULT/run.py" ] && [ -d "$TARGET_DEFAULT/TUI" ]; then
+    REPO="$TARGET_DEFAULT"
+    say "Updating existing checkout at $REPO…"
+    git -C "$REPO" pull --ff-only >/dev/null 2>&1 \
+      || warn "Could not fast-forward $REPO — continuing with the current checkout."
+  elif [ -e "$TARGET_DEFAULT" ] && [ -n "$(ls -A "$TARGET_DEFAULT" 2>/dev/null)" ]; then
+    die "$TARGET_DEFAULT exists and is not a WebAgent checkout. Move it aside and re-run."
+  else
+    say "Cloning WebAgent into $TARGET_DEFAULT…"
+    git clone --depth 1 "$REPO_URL" "$TARGET_DEFAULT" || die "git clone failed."
+    REPO="$TARGET_DEFAULT"
+  fi
+fi
+TUI_DIR="$REPO/TUI"
+[ -d "$TUI_DIR" ] || die "No TUI/ found in $REPO."
+
+# ── 3. Install the TUI's runtime deps (minimal — run from source) ─────────────
+# We deliberately DON'T `pip install -e .`: that pulls playwright + pywinpty from
+# pyproject, which Termux can't build and the manager doesn't need (browser
+# automation is off on phones; the terminal tools use the stdlib pty). Instead we
+# install only what the TUI imports to launch — textual + httpx — plus websockets
+# (loaded lazily when it talks to a running server). The launcher below runs the
+# app straight from this checkout via PYTHONPATH, so no editable install is needed.
+# This keeps the manager install fast and reliable even when the heavier server
+# stack can't be built.
+PYVER="$(python -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo '?')"
+say "Python $PYVER detected — installing the manager's dependencies (textual, httpx, websockets)…"
+python -m pip install --upgrade pip >/dev/null 2>&1 || true
+python -m pip install "textual>=0.83.0" "httpx>=0.27.0" "websockets>=12.0" \
+  || die "Could not install the manager's dependencies. Try 'pkg update && pkg upgrade' first, then re-run."
+
+# ── 4. `webagent` launcher on PATH ───────────────────────────────────────
+LAUNCHER="$PREFIX/bin/webagent"
+say "Writing launcher → $LAUNCHER"
+# When installed ALONGSIDE another server supervisor (the in-app Deploy flow's
+# Termux keep-alive loop sets WA_TUI_NO_SUPERVISE), bake WEBAGENT_TUI_NO_SUPERVISE
+# into the launcher so the manager doesn't auto-start / keep-alive a competing
+# server — it just inspects + manages the one already running. Standalone installs
+# leave this unset, so the TUI owns the server lifecycle as before.
+SUPERVISE_LINE=""
+[ -n "${WA_TUI_NO_SUPERVISE:-}" ] && SUPERVISE_LINE='export WEBAGENT_TUI_NO_SUPERVISE=1'
+cat > "$LAUNCHER" <<EOF
+#!$PREFIX/bin/bash
+# WebAgent TUI launcher (generated by install-termux.sh). Re-run the installer
+# to regenerate. Links the checkout it was installed from.
+export WEBAGENT_PROJECT="$REPO"
+export PYTHONPATH="$TUI_DIR:\${PYTHONPATH:-}"
+$SUPERVISE_LINE
+exec python -m tui_app "\$@"
+EOF
+chmod +x "$LAUNCHER"
+
+# ── 5. Termux:Widget shortcut (tap-to-launch from the Android home screen) ───
+SHORTCUTS="$HOME/.shortcuts"
+mkdir -p "$SHORTCUTS"
+cat > "$SHORTCUTS/webagent.sh" <<EOF
+#!$PREFIX/bin/bash
+exec "$LAUNCHER"
+EOF
+chmod +x "$SHORTCUTS/webagent.sh"
+
+# Clear any stale console scripts a previous `pip install -e .` may have left on
+# PATH (pyproject exposes both `tui-app` and `webagent`). Our hand-written
+# `webagent` launcher above — which sets WEBAGENT_PROJECT/PYTHONPATH and runs from
+# source — is the one to keep, so drop the leftover `tui-app` if present.
+rm -f "$PREFIX/bin/tui-app"
+
+# ── 6. API-key check ─────────────────────────────────────────────────────────
+HAVE_KEY=0
+[ -n "${LLM_API_KEY:-}${OPENROUTER_API_KEY:-}${WEBAGENT_API_KEY:-}" ] && HAVE_KEY=1
+[ -f "$REPO/provider.json" ] && HAVE_KEY=1
+if [ "$HAVE_KEY" = 0 ] && [ -f "$REPO/.env" ] && grep -q '^LLM_API_KEY=..*' "$REPO/.env" 2>/dev/null; then
+  HAVE_KEY=1
+fi
+
+echo
+say "Done. Launch it with:   webagent"
+say "Tap-to-launch: install the Termux:Widget add-on (F-Droid), then add its home-screen widget — 'webagent' will be listed."
+if [ "$HAVE_KEY" = 0 ]; then
+  echo
+  warn "No LLM API key found — the agent can't reach a model until you add one. Either:"
+  warn "  • run it with a key inline:   LLM_API_KEY=sk-... webagent"
+  warn "  • or add to $REPO/.env :"
+  warn "        LLM_API_KEY=sk-..."
+  warn "        LLM_BASE_URL=https://openrouter.ai/api/v1"
+  warn "        LLM_MODEL=deepseek/deepseek-v4-flash"
+fi

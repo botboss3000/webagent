@@ -20,7 +20,7 @@ has more than ``max_cars`` cars, the oldest few are folded into a single coarser
 
 How it fits together:
   * **Active side (here):** ``maybe_compact`` measures the current context and, if
-    over threshold, peels the aged span into new frozen cars (and merges the far
+    over its absolute token target, peels the aged span into new frozen cars (and merges the far
     back if needed), persisting the whole train to ``session_summary_segments``.
   * **Passive side (session_history.build_openai_history_from_session):** on every
     turn it reads the train and assembles ``[car 1]…[car N] + [verbatim tail]``.
@@ -205,8 +205,15 @@ def _render_transcript(rows: List[Any]) -> str:
     return text
 
 
-async def _record_usage(resp: Any, cfg: Dict[str, Any]) -> None:
-    """Book the summariser's tokens against background usage (best-effort)."""
+async def _record_usage(resp: Any, cfg: Dict[str, Any], *,
+                        user_id: Optional[str] = None,
+                        session_id: Optional[str] = None,
+                        agent_id: Optional[str] = None) -> None:
+    """Book the summariser's tokens against background usage (best-effort).
+
+    Links the row to the session (and the agent/user) so the UI can show the
+    summariser's OWN prompt size next to compaction notices — the folded span
+    + summariser instructions, NOT the session's full context."""
     try:
         _u = getattr(resp, "usage", None)
         if _u:
@@ -216,6 +223,9 @@ async def _record_usage(resp: Any, cfg: Dict[str, Any]) -> None:
                 input_tokens=getattr(_u, "prompt_tokens", 0) or 0,
                 output_tokens=getattr(_u, "completion_tokens", 0) or 0,
                 label="compact",
+                session_id=session_id,
+                user_id=user_id,
+                agent_id=agent_id,
             )
     except Exception:
         pass
@@ -243,7 +253,10 @@ def _parse_summary_json(raw: str) -> tuple:
     return (raw.strip() or None, "")
 
 
-async def _summarise_json(sys_prompt: str, user_prompt: str, cfg: Dict[str, Any]) -> tuple:
+async def _summarise_json(sys_prompt: str, user_prompt: str, cfg: Dict[str, Any], *,
+                          user_id: Optional[str] = None,
+                          session_id: Optional[str] = None,
+                          agent_id: Optional[str] = None) -> tuple:
     """Call the summariser and return ``(summary, topic)`` — ``(None, "")`` on failure.
 
     Sends the fast reasoning-effort hint via ``extra_body.reasoning.effort``; a model
@@ -271,7 +284,7 @@ async def _summarise_json(sys_prompt: str, user_prompt: str, cfg: Dict[str, Any]
                 resp = await client.chat.completions.create(**kwargs)
             else:
                 raise
-        await _record_usage(resp, cfg)
+        await _record_usage(resp, cfg, user_id=user_id, session_id=session_id, agent_id=agent_id)
         return _parse_summary_json((resp.choices[0].message.content or "").strip())
     except Exception as e:
         logger.warning("compaction: summariser call failed: %s", e)
@@ -280,7 +293,10 @@ async def _summarise_json(sys_prompt: str, user_prompt: str, cfg: Dict[str, Any]
 
 async def _summarise_segment(
     transcript: str, settings: Dict[str, Any], cfg: Dict[str, Any],
-    target_tokens: Optional[int] = None,
+    target_tokens: Optional[int] = None, *,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> tuple:
     """Compress ONE contiguous span of raw turns into a frozen car (summary, topic).
 
@@ -302,11 +318,16 @@ async def _summarise_segment(
         f"bullet points, roughly {target} tokens or fewer. Respond with ONLY a JSON "
         'object: {"topic": "<=8 word label of what this span was about", "summary": "…"}.'
     )
-    return await _summarise_json(sys_prompt, f"EXCERPT:\n{transcript}\n\nJSON:", cfg)
+    return await _summarise_json(
+        sys_prompt, f"EXCERPT:\n{transcript}\n\nJSON:", cfg,
+        user_id=user_id, session_id=session_id, agent_id=agent_id)
 
 
 async def _merge_segments_text(
-    batch: List[Dict[str, Any]], settings: Dict[str, Any], cfg: Dict[str, Any]
+    batch: List[Dict[str, Any]], settings: Dict[str, Any], cfg: Dict[str, Any], *,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> tuple:
     """Fold several already-summarised cars into one coarser (tier=1) block."""
     target = int(settings.get("segment_target_tokens") or _DEFAULT_SEGMENT_TARGET_TOKENS)
@@ -324,7 +345,9 @@ async def _merge_segments_text(
         f"{target} tokens or fewer. Respond with ONLY a JSON object: "
         '{"topic": "<=8 word label", "summary": "…"}.'
     )
-    return await _summarise_json(sys_prompt, f"SECTIONS:\n{joined}\n\nJSON:", cfg)
+    return await _summarise_json(
+        sys_prompt, f"SECTIONS:\n{joined}\n\nJSON:", cfg,
+        user_id=user_id, session_id=session_id, agent_id=agent_id)
 
 
 async def load_segments(
@@ -364,7 +387,10 @@ async def load_segments(
 
 async def _maybe_merge_far_back(
     train: List[Dict[str, Any]], settings: Dict[str, Any], max_cars: int,
-    cfg: Dict[str, Any],
+    cfg: Dict[str, Any], *,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Bound the train: once it exceeds ``max_cars`` cars, keep the newest
     ``max_cars - 1`` verbatim and fold ALL older cars into one coarser tier=1
@@ -378,7 +404,8 @@ async def _maybe_merge_far_back(
     rest = train[len(train) - keep:]    # newest cars, kept as-is
     if len(batch) < 2:
         return train
-    summary, topic = await _merge_segments_text(batch, settings, cfg)
+    summary, topic = await _merge_segments_text(
+        batch, settings, cfg, user_id=user_id, session_id=session_id, agent_id=agent_id)
     if not summary:
         return train  # failure-safe
     merged = {
@@ -393,7 +420,37 @@ async def _maybe_merge_far_back(
     return [merged] + rest
 
 
+# Concurrent-fold guard: two history assemblies (e.g. parallel prewarm requests
+# while the user types) can otherwise both read the same uncovered span and both
+# run the summariser + write the train — observed as duplicate 'compaction(train)'
+# log lines with identical stats. In-process, best-effort; a fold is marked
+# synchronously (no await between check and add), so concurrent tasks cannot
+# double-enter for the same session.
+_FOLD_IN_FLIGHT: set = set()
+
+
 async def maybe_compact(
+    db: Any, user_id: str, session_id: str, settings: Dict[str, Any],
+    force: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Grow the compaction train if context exceeds the threshold. No-op otherwise.
+
+    Wraps the implementation with an in-process per-session guard so concurrent
+    history assemblies (e.g. parallel prewarm requests) never fold the same span
+    twice — each fold costs a summariser call and a train write.
+    """
+    if session_id in _FOLD_IN_FLIGHT:
+        logger.debug("compaction: fold already in flight for %s — skipping", session_id[:12])
+        return None
+    _FOLD_IN_FLIGHT.add(session_id)
+    try:
+        return await _maybe_compact_impl(
+            db, user_id, session_id, settings, force=force)
+    finally:
+        _FOLD_IN_FLIGHT.discard(session_id)
+
+
+async def _maybe_compact_impl(
     db: Any, user_id: str, session_id: str, settings: Dict[str, Any],
     force: bool = False,
 ) -> Optional[Dict[str, Any]]:
@@ -419,8 +476,10 @@ async def maybe_compact(
     limit = int(settings.get("token_limit") or 0)
     if limit <= 0:
         return None
-    threshold = float(settings.get("compact_threshold", 0.85))
-    tail_fraction = float(settings.get("tail_fraction", 0.30))
+    target_tokens = min(
+        limit, int(settings.get("compact_target_tokens") or 100_000))
+    verbatim_tail_tokens = min(
+        target_tokens, int(settings.get("verbatim_tail_tokens") or 30_000))
     seg_source = int(settings.get("segment_source_tokens") or _DEFAULT_SEGMENT_SOURCE_TOKENS)
     max_cars = int(settings.get("max_cars") or _DEFAULT_MAX_CARS)
 
@@ -452,22 +511,13 @@ async def maybe_compact(
     cars_tokens = sum(int(s.get("token_estimate") or 0) for s in segments)
     tail_tokens = _span_tokens(rows)
     cur_tokens = cars_tokens + tail_tokens
-    if not force and cur_tokens <= int(threshold * limit):
+    if not force and cur_tokens <= target_tokens:
         return None  # not full enough (forced calls skip this gate)
 
-    # The verbatim "hot tail" budget. Two different bases:
-    #   * Automatic compaction (force=False): a fraction of the model WINDOW — the
-    #     point is to keep the window from overflowing, so 0.30 means "keep the most
-    #     recent ~30% of the window hot".
-    #   * Manual /compact + the agent's compact_context tool (force=True): a fraction
-    #     of the CURRENT (not-yet-compacted) conversation, NOT the window — so a
-    #     deliberate compaction always folds the older part even on a small session.
-    #     0.30 then means "keep the most recent 30% of this conversation verbatim,
-    #     fold the older 70%", which is what a user expects from /compact.
-    if force:
-        tail_budget = int(tail_fraction * tail_tokens)
-    else:
-        tail_budget = int(tail_fraction * limit)
+    # The verbatim hot tail is now an absolute token budget for automatic and
+    # manual compaction alike. A forced compaction on a conversation smaller than
+    # this budget is intentionally a no-op: there is no aged-out material to fold.
+    tail_budget = verbatim_tail_tokens
     # Ratio used to size each manual car's summary from its source span (honours the
     # configured source→target compression even when the window fraction wouldn't).
     _src_tok = int(settings.get("segment_source_tokens") or _DEFAULT_SEGMENT_SOURCE_TOKENS)
@@ -497,6 +547,13 @@ async def maybe_compact(
     # Resolve the summariser (default text model + provider key + fast effort) once
     # for every car/merge call this pass makes.
     summariser = await _resolve_summariser(user_id, session_id, settings)
+    # Session linkage for background-usage rows (so the UI can show the size of
+    # the summariser's OWN prompt next to compaction messages, not the session's
+    # full context). Best-effort.
+    try:
+        _agent_id = await db.get_session_agent_id(session_id)
+    except Exception:
+        _agent_id = None
 
     # Split [covered, cut) into ~seg_source chunks on user boundaries — one car each.
     inner = [b for b in boundaries if covered < b < cut]
@@ -525,7 +582,8 @@ async def maybe_compact(
         if force:
             car_target = max(200, int(_compress_ratio * _span_tokens(span)))
         summary, topic = await _summarise_segment(
-            transcript, settings, summariser, target_tokens=car_target)
+            transcript, settings, summariser, target_tokens=car_target,
+            user_id=user_id, session_id=session_id, agent_id=_agent_id)
         if not summary:
             break  # failure-safe: keep cars made so far, leave the rest verbatim
         new_cars.append({
@@ -540,7 +598,9 @@ async def maybe_compact(
         return None  # nothing summarised (e.g. summariser down) — context unchanged
 
     train = list(segments) + new_cars
-    train = await _maybe_merge_far_back(train, settings, max_cars, summariser)
+    train = await _maybe_merge_far_back(
+        train, settings, max_cars, summariser,
+        user_id=user_id, session_id=session_id, agent_id=_agent_id)
     for k, s in enumerate(train):  # renumber seq contiguous after any merge
         s["seq"] = k
 

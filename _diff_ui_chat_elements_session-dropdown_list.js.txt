@@ -1,0 +1,33 @@
+diff --git a/ui/chat/elements/session-dropdown/list.js b/ui/chat/elements/session-dropdown/list.js
+index 3856de6e..d255d62f 100644
+--- a/ui/chat/elements/session-dropdown/list.js
++++ b/ui/chat/elements/session-dropdown/list.js
+@@ -544,6 +544,12 @@ function _setTriggerLabel() {
+   if (!labelEl && trigger) {
+     const input = trigger.querySelector('.session-row-title-input');
+     if (input) {
++      // A header rename input (⋯ → Rename) replaces the label. Swapping it
++      // back mid-typing — e.g. on a session_title WS event or any label
++      // refresh — would blur it and commit a half-typed name. Leave it in
++      // place; the rename's own finish() removes the input first, then this
++      // recreates the label from the committed title.
++      if (input.isConnected) return;
+       labelEl = document.createElement('span');
+       labelEl.id = 'session-dropdown-label';
+       labelEl.className = 'session-row-title';
+@@ -880,6 +886,15 @@ function _restoreSearchInput(menu, state) {
+ function _renderSessionRows() {
+   const menu = document.getElementById('session-dropdown-menu');
+   if (!menu) return;
++  // An inline rename input (long-press or kebab → Rename) is live in the
++  // menu. A wholesale rebuild here would detach the focused input, fire its
++  // blur handler, and commit a half-typed name mid-typing (the "rename gets
++  // cancelled by a background refresh" bug — WS agent_status gate events,
++  // post-open metadata refresh and agent-icon hydration all re-render while
++  // the menu is open). Skip the rebuild; the rename's own finish() removes
++  // the input and triggers the next render, which then paints any updated
++  // status/badges/order.
++  if (menu.querySelector('.session-row-title-input')) return;
+   // Preserve the search input's live value/caret when it is focused so the
+   // re-render below never drops mid-typing keystrokes.
+   const _prevSearch = menu.querySelector('.session-manage-search-input');

@@ -1,0 +1,44 @@
+name = "webagent-feedback-relay"
+main = "src/index.ts"
+compatibility_date = "2025-05-01"
+
+# Custom domain: configure feedback.webagent.live to route to this Worker
+# via the Cloudflare dashboard (Workers & Pages → your worker → Triggers →
+# Custom Domains). No `routes` block needed when using a custom domain.
+
+[vars]
+# Repo that receives feedback issues. Must be a repo the GITHUB_TOKEN can
+# write issues to. Keep this private if testers might paste sensitive context.
+GITHUB_REPO = "botboss3000/webagent-feedback"
+
+# Comma-separated list of allowed Origin headers for CORS. Include the
+# upstream hosted app and any other origins you trust. Use "*" to allow any
+# origin (fine here since auth happens via Turnstile + rate limits, not CORS).
+ALLOWED_ORIGINS = "*"
+
+# Public Turnstile site key — embedded in clones' feedback forms via the
+# relay's /config endpoint. Safe to commit (it's public by design). Paste
+# the value you get from the Cloudflare Turnstile dashboard here.
+TURNSTILE_SITE_KEY = ""
+
+# ── Bindings (create these in the Cloudflare dashboard, then paste IDs) ──
+# Two KV namespaces:
+#   RATE_LIMIT_KV  - sliding-window counters per IP / installation
+#   BLOCKLIST_KV   - keys "ip:<addr>" or "install:<uuid>" mean blocked
+#
+# Create them once with:
+#   wrangler kv namespace create RATE_LIMIT_KV
+#   wrangler kv namespace create BLOCKLIST_KV
+# and paste the returned ids below.
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "c2e986de05df444896c025ec7ae5b46a"
+
+[[kv_namespaces]]
+binding = "BLOCKLIST_KV"
+id = "9bc077f8fad548eb9d515692a6065b08"
+
+# Secrets — NOT stored here. Set with:
+#   wrangler secret put GITHUB_TOKEN
+#   wrangler secret put TURNSTILE_SECRET_KEY

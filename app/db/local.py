@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from app.db.turn_cache import turn_cached, turn_scope_active, turn_cache_invalidate
+from app.runtime_mode import data_root
 
 # numpy is a heavy import (~0.8s and hundreds of files to scan on a cold
 # disk) but is ONLY needed for local vector search. Load it lazily on first
@@ -44,7 +45,7 @@ logger = logging.getLogger(__name__)
 # (alongside data/config, data/agents, data/uploads, data/visuals); `app/` is
 # logic only. The DB *code* stays in app/db/; the DB *files* live in data/db/.
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DB_DIR = os.path.join(_PROJECT_ROOT, "data", "db")
+DB_DIR = str(data_root() / "db")
 DEFAULT_DB_PATH = os.path.join(DB_DIR, "app.db")
 
 # Contextvar that carries the current user_id through the call stack so
@@ -147,7 +148,8 @@ def cascade_delete_clones(conn, root_session_ids) -> int:
             spawn_sid, spawn_aid = r[0], r[1]
             if spawn_sid:
                 conn.execute("DELETE FROM interactions WHERE session_id = ?", (spawn_sid,))
-                for tbl in ("session_summaries", "pipeline_events"):
+                for tbl in ("session_summaries", "pipeline_events",
+                            "run_contract_checks", "run_contract_state"):
                     try:
                         conn.execute(f"DELETE FROM {tbl} WHERE session_id = ?", (spawn_sid,))
                     except Exception:  # noqa: BLE001
@@ -307,8 +309,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Browser sessions — first-class, persistent browser TABS that live BESIDE chat
--- (not keyed to a chat session). Each row is one shareable tab the user owns:
+-- Browser sessions — first-class, persistent browser TABS that live BESIDE chat.
+-- Agent-created rows are scoped to one chat session so concurrent chats cannot
+-- cross-wire navigation, reads, or cookie jars. User-created tabs may keep this
+-- nullable until they are explicitly handed to an agent chat.
 -- its own cookie jar (storage_state) so logins survive restarts, an optional
 -- linked agent, and a `shared` flag (0 = private, 1 = visible to the linked
 -- agent). The Web tab and the agent's browser_action both address a tab by THIS
@@ -319,6 +323,7 @@ CREATE TABLE IF NOT EXISTS browser_sessions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     agent_id TEXT,
+    chat_session_id TEXT,
     title TEXT,
     url TEXT,
     shared INTEGER NOT NULL DEFAULT 0,
@@ -331,6 +336,7 @@ CREATE TABLE IF NOT EXISTS browser_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_browser_sessions_user ON browser_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_browser_sessions_agent ON browser_sessions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_browser_sessions_chat ON browser_sessions(chat_session_id);
 
 CREATE TABLE IF NOT EXISTS interactions (
     id TEXT PRIMARY KEY,
@@ -1212,6 +1218,20 @@ CREATE TABLE IF NOT EXISTS channel_identities (
 CREATE INDEX IF NOT EXISTS idx_channel_user ON channel_identities(user_id);
 CREATE INDEX IF NOT EXISTS idx_channel_channel_ext ON channel_identities(channel, external_id);
 
+CREATE TABLE IF NOT EXISTS anonymous_guest_credentials (
+    credential_hash TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    external_id     TEXT NOT NULL,
+    agent_id        TEXT NOT NULL DEFAULT '',
+    expires_at      TEXT NOT NULL,
+    last_used_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_guest_credentials_user
+ON anonymous_guest_credentials(user_id);
+
 CREATE TABLE IF NOT EXISTS linking_codes (
     id              TEXT PRIMARY KEY,
     code            TEXT NOT NULL UNIQUE,
@@ -1283,6 +1303,83 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 -- Account/identity plane — login credentials (was app/auth/users.json).
 -- Central table (never per-tenant routed; see app/db/router.py CONTROL_METHODS).
 -- password_hash is bcrypt, never plaintext. Sibling of user_profiles by user_id.
+CREATE TABLE IF NOT EXISTS model_rosters (
+    id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '', entries_json TEXT NOT NULL DEFAULT '[]',
+    default_entry_id TEXT, status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft','published','retired')),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    published_revision INTEGER,
+    source TEXT NOT NULL DEFAULT 'admin', created_by TEXT, updated_by TEXT,
+    published_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_model_rosters_status ON model_rosters(status);
+
+CREATE TABLE IF NOT EXISTS model_roster_revisions (
+    roster_id TEXT NOT NULL REFERENCES model_rosters(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    payload_json TEXT NOT NULL,
+    action TEXT NOT NULL DEFAULT 'published',
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (roster_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_model_roster_revisions_created
+    ON model_roster_revisions(roster_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS experience_tiers (
+    id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '', policy_json TEXT NOT NULL DEFAULT '{}',
+    policy_schema_version INTEGER NOT NULL DEFAULT 1 CHECK (policy_schema_version >= 1),
+    roster_id TEXT REFERENCES model_rosters(id), is_system INTEGER NOT NULL DEFAULT 0,
+    is_locked INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft','published','retired')),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    published_revision INTEGER,
+    created_by TEXT, updated_by TEXT, published_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_experience_tiers_status ON experience_tiers(status);
+CREATE INDEX IF NOT EXISTS idx_experience_tiers_roster ON experience_tiers(roster_id);
+
+CREATE TABLE IF NOT EXISTS experience_tier_revisions (
+    tier_id TEXT NOT NULL REFERENCES experience_tiers(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    payload_json TEXT NOT NULL,
+    action TEXT NOT NULL DEFAULT 'published',
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (tier_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_experience_tier_revisions_created
+    ON experience_tier_revisions(tier_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_tier_assignments (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+    tier_id TEXT NOT NULL REFERENCES experience_tiers(id),
+    source TEXT NOT NULL CHECK (source IN ('default','manual','billing','import','system')),
+    starts_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at TEXT,
+    assigned_by TEXT, reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tier_assignments_user
+    ON user_tier_assignments(user_id, starts_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tier_assignments_tier ON user_tier_assignments(tier_id);
+
+CREATE TABLE IF NOT EXISTS entitlement_audit_events (
+    id TEXT PRIMARY KEY, subject_user_id TEXT, actor_user_id TEXT,
+    action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT,
+    previous_json TEXT, new_json TEXT, reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_entitlement_audit_subject
+    ON entitlement_audit_events(subject_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_entitlement_audit_entity
+    ON entitlement_audit_events(entity_type, entity_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS user_accounts (
     user_id                     TEXT PRIMARY KEY,
     username                    TEXT NOT NULL UNIQUE,
@@ -1739,6 +1836,11 @@ def _vault_for(user_id: str, service: str, label: str = "") -> str:
         return "vault_app"
 
     # Rule 2 — admin-scoped infrastructure
+    # Named platform rosters belong to the app control plane, independent of
+    # any human admin, selected agent, or user database.
+    if user_id == "_platform" and service == "llm_roster":
+        return "vault_app"
+
     if user_id == "admin":
         infra_prefixes = (
             "deploy_cred:", "deploy_connect:", "dns_cred:",
@@ -1984,6 +2086,78 @@ def _migrate_auth_elements_schema_version(conn):
     conn.commit()
 
 
+def _migrate_model_roster_publications(conn) -> None:
+    """Backfill immutable live snapshots for legacy mutable published rosters."""
+    roster_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(model_rosters)").fetchall()
+    }
+    if not roster_cols:
+        return
+    if "published_revision" not in roster_cols:
+        conn.execute("ALTER TABLE model_rosters ADD COLUMN published_revision INTEGER")
+    for roster_row in conn.execute(
+        "SELECT * FROM model_rosters WHERE status='published' AND published_revision IS NULL"
+    ).fetchall():
+        roster = dict(roster_row)
+        revision = max(1, int(roster.get("revision") or 1))
+        payload = {
+            key: roster.get(key) for key in (
+                "slug", "name", "description", "entries_json",
+                "default_entry_id", "source",
+            )
+        }
+        conn.execute(
+            """INSERT OR IGNORE INTO model_roster_revisions
+               (roster_id, revision, payload_json, action, created_by, created_at)
+               VALUES (?, ?, ?, 'compatibility-backfill', ?, ?)""",
+            (roster["id"], revision,
+             json.dumps(payload, separators=(",", ":"), sort_keys=True),
+             roster.get("updated_by") or roster.get("created_by") or "migration",
+             roster.get("published_at") or roster.get("updated_at") or _now_iso()),
+        )
+        conn.execute(
+            "UPDATE model_rosters SET published_revision=? WHERE id=?",
+            (revision, roster["id"]),
+        )
+    conn.commit()
+
+
+def _migrate_experience_tier_publications(conn) -> None:
+    """Backfill immutable live snapshots for legacy mutable published tiers."""
+    tier_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(experience_tiers)").fetchall()
+    }
+    if not tier_cols:
+        return
+    if "published_revision" not in tier_cols:
+        conn.execute("ALTER TABLE experience_tiers ADD COLUMN published_revision INTEGER")
+    for tier_row in conn.execute(
+        "SELECT * FROM experience_tiers WHERE status='published' AND published_revision IS NULL"
+    ).fetchall():
+        tier = dict(tier_row)
+        revision = max(1, int(tier.get("revision") or 1))
+        payload = {
+            key: tier.get(key) for key in (
+                "slug", "name", "description", "policy_json",
+                "policy_schema_version", "roster_id", "is_system", "is_locked",
+            )
+        }
+        conn.execute(
+            """INSERT OR IGNORE INTO experience_tier_revisions
+               (tier_id, revision, payload_json, action, created_by, created_at)
+               VALUES (?, ?, ?, 'compatibility-backfill', ?, ?)""",
+            (tier["id"], revision,
+             json.dumps(payload, separators=(",", ":"), sort_keys=True),
+             tier.get("updated_by") or tier.get("created_by") or "migration",
+             tier.get("published_at") or tier.get("updated_at") or _now_iso()),
+        )
+        conn.execute(
+            "UPDATE experience_tiers SET published_revision=? WHERE id=?",
+            (revision, tier["id"]),
+        )
+    conn.commit()
+
+
 class LocalBackend(StorageBackend):
     """SQLite implementation of StorageBackend."""
 
@@ -2023,6 +2197,27 @@ class LocalBackend(StorageBackend):
         self._app_vault_path = _app_vault_path(vault_base)
         self._agent_vault_path = _agent_vault_path(vault_base)
         self._user_vault_path = _user_vault_path(vault_base)
+        if self._schema_plane == "agent":
+            # Agent credentials are owned and deleted with the agent, while app
+            # infrastructure credentials stay in the installation authority.
+            _agent_dir, _agent_file = os.path.split(self._db_path)
+            _agent_stem = _agent_file[:-3] if _agent_file.endswith(".db") else _agent_file
+            self._app_vault_path = _app_vault_path(DEFAULT_DB_PATH)
+            self._agent_vault_path = os.path.join(_agent_dir, f"{_agent_stem}.agent-secrets.db")
+            self._user_vault_path = _user_vault_path(DEFAULT_DB_PATH)
+        elif self._schema_plane == "user":
+            # Agent-native user stores are recognizable from their contained
+            # .../<agent>/members/<member>/<member>.db layout. Their personal
+            # vault follows that member; the linked app-account vault does not.
+            _member_dir, _member_file = os.path.split(self._db_path)
+            _members_dir = os.path.dirname(_member_dir)
+            if os.path.basename(_members_dir).lower() == "members":
+                _member_stem = _member_file[:-3] if _member_file.endswith(".db") else _member_file
+                _agent_dir = os.path.dirname(_members_dir)
+                _agent_stem = os.path.basename(_agent_dir)
+                self._app_vault_path = _app_vault_path(DEFAULT_DB_PATH)
+                self._agent_vault_path = os.path.join(_agent_dir, f"{_agent_stem}.agent-secrets.db")
+                self._user_vault_path = os.path.join(_member_dir, f"{_member_stem}.user-secrets.db")
         # Full-DB-encryption ids: only the canonical app + vault files
         # participate in the at-rest encryption config. A
         # custom/test db_path stays plaintext regardless of the global setting.
@@ -2313,6 +2508,9 @@ class LocalBackend(StorageBackend):
             try:
                 conn.executescript(render_plane(self._schema_plane, "sqlite"))
                 ensure_sqlite_plane_columns(conn, self._schema_plane)
+                if self._schema_plane == "app":
+                    _migrate_model_roster_publications(conn)
+                    _migrate_experience_tier_publications(conn)
                 # Plane-scoped canonical SQLite handles still own/attach the
                 # centralized app, agent and user secret vault files. Fresh bare
                 # installs reach this branch before the setup page is visited;
@@ -2393,6 +2591,41 @@ class LocalBackend(StorageBackend):
 
             conn.executescript(SCHEMA_SQL)
             conn.commit()
+
+            # Model-roster publication history.  Older databases stored only one
+            # mutable published row; preserve that live value as revision 1 (or
+            # its current revision) before administrators begin editing drafts.
+            roster_cols = {row[1] for row in conn.execute(
+                "PRAGMA table_info(model_rosters)"
+            ).fetchall()}
+            if "published_revision" not in roster_cols:
+                conn.execute("ALTER TABLE model_rosters ADD COLUMN published_revision INTEGER")
+            for roster_row in conn.execute(
+                "SELECT * FROM model_rosters WHERE status='published' AND published_revision IS NULL"
+            ).fetchall():
+                roster = dict(roster_row)
+                revision = max(1, int(roster.get("revision") or 1))
+                payload = {
+                    key: roster.get(key) for key in (
+                        "slug", "name", "description", "entries_json",
+                        "default_entry_id", "source",
+                    )
+                }
+                conn.execute(
+                    """INSERT OR IGNORE INTO model_roster_revisions
+                       (roster_id, revision, payload_json, action, created_by, created_at)
+                       VALUES (?, ?, ?, 'compatibility-backfill', ?, ?)""",
+                    (roster["id"], revision,
+                     json.dumps(payload, separators=(",", ":"), sort_keys=True),
+                     roster.get("updated_by") or roster.get("created_by") or "migration",
+                     roster.get("published_at") or roster.get("updated_at") or _now_iso()),
+                )
+                conn.execute(
+                    "UPDATE model_rosters SET published_revision=? WHERE id=?",
+                    (revision, roster["id"]),
+                )
+            conn.commit()
+            _migrate_experience_tier_publications(conn)
             self._migrate_session_interrupt_ownership(conn)
 
             # ── Migration: add channel column to interactions ──
@@ -4130,6 +4363,27 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def fetch_session_interaction(
+        self, user_id: str, session_id: str, interaction_id: str,
+    ) -> Optional[InteractionRecord]:
+        """Load one transcript row without materializing the whole session."""
+        await self.assert_session_owned(user_id, session_id)
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                """SELECT id, session_id, parent_id, role, content, tool_name,
+                          tool_call_id, channel, metadata, output, from_id, to_id,
+                          source, session_seq, turn_id, turn_seq, created_at
+                     FROM interactions
+                    WHERE session_id = ? AND id = ?
+                      AND (status IS NULL OR status != 'deleted')
+                    LIMIT 1""",
+                (session_id, interaction_id),
+            ).fetchone()
+            return InteractionRecord(**dict(row)) if row else None
+        finally:
+            conn.close()
+
     async def fetch_interactions_from_offset(
         self, user_id: str, session_id: str, offset: int
     ) -> List[InteractionRecord]:
@@ -4796,7 +5050,8 @@ class LocalBackend(StorageBackend):
         Manifest-gated, non-destructive seeder.
 
         Source of truth = data/agents/*.json. Writes:
-          - agent_templates row (config only) — full upsert
+          - agent_templates row (config only) — seed-managed upsert; rows whose
+            metadata.source starts with ``admin`` are preserved unless forced
           - agent_prompt_templates rows (one per slot) — version-aware:
               * missing row              → INSERT (source='json')
               * existing source='json'   → UPDATE iff JSON version > DB version
@@ -4877,8 +5132,24 @@ class LocalBackend(StorageBackend):
                 _tpl_meta_obj["source"] = "json_seed"
             tpl["metadata"] = json.dumps(_tpl_meta_obj)
 
-            # 1. agent_templates row — config only, always upsert
-            conn.execute(
+            # 1. agent_templates row — config only. An administrator may edit
+            # discoverability or save a customized agent back into the template;
+            # that claims the row (metadata.source=admin_*). A later shipped JSON
+            # change must not silently erase those live database edits.
+            _existing_tpl = conn.execute(
+                "SELECT metadata FROM agent_templates WHERE id = ?", (tpl_id,)
+            ).fetchone()
+            _existing_source = ""
+            if _existing_tpl:
+                try:
+                    _existing_meta = json.loads(_existing_tpl["metadata"] or "{}")
+                    _existing_source = str((_existing_meta or {}).get("source") or "")
+                except (json.JSONDecodeError, TypeError):
+                    _existing_source = ""
+            if _existing_source.startswith("admin") and not force:
+                skipped_admin += 1
+            else:
+                conn.execute(
                 """INSERT INTO agent_templates
                    (id, name, description, icon, max_turn_count, max_wall_seconds,
                     max_identical_tool_calls, max_stall_strikes,
@@ -4911,7 +5182,7 @@ class LocalBackend(StorageBackend):
                     trigger_key = excluded.trigger_key,
                     loop_logic = excluded.loop_logic,
                     updated_at = excluded.updated_at""",
-                (tpl_id, tpl.get("name", tpl_id), tpl.get("description", ""),
+                    (tpl_id, tpl.get("name", tpl_id), tpl.get("description", ""),
                  tpl.get("icon", ""), tpl["max_turn_count"],
                  tpl.get("max_wall_seconds"),
                  tpl.get("max_identical_tool_calls", 0),
@@ -4924,8 +5195,8 @@ class LocalBackend(StorageBackend):
                  1 if tpl.get("discoverable") else 0,
                  tpl.get("trigger_type", "user_input"), tpl.get("trigger_key"),
                  tpl.get("loop_logic", "[]"),
-                 now, now),
-            )
+                     now, now),
+                )
 
             # 2. agent_prompt_templates rows — per slot, version-gated upsert
             for s in self._slots_from_template_data(tpl):
@@ -6568,6 +6839,27 @@ class LocalBackend(StorageBackend):
         finally:
             conn.close()
 
+    async def get_session_execution_mode_history(self, session_id: str) -> list[str]:
+        """Return unique mode ids used by this session, in first-use order."""
+        if not session_id:
+            return []
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row:
+                return []
+            try:
+                meta = json.loads(row["metadata"]) if row["metadata"] else {}
+            except (json.JSONDecodeError, TypeError):
+                return []
+            raw = meta.get("execution_mode_history") if isinstance(meta, dict) else []
+            return list(dict.fromkeys(str(x).strip().lower() for x in (raw or [])
+                                      if isinstance(x, str) and x.strip()))[:20]
+        finally:
+            conn.close()
+
     async def set_session_execution_mode(
         self, session_id: str, mode: str, reason: str = ""
     ) -> str:
@@ -6579,14 +6871,26 @@ class LocalBackend(StorageBackend):
                     "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
                 ).fetchone()
                 if not row:
-                    return mode
-                try:
-                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
-                    if not isinstance(meta, dict):
-                        meta = {}
-                except (json.JSONDecodeError, TypeError):
                     meta = {}
+                    conn.execute(
+                        """INSERT INTO sessions (id, user_id, metadata, status, created_at, updated_at)
+                           VALUES (?, '', '{}', 'active', ?, ?)""",
+                        (session_id, _now_iso(), _now_iso()),
+                    )
+                else:
+                    try:
+                        meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                        if not isinstance(meta, dict):
+                            meta = {}
+                    except (json.JSONDecodeError, TypeError):
+                        meta = {}
                 meta["execution_mode"] = mode
+                history = meta.get("execution_mode_history")
+                history = history if isinstance(history, list) else []
+                normalized = str(mode or "").strip().lower()
+                if normalized and normalized not in history:
+                    history.append(normalized)
+                meta["execution_mode_history"] = history[-20:]
                 if reason:
                     meta["execution_mode_reason"] = reason
                 conn.execute(
@@ -6595,6 +6899,61 @@ class LocalBackend(StorageBackend):
                 )
                 conn.commit()
                 return mode
+            finally:
+                conn.close()
+
+    # ── Agent component panel: per-session layout state ──
+    # The chat-component drawer (todo lists, plan overviews, forms…) keeps its
+    # UI state per session — minimized/collapsed, drawer height, frozen width,
+    # full-height expanded mode, and the active component tab. Stored as a JSON
+    # object under sessions.metadata["component_ui"] (same home as execution
+    # mode) so reopening the session restores the exact panel layout.
+
+    async def get_session_component_ui(self, session_id: str) -> Optional[dict]:
+        """Return the session's saved agent-panel layout state, or None."""
+        if not session_id:
+            return None
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row:
+                return None
+            try:
+                meta = json.loads(row["metadata"]) if row["metadata"] else {}
+            except (json.JSONDecodeError, TypeError):
+                return None
+            if not isinstance(meta, dict):
+                return None
+            val = meta.get("component_ui")
+            return val if isinstance(val, dict) else None
+        finally:
+            conn.close()
+
+    async def set_session_component_ui(self, session_id: str, ui: dict) -> dict:
+        """Persist the session's agent-panel layout state. Returns it."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return ui
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                meta["component_ui"] = ui
+                conn.execute(
+                    "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), session_id),
+                )
+                conn.commit()
+                return ui
             finally:
                 conn.close()
 
@@ -6693,6 +7052,67 @@ class LocalBackend(StorageBackend):
                 meta["codex_thread_id"] = thread_id
                 conn.execute("UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
                              (json.dumps(meta), _now_iso(), session_id))
+                conn.commit()
+            finally:
+                conn.close()
+
+    # ── Provider-neutral Responses API continuation state ──────────────────
+    # This is an optimisation hint, never the transcript authority.  The agent
+    # loop validates the identity + local-history fingerprint before resuming;
+    # otherwise it discards this state and reconstructs from interactions.
+
+    async def get_session_response_chain(self, session_id: str) -> Optional[dict]:
+        if not session_id:
+            return None
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            try:
+                meta = json.loads(row["metadata"]) if row and row["metadata"] else {}
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+            value = meta.get("response_chain") if isinstance(meta, dict) else None
+            return dict(value) if isinstance(value, dict) else None
+        finally:
+            conn.close()
+
+    async def set_session_response_chain(
+        self, session_id: str, state: Optional[dict]
+    ) -> None:
+        if not session_id:
+            return
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not row:
+                    return
+                try:
+                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                if state:
+                    # Keep the durable hint intentionally small and non-secret.
+                    meta["response_chain"] = {
+                        key: state[key]
+                        for key in (
+                            "transport", "family", "identity", "model",
+                            "previous_response_id", "history_hash", "updated_at",
+                        )
+                        if key in state
+                    }
+                else:
+                    meta.pop("response_chain", None)
+                conn.execute(
+                    "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(meta), _now_iso(), session_id),
+                )
                 conn.commit()
             finally:
                 conn.close()
@@ -7030,6 +7450,7 @@ class LocalBackend(StorageBackend):
                 meta.pop("active_abilities", None)
                 meta.pop("suppressed_abilities", None)
                 meta.pop("execution_mode", None)
+                meta.pop("execution_mode_history", None)
                 conn.execute(
                     "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
                     (json.dumps(meta), _now_iso(), session_id),
@@ -7076,8 +7497,8 @@ class LocalBackend(StorageBackend):
     async def get_session_context_override(self, session_id: str) -> Optional[dict]:
         """Return this session's per-chat Context-Control override, or None if unset.
 
-        The footer compaction panel saves a small ``{compact_threshold, tail_fraction}``
-        block (fractions 0..1) under ``metadata['context_override']`` so ONE chat can
+        The footer compaction panel saves ``compact_target_tokens`` and
+        ``verbatim_tail_tokens`` under ``metadata['context_override']`` so ONE chat can
         tune its own compaction without touching the agent default — mirroring the
         per-session model override. Only the keys the user changed are present."""
         if not session_id:
@@ -7103,8 +7524,8 @@ class LocalBackend(StorageBackend):
     ) -> Optional[dict]:
         """Merge per-chat Context-Control overrides into this session's metadata.
 
-        ``updates`` maps override keys (``compact_threshold`` / ``tail_fraction``) to
-        a fraction (0..1) to set, or ``None`` to clear that one key. When no override
+        ``updates`` maps the absolute token-budget keys to an integer to set, or
+        ``None`` to clear that one key. Legacy fraction keys remain readable. When no override
         keys remain the whole ``context_override`` block is removed and the chat
         falls back to the agent's Context Control settings. Takes effect on the next
         turn (the gauge + the next automatic/manual compaction re-resolve settings).
@@ -7235,6 +7656,7 @@ class LocalBackend(StorageBackend):
                             cfg["role"] = selection.get("role", "")
                         elif sel_type == "custom":
                             cfg["custom_position"] = selection.get("position", 0)
+                            cfg["entry_id"] = selection.get("entry_id", "")
                         if effort_map:
                             cfg["model_effort"] = effort_map
                         meta["llm_config"] = cfg
@@ -7393,11 +7815,16 @@ class LocalBackend(StorageBackend):
                         new_cfg["custom_position"] = prior_slot["custom_position"]
                     elif "custom_position" in new_cfg:
                         new_cfg.pop("custom_position", None)
+                    if prior_slot.get("entry_id"):
+                        new_cfg["entry_id"] = prior_slot["entry_id"]
+                    elif "entry_id" in new_cfg:
+                        new_cfg.pop("entry_id", None)
                     new_cfg["use_default"] = False
                 effort_map = new_cfg.get("model_effort")
                 if isinstance(effort_map, dict):
                     kept = {k: v for k, v in effort_map.items()
-                            if k.startswith("role:") or k.startswith("custom:")}
+                            if (k.startswith("role:") or k.startswith("custom:")
+                                or k.startswith("entry:"))}
                     if kept:
                         new_cfg["model_effort"] = kept
                     else:
@@ -9105,6 +9532,36 @@ class LocalBackend(StorageBackend):
                 conn.execute(
                     "UPDATE interactions SET status='interrupted' WHERE status='streaming'"
                 )
+                # Gate-queued turns exist only in this process's memory: after a
+                # restart nothing will ever wake them, so a durable 'queued' user
+                # row must not dangle behind a dead Force-run button. Flip it to
+                # interrupted (the message shows as a normal stopped turn; the
+                # user can resend it). Same policy as the streaming flip above.
+                conn.execute(
+                    "UPDATE interactions SET status='interrupted' WHERE status='queued'"
+                )
+                conn.commit()
+                return n
+            finally:
+                conn.close()
+
+    async def flip_queued_interactions_to_interrupted(self) -> int:
+        """Finalize user messages still parked in the gate queue.
+
+        The kill switch uses this AFTER cancelling every run: a 'queued'
+        interaction (session-gate wait or compaction queue) had its turn
+        cancelled before it ever began, so the durable row must not dangle
+        behind a dead queue entry — flip it to interrupted (the message shows
+        as a normal stopped turn, the user can resend). Mirrors the boot
+        cleanup's queued-flip in cleanup_orphaned_runs. Returns the number of
+        rows finalised."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE interactions SET status='interrupted' WHERE status='queued'"
+                )
+                n = cur.rowcount or 0
                 conn.commit()
                 return n
             finally:
@@ -9271,6 +9728,55 @@ class LocalBackend(StorageBackend):
                     (error, _iso_now(), session_id),
                 )
                 conn.commit()
+            finally:
+                conn.close()
+
+    async def run_state_defer_resume(self, session_id: str, backoff_seconds: float,
+                                     note: Optional[str] = None) -> None:
+        """Push a stopped run's next auto-resume time out by ``backoff_seconds``
+        WITHOUT consuming a resume attempt or altering status/stop_cause. Used
+        when the cheap provider probe fails: the run stays resumable, and the
+        next sweep retries only after the backoff gate elapses. No-op on a run
+        that is currently live."""
+        now = _iso_now()
+        next_resume = _iso_in(backoff_seconds)
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """UPDATE session_runs SET
+                         next_resume_at = ?,
+                         error = CASE WHEN ? IS NOT NULL THEN ? ELSE error END,
+                         updated_at = ?
+                       WHERE session_id = ? AND status != 'running'""",
+                    (next_resume, note, note, now, session_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def run_state_tag_resumable_as_user_stop(self) -> int:
+        """Kill-switch sweep: tag every not-running resumable run as user_stop.
+
+        ``cancel_all`` only tags LIVE tasks; a run parked in retry-backoff —
+        or one whose backoff gate has just elapsed and is awaiting the next
+        watchdog tick — is not a live task and would survive the kill, then be
+        re-ignited by the watchdog / boot orphan-resume after disengage.
+        Tagging them user_stop (excluded from _RESUMABLE_CAUSES) makes the
+        kill complete: the retry ladder can never resume after the switch is
+        off. Returns the number of runs tagged."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                placeholders = ",".join("?" for _ in self._RESUMABLE_CAUSES)
+                cur = conn.execute(
+                    f"""UPDATE session_runs SET stop_cause='user_stop', updated_at=?
+                        WHERE status NOT IN ('running','complete')
+                          AND stop_cause IN ({placeholders})""",
+                    (_iso_now(), *self._RESUMABLE_CAUSES),
+                )
+                conn.commit()
+                return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
             finally:
                 conn.close()
 
@@ -9710,6 +10216,632 @@ class LocalBackend(StorageBackend):
     # User Profiles
     # ──────────────────────────────────────────────────────────────────────────
 
+    # App-plane experience tiers, model rosters, and assignments
+
+    _MODEL_ROSTER_FIELDS = frozenset({
+        "slug", "name", "description", "entries_json", "default_entry_id",
+        "status", "revision", "source", "created_by", "updated_by",
+        "published_at", "published_revision",
+    })
+    _EXPERIENCE_TIER_FIELDS = frozenset({
+        "slug", "name", "description", "policy_json", "policy_schema_version",
+        "roster_id", "is_system", "is_locked", "status", "revision",
+        "created_by", "updated_by", "published_at", "published_revision",
+    })
+    _ASSIGNMENT_FIELDS = frozenset({
+        "user_id", "tier_id", "source", "starts_at", "expires_at",
+        "assigned_by", "reason",
+    })
+
+    @staticmethod
+    def _entitlement_json(value, fallback):
+        if value is None:
+            value = fallback
+        if isinstance(value, str):
+            json.loads(value)  # validate before persisting
+            return value
+        return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+    async def get_model_roster(self, roster_id: str) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute("SELECT * FROM model_rosters WHERE id=?", (roster_id,)).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def get_model_roster_by_slug(self, slug: str) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute("SELECT * FROM model_rosters WHERE slug=?", (slug,)).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def list_model_rosters(self, status: Optional[str] = None) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            sql, params = "SELECT * FROM model_rosters", ()
+            if status:
+                sql, params = sql + " WHERE status=?", (status,)
+            rows = conn.execute(sql + " ORDER BY name, slug", params).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    async def get_published_model_roster(self, roster_id: str) -> Optional[dict]:
+        """Return the immutable live snapshot, never unpublished draft fields."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM model_rosters WHERE id=?", (roster_id,)
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT * FROM model_rosters WHERE slug=?", (roster_id,)
+                ).fetchone()
+            if not row or str(row["status"] or "") != "published":
+                return None
+            current = dict(row)
+            published_revision = current.get("published_revision")
+            if published_revision is None:
+                # Compatibility for a database opened before the backfill could
+                # complete.  The legacy published row is itself the live value.
+                return current
+            snapshot = conn.execute(
+                "SELECT * FROM model_roster_revisions WHERE roster_id=? AND revision=?",
+                (current["id"], int(published_revision)),
+            ).fetchone()
+            if not snapshot:
+                return None
+            payload = json.loads(snapshot["payload_json"] or "{}")
+            live = dict(current)
+            live.update(payload if isinstance(payload, dict) else {})
+            live["revision"] = int(snapshot["revision"])
+            live["published_revision"] = int(snapshot["revision"])
+            live["status"] = "published"
+            live["published_at"] = snapshot["created_at"]
+            return live
+        finally:
+            conn.close()
+
+    async def list_model_roster_revisions(self, roster_id: str) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM model_roster_revisions WHERE roster_id=? ORDER BY revision DESC",
+                (roster_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    async def get_model_roster_revision(self, roster_id: str, revision: int) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM model_roster_revisions WHERE roster_id=? AND revision=?",
+                (roster_id, int(revision)),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def publish_model_roster(
+        self, roster_id: str, *, actor_user_id: Optional[str] = None,
+        expected_revision: Optional[int] = None, action: str = "published",
+    ) -> dict:
+        """Atomically snapshot the working draft and advance the live pointer."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                raw = conn.execute("SELECT * FROM model_rosters WHERE id=?", (roster_id,)).fetchone()
+                if not raw:
+                    raise KeyError(roster_id)
+                row = dict(raw)
+                revision = max(1, int(row.get("revision") or 1))
+                if expected_revision is not None and revision != int(expected_revision):
+                    raise ValueError("model roster revision conflict")
+                occupied = conn.execute(
+                    "SELECT 1 FROM model_roster_revisions WHERE roster_id=? AND revision=?",
+                    (roster_id, revision),
+                ).fetchone()
+                if occupied:
+                    maximum = conn.execute(
+                        "SELECT COALESCE(MAX(revision),0) FROM model_roster_revisions WHERE roster_id=?",
+                        (roster_id,),
+                    ).fetchone()[0]
+                    revision = max(revision, int(maximum or 0)) + 1
+                payload = {
+                    key: row.get(key) for key in (
+                        "slug", "name", "description", "entries_json",
+                        "default_entry_id", "source",
+                    )
+                }
+                now = _now_iso()
+                conn.execute(
+                    """INSERT INTO model_roster_revisions
+                       (roster_id, revision, payload_json, action, created_by, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (roster_id, revision,
+                     json.dumps(payload, separators=(",", ":"), sort_keys=True),
+                     str(action or "published"), actor_user_id, now),
+                )
+                conn.execute(
+                    """UPDATE model_rosters
+                       SET status='published', revision=?, published_revision=?,
+                           published_at=?, updated_at=?, updated_by=? WHERE id=?""",
+                    (revision, revision, now, now, actor_user_id, roster_id),
+                )
+                conn.commit()
+                return dict(conn.execute(
+                    "SELECT * FROM model_rosters WHERE id=?", (roster_id,)
+                ).fetchone())
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    async def rollback_model_roster(
+        self, roster_id: str, revision: int, *, actor_user_id: Optional[str] = None,
+    ) -> dict:
+        """Republish an old immutable payload as a new immutable revision."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                current_raw = conn.execute(
+                    "SELECT * FROM model_rosters WHERE id=?", (roster_id,)
+                ).fetchone()
+                snapshot = conn.execute(
+                    "SELECT * FROM model_roster_revisions WHERE roster_id=? AND revision=?",
+                    (roster_id, int(revision)),
+                ).fetchone()
+                if not current_raw or not snapshot:
+                    raise KeyError((roster_id, revision))
+                payload = json.loads(snapshot["payload_json"] or "{}")
+                maximum = conn.execute(
+                    "SELECT COALESCE(MAX(revision),0) FROM model_roster_revisions WHERE roster_id=?",
+                    (roster_id,),
+                ).fetchone()[0]
+                new_revision = max(int(current_raw["revision"] or 1), int(maximum or 0)) + 1
+                now = _now_iso()
+                conn.execute(
+                    """INSERT INTO model_roster_revisions
+                       (roster_id, revision, payload_json, action, created_by, created_at)
+                       VALUES (?, ?, ?, 'rollback', ?, ?)""",
+                    (roster_id, new_revision,
+                     json.dumps(payload, separators=(",", ":"), sort_keys=True),
+                     actor_user_id, now),
+                )
+                editable = {key: payload.get(key) for key in (
+                    "slug", "name", "description", "entries_json",
+                    "default_entry_id", "source",
+                )}
+                conn.execute(
+                    """UPDATE model_rosters SET slug=?, name=?, description=?, entries_json=?,
+                       default_entry_id=?, source=?, status='published', revision=?,
+                       published_revision=?, published_at=?, updated_at=?, updated_by=? WHERE id=?""",
+                    (editable["slug"], editable["name"], editable["description"],
+                     editable["entries_json"], editable["default_entry_id"], editable["source"],
+                     new_revision, new_revision, now, now, actor_user_id, roster_id),
+                )
+                conn.commit()
+                return dict(conn.execute(
+                    "SELECT * FROM model_rosters WHERE id=?", (roster_id,)
+                ).fetchone())
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    async def claim_model_roster(self, roster_id: str, *, actor_user_id: Optional[str] = None) -> dict:
+        """Mark a roster administrator-owned without creating a metadata draft."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                now = _now_iso()
+                conn.execute(
+                    "UPDATE model_rosters SET source='admin', updated_by=?, updated_at=? WHERE id=?",
+                    (actor_user_id, now, roster_id),
+                )
+                conn.commit()
+                row = conn.execute("SELECT * FROM model_rosters WHERE id=?", (roster_id,)).fetchone()
+                if not row:
+                    raise KeyError(roster_id)
+                return dict(row)
+            finally:
+                conn.close()
+
+    async def upsert_model_roster(self, roster_id: str, **fields) -> dict:
+        unknown = set(fields) - self._MODEL_ROSTER_FIELDS
+        if unknown:
+            raise ValueError(f"Unknown model roster fields: {sorted(unknown)}")
+        if "entries_json" in fields:
+            fields["entries_json"] = self._entitlement_json(fields["entries_json"], [])
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                existing = conn.execute("SELECT 1 FROM model_rosters WHERE id=?", (roster_id,)).fetchone()
+                now = _now_iso()
+                if existing:
+                    updates = dict(fields)
+                    if "revision" not in updates:
+                        current = conn.execute("SELECT revision FROM model_rosters WHERE id=?", (roster_id,)).fetchone()
+                        updates["revision"] = int(current[0]) + 1
+                    if updates:
+                        sets = ", ".join(f"{key}=?" for key in updates)
+                        conn.execute(f"UPDATE model_rosters SET {sets}, updated_at=? WHERE id=?",
+                                     (*updates.values(), now, roster_id))
+                else:
+                    if not fields.get("slug") or not fields.get("name"):
+                        raise ValueError("New model roster requires slug and name")
+                    columns = ["id", *fields, "created_at", "updated_at"]
+                    conn.execute(
+                        f"INSERT INTO model_rosters ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                        (roster_id, *fields.values(), now, now),
+                    )
+                conn.commit()
+                return dict(conn.execute("SELECT * FROM model_rosters WHERE id=?", (roster_id,)).fetchone())
+            finally:
+                conn.close()
+
+    async def delete_model_roster(self, roster_id: str) -> bool:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute("DELETE FROM model_rosters WHERE id=?", (roster_id,))
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    async def get_experience_tier(self, tier_id: str) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute("SELECT * FROM experience_tiers WHERE id=?", (tier_id,)).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def get_experience_tier_by_slug(self, slug: str) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute("SELECT * FROM experience_tiers WHERE slug=?", (slug,)).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def list_experience_tiers(self, status: Optional[str] = None) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            sql, params = "SELECT * FROM experience_tiers", ()
+            if status:
+                sql, params = sql + " WHERE status=?", (status,)
+            rows = conn.execute(sql + " ORDER BY name, slug", params).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    async def get_published_experience_tier(self, tier_id: str) -> Optional[dict]:
+        """Return the immutable live policy, never unpublished working fields."""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM experience_tiers WHERE id=? OR slug=? ORDER BY id=? DESC LIMIT 1",
+                (tier_id, tier_id, tier_id),
+            ).fetchone()
+            if not row or str(row["status"] or "") != "published":
+                return None
+            current = dict(row)
+            published_revision = current.get("published_revision")
+            if published_revision is None:
+                return current
+            snapshot = conn.execute(
+                "SELECT * FROM experience_tier_revisions WHERE tier_id=? AND revision=?",
+                (current["id"], int(published_revision)),
+            ).fetchone()
+            if not snapshot:
+                return None
+            payload = json.loads(snapshot["payload_json"] or "{}")
+            live = dict(current)
+            live.update(payload if isinstance(payload, dict) else {})
+            live["revision"] = int(snapshot["revision"])
+            live["published_revision"] = int(snapshot["revision"])
+            live["status"] = "published"
+            live["published_at"] = snapshot["created_at"]
+            return live
+        finally:
+            conn.close()
+
+    async def list_experience_tier_revisions(self, tier_id: str) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM experience_tier_revisions WHERE tier_id=? ORDER BY revision DESC",
+                (tier_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    async def get_experience_tier_revision(self, tier_id: str, revision: int) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM experience_tier_revisions WHERE tier_id=? AND revision=?",
+                (tier_id, int(revision)),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def publish_experience_tier(
+        self, tier_id: str, *, actor_user_id: Optional[str] = None,
+        expected_revision: Optional[int] = None, action: str = "published",
+    ) -> dict:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                raw = conn.execute("SELECT * FROM experience_tiers WHERE id=?", (tier_id,)).fetchone()
+                if not raw:
+                    raise KeyError(tier_id)
+                row = dict(raw)
+                revision = max(1, int(row.get("revision") or 1))
+                if expected_revision is not None and revision != int(expected_revision):
+                    raise ValueError("experience tier revision conflict")
+                occupied = conn.execute(
+                    "SELECT 1 FROM experience_tier_revisions WHERE tier_id=? AND revision=?",
+                    (tier_id, revision),
+                ).fetchone()
+                if occupied:
+                    maximum = conn.execute(
+                        "SELECT COALESCE(MAX(revision),0) FROM experience_tier_revisions WHERE tier_id=?",
+                        (tier_id,),
+                    ).fetchone()[0]
+                    revision = max(revision, int(maximum or 0)) + 1
+                payload = {key: row.get(key) for key in (
+                    "slug", "name", "description", "policy_json",
+                    "policy_schema_version", "roster_id", "is_system", "is_locked",
+                )}
+                now = _now_iso()
+                conn.execute(
+                    """INSERT INTO experience_tier_revisions
+                       (tier_id, revision, payload_json, action, created_by, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (tier_id, revision, json.dumps(payload, separators=(",", ":"), sort_keys=True),
+                     str(action or "published"), actor_user_id, now),
+                )
+                conn.execute(
+                    """UPDATE experience_tiers
+                       SET status='published', revision=?, published_revision=?,
+                           published_at=?, updated_at=?, updated_by=? WHERE id=?""",
+                    (revision, revision, now, now, actor_user_id, tier_id),
+                )
+                conn.commit()
+                return dict(conn.execute(
+                    "SELECT * FROM experience_tiers WHERE id=?", (tier_id,)
+                ).fetchone())
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    async def rollback_experience_tier(
+        self, tier_id: str, revision: int, *, actor_user_id: Optional[str] = None,
+    ) -> dict:
+        """Republish an old immutable policy as a new immutable revision."""
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                current_raw = conn.execute(
+                    "SELECT * FROM experience_tiers WHERE id=?", (tier_id,)
+                ).fetchone()
+                snapshot = conn.execute(
+                    "SELECT * FROM experience_tier_revisions WHERE tier_id=? AND revision=?",
+                    (tier_id, int(revision)),
+                ).fetchone()
+                if not current_raw or not snapshot:
+                    raise KeyError((tier_id, revision))
+                payload = json.loads(snapshot["payload_json"] or "{}")
+                maximum = conn.execute(
+                    "SELECT COALESCE(MAX(revision),0) FROM experience_tier_revisions WHERE tier_id=?",
+                    (tier_id,),
+                ).fetchone()[0]
+                new_revision = max(int(current_raw["revision"] or 1), int(maximum or 0)) + 1
+                now = _now_iso()
+                conn.execute(
+                    """INSERT INTO experience_tier_revisions
+                       (tier_id, revision, payload_json, action, created_by, created_at)
+                       VALUES (?, ?, ?, 'rollback', ?, ?)""",
+                    (tier_id, new_revision,
+                     json.dumps(payload, separators=(",", ":"), sort_keys=True), actor_user_id, now),
+                )
+                editable = {key: payload.get(key) for key in (
+                    "slug", "name", "description", "policy_json",
+                    "policy_schema_version", "roster_id", "is_system", "is_locked",
+                )}
+                conn.execute(
+                    """UPDATE experience_tiers SET slug=?, name=?, description=?, policy_json=?,
+                       policy_schema_version=?, roster_id=?, is_system=?, is_locked=?,
+                       status='published', revision=?, published_revision=?, published_at=?,
+                       updated_at=?, updated_by=? WHERE id=?""",
+                    (editable["slug"], editable["name"], editable["description"],
+                     editable["policy_json"], editable["policy_schema_version"],
+                     editable["roster_id"], editable["is_system"], editable["is_locked"],
+                     new_revision, new_revision, now, now, actor_user_id, tier_id),
+                )
+                conn.commit()
+                return dict(conn.execute(
+                    "SELECT * FROM experience_tiers WHERE id=?", (tier_id,)
+                ).fetchone())
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    async def upsert_experience_tier(
+        self, tier_id: str, *, expected_revision: Optional[int] = None, **fields,
+    ) -> dict:
+        unknown = set(fields) - self._EXPERIENCE_TIER_FIELDS
+        if unknown:
+            raise ValueError(f"Unknown experience tier fields: {sorted(unknown)}")
+        if "policy_json" in fields:
+            fields["policy_json"] = self._entitlement_json(fields["policy_json"], {})
+        for flag in ("is_system", "is_locked"):
+            if flag in fields:
+                fields[flag] = 1 if fields[flag] else 0
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                existing = conn.execute("SELECT revision FROM experience_tiers WHERE id=?", (tier_id,)).fetchone()
+                now = _now_iso()
+                if existing:
+                    if expected_revision is not None and int(existing[0] or 1) != int(expected_revision):
+                        raise ValueError("experience tier revision conflict")
+                    updates = dict(fields)
+                    if "revision" not in updates:
+                        updates["revision"] = int(existing[0]) + 1
+                    if updates:
+                        sets = ", ".join(f"{key}=?" for key in updates)
+                        conn.execute(f"UPDATE experience_tiers SET {sets}, updated_at=? WHERE id=?",
+                                     (*updates.values(), now, tier_id))
+                else:
+                    if not fields.get("slug") or not fields.get("name"):
+                        raise ValueError("New experience tier requires slug and name")
+                    columns = ["id", *fields, "created_at", "updated_at"]
+                    conn.execute(
+                        f"INSERT INTO experience_tiers ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                        (tier_id, *fields.values(), now, now),
+                    )
+                conn.commit()
+                return dict(conn.execute("SELECT * FROM experience_tiers WHERE id=?", (tier_id,)).fetchone())
+            finally:
+                conn.close()
+
+    async def delete_experience_tier(self, tier_id: str) -> bool:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute("DELETE FROM experience_tiers WHERE id=?", (tier_id,))
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    async def get_user_tier_assignment(self, assignment_id: str) -> Optional[dict]:
+        conn = self._get_conn()
+        try:
+            row = conn.execute("SELECT * FROM user_tier_assignments WHERE id=?", (assignment_id,)).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def list_user_tier_assignments(self, user_id: Optional[str] = None) -> List[dict]:
+        conn = self._get_conn()
+        try:
+            sql, params = "SELECT * FROM user_tier_assignments", ()
+            if user_id is not None:
+                sql, params = sql + " WHERE user_id=?", (user_id,)
+            rows = conn.execute(sql + " ORDER BY starts_at DESC, created_at DESC", params).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    async def upsert_user_tier_assignment(self, assignment_id: str, **fields) -> dict:
+        unknown = set(fields) - self._ASSIGNMENT_FIELDS
+        if unknown:
+            raise ValueError(f"Unknown tier assignment fields: {sorted(unknown)}")
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                existing = conn.execute("SELECT 1 FROM user_tier_assignments WHERE id=?", (assignment_id,)).fetchone()
+                now = _now_iso()
+                if existing:
+                    if fields:
+                        sets = ", ".join(f"{key}=?" for key in fields)
+                        conn.execute(f"UPDATE user_tier_assignments SET {sets}, updated_at=? WHERE id=?",
+                                     (*fields.values(), now, assignment_id))
+                else:
+                    required = ("user_id", "tier_id", "source")
+                    if any(not fields.get(key) for key in required):
+                        raise ValueError("New tier assignment requires user_id, tier_id, and source")
+                    columns = ["id", *fields, "created_at", "updated_at"]
+                    conn.execute(
+                        f"INSERT INTO user_tier_assignments ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                        (assignment_id, *fields.values(), now, now),
+                    )
+                conn.commit()
+                return dict(conn.execute("SELECT * FROM user_tier_assignments WHERE id=?", (assignment_id,)).fetchone())
+            finally:
+                conn.close()
+
+    async def delete_user_tier_assignment(self, assignment_id: str) -> bool:
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute("DELETE FROM user_tier_assignments WHERE id=?", (assignment_id,))
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    async def append_entitlement_audit_event(
+        self, event_id: str, *, action: str, entity_type: str,
+        subject_user_id: Optional[str] = None, actor_user_id: Optional[str] = None,
+        entity_id: Optional[str] = None, previous_json=None, new_json=None,
+        reason: str = "", created_at: Optional[str] = None,
+    ) -> dict:
+        previous = None if previous_json is None else self._entitlement_json(previous_json, {})
+        new = None if new_json is None else self._entitlement_json(new_json, {})
+        async with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "INSERT INTO entitlement_audit_events "
+                    "(id,subject_user_id,actor_user_id,action,entity_type,entity_id,previous_json,new_json,reason,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (event_id, subject_user_id, actor_user_id, action, entity_type,
+                     entity_id, previous, new, reason, created_at or _now_iso()),
+                )
+                conn.commit()
+                return dict(conn.execute("SELECT * FROM entitlement_audit_events WHERE id=?", (event_id,)).fetchone())
+            finally:
+                conn.close()
+
+    async def list_entitlement_audit_events(
+        self, *, subject_user_id: Optional[str] = None,
+        entity_type: Optional[str] = None, entity_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[dict]:
+        clauses, params = [], []
+        if subject_user_id is not None:
+            clauses.append("subject_user_id=?")
+            params.append(subject_user_id)
+        if entity_type is not None:
+            clauses.append("entity_type=?")
+            params.append(entity_type)
+        if entity_id is not None:
+            clauses.append("entity_id=?")
+            params.append(entity_id)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM entitlement_audit_events{where} ORDER BY created_at DESC LIMIT ?",
+                (*params, max(1, min(int(limit), 1000))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
     async def get_user_profile(self, user_id: str) -> Optional[dict]:
         """Return the user_profiles row for user_id, or None if not found."""
         conn = self._get_conn()
@@ -10053,6 +11185,14 @@ class LocalBackend(StorageBackend):
             ).fetchone()
             if not existing:
                 return None
+            try:
+                metadata = json.loads(existing["metadata"] or "{}")
+                if not isinstance(metadata, dict):
+                    metadata = {}
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+            metadata["source"] = "admin_edit"
+            safe["metadata"] = json.dumps(metadata)
             set_clause = ", ".join(f"{k} = ?" for k in safe)
             conn.execute(
                 f"UPDATE agent_templates SET {set_clause}, updated_at = ? WHERE id = ?",
@@ -10969,7 +12109,8 @@ class LocalBackend(StorageBackend):
                     if not sid:
                         continue
                     conn.execute("DELETE FROM interactions WHERE session_id = ?", (sid,))
-                    for tbl in ("session_summaries", "pipeline_events"):
+                    for tbl in ("session_summaries", "pipeline_events",
+                                "run_contract_checks", "run_contract_state"):
                         try:
                             conn.execute(f"DELETE FROM {tbl} WHERE session_id = ?", (sid,))
                         except Exception:  # noqa: BLE001
@@ -11050,13 +12191,18 @@ class LocalBackend(StorageBackend):
         Move a custom agent to the recycling bin (soft delete). Caller must be in
         admin_users. Nothing is erased: the agent's status flips to 'trashed' so
         it drops out of the Agents page but keeps its prompts, sessions and
-        transcripts until it is permanently emptied from the bin.
+        transcripts until it is permanently emptied from the bin. EVERY session
+        that belongs to the agent (plus spawned helper sessions in the run-family,
+        resolved via resolve_child_sessions) is binned with it (status ->
+        'recycled'), so a trashed agent can't keep serving active chats.
         System agents (template rows) live in agent_templates, not here, and the
         built-in 'default' row carries no admin_users — so the ownership check
         alone already protects them.
         Returns True if a row was flipped, False if not found or not owned.
         """
         conn = self._get_conn()
+        recycled_ids: List[str] = []
+        flipped = False
         try:
             # Bump updated_at with the status flip so the hybrid puller carries this
             # trash to every device's local mirror (it pulls only rows whose
@@ -11068,17 +12214,66 @@ class LocalBackend(StorageBackend):
                    AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)""",
                 (_now_iso(), agent_id, user_id),
             )
+            flipped = cursor.rowcount > 0
             conn.commit()
-            return cursor.rowcount > 0
+            if flipped:
+                # ── Cascade: bin every session that belongs to this agent ──
+                # Base sessions + their whole run-family (spawned helpers, walked
+                # recursively) go to the recycling bin with the agent. Bumping
+                # updated_at lets the hybrid puller carry the flips to every
+                # device's local mirror, exactly like the agent row above.
+                # Best-effort: a missing table/column can't break the trash.
+                try:
+                    base_ids = [r[0] for r in conn.execute(
+                        "SELECT id FROM sessions WHERE agent_id = ? "
+                        "AND COALESCE(status, 'active') != 'recycled'",
+                        (agent_id,),
+                    ).fetchall()]
+                    recycled_ids = list(base_ids)
+                    for cid in resolve_child_sessions(conn, base_ids):
+                        if cid not in recycled_ids:
+                            recycled_ids.append(cid)
+                    if recycled_ids:
+                        now = _now_iso()
+                        for sid in recycled_ids:
+                            conn.execute(
+                                "UPDATE sessions SET status = 'recycled', updated_at = ? "
+                                "WHERE id = ?",
+                                (now, sid),
+                            )
+                        conn.commit()
+                except Exception:  # noqa: BLE001 — cascade is best-effort
+                    logger.exception("trash_custom_agent: session cascade failed for %s", agent_id)
         finally:
             conn.close()
+        # ── Safety: kill any active loop and clear active state ──
+        # A loop may be mid-flight on a now-binned session: set an interrupt so it
+        # halts on the next interrupt check, and clear the metadata active state so
+        # it can't re-activate from a cold read. Mirrors the session-recycle sweep
+        # in app/api/db_viewer.py. Best-effort — never fail the trash over this.
+        if flipped and recycled_ids:
+            for sid in recycled_ids:
+                try:
+                    await self.set_interrupt(sid)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    await self.clear_session_active_state(sid)
+                except Exception:  # noqa: BLE001
+                    pass
+        return flipped
 
     async def restore_custom_agent(self, agent_id: str, user_id: str) -> bool:
         """
         Restore a trashed agent back to the Agents page (status -> 'active').
-        Caller must own it. Returns True if a trashed row was restored.
+        Caller must own it. Sessions that were binned with the agent are brought
+        back too (status -> 'active', including spawned helpers in the run-family),
+        so the agent returns with its chats. Returns True if a trashed row was
+        restored.
         """
         conn = self._get_conn()
+        restored_ids: List[str] = []
+        restored = False
         try:
             cursor = conn.execute(
                 """UPDATE agents SET status = 'active', updated_at = ?
@@ -11086,10 +12281,38 @@ class LocalBackend(StorageBackend):
                    AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)""",
                 (_now_iso(), agent_id, user_id),
             )
+            restored = cursor.rowcount > 0
             conn.commit()
-            return cursor.rowcount > 0
+            if restored:
+                # ── Cascade: bring the agent's binned sessions back ──
+                # Symmetric with trash_custom_agent: base sessions that were
+                # binned (status 'recycled') flip back to 'active', and so does
+                # their run-family (spawned helpers). Sessions the user binned on
+                # their own before the agent trash are restored as well — the bin
+                # is a single bucket and we can't tell the two apart. Best-effort.
+                try:
+                    base_ids = [r[0] for r in conn.execute(
+                        "SELECT id FROM sessions WHERE agent_id = ? AND status = 'recycled'",
+                        (agent_id,),
+                    ).fetchall()]
+                    restored_ids = list(base_ids)
+                    for cid in resolve_child_sessions(conn, base_ids):
+                        if cid not in restored_ids:
+                            restored_ids.append(cid)
+                    if restored_ids:
+                        now = _now_iso()
+                        for sid in restored_ids:
+                            conn.execute(
+                                "UPDATE sessions SET status = 'active', updated_at = ? "
+                                "WHERE id = ? AND status = 'recycled'",
+                                (now, sid),
+                            )
+                        conn.commit()
+                except Exception:  # noqa: BLE001 — cascade is best-effort
+                    logger.exception("restore_custom_agent: session cascade failed for %s", agent_id)
         finally:
             conn.close()
+        return restored
 
     async def delete_custom_agent(self, agent_id: str, user_id: str) -> bool:
         """
@@ -11130,7 +12353,8 @@ class LocalBackend(StorageBackend):
                     (agent_id,),
                 )
                 for tbl in ("session_summaries", "pipeline_events",
-                            "session_runs", "skill_executions"):
+                            "session_runs", "skill_executions",
+                            "run_contract_checks", "run_contract_state"):
                     try:
                         conn.execute(
                             f"""DELETE FROM {tbl}
@@ -11158,8 +12382,8 @@ class LocalBackend(StorageBackend):
                 try:
                     conn.execute(
                         "DELETE FROM vault_agent.auth_elements "
-                        "WHERE label = ? OR label = ?",
-                        (f"oauth:{agent_id}", f"agent:{agent_id}"),
+                        "WHERE label = ? OR label = ? OR label LIKE ?",
+                        (f"oauth:{agent_id}", f"agent:{agent_id}", f"agent:{agent_id}:%"),
                     )
                 except Exception:
                     pass
@@ -11206,6 +12430,8 @@ class LocalBackend(StorageBackend):
         agent_id: str,
         user_id: str,
         updates: dict,
+        *,
+        allow_install_admin: bool = False,
     ) -> Optional[dict]:
         """
         Update editable fields on a custom agent. Caller must be in admin_users.
@@ -11247,12 +12473,16 @@ class LocalBackend(StorageBackend):
         now = _now_iso()
         safe["updated_at"] = now
         set_clause = ", ".join(f"{k} = ?" for k in safe)
-        values = list(safe.values()) + [agent_id, user_id]
+        values = list(safe.values()) + [agent_id]
+        owner_clause = ""
+        if not allow_install_admin:
+            owner_clause = " AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)"
+            values.append(user_id)
 
         conn = self._get_conn()
         try:
             cursor = conn.execute(
-                f"UPDATE agents SET {set_clause} WHERE id = ? AND EXISTS (SELECT 1 FROM json_each(admin_users) WHERE value = ?)",
+                f"UPDATE agents SET {set_clause} WHERE id = ?{owner_clause}",
                 values,
             )
             conn.commit()

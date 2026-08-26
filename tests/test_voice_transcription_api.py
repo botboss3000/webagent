@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi import HTTPException
@@ -47,6 +48,10 @@ def test_openrouter_transcription_payload() -> None:
         }
 
     with (
+        patch("app.auth.identity.assert_caller_is", AsyncMock(return_value="user-1")),
+        patch("app.entitlements.service.resolve_capabilities", AsyncMock(return_value={
+            "features": {"voice_llm": True},
+        })),
         patch.object(transcription, "_resolve_user_config", resolve),
         patch.object(
             transcription,
@@ -61,6 +66,7 @@ def test_openrouter_transcription_payload() -> None:
     ):
         result = asyncio.run(
             transcription.transcribe_audio(
+                request=SimpleNamespace(),
                 file=_Upload(),
                 user_id="user-1",
                 language="en-US",
@@ -79,14 +85,21 @@ def test_openrouter_transcription_payload() -> None:
 
 
 def test_transcription_rejects_when_admin_disables_llm_voice() -> None:
-    with patch.object(
-        transcription,
-        "get_voice_dictation_config",
-        lambda: {"llm_enabled": False, "mode": "browser_then_llm"},
+    with (
+        patch("app.auth.identity.assert_caller_is", AsyncMock(return_value="user-1")),
+        patch("app.entitlements.service.resolve_capabilities", AsyncMock(return_value={
+            "features": {"voice_llm": True},
+        })),
+        patch.object(
+            transcription,
+            "get_voice_dictation_config",
+            lambda: {"llm_enabled": False, "mode": "browser_then_llm"},
+        ),
     ):
         try:
             asyncio.run(
                 transcription.transcribe_audio(
+                    request=SimpleNamespace(),
                     file=_Upload(),
                     user_id="user-1",
                     language="en",

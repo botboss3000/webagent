@@ -19,7 +19,7 @@ runtime stores, not authority planes.
 
 ## Per-user database size limit
 
-**App Settings → App Functions → User database size limit** provides a per-user
+**Settings → App Settings → App Functions → User database size limit** provides a per-user
 cap for the user SQLite authority file. The expanded row contains an editable
 numeric **Maximum database size (MB)** field, prefilled with the default **100
 MB**. The setting is enabled by default and accepts 10 MB through 10,240 MB.

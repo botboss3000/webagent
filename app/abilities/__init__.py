@@ -24,6 +24,10 @@ Ability descriptor JSON contract (``plugins/abilities/<group>/<id>.json``)
   "icon": "globe",            // Lucide icon name
   "color": "#7aa2f7",         // accent colour
   "description": "Lets the agent search the web, …",
+  "entitlement_group": "web_read", // reviewed product-capability group
+  "risk_class": "read",            // informational: low | read | write | admin
+  "action_class": "read",          // read | write | external_action | mixed
+  "required_integration": null,     // optional backend/integration identifier
   "note": null,               // optional one-line config note
   "simple": true,             // true = toggle directly; false = needs config panel
   "placeholder": false,       // true = grey "Coming Soon" row, no toggle
@@ -121,6 +125,10 @@ def _load_group_meta(group_dir: Path, folder_name: str) -> Dict[str, Any]:
                     "color": raw.get("color") or _EMERGENT_GROUP_COLOR,
                     "desc": raw.get("desc") or "",
                     "order": raw.get("order", _EMERGENT_GROUP_ORDER),
+                    "entitlement_group": raw.get("entitlement_group"),
+                    "risk_class": raw.get("risk_class"),
+                    "action_class": raw.get("action_class"),
+                    "required_integration": raw.get("required_integration"),
                 }
         except Exception as e:
             logger.warning("Failed to parse _group.json in %s: %s", group_dir, e)
@@ -131,6 +139,10 @@ def _load_group_meta(group_dir: Path, folder_name: str) -> Dict[str, Any]:
         "color": _EMERGENT_GROUP_COLOR,
         "desc": "",
         "order": _EMERGENT_GROUP_ORDER,
+        "entitlement_group": None,
+        "risk_class": None,
+        "action_class": None,
+        "required_integration": None,
     }
 
 
@@ -160,6 +172,7 @@ def _build_catalog_entry(
     sub_dir: Path,
     gid: str,
     desc: Dict[str, Any],
+    group_meta: Optional[Dict[str, Any]] = None,
     is_app_function_dir: bool = False,
 ) -> Dict[str, Any]:
     """Build one catalog entry from a descriptor + its directory.
@@ -204,6 +217,7 @@ def _build_catalog_entry(
     if is_app_function_dir:
         kind = "app_function"
 
+    group_meta = group_meta or {}
     return {
         "id": ability_id,
         "display_name": desc.get("display_name") or ability_id,
@@ -211,6 +225,10 @@ def _build_catalog_entry(
         "icon": desc.get("icon") or "plug",
         "color": desc.get("color") or "#7aa2f7",
         "description": desc.get("description") or "",
+        "entitlement_group": desc.get("entitlement_group") or group_meta.get("entitlement_group"),
+        "risk_class": desc.get("risk_class") or group_meta.get("risk_class"),
+        "action_class": desc.get("action_class") or group_meta.get("action_class"),
+        "required_integration": desc.get("required_integration") or group_meta.get("required_integration"),
         "note": desc.get("note"),
         "simple": bool(desc.get("simple", True)),
         # Marks a behavioural, pick-one context-management strategy
@@ -239,6 +257,11 @@ def _build_catalog_entry(
         # all still read this same catalog and key off locked_on /
         # context_strategy / enabled exactly as before. See ui_catalog().
         "app_function": is_app_function,
+        # A small class of safety services has two legitimate control surfaces:
+        # app-wide limits in App Functions and per-agent preferences in the
+        # Abilities tab.  They remain app functions at runtime, but are also
+        # included in the agent-facing catalog when this flag is set.
+        "agent_configurable": bool(desc.get("agent_configurable", False)),
         # On-by-default at the app level: an ability with no explicit
         # admin toggle stored in data/config/agent-abilities.json falls
         # back to this. SHIP POLICY — abilities are ON by default, so a
@@ -255,6 +278,10 @@ def _build_catalog_entry(
         "tools": list(desc.get("tools") or []),
         "tool_metadata": desc.get("tool_metadata") or {},
         "config": desc.get("config"),
+        # Optional generic agent-panel extension. Core passes this opaque id to
+        # the shared Abilities renderer; the renderer maps known panel ids to a
+        # reusable editor. Runtime/API ownership remains in the drop-in ability.
+        "ui_panel": desc.get("ui_panel"),
         # Declarative credential needs (the common-credential framework,
         # see app/abilities/credentials.py). When present, the ability's
         # secrets are stored/read/gated generically — no bespoke endpoint.
@@ -336,7 +363,7 @@ def _load(force: bool = False) -> Dict[str, Dict[str, Any]]:
                 continue
 
             cat[ability_id] = _build_catalog_entry(
-                ability_id, sub_dir, gid, desc, is_app_function_dir=False
+                ability_id, sub_dir, gid, desc, groups.get(gid), is_app_function_dir=False
             )
 
     # ── App-function tree: plugins/app_functions/<function>/ (flat) ──
@@ -362,7 +389,7 @@ def _load(force: bool = False) -> Dict[str, Dict[str, Any]]:
                 continue
 
             cat[ability_id] = _build_catalog_entry(
-                ability_id, sub_dir, "app_functions", desc,
+                ability_id, sub_dir, "app_functions", desc, groups.get("app_functions"),
                 is_app_function_dir=True,
             )
             # Flat dir → give it an emergent group so group bookkeeping (pure
@@ -553,6 +580,44 @@ async def turn_hooks_for_agent(agent_id: str) -> list:
         logger.debug("session_titler not available", exc_info=True)
 
     return hooks
+
+
+async def prompt_context_for_agent(
+    agent_id: str, user_id: str, query: str,
+) -> str:
+    """Collect bounded turn-context snippets from enabled drop-in abilities.
+
+    An ability opts in by exporting an async ``build_prompt_context`` hook. The
+    hook is called only when the same enabled/configured-provider resolution used
+    by tool loading grants that ability to this agent. Failures are isolated so
+    an optional knowledge source can never block the chat turn.
+    """
+    if not agent_id or not (query or "").strip():
+        return ""
+    try:
+        from app.integrations import gather_enabled_providers
+        enabled = await gather_enabled_providers(agent_id, user_id) or set()
+    except Exception:
+        return ""
+
+    sections: List[str] = []
+    for ability_id in sorted(enabled):
+        try:
+            mod = ability_module(ability_id)
+            hook = getattr(mod, "build_prompt_context", None) if mod is not None else None
+            if not callable(hook):
+                continue
+            value = await hook(
+                agent_id=agent_id, user_id=user_id, query=query,
+            )
+            if isinstance(value, str) and value.strip():
+                sections.append(value.strip())
+        except Exception:
+            logger.debug(
+                "prompt context hook failed for ability %s", ability_id,
+                exc_info=True,
+            )
+    return "\n\n".join(sections)
 
 
 async def context_strategy_for_agent(agent_id: str):
@@ -872,6 +937,7 @@ def connection_rows() -> List[Dict[str, Any]]:
             # admin panel reads the same flag from the catalog as has_credentials).
             "has_credentials": bool(isinstance(entry.get("credentials"), dict)
                                     and entry["credentials"].get("fields")),
+            "ui_panel": entry.get("ui_panel"),
         })
     return rows
 
@@ -928,9 +994,10 @@ def ui_catalog() -> Dict[str, Any]:
             "default_enabled": entry.get("default_enabled", False),
             # Safety device — always-on, fixed toggle (cannot be turned off).
             "locked_on": entry.get("locked_on", False),
-            # Background app service, not an agent ability — rendered in App
-            # Settings ▸ App Functions, excluded from the two ability tables below.
+            # Background app service. Most are App-Functions-only; a descriptor
+            # may opt into the per-agent table with agent_configurable.
             "app_function": entry.get("app_function", False),
+            "agent_configurable": entry.get("agent_configurable", False),
             # App Functions are administered only from App Settings.  Include
             # their non-secret schema in the catalog so the expanded row can
             # render its controls immediately; it still fetches saved values
@@ -951,6 +1018,10 @@ def ui_catalog() -> Dict[str, Any]:
             "skill_mode": entry.get("skill_mode") or "selectable",
             "order": order_abilities.get(aid, entry.get("order", 100)),
             "group": entry["group"],
+            "entitlement_group": entry.get("entitlement_group") or "platform_admin",
+            "risk_class": entry.get("risk_class"),
+            "action_class": entry.get("action_class"),
+            "required_integration": entry.get("required_integration"),
             "tools": entry.get("tools") or [],
             # True when the ability declares a ``credentials`` block — the panel
             # then renders its generic credentials form. Field defs + values are
@@ -958,19 +1029,21 @@ def ui_catalog() -> Dict[str, Any]:
             # here, so secrets never ride along with the catalog).
             "has_credentials": bool(isinstance(entry.get("credentials"), dict)
                                     and entry["credentials"].get("fields")),
+            "ui_panel": entry.get("ui_panel"),
         }
 
     # ── Split off background APP FUNCTIONS ──────────────────────────────────
-    # An app_function (Session Namer, Context Control's compaction train, the
-    # Render Recorder) is a background service the app runs for itself, not an
-    # agent-invoked ability. It is lifted OUT of the abilities map + its group so
-    # neither ability table (admin Agent Tools, per-agent Abilities tab) shows it;
-    # it renders in App Settings ▸ App Functions instead. Nothing else changes —
+    # An app_function is copied into App Settings ▸ App Functions. Ordinarily it
+    # is then lifted out of the agent ability map; dual-surface safety services
+    # marked agent_configurable remain available for per-agent preferences too.
+    # Nothing else changes —
     # runtime still reads these from _load() (locked_on / context_strategy /
     # background-service hooks all resolve exactly as before).
     app_functions: Dict[str, Any] = {}
     for aid in [a for a, m in abilities.items() if m.get("app_function")]:
-        app_functions[aid] = abilities.pop(aid)
+        app_functions[aid] = dict(abilities[aid])
+        if not abilities[aid].get("agent_configurable"):
+            abilities.pop(aid)
 
     # Display names for member sorting
     name_of: Dict[str, str] = {aid: a["display_name"] for aid, a in abilities.items()}
@@ -990,7 +1063,7 @@ def ui_catalog() -> Dict[str, Any]:
     _grp_has_appfn: Dict[str, bool] = {}
     for e in cat.values():
         g = e.get("group")
-        if e.get("app_function"):
+        if e.get("app_function") and not e.get("agent_configurable"):
             _grp_has_appfn[g] = True
         else:
             _grp_has_real[g] = True

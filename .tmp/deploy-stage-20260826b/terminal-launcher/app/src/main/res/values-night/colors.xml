@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DARK palette (default look of the app). -->
+<resources>
+    <color name="bg_0">#0B0E14</color>
+    <color name="bg_1">#11151F</color>
+    <color name="bg_2">#171C28</color>
+    <color name="bg_elev">#1F2533</color>
+    <color name="bg_elev_2">#2A3140</color>
+
+    <color name="fg_1">#E6EAF2</color>
+    <color name="fg_2">#AEB6C6</color>
+    <color name="fg_3">#8B93A6</color>
+    <color name="fg_muted">#6B7488</color>
+
+    <color name="border">#2C3342</color>
+    <color name="border_soft">#222838</color>
+
+    <color name="accent_green">#3DDC84</color>
+    <color name="accent_cyan">#35C5F0</color>
+    <color name="accent_amber">#F0A935</color>
+    <color name="accent_magenta">#E060C0</color>
+
+    <color name="danger">#FF5C66</color>
+    <color name="scrim">#99000000</color>
+
+    <color name="recording">#FF4D5E</color>
+</resources>

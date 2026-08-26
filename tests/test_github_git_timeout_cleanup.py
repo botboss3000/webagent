@@ -4,7 +4,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from app.api import github
 
@@ -55,7 +55,7 @@ class GitTimeoutCleanupTests(unittest.TestCase):
 
         self.assertEqual((stdout, stderr, code), ("", "git command timed out", -1))
         terminate.assert_called_once_with(proc)
-        cleanup.assert_called_once_with(["add", "-A"], None)
+        cleanup.assert_called_once_with(["add", "-A"], None, ANY)
 
         popen_env = popen.call_args.kwargs["env"]
         self.assertEqual(popen_env["GIT_OPTIONAL_LOCKS"], "0")

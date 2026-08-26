@@ -22,13 +22,15 @@
 // or el.style.color = 'var(--accent)'. New colour? Add a token to the palette there first.
 
 import {
-  _esc, _iconHtml, _chevronSvg, _buildTriToggle, _wireTriToggle, _noop,
-  _buildToolRow, _buildAbilitySettingsList, _buildEyeToggle, _buildVisibilityTri,
+  _esc, _iconHtml, _chevronSvg,
+  _buildToolRow, _buildAbilitySettingsList, _buildEyeToggle,
+  _buildMoreButton, _buildGroupStatusCard, _paintGroupStatus,
   _buildAbilityTreeLoader, _staggerRevealGroups, _buildSettingsRowsHtml,
   buildCredentialsSection, _flashStatusText, _markSaving, _flashSaveCheck,
   buildAbilitySearchPill, _buildGroupTriSpinner, _buildGroupBodyLoading,
   _refreshLucideIcons, loadAbilityCatalog, invalidateAbilityCatalog,
 } from './dom-utils.js';
+import { buildSqlConnectionsSection } from './sql-database-connections.js';
 import { spawnWebagentAbilityChat } from '../../chat-widget/js/chat-widget.js';
 import { ABILITY_TO_TOOLS, _CONN_ICONS } from '../../main-panel/agents/js/state.js';
 import { authHeaders } from './left-login.js';
@@ -95,23 +97,14 @@ function _buildGroupHead(groupId, name, icon, color, desc) {
   return head;
 }
 
-/** Append a 3-position tri-toggle to a group head. (The expand chevron now
- *  lives at the LEFT of the head, built in `_buildGroupHead`.) */
-function _appendGroupTri(head, triId, title) {
-  const tri = _buildTriToggle(triId, title);
-  head.appendChild(tri);
-  return tri;
-}
-
-/** Append an inactive, same-size group toggle for groups with no togglable
- *  ability members (credential-only / placeholder) — mirrors the admin panel. */
-function _appendDisabledGroupTri(head, triId) {
-  const tri = _buildTriToggle(triId, 'No abilities to bulk-toggle in this group');
-  tri.classList.add('ac-tri-disabled');
-  tri.setAttribute('aria-disabled', 'true');
-  tri.removeAttribute('tabindex');
-  head.appendChild(tri);
-  return tri;
+/** Append a read-only group status card to a group head (replaces the old
+ *  interactive tri-toggle). State: 'off' → Disabled, 'mixed' → Partial,
+ *  'on' → Enabled, 'na' → "—" (no togglable members). The card is display-only —
+ *  bulk group toggling is intentionally gone. (SISTER-PANEL: AGENT-ABILITY-TABLE.) */
+function _appendGroupStatus(head, statusId, state, title) {
+  const status = _buildGroupStatusCard(statusId, state, title);
+  head.appendChild(status);
+  return status;
 }
 
 // Imported from shared/dom-utils.js: _buildTriToggle, _wireTriToggle
@@ -138,18 +131,20 @@ function _buildConnectionCard(conn, { agent, canEdit, abilitiesByProvider, onSav
   // A locked-on safety ability (e.g. Context Control) is always enabled and its
   // toggle is fixed ON — clicking it can't turn it off, it just reports so.
   const lockedOn = !!conn.locked_on;
-  const enabled = lockedOn ? true : !!conn.enabled;
-  // Real abilities get the single 3-position visibility tri (Off · Discoverable ·
-  // Visible) — built and appended below — instead of the [switch + eye] pair, so
-  // the inline enable switch is skipped for them. OAuth / channel / credential
-  // cards keep the plain on/off switch (they have no visibility mode).
-  const isAbilityCard = conn.section === 'ability' && !!agent && !isComingSoon;
+  const entitlementAllowed = conn.entitlement_allowed !== false;
+  canEdit = Boolean(canEdit && entitlementAllowed);
+  const enabled = entitlementAllowed && (lockedOn ? true : !!conn.enabled);
+  // Every non-coming-soon row carries the plain on/off switch. Ability rows add
+  // a ⋯ more button (visibility + caller access) instead of the old row-level
+  // controls; OAuth / channel / credential cards keep just the switch (they have
+  // no visibility mode or caller-access gate).
 
   // Wrapper. `ac-row` is required so the shared `.ac-row.expanded > .ac-ability-body`
   // rule (app3.css) reveals the body when the card is expanded — the card is the
   // direct parent of both the head (`.ac-ability-row`) and the body (`.ac-ability-body`).
   const card = document.createElement('div');
-  card.className = 'conn-card ac-row' + (isComingSoon ? ' coming-soon' : '') + (enabled ? ' enabled' : '');
+  card.className = 'conn-card ac-row' + (isComingSoon ? ' coming-soon' : '')
+    + (enabled ? ' enabled' : '') + (entitlementAllowed ? '' : ' entitlement-locked');
   card.dataset.connType = abilityId;
 
   // ── Header row ──
@@ -164,12 +159,11 @@ function _buildConnectionCard(conn, { agent, canEdit, abilitiesByProvider, onSav
     </div>
     ${isComingSoon
       ? '<span class="conn-badge coming-soon">Coming soon</span>'
-      : `<span class="ac-ability-status"></span>${isAbilityCard ? '' : `
+      : `${entitlementAllowed ? '' : '<span class="conn-badge">Upgrade required</span>'}<span class="ac-ability-status"></span>
          <label class="conn-toggle-wrap ac-ability-toggle-wrap${lockedOn ? ' ac-ability-toggle-locked' : ''}" title="${lockedOn ? 'Always on — safety device, cannot be deactivated' : (canEdit ? (enabled ? 'Disable' : 'Enable') : (enabled ? 'Enabled (admin only)' : 'Disabled (admin only)'))}">
            <input type="checkbox" class="conn-toggle" ${enabled ? 'checked' : ''} ${canEdit ? '' : 'disabled'}>
            <span class="conn-toggle-track"></span>
-         </label>`}`
-    }
+         </label>`}
   `;
 
   card.appendChild(header);
@@ -201,28 +195,31 @@ function _buildConnectionCard(conn, { agent, canEdit, abilitiesByProvider, onSav
       return _bodyPromise;
     };
 
-    // Whole-ability 3-position visibility tri on the row header — ONE control for
-    // the three states (Off · Discoverable · Visible), styled like the group tri
-    // it aligns under. It orchestrates BOTH backend writes: the enable/disable
-    // (onSave) and the visibility mode PUT (discoverable = agent loads on demand
-    // via load_ability; visible = tools & skill shown now).
-    const visTri = _buildVisibilityTri({
-      value: enabled ? (conn.ability_mode === 'discoverable' ? 'discoverable' : 'visible') : 'off',
-      canEdit,
-      lockedOn,
-      onBlocked: (msg) => _flashStatusText(header.querySelector('.ac-ability-status'), msg, 'warn'),
-      onChange: async (next, _prev) => {
-        const wantEnabled = next !== 'off';
-        const wantMode = next === 'visible' ? 'visible' : 'discoverable';
+    // ── "More" (⋯) menu — the row's only control beyond the toggle. Visibility
+    // (Off · Discoverable · Visible) and caller access (Everyone · Registered ·
+    // Admins) moved OFF the row into the shared floating menu, so the title line
+    // holds just the on/off switch (narrow-screen friendly). The menu items are
+    // rebuilt on every open so they always reflect the live connection state.
+    // The mode/access saves reuse the same endpoints + spinner → ✓ / ⚠ overlay
+    // language the old row-level controls used.
+    const _syncRowToggle = () => {
+      const t = card.querySelector('.conn-toggle');
+      if (t) t.checked = !!conn.enabled;
+    };
+    async function _setVisibility(next, btn) {
+      const wantEnabled = next !== 'off';
+      const wantMode = next === 'visible' ? 'visible' : 'discoverable';
+      _markSaving(btn);
+      try {
         // (1) Enable/disable if the on/off state actually changed.
         if (wantEnabled !== !!conn.enabled) {
           const config = _collectConfig(card, abilityId);
           await Promise.resolve(onSave(abilityId, wantEnabled, config));
           conn.enabled = wantEnabled;
           card.classList.toggle('enabled', wantEnabled);
-          // Reveal/hide the "Available to" dropdown with the on/off state.
-          if (card._accessWrap) card._accessWrap.style.display = wantEnabled ? '' : 'none';
-          // Let the parent group tri (Off/Mixed/On) re-sync from the new state.
+          _syncRowToggle();
+          // Let the parent group status card (Disabled · Partial · Enabled)
+          // re-sync from the new state.
           card.dispatchEvent(new CustomEvent('ability-enabled-change', { bubbles: true }));
         }
         // (2) When on, ensure the visibility mode matches the chosen detent.
@@ -234,18 +231,18 @@ function _buildConnectionCard(conn, { agent, canEdit, abilitiesByProvider, onSav
           });
           if (!res.ok) throw new Error('save failed');
           conn.ability_mode = wantMode;
-          if (body && typeof body._setVisInfo === 'function') body._setVisInfo('ability', wantMode);
-          if (body && typeof body._refreshSchema === 'function') body._refreshSchema();
+          const b = await ensureBody();
+          if (b && typeof b._setVisInfo === 'function') b._setVisInfo('ability', wantMode);
+          if (b && typeof b._refreshSchema === 'function') b._refreshSchema();
         }
-      },
-    });
-    // "Available to" caller-access dropdown — sits just LEFT of the visibility
-    // tri (the ability's on/off control), hidden while the ability is off since
-    // access is moot until it's enabled. Saves to its own per-agent endpoint.
-    const accessWrap = _buildAccessSelect({
-      value: conn.available_to || 'everyone',
-      canEdit,
-      onSave: async (level) => {
+        _flashSaveCheck(btn, true);
+      } catch (_) {
+        _flashSaveCheck(btn, false);
+      }
+    }
+    async function _setAccess(level, btn) {
+      _markSaving(btn);
+      try {
         const res = await fetch(`/api/v1/agents/${agent.id}/abilities/${encodeURIComponent(abilityId)}/access`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -253,17 +250,28 @@ function _buildConnectionCard(conn, { agent, canEdit, abilitiesByProvider, onSav
         });
         if (!res.ok) throw new Error('save failed');
         conn.available_to = level;
-      },
-      flash: (msg, kind) => _flashStatusText(header.querySelector('.ac-ability-status'), msg, kind),
-    });
-    accessWrap.style.display = enabled ? '' : 'none';
-    header.appendChild(accessWrap);
-    card._accessWrap = accessWrap;
-
-    // Tri at the far right, lined up under the group tri.
-    visTri.style.marginLeft = '6px';
-    header.appendChild(visTri);
-    card._visTri = visTri;   // the group bulk toggle drives this programmatically
+        _flashSaveCheck(btn, true);
+      } catch (_) {
+        _flashSaveCheck(btn, false);
+      }
+    }
+    const moreBtn = _buildMoreButton(() => {
+      const mode = (conn.enabled && conn.ability_mode === 'discoverable') ? 'discoverable' : (conn.enabled ? 'visible' : 'off');
+      const access = conn.available_to || 'everyone';
+      const items = [
+        // Visibility — the three detents of the old row-level tri, same semantics.
+        { icon: 'eye-off', label: 'Off', checked: mode === 'off', disabled: !canEdit || lockedOn, action: () => _setVisibility('off', moreBtn) },
+        { icon: 'download', label: 'Discoverable', checked: mode === 'discoverable', disabled: !canEdit, action: () => _setVisibility('discoverable', moreBtn) },
+        { icon: 'eye', label: 'Visible', checked: mode === 'visible', disabled: !canEdit, action: () => _setVisibility('visible', moreBtn) },
+        { separator: true },
+      ];
+      // "Available to" — caller-access gate (Everyone · Registered · Admins).
+      for (const lvl of _ACCESS_LEVELS) {
+        items.push({ icon: lvl.icon, label: lvl.label, checked: access === lvl.value, disabled: !canEdit, action: () => _setAccess(lvl.value, moreBtn) });
+      }
+      return items;
+    }, { title: 'More options — visibility & who can trigger this ability' });
+    header.appendChild(moreBtn);
 
     header.addEventListener('click', async e => {
       if (e.target.closest('.conn-toggle-wrap, .agents-eye-toggle, .ac-tri, .ac-access-wrap')) return;
@@ -329,6 +337,10 @@ function _buildConnectionCard(conn, { agent, canEdit, abilitiesByProvider, onSav
       try {
         await Promise.resolve(onSave(abilityId, toggle.checked, config));
         _flashSaveCheck(wrap, true);
+        // Reflect the saved state on the card and let the parent group's status
+        // card (Disabled · Partial · Enabled) re-sync from it.
+        card.classList.toggle('enabled', toggle.checked);
+        card.dispatchEvent(new CustomEvent('ability-enabled-change', { bubbles: true }));
       } catch (e) {
         // Save failed (e.g. the ability isn't enabled at the app level) — revert
         // the switch to its prior position so it never shows a state the backend
@@ -531,6 +543,16 @@ async function _buildAbilityBody(conn, { agent, canEdit, abilitiesByProvider, on
     el.appendChild(buildCredentialsSection(abilityId, {
       agentId: agent ? agent.id : null,
       onSaved: () => { invalidateAbilityCatalog(); },
+    }));
+  }
+
+  // Ability-owned connection manager. The SQL ability owns its routes, vault
+  // records and runtime; this is only the generic Abilities-surface renderer.
+  if (conn.ui_panel === 'sql_connections') {
+    el.appendChild(buildSqlConnectionsSection({
+      agent,
+      userId,
+      canEdit,
     }));
   }
 
@@ -1032,67 +1054,19 @@ function _getIcon(abilityId) {
 }
 
 // ── "Available to" — per-agent caller-access gate ──────────────────────────────
-// A small dropdown beside the ability's on/off control choosing WHICH CALLER may
-// trigger the ability when chatting THIS agent: Everyone (anyone incl. anonymous
-// guests — the default) · Registered (signed-in accounts only) · Admins (admins
-// only). It is a REAL boundary enforced server-side at tool-assembly time (the
-// gated ability's tools are never built for a caller below the level) — not a
-// prompt hint the model could ignore. PER-AGENT ONLY, like the visibility tri and
-// the config ceiling: the admin global ability table has no equivalent control,
-// so there is nothing to mirror there. (SISTER-PANEL: AGENT-ABILITY-TABLE.)
+// A menu section in each ability row's ⋯ menu choosing WHICH CALLER may trigger
+// the ability when chatting THIS agent: Everyone (anyone incl. anonymous guests —
+// the default) · Registered (signed-in accounts only) · Admins (admins only). It
+// is a REAL boundary enforced server-side at tool-assembly time (the gated
+// ability's tools are never built for a caller below the level) — not a prompt
+// hint the model could ignore. PER-AGENT ONLY, like the visibility mode and the
+// config ceiling: the admin global ability table has no equivalent control, so
+// there is nothing to mirror there. (SISTER-PANEL: AGENT-ABILITY-TABLE.)
 const _ACCESS_LEVELS = [
-  { value: 'everyone',   label: 'Everyone',   title: 'Available to anyone, including not-signed-in guests (default)' },
-  { value: 'registered', label: 'Registered', title: 'Available only to signed-in (registered) accounts' },
-  { value: 'admin',      label: 'Admins',     title: 'Available only to admin users' },
+  { value: 'everyone',   label: 'Everyone',   icon: 'globe',      title: 'Available to anyone, including not-signed-in guests (default)' },
+  { value: 'registered', label: 'Registered', icon: 'user-check', title: 'Available only to signed-in (registered) accounts' },
+  { value: 'admin',      label: 'Admins',     icon: 'shield',     title: 'Available only to admin users' },
 ];
-
-function _buildAccessSelect({ value, canEdit, onSave, flash }) {
-  const wrap = document.createElement('span');
-  wrap.className = 'ac-access-wrap';
-  wrap.title = 'Available to — who can trigger this ability';
-
-  const sel = document.createElement('select');
-  sel.className = 'ac-access-select';
-  sel.setAttribute('aria-label', 'Available to');
-  const cur = _ACCESS_LEVELS.some(l => l.value === value) ? value : 'everyone';
-  for (const lvl of _ACCESS_LEVELS) {
-    const opt = document.createElement('option');
-    opt.value = lvl.value;
-    opt.textContent = lvl.label;
-    opt.title = lvl.title;
-    if (lvl.value === cur) opt.selected = true;
-    sel.appendChild(opt);
-  }
-  sel.dataset.prev = cur;
-  // A restricted level (anything but "everyone") gets a subtle highlight so a
-  // locked-down ability reads at a glance.
-  const _reflect = (v) => wrap.classList.toggle('ac-access-restricted', v !== 'everyone');
-  _reflect(cur);
-
-  if (!canEdit) {
-    sel.disabled = true;
-  } else {
-    sel.addEventListener('change', async () => {
-      const prev = sel.dataset.prev || 'everyone';
-      const next = sel.value;
-      if (next === prev) return;
-      sel.disabled = true;
-      try {
-        await onSave(next);
-        sel.dataset.prev = next;
-        _reflect(next);
-        if (flash) flash('Saved', 'ok');
-      } catch (e) {
-        sel.value = prev;                 // revert — backend didn't persist it
-        if (flash) flash('Could not save', 'warn');
-      } finally {
-        sel.disabled = false;
-      }
-    });
-  }
-  wrap.appendChild(sel);
-  return wrap;
-}
 
 function _collectConfig(card, abilityId) {
   const config = {};
@@ -1113,8 +1087,6 @@ function _collectConfig(card, abilityId) {
   }
   return config;
 }
-
-// Imported from shared/dom-utils.js: _noop
 
 // ── Search filtering ──────────────────────────────────────────────────────────
 // Live filter driven by the hybrid search/chat pill's `onFilter`. Same behaviour
@@ -1277,6 +1249,9 @@ export async function build(container, cfg) {
       for (const m of rec.memberIds) {
         const c = conn.byType[m];
         if (!c) continue;  // app-enabled but not present (e.g. admin-cred gated)
+        const catalogAbility = allAbilities[m] || {};
+        c.entitlement_allowed = catalogAbility.entitlement_allowed !== false;
+        c.entitlement_reason = catalogAbility.entitlement_reason || 'allowed';
         const card = _buildConnectionCard(c, { agent, canEdit, abilitiesByProvider, onSave, userId, agentToolsLoader });
         card.dataset.connType = m;
         rec.bodyEl.appendChild(card);
@@ -1346,7 +1321,7 @@ export async function build(container, cfg) {
   if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
   _staggerRevealGroups(grid);
 
-  // ── Step 3 — per-agent statuses arrive: swap each spinner for the real tri ────
+  // ── Step 3 — per-agent statuses arrive: swap each spinner for its status card ──
   connPromise.then(({ byType }) => {
     for (const rec of groupRecs) {
       const present = rec.memberIds.filter(m => byType[m]);
@@ -1356,48 +1331,34 @@ export async function build(container, cfg) {
       if (!present.length) { rec.removed = true; rec.groupEl.remove(); continue; }
 
       // Togglable = present ability-kind members (locked-on members are present and
-      // counted as on, but the bulk handler skips them — safety device).
+      // counted as on, but are never bulk-controlled — bulk control is gone; the
+      // status card is display-only).
       const togglable = present
         .filter(m => ((allAbilities[m] || {}).kind || 'ability') === 'ability')
         .map(m => ({ id: m, isEnabled: () => !!(byType[m] && byType[m].enabled) }));
 
       if (togglable.length) {
-        const tri = _appendGroupTri(rec.head, 'ac-group-tri-' + rec.group.id, 'Off · Mixed · On — left half for all-off, right half for all-on');
-        rec.triSlot.remove();  // tri was appended after the spinner; drop the spinner
-        const triSync = _wireTriToggle(tri, togglable, async goOn => {
-          // Bulk needs each member's card (its visibility tri) — build + expand so
-          // the change is visible, then drive each card's tri (same save path as a
-          // direct click: spinner → ✓ / ⚠ confirm + revert).
-          await _ensureGroupBuilt(rec);
-          rec.groupEl.classList.add('expanded');
-          for (const t of togglable) {
-            const conn = byType[t.id];
-            if (!conn || conn.locked_on) continue;  // safety device — never bulk-toggled
-            if (!!conn.enabled === goOn) continue;
-            const card = rec.bodyEl.querySelector('[data-conn-type="' + t.id + '"]');
-            // Drive each member's own visibility tri (Off · Discoverable · Visible)
-            // — bulk-on settles a row to Visible, bulk-off to Off. Same save +
-            // per-row spinner → ✓ / ⚠ confirm + revert as a direct click.
-            const memTri = card && card._visTri;
-            if (memTri && typeof memTri._apply === 'function') {
-              await memTri._apply(goOn ? 'visible' : 'off');
-            }
-          }
-          triSync();
-        });
-        // Re-sync the group tri when a member's own tri flips its enable state.
-        rec.bodyEl.addEventListener('ability-enabled-change', () => triSync());
+        // Status card (Disabled · Partial · Enabled) replaces the old group tri.
+        const status = _appendGroupStatus(rec.head, 'ac-group-status-' + rec.group.id, 'off', 'Disabled · Partial · Enabled — read-only summary of this group');
+        rec.triSlot.remove();  // the status card was appended after the spinner; drop the spinner
+        const sync = () => {
+          const onCount = togglable.filter(m => m.isEnabled()).length;
+          status.dataset.state = onCount === 0 ? 'off' : (onCount === togglable.length ? 'on' : 'mixed');
+          _paintGroupStatus(status);
+        };
+        sync();
+        // Re-sync the card when a member's own toggle flips its enable state.
+        rec.bodyEl.addEventListener('ability-enabled-change', () => sync());
       } else {
-        _appendDisabledGroupTri(rec.head, 'ac-group-tri-' + rec.group.id);
+        _appendGroupStatus(rec.head, 'ac-group-status-' + rec.group.id, 'na', 'No on/off abilities in this group');
         rec.triSlot.remove();
       }
     }
   }).catch(() => {
-    // Connections failed — turn the status spinners into disabled tris so the rows
-    // still read complete; each group body shows its own error when expanded.
+    // Connections failed — the status cards read "—" so the rows still read
+    // complete; each group body shows its own error when expanded.
     for (const rec of groupRecs) {
-      const dt = _appendDisabledGroupTri(rec.head, 'ac-group-tri-' + rec.group.id);
-      dt.title = 'Could not load status';
+      _appendGroupStatus(rec.head, 'ac-group-status-' + rec.group.id, 'na', 'Could not load status');
       rec.triSlot.remove();
     }
   });

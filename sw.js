@@ -4,18 +4,20 @@
  *   - App shell (HTML, CSS, JS, icons): precache on install
  *   - API calls (/api/*): network-only (never cache stale data)
  *   - CDN assets: stale-while-revalidate
- *   - Executable app assets (JS/CSS/JSON): network-first, cache fallback. ES
- *     modules must come from one coherent checkout version; serving a cached
- *     dependency beside a fresh importer can abort the whole module graph.
+ *   - Executable app assets (JS/CSS/JSON): cache-first within one versioned
+ *     worker generation. The boot loader installs/activates an update before
+ *     importing modules, so a generation is coherent without paying a network
+ *     round-trip for every module on every visit.
  *   - Passive static assets (images/fonts): stale-while-revalidate.
  *   - Navigation: network-first, fall back to cached index.html
  *
  * Bump CACHE on each release so the activate handler drops the prior cache.
  */
 
-const CACHE = "webagent-v232";
+const CACHE = "webagent-v278";
 const STATIC_PATTERN = /\.(css|js|json|svg|png|ico|woff2?)$/;
 const CODE_PATTERN = /\.(css|js|json)$/;
+const HTML_PATTERN = /\.html$/;
 // Kept for defence-in-depth only: as of the offline-vendoring change the app
 // no longer requests anything from these CDNs (fonts + JS libs are self-hosted
 // under /ui/vendor/). Any stray CDN request still gets stale-while-revalidate.
@@ -36,50 +38,23 @@ const WS_PATTERN = /^\/api\/v1\/agent\/ws/;
  * the new worker always installs + activates; any asset that can't be fetched is
  * simply skipped here and still runtime-cached on first use (staleWhileRevalidate
  * below). So a future file move degrades gracefully instead of freezing updates. */
+// Keep install bounded to the bootstrap shell and its pre-controller assets.
+// The full executable module graph is still cached by cacheFirst as the live
+// page requests it; precaching that entire graph made workers take tens of
+// seconds to install. The small set below guarantees that one successful
+// online visit is enough to open the shell and chat partial offline.
 const PRECACHE = [
-  "/",
-  "/app",
   "/index.html",
-  "/ui/diagnostics.html",
   "/ui/manifest.json",
   "/ui/favicon.svg",
-  "/ui/icons/icon-192x192.png",
-  "/ui/icons/icon-192x192-maskable.png",
-  "/ui/icons/icon-512x512.png",
-  "/ui/icons/icon-512x512-maskable.png",
+  "/ui/shared/css/index.css",
+  "/ui/shared/css/design-system.css",
   "/ui/shared/css/app1.css",
   "/ui/shared/css/app2.css",
   "/ui/shared/css/app3.css",
   "/ui/shared/css/app-control-point.css",
-  "/ui/shared/css/index.css",
-  "/ui/shared/css/design-system.css",
-  // Core boot JS — the stable top of the module chain that gates first paint.
-  // Precaching these means a normal reload serves them instantly instead of
-  // re-fetching. Kept to the few files that rarely move; every OTHER module is
-  // runtime-cached on first use by staleWhileRevalidate below, so this list
-  // never needs to track the full (139-file) import graph. (A hard refresh
-  // bypasses the SW entirely — this helps ordinary reloads + repeat visits.)
   "/ui/shared/js/appearance.js",
-  "/ui/shared/js/header-build.js",
-  "/ui/shared/js/partial-loader.js",
-  "/ui/shared/js/main.js",
-  "/ui/shared/js/debugConsole.js",
-  "/ui/shared/js/clipboard.js",
-  "/ui/shared/js/config.js",
-  "/ui/shared/js/left-login.js",
-  "/ui/shared/js/db-select.js",
-  "/ui/shared/js/device-picker.js",
-  "/ui/main-panel/agents/agent-loop/loop.css",
-  "/ui/main-panel/agents/agent-loop/loop-visual.css",
-  "/ui/main-panel/genui/genui.css",
-  "/ui/main-panel/agents/agents.css",
-  "/ui/main-panel/admin-tools/files.css",
-  "/ui/tutorials/tutorial.css",
-  // Self-hosted third-party libs + fonts (were CDN-loaded before the offline
-  // change). Precaching the core ones means the shell renders fully — icons,
-  // markdown, terminal, fonts — even when the app is opened as an installed PWA
-  // with no server reachable. Prism grammar components (290+ files) are NOT
-  // listed here; they're runtime-cached on first use by staleWhileRevalidate.
+  "/ui/shared/js/header-build.js?v=3",
   "/ui/vendor/fonts/fonts.css",
   "/ui/vendor/lucide/lucide.min.js",
   "/ui/vendor/marked/marked.min.js",
@@ -91,6 +66,12 @@ const PRECACHE = [
   "/ui/vendor/xterm/addon-fit.js",
   "/ui/vendor/xterm/addon-web-links.js",
   "/ui/vendor/xterm/addon-search.js",
+  "/ui/shared/js/db-select.js",
+  "/ui/shared/js/device-picker.js",
+  "/ui/shared/js/partial-loader.js",
+  "/ui/chat/chat-side-panel.html",
+  "/ui/main-panel/agents/agents.html",
+  "/ui/main-panel/wiki/wiki.html",
 ];
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -137,12 +118,21 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // App code must be fetched as a coherent set while the server is reachable.
-  // A stale-while-revalidate module graph can combine a new importer with an
-  // old dependency (for example, importing an export that the cached module
-  // does not have), which aborts boot before the UI can recover.
+  // App code is immutable inside a CACHE generation. Boot waits briefly for an
+  // updated worker before importing the graph, and activation deletes older
+  // generations, so cache-first is both coherent and dramatically faster on a
+  // returning visit. Development/release changes must bump CACHE above.
   if (url.origin === self.location.origin && CODE_PATTERN.test(url.pathname)) {
-    e.respondWith(networkFirstStatic(request));
+    e.respondWith(cacheFirst(request));
+    return;
+  }
+
+  // UI partials are the markup half of the executable shell. They are fetched
+  // with cache:no-store by the live loader, but an offline cold start still
+  // needs the last coherent worker generation. API/server-rendered HTML never
+  // reaches this branch because only static .html paths qualify.
+  if (url.origin === self.location.origin && HTML_PATTERN.test(url.pathname)) {
+    e.respondWith(cacheFirst(request));
     return;
   }
 
@@ -174,7 +164,11 @@ async function fetchAndCache(request) {
 }
 
 async function cacheFirst(request) {
-  const cached = await caches.match(request);
+  // Never search every CacheStorage generation here. During activate(), an old
+  // cache can coexist briefly with the new worker; caches.match() may then hand
+  // a new importer an old dependency and create a broken mixed module graph.
+  const cache = await caches.open(CACHE);
+  const cached = await cache.match(request);
   if (cached) return cached;
   try {
     return await fetchAndCache(request);
@@ -190,22 +184,14 @@ async function staleWhileRevalidate(request) {
   return cached || (await fetchPromise) || new Response("Offline", { status: 503 });
 }
 
-async function networkFirstStatic(request) {
-  try {
-    return await fetchAndCache(request);
-  } catch {
-    const cached = await caches.match(request);
-    return cached || new Response("Offline", { status: 503 });
-  }
-}
-
 async function networkFirstNavigation(request) {
   try {
     return await fetchAndCache(request);
   } catch {
-    const cached = await caches.match(request);
+    const cache = await caches.open(CACHE);
+    const cached = await cache.match(request);
     if (cached) return cached;
-    const fallback = await caches.match("/index.html");
+    const fallback = await cache.match("/index.html");
     return fallback || new Response("Offline", { status: 503 });
   }
 }

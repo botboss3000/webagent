@@ -201,11 +201,11 @@ class BrowserPolicyTests(unittest.TestCase):
                     "telemetry_enabled": False,
                 }
             )
-            self.assertEqual(policy.metadata_ttl_seconds, 30)
+            self.assertEqual(policy.metadata_ttl_seconds, 0)
             self.assertEqual(policy.max_cache_bytes, 2 * 1024 * 1024 * 1024)
             self.assertFalse(policy.telemetry_enabled)
             parsed = json.loads((Path(temp) / "policy.json").read_text())
-            self.assertEqual(parsed["metadata_ttl_seconds"], 30)
+            self.assertEqual(parsed["metadata_ttl_seconds"], 0)
 
 
 class RawHandleAuditTests(unittest.TestCase):

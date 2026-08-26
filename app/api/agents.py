@@ -21,7 +21,9 @@ GET  /api/v1/agents/{agent_id}/members  — list agent admins + members with sta
 import asyncio
 import json as _json
 import logging
+from pathlib import Path
 import re
+import secrets
 import time
 from typing import Any, Dict, List, Literal, Optional
 
@@ -29,8 +31,16 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.auth.identity import assert_caller_is
+from app.auth.identity import assert_caller_is, request_user_id, user_may_access_page
 from app.db import get_db
+from app.entitlements.service import resolve_capabilities
+from app.entitlements.resources import (
+    ResourceEntitlementError,
+    enforce_ability_group,
+    enforce_agent_materialization,
+    enforce_connection_change,
+    connection_resource_lock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +52,7 @@ SHARED_DEFAULT_AGENT_ID = "shared_default"
 # The default WebAgent is one app-level singleton, not one singleton per user.
 # Both startup and request-time recovery converge on this fixed authority ID.
 _provision_locks: Dict[str, asyncio.Lock] = {}
+_agent_create_locks: Dict[str, asyncio.Lock] = {}
 
 
 def _provision_lock(user_id: str) -> asyncio.Lock:
@@ -50,6 +61,39 @@ def _provision_lock(user_id: str) -> asyncio.Lock:
         lk = asyncio.Lock()
         _provision_locks[user_id] = lk
     return lk
+
+
+def _agent_create_lock(user_id: str) -> asyncio.Lock:
+    lock = _agent_create_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _agent_create_locks[user_id] = lock
+    return lock
+
+
+def _template_is_allowed(capabilities: dict, template_id: str) -> bool:
+    allowed = set(capabilities.get("agent_templates") or [])
+    return "*" in allowed or template_id in allowed
+
+
+def _owned_custom_agent_count(rows: List[dict], user_id: str) -> int:
+    count = 0
+    for row in rows:
+        if row.get("source") != "custom" or row.get("status") == "clone":
+            continue
+        metadata = row.get("metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = _json.loads(metadata)
+            except Exception:
+                metadata = {}
+        if isinstance(metadata, dict) and metadata.get("owner_user_id") == user_id:
+            count += 1
+    return count
+
+
+def _resource_http_error(exc: ResourceEntitlementError) -> HTTPException:
+    return HTTPException(status_code=403, detail=exc.detail())
 
 
 async def provision_default_agent(db, user_id: str) -> Optional[dict]:
@@ -92,15 +136,6 @@ async def provision_default_agent(db, user_id: str) -> Optional[dict]:
 
 # ── Request / Response models ─────────────────────────────────────────────────
 
-class CreateAgentRequest(BaseModel):
-    user_id: str
-    name: str
-    description: Optional[str] = ""
-    template_id: Optional[str] = "default"
-    capability_profile: Optional[Literal["simple", "standard", "advanced"]] = None
-    capability_extensions: List[str] = Field(default_factory=list)
-
-
 class ReorderAgentsRequest(BaseModel):
     user_id: str
     order: List[str]  # agent ids, top-to-bottom (index 0 = top of the list)
@@ -138,6 +173,9 @@ class UpdateAgentRequest(BaseModel):
     # | 'auto'. Stored in metadata['default_execution_mode']; the chat pill seeds a
     # fresh session from it (ui/chat/js/chat-ui.js). Blank ⇒ 'ask'.
     default_execution_mode: Optional[str] = None
+    # Modular chat modes for this agent. Ask/Plan/Auto are always present and
+    # may be customized; additional entries add modes to the chat footer.
+    execution_modes: Optional[List[Dict[str, Any]]] = None
     # Default Remote Control target device for NEW sessions with this agent — the
     # instance-id of a device in the shared fleet (stored in
     # metadata['default_target_device']). Blank ⇒ run on "this device" (local).
@@ -149,6 +187,9 @@ class UpdateAgentRequest(BaseModel):
     # Whether the agent's public /{agent_id} shared link is enabled.
     # Stored in metadata['public_link']; the public route checks this flag.
     public_link: Optional[bool] = None
+    # Public anonymous policy: funding, usage/data limits, and UI narrowing.
+    # A user-created agent cannot be published without valid explicit funding.
+    public_access: Optional[Dict[str, Any]] = None
     # Per-agent chat UI override — partial dict deep-merged into the app-wide
     # into metadata['chat_ui']. Blank value for a key clears it (use default).
     chat_ui: Optional[Dict[str, Any]] = None
@@ -159,6 +200,9 @@ class UpdateAgentRequest(BaseModel):
     # Local Codex CLI engine config (folder/model/extra_flags), shallow-merged
     # into metadata['codex_code'].
     codex_code: Optional[Dict[str, Any]] = None
+    # Terminal Chat engine config (command/working folder/environment),
+    # shallow-merged into metadata['terminal_chat'].
+    terminal_chat: Optional[Dict[str, Any]] = None
     # Website embed widget config — partial dict (enabled/allowed_domains/accent/
     # title/subtitle/greeting/placeholder/launcher_position),
     # normalized + shallow-merged into metadata['embed']. Drives the standalone
@@ -168,10 +212,51 @@ class UpdateAgentRequest(BaseModel):
     # Resume tail messages — how many recent messages to replay on resume.
     # Stored in metadata['resume_tail_messages']; 0 = use the app default (32).
     resume_tail_messages: Optional[int] = None
+    # Close-out audit checklist — the Output Closer's checklist-auditor prop
+    # (metadata['audit_checklist']). When set, after each final response the
+    # closer audits the completed work against this checklist and either
+    # closes (summary lane reporting the checklist status) or sends the verdict
+    # back into the main loop as a synthetic [AUDITOR] message so the agent
+    # finishes the missing items (bounded by max_rounds). Accepted shapes:
+    #   - plain string: one checklist item per line
+    #   - JSON array of strings
+    #   - JSON object {"checklist": [...], "max_rounds": N, "send_back": bool}
+    # Blank/empty clears the prop (audit disabled; plain summary behavior).
+    audit_checklist: Optional[Any] = None
+    # Per-agent closer prompt (metadata['closer_prompt']). A non-empty string
+    # replaces the global app-prompts.json closer template for THIS agent;
+    # blank/absent falls back to the global template / built-in fallback.
+    closer_prompt: Optional[str] = None
+    # Mode-aware Manager Loop. Partial objects are deep-merged over the
+    # effective per-agent config and stored at metadata['manager'].
+    manager_loop: Optional[Dict[str, Any]] = None
     # Prompt slots — admin-only. Full slot set when present; reconciled against existing.
     slots: Optional[List[SlotPayload]] = None
     # Per-slot wipe of all user override rows at save time.
     reset_overrides_for: Optional[List[str]] = None
+
+
+class CreateAgentRequest(UpdateAgentRequest):
+    """Creation extends the exact persisted-agent configuration schema."""
+    name: str
+    description: Optional[str] = ""
+    template_id: Optional[str] = "default"
+    capability_profile: Optional[Literal["simple", "standard", "advanced"]] = None
+    capability_extensions: List[str] = Field(default_factory=list)
+
+
+def _normalize_codex_code_update(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Validate the closed Codex context/closer controls in a partial update."""
+    if value is None:
+        return None
+    normalized = dict(value)
+    if "context_mode" in normalized:
+        mode = normalized["context_mode"]
+        if not isinstance(mode, str) or mode not in ("native_codex", "webagent_wrapper", "codex_portal"):
+            raise HTTPException(status_code=400, detail="Invalid codex_code.context_mode.")
+    if "closer_enabled" in normalized and not isinstance(normalized["closer_enabled"], bool):
+        raise HTTPException(status_code=400, detail="Invalid codex_code.closer_enabled.")
+    return normalized
 
 
 class UpdateMyPromptsItem(BaseModel):
@@ -224,6 +309,7 @@ class SaveAsTemplateRequest(BaseModel):
 
 class AnonSessionRequest(BaseModel):
     browser_id: Optional[str] = None
+    guest_credential: Optional[str] = None
 
 
 class TestAgentRequest(BaseModel):
@@ -350,14 +436,19 @@ def _safe_agent(agent: dict) -> dict:
     # it in metadata['icon']). Returns the raw string or empty string — the
     # frontend falls back to the default 'bot' icon when icon is falsy.
     result["icon"] = (meta.get("icon") or "") if isinstance(meta, dict) else ""
-    # Default chat execution mode for NEW sessions ('ask' | 'plan' | 'auto'). Edited
+    # Modular execution modes. Defaults are materialized for legacy agents so
+    # every client receives the same complete mode vocabulary.
+    from app.agent.execution_modes import execution_modes_for_agent
+    result["execution_modes"] = execution_modes_for_agent({**agent, "metadata": meta})
+    # Default chat execution mode for NEW sessions. Edited
     # on the Config tab and read by ui/chat/js/chat-ui.js when seeding a
     # fresh session. When UNSET, agents cloned from the default WebAgent template
     # start in 'plan' (matches default.json metadata.default_execution_mode), so even
     # pre-existing default agents created before this field honour it; everything
     # else falls back to 'ask'. An explicit stored value always wins.
     _dem = meta.get("default_execution_mode") if isinstance(meta, dict) else ""
-    if _dem not in ("ask", "plan", "auto"):
+    _available_mode_ids = {m["id"] for m in result["execution_modes"]}
+    if _dem not in _available_mode_ids:
         _engine = meta.get("engine") if isinstance(meta, dict) else None
         if _engine == "codex" and _dem == "wkspc":
             pass  # codex-engine mode (workspace-write) — keep as-is
@@ -380,10 +471,23 @@ def _safe_agent(agent: dict) -> dict:
     # Public-link flag — gates the public /{agent_id} route. Reads fall back to
     # the legacy is_embeddable key so previously-enabled agents keep working.
     result["public_link"] = bool(meta.get("public_link", meta.get("is_embeddable"))) if isinstance(meta, dict) else False
+    from app.agent.public_policy import normalize_public_access
+    result["public_access"] = normalize_public_access({**result, "metadata": meta})
     # Resume tail messages — how many recent messages to replay on resume.
     # 0 = use the app default (32). Stored in metadata; edited on the Config tab.
     rtm = meta.get("resume_tail_messages") if isinstance(meta, dict) else None
     result["resume_tail_messages"] = int(rtm) if isinstance(rtm, int) else 0
+    # Close-out audit checklist — the Output Summarizer's checklist-auditor prop
+    # (metadata['audit_checklist']). Read back verbatim so the Config tab can show
+    # and re-edit it (string / JSON array / JSON object form). Absent ⇒ no audit.
+    result["audit_checklist"] = meta.get("audit_checklist") if isinstance(meta, dict) else None
+    # Per-agent closer prompt (metadata['closer_prompt']) — read back so the
+    # Config tab can show and edit it. Absent ⇒ global template is used.
+    result["closer_prompt"] = (meta.get("closer_prompt") or "") if isinstance(meta, dict) else ""
+    # Complete normalized Manager Loop config (legacy flat metadata['manager']
+    # rows are migrated in-memory so old agents remain editable).
+    from app.agent.manager_config import manager_loop_for_agent
+    result["manager_loop"] = manager_loop_for_agent({**agent, "metadata": meta})
     # Embed widget config (colors, fonts, title, custom CSS) — read by the embed page
     ec = meta.get("embed_config") if isinstance(meta, dict) else None
     result["embed_config"] = ec if isinstance(ec, dict) else {}
@@ -412,11 +516,23 @@ async def _require_admin(db, user_id: str) -> None:
 
 
 async def _is_agent_admin(db, agent_id: str, user_id: str) -> bool:
-    """Return True if user is a global admin OR in the agent's admin_users list."""
-    if await db.is_user_admin(user_id):
-        return True
-    roles = await db.get_agent_roles(agent_id)
-    return user_id in roles["admin_users"]
+    """Return whether the caller administers this agent.
+
+    Installation administrators configure global service policy, but do not
+    inherit authority over every independently owned agent.
+    """
+    from app.auth.identity import get_verified_caller_uid
+    from app.agent.member_workspace import is_agent_member_subject
+    if is_agent_member_subject(user_id):
+        # Agent-native administrators use the agent-scoped profile APIs/cards;
+        # their token is not an account for the hosting application's agent UI.
+        return False
+    verified = get_verified_caller_uid()
+    if verified and verified != user_id:
+        return False
+    from app.agent.profiles import resolve_member
+    member = await resolve_member(agent_id, user_id, auto_link_app=False)
+    return bool(member and member.get("is_agent_admin"))
 
 
 async def _require_ability_enabled(db, agent_id: str, ability_id: str) -> None:
@@ -489,6 +605,7 @@ async def update_tutorial_prefs(req: TutorialPrefsRequest, request: Request):
 
 @router.get("/agents/templates")
 async def list_agent_templates(
+    request: Request,
     user_id: str = Query(...),
     include_admin: bool = Query(False),
     discoverable_only: bool = Query(False),
@@ -499,13 +616,21 @@ async def list_agent_templates(
     If discoverable_only=true, only returns templates with discoverable=1.
     """
     db = get_db()
+    user_id = await assert_caller_is(request, user_id)
     if include_admin:
         await _require_admin(db, user_id)
+    capabilities = await resolve_capabilities(user_id, db=db)
     templates = await db.list_agent_templates(
         include_admin=include_admin,
-        discoverable_only=discoverable_only,
+        discoverable_only=(discoverable_only or not include_admin),
     )
-    return {"templates": [_safe_agent(t) for t in templates]}
+    return {
+        "templates": [
+            _safe_agent(template)
+            for template in templates
+            if _template_is_allowed(capabilities, str(template.get("id") or ""))
+        ]
+    }
 
 
 @router.get("/agents")
@@ -526,14 +651,18 @@ async def list_agents(request: Request, user_id: str = Query(...), include_syste
     """
     db = get_db()
     user_id = await assert_caller_is(request, user_id)
+    from app.agent.member_workspace import is_agent_member_subject
+    if is_agent_member_subject(user_id):
+        raise HTTPException(status_code=403, detail="Agent-local identities do not have app roster access")
+    if request_user_id(request) != user_id:
+        raise HTTPException(status_code=403, detail="Agent rosters cannot be impersonated")
     bin_view = (view == "bin")
     clones_view = (view == "clones")
-    is_admin = await db.is_user_admin(user_id)
     if clones_view:
-        all_agents = await db.list_agents_for_user(user_id, include_admin=is_admin,
+        all_agents = await db.list_agents_for_user(user_id, include_admin=False,
                                                    view="clones")
     else:
-        all_agents = await db.list_agents_for_user(user_id, include_admin=is_admin,
+        all_agents = await db.list_agents_for_user(user_id, include_admin=False,
                                                    view=("bin" if bin_view else "active"))
     out = []
     for a in all_agents:
@@ -625,6 +754,13 @@ async def create_agent(req: CreateAgentRequest, request: Request):
     """
     db = get_db()
     req.user_id = await assert_caller_is(request, req.user_id)
+    from app.agent.member_workspace import is_agent_member_subject
+    if req.user_id.startswith("anon_") or is_agent_member_subject(req.user_id):
+        raise HTTPException(status_code=403, detail={
+            "code": "registration_required",
+            "feature": "agent_create",
+            "message": "Register or sign in to create and manage agents.",
+        })
     if not req.name or not req.name.strip():
         raise HTTPException(status_code=400, detail="Agent name is required.")
     # A clone of the default WebAgent inherits its Advanced capability shape.
@@ -633,15 +769,44 @@ async def create_agent(req: CreateAgentRequest, request: Request):
     _capability_profile = req.capability_profile or (
         "advanced" if _template_id == "default" else "simple"
     )
-    agent = await db.create_custom_agent(
-        user_id=req.user_id,
-        name=req.name.strip(),
-        description=req.description or "",
-        template_id=_template_id,
-        seed_abilities=False,
-        capability_profile=_capability_profile,
-        capability_extensions=req.capability_extensions or [],
-    )
+    async with _agent_create_lock(req.user_id):
+        try:
+            await enforce_agent_materialization(
+                db, req.user_id, template_id=_template_id,
+            )
+        except ResourceEntitlementError as exc:
+            raise _resource_http_error(exc) from exc
+        agent = await db.create_custom_agent(
+            user_id=req.user_id,
+            name=req.name.strip(),
+            description=req.description or "",
+            template_id=_template_id,
+            seed_abilities=False,
+            capability_profile=_capability_profile,
+            capability_extensions=req.capability_extensions or [],
+        )
+        # Direct/local backends do not pass through PlaneRouterBackend's create
+        # hook. Seed the independent agent authorization plane here as well;
+        # the operation is idempotent when the router already did it.
+        from app.agent.profiles import ensure_builtins
+        await ensure_builtins(agent["id"], agent=agent, creator_user_id=req.user_id)
+    # Apply every create-time Config field through the same validation,
+    # normalization, and persistence path used by the final Config page.
+    _create_only = {
+        "user_id", "name", "description", "template_id",
+        "capability_profile", "capability_extensions",
+    }
+    _initial_updates = {
+        key: value for key, value in req.model_dump(exclude_unset=True).items()
+        if key not in _create_only
+    }
+    if _initial_updates:
+        updated_result = await update_agent(
+            agent["id"],
+            UpdateAgentRequest(user_id=req.user_id, **_initial_updates),
+            request,
+        )
+        agent = updated_result["agent"]
     # Platform admins' own agents are exempt from payment by default.
     # The admin can delete the exemption later via /billing/exemptions if
     # they want to charge for their own agent.
@@ -820,6 +985,45 @@ async def get_agent(request: Request, agent_id: str, user_id: str = Query(...)):
                         conn.close()
                 except Exception as e:
                     logger.debug("Failed to enrich template_source on get_agent %s: %s", agent_id, e)
+            try:
+                from app.abilities import app_function_enabled
+                from app.agent.loop_executor import LoopConfig
+                run_manager_ok = bool(app_function_enabled("run_manager"))
+                manager_node_ok = LoopConfig.from_agent(a).is_enabled("manager_chk")
+                orchestration_ok = any(
+                    row.get("section") == "ability"
+                    and row.get("connection_type") == "agent_orchestration"
+                    and row.get("enabled")
+                    for row in await db.get_agent_connections(agent_id)
+                )
+                result["manager_contract_preflight"] = {
+                    "run_manager": run_manager_ok,
+                    "manager_chk": manager_node_ok,
+                    "agent_orchestration": orchestration_ok,
+                    "ready": run_manager_ok and manager_node_ok and orchestration_ok,
+                }
+            except Exception as e:
+                logger.debug("Could not resolve contract preflight for %s: %s", agent_id, e)
+                result["manager_contract_preflight"] = {
+                    "run_manager": False, "manager_chk": False,
+                    "agent_orchestration": False, "ready": False,
+                    "error": "Preflight could not be loaded.",
+                }
+            if agent_id == SHARED_DEFAULT_AGENT_ID:
+                try:
+                    seed_path = Path(__file__).resolve().parents[1] / "defaults" / "agents" / "default.json"
+                    seed = _json.loads(seed_path.read_text(encoding="utf-8"))
+                    seed_manager = ((seed.get("metadata") or {}).get("manager") or {})
+                    from app.agent.manager_config import manager_loop_for_agent
+                    normalized_seed = manager_loop_for_agent({
+                        "metadata": {"manager": seed_manager},
+                    })
+                    result["shared_default_seed_diverged"] = (
+                        _json.dumps(result.get("manager_loop") or {}, sort_keys=True, default=str)
+                        != _json.dumps(normalized_seed, sort_keys=True, default=str)
+                    )
+                except Exception:
+                    result["shared_default_seed_diverged"] = None
             return {"agent": result}
     raise HTTPException(status_code=404, detail="Agent not found.")
 
@@ -837,7 +1041,13 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
     """
     db = get_db()
     req.user_id = await assert_caller_is(request, req.user_id)
-    if not await _is_agent_admin(db, agent_id, req.user_id):
+    shared_default_edit = agent_id == SHARED_DEFAULT_AGENT_ID
+    if shared_default_edit:
+        # The live singleton is seed-backed but remains ordinary runtime state.
+        # Installation admins may tune it here; exporting to the JSON seed is a
+        # separate explicit operation.
+        await _require_admin(db, req.user_id)
+    elif not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Only agent admins can edit this agent.")
 
     import json as _json
@@ -848,23 +1058,31 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
     llm_config_in = payload.pop("llm_config", None)
     chat_ui_in = payload.pop("chat_ui", None)
     claude_code_in = payload.pop("claude_code", None)
-    codex_code_in = payload.pop("codex_code", None)
+    codex_code_in = _normalize_codex_code_update(payload.pop("codex_code", None))
     embed_in = payload.pop("embed", None)
     terminal_chat_in = payload.pop("terminal_chat", None)
     exec_mode_in = payload.pop("default_execution_mode", None)
+    exec_modes_in = payload.pop("execution_modes", None)
     target_device_in = payload.pop("default_target_device", None)
     public_link_in = payload.pop("public_link", None)
+    public_access_in = payload.pop("public_access", None)
     resume_tail_in = payload.pop("resume_tail_messages", None)
-    # Normalize the default chat mode (accept legacy read/write aliases) and reject
-    # anything else so the metadata only ever holds 'ask' | 'plan' | 'auto'.
+    audit_checklist_in = payload.pop("audit_checklist", None)
+    closer_prompt_in = payload.pop("closer_prompt", None)
+    manager_loop_in = payload.pop("manager_loop", None)
+    from app.agent.execution_modes import normalize_execution_modes, normalize_mode_id
+    if exec_modes_in is not None:
+        if not isinstance(exec_modes_in, list):
+            raise HTTPException(status_code=400, detail="execution_modes must be a list.")
+        exec_modes_in = normalize_execution_modes(exec_modes_in)
+    # Normalize the default chat mode (accept legacy read/write aliases).
     if exec_mode_in is not None:
-        _m = str(exec_mode_in).strip().lower()
-        _m = {"read": "plan", "write": "ask"}.get(_m, _m)
+        _m = normalize_mode_id(exec_mode_in, fallback="")
         # 'wkspc' is the codex-engine workspace-write mode — offered only on codex
         # agent cards (native agents never send it).
-        if _m not in ("ask", "plan", "auto", "wkspc"):
+        if not _m and str(exec_mode_in).strip().lower() != "wkspc":
             raise HTTPException(status_code=400, detail="Invalid default_execution_mode.")
-        exec_mode_in = _m
+        exec_mode_in = _m or "wkspc"
     updates = {k: v for k, v in payload.items()
                if k not in ("user_id",) and v is not None}
 
@@ -873,10 +1091,14 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
     # metadata so they don't clobber each other or the rest of the blob.
     if (llm_config_in is not None or chat_ui_in is not None or claude_code_in is not None or codex_code_in is not None
             or terminal_chat_in is not None or embed_in is not None
-            or icon_in is not None or exec_mode_in is not None
+            or icon_in is not None or exec_mode_in is not None or exec_modes_in is not None
             or target_device_in is not None
             or public_link_in is not None
-            or resume_tail_in is not None):
+            or public_access_in is not None
+            or resume_tail_in is not None
+            or audit_checklist_in is not None
+            or closer_prompt_in is not None
+            or manager_loop_in is not None):
         current = await db.get_agent_by_id(agent_id)
         meta = {}
         if current:
@@ -932,29 +1154,92 @@ async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request)
             from app.api.embed_config import normalize_embed_config
             _cur_embed = meta.get("embed") if isinstance(meta.get("embed"), dict) else {}
             meta["embed"] = normalize_embed_config(embed_in, _cur_embed)
+            if bool(meta["embed"].get("enabled")):
+                from app.agent.public_policy import validate_publication
+                public_access_in = await validate_publication(
+                    db, {**(current or {"id": agent_id}), "metadata": meta},
+                    public_access_in if isinstance(public_access_in, dict)
+                    else (meta.get("public_access") if isinstance(meta.get("public_access"), dict) else {}),
+                )
         if icon_in is not None:
             # Store icon in metadata — the agents table has no dedicated icon column.
             # An empty/blank string means "clear the icon" (falls back to default).
             meta["icon"] = icon_in.strip() or ""
         if exec_mode_in is not None:
             meta["default_execution_mode"] = exec_mode_in
+        if exec_modes_in is not None:
+            meta["execution_modes"] = exec_modes_in
+        if exec_mode_in is not None:
+            available_ids = {
+                item["id"] for item in normalize_execution_modes(meta.get("execution_modes"))
+            }
+            if exec_mode_in != "wkspc" and exec_mode_in not in available_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail="default_execution_mode must reference a configured mode.",
+                )
         if target_device_in is not None:
             # Instance-id of the default Remote Control device; blank clears it
             # (run locally). Stored raw — the chat pill resolves the label + online
             # state from the live device list.
             meta["default_target_device"] = str(target_device_in).strip()
         if public_link_in is not None:
+            if bool(public_link_in):
+                from app.agent.public_policy import validate_publication
+                public_access_in = await validate_publication(
+                    db, {**(current or {"id": agent_id}), "metadata": meta},
+                    public_access_in if isinstance(public_access_in, dict)
+                    else (meta.get("public_access") if isinstance(meta.get("public_access"), dict) else {}),
+                )
             meta["public_link"] = bool(public_link_in)
             meta.pop("is_embeddable", None)  # legacy key — replaced by public_link
+        if public_access_in is not None:
+            if not isinstance(public_access_in, dict):
+                raise HTTPException(status_code=400, detail="public_access must be an object.")
+            # Enabling/changing a live public policy must remain funded.
+            if bool(meta.get("public_link")) or bool((meta.get("embed") or {}).get("enabled")):
+                from app.agent.public_policy import validate_publication
+                public_access_in = await validate_publication(
+                    db, {**(current or {"id": agent_id}), "metadata": meta}, public_access_in,
+                )
+            meta["public_access"] = public_access_in
         if resume_tail_in is not None:
             meta["resume_tail_messages"] = int(resume_tail_in)
+        if audit_checklist_in is not None:
+            # Store the checklist prop as given; blank forms clear it so the
+            # agent falls back to the app-level default / plain summary.
+            _blank = (
+                (isinstance(audit_checklist_in, str) and not audit_checklist_in.strip())
+                or (isinstance(audit_checklist_in, (list, dict)) and not audit_checklist_in)
+            )
+            if _blank:
+                meta.pop("audit_checklist", None)
+            else:
+                meta["audit_checklist"] = audit_checklist_in
+        if closer_prompt_in is not None:
+            # Per-agent closer prompt; blank clears it so the agent falls back
+            # to the global app-prompts template.
+            if isinstance(closer_prompt_in, str) and not closer_prompt_in.strip():
+                meta.pop("closer_prompt", None)
+            else:
+                meta["closer_prompt"] = str(closer_prompt_in)
+        if manager_loop_in is not None:
+            from app.agent.manager_config import merge_manager_loop_update
+            try:
+                meta["manager"] = merge_manager_loop_update(
+                    {**(current or {"id": agent_id}), "metadata": meta},
+                    manager_loop_in,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         updates["metadata"] = meta
 
-    updated = await db.update_agent_fields(
-        agent_id=agent_id,
-        user_id=req.user_id,
-        updates=updates,
-    )
+    update_kwargs = {
+        "agent_id": agent_id, "user_id": req.user_id, "updates": updates,
+    }
+    if shared_default_edit:
+        update_kwargs["allow_install_admin"] = True
+    updated = await db.update_agent_fields(**update_kwargs)
     if updated is None:
         raise HTTPException(status_code=404, detail="Agent not found or not owned by this user.")
 
@@ -1706,6 +1991,8 @@ async def delete_agent(request: Request, agent_id: str, user_id: str = Query(...
     """
     db = get_db()
     user_id = await assert_caller_is(request, user_id)
+    if not await _is_agent_admin(db, agent_id, user_id):
+        raise HTTPException(status_code=403, detail="Only agent administrators can delete this agent.")
     if permanent:
         deleted = await db.delete_custom_agent(agent_id=agent_id, user_id=user_id)
     else:
@@ -1741,7 +2028,24 @@ async def restore_agent(request: Request, agent_id: str, user_id: str = Query(..
     """Restore a trashed agent from the recycling bin back to the Agents page."""
     db = get_db()
     user_id = await assert_caller_is(request, user_id)
-    restored = await db.restore_custom_agent(agent_id=agent_id, user_id=user_id)
+    if not await _is_agent_admin(db, agent_id, user_id):
+        raise HTTPException(status_code=403, detail="Only agent administrators can restore this agent.")
+    trashed = next(
+        (row for row in await db.list_agents_for_user(user_id, include_admin=False, view="bin")
+         if str(row.get("id") or "") == agent_id),
+        None,
+    )
+    if not trashed:
+        raise HTTPException(status_code=404, detail="Agent not found in the bin, or not owned by this user.")
+    async with _agent_create_lock(user_id):
+        try:
+            await enforce_agent_materialization(
+                db, user_id, template_id=str(trashed.get("template_id") or "default"),
+                restoring=True,
+            )
+        except ResourceEntitlementError as exc:
+            raise _resource_http_error(exc) from exc
+        restored = await db.restore_custom_agent(agent_id=agent_id, user_id=user_id)
     if not restored:
         raise HTTPException(status_code=404, detail="Agent not found in the bin, or not owned by this user.")
     # Live-sync: the agent leaves the bin and reappears on the main grid.
@@ -1764,7 +2068,7 @@ async def test_agent(req: TestAgentRequest, request: Request):
     req.user_id = await assert_caller_is(request, req.user_id)
 
     # Resolve the agent config
-    agents = await db.list_agents_for_user(req.user_id, include_admin=await db.is_user_admin(req.user_id))
+    agents = await db.list_agents_for_user(req.user_id, include_admin=False)
     target = next((a for a in agents if a.get("id") == req.agent_id), None)
     if not target:
         # Try looking up by template id directly
@@ -1789,6 +2093,7 @@ async def test_agent(req: TestAgentRequest, request: Request):
         context_docs,
         brain_context=None,
         user_id=req.user_id,
+        session_id=test_session_id,
     )
 
     # Run a single-turn agent loop (non-streaming)
@@ -1841,9 +2146,6 @@ _CONNECTION_CATALOG = [
     {"connection_type": "microsoft", "section": "integration", "display_name": "Microsoft 365",    "status": "available"},
     {"connection_type": "yahoo",     "section": "integration", "display_name": "Yahoo",            "status": "available"},
     {"connection_type": "dropbox",   "section": "integration", "display_name": "Dropbox",          "status": "available"},
-    {"connection_type": "notion",        "section": "integration", "display_name": "Notion",        "status": "coming_soon"},
-    {"connection_type": "airtable",      "section": "integration", "display_name": "Airtable",      "status": "coming_soon"},
-    {"connection_type": "google_sheets", "section": "integration", "display_name": "Google Sheets", "status": "coming_soon"},
     # ── Integrations · Developer ──
     {"connection_type": "github",    "section": "integration", "display_name": "GitHub",           "status": "coming_soon"},
     {"connection_type": "gitlab",    "section": "integration", "display_name": "GitLab",           "status": "coming_soon"},
@@ -1852,10 +2154,9 @@ _CONNECTION_CATALOG = [
     {"connection_type": "hubspot",    "section": "integration", "display_name": "HubSpot",         "status": "coming_soon"},
     {"connection_type": "salesforce", "section": "integration", "display_name": "Salesforce",      "status": "coming_soon"},
     {"connection_type": "mailchimp",  "section": "integration", "display_name": "Mailchimp",       "status": "coming_soon"},
-    # ── Integrations · Payments ──
-    {"connection_type": "stripe",    "section": "integration", "display_name": "Stripe",           "status": "coming_soon"},
-    {"connection_type": "paypal",    "section": "integration", "display_name": "PayPal",           "status": "coming_soon"},
-    {"connection_type": "square",    "section": "integration", "display_name": "Square",           "status": "coming_soon"},
+    # ── Integrations · Financial data ──
+    # Commerce payment providers (Stripe, PayPal, Square, BTCPay) are discovered
+    # from plugins/abilities/Commerce below, including their credential forms.
     {"connection_type": "bank",      "section": "integration", "display_name": "Bank Accounts",    "status": "coming_soon"},
     {"connection_type": "search",    "section": "integration", "display_name": "Search Engine",    "status": "coming_soon"},
     # ── Social Media ──
@@ -1919,7 +2220,7 @@ _CATALOG_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
 
 
 @router.get("/abilities/catalog")
-async def get_abilities_catalog():
+async def get_abilities_catalog(request: Request):
     """Render-time metadata for the two ability panels (admin Agent Settings +
     per-agent Abilities tab). Pure static catalogue (no per-agent data), built
     from the drop-in files in plugins/abilities/ — so both panels render
@@ -1933,26 +2234,44 @@ async def get_abilities_catalog():
         ttl = 8.0
     now = _time.monotonic()
     cached = _CATALOG_CACHE.get("data")
-    if ttl > 0 and cached is not None and (now - _CATALOG_CACHE["at"]) < ttl:
-        return cached
+    cache_fresh = ttl > 0 and cached is not None and (now - _CATALOG_CACHE["at"]) < ttl
+    if cache_fresh:
+        data = cached
+    else:
+        try:
+            from app.abilities import ui_catalog, reload
+            # Re-scan plugins/abilities/ so a freshly-dropped or freshly-edited
+            # <id>.json descriptor appears with no server restart.
+            reload()
+            data = ui_catalog()
+            _CATALOG_CACHE["data"] = data
+            _CATALOG_CACHE["at"] = now
+        except Exception as e:
+            logger.warning("Could not build abilities catalog: %s", e)
+            data = cached or {"groups": [], "abilities": {}, "credential_members": []}
+
+    # Catalog metadata is caller-specific presentation. Keep the cached plugin
+    # scan immutable, then annotate every ability with the same entitlement
+    # decision used by runtime assembly so the UI can render denied rows locked.
+    import copy as _copy
+    result = _copy.deepcopy(data)
     try:
-        from app.abilities import ui_catalog, reload
-        # Re-scan plugins/abilities/ so a freshly-dropped or freshly-edited
-        # <id>.json descriptor appears with no server restart — the discovery scan
-        # is a handful of small dir reads. Mirrors the pages catalog above.
-        reload()
-        data = ui_catalog()
-        _CATALOG_CACHE["data"] = data
-        _CATALOG_CACHE["at"] = now
-        return data
-    except Exception as e:
-        logger.warning("Could not build abilities catalog: %s", e)
-        # Serve the last good catalog if we have one, else an empty shell.
-        return cached or {"groups": [], "abilities": {}, "credential_members": []}
+        uid = request_user_id(request)
+        capabilities = await resolve_capabilities(uid, db=get_db())
+        allowed = set(capabilities.get("ability_groups") or [])
+        for ability_id, item in (result.get("abilities") or {}).items():
+            group = str(item.get("entitlement_group") or "platform_admin")
+            item["entitlement_allowed"] = group in allowed
+            item["entitlement_reason"] = "allowed" if group in allowed else "tier_denied"
+    except Exception:
+        for item in (result.get("abilities") or {}).values():
+            item["entitlement_allowed"] = False
+            item["entitlement_reason"] = "policy_unavailable"
+    return result
 
 
 @router.get("/pages/catalog")
-async def get_pages_catalog():
+async def get_pages_catalog(request: Request):
     """Render-time metadata for the app shell's main header tabs and the Admin
     Tools sidebar views. Built from the drop-in ``page.json`` descriptors under
     ui/ and ui/admin-tools/, merged with the admin's order/label/icon/hidden
@@ -1962,34 +2281,73 @@ async def get_pages_catalog():
     try:
         from app import ui_pages
         from app.admin import page_config
-        # Re-scan the ui/ folders on each catalog fetch (once per page load) so a
-        # freshly-dropped ui/<page>/page.json folder appears with no server
-        # restart — the discovery scan is a handful of small dir reads. Also drop
-        # the override cache so external edits to the *-panel-pages.json files
-        # (git pull, manual edit) are honoured; the admin write endpoints keep the
-        # cache in sync on their own.
-        ui_pages.reload()
-        page_config.reload()
-        return ui_pages.ui_catalog()
+        # Both discovery and page-config already maintain explicit reload hooks
+        # for admin writes and deployment changes.  Re-reading every descriptor
+        # and config file on every browser boot turns this hot endpoint into a
+        # filesystem gate for the entire app.
+        catalog = ui_pages.ui_catalog()
+        uid = request_user_id(request)
+        db = get_db()
+        capabilities = await resolve_capabilities(uid, db=db)
+        filtered = {
+            "main": [], "admin": [], "splash": list(catalog.get("splash") or []),
+            "_meta": {
+                "tier_id": (capabilities.get("tier") or {}).get("id"),
+                "tier_revision": (capabilities.get("tier") or {}).get("revision"),
+                "roster_revision": (capabilities.get("models") or {}).get("revision"),
+                "evaluation_revision": (capabilities.get("evaluation") or {}).get("revision"),
+                "evaluated_at": capabilities.get("evaluated_at"),
+                "subject_class": (capabilities.get("subject") or {}).get("class"),
+            },
+        }
+        is_admin = bool((capabilities.get("subject") or {}).get("is_admin"))
+        anonymous = not uid or str(uid).startswith("anon_")
+        for kind in ("main", "admin"):
+            for page in catalog.get(kind) or []:
+                page_id = str(page.get("id") or "")
+                visibility = str(page.get("visibility") or "auth")
+                installation_allowed = (
+                    visibility == "all"
+                    or is_admin
+                    or (visibility == "auth" and not anonymous)
+                )
+                required_capability = str(page.get("required_backend_capability") or "")
+                if required_capability == "role:platform_admin" and not is_admin:
+                    installation_allowed = False
+                entitlement_page = "admin-tools" if kind == "admin" else page_id
+                if installation_allowed and bool((capabilities.get("pages") or {}).get(entitlement_page)):
+                    filtered[kind].append(page)
+        return filtered
     except Exception as e:
         logger.warning("Could not build pages catalog: %s", e)
         return {"main": [], "admin": []}
 
 
 @router.get("/abilities/{ability_id}/config-schema")
-async def get_ability_config_schema(ability_id: str):
+async def get_ability_config_schema(
+    ability_id: str,
+    scope: str = Query("agent"),
+):
     """Return the per-ability config schema (the companion .json file beside
     the .py plugin) so the frontend can render per-ability settings rows.
     Returns 404 when the ability has no config schema."""
     try:
         from app.abilities import ability_config_schema
         schema = ability_config_schema(ability_id)
-        # For each setting that declares a `ceiling` rule, attach the admin's
-        # current APP-LEVEL value as `ceiling_value` — the GLOBAL MAXIMUM the
-        # per-agent tree must clamp to (boolean lock / number cap). These are
-        # non-secret knobs, so it's safe on this public schema endpoint; the admin
-        # table ignores it. Falls back to the field default when the admin never
-        # set it. See app/admin/ability_config.effective_ability_config.
+        # Dual-surface abilities may expose a compact per-agent schema while
+        # keeping infrastructure/safety controls in App Functions.  Unscoped
+        # fields remain visible everywhere for backward compatibility.
+        requested_scope = "app" if str(scope).strip().lower() == "app" else "agent"
+        if isinstance(schema, dict) and isinstance(schema.get("settings"), list):
+            schema = dict(schema)
+            schema["settings"] = [
+                field for field in schema["settings"]
+                if not isinstance(field, dict)
+                or str(field.get("scope") or "both").lower() in ("both", requested_scope)
+            ]
+        # Agent controls inherit the stored app-level value until explicitly
+        # overridden, so expose that value as their rendered default. For fields
+        # with a `ceiling` rule, also attach the hard clamp used by the agent UI.
         if isinstance(schema, dict) and isinstance(schema.get("settings"), list):
             try:
                 from app.admin import ability_config as _abcfg
@@ -2002,9 +2360,16 @@ async def get_ability_config_schema(ability_id: str):
             schema = dict(schema)
             new_settings = []
             for field in schema["settings"]:
-                if isinstance(field, dict) and field.get("ceiling"):
+                if isinstance(field, dict):
                     field = dict(field)
-                    field["ceiling_value"] = admin_vals.get(field.get("key"), field.get("default"))
+                    key = field.get("key")
+                    descriptor_default = field.get("default")
+                    if requested_scope == "agent" and key in admin_vals:
+                        field["default"] = admin_vals[key]
+                    if field.get("ceiling"):
+                        ceiling_key = field.get("ceiling_key") or key
+                        field["ceiling_value"] = admin_vals.get(
+                            ceiling_key, descriptor_default)
                 new_settings.append(field)
             schema["settings"] = new_settings
         # Return null rather than 404 so browsers don't log this as a console
@@ -2028,15 +2393,11 @@ async def get_ability_config_values(
     panel can pre-fill the fields with what was previously saved. Empty map when
     nothing has been saved yet. Backed by app/admin/ability_config.py."""
     from app.admin import ability_config as _abcfg
-    from app.admin.integrations import resolve_user_id
-    db = get_db()
-    user_id = resolve_user_id(authorization or "", token or "")
-    await _require_admin(db, user_id)
     # Auto-seed: make sure the repo-local config file exists (created/seeded from
     # the vault on first access) before we read, so a missing file self-heals
     # rather than returning stale emptiness.
     try:
-        await _abcfg.ensure_bootstrapped(db)
+        await _abcfg.ensure_bootstrapped(get_db())
     except Exception as e:
         logger.debug("ability_config ensure_bootstrapped (get) skipped: %s", e)
     return {"ability_settings": _abcfg.get_ability_config(ability_id)}
@@ -2492,13 +2853,20 @@ async def upsert_agent_connection(
             except Exception:
                 pass
 
-    row = await db.upsert_agent_connection(
-        agent_id=agent_id,
-        connection_type=connection_type,
-        section=catalog_entry["section"],
-        enabled=req.enabled,
-        config=new_config,
-    )
+    async with connection_resource_lock(req.user_id):
+        try:
+            await enforce_connection_change(
+                db, req.user_id, agent_id, connection_type, enabling=bool(req.enabled),
+            )
+        except ResourceEntitlementError as exc:
+            raise _resource_http_error(exc) from exc
+        row = await db.upsert_agent_connection(
+            agent_id=agent_id,
+            connection_type=connection_type,
+            section=catalog_entry["section"],
+            enabled=req.enabled,
+            config=new_config,
+        )
 
     # Newly-enabled ability → default its tools to "discoverable" (hybrid rule).
     # Only sets tools that have no explicit per-tool mode yet, so prior choices
@@ -2855,9 +3223,10 @@ async def add_agent_admin(agent_id: str, req: ManageAdminRequest, request: Reque
     req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Admin access required.")
-    added = await db.add_agent_admin(agent_id, req.target_user_id)
-    roles = await db.get_agent_roles(agent_id)
-    return {"admin_users": roles["admin_users"], "added": added}
+    from app.agent import profiles as agent_profiles
+    target = await agent_profiles.ensure_app_member(agent_id, req.target_user_id)
+    promoted = await agent_profiles.set_member_admin(agent_id, target["id"], True)
+    return {"principal": agent_profiles.safe_principal(promoted), "added": True}
 
 
 @router.get("/agents/{agent_id}/members")
@@ -3029,14 +3398,6 @@ async def create_anon_session(agent_id: str, req: AnonSessionRequest, request: R
     No JWT required. Returns a token so the visitor can chat.
     """
     import uuid as _uuid_mod
-    # Abuse guard: this endpoint is unauthenticated and mints usable chat tokens,
-    # so an open flood here is free LLM spend on the owner. Cap per client IP.
-    # (Defence-in-depth; pair with an edge limiter for multi-instance.) See the
-    # security audit's CRITICAL finding + app/api/rate_limit.py.
-    from app.api.rate_limit import enforce, client_ip, anon_session_limits
-    _smax, _swin = anon_session_limits()
-    enforce(f"anon-session:{client_ip(request)}", _smax, _swin,
-            detail="Too many chat sessions started from your network. Please wait a moment.")
     db = get_db()
 
     agent = await db.get_agent_by_id(agent_id)
@@ -3052,19 +3413,38 @@ async def create_anon_session(agent_id: str, req: AnonSessionRequest, request: R
                     else "This agent requires admin authorization. Sign in with an authorized account."),
         )
 
-    browser_id = req.browser_id or _uuid_mod.uuid4().hex
-    from app.communications.auth import get_or_create_identity
-    identity = await get_or_create_identity(channel="web_public", external_id=browser_id)
+    from app.agent.public_policy import require_public_funding
+    await require_public_funding(db, agent)
 
-    await db.add_agent_member(agent_id, identity.user_id)
+    browser_id = req.browser_id or _uuid_mod.uuid4().hex
+    from app.api.rate_limit import enforce_anon_session_creation, bind_anon_session_identity
+    reservation = await enforce_anon_session_creation(request, browser_id)
+    from app.agent.profiles import ensure_guest_member
+    member, durable_credential = await ensure_guest_member(agent_id, req.guest_credential or "")
+    visitor_user_id = member["subject_id"]
+    await bind_anon_session_identity(reservation, visitor_user_id)
 
     from app.auth.jwt import create_access_token
-    token = create_access_token(username=identity.user_id, user_id=identity.user_id)
+    token = create_access_token(
+        username=visitor_user_id,
+        user_id=visitor_user_id,
+        expires_minutes=60,
+        extra_claims={
+            "anon_admission": True,
+            "anon_admission_id": secrets.token_urlsafe(18),
+            "anon_source": reservation["source_hash"],
+            "agent_id": agent_id,
+            "agent_member_id": member["id"],
+            "agent_identity": True,
+        },
+    )
 
     return {
         "token": token,
-        "user_id": identity.user_id,
-        "session_id": identity.user_id,
+        "user_id": visitor_user_id,
+        "session_id": visitor_user_id,
+        "guest_credential": durable_credential,
+        "access_token_expires_in": 3600,
     }
 
 
@@ -3209,6 +3589,11 @@ async def upsert_agent_ability(
     req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Only agent admins can change abilities.")
+    if req.enabled:
+        try:
+            await enforce_ability_group(db, req.user_id, ability_id)
+        except ResourceEntitlementError as exc:
+            raise _resource_http_error(exc) from exc
 
     from app.admin.integrations import get_oauth_ability_config
     from app.integrations.ability_registry import get_ability
@@ -3286,6 +3671,10 @@ async def set_agent_ability_byo_creds(
     req.user_id = await assert_caller_is(request, req.user_id)
     if not await _is_agent_admin(db, agent_id, req.user_id):
         raise HTTPException(status_code=403, detail="Only agent admins can set BYO credentials.")
+    try:
+        await enforce_ability_group(db, req.user_id, ability_id)
+    except ResourceEntitlementError as exc:
+        raise _resource_http_error(exc) from exc
     cid = (req.client_id or "").strip()
     csec = (req.client_secret or "").strip()
     if not cid or not csec:

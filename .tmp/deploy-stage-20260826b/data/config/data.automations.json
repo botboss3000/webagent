@@ -1,0 +1,29 @@
+{
+  "id": "automations",
+  "label": "Automations",
+  "icon": "settings-2",
+  "data_sources": [
+    { "row_type": "automation", "endpoint": "/api/v1/automations/dashboard", "result_shape": "nested" }
+  ],
+  "gutter": { "width": 6, "default_open": true, "auto_collapse_at": 800 },
+  "columns": [
+    { "id": "check",   "width": 32,  "sticky": true,  "sticky_offset": 0,  "for": ["automation"] },
+    { "id": "agent",   "width": 140,                                           "for": ["automation"] },
+    { "id": "name",    "width": 220, "sort_key": "label",                      "for": ["automation"] },
+    { "id": "status",  "width": 100, "sort_key": "status",                     "for": ["automation"] },
+    { "id": "type",    "width": 90,                                            "for": ["automation"] },
+    { "id": "trigger", "width": 140,                                           "for": ["automation"] },
+    { "id": "output",  "width": 120,                                           "for": ["automation"] },
+    { "id": "last",    "width": 100,                                           "for": ["automation"] },
+    { "id": "next",    "width": 100,                                           "for": ["automation"] },
+    { "id": "count",   "width": 60,  "align": "right",                        "for": ["automation"] },
+    { "id": "device",  "width": 80,                                            "for": ["automation"] },
+    { "id": "enabled", "width": 50,  "align": "center",                       "for": ["automation"] }
+  ],
+  "responsive": {
+    "breakpoints": [
+      { "max_width": 600,  "hide": ["type", "trigger", "output", "last", "next", "count", "device"] },
+      { "max_width": 900,  "hide": ["count", "device"] }
+    ]
+  }
+}

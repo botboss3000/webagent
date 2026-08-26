@@ -77,3 +77,93 @@ function bindComposer(){
 /* ── Helpers ── */
 function closest(el,sel){while(el&&el!==document){if(el.matches&&el.matches(sel))return el;el=el.parentElement}return null}
 function formatTS(ts){try{var d=new Date(ts);return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}catch(e){return''}}
+
+/* ── FEATURE DETAIL INTERACTIONS — bound once at boot, delegated on #detail-zone ── */
+function bindFeatureDetail(){
+  var zone=document.getElementById('detail-zone');if(!zone)return;
+  zone.addEventListener('click',function(e){
+    var btn=closest(e.target,'.ft-run');if(!btn)return;
+    e.stopPropagation();var pi=parseInt(btn.dataset.ftPi);if(isNaN(pi))return;startFeatureTest(pi);
+  });
+  zone.addEventListener('click',function(e){
+    var btn=closest(e.target,'.ft-entry');if(!btn)return;
+    e.stopPropagation();var pi=parseInt(btn.dataset.ftPi);if(isNaN(pi))return;
+    var p=STATE.projects[pi];if(p)ftObj(p);
+    STATE.view='feature';savePageState();renderDetail();
+  });
+  zone.addEventListener('click',function(e){
+    var btn=closest(e.target,'.ft-back');if(!btn)return;
+    e.stopPropagation();var pi=parseInt(btn.dataset.ftPi);if(isNaN(pi))return;
+    STATE.view='project';savePageState();renderDetail();
+  });
+  zone.addEventListener('click',function(e){
+    var btn=closest(e.target,'.ft-stop');if(!btn||btn.disabled)return;
+    e.stopPropagation();var pi=parseInt(btn.dataset.ftPi);if(isNaN(pi))return;requestStopFeature(pi);
+  });
+  zone.addEventListener('click',function(e){
+    var btn=closest(e.target,'.ft-send,.ft-send-answers');if(!btn)return;
+    e.stopPropagation();var pi=parseInt(btn.dataset.ftPi);if(isNaN(pi))return;sendFeatureAnswer(pi);
+  });
+  zone.addEventListener('click',function(e){
+    var skip=closest(e.target,'.ft-skip');if(!skip)return;
+    e.stopPropagation();var pi=parseInt(skip.dataset.ftPi);if(isNaN(pi))return;skipFeatureToPlan(pi);
+  });
+  zone.addEventListener('click',function(e){
+    var row=closest(e.target,'.ft-q-row');if(!row)return;
+    e.stopPropagation();var q=closest(row,'.qa-question');if(q)q.classList.toggle('open');
+  });
+  zone.addEventListener('click',function(e){
+    var btn=closest(e.target,'.ft-plan-accept,.ft-plan-reject,.ft-plan-comment-send');if(!btn)return;
+    e.stopPropagation();var pi=parseInt(btn.dataset.ftPi);if(isNaN(pi))return;
+    var p=STATE.projects[pi],ft=p&&p.featureTest,tq=ft&&ft.testQA;if(!tq)return;
+    if(btn.classList.contains('ft-plan-accept')){sendFeaturePlanAction(pi,'accept','')}
+    else if(btn.classList.contains('ft-plan-reject')){
+      var row=document.getElementById('ft-plan-comment-row-'+pi);
+      if(row&&row.style.display==='flex'){sendFeaturePlanAction(pi,'reject_with_comment','')}
+      else{if(row)row.style.display='flex';}
+    }else{
+      var inp=document.getElementById('ft-plan-comment-inp-'+pi);
+      sendFeaturePlanAction(pi,'reject_with_comment',inp?inp.value.trim():'');
+    }
+  });
+  zone.addEventListener('click',function(e){
+    var link=closest(e.target,'.ft-open-chat');if(!link)return;
+    e.stopPropagation();var pi=parseInt(link.dataset.ftPi);if(isNaN(pi))return;
+    var p=STATE.projects[pi],ft=p&&p.featureTest,tq=ft&&ft.testQA;if(!tq||!tq.session_id)return;
+    toast('Opening chat...');
+    chatToSession(tq.session_id,p.name,'[Feature Readiness] Open in Chat: '+p.name,false,false,false,CFG.prompts.openChat_userMessage||DEF_PROMPTS.openChat_userMessage);
+  });
+  zone.addEventListener('click',function(e){
+    var btn=closest(e.target,'.req-add-btn');if(!btn)return;
+    e.stopPropagation();var pi=parseInt(btn.dataset.ftPi);if(isNaN(pi))return;addRequirement(pi);
+  });
+  zone.addEventListener('click',function(e){
+    var btn=closest(e.target,'.freq-del');if(!btn)return;
+    e.stopPropagation();var pi=parseInt(btn.dataset.ftPi),ri=parseInt(btn.dataset.r);
+    if(isNaN(pi)||isNaN(ri))return;
+    delClick(btn,function(){deleteFeatureRequirement(pi,ri)});
+  });
+  zone.addEventListener('change',function(e){
+    var t=e.target;if(!t||t.type!=='checkbox'||t.dataset.r===undefined)return;
+    var pi=parseInt(t.dataset.ftPi),ri=parseInt(t.dataset.r);
+    if(isNaN(pi)||isNaN(ri))return;
+    var p=STATE.projects[pi],ft=p&&p.featureTest;if(!ft||!ft.requirements[ri])return;
+    ft.requirements[ri].done=t.checked;
+    saveBag();renderDetail();
+  });
+  zone.addEventListener('keydown',function(e){
+    var inp=e.target;if(!inp||!inp.id||inp.id.indexOf('req-add-')!==0)return;
+    if(e.key==='Enter'){e.preventDefault();addRequirement(parseInt(inp.id.replace('req-add-',''),10));}
+  });
+  zone.addEventListener('change',function(e){
+    var inp=e.target;if(!inp||!inp.classList||!inp.classList.contains('req-criteria'))return;
+    var pi=parseInt(inp.dataset.ftPi),ri=parseInt(inp.dataset.r);
+    if(isNaN(pi)||isNaN(ri))return;
+    saveRequirementCriteria(pi,ri,inp.value);
+  });
+  zone.addEventListener('focusout',function(e){
+    var t=e.target;if(!t||!t.id||t.id.indexOf('feature-desc-')!==0)return;
+    var pi=parseInt(t.id.replace('feature-desc-',''),10);
+    if(!isNaN(pi))saveFeatureDesc(pi,t.value);
+  });
+}

@@ -34,10 +34,9 @@
     ]
   },
   "meta": {
-    "lastUpdated": "2026-05-08T19:56:27Z",
-    "status": "ok",
     "domain": "webagent.live",
-    "note": "4 records found"
+    "status": "needs_login",
+    "note": "Login not saved yet \u2014 click 'Save to vault' on the page."
   },
   "chatConfig": {
     "button": {

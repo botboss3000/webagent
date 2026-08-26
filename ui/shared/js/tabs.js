@@ -9,14 +9,10 @@
 import { startAccount } from './account.js';
 import { pageMemory } from './page-memory.js';
 import { refreshTutorial } from '../../tutorials/js/tutorial.js';
-import { isAdmin } from './left-login.js';
-import { initAppConfig } from '../../main-panel/instances/app-config/index.js';
-import { initDbViewer } from './index.js';
-import { initDataManagement } from './data-management.js';
-import { initRemoteAccess } from './remote-access.js';
-import { initTunnelLink } from './tunnel-link.js';
-import { showPageAccessGate, hidePageAccessGate } from './page-access-gate.js';
+import { isAdmin, isAuthenticated, isAnonGuest, adminStatusReady } from './left-login.js?v=253';
+import { showPageAccessGate, hidePageAccessGate } from './page-access-gate.js?v=253';
 import { app } from './state.js';
+import { getActive } from './accounts.js';
 import { createChatLauncher } from '../../chat-widget/js/chat-launcher.js';
 
 // ── Lazy Admin Tools init ───────────────────────────────────────────────────
@@ -29,20 +25,28 @@ let _adminInited = false;
 function _ensureAdminInit() {
   if (_adminInited) return;
   _adminInited = true;
-  try { initDbViewer(); }       catch (e) { console.error('initDbViewer failed', e); }
-  try { initDataManagement(); }  catch (e) { console.error('initDataManagement failed', e); }
-  try { initRemoteAccess(); }    catch (e) { console.error('initRemoteAccess failed', e); }
-  try { initTunnelLink(); }      catch (e) { console.error('initTunnelLink failed', e); }
-  try { initAppConfig(); }       catch (e) { console.error('initAppConfig failed', e); }
+  Promise.all([
+    import('./index.js'),
+    import('./data-management.js'),
+    import('./remote-access.js'),
+    import('./tunnel-link.js'),
+    import('../../main-panel/instances/settings/settings.js'),
+  ]).then(([dbViewer, dataManagement, remoteAccess, tunnelLink, settings]) => {
+    try { dbViewer.initDbViewer(); }             catch (e) { console.error('initDbViewer failed', e); }
+    try { dataManagement.initDataManagement(); } catch (e) { console.error('initDataManagement failed', e); }
+    try { remoteAccess.initRemoteAccess(); }     catch (e) { console.error('initRemoteAccess failed', e); }
+    try { tunnelLink.initTunnelLink(); }         catch (e) { console.error('initTunnelLink failed', e); }
+    try { settings.initSettings(); }             catch (e) { console.error('initSettings failed', e); }
+  }).catch((e) => console.error('Admin Tools initialization failed', e));
 }
 
-// Admin Tools is the one admin-only destination (everything privileged lives
-// inside it as sidebar views). A non-admin must never be ACTIVATED onto it — not
+// Admin Tools, Instances, and File Manager are admin-only destinations. A
+// non-admin must never be ACTIVATED onto any of them — not
 // an anonymous guest, and not a real admin in the brief boot window before the
 // server confirms admin status — because activating it flashes the admin panels
 // (App Settings etc.) and then full-screens the "Restricted Access" overlay.
 function _isAdminOnlyTab(tabValue) {
-  return tabValue === 'admin-tools';
+  return tabValue === 'admin-tools' || tabValue === 'instances' || tabValue === 'explorer';
 }
 
 // A main page hidden from this visitor by its 3-state visibility setting — a
@@ -59,6 +63,21 @@ function _pageVisibilityBlocked(tabValue) {
     return typeof window.__pageHiddenByVisibility === 'function'
       && !!window.__pageHiddenByVisibility(tabValue);
   } catch (_) { return false; }
+}
+
+function _selectOptionBlocked(tabValue, tabSelect) {
+  if (!tabValue || !tabSelect) return false;
+  return !Array.from(tabSelect.options || []).some((option) => option.value === tabValue);
+}
+
+function _anonymousIdentityBlocked(tabValue) {
+  if (tabValue !== 'instances') return false;
+  let uid = String((app && app.currentUserId) || '');
+  try { uid = String((getActive() && getActive().user_id) || uid); } catch (_) {}
+  try { uid = String(localStorage.getItem('auth_user_id') || uid); } catch (_) {}
+  try { uid = String(document.getElementById('top-user-id')?.title || uid); } catch (_) {}
+  try { uid = String(document.querySelector('#top-user-avatar-slot .user-avatar')?.title || uid); } catch (_) {}
+  return uid.indexOf('anon_') === 0;
 }
 
 function setChatPanelVisible(visible) {
@@ -100,8 +119,16 @@ function _catalogPage(id) {
 function _dynModule(id, entry) {
   if (!_dynMods[id]) {
     // DYN-IMPORT-CACHE: evict the rejection so the next activation retries.
+    const moduleUrl = new URL(entry, document.baseURI);
+    // The running backend memoizes page.json descriptors until restart. Keep the
+    // security-sensitive Instances module independently cache-bustable so a shell
+    // refresh can deliver an auth-gate fix even while an older catalog is live.
+    if (id === 'instances') moduleUrl.searchParams.set('v', '255');
+    // Same trick for the Wiki page: its sidebar-popover layout ships in this
+    // module + wiki.css, so bump this whenever those assets change.
+    if (id === 'wiki') moduleUrl.searchParams.set('v', '6');
     _dynMods[id] = Promise.resolve()
-      .then(() => import(new URL(entry, document.baseURI).href))
+      .then(() => import(moduleUrl.href))
       .catch((e) => { delete _dynMods[id]; throw e; });
   }
   return _dynMods[id];
@@ -127,7 +154,17 @@ function _startPage(id) {
         // Restore the page's saved view state after it has started rendering.
         _recallPage(id, p, m);
       })
-      .catch((e) => console.error('start ' + id + ' failed', e));
+      .catch((e) => {
+        console.error('start ' + id + ' failed', e);
+        const target = document.getElementById('tab-' + id);
+        if (target && target.classList.contains('active')) {
+          target.removeAttribute('aria-busy');
+          target.innerHTML = '<section role="status" data-page-start-state="failed" '
+            + 'style="max-width:460px;margin:auto;padding:36px 28px;text-align:center">'
+            + '<h2 style="font-size:18px;margin:0 0 10px">This page could not be opened</h2>'
+            + '<p style="margin:0;color:var(--fg-3)">Try again in a moment.</p></section>';
+        }
+      });
   } else {
     // Static / iframe-only pages still get their DOM snapshot restored.
     _recallPage(id, p, null);
@@ -279,14 +316,22 @@ function _recallPage(id, p, mod) {
 // row here when a new page gains a hotlink sub-param.
 const _PAGE_PARAMS = { wiki: ['article'], 'admin-tools': ['view'] };
 
-// The app's canonical landing page — the first content tab a no-param load of
-// "/app" opens: the lowest-ordered VISIBLE non-admin page (today that's Agents).
-// Computed live from the DOM so it tracks the catalog AND per-visitor visibility
-// (header-build hides 'auth'/'off' tabs with display:none); Admin Tools (admin-
-// only) and the pinned Account entry are skipped. Returns '' when nothing is open
-// to this visitor (e.g. every page registration-only for an anonymous guest).
-// Shared by _safeDefaultTab (redirect target) and _syncTabUrl (clean-URL test).
+// The tier-aware landing page for a no-param /app load. The admin decision comes
+// only from left-login's server-backed check-access probe; client storage is used
+// solely to distinguish an anonymous guest from a registered member. If a target
+// page is not present (for example, removed by an entitlement/catalog change),
+// fall back to the first visible non-admin page.
 function _computeDefaultTab() {
+  const preferred = isAdmin()
+    ? 'instances'
+    : 'agents';
+  const preferredButton = document.querySelector(
+    `#main-tabs .main-tab[data-value="${preferred}"]`
+  );
+  if (preferredButton && preferredButton.style.display !== 'none'
+      && !_pageVisibilityBlocked(preferred)) {
+    return preferred;
+  }
   const btns = Array.from(document.querySelectorAll('#main-tabs .main-tab[data-value]'));
   for (const b of btns) {
     const v = b.dataset.value;
@@ -333,22 +378,25 @@ function _syncTabUrl(tabValue) {
 export function initTabs() {
   const tabSelect = document.getElementById('main-tab-select');
   if (!tabSelect) return;
+  const pendingEarlyTab = window.__pendingMainTab || '';
+  window.__pendingMainTab = '';
+  window.__mainTabsRouterReady = true;
 
-  const savedTab = localStorage.getItem('lastActiveTab');
-  if (savedTab && tabSelect.querySelector(`option[value="${savedTab}"]`)) {
-    tabSelect.value = savedTab;
-  }
-
-  // Where a non-admin lands when their saved/requested tab was Admin Tools — the
-  // app's canonical landing page. The live DOM logic (first VISIBLE non-admin tab,
-  // skipping Account; '' when every page is gated for this visitor) lives in the
-  // shared module-level _computeDefaultTab so _syncTabUrl can reuse it for the
-  // clean-URL test; this thin wrapper keeps the redirect call sites readable.
+  // Safe landing when a non-admin requests an admin-only view. This uses the
+  // same tier-aware target as a plain /app navigation.
   function _safeDefaultTab() {
     return _computeDefaultTab();
   }
 
+  let _userNavigated = false;
+  let _lastRequestedTab = null;
+  let _activationSequence = 0;
   function activateTab(tabValue, userInitiated) {
+    const activationSequence = ++_activationSequence;
+    if (userInitiated) {
+      _userNavigated = true;
+      _lastRequestedTab = tabValue;
+    }
     // Back-compat: 'files' was the legacy id for what is now 'admin-tools'.
     // Saved state in older browsers will still hold 'files'.
     if (tabValue === 'files') tabValue = 'admin-tools';
@@ -369,6 +417,21 @@ export function initTabs() {
       try { localStorage.setItem('files.sidebarView', 'runtime-loop'); } catch (_) {}
     }
 
+    // No tenant catalog means there is no page we can safely activate. Keep the
+    // explicit cached-view-unavailable panel visible instead of converting a
+    // missing default page into the generic account-access gate. Account remains
+    // reachable so the user can sign in/out or change identity.
+    const catalogUnavailable = window.__pagesCatalog?._unavailable === true;
+    if (catalogUnavailable && tabValue !== 'account') {
+      document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('active'));
+      const notice = document.querySelector('[data-catalog-unavailable="1"]');
+      if (notice) notice.classList.add('active');
+      hidePageAccessGate();
+      _stopAllExcept(null);
+      _activePageId = null;
+      return;
+    }
+
     // Admin Tools boot-race guard. Admin status isn't known yet at boot (the
     // /check-access probe is async), so a not-yet-confirmed admin is redirected
     // to a safe, visible page rather than flashing the admin panels. A real admin
@@ -387,7 +450,15 @@ export function initTabs() {
     // panel, so the visitor signs in right where they tried to go. Covers every
     // entry point (?tab= deep link, dropdown, restored lastActiveTab, agent
     // ui_command). Signing in reloads and re-runs this check.
-    const gated = !!tabValue && _pageVisibilityBlocked(tabValue);
+    // Authoritative select membership is an access boundary. The catalog omits
+    // disallowed/unavailable pages from the hidden select, but a stale/locked
+    // visible header button or deep link can still carry their page id. Fail
+    // closed here, before partial hydration or _startPage; this does not depend
+    // on identity state being synchronized yet.
+    const gated = !!tabValue
+      && (_pageVisibilityBlocked(tabValue)
+        || _selectOptionBlocked(tabValue, tabSelect)
+        || _anonymousIdentityBlocked(tabValue));
 
     document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('active'));
     if (!gated) {
@@ -434,6 +505,8 @@ export function initTabs() {
       // who can't see the page.
       _stopAllExcept(null);
       _activePageId = null;
+      const gatedContent = document.getElementById('tab-' + tabValue);
+      if (gatedContent) gatedContent.removeAttribute('aria-busy');
       showPageAccessGate(tabValue);
       try { refreshTutorial(tabValue); } catch (_) {}
       return;
@@ -442,18 +515,38 @@ export function initTabs() {
     // Normal page: ensure any prior gate is torn down, then dispatch. Flow +
     // Runtime Loop are sidebar views inside Admin Tools, so stopAdminTools() (the
     // admin-tools page's stop hook) owns their lifecycle when leaving admin-tools.
-    // Admin Tools needs its lazy sub-panel init run once before its start hook.
+    // Inactive page markup is loaded on demand. A page initializer must not run
+    // before its own partial exists, but the active-tab paint above remains
+    // synchronous so the click is acknowledged immediately.
     hidePageAccessGate();
     _stopAllExcept(tabValue);
-    if (tabValue === 'admin-tools') {
-      _ensureAdminInit();
-    }
-    _startPage(tabValue);
-
-    // Re-render tutorial hint badges for the newly active tab. Defer a tick
-    // so the tab's start*() routine has populated dynamic content first.
-    try { refreshTutorial(tabValue); } catch (_) {}
+    const targetContent = document.getElementById('tab-' + tabValue);
+    if (targetContent) targetContent.setAttribute('aria-busy', 'true');
+    const ensurePartial = typeof window.__ensurePagePartial === 'function'
+      ? window.__ensurePagePartial(tabValue)
+      : Promise.resolve();
+    Promise.resolve(ensurePartial).then(() => {
+      if (activationSequence !== _activationSequence) return;
+      if (targetContent) targetContent.removeAttribute('aria-busy');
+      if (tabValue === 'admin-tools') _ensureAdminInit();
+      _startPage(tabValue);
+      // Re-render tutorial hint badges after the page's start routine has had a
+      // chance to populate dynamic content.
+      try { refreshTutorial(tabValue); } catch (_) {}
+    }).catch((error) => {
+      if (targetContent) targetContent.removeAttribute('aria-busy');
+      console.error('hydrate ' + tabValue + ' failed', error);
+    });
   }
+
+  // The visible header may contain a gated page that is intentionally omitted
+  // from the guest <select>. Route its button id directly so the select cannot
+  // collapse the requested value to an empty string before activateTab sees it.
+  window.__routeMainTab = function (view, userInitiated = true) {
+    if (!view) return;
+    if (tabSelect.querySelector(`option[value="${view}"]`)) tabSelect.value = view;
+    activateTab(view, userInitiated);
+  };
 
   // On load: if ?tab=<tabValue> is in the URL, activate that tab. Used when
   // middle-clicking a header button opens a new window — and now also the path a
@@ -535,6 +628,25 @@ export function initTabs() {
     activateTab(e.target.value, true);
   });
 
+  // Header buttons are rebuilt when a fallback catalog is replaced by the
+  // authoritative catalog. Bind navigation to the stable strip rather than to
+  // the individual buttons so every replacement still travels through the one
+  // activation path that changes button/content/lifecycle state together.
+  const tabBar = document.getElementById('main-tabs');
+  if (tabBar) {
+    tabBar.addEventListener('click', (event) => {
+      if (event.__mainTabRouted) return;
+      const button = event.target.closest('.main-tab[data-value]');
+      if (!button || !tabBar.contains(button) || button.disabled) return;
+      const value = button.dataset.value;
+      if (!value) return;
+      if (tabSelect.querySelector(`option[value="${value}"]`)) {
+        tabSelect.value = value;
+      }
+      activateTab(value, true);
+    });
+  }
+
   // The loop-visualizer controls (level filters + autoscroll) are driven by the
   // agent-loop module under ui/agents/. Import it LAZILY + defensively so this
   // module never fails to load when that page folder is absent (drop-in safety).
@@ -562,84 +674,78 @@ export function initTabs() {
   // Also apply the saved chat visibility here (not just in _initChatVisibility)
   // because this module script runs before DOMContentLoaded, so the body class
   // hasn't been set yet — without it the user would see the main panel.
-  if (typeof window.__isMobileChatLayout === 'function' && window.__isMobileChatLayout()
+  if (pendingEarlyTab && document.getElementById('tab-' + pendingEarlyTab)) {
+    if (tabSelect.querySelector(`option[value="${pendingEarlyTab}"]`)) {
+      tabSelect.value = pendingEarlyTab;
+    }
+    activateTab(pendingEarlyTab, true);
+  } else if (typeof window.__isMobileChatLayout === 'function' && window.__isMobileChatLayout()
       && typeof window.__getChatVisible === 'function' && window.__getChatVisible()) {
     if (typeof window.__applyChatVisible === 'function') window.__applyChatVisible(true);
   } else if (!_deepLinkHandled) {
-    // Restore the last page this browser was on (saved to localStorage on every
-    // navigation), falling back to the canonical landing page. The ?tab= deep
-    // link above covers refresh-after-navigation; this covers a bare load of
-    // "/app" (new tab, cleared URL) so the user lands where they left off.
-    const initialTab = tabSelect.value ? tabSelect.value : (_computeDefaultTab() || 'agents');
+    // A bare /app is intentionally tier-aware rather than restoring an arbitrary
+    // browser-local last tab: anonymous visitors and registered members start
+    // in Agents, and confirmed admins are promoted to Instances below.
+    const initialTab = _computeDefaultTab() || 'agents';
     tabSelect.value = initialTab;
     activateTab(initialTab);
   }
 
-  // Deferred Admin Tools restore. The guard above redirected admin-tools → a safe
-  // default because admin status isn't known yet at boot (the /check-access probe
-  // is async). This covers BOTH ways an admin can request Admin Tools at boot: a
-  // restored lastActiveTab OR a ?tab=admin-tools deep link. Once the server
-  // confirms admin, send them (back) to Admin Tools. On mobile this is a boot
-  // restore, not a user navigation: mount the saved page behind chat without
-  // changing the saved chat/main view. Desktop still treats it as navigation so
-  // the address bar reflects ?tab=admin-tools(&view=) and the link stays
-  // shareable. A confirmed NON-admin simply stays on the default.
-  if ((_isAdminOnlyTab(savedTab) || _isAdminOnlyTab(_deepLinkTab)) && !isAdmin()) {
+  // When a slow catalog forced the shell to boot from the minimal Agents fallback,
+  // reconcile its tab strip and choose the now-authoritative tier landing once
+  // its partials have been mounted.  Explicit deep links retain precedence.
+  let _lateCatalogReady = !window.__catalogBootedFromFallback;
+  const _reconcileTierLanding = () => {
+    if (_deepLinkHandled || _userNavigated || !_lateCatalogReady) return;
+    // A registered account may still prove to be an admin. Do not commit it to
+    // the member landing until the authoritative role probe has settled.
+    if (isAuthenticated() && !isAnonGuest() && !adminStatusReady()) return;
+    const target = _computeDefaultTab();
+    if (target && tabSelect.querySelector(`option[value="${target}"]`)) {
+      tabSelect.value = target;
+      activateTab(target);
+    }
+  };
+  window.addEventListener('pages-catalog-ready', () => {
+    if (!window.__catalogBootedFromFallback) return;
+    window.__catalogBootedFromFallback = false;
+    _lateCatalogReady = true;
+    // A deep link or click can target a page that was absent from the minimal
+    // fallback catalog. Its tab paints immediately, but _startPage had no
+    // descriptor to dispatch. Late hydration has now mounted its markup and
+    // published the authoritative catalog, so reactivate the user's chosen page
+    // once without changing their navigation intent.
+    const requested = _deepLinkTab || _lastRequestedTab || tabSelect.value;
+    if ((_deepLinkHandled || _userNavigated) && requested) {
+      if (tabSelect.querySelector(`option[value="${requested}"]`)) tabSelect.value = requested;
+      activateTab(requested, false);
+      return;
+    }
+    _reconcileTierLanding();
+  }, { once: true });
+
+  // A direct Admin Tools deep link must still work once the server verifies the
+  // admin role. A saved browser-local tab is deliberately NOT restored: a bare
+  // /app always uses the tier landing rule above.
+  if (_isAdminOnlyTab(_deepLinkTab) && !isAdmin()) {
     const _restoreAdminTab = (e) => {
       window.removeEventListener('admin-status-loaded', _restoreAdminTab);
       if (e && e.detail && e.detail.is_admin) {
         const isMobile = typeof window.__isMobileChatLayout === 'function'
           && window.__isMobileChatLayout();
-        activateTab('admin-tools', !isMobile);
+        activateTab(_deepLinkTab, !isMobile);
       }
     };
     window.addEventListener('admin-status-loaded', _restoreAdminTab);
   }
 
-  // ── First-ever landing: send a brand-new admin to Data Settings ──
-  // On the VERY FIRST load of this browser (after the setup wizard + splash, once
-  // the admin password is set and the gate is passed) the first content page an
-  // admin should see is Admin Configuration → Data Settings, not the usual Agents
-  // landing. It fires AT MOST ONCE per browser and only for a confirmed admin.
-  //
-  // Mechanics: land = Admin Tools tab (lastActiveTab) → 'settings' sidebar view
-  // (files.sidebarView) → 'data-settings' section (appConfig_activeSection). We
-  // seed the latter two localStorage keys BEFORE activating admin-tools so that
-  // files.js' applySidebarView and nav.js' module-eval both read the fresh values
-  // when Admin Tools first lazily mounts. Admin status is async (the /check-access
-  // probe), so — like the deferred restore above — we wait for admin-status-loaded.
-  //
-  // State machine (localStorage 'webagent.firstLanding.v1'):
-  //   absent  → first time this code runs in this browser. If the browser already
-  //             has a saved tab or arrived via a ?tab= deep link, it's an existing/
-  //             intentional visit → mark 'done' (suppress, never yank them). A truly
-  //             fresh browser → 'pending' and arm the listener.
-  //   pending → armed but no admin has signed in yet (e.g. the admin signs in on a
-  //             later load); keep waiting so their first authenticated load still
-  //             lands on Data Settings. A non-admin visitor just leaves it pending.
-  //   done    → already landed (or suppressed) — do nothing.
-  (function () {
-    const KEY = 'webagent.firstLanding.v1';
-    let state;
-    try { state = localStorage.getItem(KEY); } catch (_) { return; }
-    if (state === 'done') return;
-    if (state === null) {
-      if (savedTab || _deepLinkHandled) {
-        try { localStorage.setItem(KEY, 'done'); } catch (_) {}
-        return;
-      }
-      try { localStorage.setItem(KEY, 'pending'); } catch (_) {}
-    }
-    const _firstLanding = (e) => {
-      window.removeEventListener('admin-status-loaded', _firstLanding);
-      if (!(e && e.detail && e.detail.is_admin)) return;  // stay 'pending' for non-admins
-      try { localStorage.setItem('files.sidebarView', 'settings'); } catch (_) {}
-      try { localStorage.setItem('appConfig_activeSection', 'data-settings'); } catch (_) {}
-      try { localStorage.setItem(KEY, 'done'); } catch (_) {}
-      activateTab('admin-tools', true);
-    };
-    window.addEventListener('admin-status-loaded', _firstLanding);
-  })();
+  // Admin status resolves asynchronously from the server. The provisional
+  // anonymous/member landing above therefore cannot be trusted as final for an
+  // admin. For a plain /app (not an explicit ?tab= link), move a CONFIRMED admin
+  // to Instances after that authoritative response arrives.
+  if (!_deepLinkHandled) {
+    window.addEventListener('admin-status-loaded', _reconcileTierLanding, { once: true });
+  }
 
   // ── Middle-click on a header tab opens that page in a new browser tab ──
   // (The new-session + button's own middle-click handler moved with the button
@@ -682,8 +788,51 @@ export function initTabs() {
 
   // (Main-panel swipe-to-flip gesture removed — was causing accidental page switches.)
 
-  // The spinner was shown in the header during init (pre-paint script
-  // set body.is-booting). Now that the tab content is mounted, clear
-  // is-booting so the spinner fades out immediately.
+  // The pre-paint script set body.is-booting during init. Now that the
+  // tab content is mounted, clear it — this stops the boot phantom
+  // cursor (index.html) that drives the animated background while booting.
+  const bootPill = document.getElementById('chat-input-row');
+  const bootInputArea = document.getElementById('chat-input-area');
+  const reduceMotion = window.matchMedia
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const animateComposer = !!(
+    bootPill && bootInputArea && window.innerWidth > 800 && !reduceMotion
+    && document.body.classList.contains('is-booting')
+  );
+  const firstRect = animateComposer ? bootPill.getBoundingClientRect() : null;
+
   document.body.classList.remove('is-booting');
+  // Empty-session positioning has to re-apply after the boot selector drops:
+  // footer profiles own an inline !important bottom value that CSS cannot beat.
+  if (typeof app.refreshSuggestions === 'function') {
+    try { app.refreshSuggestions(); } catch (_) { /* best-effort boot polish */ }
+  }
+
+  // FLIP the composer from the centred boot scene to its ordinary chat-panel
+  // dock. The surrounding panel can switch layouts immediately while the one
+  // element the user is tracking moves continuously between the positions.
+  if (animateComposer && firstRect && firstRect.width > 0) {
+    const lastRect = bootPill.getBoundingClientRect();
+    const destinationTransform = getComputedStyle(bootInputArea).transform;
+    const finalTransform = destinationTransform === 'none' ? 'translate3d(0, 0, 0)' : destinationTransform;
+    const dx = firstRect.left - lastRect.left;
+    const dy = firstRect.top - lastRect.top;
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+      bootInputArea.classList.add('chat-input-area-docking');
+      bootInputArea.style.transition = 'none';
+      bootInputArea.style.transform = `translate3d(${dx}px, ${dy}px, 0) ${finalTransform}`;
+      bootInputArea.getBoundingClientRect();
+      requestAnimationFrame(() => {
+        bootInputArea.style.transition = 'transform 680ms cubic-bezier(.22, 1, .36, 1)';
+        bootInputArea.style.transform = finalTransform;
+      });
+      const cleanup = () => {
+        bootInputArea.classList.remove('chat-input-area-docking');
+        bootInputArea.style.removeProperty('transition');
+        bootInputArea.style.removeProperty('transform');
+      };
+      bootInputArea.addEventListener('transitionend', cleanup, { once: true });
+      setTimeout(cleanup, 900);
+    }
+  }
 }

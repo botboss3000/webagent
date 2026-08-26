@@ -11,6 +11,7 @@ import { getAuthToken } from './left-login.js';
 import { renderAvatar } from './user-avatar.js';
 import { getActive } from './accounts.js';
 import { handleAttachmentEvent } from './attachments.js';
+import { isMessageTypeVisible } from './chat-visibility.js';
 
 let reconnectTimer = null;
 let reconnectAttempts = 0;
@@ -266,7 +267,9 @@ export function connectAgent() {
     // is delivering (same-process) the poll never fires, and when it can't
     // (browser and agent on different workers/instances) the poll takes over.
     if (_sid && (event.type === 'stream' || event.type === 'response'
-                 || event.type === 'agent_step_end' || event.type === 'interrupted')) {
+                 || event.type === 'agent_step_end' || event.type === 'interrupted'
+                 || event.type === 'summary' || event.type === 'overview'
+                 || event.type === 'scout_response')) {
       if (!app._lastWsEventAt) app._lastWsEventAt = {};
       app._lastWsEventAt[_sid] = Date.now();
     }
@@ -415,7 +418,12 @@ export function connectAgent() {
           const sel = genuiLabel
             ? `.chat-bubble.info.system-genui[data-msg-id="${CSS.escape(String(mid))}"]`
             : `.chat-bubble.user[data-msg-id="${CSS.escape(String(mid))}"]`;
-          if (app.chatMessages.querySelector(sel)) break;
+          if (app.chatMessages.querySelector(sel)) {
+            if (!genuiLabel && typeof app.positionActivityGroupAfterOwner === 'function') {
+              try { app.positionActivityGroupAfterOwner(mid); } catch (_) {}
+            }
+            break;
+          }
         }
         if (genuiLabel) {
           if (typeof app.addChatBubble === 'function') {
@@ -429,39 +437,40 @@ export function connectAgent() {
                 if (t === genuiLabel) {
                   b.setAttribute('data-msg-id', String(mid));
                   if (typeof app._setBubbleCreatedAt === 'function') app._setBubbleCreatedAt(b, createdAt);
+                  if (typeof app._addBubbleActions === 'function') {
+                    try { app._addBubbleActions(b); } catch (_) { /* reconcile heals later */ }
+                  }
                   break;
                 }
               }
               if (app.chatMessages.querySelector(
                     `.chat-bubble.info.system-genui[data-msg-id="${CSS.escape(String(mid))}"]`)) break;
             }
-            app.addChatBubble('info', genuiLabel, 'system-genui', undefined, undefined, mid || undefined, createdAt);
+            const _gb = app.addChatBubble('info', genuiLabel, 'system-genui', undefined, undefined, mid || undefined, createdAt);
+            if (_gb && typeof app._addBubbleActions === 'function') {
+              try { app._addBubbleActions(_gb); } catch (_) { /* reconcile heals later */ }
+            }
             if (app.isDebug && (cont || '').trim()) {
               app.addChatBubble('info', 'Raw prompt:\n' + cont, 'system-debug');
             }
           }
           break;
         }
-        // Adopt the sender's own optimistic bubble (rendered locally before the
-        // id was known) so we don't double it. Match by text on an untagged
-        // user bubble; tag it with the id instead of adding a new one.
-        if (mid) {
-          const candidates = app.chatMessages.querySelectorAll('.chat-bubble.user:not([data-msg-id])');
-          for (let i = candidates.length - 1; i >= 0; i--) {
-            const b = candidates[i];
-            const t = (b.querySelector('.bubble-body')?.textContent || '').trim();
-            if (t === cont.trim()) {
-              b.setAttribute('data-msg-id', String(mid));
-              if (typeof app._setBubbleCreatedAt === 'function') app._setBubbleCreatedAt(b, createdAt);
-              break;
-            }
-          }
-          if (app.chatMessages.querySelector(
-                `.chat-bubble.user[data-msg-id="${CSS.escape(String(mid))}"]`)) break;
-        }
-        if (typeof app.addChatBubble === 'function') {
+        // Adopt the sender's optimistic bubble by text/id, or render a fresh one
+        // — with its footer — through the shared helper. (addChatBubble never
+        // builds a footer; renderer paths must go through _ensureUserBubble so
+        // "user bubble" and "gutter" stay inseparable.)
+        if (typeof app._ensureUserBubble === 'function') {
+          try {
+            const cls = event.source === 'event_trigger' ? 'event-trigger' : undefined;
+            app._ensureUserBubble(cont, mid || undefined, createdAt, cls);
+          } catch (_) { /* reconcile heals later */ }
+        } else if (typeof app.addChatBubble === 'function') {
           const cls = event.source === 'event_trigger' ? 'event-trigger' : undefined;
           app.addChatBubble('user', cont, cls, undefined, undefined, mid || undefined, createdAt);
+        }
+        if (typeof app.positionActivityGroupAfterOwner === 'function') {
+          try { app.positionActivityGroupAfterOwner(mid); } catch (_) {}
         }
         break;
       }
@@ -478,14 +487,35 @@ export function connectAgent() {
         }
         if (typeof app.appendStreamToActiveBubble === 'function') {
           try {
+            if (typeof app.dismissScoutResponse === 'function') {
+              app.dismissScoutResponse(_ownerTurnId || event.turn_id);
+            }
             app.appendStreamToActiveBubble(
               event.content || '',
               event.asst_id || event.turn_id,
               event.created_at || event.emit_time,
+              _ownerTurnId,
+              _interactionSeq,
             );
           } catch(_) {}
         } else {
           console.warn('DEBUG-TAG:agentWs-stream-no-appender');
+        }
+        break;
+
+      case 'scout_response':
+        if (eventSessionId && eventSessionId !== app.currentSessionId) {
+          if (event.replayed) _stashReplay(eventSessionId, event);
+          break;
+        }
+        if (typeof app.showScoutResponse === 'function') {
+          try {
+            app.showScoutResponse(
+              event.content || '', event.asst_id || event.id || '',
+              event.turn_id || _ownerTurnId,
+              event.created_at || event.emit_time, event.phase || 'ready',
+            );
+          } catch (_) {}
         }
         break;
 
@@ -496,6 +526,7 @@ export function connectAgent() {
           if (event.replayed) _stashReplay(eventSessionId, event);
           break;
         }
+        if (!isMessageTypeVisible('progress')) break;
         if (typeof app.finalizeAgentStep === 'function') {
           try {
             app.finalizeAgentStep(
@@ -519,6 +550,9 @@ export function connectAgent() {
         }
         if (typeof app.finalizeAgentResponse === 'function') {
           try {
+            if (typeof app.dismissScoutResponse === 'function') {
+              app.dismissScoutResponse(_ownerTurnId || event.turn_id);
+            }
             app.finalizeAgentResponse(
               event.content || '', event.asst_id || event.turn_id,
               !!event.replayed, event.created_at || event.emit_time,
@@ -533,6 +567,31 @@ export function connectAgent() {
         }
         break;
 
+      case 'summary':
+      case 'overview': // legacy event name — queued/replayed pre-rename events
+        // User-facing final message from the Output Summarizer — a parallel
+        // LLM loop that rewords the agent's messages from the finished run
+        // (no tool calls) into one concise final message.
+        // Persisted as a role='system' row (source 'system:overview' legacy /
+        // 'system:summary'), so the DB-reconcile poll re-renders it identically
+        // (dedup by data-msg-id).
+        if (eventSessionId && eventSessionId !== app.currentSessionId) {
+          if (event.replayed) _stashReplay(eventSessionId, event);
+          break;
+        }
+        if (!isMessageTypeVisible('summary')) break;
+        if (typeof app.renderSummary === 'function') {
+          try {
+            app.renderSummary(
+              event.content || '',
+              event.id || event.asst_id || '',
+              event.created_at || event.emit_time,
+              event.asst_id || '',
+            );
+          } catch(_) {}
+        }
+        break;
+
       case 'execution_mode': {
         // The agent switched Ask/Plan/Auto mid-conversation (set_execution_mode
         // tool — typically Plan→Auto once the user approved a plan). Update the
@@ -543,6 +602,12 @@ export function connectAgent() {
         if (eventSessionId && eventSessionId !== app.currentSessionId) break;
         if (typeof app.setExecutionMode === 'function') {
           try { app.setExecutionMode(event.mode); } catch (_) { /* ignore */ }
+        }
+        // Live transcript notice: announce the flip where the bubbles are,
+        // anchored to the running turn so it lands between that turn's tool
+        // calls (mirrors markAgentInterrupted's placement).
+        if (typeof app.notifyExecutionMode === 'function') {
+          try { app.notifyExecutionMode(event.mode, { turnId: _ownerTurnId }); } catch (_) { /* ignore */ }
         }
         break;
       }
@@ -561,8 +626,10 @@ export function connectAgent() {
             && typeof app.addChatBubble === 'function') {
           // role 'agent' so it renders on the assistant side (matches how the
           // persisted role='assistant' row is re-rendered on session load).
-          try { app.addChatBubble('agent', event.message || 'Repo changes detected.', 'git-watch-notice'); }
-          catch (_) { /* render error — the persisted row still covers it */ }
+          try {
+            const _rb = app.addChatBubble('agent', event.message || 'Repo changes detected.', 'git-watch-notice');
+            if (_rb && typeof app._addBubbleActions === 'function') app._addBubbleActions(_rb);
+          } catch (_) { /* render error — the persisted row still covers it */ }
         }
         break;
 
@@ -571,7 +638,25 @@ export function connectAgent() {
       case 'agent_deleted':
       case 'agent_restored':
       case 'agent_status':
-        // An agent started/stopped a run, or a session entered the gate queue.
+        // An agent started/stopped a run, a session entered the gate queue, or
+        // a /compact started/finished folding this session.
+        if (event.status === 'compacting' && event.session_id) {
+          // Compaction in progress (initiated here or on another device) — lock
+          // the composer and show "Compacting…" above the pill until the
+          // compact_done broadcast or the drain's 'running' event.
+          if (event.session_id === app.currentSessionId
+              && typeof app._lockComposerForCompaction === 'function') {
+            try { app._lockComposerForCompaction(); } catch (_) { /* ignore */ }
+          }
+          break;
+        }
+        if (event.status === 'compact_done' && event.session_id) {
+          if (event.session_id === app.currentSessionId
+              && typeof app._unlockComposerForCompaction === 'function') {
+            try { app._unlockComposerForCompaction(); } catch (_) { /* ignore */ }
+          }
+          break;
+        }
         if (event.status === 'queued' && event.session_id) {
           // Session cap reached — this session waits in the FIFO queue.
           // Mark the user's bubble in the CURRENT view only (a bubble can only
@@ -591,6 +676,12 @@ export function connectAgent() {
           if (event.session_id === app.currentSessionId
               && typeof app.clearBubbleQueued === 'function') {
             try { app.clearBubbleQueued(event.turn_id, event.session_id); } catch (_) { /* ignore */ }
+          }
+          // A drained compaction-queued message starting its turn means the
+          // compaction is over — release any restore-driven composer lock.
+          if (event.session_id === app.currentSessionId
+              && typeof app._unlockComposerForCompaction === 'function') {
+            try { app._unlockComposerForCompaction(); } catch (_) { /* ignore */ }
           }
           if (typeof app.onSessionGateRunning === 'function') {
             try { app.onSessionGateRunning(event); } catch (_) { /* ignore */ }
@@ -689,6 +780,20 @@ export function connectAgent() {
         }
         break;
 
+      case 'kill_switch':
+        // The kill switch was toggled from another tab/device of this user.
+        // Repaint the header button, session dropdown and Sessions page right
+        // away (they listen for kill-switch-changed) instead of waiting for
+        // the 15s/30s polls. Ignore on replay (a reconnect shouldn't re-fire
+        // an old toggle).
+        if (event.replayed) break;
+        try {
+          window.dispatchEvent(new CustomEvent('kill-switch-changed', {
+            detail: { engaged: !!event.engaged },
+          }));
+        } catch (_) { /* ignore */ }
+        break;
+
       // All other event types (tool_call, tool_result, pipeline, db) are handled by app._loopHandler etc.
       default:
         break;
@@ -730,5 +835,30 @@ export function connectAgent() {
 
   app.agentWs.onerror = () => {
     setAgentStatus('red');
+  };
+
+  // ── Output Summarizer: summary lane ──
+  // The summarizer's concise recap renders as its OWN content-only agent bubble
+  // ('summary-bubble' class — never merges into the raw response), sitting after
+  // the folded working response. Persisted as role='system' (source
+  // 'system:overview' legacy / 'system:summary'), so reloads and the
+  // reconcile poll rebuild it identically (dedup by data-msg-id).
+  app.renderSummary = (content, rowId, createdAt, finalAsstId) => {
+    if (!content || !app.chatMessages) return null;
+    if (typeof app.addChatBubble !== 'function') return null;
+    try {
+      const bubble = app.addChatBubble(
+        'agent', content, 'summary-bubble',
+        undefined, undefined, rowId || undefined, createdAt || undefined,
+      );
+      // Same footer treatment as the session-load path (time, ⋮ context menu).
+      if (bubble && typeof app._addBubbleActions === 'function') {
+        try { app._addBubbleActions(bubble); } catch (_) { /* reconcile heals later */ }
+      }
+      if (typeof app.suppressMatchingResponsePreview === 'function') {
+        try { app.suppressMatchingResponsePreview(content, finalAsstId); } catch (_) {}
+      }
+      return bubble;
+    } catch (_) { return null; }
   };
 }

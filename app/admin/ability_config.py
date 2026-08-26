@@ -292,9 +292,11 @@ def _clamp_value(ceiling: str, ftype: Optional[str], admin_val: Any, agent_val: 
 
 
 def _ceiling_rules(ability_id: str) -> Dict[str, tuple]:
-    """``{key: (ceiling, type, default)}`` for every config field of an ability
+    """``{key: (ceiling, type, default, source_key)}`` for config fields
     that declares a ``ceiling`` rule. Empty when the ability has no schema or no
-    ceiling-bearing fields (the common case → no behaviour change)."""
+    ceiling-bearing fields. ``ceiling_key`` optionally points at a different
+    app-level field that supplies the cap (for example an agent target capped by
+    the global maximum-context field)."""
     rules: Dict[str, tuple] = {}
     try:
         from app.abilities import ability_config_schema
@@ -302,7 +304,10 @@ def _ceiling_rules(ability_id: str) -> Dict[str, tuple]:
         for f in (schema.get("settings") or []):
             c = f.get("ceiling")
             if c and f.get("key"):
-                rules[f["key"]] = (c, f.get("type"), f.get("default"))
+                rules[f["key"]] = (
+                    c, f.get("type"), f.get("default"),
+                    f.get("ceiling_key") or f["key"],
+                )
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("_ceiling_rules: schema read failed for %s: %s", ability_id, e)
     return rules
@@ -347,8 +352,8 @@ def effective_ability_config(
             out[k] = v
     # Ceiling knobs: clamp the agent value to the admin value (admin value falls
     # back to the field default when the admin never set it explicitly).
-    for k, (ceiling, ftype, default) in rules.items():
-        admin_val = base[k] if k in base else default
+    for k, (ceiling, ftype, default, source_key) in rules.items():
+        admin_val = base[source_key] if source_key in base else default
         if k in pa:
             out[k] = _clamp_value(ceiling, ftype, admin_val, pa[k])
         elif k not in out:

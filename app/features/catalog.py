@@ -39,7 +39,6 @@ _FOLDER_SPECS = [
      {"oauth_helper", "ability_registry"}),
     ("event_source", "events/sources", "app.events.sources", True, set()),
     ("channel", "communications/plugins", "app.communications.plugins", True, set()),
-    ("connector", "connectors", "app.connectors", False, {"base"}),
     ("scheduler", "scheduler/providers", "app.scheduler.providers", False, set()),
     ("encryption", "encryption", "app.encryption", False,
      {"interface", "migration", "vault_keys"}),

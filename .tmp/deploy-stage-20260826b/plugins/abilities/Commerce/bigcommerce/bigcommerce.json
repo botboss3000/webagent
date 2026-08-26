@@ -1,0 +1,12 @@
+{
+  "display_name": "BigCommerce",
+  "kind": "placeholder",
+  "icon": "store",
+  "color": "#e0af68",
+  "description": "BigCommerce catalog, inventory, customer, order, and checkout management.",
+  "note": "Coming soon — connects through a BigCommerce app and store API account.",
+  "simple": false,
+  "placeholder": true,
+  "tools": [],
+  "order": 3
+}

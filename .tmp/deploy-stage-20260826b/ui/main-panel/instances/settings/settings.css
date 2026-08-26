@@ -1,0 +1,152 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Settings — Instances → "This device" → Settings (the JSON-driven config area).
+   ui/main-panel/instances/settings/
+
+   Three surfaces, all driven by settings-index.json:
+     • the landing LIST (#settings-list) — grouped clickable section headings,
+     • the per-section PAGES (page partials into #settings-page-slot-*) — each
+       a stack of the standard .ac-category-group tables (styled in app3.css),
+     • the unified search/chat PILL (shared .chat-pill classes in app1.css /
+       index.css; page-assistant engine in settings/page-assistant.js).
+
+   Theme tokens only — never hard-code hex (design-system.css is the source).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Slot wrappers must not be flex items (or the parent's gap fires between all
+   ten slots and stacks phantom space above the list). Collapse them so the
+   real .settings-page elements are the flex items, like the old
+   #ac-section-slot-* wrappers. */
+#app-config-content > [id^="settings-page-slot-"] { display: contents; }
+
+/* ── Page chrome (topbar shown while a single page is open) ─────────────── */
+/* The three surfaces below (topbar / list / page) run edge-to-edge: the
+   Settings tab sits 10px from the panel edge via the host overrides in
+   instances.css (.inst-detail / #app-config-content margins are neutralised),
+   so no max-width cap is applied here. */
+.settings-topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 10px 0 2px;
+  box-sizing: border-box;
+}
+.settings-topbar[hidden] { display: none !important; }
+.settings-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: color-mix(in srgb, var(--bg-2) 60%, transparent);
+  color: var(--fg-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.settings-back-btn:hover {
+  background: var(--bg-2);
+  color: var(--fg-1);
+  border-color: var(--accent);
+}
+.settings-topbar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Landing list ───────────────────────────────────────────────────────── */
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  width: 100%;
+  margin: 0;
+  padding: 6px 0 10px;
+  box-sizing: border-box;
+}
+.settings-list[hidden] { display: none !important; }
+.settings-group { display: flex; flex-direction: column; gap: 8px; }
+.settings-group-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  padding: 0 4px;
+}
+.settings-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
+  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .1s ease;
+}
+.settings-item:hover {
+  background: var(--bg-2);
+  border-color: var(--accent);
+}
+.settings-item:active { transform: translateY(1px); }
+.settings-item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+.settings-item-body { flex: 1 1 auto; min-width: 0; }
+.settings-item-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg-1);
+}
+.settings-item-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-3);
+}
+.settings-item-chev {
+  flex: 0 0 auto;
+  color: var(--fg-4);
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ── Per-section pages ──────────────────────────────────────────────────── */
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+.settings-page[hidden] { display: none !important; }
+/* Build gate for the Agent Tools page (mirrors .ac-section.is-building in
+   app3.css): the agent-settings module drops the class once its async build
+   of the ability/integration tables resolves. */
+.settings-page.is-building > *:not(.ac-section-loader) { display: none !important; }
+.settings-page.is-building > .ac-section-loader { display: flex !important; }
+.settings-page > .ac-section-loader { display: none; }

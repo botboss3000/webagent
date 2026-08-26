@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "alarms": [
+    {
+      "id": "a1",
+      "label": "asyncio pipe-close noise",
+      "contains": "_call_connection_lost",
+      "level": "",
+      "category": "",
+      "action": "notify",
+      "loudness": "digest",
+      "channels": []
+    },
+    {
+      "id": "a2",
+      "label": "LLM timeout",
+      "contains": "OpenRouter timeout",
+      "level": "",
+      "category": "",
+      "action": "notify",
+      "loudness": "every",
+      "channels": []
+    },
+    {
+      "id": "a3",
+      "label": "feedback relay",
+      "contains": "Feedback relay call failed",
+      "level": "",
+      "category": "",
+      "action": "notify",
+      "loudness": "digest",
+      "channels": []
+    }
+  ]
+}

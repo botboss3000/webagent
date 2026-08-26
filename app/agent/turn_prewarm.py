@@ -1,7 +1,7 @@
 """Per-session PREWARM of the read-only chat prep.
 
-The session/agent-scoped prep a turn needs — the agent's TOOL set, the chat
-HISTORY, and the attached DATA-SOURCE list — does NOT depend on the message the
+The session/agent-scoped prep a turn needs — the agent's TOOL set and chat
+HISTORY — does NOT depend on the message the
 user is about to type. On a remote DB those reads cost several seconds. This
 module lets the front-end build them WHILE THE USER IS STILL TYPING (via the
 ``/chat/prewarm`` endpoint) and stash them per session, so when the message is
@@ -38,23 +38,34 @@ Sig = Tuple[Any, Any, Any]
 
 
 def store(session_id: str, *, sig: Sig, tools: Any, history: Any,
-          ds_attached: Any, ttl: float = DEFAULT_TTL_SECONDS) -> None:
+          ttl: float = DEFAULT_TTL_SECONDS) -> None:
     """Stash a freshly-built prep bundle for ``session_id``."""
     now = time.monotonic()
     _BUNDLES[session_id] = {
         "sig": sig,
         "tools": tools,
         "history": history,
-        "ds_attached": ds_attached,
         "built_at": now,
         "expires_at": now + ttl,
     }
 
 
-def consume(session_id: str, *, sig: Sig) -> Optional[Dict[str, Any]]:
+def consume(
+    session_id: str,
+    *,
+    sig: Sig,
+    pending_starts_new_task: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Return a valid bundle for ``session_id`` (matching sig, within TTL, built
     after the last completed turn), or None. Non-destructive: a superseding /
-    retried turn for the same session may reuse it until ``mark_turn_done``."""
+    retried turn for the same session may reuse it until ``mark_turn_done``.
+
+    A prewarm is built before the pending user message exists, so its history
+    cannot know that the message opens a new task. In that case the expensive
+    tool reads remain reusable, but ``history`` is deliberately
+    cleared so the send rebuilds it with the newly persisted user row and can
+    reduce closed-task tool exchanges before the first provider call.
+    """
     b = _BUNDLES.get(session_id)
     if not b:
         return None
@@ -66,7 +77,12 @@ def consume(session_id: str, *, sig: Sig) -> Optional[Dict[str, Any]]:
         return None
     if b["built_at"] <= _LAST_TURN_DONE.get(session_id, 0.0):
         return None
-    return b
+    if not pending_starts_new_task:
+        return b
+    without_stale_history = dict(b)
+    without_stale_history["history"] = None
+    without_stale_history["history_reusable"] = False
+    return without_stale_history
 
 
 def mark_turn_done(session_id: str) -> None:

@@ -1,0 +1,25 @@
+diff --git a/ui/chat/js/session-core.js b/ui/chat/js/session-core.js
+index 1f504bcb..98f89793 100644
+--- a/ui/chat/js/session-core.js
++++ b/ui/chat/js/session-core.js
+@@ -388,6 +388,10 @@ function startRename(sid, row) {
+   const finish = async (commit) => {
+     if (done) return;
+     done = true;
++    // Detach the input BEFORE the re-render: _renderSessionRows() skips its
++    // rebuild while a rename input is live, so the commit must clear it or
++    // the fresh title never paints.
++    input.remove();
+     const newTitle = input.value.trim();
+     if (commit && newTitle && newTitle !== current) {
+       const ok = await patchSession(sid, { title: newTitle });
+@@ -429,6 +433,9 @@ function _headerRenameSession() {
+   const finish = async (commit) => {
+     if (done) return;
+     done = true;
++    // Same as startRename: clear the live input before _setTriggerLabel
++    // recreates the label, or the guard there would keep it in place.
++    input.remove();
+     const newTitle = input.value.trim();
+     if (commit && newTitle && newTitle !== current) {
+       const ok = await patchSession(sid, { title: newTitle });

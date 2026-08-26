@@ -33,7 +33,7 @@ async def resolve_tools_for_engine(
     """Load every tool available to this agent, returning name → (handler, info).
 
     Calls the same ``load_tools()`` the native agent loop uses, so ability-
-    gated tools, integration tools, data-source tools, and custom DB tools
+    gated tools, integration tools, ability tools, and custom DB tools
     are all included — with no per-engine wiring.
 
     Returns an empty dict when loading fails (the MCP server will report zero
@@ -90,12 +90,12 @@ async def execute_mcp_tool(
     if execution_mode == "plan" and info.get("destructive"):
         return _error(
             f"Tool '{name}' is blocked in Plan mode (it writes or changes state). "
-            "Switch to Ask or Auto mode to use it."
+            "Switch to a write-capable mode such as Auto to use it."
         )
-    if execution_mode == "ask" and info.get("requires_confirmation") and info.get("destructive"):
+    if execution_mode == "ask" and info.get("destructive"):
         return _error(
-            f"Tool '{name}' requires user confirmation before execution. "
-            "Ask the user to approve this action, then I can run it."
+            f"Tool '{name}' is blocked in Ask mode (it writes or changes state). "
+            "Ask mode ends with a proposal; switch to a write-capable mode such as Auto to execute it."
         )
 
     start = time.time()

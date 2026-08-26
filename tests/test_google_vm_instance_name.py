@@ -19,6 +19,15 @@ class GoogleVMInstanceNameTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(events[0]["result"]["ok"])
         self.assertIn("Instance name", events[0]["result"]["message"])
 
+    async def _drain(self, agen):
+        """Consume _poll_app_health's async generator and return the state it
+        reports in its terminal "verify-result" event."""
+        state = None
+        async for event in agen:
+            if event.get("phase") == "verify-result":
+                state = event.get("state")
+        return state
+
     async def test_health_probe_uses_app_api_instead_of_caddy_root(self):
         provider = GoogleVMProvider()
         response = Mock(status_code=404, text="not found")
@@ -31,7 +40,8 @@ class GoogleVMInstanceNameTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.deploy.providers.google_vm.httpx.AsyncClient", return_value=context), \
                 patch("asyncio.sleep", new=AsyncMock()), \
                 patch("app.deploy.providers.google_vm.time.time", side_effect=[0, 0, 2]):
-            state = await provider._poll_app_health("203.0.113.10", timeout_s=1)
+            state = await self._drain(
+                provider._poll_app_health("203.0.113.10", timeout_s=1))
 
         self.assertEqual(state, "installing")
         self.assertEqual(client.get.await_args.args[0], "http://203.0.113.10/api/v1/boot")
@@ -51,9 +61,9 @@ class GoogleVMInstanceNameTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.deploy.providers.google_vm.httpx.AsyncClient", return_value=context), \
                 patch("asyncio.sleep", new=AsyncMock()), \
                 patch("app.deploy.providers.google_vm.time.time", side_effect=[0, 0]):
-            state = await provider._poll_app_health(
-                "203.0.113.10", timeout_s=1, require_scoped_p2p=True
-            )
+            state = await self._drain(
+                provider._poll_app_health(
+                    "203.0.113.10", timeout_s=1, require_scoped_p2p=True))
 
         self.assertEqual(state, "running")
         self.assertEqual(

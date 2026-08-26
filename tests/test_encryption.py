@@ -25,7 +25,7 @@ from typing import Dict, List, Optional
 
 
 def _async(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -61,13 +61,6 @@ class _InMemSecrets:
 
 class _Base(unittest.TestCase):
     """Set up an isolated SQLite DB + in-memory secrets per test."""
-
-    @classmethod
-    def setUpClass(cls):
-        try:
-            asyncio.get_event_loop()
-        except RuntimeError:
-            asyncio.set_event_loop(asyncio.new_event_loop())
 
     def setUp(self) -> None:
         # Fresh tmp dir for the SQLite file.

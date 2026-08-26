@@ -83,7 +83,7 @@ function directChat(msg,label){
 function tplt(s,map){return s.replace(/\$\{(\w+)\}/g,function(_,k){return map[k]!==undefined?map[k]:'${'+k+'}'})}
 function cardChatPrompt(p,text){var cfg=CFG.cardChat&&CFG.cardChat.template?CFG.cardChat.template:'';if(!cfg)return'['+p.name+'] '+text;var oi=p.items?p.items.filter(function(i){return !i.done}):[],items=oi.map(function(i){return i.text+' ('+(i.tag||'task')+')'}).join('; ')||'none',done=p.items?p.items.filter(function(i){return i.done}).length:0,m=p.metrics||{},agent=p.chatAgentId||(CFG.cardChat&&CFG.cardChat.agentId)||'',map={name:p.name,status:p.statusLabel||p.status||'Active',progress:p.progress,open:p.open,tasks:p.tasks,daysLeft:m.daysLeft,commits:m.commits,prs:m.prs,reviewers:m.reviewers,items:items,done:done,chart:(p.chart||[]).join(', ')||'none',notes:(p.chatNotes||'')+((CFG.cardChat&&CFG.cardChat.detailNote)||''),agentId:agent,text:text};window.__genuiCardAgentId=agent||null;return'['+p.name+'] '+tplt(cfg,map)}
 
-var STATE={projects:BAG.projects||[],q:'',activeId:null,openItem:null,itemQ:'',itemSearchOpen:false,sessions:(BAG.sessions||{})};
+var STATE={projects:BAG.projects||[],q:'',activeId:null,openItem:null,itemQ:'',itemSearchOpen:false,view:'project',sessions:(BAG.sessions||{})};
 STATE.projects.forEach(recalcProject); // Fix 2: derive tasks/open from items on load (no stored counters)
 var toastTimer=null,carUpd=null;
 

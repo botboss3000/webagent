@@ -5,11 +5,12 @@ export const MEMORY_ONLY = 'memory_only';
 export const DISABLED = 'disabled';
 
 const MODES = new Set([PERSISTENT_CACHE, MEMORY_ONLY, DISABLED]);
+const STORAGE_PRESSURE_KEY = 'webagent.browserStoragePressure.v1';
 let _mode = PERSISTENT_CACHE;
 let _ownerScope = '';
 let _policyEpoch = 0;
 let _schemaVersion = 0;
-let _maxBytes = 50 * 1024 * 1024;
+let _maxBytes = 512 * 1024 * 1024;
 
 export function getBrowserStorageMode() {
   return _mode;
@@ -34,7 +35,7 @@ export function configureBrowserStoragePolicy({
   ownerScope = '',
   policyEpoch = 0,
   schemaVersion = 0,
-  maxBytes = 50 * 1024 * 1024,
+  maxBytes = 512 * 1024 * 1024,
 } = {}) {
   const normalized = MODES.has(mode) ? mode : DISABLED;
   const previous = _mode;
@@ -66,6 +67,7 @@ export async function assertBrowserCapacity(additionalBytes) {
   if (!browserPersistenceAllowed()) return;
   const requested = Math.max(0, Number(additionalBytes) || 0);
   if (requested > _maxBytes) {
+    _announceStoragePressure(requested, 0, _maxBytes);
     throw new DOMException('Browser storage policy quota exceeded', 'QuotaExceededError');
   }
   if (navigator.storage?.estimate) {
@@ -74,7 +76,24 @@ export async function assertBrowserCapacity(additionalBytes) {
     const browserQuota = Math.max(0, Number(estimate.quota) || 0);
     if ((browserQuota && usage + requested > browserQuota)
         || usage + requested > _maxBytes) {
+      _announceStoragePressure(requested, usage, Math.min(
+        browserQuota || Number.MAX_SAFE_INTEGER,
+        _maxBytes || Number.MAX_SAFE_INTEGER,
+      ));
       throw new DOMException('Browser storage policy quota exceeded', 'QuotaExceededError');
     }
   }
+}
+
+function _announceStoragePressure(requested, usage, quota) {
+  if (typeof window === 'undefined') return;
+  const detail = {
+    owner_scope: _ownerScope,
+    requested_bytes: Math.max(0, Number(requested) || 0),
+    usage_bytes: Math.max(0, Number(usage) || 0),
+    quota_bytes: Math.max(0, Number(quota) || 0),
+    occurred_at: new Date().toISOString(),
+  };
+  try { localStorage.setItem(STORAGE_PRESSURE_KEY, JSON.stringify(detail)); } catch (_) {}
+  window.dispatchEvent(new CustomEvent('webagent-browser-storage-pressure', { detail }));
 }

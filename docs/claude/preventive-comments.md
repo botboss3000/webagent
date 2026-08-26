@@ -181,12 +181,12 @@ Same-element creation sequences that cannot be extracted without over-parameteri
 ### Category B: Event-handler wiring (~12 groups, 4-8 lines each)
 Identical `addEventListener` w/ `stopPropagation` or `toggle` patterns on similar elements.
 
-**Files:** `ui/js/agents/view.js`, `ui/js/agents/tab-automation.js`, `ui/js/chat.js`, `ui/js/sessions.js`, `ui/admin-tools/app-config/agent-settings.js` (OAuth scope "all"/"none" toggles)
+**Files:** `ui/js/agents/view.js`, `ui/js/agents/tab-automation.js`, `ui/js/chat.js`, `ui/js/sessions.js`, `ui/main-panel/instances/settings/agent-settings.js` (OAuth scope "all"/"none" toggles)
 
 ### Category C: State-update boilerplate (~12 groups, 3-6 lines each)
 Short blocks that toggle CSS classes, update `innerHTML`, and call a render function.
 
-**Files:** `ui/js/agents/view.js`, `ui/js/agents/tab-automation.js`, `ui/js/files.js`, `ui/js/files-git.js`, `ui/js/sessions.js`, `ui/admin-tools/app-config/agent-settings.js`
+**Files:** `ui/js/agents/view.js`, `ui/js/agents/tab-automation.js`, `ui/js/files.js`, `ui/js/files-git.js`, `ui/js/sessions.js`, `ui/main-panel/instances/settings/agent-settings.js`
 
 **Assessment (2026-06-09):** These clusters are too small and too tightly coupled to surrounding context to benefit from extraction. They are the natural footprint of a jQuery-era codebase using vanilla DOM APIs. Adding a bulkhead now would increase complexity without reducing maintenance burden.
 
@@ -202,8 +202,8 @@ Short blocks that toggle CSS classes, update `innerHTML`, and call a render func
 | `ui/js/files.js` | 2 | 23 | Systemic (DOM building) |
 | `ui/js/files-git.js` | 2 | 18 | Systemic (DOM building) |
 | `ui/js/storage.js` | 3 | 20 | Systemic (event-wiring + badge update) |
-| `ui/admin-tools/app-config/agent-settings.js` | 2 | 20 | Systemic (column heads + scope toggles) |
-| `ui/admin-tools/app-config/data-management.js + remote-access.js` | 1 | 12 | Intentional (different color/theming) |
+| `ui/main-panel/instances/settings/agent-settings.js` | 2 | 20 | Systemic (column heads + scope toggles) |
+| `ui/main-panel/instances/settings/data-management.js + remote-access.js` | 1 | 12 | Intentional (different color/theming) |
 
 All systemic groups are documented here for tracking. No extraction or suppression is warranted.
 

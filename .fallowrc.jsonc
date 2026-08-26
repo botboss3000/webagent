@@ -47,10 +47,10 @@
     "ui/main-panel/automations/js/automations.js",
     "ui/main-panel/browser/js/browser.js",
     "ui/main-panel/genui/js/genui.js",
+    "ui/main-panel/instances/instances.js",
     "ui/main-panel/sessions/js/sessions-page.js",
     "ui/main-panel/wiki/js/wiki.js",
     "ui/shared/js/files.js",
-    "ui/admin-tools/app-config/settings-view.js",
     "ui/admin-tools/database/database-view.js",
     "ui/admin-tools/diagnostics/diagnostics-view.js",
     "ui/admin-tools/git/git-view.js",
@@ -100,41 +100,12 @@
   // Shared utility loaded through the admin-tools module loader rather than a
   // static ES import reachable from an entry point.
   "ignoreExports": [
-    { "file": "ui/admin-tools/app-config/utils.js", "exports": ["*"] },
     {
       "file": "ui/chat/js/chat-bubble.js",
       "exports": ["*"]
     },
     {
       "file": "ui/chat/js/session-list.js",
-      "exports": ["*"]
-    },
-    {
-      "file": "ui/admin-tools/app-config/agent-settings/agent-settings.js",
-      "exports": ["*"]
-    },
-    {
-      "file": "ui/admin-tools/app-config/app-settings/app-settings.js",
-      "exports": ["*"]
-    },
-    {
-      "file": "ui/admin-tools/app-config/agent-settings/scheduler.js",
-      "exports": ["*"]
-    },
-    {
-      "file": "ui/admin-tools/app-config/database/data-management.js",
-      "exports": ["*"]
-    },
-    {
-      "file": "ui/admin-tools/app-config/agent-settings/event-sources.js",
-      "exports": ["*"]
-    },
-    {
-      "file": "ui/admin-tools/app-config/optimizer/optimizer-stats.js",
-      "exports": ["*"]
-    },
-    {
-      "file": "ui/admin-tools/app-config/user-management/users.js",
       "exports": ["*"]
     }
   ]

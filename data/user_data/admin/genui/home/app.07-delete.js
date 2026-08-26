@@ -66,4 +66,28 @@ function saveProjectInfo(pi,val){
   var p=STATE.projects[pi];if(!p)return;
   p.info=String(val||'');saveBag();
 }
+function ftObj(p){if(!p.featureTest)p.featureTest={description:'',requirements:[],testQA:null,testPlan:null};return p.featureTest}
+function saveFeatureDesc(pi,val){
+  var p=STATE.projects[pi];if(!p)return;
+  ftObj(p).description=String(val||'');saveBag();
+}
+function addRequirement(pi){
+  var p=STATE.projects[pi];if(!p)return;
+  var inp=document.getElementById('req-add-'+pi);if(!inp)return;
+  var text=inp.value.trim();if(!text){toast('Write the requirement first.');return}
+  ftObj(p).requirements.push({text:text,done:false,criteria:''});
+  inp.value='';
+  saveBag();savePageState();renderDetail();
+  toast('Requirement added');
+}
+function deleteFeatureRequirement(pi,ri){
+  var p=STATE.projects[pi],ft=p&&p.featureTest;if(!ft||!ft.requirements[ri])return;
+  ft.requirements.splice(ri,1);
+  saveBag();savePageState();renderDetail();
+  toast('Requirement deleted');
+}
+function saveRequirementCriteria(pi,ri,val){
+  var p=STATE.projects[pi],ft=p&&p.featureTest;if(!ft||!ft.requirements[ri])return;
+  ft.requirements[ri].criteria=String(val||'');saveBag();
+}
 

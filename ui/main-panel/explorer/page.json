@@ -1,0 +1,14 @@
+{
+  "id": "explorer",
+  "required_backend_capability": "role:platform_admin",
+  "label": "File Manager",
+  "icon": "folder-tree",
+  "order": 2,
+  "locked": true,
+  "html": "explorer.html",
+  "mount": "#tab-explorer",
+  "entry": "ui/main-panel/explorer/explorer-view.js",
+  "start": "startView",
+  "stop": "stopView",
+  "css": ["../admin-tools/files.css"]
+}

@@ -19,11 +19,12 @@
 // or el.style.color = 'var(--accent)'. New colour? Add a token to the palette there first.
 //
 import {
-  _esc, _iconHtml, _chevronSvg, _buildTriToggle, _wireTriToggle, _noop,
+  _esc, _iconHtml, _chevronSvg,
   _buildComingSoonPill, _buildToolRow, _buildAbilitySettingsList,
   _buildAbilityTreeLoader, _staggerRevealGroups, _buildSettingsRowsHtml,
   buildCredentialsSection, _flashStatusText, _markSaving, _flashSaveCheck,
-  buildAbilitySearchPill, loadAbilityCatalog, invalidateAbilityCatalog,
+  buildAbilitySearchPill, _buildMoreButton, _buildGroupStatusCard, _paintGroupStatus,
+  loadAbilityCatalog, invalidateAbilityCatalog,
 } from './dom-utils.js';
 import { authHeaders } from './left-login.js';
 import { spawnWebagentAbilityChat } from '../../chat-widget/js/chat-widget.js';
@@ -106,24 +107,14 @@ function _buildGroupHead(groupId, name, icon, color, desc) {
   return head;
 }
 
-/** Append a 3-position tri-toggle to an existing group head row. (The expand
- *  chevron now lives at the LEFT of the head, built in `_buildGroupHead`.) */
-function _appendGroupTri(head, triId, title) {
-  const tri = _buildTriToggle(triId, title);
-  head.appendChild(tri);
-  return tri;
-}
-
-/** Append an inactive, same-size group toggle. Used for groups with no
- *  togglable ability members (placeholder-only or credential/integration
- *  groups) so every group row still carries a consistently-sized toggle. */
-function _appendDisabledGroupTri(head, triId) {
-  const tri = _buildTriToggle(triId, 'No abilities to bulk-toggle in this group');
-  tri.classList.add('ac-tri-disabled');
-  tri.setAttribute('aria-disabled', 'true');
-  tri.removeAttribute('tabindex');
-  head.appendChild(tri);
-  return tri;
+/** Append a read-only group status card to a group head (replaces the old
+ *  interactive tri-toggle). State: 'off' → Disabled, 'mixed' → Partial,
+ *  'on' → Enabled, 'na' → "—" (no togglable members). The card is display-only —
+ *  bulk group toggling is intentionally gone. (SISTER-PANEL: AGENT-ABILITY-TABLE.) */
+function _appendGroupStatus(head, statusId, state, title) {
+  const status = _buildGroupStatusCard(statusId, state, title);
+  head.appendChild(status);
+  return status;
 }
 
 // Imported from shared/dom-utils.js: _buildTriToggle, _wireTriToggle
@@ -251,7 +242,7 @@ function _abilityToggleWrap(ability) {
 async function _saveAbility(ability, enabled) {
   try {
     if (enabled) {
-      const res = await fetch('/admin/integrations/abilities/' + ability, { method: 'POST' });
+      const res = await fetch('/admin/integrations/abilities/' + ability, { method: 'POST', headers: authHeaders() });
       if (!res.ok) throw new Error('HTTP ' + res.status);
     } else {
       if (ability === 'automation') {
@@ -262,7 +253,7 @@ async function _saveAbility(ability, enabled) {
         );
         if (!ok) return false;  // cancelled — caller keeps the prior position
       }
-      const res = await fetch('/admin/integrations/abilities/' + ability, { method: 'DELETE' });
+      const res = await fetch('/admin/integrations/abilities/' + ability, { method: 'DELETE', headers: authHeaders() });
       if (!res.ok) throw new Error('HTTP ' + res.status);
     }
     _markAbilityAction(ability);
@@ -287,18 +278,18 @@ function _setToggleSaving(toggleEl, saving) {
   if (saving) _markSaving(toggleEl.closest('.ac-ability-toggle-wrap'));
 }
 
-// Re-sync the parent group tri-toggle (Off/Mixed/On) from the current member
-// states after one member changed.
-function _resyncParentTri(toggleEl) {
+// Re-sync the parent group's status card (Disabled · Partial · Enabled) from the
+// current member states after one member changed.
+function _resyncParentStatus(toggleEl) {
   const groupEl = toggleEl.closest('.ac-group');
   if (!groupEl) return;
-  // The group-head enable tri only — never a per-tool permission tri.
-  const tri = groupEl.querySelector('.ac-tri:not(.ac-tri-perm)');
-  if (!tri) return;
+  const status = groupEl.querySelector('.ac-group-status');
+  if (!status) return;
   const body = groupEl.querySelector('.ac-group-body');
   const rows = body ? [...body.querySelectorAll('[data-ability]')] : [];
   const onCount = rows.filter(r => !!_abilityStates[r.dataset.ability]).length;
-  tri.dataset.state = onCount === 0 ? 'off' : (onCount === rows.length ? 'on' : 'mixed');
+  status.dataset.state = onCount === 0 ? 'off' : (onCount === rows.length ? 'on' : 'mixed');
+  _paintGroupStatus(status);
 }
 
 // The full single-toggle UX: hold the toggle at its prior position, show a
@@ -312,7 +303,7 @@ async function _runAbilityToggle(toggleEl, id, desired) {
   const ok = await _saveAbility(id, desired);
   _setToggleSaving(toggleEl, false);
   if (ok) toggleEl.checked = desired;   // settle into the new position
-  _resyncParentTri(toggleEl);
+  _resyncParentStatus(toggleEl);
   return ok;
 }
 
@@ -401,12 +392,19 @@ function _buildHoldDeleteButton(onConfirm, holdTitle) {
   return delBtn;
 }
 
-/** Per-ability delete button — deletes one ability's files. */
-function _buildDeleteButton(abilityId) {
-  return _buildHoldDeleteButton(
-    (btn) => _confirmDeleteAbility(abilityId, btn.closest('.ac-ability-row')),
-    'Hold 1.5s to delete this ability',
-  );
+/** Per-ability "more" (⋯) menu — the row's only extra control. The delete action
+ *  moved INTO the menu (was a row-level hold-to-delete trash button), so the
+ *  title line holds just the toggle + ⋯. The menu's delete runs the same
+ *  `_confirmDeleteAbility` flow (type DELETE to confirm) as the old button. */
+function _buildAbilityMoreButton(memberId, row, abilities) {
+  return _buildMoreButton(() => {
+    const meta = abilities[memberId] || {};
+    const deletable = !meta.placeholder && meta.kind !== 'credential' && meta.kind !== 'oauth' && meta.kind !== 'channel';
+    return [
+      { icon: 'trash-2', label: 'Delete ability', danger: true, disabled: !deletable,
+        action: () => _confirmDeleteAbility(memberId, row) },
+    ];
+  }, { title: 'More options — delete this ability' });
 }
 
 /** Whole-group delete button — deletes the entire plugins/abilities/<group>/ folder. */
@@ -443,7 +441,7 @@ async function _confirmDeleteAbility(abilityId, row) {
 
     const delRes = await fetch('/api/v1/abilities/' + abilityId, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ confirmed: true }),
     });
     if (!delRes.ok) throw new Error('HTTP ' + delRes.status);
@@ -514,7 +512,7 @@ async function _confirmDeleteGroup(groupId, groupName, groupEl) {
 
     const delRes = await fetch('/api/v1/abilities/group/' + encodeURIComponent(groupId), {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ confirmed: true }),
     });
     if (!delRes.ok) throw new Error('HTTP ' + delRes.status);
@@ -538,8 +536,6 @@ async function _confirmDeleteGroup(groupId, groupName, groupEl) {
 // These call the existing save functions in app-config.js (window globals).
 // The caller wires these in the callbacks config.
 
-// Imported from shared/dom-utils.js: _noop
-
 // ── Config ROWS builder for non-simple abilities ────────────────────────────
 // Non-simple abilities (meta.simple === false) need extra settings. This builder
 // fetches the companion JSON schema from the API and returns the wired setting
@@ -547,7 +543,7 @@ async function _confirmDeleteGroup(groupId, groupName, groupEl) {
 // `.ac-list` as the ability's tool rows — config knobs and tools then read as one
 // continuous table. Returns { nodes, note } (or null when there are no settings).
 
-async function _buildConfigRows(abilityId, meta) {
+async function _buildConfigRows(abilityId, meta, canEdit) {
   try {
     const res = await fetch('/api/v1/abilities/' + encodeURIComponent(abilityId) + '/config-schema');
     if (!res.ok) return null;
@@ -568,12 +564,13 @@ async function _buildConfigRows(abilityId, meta) {
     // (spinner → ✓ over the control, or ⚠ + revert on failure). This mirrors the
     // agent panel's per-agent settings save. (SISTER-PANEL: AGENT-ABILITY-TABLE.)
     const fields = [...tmp.querySelectorAll('.ac-config-field')];
+    if (!canEdit) fields.forEach(field => { field.disabled = true; });
     const collect = () => {
       const settings = {};
       fields.forEach(f => { settings[f.dataset.configKey] = f.value; });
       return settings;
     };
-    fields.forEach(f => {
+    if (canEdit) fields.forEach(f => {
       const ctrl = f.closest('.ac-config-control');
       let prevVal = f.value;   // last-saved value, for revert on failure
       f.addEventListener('change', async () => {
@@ -672,7 +669,7 @@ async function _loadGlobalToolDefaults() {
 async function _saveGlobalToolDefault(toolName, patch) {
   const res = await fetch('/admin/integrations/tool-defaults/' + encodeURIComponent(toolName), {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(patch),
   });
   if (!res.ok) throw new Error('save failed');
@@ -698,7 +695,7 @@ async function _saveGlobalToolDefault(toolName, patch) {
 // <id>.skill.md (GET /api/v1/abilities/{id}/skill) and saves it back
 // (PUT same path). Editing writes a repo-tracked file shared by every agent that
 // uses the ability — inline-skill abilities come back editable:false (read-only).
-function _buildSkillRow(abilityId, meta) {
+function _buildSkillRow(abilityId, meta, canEdit) {
   const wrap = document.createElement('div');
   wrap.className = 'ac-skill-row';
   wrap.style.cssText = 'margin:8px 0;';
@@ -716,7 +713,7 @@ function _buildSkillRow(abilityId, meta) {
   const editBtn = document.createElement('button');
   editBtn.type = 'button';
   editBtn.className = 'agents-btn';
-  editBtn.textContent = 'Edit';
+  editBtn.textContent = canEdit ? 'Edit' : 'View';
   editBtn.style.cssText = 'font-size:11px;padding:3px 10px;flex-shrink:0;';
   head.appendChild(editBtn);
   wrap.appendChild(head);
@@ -763,10 +760,12 @@ function _buildSkillRow(abilityId, meta) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       ta.value = data.content || '';
-      if (data.editable === false) {
+      if (!canEdit || data.editable === false) {
         ta.disabled = true;
         saveBtn.disabled = true;
-        _flash(false, data.inline
+        _flash(false, !canEdit
+          ? 'Only an app admin can edit this skill.'
+          : data.inline
           ? 'Defined inline in the descriptor — read-only here.'
           : 'This skill is read-only.');
       } else {
@@ -798,7 +797,7 @@ function _buildSkillRow(abilityId, meta) {
     try {
       const res = await fetch('/api/v1/abilities/' + encodeURIComponent(abilityId) + '/skill', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ content: ta.value }),
       });
       if (!res.ok) {
@@ -830,6 +829,7 @@ function _buildSkillRow(abilityId, meta) {
  * @param {object} cfg.integrationStates - { [providerId]: { configured: bool, kind: 'channel'|'oauth'|'generic' } }
  * @param {object} [cfg.callbacks] - { onEnableChannel, onDisableChannel, onUnconfigureProvider }
  * @param {boolean} [cfg.showSearch] - show search bar (default true)
+ * @param {boolean} [cfg.canEdit] - app-level controls are editable (default true)
  */
 export async function build(container, cfg) {
   if (!container) return null;
@@ -858,6 +858,7 @@ export async function build(container, cfg) {
   const integrationStates = cfg.integrationStates || {};
   const cb = cfg.callbacks || {};
   const showSearch = cfg.showSearch !== false;
+  const canEdit = cfg.canEdit !== false;
 
   // Populate runtime state from the caller's snapshot.
   for (const [id, st] of Object.entries(abilityStates)) {
@@ -891,6 +892,10 @@ export async function build(container, cfg) {
 
     for (const memberId of (group.members || [])) {
       const meta = abilities[memberId] || {};
+      // Dual-surface safety services (currently Context Control) belong in the
+      // per-agent Abilities tab and App Settings ▸ App Functions.  Do not render
+      // a third duplicate row in the admin Agent Tools table.
+      if (meta.app_function) continue;
       const kind = meta.kind || "ability";
       const isPlaceholder = meta.placeholder || kind === "placeholder";
       const displayName = meta.display_name || memberId;
@@ -930,21 +935,21 @@ export async function build(container, cfg) {
       const _lockTitle = 'Always on — safety device, cannot be deactivated';
       const { toggle, toggleWrap } = _appendToggle(
         row, 'ac-ability-toggle-' + memberId,
-        lockedOn ? true : !!_abilityStates[memberId], true,
+        lockedOn ? true : !!_abilityStates[memberId], canEdit && !lockedOn,
         lockedOn ? _lockTitle : undefined,
         lockedOn ? _lockTitle : undefined);
       if (lockedOn && toggleWrap) toggleWrap.classList.add('ac-ability-toggle-locked');
 
       // EVERY member row is expandable. Expand chevron sits LEFT of the icon
-      // (after the row indent); the delete button is the LAST child so it lines
+      // (after the row indent); the ⋯ more button is the LAST child so it lines
       // up with the group row's delete button on the same right edge.
       const chevron = document.createElement('span');
       chevron.className = 'ac-row-chevron ac-row-chevron--left';
       chevron.innerHTML = _chevronSvg();
       row.insertBefore(chevron, row.firstChild);
 
-      // Delete button (admin only) — last child, right-aligned.
-      row.appendChild(_buildDeleteButton(memberId));
+      // More button (admin only) — last child, right-aligned. Holds Delete.
+      if (canEdit) row.appendChild(_buildAbilityMoreButton(memberId, row, abilities));
 
       bodyEl.appendChild(row);
 
@@ -958,12 +963,13 @@ export async function build(container, cfg) {
 
       // (0) Skill row — the ability's how-to document, above the configuration.
       // Edit opens an inline viewer/editor for the shared <id>.skill.md file.
-      configBody.appendChild(_buildSkillRow(memberId, meta));
+      configBody.appendChild(_buildSkillRow(memberId, meta, canEdit));
 
       // (0.5) Credentials — generic form for abilities that declare a
       // `credentials` block (drop-in; no bespoke card). See buildCredentialsSection (dom-utils).
       if (meta.has_credentials) {
         configBody.appendChild(buildCredentialsSection(memberId, {
+          canEdit,
           onSaved: () => { invalidateAbilityCatalog(); },
         }));
       }
@@ -993,7 +999,7 @@ export async function build(container, cfg) {
         ph.style.cssText = 'padding:8px;font-size:11px;';
         ph.textContent = 'Loading settings…';
         unifiedList.insertBefore(ph, toolsAnchor);
-        _buildConfigRows(memberId, meta).then(loaded => {
+        _buildConfigRows(memberId, meta, canEdit).then(loaded => {
           // MOVE the built nodes in (they carry change-to-save listeners wired in
           // _buildConfigRows — re-serializing via innerHTML would drop them).
           ph.remove();
@@ -1030,7 +1036,7 @@ export async function build(container, cfg) {
         unifiedList.appendChild(_buildToolRow(
           { name, description: '', mode, locked: false, destructive: isConfirm, permMode, ceiling },
           {
-            canEdit: true,
+            canEdit,
             showPerm: true,
             // Admin = ceiling only (enable + permission). Visibility/discovery is
             // tuned PER AGENT in the Abilities tab, so the eye toggle is omitted here.
@@ -1074,42 +1080,36 @@ export async function build(container, cfg) {
       });
     }
 
-    // ── Group toggle (always present, consistent size) ──
-    //   • >=1 togglable ability member -> active tri (Off/Mixed/On; a single
-    //     member naturally behaves as a plain on/off).
+    // ── Group status card (always present, consistent footprint) ──
+    //   • >=1 togglable ability member -> live status (Disabled · Partial ·
+    //     Enabled), re-synced whenever a member toggles.
     //   • 0 togglable members (placeholder-only / credential / integration
-    //     groups) -> inactive, greyed tri so the row still carries a toggle.
-    let triSync = _noop;
+    //     groups) -> neutral "—" card; the host page (agent-settings.js) paints
+    //     its own configured-count onto those. Bulk toggling is gone.
     if (togglable.length) {
-      const tri = _appendGroupTri(head, 'ac-group-tri-' + group.id, 'Off \u00b7 Mixed \u00b7 On — click the left half for all-off, the right half for all-on');
-      triSync = _wireTriToggle(tri, togglable, async goOn => {
-        for (const m of togglable) {
-          if (abilities[m.id] && abilities[m.id].locked_on) continue;  // safety device — never bulk-toggled
-          if (m.isEnabled() === goOn) continue;
-          const toggleEl = document.getElementById('ac-ability-toggle-' + m.id);
-          if (toggleEl) {
-            // Same spinner → confirm → settle path as a single toggle click.
-            await _runAbilityToggle(toggleEl, m.id, goOn);
-          } else {
-            await _saveAbility(m.id, goOn);
-          }
-        }
-        triSync();
-      });
+      const status = _appendGroupStatus(head, 'ac-group-status-' + group.id, 'off', 'Disabled \u00b7 Partial \u00b7 Enabled — read-only summary of this group');
+      const paint = () => {
+        const onCount = togglable.filter(m => m.isEnabled()).length;
+        status.dataset.state = onCount === 0 ? 'off' : (onCount === togglable.length ? 'on' : 'mixed');
+        _paintGroupStatus(status);
+      };
+      paint();
+      // Member toggle changes already re-paint via `_resyncParentStatus`
+      // (_runAbilityToggle); `state.syncAllTriToggles` covers external loads.
     } else {
-      _appendDisabledGroupTri(head, 'ac-group-tri-' + group.id);
+      _appendGroupStatus(head, 'ac-group-status-' + group.id, 'na', 'No on/off abilities in this group');
     }
 
     // ── Group delete button (admin) — deletes the whole folder. Last child of
     //    the head so it aligns with the per-ability delete buttons below. ──
-    head.appendChild(_buildGroupDeleteButton(group.id, group.name));
+    if (canEdit) head.appendChild(_buildGroupDeleteButton(group.id, group.name));
 
     grid.appendChild(groupEl);
     state.searchGroups.push({ groupEl, rows: memberRows });
   }
 
   // Wire individual toggle changes → re-sync parent group tri-toggle.
-  grid.querySelectorAll('[data-ability]').forEach(rowEl => {
+  if (canEdit) grid.querySelectorAll('[data-ability]').forEach(rowEl => {
     const id = rowEl.dataset.ability;
     const toggleEl = document.getElementById('ac-ability-toggle-' + id);
     if (toggleEl) {
@@ -1165,26 +1165,22 @@ export async function build(container, cfg) {
   // owning the grid.
   state.runFilter = (q) => _runAdminFilter(q, grid, state.searchGroups);
 
-  // Return a handle so the caller can re-sync tri-toggles after data loads.
+  // Return a handle so the caller can re-sync group status cards after data loads.
+  // (Method name kept for the host page's existing call — it now repaints the
+  // read-only status pills rather than tri-toggles.)
   state.syncAllTriToggles = () => {
-    grid.querySelectorAll('.ac-tri').forEach(tri => {
-      // Per-tool PERMISSION tris (Deny/Ask/Auto) carry their own value + ceiling —
-      // they are NOT a group enable-state, so never recompute them from the
-      // group's member rows (doing so forced every tool knob to the group's
-      // on/mixed/off position, hiding each tool's real permission).
-      if (tri.classList.contains('ac-tri-perm')) return;
-      // A tri the host page has adopted (e.g. the admin Agent Settings page wires
-      // credential-only group tris to reflect configured providers) owns its own
-      // state — don't recompute it from data-ability rows (placeholder members
-      // also carry data-ability and would force it to "off").
-      if (tri.dataset.intWired) return;
-      const groupEl = tri.closest('.ac-group');
+    grid.querySelectorAll('.ac-group-status').forEach(status => {
+      // Credential/integration groups have no [data-ability] rows (their members
+      // are slots the host fills) — the host owns their cards and paints them
+      // itself, so skip those (an empty row-set would force them to "off").
+      const groupEl = status.closest('.ac-group');
       if (!groupEl) return;
       const body = groupEl.querySelector('.ac-group-body');
       const rows = body ? [...body.querySelectorAll('[data-ability]')] : [];
       if (!rows.length) return;
       const onCount = rows.filter(r => !!_abilityStates[r.dataset.ability]).length;
-      tri.dataset.state = onCount === 0 ? 'off' : (onCount === rows.length ? 'on' : 'mixed');
+      status.dataset.state = onCount === 0 ? 'off' : (onCount === rows.length ? 'on' : 'mixed');
+      _paintGroupStatus(status);
     });
   };
 

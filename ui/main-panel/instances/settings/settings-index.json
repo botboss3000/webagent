@@ -1,0 +1,125 @@
+{
+  "version": 2,
+  "updated": "2026-08-26",
+  "_doc": "Settings index — the single source of truth for the Instances → Settings area. The landing list, the per-section pages, the search, and the page-assistant prompt mapping are ALL driven from this file. Add a section by adding an entry (and its page partial under pages/<id>.html); nothing else needs a hardcoded list.",
+  "title": "Settings",
+  "groups": [
+    {
+      "id": "data",
+      "label": "Data",
+      "icon": "database",
+      "sections": [
+        {
+          "id": "app-access",
+          "title": "App Access",
+          "icon": "key-round",
+          "description": "Social sign-in options — how people get into this instance.",
+          "keywords": ["signin", "login", "auth", "authentication", "oauth", "google", "github", "microsoft", "apple", "providers", "keys"],
+          "paPage": "data_settings"
+        },
+        {
+          "id": "storage-routing",
+          "title": "Storage Routing",
+          "icon": "database",
+          "description": "Map each data function to its storage backend — Browser, Server or Remote.",
+          "keywords": ["data", "database", "indexeddb", "sqlite", "postgres", "byod", "routing", "backends"],
+          "paPage": "data_settings"
+        }
+      ]
+    },
+    {
+      "id": "app",
+      "label": "App",
+      "icon": "settings-2",
+      "sections": [
+        {
+          "id": "main-panel-pages",
+          "title": "Main Panel Pages",
+          "icon": "layout",
+          "description": "The pages a visitor switches between in the main panel — which exist, their order, names and visibility.",
+          "keywords": ["pages", "tabs", "dashboard", "genui", "browser", "sessions", "catalog", "visible", "order"],
+          "paPage": "app_settings"
+        },
+        {
+          "id": "admin-panel-pages",
+          "title": "Admin Panel Pages",
+          "icon": "panel-left",
+          "description": "The admin views inside Admin Tools — which exist, their order, names, icons and visibility.",
+          "keywords": ["admin", "tools", "views", "tabs", "catalog", "settings", "pages"],
+          "paPage": "app_settings"
+        },
+        {
+          "id": "app-functions",
+          "title": "App Functions",
+          "icon": "cog",
+          "description": "Background services the app runs on its own — session namer, context control, stream buffer and more.",
+          "keywords": ["services", "background", "session", "namer", "context", "compaction", "stream", "buffer", "quick", "message", "app control"],
+          "paPage": "app_settings"
+        },
+        {
+          "id": "browser-session-management",
+          "title": "Browser Session Management",
+          "icon": "monitor-cog",
+          "description": "Cap server-owned headless browsers, close idle sessions, and inspect live browser usage.",
+          "keywords": ["browser", "playwright", "headless", "sessions", "concurrency", "cap", "idle", "timeout", "cleanup", "chromium"],
+          "paPage": "app_settings"
+        },
+        {
+          "id": "design",
+          "title": "Design",
+          "icon": "palette",
+          "description": "The whole app's look across both themes — palettes, fonts, borders, boot behaviour and chat layout.",
+          "keywords": ["appearance", "theme", "color", "colour", "palette", "background", "font", "border", "welcome", "boot", "animation", "tooltips", "chat", "position"],
+          "paPage": "app_settings"
+        },
+        {
+          "id": "entitlements",
+          "title": "Experience Tiers",
+          "icon": "layers-3",
+          "description": "Publish model rosters and control the pages, tools, models and quotas available to each user tier.",
+          "keywords": ["tier", "entitlement", "role", "plan", "roster", "model", "quota", "limit", "feature", "ability", "access"],
+          "paPage": "app_settings"
+        }
+      ]
+    },
+    {
+      "id": "agent",
+      "label": "Agent",
+      "icon": "bot",
+      "sections": [
+        {
+          "id": "models",
+          "title": "Models",
+          "icon": "cpu",
+          "description": "The LLM providers and models agents can use — providers, keys, the default model and capabilities.",
+          "keywords": ["llm", "provider", "api", "key", "claude", "openai", "openrouter", "ollama", "default", "model", "token", "embeddings"],
+          "paPage": "agent_settings"
+        },
+        {
+          "id": "agent-tools",
+          "title": "Agent Tools",
+          "icon": "wrench",
+          "description": "Every ability, tool and integration an agent can run — the whole unified table.",
+          "keywords": ["abilities", "tools", "permissions", "web", "search", "image", "visualizer", "automation", "browser", "skills"],
+          "paPage": "agent_settings"
+        },
+        {
+          "id": "templates-prompts",
+          "title": "Templates and prompts",
+          "icon": "file-text",
+          "description": "The global system prompt and the on-disk agent prompt templates new agents are built from.",
+          "keywords": ["global", "system", "prompt", "template", "seed", "reseed", "agent", "tone"],
+          "paPage": "agent_settings"
+        },
+        {
+          "id": "automation-engine",
+          "title": "Automation Engine",
+          "icon": "clock",
+          "description": "The platform engine that fires automations — the scheduler and the event sources.",
+          "keywords": ["scheduler", "cron", "timers", "event", "sources", "runtime", "deliveries", "jobs"],
+          "paPage": "agent_settings"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "runId": "APROF-SOLAR-20260826-01",
+  "trajectoryId": "solarapiano-agent-profile-embed",
+  "seed": "solarapiano-profiles-20260826",
+  "environment": {
+    "baseUrl": "http://127.0.0.1:18099",
+    "browser": "Playwright Chromium headless",
+    "browserState": "isolated-cold",
+    "build": "bda3ea33"
+  },
+  "startedAt": "2026-08-26T14:15:05.505874+00:00",
+  "finishedAt": "2026-08-26T14:15:34.728044+00:00",
+  "result": "pass",
+  "cases": [
+    {
+      "id": "J01",
+      "result": "pass",
+      "steps": [
+        {"id": "J01-S1", "action": "Sign in through the visible admin form", "expected": "Admin authenticates", "actual": "HTTP 200 and home navigation", "result": "pass", "timing": {"valueMs": 4030, "boundary": "action-to-authoritative-response"}, "evidence": ["APROF-SOLAR-20260826-01-admin-signed-in.png"], "issues": []},
+        {"id": "J01-S2", "action": "Create or idempotently locate the Solara Piano Assistant", "expected": "Creator owns one persisted agent", "actual": "Agent bc87ad99-6a29-45e2-86a4-f289fe620710 persisted", "result": "pass", "timing": {"valueMs": 798, "boundary": "action-to-authoritative-response"}, "evidence": [], "issues": []}
+      ]
+    },
+    {
+      "id": "J02",
+      "result": "pass",
+      "steps": [
+        {"id": "J02-S1", "action": "Configure Visitor", "expected": "Visitor policy persists", "actual": "HTTP 200", "result": "pass", "timing": {"valueMs": 423, "boundary": "action-to-authoritative-response"}, "evidence": [], "issues": []},
+        {"id": "J02-S2", "action": "Configure Clients", "expected": "Read-mostly agent-member policy persists", "actual": "HTTP 200", "result": "pass", "timing": {"valueMs": 297, "boundary": "action-to-authoritative-response"}, "evidence": [], "issues": []},
+        {"id": "J02-S3", "action": "Configure Admin", "expected": "Administrator policy persists", "actual": "HTTP 200", "result": "pass", "timing": {"valueMs": 146, "boundary": "action-to-authoritative-response"}, "evidence": [], "issues": []},
+        {"id": "J02-S4", "action": "Enable agent-native Client registration", "expected": "App registration is not required", "actual": "local=open; app_login=false", "result": "pass", "timing": {"valueMs": 215, "boundary": "action-to-authoritative-response"}, "evidence": [], "issues": []},
+        {"id": "J02-S5", "action": "Reload authoritative profiles", "expected": "Exactly Visitor, Clients, Admin", "actual": "Profile names matched exactly", "result": "pass", "timing": {"valueMs": 191, "boundary": "action-to-authoritative-response"}, "evidence": [], "issues": []}
+      ]
+    },
+    {
+      "id": "J03",
+      "result": "pass",
+      "steps": [
+        {"id": "J03-S1", "action": "Enter as anonymous visitor", "expected": "Guest receives Visitor profile", "actual": "HTTP 200; profile=Visitor", "result": "pass", "timing": {"valueMs": 905, "boundary": "action-to-authoritative-response"}, "evidence": [], "issues": []},
+        {"id": "J03-S2", "action": "Open and operate embedded surface", "expected": "Branded composer is usable without browser or network errors", "actual": "Composer visible; drafted send enabled; zero page errors and failed responses", "result": "pass", "timing": {"valueMs": 16562, "boundary": "navigation-through-stable-interactive-state"}, "evidence": ["APROF-SOLAR-20260826-01-embed-visitor.png"], "issues": []}
+      ]
+    },
+    {
+      "id": "J04",
+      "result": "pass",
+      "steps": [
+        {"id": "J04-S1", "action": "Register directly with the agent", "expected": "Agent-scoped identity receives Clients", "actual": "HTTP 200; profile=Clients; agent-scoped subject", "result": "pass", "timing": {"valueMs": 1440, "boundary": "action-to-authoritative-response"}, "evidence": [], "issues": []},
+        {"id": "J04-S2", "action": "Attempt administration as Client", "expected": "Access denied", "actual": "HTTP 403", "result": "pass", "timing": {"valueMs": 116, "boundary": "action-to-authoritative-response"}, "evidence": [], "issues": []}
+      ]
+    },
+    {
+      "id": "J06",
+      "result": "pass",
+      "steps": [
+        {"id": "J06-S1", "action": "Enable explicitly funded embed", "expected": "Embed enabled", "actual": "HTTP 200; enabled=true", "result": "pass", "timing": {"valueMs": 1244, "boundary": "action-to-authoritative-response"}, "evidence": [], "issues": []},
+        {"id": "J06-S2", "action": "Read public descriptor", "expected": "Embeddable snippet returned", "actual": "HTTP 200; embeddable=true", "result": "pass", "timing": {"valueMs": 82, "boundary": "action-to-authoritative-response"}, "evidence": [], "issues": []}
+      ]
+    }
+  ],
+  "metrics": {},
+  "artifacts": [
+    "APROF-SOLAR-20260826-01-admin-signed-in.png",
+    "APROF-SOLAR-20260826-01-embed-visitor.png"
+  ],
+  "limitations": [
+    "The in-app browser service exposed no session, so isolated Playwright Chromium was used.",
+    "The sibling Solara Piano project was read-only in this workspace permission profile."
+  ],
+  "reproduction": {
+    "agentId": "bc87ad99-6a29-45e2-86a4-f289fe620710",
+    "script": "configure_agent_journey.py"
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "_readme": [
+    "SETUP BUNDLE TEMPLATE — copy this to 'bootstrap.json' (which is gitignored) next",
+    "to a fresh WebAgent clone to preconfigure it on first boot. Fill in only the",
+    "sections you want; delete the rest. On first boot, if this install has no LLM",
+    "configured yet, the app applies these sections (activating the database) and",
+    "then renames the file to bootstrap.applied.json. Delete every '_'-prefixed key",
+    "before use — they are comments, not config.",
+    "",
+    "TWO WAYS TO SHIP THIS FILE:",
+    "  1. PLAINTEXT (this template) — you secure the file yourself; no password needed.",
+    "  2. ENCRYPTED — instead of this JSON, put a single 'WABOOT1....' code string as",
+    "     the whole file contents (generate it from a running install's Data Settings",
+    "     > Deployment > 'This app' > Create setup code). Then set the environment",
+    "     variable BOOTSTRAP_ADMIN_PASSWORD to the source admin password so the app",
+    "     can decrypt it at boot.",
+    "",
+    "The easiest path is NOT to hand-edit this at all: on a configured install open",
+    "Data Settings > Deployment > 'This app' > Create setup code, and paste the code",
+    "on the new install's setup page (or save it as bootstrap.json)."
+  ],
+  "v": 1,
+  "sections": {
+    "admin": {
+      "_comment": "The admin login created on the fresh install.",
+      "username": "admin",
+      "display_name": "Admin",
+      "password": "CHANGE-ME"
+    },
+    "llm": {
+      "_comment": "AI provider + preset default model + the saved-model roster. api_key is the real key.",
+      "provider": "openrouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "sk-...",
+      "model": "deepseek/deepseek-v4-flash",
+      "multi_providers": [
+        {
+          "provider": "openrouter",
+          "base_url": "https://openrouter.ai/api/v1",
+          "api_key": "sk-...",
+          "model": "deepseek/deepseek-v4-flash",
+          "enabled": true,
+          "text_capable": true
+        }
+      ]
+    },
+    "database": {
+      "_comment": "App database connection. For SQLite this can be omitted entirely (the app self-creates one).",
+      "provider": "postgres",
+      "host": "db.example.com",
+      "port": 5432,
+      "database": "webagent",
+      "username": "webagent",
+      "password": "CHANGE-ME",
+      "ssl_mode": "require",
+      "schema": "public"
+    },
+    "vault": {
+      "_comment": "Secrets-vault backend. 'inline_db' (app DB) or 'os_keyring' need no config; remote vaults take a config object (and their access token is re-entered on the new device).",
+      "mode": "os_keyring",
+      "config": {}
+    }
+  }
+}

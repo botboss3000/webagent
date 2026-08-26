@@ -1,0 +1,8 @@
+I want to add a prompt injection feature and file changing per session strategy for the agent to be aware of sessions. This would be 2 fold. 1. Agents in sessions with specific user would keep track of their session subject and files/projects/goals/ideas/etc that are affected. 2. agent context would get injection of all active sessions (non recycle binned) with their subject, and file or project, etc impacts, and time since complete/error/running status, and maybe other things.
+
+if editing files, we need to ensure 2 sessions dont touch the same files. if a session is finished with a file, the agent needs to mark it checked in. and if editing, it would be checked out. other sessions will be prohibited from editing files, but could read and keep track of checked status if needed.
+
+we currently have a closer parallel loop, so one of his checkpoints would be to ensure the files and session subject and other stats are mantained. closer could probably also set the session flags to different things like need input, complete, etc
+
+we currently have injections when agent changes modes or models, so maybe this could be similar? or not...
+start of session, agent would get a list of all sessions and note saying its for background info. it would have the session id so agent could quickly query them IF NEEDED. if the other sessions update, the next run of the agent would get just those session details updated so agent would know the changes. it would need to have a contract system to ensure he doesn't edit files from other sessions, and maybe when editing, it would need to set the checked out flag. we'd need to have a column or even complete table to track all these details in the db. give me proposals.

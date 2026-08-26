@@ -196,10 +196,13 @@ def inject_integration_tools(
     # is enabled. Its provider enum is restricted to those providers so the
     # LLM cannot discover capabilities it isn't supposed to have.
     # Non-OAuth providers (telegram, scraper, browser_session) don't apply here.
-    _OAUTH_ENABLED = sorted(
-        p for p in enabled_providers
-        if p not in {"telegram", "scraper", "browser_session"}
-    )
+    _NON_OAUTH_PROVIDERS = {
+        "telegram", "scraper", "browser_session",
+        # Direct credential-backed Commerce APIs. Their dedicated adapters read
+        # agent-scoped credentials from the vault; oauth_api_call cannot.
+        "woocommerce", "bigcommerce", "square", "stripe", "paypal", "btcpay",
+    }
+    _OAUTH_ENABLED = sorted(p for p in enabled_providers if p not in _NON_OAUTH_PROVIDERS)
     if _OAUTH_ENABLED:
         handler, schema = _build_generic_oauth_tool(user_id, agent_id, _OAUTH_ENABLED)
         tools["oauth_api_call"] = tool_info_cls(

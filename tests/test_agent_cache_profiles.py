@@ -13,8 +13,8 @@ from app.agent.cache_profiles import (
     profile_layer_blocks,
     with_cache_profile,
 )
-from app.agent.prompts import build_system_prompt_parts
-from app.agent.loop import _build_layered_messages
+from app.agent.prompts import append_skills_section, build_system_prompt_parts
+from app.agent.loop import _build_layered_messages, _filter_history_for_available_tools
 from app.db.local import LocalBackend
 from app.tools.tool_modes import render_ability_index
 
@@ -39,6 +39,14 @@ def test_profile_layers_are_exact_nested_message_prefixes():
     advanced = profile_layer_blocks("advanced")
     assert standard[: len(simple)] == simple
     assert advanced[: len(standard)] == standard
+
+
+def test_profile_layers_can_hide_every_forbidden_ability():
+    assert profile_layer_blocks("advanced", allowed_abilities=set()) == []
+    blocks = profile_layer_blocks("advanced", allowed_abilities={"web_access"})
+    assert len(blocks) == 1
+    assert "web_access" in blocks[0]
+    assert "codebase_admin" not in blocks[0]
 
 
 def test_profile_order_is_stable_and_extensions_follow_profile():
@@ -86,6 +94,25 @@ def test_prompt_parts_keep_brain_context_out_of_shared_prefix(monkeypatch):
     assert "USER MEMORY" not in parts.shared_core
 
 
+def test_anonymous_prompt_excludes_shared_agent_docs_skills_and_memory():
+    docs = [{"context_type": "agent", "content": "omnipotent codebase admin"}]
+    parts = run(build_system_prompt_parts(
+        docs,
+        brain_context="private memory",
+        user_id="anon_test",
+        agent_id="shared_default",
+    ))
+    rendered = parts.render().lower()
+    assert "helpful conversational assistant" in rendered
+    assert "codebase" not in rendered
+    assert "private memory" not in rendered
+    assert run(append_skills_section(
+        parts.agent_context,
+        {"id": "shared_default"},
+        caller_user_id="anon_test",
+    )) == parts.agent_context
+
+
 def test_layered_messages_put_turn_context_after_history():
     messages = _build_layered_messages(
         shared_system="PLATFORM",
@@ -105,6 +132,41 @@ def test_layered_messages_put_turn_context_after_history():
     assert messages[1]["content"] == "SIMPLE"
     assert messages[2]["content"] == "STANDARD"
     assert messages[-2]["content"] == "MEMORY\n\nROUTING HINT"
+
+
+def test_history_drops_forbidden_tool_calls_and_their_advertising_prose():
+    history = [
+        {"role": "user", "content": "write a file"},
+        {"role": "assistant", "content": "I will load coding.", "tool_calls": [
+            {"id": "forbidden", "type": "function", "function": {"name": "load_skill", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "forbidden", "name": "load_skill", "content": "Codebase Admin"},
+        {"role": "assistant", "content": "I cannot perform that action."},
+    ]
+    filtered = _filter_history_for_available_tools(history, {"calculate"})
+    assert filtered == [history[0], history[-1]]
+
+
+def test_history_keeps_canonical_nameless_tool_results_for_allowed_calls():
+    history = [
+        {"role": "user", "content": "find the wiki"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call-1", "type": "function", "function": {
+                "name": "search_source", "arguments": '{"pattern":"Wiki"}',
+            }},
+            {"id": "call-2", "type": "function", "function": {
+                "name": "search_source", "arguments": '{"pattern":"sidebar"}',
+            }},
+        ]},
+        # Canonical OpenAI tool messages have no name; the call id binds each
+        # result to the named function in the assistant message above.
+        {"role": "tool", "tool_call_id": "call-1", "content": "first result"},
+        {"role": "tool", "tool_call_id": "call-2", "content": "second result"},
+    ]
+
+    filtered = _filter_history_for_available_tools(history, {"search_source"})
+
+    assert filtered == history
 
 
 def test_custom_agent_profile_persists_metadata_and_exact_abilities():

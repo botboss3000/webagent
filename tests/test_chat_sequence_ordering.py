@@ -83,12 +83,26 @@ class ChatSequenceOrderingTests(unittest.TestCase):
             "progress",
         )
 
-    def test_terminal_status_overrides_stale_pending_metadata(self):
+    def test_stopped_status_classifies_as_system(self):
         self.assertEqual(
             _interaction_message_phase(
                 '{"message_phase":"pending"}', "assistant", "error", "{}"
             ),
-            "terminal",
+            "system",
+        )
+
+    def test_system_role_classifies_as_system(self):
+        self.assertEqual(
+            _interaction_message_phase(None, "system", "complete", "{}"),
+            "system",
+        )
+
+    def test_legacy_terminal_phase_normalizes_to_system(self):
+        self.assertEqual(
+            _interaction_message_phase(
+                '{"message_phase":"terminal"}', "assistant", "complete", "{}"
+            ),
+            "system",
         )
 
     def test_newest_window_reverses_every_order_component(self):

@@ -1,0 +1,12 @@
+{
+  "display_name": "WooCommerce",
+  "kind": "placeholder",
+  "icon": "shopping-basket",
+  "color": "#e0af68",
+  "description": "WooCommerce products, inventory, orders, carts, and checkout.",
+  "note": "Coming soon — connects to a WooCommerce REST API installation.",
+  "simple": false,
+  "placeholder": true,
+  "tools": [],
+  "order": 2
+}

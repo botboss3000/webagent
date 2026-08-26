@@ -479,6 +479,13 @@ body.light-mode #chat-input-area {
   border-color: rgba(var(--brand-rgb),0.35);
 }
 
+.chat-bubble.agent.scout-preview {
+  border-color: rgba(var(--brand-rgb),0.28);
+  border-style: dashed;
+  color: var(--fg-2);
+  opacity: 0.88;
+}
+
 .chat-bubble.info {
   background: transparent;
   border: none;
@@ -494,6 +501,14 @@ body.light-mode #chat-input-area {
 }
 .chat-bubble.info .bubble-body {
   line-height: 1.45;
+}
+/* Notice-bubble footer (time + ⋮ context menu) must stay legible on the
+   otherwise-dimmed info bubble — the ⋮ is the only way to read the
+   per-message context (e.g. the summariser prompt size on a compaction
+   notice). Centered to match the notice's centered layout. */
+.chat-bubble.info .turn-gutter {
+  opacity: 1;
+  justify-content: center;
 }
 
 /* ── System messages: retry / error / debug ────────────────────────
@@ -539,6 +554,54 @@ body.light-mode #chat-input-area {
   justify-content: center;
 }
 
+/* ── Mode-change notice (Ask/Plan/Auto enabled) ──────────────────────
+   The durable twin of the live ⚠ mode row: rendered from the persisted
+   system:mode interaction on cold load / IndexedDB cache. Same warning
+   palette as system-retry so the two read as one family. */
+.chat-bubble.info.system-mode {
+  color: var(--warning, var(--fg-2));
+  opacity: 1;
+  font-weight: 500;
+  padding: 10px 18px;
+  max-width: 90%;
+  border-radius: 10px;
+  background: var(--warning-soft, rgba(var(--warning-rgb, 255,193,7), 0.08));
+  border: var(--border-width) solid var(--warning-mid, rgba(var(--warning-rgb, 255,193,7), 0.25));
+}
+.chat-bubble.info.system-mode .bubble-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.chat-bubble.info.system-mode .turn-gutter {
+  display: none !important;
+}
+
+/* ── Model-switch notice ("Switched to <model>") ─────────────────────
+   The durable twin of the live model row: rendered from the persisted
+   system:model interaction on cold load / IndexedDB cache. Accent-tinted
+   (brand) so it reads as an informational state change, distinct from the
+   warning-yellow mode notice. */
+.chat-bubble.info.system-model {
+  color: var(--accent, var(--fg-2));
+  opacity: 1;
+  font-weight: 500;
+  padding: 10px 18px;
+  max-width: 90%;
+  border-radius: 10px;
+  background: var(--accent-soft, rgba(var(--brand-rgb), 0.08));
+  border: var(--border-width) solid var(--accent-mid, rgba(var(--brand-rgb), 0.25));
+}
+.chat-bubble.info.system-model .bubble-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
 /* GenUI-originated sends (page fields/buttons) render as a green label notice.
    The raw prompt stays agent-side and only surfaces under the debug toggle
    (as a system-debug row) — never as a "You" bubble. Mirrors the retry/error
@@ -559,6 +622,13 @@ body.light-mode #chat-input-area {
   gap: 8px;
   flex-wrap: wrap;
   justify-content: center;
+}
+
+/* Output Closer — standalone final-output bubble. It remains distinct from the
+   folded working response, but intentionally has no sender/header label. */
+.chat-bubble.agent.summary-bubble {
+  background: rgba(var(--brand-rgb), 0.05);
+  border-color: rgba(var(--brand-rgb), 0.3);
 }
 
 /* Retry badge: inline pill showing "1 of 5" */
@@ -718,11 +788,11 @@ body.light-mode #main-tab-select {
 
 /* ── 13. Scrollbars — branded,
 slim ─────────────────────────── */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(var(--brand-rgb),0.28) transparent;
-}
-
+/* NOTE: scrollbar-width / scrollbar-color are NOT set globally — in Chromium
+   they force the native scrollbar (arrow buttons included) and DISABLE the
+   ::-webkit-scrollbar styling below, which is what draws the app's thin
+   rounded pill. Firefox (no arrow buttons ever) keeps the thin branded look
+   via the @-moz-document rule at the end of this section. */
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -760,8 +830,17 @@ slim ─────────────────────────
   background: transparent;
 }
 
-body.light-mode * {
-  scrollbar-color: rgba(var(--brand-rgb),0.35) transparent;
+/* Firefox only — thin branded scrollbar (Firefox never draws arrow buttons,
+   so scrollbar-width/color are safe here; Chromium must stay on the webkit
+   pill above to avoid native arrow buttons). */
+@-moz-document url-prefix() {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(var(--brand-rgb),0.28) transparent;
+  }
+  body.light-mode * {
+    scrollbar-color: rgba(var(--brand-rgb),0.35) transparent;
+  }
 }
 
 body.light-mode *::-webkit-scrollbar-thumb {
@@ -876,21 +955,21 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
   body.mobile-mode .mobile-nav-toggle { display: inline-flex; }
 }
 
-/* Centered brand wordmark for the compact mobile header (mobile_mode=true).
-   Sits between the nav toggle and the Chat button where the tab strip is
-   hidden. Decorative only — no icon, no click target: pointer-events:none
-   so taps pass through, and it never grows to crowd the edge buttons. */
-.mobile-header-brand {
+/* "Back to main page" button for the compact mobile header (mobile_mode=true).
+   Sits in normal flow directly right of the nav toggle (the hamburger) so the
+   center of the header stays free for the dedicated center logo label. Tapping
+   it reopens whichever main panel page was opened last (Sessions by default),
+   with the label showing that page's name (wired in
+   ui/shared/js/mobile-navigation.js) — an interactive target, never
+   decorative. max-width + ellipsis keep a long page name from crowding the
+   center slot. */
+.mobile-back-main-btn {
   display: none;
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
   align-items: center;
   justify-content: center;
-  padding: 0 12px;
-  max-width: 44vw;
+  margin-left: 8px;
+  padding: 0 10px;
+  max-width: 40vw;
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -898,26 +977,47 @@ body.light-mode *::-webkit-scrollbar-thumb:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: pointer;
   user-select: none;
+  border-radius: 8px;
 }
 @media (max-width: 800px) {
-  body.mobile-mode .mobile-header-brand { display: inline-flex; }
+  body.mobile-mode .mobile-back-main-btn { display: inline-flex; }
+}
+/* Hover / focus feedback for the back-to-main-page button. */
+.mobile-back-main-btn:hover { color: var(--fg-1); }
+.mobile-back-main-btn:focus-visible {
+  color: var(--fg-1);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* ── Header boot gate ────────────────────────────────────────────────
-   body.header-pending is set on <body> in index.html and removed by
-   initMobileNavigation() (ui/shared/js/mobile-navigation.js) on every
-   exit path once /api/v1/auth/ui-config resolves. Until then the header
-   stays EMPTY — the desktop tab strip (and the Chat button) can never
-   flash before the mobile layout is decided. min-height keeps the chrome
-   stable so the stage doesn't jump when content appears. */
-body.header-pending #main-tabs-wrap,
-body.header-pending #status-right {
-  display: none !important;
-}
+   Two independent startup decisions feed this gate:
+     • body.is-booting remains until the initial tab content is mounted.
+     • body.header-pending remains until mobile-navigation.js has decided
+       whether the desktop carousel or compact mobile sidebar applies.
+
+   While either decision is pending, expose only the two useful diagnostics:
+   Debug and Chat. In particular, never paint cached/generated page tabs,
+   account/update controls, carousel chevrons, or the mobile navigation trigger
+   in an intermediate desktop layout. The controls appear only after their
+   final desktop/mobile format is ready. */
 body.header-pending #main-header {
   min-height: 38px;
+}
+body.header-pending #main-tabs > :not(#debug-console-toggle),
+body.is-booting #main-tabs > :not(#debug-console-toggle),
+body.header-pending #main-tabs-chev-left,
+body.header-pending #main-tabs-chev-right,
+body.is-booting #main-tabs-chev-left,
+body.is-booting #main-tabs-chev-right,
+body.header-pending .mobile-nav-toggle,
+body.header-pending .mobile-back-main-btn,
+body.is-booting .mobile-nav-toggle,
+body.is-booting .mobile-back-main-btn {
+  display: none !important;
 }
 
 .mobile-nav-menu {
@@ -943,7 +1043,6 @@ body.header-pending #main-header {
   min-height: 0;
   overflow-y: auto;
   padding: 8px;
-  scrollbar-width: thin;
 }
 .mobile-nav-item {
   width: 100%;
@@ -1262,30 +1361,15 @@ body.light-mode #agents-list-header { border-bottom-color: var(--border); }
 	#main-panel { border-radius: 0; }
 	}
 
-/* ── Boot spinner ─────────────────────────────────────────────────
+/* ── Boot state marker (spinner retired) ───────────────────────
    The pre-paint script in index.html adds body.is-booting; tabs.js
-   removes it once the tab content is mounted. This draws a small
-   centered spinner so the brief JS-init window isn't a blank screen.
-   NOTE: the full-screen #boot-curtain (critical CSS in index.html's
-   <head>) now sits ABOVE this during boot, so this spinner is normally
-   hidden behind it — it remains as a lightweight fallback.
-   Theme-aware (design-system vars), disabled under reduced motion. */
-body.is-booting::after {
-  content: "";
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  width: 34px;
-  height: 34px;
-  margin: -17px 0 0 -17px;
-  border: 3px solid var(--border-strong);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: bootSpin 0.8s linear infinite;
-  z-index: 9000;
-  pointer-events: none;
-}
-@keyframes bootSpin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) {
-  body.is-booting::after { animation: none; }
-}
+   removes it once the tab content is mounted. It used to draw a small
+   centered spinner so the JS-init window wasn't a blank screen — that
+   spinner is GONE. Boot is now visualised by the boot phantom cursor
+   (index.html, "Boot phantom cursor"): while is-booting is set, a
+   independent boot input orbits the page and drives the animated background
+   (stargaze / grid / particles / #cursor-glow) alongside the real mouse —
+   so the loading state is movement in the
+   scene, as if the AI is stirring it, instead of a spinner.
+   is-booting remains as the boot-state flag the phantom cursor
+   watches to know when to stop. */

@@ -25,6 +25,7 @@ import { authHeaders } from '../../../../shared/js/left-login.js';
 import { LOOP_W, LOOP_NODES, computeEdgePath, renderLoopDiagram, applyDiagramStates } from './loop-diagram.js';
 import { NODE_STATIC_ITEMS, OPTIMIZER_NODES, NODE_PANEL_INFO } from './loop-node-data.js';
 import { interactionToEvents, fetchInteractionRows } from './loop-events.js';
+import { readAgentCache, writeAgentCache } from '../../js/agent-cache.js';
 
 // LOOP_W imported from loop-diagram.js (used for optimizer label)
 
@@ -51,12 +52,24 @@ export async function fetchAllToolMeta() {
   if (_toolMetaCache && (now - _toolMetaCacheTs) < TOOL_META_CACHE_MS) {
     return _toolMetaCache;
   }
+  const persisted = readAgentCache('tool-metadata');
+  if (!_toolMetaCache && Array.isArray(persisted)) {
+    _toolMetaCache = persisted;
+    _toolMetaCacheTs = now;
+    _refreshToolMeta().catch(() => {});
+    return _toolMetaCache;
+  }
+  return _refreshToolMeta();
+}
+
+async function _refreshToolMeta() {
   try {
     const res = await fetch(apiPath('/admin/tools'), { headers: authHeaders() });
     if (!res.ok) return [];
     const data = await res.json();
     _toolMetaCache = Array.isArray(data) ? data : [];
-    _toolMetaCacheTs = now;
+    _toolMetaCacheTs = Date.now();
+    writeAgentCache('tool-metadata', _toolMetaCache, 5 * 60 * 1000);
     return _toolMetaCache;
   } catch {
     return [];
@@ -97,7 +110,6 @@ function eventToNodeId(event) {
 
       // LOOP INIT
       case 'load_tools':            return 'load_tools';
-      case 'data_src_loaded':       return 'data_src_load';
       case 'integration_status':    return 'integration_status';
 
       // INFERENCE (per-turn)
@@ -117,8 +129,6 @@ function eventToNodeId(event) {
       // EXECUTION
       case 'execute_start':
       case 'execute_end':           return 'execute_tools';
-      case 'data_src_query_started':
-      case 'data_src_query_finished': return 'data_src_exec';
       case 'agent_delegation':      return 'delegation_chk';
       case 'skill_track':           return 'skill_track';
 
@@ -129,6 +139,13 @@ function eventToNodeId(event) {
       // OUTPUT
       case 'memory_save_start':
       case 'memory_save_end':       return 'memory_save';
+
+      // CLOSER (post-run close-out LLM steps)
+      case 'closer_start':          return 'llm_call';
+      case 'closer_audit_start':
+      case 'closer_audit_end':      return 'memory_save';
+      case 'closer_llm_start':
+      case 'closer_llm_end':        return 'llm_call';
 
       default: return null;
     }

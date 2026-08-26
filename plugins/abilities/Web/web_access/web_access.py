@@ -5,7 +5,7 @@ so the ability is self-contained). ``web_search`` and ``get_weather`` were moved
 from ``app/tools/core_tools.py``; ``maps_geocode`` (+ its schema) was moved from
 the now-deleted ``app/tools/maps.py``. Handlers are defined at MODULE LEVEL so
 other modules can import them directly — notably ``web_search`` is imported by
-``app/connectors/web_search_domain.py`` via ``ability_module('web_access')``.
+the Web Access ability through ``ability_module('web_access')``.
 
 Discovered generically by core via three optional module hooks (see
 app/abilities/__init__.py "Self-contained abilities"):

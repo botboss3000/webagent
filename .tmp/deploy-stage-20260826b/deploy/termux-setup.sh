@@ -1,0 +1,324 @@
+#!/usr/bin/env bash
+# ============================================================================
+# WebAgent — Linux / Termux installer & launcher.
+#
+# Run this on the target machine. It is what the Deploy panel's one-line command
+# hands off to after cloning the repo to $HOME/webagent. It works in TWO places
+# and detects which one automatically:
+#
+#   * Termux (Android phone / tablet) — WebAgent's full Python stack (compiled
+#     wheels, optional SQLCipher) is unreliable on bare Termux, so we install it
+#     inside a real Ubuntu userland via proot-distro (no root). This Ubuntu
+#     sandbox is the Termux-specific "customization"; everything else is shared.
+#   * A plain Linux computer / server — the dependencies build natively, so we
+#     install straight onto the system (system package manager + a venv), with
+#     no proot wrapper.
+#
+# ORDER MATTERS. We install the lightweight Server Manager (the `webagent`
+# command) FIRST, on its own minimal dependencies, and only then build the
+# heavier WebAgent server. That way a failure in the fragile server build never
+# leaves you empty-handed — you always end up with a working `webagent` you can
+# use to inspect / retry / diagnose. The server build is run non-fatally and its
+# output is saved to ~/webagent-install.log.
+#
+# Idempotent: re-running updates the code, reuses the existing distro / venv, and
+# relaunches. Browser automation (Playwright) is intentionally omitted on both —
+# see req_no_playwright.txt — to keep this lightweight install reliable.
+# ============================================================================
+set -e
+
+# Where the repo actually lives. Derive it from THIS script's own location
+# (deploy/termux-setup.sh → its parent is the repo root) so a CUSTOM install
+# folder chosen in the Deploy panel works, not just the default. Fall back to the
+# default if that can't be resolved for any reason.
+REPO_DIR="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+[ -d "$REPO_DIR/.git" ] || REPO_DIR="$HOME/webagent"
+PORT=8080
+INSTALL_LOG="$HOME/webagent-install.log"
+
+echo "============================================"
+echo " WebAgent — Linux / Termux setup"
+echo "============================================"
+
+# The one-line command clones the repo first; make sure it's really there. ----
+if [ ! -d "$REPO_DIR/.git" ]; then
+  echo "ERROR: WebAgent code not found at $REPO_DIR." >&2
+  echo "       Clone it first, then re-run this script." >&2
+  exit 1
+fi
+echo "Updating WebAgent code…"
+git -C "$REPO_DIR" pull --ff-only || echo "  (could not fast-forward — keeping the current code)"
+
+# Optional pre-set admin password (from the Deploy panel). The one-line install
+# command passes it as WA_ADMIN_PW; we write it into .env, which the app loads at
+# boot (app/main.py load_dotenv). .env is gitignored, so the git pull above never
+# disturbs it. When it's absent nothing is written — the first visitor to the app's
+# address sets the password on the setup page (open until an admin exists, so it
+# works from another device on the same network too).
+if [ -n "$WA_ADMIN_PW" ]; then
+  ENV_FILE="$REPO_DIR/.env"
+  touch "$ENV_FILE"
+  # Drop any earlier line so re-running replaces, not stacks.
+  grep -vE '^BOOTSTRAP_ADMIN_PASSWORD=' "$ENV_FILE" > "$ENV_FILE.tmp" 2>/dev/null || : > "$ENV_FILE.tmp"
+  mv "$ENV_FILE.tmp" "$ENV_FILE"
+  printf 'BOOTSTRAP_ADMIN_PASSWORD=%s\n' "$WA_ADMIN_PW" >> "$ENV_FILE"
+  echo "Admin account will be created on first boot from the password you set."
+fi
+
+# Optional pre-loaded configuration bundle (from the Deploy panel's "Include this
+# app's configuration" toggle). The one-line command passes it as WA_BOOTSTRAP_CODE;
+# we write it to bootstrap.json, which the app applies on first boot
+# (app/admin/bootstrap_bundle.apply_boot_file) — decrypting it with the
+# BOOTSTRAP_ADMIN_PASSWORD written just above — then renames the file. Absent → skipped.
+if [ -n "$WA_BOOTSTRAP_CODE" ]; then
+  printf '%s\n' "$WA_BOOTSTRAP_CODE" > "$REPO_DIR/bootstrap.json"
+  echo "Pre-loaded configuration will be applied on first boot."
+fi
+
+# Detect Termux (the customization) vs a plain Linux box. ---------------------
+if [ -n "$TERMUX_VERSION" ] || [ -d /data/data/com.termux ] || command -v termux-setup-storage >/dev/null 2>&1; then
+  IS_TERMUX=1
+else
+  IS_TERMUX=0
+fi
+
+# sudo helper for the Linux paths. Harmless / unused on Termux.
+SUDO=
+[ "$(id -u 2>/dev/null)" = 0 ] || SUDO=sudo
+
+# On a plain Linux box the manager needs python3 + venv, so install the system
+# packages up front (the same toolchain the server build needs later). On Termux
+# the manager's own installer (TUI/install-termux.sh) pulls python+git itself, so
+# nothing is needed here.
+if [ "$IS_TERMUX" = 0 ]; then
+  echo "Installing system packages (python3, venv, pip, git, build tools)…"
+  if command -v apt-get >/dev/null 2>&1; then
+    $SUDO apt-get update
+    $SUDO apt-get install -y python3 python3-venv python3-pip git build-essential libffi-dev
+  elif command -v dnf >/dev/null 2>&1; then
+    $SUDO dnf install -y python3 python3-pip python3-virtualenv git gcc make libffi-devel
+  elif command -v pacman >/dev/null 2>&1; then
+    $SUDO pacman -Sy --noconfirm python python-pip git base-devel libffi
+  else
+    echo "  (couldn't find apt/dnf/pacman — install python3, pip and git yourself, then re-run)" >&2
+  fi
+fi
+
+# ── STEP 1: the Server Manager (the `webagent` command) — FIRST ──────────────
+# Install the lightweight manager up front, on its own minimal dependencies, so
+# that even if the heavier server build below fails you are ALWAYS left with a
+# working `webagent` command to inspect / retry / diagnose — never an empty repo.
+# It carries WEBAGENT_TUI_NO_SUPERVISE so it only ever MANAGES the server the
+# keep-alive launch (below) owns — never a second, competing server. Non-fatal:
+# a hiccup here doesn't stop the server build that follows.
+echo "Installing the Server Manager (the 'webagent' command)…"
+if [ "$IS_TERMUX" = 1 ]; then
+  # Termux: reuse the TUI's own native installer (writes `webagent` to $PREFIX/bin
+  # + a Termux:Widget home-screen shortcut). WA_TUI_NO_SUPERVISE bakes the flag in.
+  WA_TUI_NO_SUPERVISE=1 bash "$REPO_DIR/TUI/install-termux.sh" \
+    || echo "  (Server Manager install skipped — the server build will still continue.)"
+else
+  # Plain Linux: a dedicated venv + a `webagent` launcher on PATH (/usr/local/bin,
+  # written with sudo when not root — SUDO was set above).
+  ( set -e
+    [ -d "$REPO_DIR/TUI/.venv" ] || python3 -m venv "$REPO_DIR/TUI/.venv"
+    "$REPO_DIR/TUI/.venv/bin/pip" install --upgrade pip wheel >/dev/null
+    "$REPO_DIR/TUI/.venv/bin/pip" install -e "$REPO_DIR/TUI"
+    $SUDO tee /usr/local/bin/webagent >/dev/null <<WALAUNCH
+#!/usr/bin/env bash
+# WebAgent Server Manager (TUI) — installed FIRST by termux-setup.sh.
+# The systemd service / keep-alive loop owns the running server; this just
+# inspects / restarts it (WEBAGENT_TUI_NO_SUPERVISE = no second supervisor).
+export WEBAGENT_PROJECT="$REPO_DIR"
+export WEBAGENT_TUI_NO_SUPERVISE=1
+exec "$REPO_DIR/TUI/.venv/bin/webagent" "\$@"
+WALAUNCH
+    $SUDO chmod +x /usr/local/bin/webagent
+  ) && echo "  Server Manager installed — run 'webagent' to manage it." \
+    || echo "  (Server Manager install skipped — the server build will still continue.)"
+fi
+
+# ── STEP 2: build + start the full WebAgent server — NON-FATAL ───────────────
+# This is the heavier, more fragile part. We run it WITHOUT aborting the whole
+# script on failure, so a problem here still leaves the manager above usable.
+# Everything it prints is mirrored to $INSTALL_LOG, and ${PIPESTATUS[0]} tells us
+# whether it completed (the inner `set -e` makes the block exit on first error).
+HEAVY_OK=0
+set +e
+{
+  set -e
+  if [ "$IS_TERMUX" = 1 ]; then
+    # ── Termux path: build + run inside an Ubuntu proot-distro sandbox ──
+    DISTRO="ubuntu"
+    ROOTFS="$PREFIX/var/lib/proot-distro/installed-rootfs/$DISTRO"
+
+    echo "[Termux 1/3] Installing Termux packages (git, proot-distro)…"
+    pkg update -y
+    pkg install -y git proot-distro
+
+    echo "[Termux] Keeping the device awake (wake-lock)…"
+    termux-wake-lock || echo "  (wake-lock unavailable — the server may pause when the screen is off)"
+
+    # Is an Ubuntu container already usable? Ask proot-distro itself (the only
+    # authoritative source — it honours PROOT_DISTRO_HOME and whatever on-disk
+    # layout the installed version uses) by actually logging in and running a
+    # no-op. A bare path check is fragile: an interrupted earlier run, a custom
+    # PROOT_DISTRO_HOME, or an older 'containers/' layout all hide the container
+    # from one hardcoded path — and then 'proot-distro install' aborts with
+    # "container 'ubuntu' already exists", stranding the build.
+    ubuntu_usable() { proot-distro login "$DISTRO" -- true >/dev/null 2>&1; }
+
+    if ubuntu_usable; then
+      echo "[Termux 2/3] Ubuntu environment already installed — reusing it."
+    else
+      echo "[Termux 2/3] Preparing the Ubuntu environment (first time only — a few minutes)…"
+      # A container may be REGISTERED but broken (a previous run died mid-install).
+      # That's the "already exists" case: a plain install would abort. Detect any
+      # leftover (proot-distro's own list, or the known rootfs paths) and reset it
+      # to a clean state instead of giving up; only do a fresh install when there's
+      # genuinely nothing there.
+      if proot-distro list 2>/dev/null | grep -qiw "$DISTRO" \
+         || [ -d "$ROOTFS" ] \
+         || [ -d "$PREFIX/var/lib/proot-distro/containers/$DISTRO" ]; then
+        echo "  Found a half-finished Ubuntu install — resetting it cleanly…"
+        proot-distro reset "$DISTRO" \
+          || { proot-distro remove "$DISTRO" 2>/dev/null; proot-distro install "$DISTRO"; }
+      else
+        proot-distro install "$DISTRO"
+      fi
+      ubuntu_usable || { echo "ERROR: the Ubuntu environment is still not usable after setup." >&2; exit 1; }
+    fi
+
+    echo "[Termux 3/3] Installing Python dependencies inside Ubuntu (first run is slow)…"
+    proot-distro login "$DISTRO" --bind "$REPO_DIR:/root/webagent" -- bash -c '
+set -e
+cd /root/webagent
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y python3 python3-venv python3-pip git build-essential libffi-dev
+[ -d .venv ] || python3 -m venv .venv
+.venv/bin/pip install --upgrade pip wheel
+# Playwright-free dependency set — browser automation is omitted on phones.
+.venv/bin/pip install -r req_no_playwright.txt
+# Pre-compile bytecode so the first server boot is fast (no .pyc compile). Non-fatal.
+.venv/bin/python -m compileall -q app run.py || true
+echo "  dependencies ready."
+'
+
+    echo "Starting the server in the background…"
+    bash "$REPO_DIR/start_server_termux.sh"
+
+    # Survive a reboot: drop a Termux:Boot script that relaunches the server on
+    # device startup. It only fires if the free Termux:Boot add-on is installed
+    # (from F-Droid) — harmless otherwise — so the banner below reminds the user.
+    echo "Setting up start-on-boot (needs the Termux:Boot add-on)…"
+    mkdir -p "$HOME/.termux/boot"
+    # Unquoted heredoc so $REPO_DIR is baked in now (the boot add-on runs this with
+    # no REPO_DIR in scope), honouring a custom install folder.
+    cat > "$HOME/.termux/boot/webagent-boot.sh" <<BOOTEOF
+#!/data/data/com.termux/files/usr/bin/sh
+# WebAgent — start on device boot. Needs the Termux:Boot add-on (F-Droid).
+# Generated by deploy/termux-setup.sh; re-run that script to regenerate.
+termux-wake-lock 2>/dev/null
+sleep 5
+bash "$REPO_DIR/start_server_termux.sh"
+BOOTEOF
+    chmod +x "$HOME/.termux/boot/webagent-boot.sh"
+  else
+    # ── Plain Linux path: install natively, no proot ──
+    echo "[Linux 1/2] Building the Python virtual environment…"
+    cd "$REPO_DIR"
+    [ -d .venv ] || python3 -m venv .venv
+    .venv/bin/pip install --upgrade pip wheel
+    # Playwright-free dependency set — same lightweight install as the phone.
+    .venv/bin/pip install -r req_no_playwright.txt
+    # Pre-compile bytecode so the first server boot is fast (no .pyc compile). Non-fatal.
+    .venv/bin/python -m compileall -q app run.py || true
+
+    echo "[Linux 2/2] Setting up the server to run and survive reboots…"
+    RUN_USER="$(id -un)"
+    LINUX_SVC=loop
+    # Best: a systemd service — auto-starts on boot AND restarts on crash, exactly
+    # like the cloud VM. Only when systemd is actually running (not just present —
+    # e.g. a container/WSL may have systemctl but no live PID-1 systemd) and we have
+    # root or sudo. Otherwise fall through to the keep-alive loop + a @reboot entry.
+    if command -v systemctl >/dev/null 2>&1 && { [ "$(id -u)" = 0 ] || [ -n "$SUDO" ]; } && $SUDO systemctl list-units >/dev/null 2>&1; then
+      echo "  Installing a systemd service (auto-start on boot + restart on crash)…"
+      $SUDO tee /etc/systemd/system/webagent.service >/dev/null <<UNITEOF
+[Unit]
+Description=WebAgent server
+After=network.target
+
+[Service]
+Type=simple
+User=$RUN_USER
+WorkingDirectory=$REPO_DIR
+ExecStart=$REPO_DIR/.venv/bin/python run.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+      if $SUDO systemctl daemon-reload && $SUDO systemctl enable --now webagent; then
+        LINUX_SVC=systemd
+        echo "  systemd service 'webagent' is enabled and running."
+      else
+        echo "  (systemd setup didn't complete — falling back to a keep-alive loop.)"
+      fi
+    fi
+    if [ "$LINUX_SVC" != systemd ]; then
+      echo "  Starting the keep-alive loop…"
+      bash "$REPO_DIR/deploy/start_server_linux.sh" "$REPO_DIR"
+      # Best-effort reboot persistence without systemd: a @reboot user crontab entry
+      # (de-duplicated) that relaunches the same loop. No root needed.
+      if command -v crontab >/dev/null 2>&1; then
+        if ( crontab -l 2>/dev/null | grep -v 'deploy/start_server_linux.sh'; \
+             echo "@reboot bash \"$REPO_DIR/deploy/start_server_linux.sh\" \"$REPO_DIR\" >/dev/null 2>&1" ) | crontab -; then
+          echo "  Added a @reboot entry so it restarts after a reboot."
+        else
+          echo "  (couldn't add a @reboot entry — re-run this command after a reboot to start it.)"
+        fi
+      else
+        echo "  (no systemd or cron here — re-run this command after a reboot to start it.)"
+      fi
+    fi
+  fi
+} 2>&1 | tee "$INSTALL_LOG"
+HEAVY_RC=${PIPESTATUS[0]}
+set -e
+[ "${HEAVY_RC:-1}" = 0 ] && HEAVY_OK=1
+
+# Tell the user where to reach it (or how to recover). ------------------------
+IP="$( (ip -4 addr 2>/dev/null || ifconfig 2>/dev/null) | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | grep -v '^127\.' | head -n1)"
+echo ""
+echo "============================================"
+if [ "$HEAVY_OK" = 1 ]; then
+  echo " WebAgent is starting in the background."
+  echo "   On this machine:     http://localhost:$PORT"
+  if [ -n "$IP" ]; then
+    echo "   From another device: http://$IP:$PORT   (same network)"
+  fi
+  echo " It keeps running and restarts itself if it stops."
+  echo " Manage it any time with:  webagent   (the Server Manager TUI)"
+  if [ "$IS_TERMUX" = 1 ]; then
+    echo " Start-on-boot: install the free Termux:Boot add-on (F-Droid) and open it once."
+    echo " To stop it:  proot-distro login ubuntu -- pkill -f run.py"
+  elif command -v systemctl >/dev/null 2>&1 && systemctl is-enabled webagent >/dev/null 2>&1; then
+    echo " It also starts automatically after a reboot (systemd service 'webagent')."
+    echo " To stop it:  sudo systemctl stop webagent     (stop boot-start: sudo systemctl disable webagent)"
+  else
+    echo " To stop it:  pkill -f run.py"
+  fi
+else
+  echo " The Server Manager IS installed — run:   webagent"
+  echo " …but the WebAgent server build did NOT finish."
+  echo ""
+  echo "   • Retry any time by re-running this same install command."
+  echo "   • Inspect / diagnose with the manager:   webagent"
+  echo "   • The full install log is saved at:      $INSTALL_LOG"
+  echo ""
+  echo " Most common cause on phones: not enough free storage — the Ubuntu"
+  echo " environment + dependencies need roughly 1.5–2 GB free."
+fi
+echo "============================================"

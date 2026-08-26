@@ -1,0 +1,48 @@
+================================================================================
+DIFF shared/js/chat-activity.js (45 lines)
+================================================================================
+--- 
++++ 
+@@ -532,26 +532,14 @@
+ }
+ 
+-/** Estimate context tokens from an array of message objects (chars/4 heuristic). */
+-function _estimateContextFromMessages(messages) {
+-  if (!messages || !messages.length) return 0;
+-  let totalChars = 0;
+-  for (const m of messages) {
+-    const c = m.content;
+-    if (typeof c === 'string') totalChars += c.length;
+-    else if (c) totalChars += String(c).length;
+-    // Also count tool_calls payload if present
+-    if (m.tool_calls) {
+-      try { totalChars += JSON.stringify(m.tool_calls).length; }
+-      catch (_) { totalChars += String(m.tool_calls).length; }
+-    }
+-  }
+-  return Math.max(0, Math.round(totalChars / 4));
+-}
+-
+-/** Set the live context from an array of messages (called on session load). */
++/** Called on session load and repeatedly as messages stream in / windows load
++ *  (cache append, tail-poll, reposition, …). Deliberately does NOT touch the ctx
++ *  readout: a chars/4 estimate of whatever window the browser currently holds
++ *  under-reports long sessions and was the source of the counter's "drops" (a
++ *  partial-window re-estimate stomping the exact count). The ctx pill is exact
++ *  counts only — setContextTokens (server MAX) and llm_call_end (live, monotonic).
++ *  Here we only clear a stale ramp and restore the IN/OUT token cache, which is
++ *  unrelated to the ctx number. */
+ function setContextFromMessages(messages) {
+-  _contextTokens = _estimateContextFromMessages(messages);
+   _pendingCtxEstimate = 0; // clear any stale ramp from a previous session
+-  _renderCtxIndicator();
+   // Restore cached counters instantly; session-load then applies the one
+   // authoritative ledger payload without issuing another aggregate request.
+@@ -1431,4 +1419,7 @@
+   _updateTokenBar();
+   _renderCost();
++  // Re-render the ctx readout too, so a reset can't leave the previous
++  // session's stale ctx (e.g. "88K") showing beside a freshly-zeroed cost.
++  _renderCtxIndicator();
+   try { localStorage.removeItem(_TOKEN_CACHE_KEY); } catch (_) {}
+ }

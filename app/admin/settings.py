@@ -19,6 +19,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.auth.jwt import decode_token
+from app.auth.identity import request_user_id
 from app.util.config_io import safe_write_json, set_config_key
 
 logger = logging.getLogger(__name__)
@@ -29,12 +30,14 @@ METADATA_FLAG = PROJECT_ROOT / ".metadata-enabled"
 APP_SETTINGS_FILE = PROJECT_ROOT / "data" / "config" / "app-settings.json"
 
 ANONYMOUS_KEY = "__anonymous__"
+PLATFORM_LLM_OWNER = "admin"
 
 DEFAULT_PROVIDER = {
     "provider": "",
     "base_url": "",
     "api_key": "",
     "model": "",
+    "stateful_responses": "auto",
     "providers": {},
     "multi_providers": [],
 }
@@ -51,6 +54,10 @@ PROVIDER_PRESETS = {
     "openai": {
         "name": "OpenAI",
         "base_url": "https://api.openai.com/v1",
+    },
+    "gemini": {
+        "name": "Google Gemini",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
     },
     "groq": {
         "name": "Groq",
@@ -254,6 +261,16 @@ async def _persist_llm_config(user_id: str, full: dict) -> None:
             secret_ref=secret,
             label="default",
         )
+        # Compatibility bridge: the existing Models UI still writes the
+        # historical admin row. Keep that row during rollout, while also
+        # updating system-managed named rosters. Explicitly administered or
+        # imported rosters are never overwritten by this bridge.
+        if user_id == PLATFORM_LLM_OWNER:
+            try:
+                from app.entitlements.rosters import sync_legacy_platform_config
+                await sync_legacy_platform_config(full, db=db)
+            except Exception as roster_error:
+                logger.warning("Failed to sync named platform rosters: %s", roster_error)
     except Exception as e:
         logger.warning("Failed to save LLM config to vault: %s", e)
 
@@ -327,7 +344,9 @@ async def migrate_llm_secrets() -> None:
 
 async def _resolve_user_config(user_id: str) -> dict:
     """Resolve a user's provider config WITHOUT touching env.
-    Reads from the auth_elements DB table (own config, then admin fallback).
+    Reads the user's own config, then exactly their tier's named platform roster.
+    A missing/unpublished roster fails closed; another tier's or the historical
+    administrator credential is never substituted.
     Shared by the runtime applier and the chat-footer resolver so
     both see the exact same base config.
     """
@@ -336,8 +355,13 @@ async def _resolve_user_config(user_id: str) -> dict:
         db = get_db()
         elem = await db.auth_element_get(user_id, "llm", "default")
         if not elem:
-            # Fall back to admin user's config (anonymous visitors get a working LLM)
-            elem = await db.auth_element_get("admin", "llm", "default")
+            try:
+                from app.entitlements.rosters import resolve_platform_roster_config
+                platform = await resolve_platform_roster_config(user_id, db=db)
+                if platform:
+                    return platform
+            except Exception:
+                logger.debug("Named platform roster resolution failed", exc_info=True)
         if elem:
             cfg = elem.get("config") or {}
             if isinstance(cfg, str):
@@ -349,6 +373,86 @@ async def _resolve_user_config(user_id: str) -> dict:
     except Exception:
         pass
     return dict(DEFAULT_PROVIDER)
+
+
+async def _require_provider_admin(request: Request) -> str:
+    """Return the verified DB-admin caller for provider-management routes.
+
+    These routes configure the platform LLM fallback and therefore must not
+    trust a client-supplied user id (or merely a decodable-but-non-admin JWT).
+    Runtime resolution deliberately remains separate in
+    :func:`_resolve_user_config`, where credentials are required for execution.
+    """
+    user_id = request_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        from app.db import get_db
+        is_admin = await get_db().is_user_admin(user_id)
+    except Exception:
+        is_admin = False
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    return user_id
+
+
+def _public_provider_config(config: dict) -> dict:
+    """Return browser-safe provider metadata with no usable credentials.
+
+    Empty key fields preserve the existing save contract (blank means keep the
+    stored key), while ``credential_configured`` lets the UI show configuration
+    state without receiving the secret itself.
+    """
+    safe = _strip_provider_secrets(config or {})
+    safe["credential_configured"] = bool((config or {}).get("api_key"))
+
+    providers = safe.get("providers")
+    original_providers = (config or {}).get("providers") or {}
+    if isinstance(providers, dict):
+        for name, value in providers.items():
+            if isinstance(value, dict):
+                original = original_providers.get(name) or {}
+                value["credential_configured"] = bool(
+                    isinstance(original, dict) and original.get("api_key")
+                )
+
+    roster = safe.get("multi_providers")
+    original_roster = (config or {}).get("multi_providers") or []
+    if isinstance(roster, list):
+        roster = _roster_entries_with_ids(roster)
+        safe["multi_providers"] = roster
+        for index, value in enumerate(roster):
+            if isinstance(value, dict):
+                original = original_roster[index] if index < len(original_roster) else {}
+                value["credential_configured"] = bool(
+                    isinstance(original, dict) and original.get("api_key")
+                )
+    return safe
+
+
+def _roster_entries_with_ids(entries: list) -> list[dict]:
+    """Attach the same deterministic IDs used by the named-roster service."""
+    from app.entitlements.rosters import PLATFORM_DEFAULT_ROSTER_ID, stable_entry_id
+
+    result = []
+    duplicate_counts = {}
+    for raw in entries or []:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        identity = "|".join(str(item.get(key) or "").strip() for key in ("provider", "base_url", "model"))
+        duplicate_index = duplicate_counts.get(identity, 0)
+        duplicate_counts[identity] = duplicate_index + 1
+        try:
+            item["entry_id"] = stable_entry_id(
+                PLATFORM_DEFAULT_ROSTER_ID,
+                item,
+                duplicate_index=duplicate_index,
+            )
+        except ValueError:
+            item["entry_id"] = str(item.get("entry_id") or "")
+        result.append(item)
+    return result
 
 
 async def user_has_own_llm_config(user_id: str) -> bool:
@@ -420,6 +524,52 @@ _ROLE_ALIASES = {
 }
 _STANDARD_ROLES = ("standard", "premium", "image_in", "image_out")
 
+# ── Roster-role prompt directives (grep ROLE-DIRECTIVE-INJECT) ─────────────
+# PER-AGENT admin-authored prompt injections keyed by roster slot, stored in
+# the agent's OWN metadata['llm_config']['model_directives'] (written through
+# PUT /agents/{id}, which is agent-admin-gated — only the agents administrator
+# can change them). Fixed role slots use their role name; EACH custom roster
+# slot uses its slot_ref 'custom:<position>' (positions from _assign_slots,
+# matching the footer picker's "Custom N" labels — so custom 1, custom 2, ...
+# each get their own injection). The chat-brain roles (standard / premium /
+# image_in / custom) ride into the system prompt when the session's model
+# selection is that slot (app/agent/prompts.py); the worker roles feed their
+# worker prompts (image_out → image_generation.py, system → session_titler).
+# voice has no prompt-injection point today (LLM transcription is audio→text)
+# — stored for future use.
+MODEL_DIRECTIVE_KEYS = ("standard", "premium", "image_in", "image_out",
+                        "system", "voice")
+
+
+async def get_agent_model_directives(agent_id: str) -> dict:
+    """Read ONE agent's roster-role prompt directives from
+    agents.metadata['llm_config']['model_directives'].
+
+    Async (DB read) — called on the prompt-build hot path and by the image /
+    session-namer workers. Always returns every fixed role key plus a
+    ``custom`` dict keyed by slot_ref ('custom:<position>' → text)."""
+    merged = {}
+    try:
+        from app.db import get_db
+        rec = await get_db().get_agent_by_id(agent_id)
+        meta = rec.get("metadata") if rec else {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:  # noqa: BLE001
+                meta = {}
+        llm = meta.get("llm_config") if isinstance(meta, dict) else {}
+        raw = llm.get("model_directives") if isinstance(llm, dict) else {}
+        if isinstance(raw, dict):
+            merged = raw
+    except Exception:  # noqa: BLE001 — directives are best-effort
+        merged = {}
+    out = {k: str(merged.get(k) or "").strip() for k in MODEL_DIRECTIVE_KEYS}
+    custom = merged.get("custom")
+    out["custom"] = ({str(k): str(v or "").strip() for k, v in custom.items()}
+                     if isinstance(custom, dict) else {})
+    return out
+
 
 def _normalize_role(name: str) -> str:
     """Canonicalize a role name (accepts legacy 'text'/'text_plus')."""
@@ -482,43 +632,54 @@ def _assign_slots(providers: list, default_model_id: str = "") -> dict:
         if v:
             slot_list.append({
                 "type": "role", "role": role_name,
+                "entry_id": v.get("entry_id", ""),
                 "provider": v.get("provider", ""),
                 "model": v.get("model", ""),
                 "base_url": v.get("base_url", ""),
                 "api_key": v.get("api_key", ""),
+                "stateful_responses": v.get("stateful_responses", "auto"),
             })
     for i, p in enumerate(custom, start=1):
         slot_list.append({
             "type": "custom", "position": i,
+            "entry_id": p.get("entry_id", ""),
             "provider": p.get("provider", ""),
             "model": p.get("model", ""),
             "base_url": p.get("base_url", ""),
             "api_key": p.get("api_key", ""),
+            "stateful_responses": p.get("stateful_responses", "auto"),
         })
 
     return {"roles": roles, "custom": custom, "slot_list": slot_list}
 
 
 def _resolve_slot(slots: dict, selection_type: str, role: str = "",
-                  custom_position: int = 0) -> Optional[dict]:
+                  custom_position: int = 0, entry_id: str = "") -> Optional[dict]:
     """Find a specific slot in the assignment and return its provider entry
     (a dict with provider/base_url/api_key/model), or None if unresolved."""
     for s in slots.get("slot_list", []):
         if selection_type == "role" and s.get("type") == "role" and s.get("role") == role:
             return {"provider": s.get("provider", ""), "base_url": s.get("base_url", ""),
-                    "api_key": s.get("api_key", ""), "model": s.get("model", "")}
-        if selection_type == "custom" and s.get("type") == "custom" and s.get("position") == custom_position:
+                    "api_key": s.get("api_key", ""), "model": s.get("model", ""),
+                    "stateful_responses": s.get("stateful_responses", "auto")}
+        if (selection_type == "custom" and s.get("type") == "custom"
+                and ((entry_id and s.get("entry_id") == entry_id)
+                     or (not entry_id and s.get("position") == custom_position))):
             return {"provider": s.get("provider", ""), "base_url": s.get("base_url", ""),
-                    "api_key": s.get("api_key", ""), "model": s.get("model", "")}
+                    "api_key": s.get("api_key", ""), "model": s.get("model", ""),
+                    "entry_id": s.get("entry_id", ""),
+                    "stateful_responses": s.get("stateful_responses", "auto")}
     return None
 
 
 def _slot_ref(selection_type: str, role: str = "",
-              custom_position: int = 0) -> str:
+              custom_position: int = 0, entry_id: str = "") -> str:
     """The stable string key for a slot — used for per-slot effort look-up.
     e.g. 'role:text', 'custom:2'."""
     if selection_type == "role":
         return f"role:{role}"
+    if entry_id:
+        return f"entry:{entry_id}"
     return f"custom:{custom_position}"
 
 
@@ -538,7 +699,7 @@ def _merge_agent_override(base: dict, override: dict) -> dict:
     no model is set → the chat errors with 'No text model configured'.
     """
     merged = dict(base or {})
-    for k in ("provider", "base_url", "api_key", "model"):
+    for k in ("provider", "base_url", "api_key", "model", "stateful_responses"):
         v = override.get(k)
         if v:
             merged[k] = v
@@ -603,7 +764,7 @@ def _merge_agent_override(base: dict, override: dict) -> dict:
             elif not merged.get("model"):
                 # A roster-only override has no chosen brain, so make its first
                 # row the complete default configuration.
-                for k in ("provider", "base_url", "api_key", "model"):
+                for k in ("provider", "base_url", "api_key", "model", "stateful_responses"):
                     if first.get(k):
                         merged[k] = first[k]
     else:
@@ -620,11 +781,11 @@ def _merge_agent_override(base: dict, override: dict) -> dict:
     roster_models = {p.get("model") for p in merged.get("multi_providers", []) if p.get("model")}
     if merged.get("model") and roster_models and merged.get("model") not in roster_models:
         first = merged["multi_providers"][0]
-        for k in ("provider", "base_url", "api_key", "model"):
+        for k in ("provider", "base_url", "api_key", "model", "stateful_responses"):
             if first.get(k):
                 merged[k] = first[k]
     elif merged.get("model") and not roster_models:
-        for k in ("model", "provider", "base_url", "api_key"):
+        for k in ("model", "provider", "base_url", "api_key", "stateful_responses"):
             merged[k] = base.get(k, "")
 
     # ── Slot-based session-override resolution ──
@@ -638,16 +799,17 @@ def _merge_agent_override(base: dict, override: dict) -> dict:
         slots = _assign_slots(union, default_model_id=merged.get("model", ""))
         sel_role = _normalize_role(override.get("role", ""))
         sel_pos = override.get("custom_position", 0)
-        resolved = _resolve_slot(slots, sel_type, sel_role, sel_pos)
+        sel_entry_id = str(override.get("entry_id") or "")
+        resolved = _resolve_slot(slots, sel_type, sel_role, sel_pos, sel_entry_id)
         if resolved:
-            for k in ("provider", "base_url", "api_key", "model"):
+            for k in ("entry_id", "provider", "base_url", "api_key", "model", "stateful_responses"):
                 if resolved.get(k):
                     merged[k] = resolved[k]
-            merged["_slot_ref"] = _slot_ref(sel_type, sel_role, sel_pos)
+            merged["_slot_ref"] = _slot_ref(sel_type, sel_role, sel_pos, sel_entry_id)
         else:
             # Slot unresolvable — leave model blank so the chat errors.
             merged["model"] = ""
-            merged["_slot_ref"] = _slot_ref(sel_type, sel_role, sel_pos)
+            merged["_slot_ref"] = _slot_ref(sel_type, sel_role, sel_pos, sel_entry_id)
 
     return merged
 
@@ -655,7 +817,8 @@ def _merge_agent_override(base: dict, override: dict) -> dict:
 def _session_llm_override(cfg: Optional[dict]) -> Optional[dict]:
     """Return a session's custom LLM config IF it overrides the layer below.
 
-    Sessions store either a concrete ``model`` OR a ``selection_type`` + role/position
+    Sessions store either a concrete ``model`` OR a ``selection_type`` plus a
+    semantic role/stable entry ID (legacy rows may still contain a position)
     (set by the chat footer model picker). Only an explicit ``use_default=False``
     carrying a model or a selection counts; anything else means "fall back to the
     agent/app default".
@@ -720,6 +883,91 @@ def _effective_config(
     return merged
 
 
+def _config_roster_entries(config: dict) -> list[dict]:
+    """Return a config's default and racers as stable-ID roster entries."""
+    raw = []
+    root = {key: config.get(key) for key in (
+        "entry_id", "provider", "base_url", "api_key", "model",
+        "text_capable", "image_capable", "image_out_capable", "voice_capable",
+        "use_for_image_out", "high_effort_capable",
+    ) if config.get(key) not in (None, "")}
+    if not root.get("entry_id") and config.get("_platform_default_entry_id"):
+        root["entry_id"] = config["_platform_default_entry_id"]
+    if root.get("model"):
+        raw.append(root)
+    raw.extend(item for item in (config.get("multi_providers") or []) if isinstance(item, dict))
+    entries = _roster_entries_with_ids(raw)
+    result, seen = [], set()
+    for entry in entries:
+        identity = (str(entry.get("entry_id") or ""), str(entry.get("provider") or ""),
+                    str(entry.get("base_url") or ""), str(entry.get("model") or ""))
+        if identity not in seen:
+            seen.add(identity)
+            result.append(entry)
+    return result
+
+
+def _same_roster_entry(left: dict, right: dict) -> bool:
+    left_id, right_id = str(left.get("entry_id") or ""), str(right.get("entry_id") or "")
+    if left_id and right_id and left_id == right_id:
+        return True
+    return all(str(left.get(key) or "") == str(right.get(key) or "")
+               for key in ("provider", "base_url", "model"))
+
+
+async def _clamp_config_to_entitlements(user_id: str, base: dict, effective: dict) -> tuple[dict, dict]:
+    """Clamp agent/session selections to the caller's effective base roster."""
+    from app.entitlements.service import resolve_capabilities
+
+    capabilities = await resolve_capabilities(user_id)
+    model_policy = capabilities.get("models") or {}
+    allowed_ids = set(model_policy.get("allowed_entry_ids") or [])
+    base_entries = _config_roster_entries(base)
+    platform_roster_id = str(base.get("_platform_roster_id") or "")
+    if platform_roster_id:
+        # Capabilities resolution owns roster validity.  Empty IDs are not an
+        # implicit wildcard: they mean no published entries were resolved.
+        if (model_policy.get("available") is False
+                or platform_roster_id != str(model_policy.get("roster_id") or "")
+                or not allowed_ids):
+            base_entries = []
+        elif "*" not in allowed_ids:
+            base_entries = [entry for entry in base_entries if entry.get("entry_id") in allowed_ids]
+    else:
+        if not model_policy.get("allow_byo"):
+            base_entries = []
+        maximum = model_policy.get("max_byo_entries")
+        if maximum is not None:
+            base_entries = base_entries[:max(0, int(maximum))]
+
+    effective_entries = _config_roster_entries(effective)
+    narrowed = [entry for entry in base_entries
+                if any(_same_roster_entry(entry, candidate) for candidate in effective_entries)]
+    candidates = narrowed or base_entries
+    selected = next((entry for entry in candidates if _same_roster_entry(entry, effective)),
+                    candidates[0] if candidates else None)
+    clamped = dict(effective)
+    clamped["multi_providers"] = candidates
+    if selected:
+        for key in ("entry_id", "provider", "base_url", "api_key", "model"):
+            clamped[key] = selected.get(key, "")
+    else:
+        for key in ("entry_id", "provider", "base_url", "api_key", "model"):
+            clamped[key] = ""
+    clamped["_entitlement_roster_id"] = model_policy.get("roster_id")
+    return clamped, capabilities
+
+
+def _clamp_reasoning_effort(level: Optional[str], capabilities: dict) -> Optional[str]:
+    if not level:
+        return None
+    order = {"default": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4}
+    maximum = str((capabilities.get("models") or {}).get("max_reasoning_effort") or "default")
+    return level if order.get(level, 0) <= order.get(maximum, 0) else (
+        None if maximum == "default" else maximum
+    )
+
+
 async def _load_session_override(session_id: Optional[str]) -> Optional[dict]:
     """Fetch a session's stored llm_config (best-effort, None on any failure)."""
     if not session_id:
@@ -756,8 +1004,35 @@ async def apply_provider_for_run(
     user's global default.
     """
     session_override = await _load_session_override(session_id)
-    effective = _effective_config(await _resolve_user_config(user_id), agent_rec, session_override)
-    effective = await _ensure_tool_capable(effective, user_id)
+    config_user_id = user_id
+    dedicated_public_key = False
+    if str(user_id or "").startswith("anon_") and agent_rec:
+        from app.agent.public_policy import PLATFORM_SHOWCASE_AGENT_ID, require_public_funding
+        if str(agent_rec.get("id") or "") != PLATFORM_SHOWCASE_AGENT_ID:
+            from app.db import get_db
+            funding = await require_public_funding(get_db(), agent_rec)
+            config_user_id = str(funding.get("owner_user_id") or user_id)
+            dedicated_public_key = funding.get("mode") == "dedicated_key"
+            # Visitors cannot select models from the sponsor's roster. Public
+            # traffic always runs the model configuration published by the owner.
+            session_override = None
+    base = await _resolve_user_config(config_user_id)
+    if dedicated_public_key:
+        # Use the published agent configuration as its own base. Otherwise the
+        # stale-roster guard correctly sees no inherited roster but incorrectly
+        # falls back to the visitor/platform model.
+        base = dict(_agent_llm_override(agent_rec) or base)
+    effective = _effective_config(base, agent_rec, session_override)
+    effective = await _ensure_tool_capable(effective, config_user_id)
+    if dedicated_public_key:
+        # Publication validation requires an agent-owned provider/key override.
+        # The visitor's anonymous entitlement must not erase that funded key.
+        from app.entitlements.service import resolve_capabilities
+        capabilities = await resolve_capabilities(config_user_id)
+    else:
+        effective, capabilities = await _clamp_config_to_entitlements(
+            config_user_id, base, effective,
+        )
     # The default loop consumes this config directly so simultaneous chats cannot
     # overwrite each other's credentials through process-global environment
     # variables.  Keep the env application for legacy/background callers.
@@ -773,6 +1048,7 @@ async def apply_provider_for_run(
         model=effective.get("model"),
         slot_ref=effective.get("_slot_ref"),
     )
+    effort = _clamp_reasoning_effort(effort, capabilities)
     # This transient value lets a caller use the fully resolved run config
     # without reading the shared environment. It is never persisted.
     effective["reasoning_effort"] = effort
@@ -791,11 +1067,33 @@ async def resolve_active_model(
     footer shows exactly the model the loop will use. Used by /current-model-info.
     """
     session_override = await _load_session_override(session_id)
-    effective = _effective_config(await _resolve_user_config(user_id), agent_rec, session_override)
-    effective = await _ensure_tool_capable(effective, user_id)
+    config_user_id = user_id
+    dedicated_public_key = False
+    if str(user_id or "").startswith("anon_") and agent_rec:
+        from app.agent.public_policy import PLATFORM_SHOWCASE_AGENT_ID, require_public_funding
+        if str(agent_rec.get("id") or "") != PLATFORM_SHOWCASE_AGENT_ID:
+            from app.db import get_db
+            funding = await require_public_funding(get_db(), agent_rec)
+            config_user_id = str(funding.get("owner_user_id") or user_id)
+            dedicated_public_key = funding.get("mode") == "dedicated_key"
+            session_override = None
+    base = await _resolve_user_config(config_user_id)
+    if dedicated_public_key:
+        base = dict(_agent_llm_override(agent_rec) or base)
+    effective = _effective_config(base, agent_rec, session_override)
+    effective = await _ensure_tool_capable(effective, config_user_id)
+    if dedicated_public_key:
+        from app.entitlements.service import resolve_capabilities
+        capabilities = await resolve_capabilities(config_user_id)
+    else:
+        effective, capabilities = await _clamp_config_to_entitlements(
+            config_user_id, base, effective,
+        )
     provider = effective.get("provider", "") or ""
     base_url = effective.get("base_url") or (PROVIDER_PRESETS.get(provider, {}) or {}).get("base_url", "")
-    effort = _resolve_session_effort(session_override, effective.get("model"))
+    effort = _clamp_reasoning_effort(
+        _resolve_session_effort(session_override, effective.get("model")), capabilities
+    )
     return {"model": effective.get("model", "") or "", "provider": provider,
             "base_url": base_url, "reasoning_effort": effort or "default"}
 
@@ -812,10 +1110,13 @@ async def resolve_agent_models(
     Returns:
       {"slots": [{"type":"role","role":"standard","model":"gpt-4o",...}, ...],
        "active_slot": {"type":"role","role":"standard"} | None,
-       "model_effort": {"role:standard":"high", "custom:2":"low"}}
+       "model_effort": {"role:standard":"high", "custom:2":"low"},
+       "agent_override": {"model": "<id>"} | None}
     """
     session_override = await _load_session_override(session_id)
-    effective = _effective_config(await _resolve_user_config(user_id), agent_rec, session_override)
+    base = await _resolve_user_config(user_id)
+    effective = _effective_config(base, agent_rec, session_override)
+    effective, capabilities = await _clamp_config_to_entitlements(user_id, base, effective)
     union = effective.get("multi_providers") or []
     slots = _assign_slots(union, default_model_id=effective.get("model", ""))
 
@@ -827,6 +1128,7 @@ async def resolve_agent_models(
             "type": session_override["selection_type"],
             "role": role,
             "custom_position": session_override.get("custom_position", 0),
+            "entry_id": session_override.get("entry_id", ""),
         }
     elif slots["slot_list"]:
         # Default active = first slot (the standard role, if it exists).
@@ -835,12 +1137,114 @@ async def resolve_agent_models(
             active_slot["role"] = slots["slot_list"][0]["role"]
         else:
             active_slot["custom_position"] = slots["slot_list"][0]["position"]
+            active_slot["entry_id"] = slots["slot_list"][0].get("entry_id", "")
+
+    # Agent-driven concrete-model override (the Model Switcher ability's
+    # set_model / use_premium_model writes {use_default: False, model: <id>}).
+    # The user's footer-picker slot selection never carries a `model` key, so a
+    # concrete model here is always the AGENT's temporary upgrade. Unlike the
+    # slot selection, it's invisible to the slot resolver — expose it so the
+    # chat footer can show the overridden model in warning color while it's
+    # live, and revert automatically when the run ends (runner._finish_run
+    # clears the override and the UI re-syncs). (grep SESSION-MODEL-OVERRIDE)
+    agent_override = None
+    if isinstance(session_override, dict) and session_override.get("use_default") is False:
+        _ao_model = session_override.get("model")
+        if _ao_model:
+            agent_override = {"model": _ao_model}
 
     # Per-slot reasoning-effort the chat has chosen.
     effort_map = (session_override or {}).get("model_effort")
     effort_map = effort_map if isinstance(effort_map, dict) else {}
-    return {"slots": slots["slot_list"], "active_slot": active_slot,
-            "model_effort": effort_map}
+    effort_map = {
+        key: (_clamp_reasoning_effort(str(value).lower(), capabilities) or "default")
+        for key, value in effort_map.items()
+    }
+    safe_slots = [
+        {key: value for key, value in slot.items() if key != "api_key"}
+        for slot in slots["slot_list"]
+    ]
+    return {"slots": safe_slots, "active_slot": active_slot,
+            "model_effort": effort_map, "agent_override": agent_override}
+
+
+def _slot_for_model(caps: dict, model: str) -> Optional[tuple]:
+    """(role, slot_ref) for a model id, via the ordered slot_list — semantic
+    roles win over custom positions (mirrors _assign_slots' ordering). None
+    when the model is not in the roster at all."""
+    d = caps.get("default") or {}
+    union = ([d] if d.get("model") else []) + list(caps.get("racers") or [])
+    slots = _assign_slots(union, default_model_id=d.get("model", ""))
+    for s in slots["slot_list"]:
+        if s.get("model") == model:
+            if s["type"] == "role":
+                return s["role"], _slot_ref("role", s["role"])
+            return "custom", _slot_ref(
+                "custom", "", s.get("position", 0), s.get("entry_id", "")
+            )
+    return None
+
+
+async def session_active_slot(
+    user_id: str,
+    agent_rec: Optional[dict] = None,
+    session_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Return {"role": ..., "slot_ref": ...} for the session's ACTIVE roster
+    slot — the one whose per-agent admin directive rides into the system
+    prompt (grep ROLE-DIRECTIVE-INJECT). Mirrors resolve_agent_models' slot
+    resolution (SISTER-SYNC: SESSION-MODEL-OVERRIDE):
+
+      • a role-slot selection (footer picker / mode selector) → that role
+        (standard | premium | image_in | image_out) with 'role:<role>';
+      • a custom-slot selection → role 'custom' with slot_ref
+        'custom:<position>' (the footer picker's "Custom N");
+      • a concrete-model override (the Model Switcher's set_model /
+        use_premium_model) → the model's first-matching slot;
+      • no override → the DEFAULT slot (slot_list[0] — exactly what the
+        footer picker treats as active).
+
+    Returns None when nothing resolves (no roster) — no directive rides in.
+    Model NAMES are never parsed; only the slot classification decides."""
+    if not session_id:
+        return None
+    try:
+        session_override = await _load_session_override(session_id)
+        caps = await load_llm_capabilities_for_user(user_id, agent_rec=agent_rec)
+    except Exception:  # noqa: BLE001 — slot resolution is best-effort
+        return None
+    session_override = session_override if isinstance(session_override, dict) else {}
+
+    if session_override.get("selection_type") == "role":
+        role = _normalize_role(str(session_override.get("role", "")))
+        if role in _STANDARD_ROLES:
+            return {"role": role, "slot_ref": _slot_ref("role", role)}
+        return None
+    if session_override.get("selection_type") == "custom":
+        pos = int(session_override.get("custom_position") or 0)
+        entry_id = str(session_override.get("entry_id") or "")
+        return {"role": "custom", "slot_ref": _slot_ref("custom", "", pos, entry_id)}
+
+    model = str(session_override.get("model") or "")
+    if model:
+        found = _slot_for_model(caps, model)
+        if not found:
+            return None
+        role, slot_ref = found
+        return {"role": role, "slot_ref": slot_ref}
+
+    slots = _assign_slots(
+        caps.get("racers") or [],
+        default_model_id=(caps.get("default") or {}).get("model", ""),
+    )
+    first = slots["slot_list"][0] if slots["slot_list"] else None
+    if not first:
+        return None
+    if first["type"] == "role":
+        return {"role": first["role"], "slot_ref": _slot_ref("role", first["role"])}
+        return {"role": "custom",
+            "slot_ref": _slot_ref("custom", "", first.get("position", 0),
+                                    first.get("entry_id", ""))}
 
 
 def _apply_config_to_env(config: dict) -> None:
@@ -916,31 +1320,18 @@ async def load_llm_capabilities_for_user(user_id: str, agent_rec: Optional[dict]
     chat model-switcher list; the models are NOT raced, parallel racing was
     removed. Exactly one model — "default" — is the brain per run.)
     """
-    cfg = None
-    try:
-        from app.db import get_db
-        db = get_db()
-        for uid in (user_id, "admin"):
-            elem = await db.auth_element_get(uid, "llm", "default")
-            if elem:
-                c = elem.get("config") or {}
-                if isinstance(c, str):
-                    c = json.loads(c)
-                _rehydrate_llm_keys(c, elem.get("secret_ref", ""))
-                cfg = c
-                break
-    except Exception as e:
-        logger.debug("load_llm_capabilities_for_user DB read failed: %s", e)
-    if cfg is None:
-        cfg = dict(DEFAULT_PROVIDER)
+    base = await _resolve_user_config(user_id)
+    cfg = base
 
     # Factor in the agent's LLM override so caps reflect what THIS agent runs on.
     # Mirrors the runtime resolution (apply_provider_for_run) so list_models and
     # the switcher tools agree with the model the loop actually uses. (grep AGENT-AWARE-CAPS)
     if agent_rec:
         cfg = _effective_config(cfg, agent_rec)
+    cfg, _capabilities = await _clamp_config_to_entitlements(user_id, base, cfg)
 
     default = {
+        "entry_id": cfg.get("entry_id", ""),
         "model": cfg.get("model", ""),
         "provider": cfg.get("provider", ""),
         "base_url": cfg.get("base_url", ""),
@@ -955,6 +1346,7 @@ async def load_llm_capabilities_for_user(user_id: str, agent_rec: Optional[dict]
     racers = []
     for p in (cfg.get("multi_providers") or []):
         racers.append({
+            "entry_id": p.get("entry_id", ""),
             "model": p.get("model", ""),
             "provider": p.get("provider", "custom"),
             "base_url": p.get("base_url", ""),
@@ -1322,6 +1714,24 @@ def shared_default_agent_enabled() -> bool:
     return _load_app_settings().get("shared_default_agent_enabled", True) is True
 
 
+def get_browser_session_policy() -> dict:
+    """Validated runtime policy for server-owned Playwright browsers."""
+    raw = _load_app_settings()
+    try:
+        maximum = int(raw.get("browser_max_concurrent_sessions", 3))
+    except (TypeError, ValueError):
+        maximum = 3
+    try:
+        timeout = int(raw.get("browser_idle_timeout_seconds", 300))
+    except (TypeError, ValueError):
+        timeout = 300
+    return {
+        "max_concurrent_sessions": max(1, min(20, maximum)),
+        "idle_timeout_seconds": max(60, min(86400, timeout)),
+        "idle_cleanup_enabled": raw.get("browser_idle_cleanup_enabled", True) is not False,
+    }
+
+
 def _is_metadata_enabled() -> bool:
     return METADATA_FLAG.exists()
 
@@ -1333,6 +1743,7 @@ class ProviderConfig(BaseModel):
     base_url: str = ""
     api_key: str
     model: str = ""
+    stateful_responses: str = "auto"  # auto | disabled
     providers: dict = {}
     # Media-capability of the default model (detected on save, user-overridable).
     text_capable: bool = True
@@ -1341,13 +1752,18 @@ class ProviderConfig(BaseModel):
     voice_capable: bool = False       # accepts audio/voice input
     use_for_image_out: bool = False   # this model is the image generator
     high_effort_capable: bool = False  # admin-marked "premium" tier the agent may upgrade ONTO
+    credential_configured: bool = False  # read-only; API keys are never returned
 
 
 class MultiProviderEntry(BaseModel):
+    # Immutable model identity. Legacy clients may omit it; migration assigns a
+    # deterministic value from provider/base_url/model.
+    entry_id: str = ""
     provider: str
     base_url: str = ""
     api_key: str = ""
     model: str = ""
+    stateful_responses: str = "auto"  # auto | disabled
     enabled: bool = True          # "use for text" — selectable as the chat/brain model
     # Media-capability (detected on save, user-overridable) + image routing roles.
     text_capable: bool = True
@@ -1359,6 +1775,7 @@ class MultiProviderEntry(BaseModel):
     use_for_voice: bool = False      # eligible for LLM-powered voice input
     use_for_system: bool = False     # eligible for app misc. LLM tasks
     high_effort_capable: bool = False  # admin-marked "premium" tier the agent may upgrade ONTO
+    credential_configured: bool = False  # read-only; ignored when persisting
 
 
 class MultiProvidersRequest(BaseModel):
@@ -1474,27 +1891,93 @@ class AppSettings(BaseModel):
     # behaviour). When the cap is reached, sessions that try to start a run
     # wait in a FIFO queue and begin only after an active session completes.
     max_active_sessions: int = 0
+    # ── Browser-session lifecycle (app/tools/browser.py) ──
+    # Server-owned headless Chromium instances are capped app-wide. Inactive
+    # sessions are persisted and closed after the timeout; a later action opens
+    # the same saved browser-session row again with its cookies and last URL.
+    browser_max_concurrent_sessions: int = 3
+    browser_idle_timeout_seconds: int = 300
+    browser_idle_cleanup_enabled: bool = True
     # ── Anonymous session rate limits (app/api/rate_limit.py) ──
     # Maximum new anonymous sessions per client IP within the window below.
     # 0 disables the check entirely. Env var WEBAGENT_ANON_SESSION_MAX overrides.
-    anon_session_max: int = 20
+    anon_session_max: int = 10
     # Rolling window in seconds for the anonymous-session rate limit above.
     # Env var WEBAGENT_ANON_SESSION_WINDOW overrides.
     anon_session_window: int = 60
+    # App-wide circuit breaker for anonymous identity minting, independent of
+    # client IP/network. This is the origin-side backstop for distributed bots.
+    anon_global_session_max: int = 25
+    anon_global_session_window: int = 3600
+    # Public account-creation backstops. Human verification at the edge is
+    # still recommended; these protect the origin if an edge rule is absent.
+    public_registration_ip_max: int = 5
+    public_registration_global_max: int = 100
+    public_registration_window: int = 3600
+    # Maximum DISTINCT browser identities associated with one privacy-safe
+    # source fingerprint during the window. Unlike anon_session_max, ordinary
+    # token refreshes for the same browser do not consume another identity.
+    anon_identity_max: int = 5
+    # Several browsers may have distinct guest identities on one network. A
+    # returning browser keeps the same identity and does not consume another
+    # slot; their anonymous spend still shares the network allowance below.
+    anon_identity_window: int = 86400
     # ── Anonymous chat message rate limits (app/api/rate_limit.py) ──
     # Maximum messages per anonymous identity within the window below. Env var
     # WEBAGENT_ANON_CHAT_MAX overrides. 0 disables the per-identity check.
-    anon_chat_max: int = 30
+    anon_chat_max: int = 5
     # Rolling window in seconds for the per-identity message limit above.
     # Env var WEBAGENT_ANON_CHAT_WINDOW overrides.
     anon_chat_window: int = 300
+    # Daily allowance for one anonymous identity. Reaching it moves the visitor
+    # to registration instead of allowing unlimited low-rate usage forever.
+    anon_daily_chat_max: int = 10
+    anon_daily_chat_window: int = 86400
     # Maximum messages across ALL anonymous identities from one IP within the
     # window below. Catches a single IP cycling through minted tokens. Env var
     # WEBAGENT_ANON_CHAT_IP_MAX overrides. 0 disables the per-IP check.
-    anon_chat_ip_max: int = 90
+    anon_chat_ip_max: int = 10
     # Rolling window in seconds for the per-IP message limit above.
     # Env var WEBAGENT_ANON_CHAT_IP_WINDOW overrides.
     anon_chat_ip_window: int = 300
+    # App-wide anonymous chat admission circuit breaker. This durable aggregate
+    # applies across unrelated source networks before model work starts.
+    anon_global_chat_max: int = 50
+    anon_global_chat_window: int = 300
+    # Operator kill switch and hard app-wide anonymous-use budget. The budget
+    # counts admitted anonymous chat turns before model work starts, so it caps
+    # exposure even when attackers arrive from unrelated networks. Registered
+    # traffic is never included. 0 disables the budget, not anonymous chat.
+    anonymous_chat_enabled: bool = True
+    anon_budget_max: int = 100
+    anon_budget_window: int = 86400
+    # Native anonymous spend controls. Token budgets are conservative
+    # admission estimates (prompt characters / 4 plus the reserved output);
+    # actual provider usage is recorded after each model call for reporting.
+    anon_estimated_output_tokens: int = 4096
+    anon_estimated_cost_per_1k_microusd: int = 10000
+    anon_token_user_max: int = 100000
+    anon_token_source_max: int = 100000
+    anon_token_global_max: int = 1000000
+    anon_cost_user_microusd_max: int = 250000
+    # One lifetime $0.25 grant shared by every anonymous identity on the coarse
+    # network source. Unlike the other spend controls, this ledger never resets.
+    anon_cost_source_microusd_max: int = 250000
+    anon_cost_global_microusd_max: int = 2500000
+    anon_spend_window: int = 86400
+    anon_max_concurrent_runs: int = 2
+    anon_run_lease_seconds: int = 900
+    # Correlated high-risk traffic progresses from a small delay to a temporary
+    # registration-required cooldown. Values are deliberately coarse to avoid
+    # treating browser/network signals as proof of identity.
+    anon_risk_delay_score: int = 2
+    anon_risk_cooldown_score: int = 4
+    anon_risk_delay_ms: int = 500
+    anon_risk_cooldown_seconds: int = 900
+    anon_auto_close_enabled: bool = True
+    anon_auto_close_seconds: int = 900
+    anon_error_max: int = 10
+    anon_error_window: int = 300
     # ── Self-healing / auto-resume (app/agent/runner.py + app/agent/watchdog.py) ──
     # The liveness watchdog re-ignites runs that stopped involuntarily (server
     # restart, vanished task, frozen await) from durable history, fully backend-
@@ -1953,7 +2436,12 @@ def _env_int_for(name: str, default: int) -> int:
             return int(env)
         except (TypeError, ValueError):
             pass
-    val = _load_app_settings().get(name.lower(), default)
+    # Environment variables use WEBAGENT_* while the persisted settings model
+    # uses the field name without that deployment-specific prefix.
+    settings_key = name.lower()
+    if settings_key.startswith("webagent_"):
+        settings_key = settings_key[len("webagent_"):]
+    val = _load_app_settings().get(settings_key, default)
     try:
         return int(val)
     except (TypeError, ValueError):
@@ -1962,7 +2450,7 @@ def _env_int_for(name: str, default: int) -> int:
 
 def get_anon_session_max() -> int:
     """Max new anonymous sessions per client IP within the window."""
-    return max(0, _env_int_for("WEBAGENT_ANON_SESSION_MAX", 20))
+    return max(0, _env_int_for("WEBAGENT_ANON_SESSION_MAX", 10))
 
 
 def get_anon_session_window() -> int:
@@ -1970,9 +2458,40 @@ def get_anon_session_window() -> int:
     return max(1, _env_int_for("WEBAGENT_ANON_SESSION_WINDOW", 60))
 
 
+def get_anon_global_session_max() -> int:
+    """App-wide anonymous session mints allowed in the global window."""
+    return max(0, _env_int_for("WEBAGENT_ANON_GLOBAL_SESSION_MAX", 25))
+
+
+def get_anon_global_session_window() -> int:
+    return max(1, _env_int_for("WEBAGENT_ANON_GLOBAL_SESSION_WINDOW", 3600))
+
+
+def get_public_registration_ip_max() -> int:
+    return max(0, _env_int_for("WEBAGENT_PUBLIC_REGISTRATION_IP_MAX", 5))
+
+
+def get_public_registration_global_max() -> int:
+    return max(0, _env_int_for("WEBAGENT_PUBLIC_REGISTRATION_GLOBAL_MAX", 100))
+
+
+def get_public_registration_window() -> int:
+    return max(1, _env_int_for("WEBAGENT_PUBLIC_REGISTRATION_WINDOW", 3600))
+
+
+def get_anon_identity_max() -> int:
+    """Max distinct anonymous browser identities per source fingerprint."""
+    return max(0, _env_int_for("WEBAGENT_ANON_IDENTITY_MAX", 5))
+
+
+def get_anon_identity_window() -> int:
+    """Window in seconds for distinct anonymous identities per source."""
+    return max(1, _env_int_for("WEBAGENT_ANON_IDENTITY_WINDOW", 86400))
+
+
 def get_anon_chat_max() -> int:
     """Max messages per anonymous identity within the window."""
-    return max(0, _env_int_for("WEBAGENT_ANON_CHAT_MAX", 30))
+    return max(0, _env_int_for("WEBAGENT_ANON_CHAT_MAX", 5))
 
 
 def get_anon_chat_window() -> int:
@@ -1980,14 +2499,83 @@ def get_anon_chat_window() -> int:
     return max(1, _env_int_for("WEBAGENT_ANON_CHAT_WINDOW", 300))
 
 
+def get_anon_daily_chat_max() -> int:
+    """Daily admitted chat turns for one anonymous identity."""
+    return max(0, _env_int_for("WEBAGENT_ANON_DAILY_CHAT_MAX", 10))
+
+
+def get_anon_daily_chat_window() -> int:
+    return max(1, _env_int_for("WEBAGENT_ANON_DAILY_CHAT_WINDOW", 86400))
+
+
 def get_anon_chat_ip_max() -> int:
     """Max messages across all anon identities from one IP within the window."""
-    return max(0, _env_int_for("WEBAGENT_ANON_CHAT_IP_MAX", 90))
+    return max(0, _env_int_for("WEBAGENT_ANON_CHAT_IP_MAX", 10))
 
 
 def get_anon_chat_ip_window() -> int:
     """Window in seconds for the per-IP message limit."""
     return max(1, _env_int_for("WEBAGENT_ANON_CHAT_IP_WINDOW", 300))
+
+
+def get_anon_global_chat_max() -> int:
+    """App-wide anonymous chat admissions allowed in the global window."""
+    return max(0, _env_int_for("WEBAGENT_ANON_GLOBAL_CHAT_MAX", 50))
+
+
+def get_anon_global_chat_window() -> int:
+    return max(1, _env_int_for("WEBAGENT_ANON_GLOBAL_CHAT_WINDOW", 300))
+
+
+def get_anonymous_chat_enabled() -> bool:
+    """Whether anonymous identity minting and chat are enabled app-wide."""
+    raw = os.environ.get("WEBAGENT_ANONYMOUS_CHAT_ENABLED", "").strip().lower()
+    if raw:
+        return raw in {"1", "true", "yes", "on"}
+    return _load_app_settings().get("anonymous_chat_enabled", True) is not False
+
+
+def get_anon_budget_max() -> int:
+    """Hard app-wide anonymous chat-turn budget for one budget window."""
+    return max(0, _env_int_for("WEBAGENT_ANON_BUDGET_MAX", 100))
+
+
+def get_anon_budget_window() -> int:
+    return max(1, _env_int_for("WEBAGENT_ANON_BUDGET_WINDOW", 86400))
+
+
+def get_anon_native_controls() -> dict:
+    """Return bounded native anonymous spend/risk/concurrency controls."""
+    values = {
+        "estimated_output_tokens": _env_int_for("WEBAGENT_ANON_ESTIMATED_OUTPUT_TOKENS", 4096),
+        "estimated_cost_per_1k_microusd": _env_int_for("WEBAGENT_ANON_ESTIMATED_COST_PER_1K_MICROUSD", 10000),
+        "token_user_max": _env_int_for("WEBAGENT_ANON_TOKEN_USER_MAX", 100000),
+        "token_source_max": _env_int_for("WEBAGENT_ANON_TOKEN_SOURCE_MAX", 100000),
+        "token_global_max": _env_int_for("WEBAGENT_ANON_TOKEN_GLOBAL_MAX", 1000000),
+        "cost_user_microusd_max": _env_int_for("WEBAGENT_ANON_COST_USER_MICROUSD_MAX", 250000),
+        "cost_source_microusd_max": _env_int_for("WEBAGENT_ANON_COST_SOURCE_MICROUSD_MAX", 250000),
+        "cost_global_microusd_max": _env_int_for("WEBAGENT_ANON_COST_GLOBAL_MICROUSD_MAX", 2500000),
+        "spend_window": _env_int_for("WEBAGENT_ANON_SPEND_WINDOW", 86400),
+        "max_concurrent_runs": _env_int_for("WEBAGENT_ANON_MAX_CONCURRENT_RUNS", 2),
+        "run_lease_seconds": _env_int_for("WEBAGENT_ANON_RUN_LEASE_SECONDS", 900),
+        "risk_delay_score": _env_int_for("WEBAGENT_ANON_RISK_DELAY_SCORE", 2),
+        "risk_cooldown_score": _env_int_for("WEBAGENT_ANON_RISK_COOLDOWN_SCORE", 4),
+        "risk_delay_ms": _env_int_for("WEBAGENT_ANON_RISK_DELAY_MS", 500),
+        "risk_cooldown_seconds": _env_int_for("WEBAGENT_ANON_RISK_COOLDOWN_SECONDS", 900),
+        "auto_close_seconds": _env_int_for("WEBAGENT_ANON_AUTO_CLOSE_SECONDS", 900),
+        "error_max": _env_int_for("WEBAGENT_ANON_ERROR_MAX", 10),
+        "error_window": _env_int_for("WEBAGENT_ANON_ERROR_WINDOW", 300),
+    }
+    values = {key: max(0, int(value)) for key, value in values.items()}
+    values["spend_window"] = max(1, values["spend_window"])
+    values["run_lease_seconds"] = max(30, values["run_lease_seconds"])
+    values["error_window"] = max(1, values["error_window"])
+    raw = os.environ.get("WEBAGENT_ANON_AUTO_CLOSE_ENABLED", "").strip().lower()
+    values["auto_close_enabled"] = (
+        raw in {"1", "true", "yes", "on"} if raw
+        else _load_app_settings().get("anon_auto_close_enabled", True) is not False
+    )
+    return values
 
 
 def get_app_control_quick_message() -> bool:
@@ -2122,17 +2710,16 @@ async def get_providers():
 
 @router.get("/provider", response_model=ProviderConfig)
 async def get_provider(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
+    request: Request,
 ):
     """Get current provider configuration for the requesting user.
     Reads from the auth_elements table in the DB (per-user).
     API key is returned as plaintext.
     """
-    user_id = _resolve_user_id(authorization or "", token or "")
+    await _require_provider_admin(request)
 
     # Resolve own config → admin fallback (shared resolver).
-    config = await _resolve_user_config(user_id)
+    config = await _load_own_llm_config(PLATFORM_LLM_OWNER) or dict(DEFAULT_PROVIDER)
 
     # Ensure providers dict exists
     if "providers" not in config:
@@ -2143,25 +2730,24 @@ async def get_provider(
         prov = config.get("provider", "")
         if prov in PROVIDER_PRESETS:
             config["base_url"] = PROVIDER_PRESETS[prov]["base_url"]
-    return ProviderConfig(**config)
+    return ProviderConfig(**_public_provider_config(config))
 
 
 @router.post("/provider", response_model=dict)
 async def set_provider(
+    request: Request,
     config: ProviderConfig,
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
 ):
     """Set provider configuration for the requesting user.
     API keys are packed into the ENCRYPTED vault secret (auth_elements.secret_ref);
     the DB config blob is stored key-stripped. Never
     shared between users.
     """
-    user_id = _resolve_user_id(authorization or "", token or "")
+    user_id = await _require_provider_admin(request)
     # Resolve the CURRENT config from the vault (keys rehydrated) so a partial
     # save — e.g. changing the model with the key field left blank to "keep" — does
     # not wipe the stored key.
-    existing = await _resolve_user_config(user_id)
+    existing = await _load_own_llm_config(PLATFORM_LLM_OWNER) or dict(DEFAULT_PROVIDER)
     existing_providers = existing.get("providers", {})
     request_providers = config.providers or {}
 
@@ -2180,6 +2766,7 @@ async def set_provider(
         "api_key": current_key,
         "model": current_model,
         "base_url": current_url,
+        "stateful_responses": config.stateful_responses,
     }
 
     merged = {
@@ -2187,6 +2774,7 @@ async def set_provider(
         "base_url": current_url,
         "api_key": current_key,
         "model": current_model,
+        "stateful_responses": config.stateful_responses,
         "providers": merged_providers,
         "text_capable": config.text_capable,
         "image_capable": config.image_capable,
@@ -2200,7 +2788,7 @@ async def set_provider(
 
     # Persist through the single secret-safe path: keys packed into the encrypted
     # vault secret, plaintext DB config blob stripped.
-    await _persist_llm_config(user_id, merged)
+    await _persist_llm_config(PLATFORM_LLM_OWNER, merged)
 
     logger.info("Provider config set for user %s: %s", user_id[:12], config.provider)
     return {"status": "ok", "message": f"Provider set to {config.provider}", "user": user_id}
@@ -2208,39 +2796,37 @@ async def set_provider(
 
 @router.post("/provider/clear", response_model=dict)
 async def clear_provider(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
+    request: Request,
 ):
     """Clear provider configuration for the requesting user."""
-    user_id = _resolve_user_id(authorization or "", token or "")
+    user_id = await _require_provider_admin(request)
     # Clear the vault so a cleared key cannot be resurrected on the next read.
-    await _persist_llm_config(user_id, dict(DEFAULT_PROVIDER))
+    await _persist_llm_config(PLATFORM_LLM_OWNER, dict(DEFAULT_PROVIDER))
     logger.info("Provider config cleared for user %s", user_id[:12])
     return {"status": "ok", "message": "Provider settings cleared", "user": user_id}
 
 
 @router.get("/multi-providers")
 async def get_multi_providers(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
+    request: Request,
 ):
     """Get the saved-model roster for the requesting user (the candidate models
     for the chat switcher + vision/image workers). Returns a list of entries.
     """
-    user_id = _resolve_user_id(authorization or "", token or "")
+    await _require_provider_admin(request)
 
     # Resolve own config → admin fallback (shared resolver).
-    config = await _resolve_user_config(user_id)
+    config = await _load_own_llm_config(PLATFORM_LLM_OWNER) or dict(DEFAULT_PROVIDER)
+    public = _public_provider_config(config)
 
     return {
-        "providers": config.get("multi_providers", []),
+        "providers": public.get("multi_providers", []),
     }
 
 
 @router.get("/provider-bundle")
 async def get_provider_bundle(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
+    request: Request,
 ):
     """Combined read: the default-model provider config AND the saved-model roster
     in ONE response, resolved from a SINGLE vault+DB read.
@@ -2252,10 +2838,10 @@ async def get_provider_bundle(
     slices from one resolve halves that. API keys are returned as plaintext, same
     as GET /provider.
     """
-    user_id = _resolve_user_id(authorization or "", token or "")
+    await _require_provider_admin(request)
 
     # ONE resolve (own config → admin fallback), keys rehydrated.
-    config = await _resolve_user_config(user_id)
+    config = await _load_own_llm_config(PLATFORM_LLM_OWNER) or dict(DEFAULT_PROVIDER)
 
     if "providers" not in config:
         config["providers"] = {}
@@ -2264,60 +2850,75 @@ async def get_provider_bundle(
         if prov in PROVIDER_PRESETS:
             config["base_url"] = PROVIDER_PRESETS[prov]["base_url"]
 
+    public = _public_provider_config(config)
     return {
-        "provider": ProviderConfig(**config),
-        "roster": config.get("multi_providers", []),
+        "provider": ProviderConfig(**public),
+        "roster": public.get("multi_providers", []),
     }
 
 
 @router.post("/multi-providers", response_model=dict)
 async def set_multi_providers(
+    request: Request,
     body: MultiProvidersRequest,
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
 ):
     """Save the user's saved-model roster (the candidate models for the chat
     switcher + vision/image workers) to DB auth_elements.
     The default brain model is owned separately by POST /provider (the "Default"
     radio) and is NOT changed here unless none is set yet.
     """
-    user_id = _resolve_user_id(authorization or "", token or "")
+    user_id = await _require_provider_admin(request)
     # Vault-first (keys rehydrated) so the default brain's key + providers map are
     # preserved across a roster-only edit.
-    existing = await _resolve_user_config(user_id)
+    existing = await _load_own_llm_config(PLATFORM_LLM_OWNER) or dict(DEFAULT_PROVIDER)
+
+    existing_roster = _roster_entries_with_ids(existing.get("multi_providers") or [])
+    existing_by_id = {entry["entry_id"]: entry for entry in existing_roster}
+    incoming_roster = _roster_entries_with_ids([
+        p.model_dump(exclude={"credential_configured"}) for p in body.providers
+    ])
+    # Browser reads intentionally return blank keys. Match by immutable ID so a
+    # reorder or role edit preserves each entry's encrypted credential.
+    for entry in incoming_roster:
+        previous = existing_by_id.get(entry["entry_id"])
+        if not entry.get("api_key") and previous:
+            entry["api_key"] = previous.get("api_key", "")
 
     merged = dict(existing)
-    merged["multi_providers"] = [p.model_dump() for p in body.providers]
+    merged["multi_providers"] = incoming_roster
 
     # The Standard role (enabled + text_capable) IS the default brain model.
     # When a roster save designates a Standard model, promote it to the
     # top-level provider/model slots so new sessions start with it.  If no
     # model has the Standard role, leave the existing default in place.
-    standard = next(
-        (p for p in body.providers if p.enabled and p.text_capable is not False),
+    standard_index = next(
+        (index for index, p in enumerate(body.providers) if p.enabled and p.text_capable is not False),
         None,
     )
+    standard = incoming_roster[standard_index] if standard_index is not None else None
     if standard:
-        merged["provider"] = standard.provider
-        if standard.base_url:
-            merged["base_url"] = standard.base_url
-        if standard.api_key:
-            merged["api_key"] = standard.api_key
-        if standard.model:
-            merged["model"] = standard.model
-    elif body.providers and not merged.get("model"):
-        first = body.providers[0]
-        merged["provider"] = first.provider
-        if first.base_url:
-            merged["base_url"] = first.base_url
-        if first.api_key:
-            merged["api_key"] = first.api_key
-        if first.model:
-            merged["model"] = first.model
+        merged["provider"] = standard.get("provider", "")
+        if standard.get("base_url"):
+            merged["base_url"] = standard["base_url"]
+        if standard.get("api_key"):
+            merged["api_key"] = standard["api_key"]
+        if standard.get("model"):
+            merged["model"] = standard["model"]
+        merged["stateful_responses"] = standard.get("stateful_responses", "auto")
+    elif incoming_roster and not merged.get("model"):
+        first = incoming_roster[0]
+        merged["provider"] = first.get("provider", "")
+        if first.get("base_url"):
+            merged["base_url"] = first["base_url"]
+        if first.get("api_key"):
+            merged["api_key"] = first["api_key"]
+        if first.get("model"):
+            merged["model"] = first["model"]
+        merged["stateful_responses"] = first.get("stateful_responses", "auto")
 
     # Persist through the single secret-safe path: every roster key + the default
     # key packed into the encrypted vault secret; plaintext stores stripped.
-    await _persist_llm_config(user_id, merged)
+    await _persist_llm_config(PLATFORM_LLM_OWNER, merged)
 
     count = len(body.providers)
     logger.info("Saved-model roster saved for user %s: count=%d", user_id[:12], count)
@@ -2382,6 +2983,7 @@ def _detect_model_modalities(m: dict) -> tuple:
 
 @router.get("/models")
 async def get_models(
+    request: Request,
     provider: str = "",
     api_key: str = Query("", alias="api_key"),
     base_url: str = Query("", alias="base_url"),
@@ -2392,7 +2994,7 @@ async def get_models(
     Uses the requesting user's saved config, or the explicit api_key/base_url
     params passed by the frontend (for per-row model fetching in parallel providers UI).
     """
-    user_id = _resolve_user_id(authorization or "", token or "")
+    await _require_provider_admin(request)
 
     # Explicit params override saved config (used by parallel provider rows)
     if api_key and base_url:
@@ -2400,7 +3002,7 @@ async def get_models(
         pass
     else:
         # Fall back to saved provider config
-        config = await _resolve_user_config(user_id)
+        config = await _load_own_llm_config(PLATFORM_LLM_OWNER) or dict(DEFAULT_PROVIDER)
         api_key = config.get("api_key", "")
         if not api_key:
             return {"error": "No API key configured", "models": []}
@@ -2465,6 +3067,23 @@ async def get_models(
                         entry["cost_input"] = meta.get("cost_input")
                         entry["cost_output"] = meta.get("cost_output")
                         entry["description"] = meta.get("description") or ""
+                        # Capability fallback: some hosts (DeepSeek's own /models,
+                        # self-hosted gateways) advertise NO structured modalities,
+                        # so live detection defaults every model to text-only —
+                        # wrongly marking vision/voice models (e.g. deepseek-v4-
+                        # flash-vision-exp) as Standard-only. The catalog
+                        # (models.dev / OpenRouter) knows the true input/output
+                        # modalities, so fill the gaps from it. Upgrade-only: never
+                        # downgrade what the live response did report.
+                        if not known:
+                            imods = [str(x).lower() for x in (meta.get("input_modalities") or [])]
+                            if imods:
+                                entry["image_capable"] = "image" in imods
+                                entry["voice_capable"] = "audio" in imods
+                                entry["modality_known"] = True
+                        omods = [str(x).lower() for x in (meta.get("output_modalities") or [])]
+                        if "image" in omods:
+                            entry["image_out_capable"] = True
                 models.append(entry)
             models.sort(key=lambda x: x["id"])
             return {"error": None, "models": models}
@@ -2532,8 +3151,8 @@ async def get_model_usage(
                 "total_output_tokens": 0, "total_cost_cents": 0, "total_cost_usd": 0.0}
 
     try:
-        from app.db import get_db
-        db = get_db()
+        from app.db import get_app_db
+        db = get_app_db()
         want_global = (scope == "global") and await _is_admin(db, user_id)
         total_in = 0
         total_out = 0
@@ -2606,15 +3225,18 @@ async def get_session_cost(
     reconciles its live running total against this on session load."""
     user_id = _resolve_user_id(authorization or "", token or "")
     if not user_id:
-        return {"error": "not_authenticated", "total_cost_usd": 0.0, "by_model": {}}
+        return {"error": "not_authenticated", "total_cost_usd": 0.0, "by_model": {}, "context_tokens": 0}
     if not session_id:
-        return {"error": None, "total_cost_usd": 0.0, "by_model": {}}
+        return {"error": None, "total_cost_usd": 0.0, "by_model": {}, "context_tokens": 0}
 
+    context_tokens = 0  # latest input_tokens (source='chat') — ledger fallback for the footer ctx chip
+    context_model = ""  # model from that same call — keeps restored count/label atomic
     try:
-        from app.db import get_db
-        db = get_db()
+        from app.db import get_app_db
+        db = get_app_db()
         by_model: dict = {}
         total = 0.0
+        has_unknown = False
 
         if hasattr(db, "_get_conn"):
             conn = db._get_conn()
@@ -2632,6 +3254,90 @@ async def get_session_cost(
                         by_model[m] = {"input": inp, "output": out,
                                        "total": inp + out, "cost_usd": round(cost, 6)}
                     total += cost
+                _unk = conn.execute(
+                    "SELECT COUNT(*) FROM usage_events "
+                    "WHERE user_id=? AND session_id=? AND cost_source='unknown'",
+                    (user_id, session_id),
+                ).fetchone()
+                has_unknown = bool(_unk and _unk[0] > 0)
+                _ctx = conn.execute(
+                    "SELECT input_tokens, model FROM usage_events "
+                    "WHERE user_id=? AND session_id=? AND source='chat' "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1",
+                    (user_id, session_id),
+                ).fetchone()
+                if _ctx and _ctx[0] is not None:
+                    context_tokens = int(_ctx[0])
+                    context_model = str(_ctx[1] or "")
+                # ── Background summariser work counts toward the session ──
+                # Mirrors db_viewer: compaction summariser + summary-lane
+                # summarizer calls are real LLM calls for this session. New rows
+                # carry session_id+user_id (already in by_model/total above);
+                # UNLINKED historical rows (session_id NULL) are credited by time
+                # window — each system:compaction / system:closer / system:summary /
+                # system:summary message claims the nearest
+                # unlinked call at/before it. Kept in lockstep with the
+                # /session-messages totals so the pill and the cost panel agree.
+                try:
+                    _uconn = None
+                    try:
+                        from app.db import get_user_db
+                        _ub = get_user_db(user_id)
+                        if hasattr(_ub, "_get_conn"):
+                            _uconn = _ub._get_conn()
+                            for _bg_srcs, _notice_srcs in (
+                                (("background:compact",), ("system:compaction",)),
+                                (("background:overview", "background:summarizer", "background:closer"),
+                                 ("system:overview", "system:summary", "system:closer")),
+                            ):
+                                _nph = ",".join("?" * len(_notice_srcs))
+                                _notices = [str(r[0]) for r in _uconn.execute(
+                                    "SELECT created_at FROM interactions "
+                                    f"WHERE session_id=? AND source IN ({_nph}) "
+                                    "ORDER BY created_at ASC",
+                                    (session_id, *_notice_srcs)).fetchall()]
+                                if not _notices:
+                                    continue
+                                _sph = ",".join("?" * len(_bg_srcs))
+                                _rows = conn.execute(
+                                    "SELECT id, model, created_at, input_tokens, output_tokens, cost_usd, cost_source "
+                                    f"FROM usage_events WHERE source IN ({_sph}) AND session_id IS NULL "
+                                    "ORDER BY created_at ASC",
+                                    (*_bg_srcs,),
+                                ).fetchall()
+                                # Credit the ONE nearest unlinked call at/before each
+                                # notice (each fold/summary owns its own call), never
+                                # consuming the whole unlinked pool — those rows are
+                                # shared across all pre-linkage sessions.
+                                _credited_ids = set()
+                                for _ts in _notices:
+                                    _best = None
+                                    for _rr in _rows:
+                                        if str(_rr[2]) <= _ts:
+                                            if _rr[0] not in _credited_ids:
+                                                _best = _rr
+                                        else:
+                                            break
+                                    if _best is not None:
+                                        _credited_ids.add(_best[0])
+                                        _m = _best[1] or ""
+                                        _inp, _out = int(_best[3] or 0), int(_best[4] or 0)
+                                        _cost = float(_best[5] or 0)
+                                        if _m:
+                                            _cur = by_model.setdefault(
+                                                _m, {"input": 0, "output": 0, "total": 0, "cost_usd": 0.0})
+                                            _cur["input"] += _inp
+                                            _cur["output"] += _out
+                                            _cur["total"] += _inp + _out
+                                            _cur["cost_usd"] = round(_cur["cost_usd"] + _cost, 6)
+                                        total += _cost
+                                        if _best[6] == "unknown":
+                                            has_unknown = True
+                    finally:
+                        if _uconn is not None:
+                            _uconn.close()
+                except Exception:
+                    pass
             finally:
                 conn.close()
         elif hasattr(db, "get_raw_client"):
@@ -2650,10 +3356,24 @@ async def get_session_cost(
                     cur["total"] += inp + out
                     cur["cost_usd"] = round(cur["cost_usd"] + cost, 6)
                 total += cost
+            _unk_rows = client.table("usage_events") \
+                .select("id") \
+                .eq("user_id", user_id).eq("session_id", session_id) \
+                .eq("cost_source", "unknown").limit(1).execute()
+            has_unknown = bool((_unk_rows.data or []))
+            _ctx_rows = client.table("usage_events").select("input_tokens, model") \
+                .eq("user_id", user_id).eq("session_id", session_id) \
+                .eq("source", "chat") \
+                .order("created_at", desc=True).order("id", desc=True).limit(1).execute()
+            _ctx_row = (_ctx_rows.data or [{}])[0]
+            context_tokens = int(_ctx_row.get("input_tokens") or 0)
+            context_model = str(_ctx_row.get("model") or "")
 
-        return {"error": None, "total_cost_usd": round(total, 6), "by_model": by_model}
+        return {"error": None, "total_cost_usd": round(total, 6), "by_model": by_model,
+                "has_unknown": has_unknown, "context_tokens": context_tokens,
+                "context_model": context_model}
     except Exception as e:
-        return {"error": str(e), "total_cost_usd": 0.0, "by_model": {}}
+        return {"error": str(e), "total_cost_usd": 0.0, "by_model": {}, "context_tokens": 0}
 
 
 @router.get("/agent-usage")
@@ -2676,8 +3396,8 @@ async def get_agent_usage(
                 "total_input_tokens": 0, "total_output_tokens": 0, "by_model": {}}
 
     try:
-        from app.db import get_db
-        db = get_db()
+        from app.db import get_app_db
+        db = get_app_db()
         by_model: dict = {}
         total_cost = 0.0
         total_in = 0
@@ -2752,8 +3472,8 @@ async def reset_agent_usage(
         return {"error": "agent_id required"}
 
     try:
-        from app.db import get_db
-        db = get_db()
+        from app.db import get_app_db
+        db = get_app_db()
         if hasattr(db, "_get_conn"):
             conn = db._get_conn()
             try:
@@ -2797,10 +3517,10 @@ async def get_session_model_usage(
 ):
     """Per-model token totals for one session, scoped to the current user.
 
-    usage_events has no session_id column; it links to a session through
-    interaction_id -> interactions.session_id, so we join on that. Returns a
-    map keyed by model id: {input, output, total}. Used by the footer model
-    picker to show each model's session usage next to its name."""
+    usage_events has a session_id column, so we sum by it directly (the old
+    interaction_id join was cross-plane and broke once usage_events moved to
+    the app plane). Returns a map keyed by model id: {input, output, total}.
+    Used by the footer model picker to show each model's session usage."""
     user_id = _resolve_user_id(authorization or "", token or "")
     if not user_id:
         return {"error": "not_authenticated", "usage": {}}
@@ -2808,20 +3528,19 @@ async def get_session_model_usage(
         return {"error": None, "usage": {}}
 
     try:
-        from app.db import get_db
-        db = get_db()
+        from app.db import get_app_db
+        db = get_app_db()
         usage: dict = {}
 
         if hasattr(db, "_get_conn"):
             conn = db._get_conn()
             try:
                 rows = conn.execute(
-                    "SELECT ue.model, COALESCE(SUM(ue.input_tokens),0), "
-                    "COALESCE(SUM(ue.output_tokens),0), COALESCE(SUM(ue.cost_usd),0) "
-                    "FROM usage_events ue "
-                    "JOIN interactions i ON ue.interaction_id = i.id "
-                    "WHERE ue.user_id=? AND i.session_id=? "
-                    "GROUP BY ue.model",
+                    "SELECT model, COALESCE(SUM(input_tokens),0), "
+                    "COALESCE(SUM(output_tokens),0), COALESCE(SUM(cost_usd),0) "
+                    "FROM usage_events "
+                    "WHERE user_id=? AND session_id=? "
+                    "GROUP BY model",
                     (user_id, session_id),
                 ).fetchall()
                 for r in rows or []:
@@ -2835,27 +3554,21 @@ async def get_session_model_usage(
                 conn.close()
         elif hasattr(db, "get_raw_client"):
             client = db.get_raw_client()
-            # Two-step (no server-side join): which interactions belong to the
-            # session, then sum usage for those interaction ids.
-            irows = client.table("interactions").select("id") \
-                .eq("session_id", session_id).execute()
-            iids = [row["id"] for row in (irows.data or []) if row.get("id")]
-            if iids:
-                resp = client.table("usage_events") \
-                    .select("model, input_tokens, output_tokens, cost_usd, interaction_id") \
-                    .eq("user_id", user_id).in_("interaction_id", iids).execute()
-                for row in resp.data or []:
-                    model = row.get("model") or ""
-                    if not model:
-                        continue
-                    inp = row.get("input_tokens", 0) or 0
-                    out = row.get("output_tokens", 0) or 0
-                    cost = row.get("cost_usd", 0) or 0
-                    cur = usage.setdefault(model, {"input": 0, "output": 0, "total": 0, "cost_usd": 0.0})
-                    cur["input"] += inp
-                    cur["output"] += out
-                    cur["total"] += inp + out
-                    cur["cost_usd"] = round(cur["cost_usd"] + cost, 6)
+            resp = client.table("usage_events") \
+                .select("model, input_tokens, output_tokens, cost_usd") \
+                .eq("user_id", user_id).eq("session_id", session_id).execute()
+            for row in resp.data or []:
+                model = row.get("model") or ""
+                if not model:
+                    continue
+                inp = row.get("input_tokens", 0) or 0
+                out = row.get("output_tokens", 0) or 0
+                cost = row.get("cost_usd", 0) or 0
+                cur = usage.setdefault(model, {"input": 0, "output": 0, "total": 0, "cost_usd": 0.0})
+                cur["input"] += inp
+                cur["output"] += out
+                cur["total"] += inp + out
+                cur["cost_usd"] = round(cur["cost_usd"] + cost, 6)
 
         return {"error": None, "usage": usage}
     except Exception as e:
@@ -2913,12 +3626,55 @@ def _codex_model_window(model: str):
     return None
 
 
+async def _require_model_view_access(request: Request, agent_id: str, session_id: str):
+    """Authenticate model metadata reads and enforce session/agent access."""
+    user_id = request_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail={"code": "authentication_required"})
+    from app.db import get_db
+    db = get_db()
+    bound_agent_id = ""
+    if session_id:
+        try:
+            await db.assert_session_owned(user_id, session_id)
+        except PermissionError:
+            participant = False
+            try:
+                participant = await db.is_session_participant(session_id, user_id, "user")
+            except Exception:
+                pass
+            try:
+                bound_agent_id = await db.get_session_agent_id(session_id) or ""
+            except Exception:
+                bound_agent_id = ""
+            if bound_agent_id and not participant:
+                raise HTTPException(status_code=404, detail="Session not found.")
+        if not bound_agent_id:
+            try:
+                bound_agent_id = await db.get_session_agent_id(session_id) or ""
+            except Exception:
+                pass
+    if agent_id and bound_agent_id and agent_id != bound_agent_id:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    effective_agent_id = bound_agent_id or agent_id
+    agent_rec = await db.get_agent_by_id(effective_agent_id) if effective_agent_id else None
+    if effective_agent_id and not agent_rec:
+        raise HTTPException(status_code=404, detail="Agent not found.")
+    if agent_rec:
+        mode = str(agent_rec.get("user_mode") or "anonymous")
+        is_admin = bool(await db.is_user_admin(user_id))
+        is_member = bool(await db.is_agent_member(effective_agent_id, user_id))
+        registered = not str(user_id).startswith("anon_")
+        if not (is_admin or is_member or mode == "anonymous" or (mode == "register" and registered)):
+            raise HTTPException(status_code=403, detail={"code": "agent_membership_required"})
+    return user_id, agent_rec
+
+
 @router.get("/current-model-info")
 async def get_current_model_info(
+    request: Request,
     agent_id: str = Query("", alias="agent_id"),
     session_id: str = Query("", alias="session_id"),
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
 ):
     """Resolve the *active* model for the current chat and return its catalog
     metadata (context window, max output, cost) in a single call. Used by the
@@ -2930,15 +3686,7 @@ async def get_current_model_info(
     top — so the footer shows the model the run will actually use, not just the
     global default.
     """
-    user_id = _resolve_user_id(authorization or "", token or "")
-
-    agent_rec = None
-    if agent_id:
-        try:
-            from app.db import get_db
-            agent_rec = await get_db().get_agent_by_id(agent_id)
-        except Exception:
-            agent_rec = None
+    user_id, agent_rec = await _require_model_view_access(request, agent_id, session_id)
 
     active = await resolve_active_model(user_id, agent_rec, session_id or None)
     model = active.get("model", "")
@@ -3020,24 +3768,16 @@ async def get_current_model_info(
 
 @router.get("/agent-models")
 async def get_agent_models(
+    request: Request,
     agent_id: str = Query("", alias="agent_id"),
     session_id: str = Query("", alias="session_id"),
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
 ):
     """List the Text-capable models a chat user can switch between for this agent
     (app default(s) + the agent's own roster — the exact union the run considers),
     plus the model currently active for this chat. Used by the chat footer model
     switcher so it shows ALL of the agent's models, not just the admin defaults.
     """
-    user_id = _resolve_user_id(authorization or "", token or "")
-    agent_rec = None
-    if agent_id:
-        try:
-            from app.db import get_db
-            agent_rec = await get_db().get_agent_by_id(agent_id)
-        except Exception:
-            agent_rec = None
+    user_id, agent_rec = await _require_model_view_access(request, agent_id, session_id)
     try:
         return await resolve_agent_models(user_id, agent_rec, session_id or None)
     except Exception as e:
@@ -3075,6 +3815,20 @@ async def list_backgrounds():
 async def get_app_settings():
     """Return app-wide feature flags."""
     return AppSettings(**_load_app_settings())
+
+
+@router.get("/anonymous-access")
+async def get_anonymous_access_status(request: Request):
+    """Return the live anonymous kill-switch and hard-budget status."""
+    from app.db import get_db
+    caller_id = _resolve_user_id(
+        request.headers.get("Authorization", "") or "",
+        request.query_params.get("token", "") or "",
+    )
+    if not await get_db().is_user_admin(caller_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    from app.api.rate_limit import anonymous_budget_status
+    return anonymous_budget_status()
 
 
 @router.post("/app", response_model=AppSettings)
@@ -3128,9 +3882,25 @@ async def set_app_settings(request: Request):
     except (TypeError, ValueError):
         mas = 0
     settings.max_active_sessions = max(0, min(9999, mas))
+    try:
+        browser_max = int(settings.browser_max_concurrent_sessions)
+    except (TypeError, ValueError):
+        browser_max = 3
+    settings.browser_max_concurrent_sessions = max(1, min(20, browser_max))
+    try:
+        browser_idle = int(settings.browser_idle_timeout_seconds)
+    except (TypeError, ValueError):
+        browser_idle = 300
+    settings.browser_idle_timeout_seconds = max(60, min(86400, browser_idle))
     # Preserve any unknown raw keys already in the file while writing the merged
     # validated settings on top.
     _save_app_settings({**existing, **settings.model_dump()})
+    if any(key.startswith("browser_") for key in body):
+        try:
+            from app.tools import browser as browser_engine
+            await browser_engine.enforce_policy()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not apply browser session policy immediately: %s", exc)
     return settings
 
 

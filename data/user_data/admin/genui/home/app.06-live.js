@@ -49,7 +49,7 @@ var _liveData=null;
       // Overwrite project-level fields that the agent may have changed
       ep.name=fp.name;ep.status=fp.status;ep.statusLabel=fp.statusLabel;
       ep.progress=fp.progress;ep.metrics=fp.metrics;ep.chart=fp.chart;
-      ep.items=fi;ep.info=fp.info;recalcProject(ep);
+      ep.items=fi;ep.info=fp.info;ep.featureTest=fp.featureTest;recalcProject(ep);
     }
     STATE.sessions=fresh.sessions||STATE.sessions||{};
     BAG.config=fresh.config||BAG.config||{};

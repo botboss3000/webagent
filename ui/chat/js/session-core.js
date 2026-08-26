@@ -38,15 +38,129 @@ function interruptSession(sessionId) {
 
 // ── Switch session ─────────────────────────────────────────────────────────
 
-// The loading spinner shown in the chat area while a session's messages are
-// fetched. Shared with session-swipe.js so the swipe handoff can pre-render
-// the exact same markup behind the arrow+text panel (single source of truth).
-export function loadingSpinnerMarkup() {
-  return '<div class="chat-loading-wrap">' +
-    '<div class="chat-loading-spinner">' +
-      '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>' +
-    '</div>' +
-  '</div>';
+// The phantom-skeleton shown in the chat area while a session's messages are
+// fetched: ghost user / agent / tool-call bubbles that mirror the transcript
+// layout (user right, agent left, collapsed tool-call card). The bubble count,
+// role order, line counts and line widths are randomized per load, so every
+// session switch renders a slightly different phantom conversation that fits
+// any panel width (widths are percentages of the bubble). Shared with
+// session-swipe.js so the swipe handoff can pre-render the same markup
+// behind the arrow+text panel (single source of truth).
+const _skeletonRand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+const _skeletonLine = (w) => '<span class="chat-skeleton-line" style="width:' + w + '%"></span>';
+
+// One phantom bubble; the last line is always shorter (classic skeleton look).
+function _skeletonBubble(role) {
+  const n = _skeletonRand(2, 4);
+  let out = '<div class="chat-skeleton-bubble ' + role + '">';
+  for (let i = 0; i < n - 1; i++) out += _skeletonLine(_skeletonRand(55, 98));
+  out += _skeletonLine(_skeletonRand(35, 55));
+  return out + '</div>';
+}
+
+// Phantom tool-call / update card: icon + label rows.
+function _skeletonToolBlock() {
+  const rows = _skeletonRand(2, 4);
+  let out = '<div class="chat-skeleton-tools">';
+  for (let i = 0; i < rows; i++) {
+    out += '<div class="chat-skeleton-tool"><span class="chat-skeleton-tool-icon"></span>' +
+      '<span class="chat-skeleton-tool-line" style="width:' + _skeletonRand(25, 75) + '%"></span></div>';
+  }
+  return out + '</div>';
+}
+
+// One random phantom block — user bubble, agent bubble or tool card — shared by
+// the initial markup and the infinite-scroll filler below, so scroll-appended
+// ghosts read exactly like the ones the load opened with.
+function _skeletonBlock() {
+  const r = Math.random();
+  if (r < 0.4) return _skeletonBubble('user');
+  if (r < 0.65) return _skeletonToolBlock();
+  return _skeletonBubble('agent');
+}
+
+export function loadingSkeletonMarkup() {
+  // Assemble a phantom conversation: agent greeting → (user + tool card, then
+  // random extras) → agent reply. Every load guarantees all three phantom
+  // kinds (user / agent / tool call) while the extras keep it varied.
+  let html = '<div class="chat-loading-wrap chat-skeleton" role="status" aria-label="Loading conversation">';
+  html += _skeletonBubble('agent');
+  html += _skeletonBubble('user');
+  html += _skeletonToolBlock();
+  const extras = _skeletonRand(1, 3);
+  for (let i = 0; i < extras; i++) html += _skeletonBlock();
+  html += _skeletonBubble('agent');
+  html += '</div>';
+  return html;
+}
+
+// ── Infinite phantom scroll ────────────────────────────────────────────────
+// loadingSkeletonMarkup() alone paints a fixed handful of bubbles — on a tall
+// panel that fits one screen there is nothing to scroll. switchToSession()
+// calls installSkeletonInfiniteScroll() right after painting: it fills the wrap
+// past the fold, then appends more ghost blocks whenever the user scrolls near
+// the bottom, so the phantom conversation keeps scrolling like the real
+// transcript. The listener self-disposes the moment the wrap leaves the DOM
+// (real messages replace it via innerHTML='' / replaceChildren()), so nothing
+// leaks into the loaded state.
+const _SKELETON_MAX_BLOCKS = 600;   // hard ceiling — a hung fetch can't balloon the DOM
+const _SKELETON_FILL_FACTOR = 1.8;  // initial fill target: 1.8× the visible height
+const _SKELETON_APPEND_BATCH = 12;  // ghost blocks appended per near-bottom scroll
+const _SKELETON_NEAR_BOTTOM_PX = 160;
+
+export function installSkeletonInfiniteScroll(wrap) {
+  if (!wrap || !wrap.isConnected) return;
+  // app.chatMessages (#chat-messages-inner) is the content; its parent
+  // (#chat-messages) is the element that actually scrolls. _chatScroller is
+  // set by chat-virtual-scroll.js and survives teardown (teardown only removes
+  // its listeners), so it is still the right scroller here; fall back to the
+  // documented parent chain if it is missing.
+  const scroller = app._chatScroller
+    || (wrap.parentElement && wrap.parentElement.parentElement)
+    || wrap;
+  if (!scroller || typeof scroller.addEventListener !== 'function') return;
+
+  let blockCount = 0; // blocks appended beyond the initial markup
+
+  // Fill past the fold up front so tall panels start with real scroll room.
+  const fill = () => {
+    const target = (scroller.clientHeight || window.innerHeight || 600) * _SKELETON_FILL_FACTOR;
+    while (blockCount < _SKELETON_MAX_BLOCKS && wrap.scrollHeight < target) {
+      wrap.insertAdjacentHTML('beforeend', _skeletonBlock());
+      blockCount++;
+    }
+  };
+
+  const onScroll = () => {
+    // Self-dispose: the skeleton was replaced by the real transcript (or the
+    // wrap was otherwise detached) — drop the listener and stop filling.
+    if (!wrap.isConnected) {
+      scroller.removeEventListener('scroll', onScroll);
+      return;
+    }
+    const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+      < _SKELETON_NEAR_BOTTOM_PX;
+    if (!nearBottom) return;
+    for (let i = 0; i < _SKELETON_APPEND_BATCH && blockCount < _SKELETON_MAX_BLOCKS; i++) {
+      wrap.insertAdjacentHTML('beforeend', _skeletonBlock());
+      blockCount++;
+    }
+  };
+
+  scroller.addEventListener('scroll', onScroll, { passive: true });
+
+  // Deterministic disposal even if no scroll ever fires after the swap.
+  if (wrap.parentNode && typeof MutationObserver !== 'undefined') {
+    const observer = new MutationObserver(() => {
+      if (!wrap.isConnected) {
+        observer.disconnect();
+        scroller.removeEventListener('scroll', onScroll);
+      }
+    });
+    observer.observe(wrap.parentNode, { childList: true });
+  }
+
+  fill();
 }
 
 async function switchToSession(sid) {
@@ -88,14 +202,29 @@ async function switchToSession(sid) {
 
   _teardownVirtualScroll();
   if (app.chatMessages) {
-    app.chatMessages.innerHTML = loadingSpinnerMarkup();
+    app.chatMessages.innerHTML = loadingSkeletonMarkup();
+    // Make the phantom conversation scrollable past the fold — ghost blocks
+    // keep generating while the session loads, so the skeleton reads like the
+    // real transcript instead of a static handful of bubbles.
+    const wrap = app.chatMessages.querySelector('.chat-loading-wrap');
+    if (wrap) installSkeletonInfiniteScroll(wrap);
   }
 
+  // Clear the previous session's pill state (tokens/cost/ctx) BEFORE the new
+  // session loads — resetting after load would wipe the cost the loader just
+  // set (chatActivitySessionChanged → resetTokens).
+  chatActivitySessionChanged();
   await loadSessionChat(sid);
+  // Native Portal transcripts do not carry WebAgent session metadata. Keep
+  // the title captured from the selected row if a concurrent cache refresh
+  // replaced it with the generic current-session stub while messages loaded.
+  if (targetSess?.title) {
+    const refreshedTarget = _sessionsCache.find(session => session.id === sid);
+    if (refreshedTarget) refreshedTarget.title = targetSess.title;
+  }
   loopSessionChanged();
   loopVisualSessionChanged();
   genuiSessionChanged();
-  chatActivitySessionChanged();
   _renderSessionRows();
   _setTriggerLabel();
 
@@ -121,12 +250,28 @@ async function switchToSession(sid) {
         ev.interaction_seq ?? (anchor && anchor.interactionSeq),
       );
       const ownerTurnId = ev.turn_id || (anchor && anchor.turnId) || '';
-      if (ev.type === 'stream' && typeof app.appendStreamToActiveBubble === 'function') {
+      if (ev.type === 'scout_response' && typeof app.showScoutResponse === 'function') {
+        app.showScoutResponse(
+          ev.content || '', ev.asst_id || ev.id || '', ev.turn_id || ownerTurnId,
+          ev.created_at || ev.emit_time, ev.phase || 'ready',
+        );
+      } else if (ev.type === 'stream' && typeof app.appendStreamToActiveBubble === 'function') {
+        if (typeof app.dismissScoutResponse === 'function') {
+          app.dismissScoutResponse(ownerTurnId || ev.turn_id);
+        }
         app.appendStreamToActiveBubble(ev.content || '', key, ev.created_at || ev.emit_time);
       } else if (ev.type === 'agent_step_end' && typeof app.finalizeAgentStep === 'function') {
         app.finalizeAgentStep(ev.content || '', key, ev.created_at || ev.emit_time, ownerTurnId, interactionSeq);
       } else if (ev.type === 'response' && typeof app.finalizeAgentResponse === 'function') {
+        if (typeof app.dismissScoutResponse === 'function') {
+          app.dismissScoutResponse(ownerTurnId || ev.turn_id);
+        }
         app.finalizeAgentResponse(ev.content || '', key, true, ev.created_at || ev.emit_time, ownerTurnId, interactionSeq);
+      } else if ((ev.type === 'summary' || ev.type === 'overview') && typeof app.renderSummary === 'function') {
+        app.renderSummary(
+          ev.content || '', ev.id || ev.asst_id, ev.created_at || ev.emit_time,
+          ev.asst_id || '',
+        );
       } else if (ev.type === 'interrupted' && typeof app.markAgentInterrupted === 'function') {
         app.markAgentInterrupted(ev.asst_id, ev.created_at || ev.emit_time, interactionSeq, ownerTurnId);
       }
@@ -169,6 +314,33 @@ async function switchToSession(sid) {
 // The caller (session-init.js) shows the error in the session title on failure.
 
 async function deleteSession(sid, { retries = 1 } = {}) {
+  if (window.__webagentOfflineReadOnly === true) {
+    return { ok: false, error: 'Offline · cached data is read-only' };
+  }
+  if (typeof sid === 'string' && sid.startsWith('codex:')) {
+    try {
+      const qs = new URLSearchParams({ user_id: app.currentUserId || '', agent_id: app.currentAgentId || '' });
+      const res = await fetch(apiPath(`/api/v1/engines/codex/portal/links/${encodeURIComponent(sid)}?${qs}`), { method: 'DELETE', headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, error: data.detail || `Server error (${res.status})` };
+      await populateSessionSelect(app.currentUserId);
+      const stub = _sessionsCache.findIndex(s => s.id === sid && s.created_at === null);
+      if (stub !== -1) _sessionsCache.splice(stub, 1);
+      if (sid === app.currentSessionId) {
+        const others = _sessionsCache.filter(s => s.id !== sid);
+        if (others.length) await switchToSession(others[0].id);
+        else {
+          app.currentSessionId = randomUUID();
+          localStorage.setItem('terminalSessionId', app.currentSessionId);
+          _clearSessionHeader();
+          await loadSessionChat(app.currentSessionId);
+        }
+      }
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message || 'Network error' };
+    }
+  }
   interruptSession(sid);
   if (storageAdapter.isBrowser) {
     const result = await storageAdapter.deleteSession(sid);
@@ -262,6 +434,21 @@ async function deleteSession(sid, { retries = 1 } = {}) {
 // ── Patch session ──────────────────────────────────────────────────────────
 
 async function patchSession(sid, body) {
+  if (window.__webagentOfflineReadOnly === true) return false;
+  if (typeof sid === 'string' && sid.startsWith('codex:')) {
+    // Link-level display state belongs to the plugin sidecar. Native Codex owns
+    // the task title; WebAgent must never manufacture a sessions row for it.
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'title')) return false;
+    try {
+      const res = await fetch(apiPath(`/api/v1/engines/codex/portal/links/${encodeURIComponent(sid)}`), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ user_id: app.currentUserId, agent_id: app.currentAgentId, ...body }),
+      });
+      if (res.ok) await populateSessionSelect(app.currentUserId);
+      return res.ok;
+    } catch (_) { return false; }
+  }
   if (storageAdapter.isBrowser) {
     await storageAdapter.patchSession(sid, body);
     notifySessionsChanged({ action: 'patch', ids: [sid] });
@@ -273,7 +460,16 @@ async function patchSession(sid, body) {
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body),
     });
-    if (res.ok) notifySessionsChanged({ action: 'patch', ids: [sid] });
+    if (res.ok) {
+      // Hybrid mode serves the session list from the IndexedDB mirror, so
+      // sync the cache entry NOW — otherwise the next populateSessionSelect
+      // paints the stale pre-patch row and the change (pin/hide/title) only
+      // shows up after the dropdown is closed and reopened.
+      if (storageAdapter.isHybrid) {
+        await storageAdapter.updateSessionCache(sid, body);
+      }
+      notifySessionsChanged({ action: 'patch', ids: [sid] });
+    }
     return res.ok;
   } catch (e) {
     console.warn('Failed to patch session:', e);
@@ -291,6 +487,9 @@ async function patchSession(sid, body) {
 // message (same rule as the server's fallback naming).
 
 async function autoRenameSession(sid) {
+  if (window.__webagentOfflineReadOnly === true) {
+    return { ok: false, error: 'Offline · cached data is read-only' };
+  }
   if (!sid) return { ok: false, error: 'No session' };
   console.log('[auto-rename] autoRenameSession called for', sid);
   if (storageAdapter.isBrowser) {
@@ -343,6 +542,7 @@ async function autoRenameSession(sid) {
 // ── Toggle pin ─────────────────────────────────────────────────────────────
 
 async function togglePin(sid) {
+  if (window.__webagentOfflineReadOnly === true) return;
   const sess = _sessionsCache.find(s => s.id === sid);
   if (!sess) return;
   const newPinned = !sess.pinned;
@@ -356,6 +556,7 @@ async function togglePin(sid) {
 // ── Toggle hidden ──────────────────────────────────────────────────────────
 
 async function toggleHidden(sid) {
+  if (window.__webagentOfflineReadOnly === true) return;
   const sess = _sessionsCache.find(s => s.id === sid);
   if (!sess) return;
   const newHidden = !sess.hidden;
@@ -369,6 +570,7 @@ async function toggleHidden(sid) {
 // ── Rename (dropdown row and header) ───────────────────────────────────────
 
 function startRename(sid, row) {
+  if (window.__webagentOfflineReadOnly === true) return;
   const titleEl = row.querySelector('.session-row-title');
   if (!titleEl) return;
   const sess = _sessionsCache.find(s => s.id === sid);
@@ -385,6 +587,10 @@ function startRename(sid, row) {
   const finish = async (commit) => {
     if (done) return;
     done = true;
+    // Detach the input BEFORE the re-render: _renderSessionRows() skips its
+    // rebuild while a rename input is live, so the commit must clear it or
+    // the fresh title never paints.
+    input.remove();
     const newTitle = input.value.trim();
     if (commit && newTitle && newTitle !== current) {
       const ok = await patchSession(sid, { title: newTitle });
@@ -407,6 +613,7 @@ function startRename(sid, row) {
 }
 
 function _headerRenameSession() {
+  if (window.__webagentOfflineReadOnly === true) return;
   const labelEl = document.getElementById('session-dropdown-label');
   if (!labelEl) return;
   const sid = app.currentSessionId;
@@ -426,6 +633,16 @@ function _headerRenameSession() {
   const finish = async (commit) => {
     if (done) return;
     done = true;
+    // Restore the label span IN THE DOM before any await. Simply removing the
+    // input leaves the trigger with NO label element, and _setTriggerLabel's
+    // recovery only kicks in when a live input is still a child of the
+    // trigger — after removal it finds neither and bails, so the session name
+    // stays blank until a refresh (the "name blanks out after rename" bug).
+    // The input keeps its value once detached, so read it after the swap.
+    const labelEl = document.createElement('span');
+    labelEl.id = 'session-dropdown-label';
+    labelEl.className = 'session-row-title';
+    input.replaceWith(labelEl);
     const newTitle = input.value.trim();
     if (commit && newTitle && newTitle !== current) {
       const ok = await patchSession(sid, { title: newTitle });
@@ -458,3 +675,11 @@ export {
   _headerRenameSession,
   autoRenameSession,
 };
+
+// Expose the cache-aware session switch to the floating chat launcher (the
+// mobile "not on chat panel" entry). The widget calls this hook INSTEAD of its
+// own raw /api/v1/db/sessions/{id} fetch, so switching uses the hybrid
+// IndexedDB cache — zero server round trips when the transcript is resident.
+if (typeof window !== 'undefined') {
+  window.__switchToSession = (sid) => switchToSession(sid);
+}

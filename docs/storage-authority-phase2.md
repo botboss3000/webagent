@@ -49,7 +49,7 @@ handle, so server-transcript/control-plane paths fail closed.
 
 ## Administrator controls and disclosure
 
-The Data Settings storage panel now exposes:
+The Settings → Data Settings storage panel now exposes:
 
 - metadata and transcript TTL;
 - device cache quota;

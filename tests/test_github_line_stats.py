@@ -38,7 +38,7 @@ class GithubLineStatsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_endpoint_offloads_git_scan_from_event_loop(self):
         payload = {"project_root": "repo", "stats": {}}
-        with patch.object(github.asyncio, "to_thread", new=AsyncMock(return_value=payload)) as offload:
+        with patch.object(github, "_run_git_job", new=AsyncMock(return_value=payload)) as offload:
             result = await github.get_line_stats(None)
         self.assertEqual(result, payload)
         offload.assert_awaited_once_with(github._project_line_stats_payload)

@@ -19,15 +19,17 @@ function startQA(pi,ii){
   // normal, visible session named after the item.
   item.qa.session_id=newId();
   item.qa.status='planning';
-  item.qa.thread=[{role:'agent',text:'Analyzing this item and researching the codebase...',ts:new Date().toISOString()}];
+  var isTest=item.tag==='test',P=CFG.prompts.qa||{};
+  item.qa.thread=[{role:'agent',text:isTest?'Analyzing this feature and preparing a test plan...':'Analyzing this item and researching the codebase...',ts:new Date().toISOString()}];
   item.qa.questions=[];item.qa.plan=null;item.qa.plan_status=null;item.qa.execution_log=[];
   saveBag();  // persist QA state so it survives page refresh
   renderCards();renderDetail();setTimeout(function(){toggleQA(pi,ii)},100);
   // Route this task into its OWN dedicated session (research → plan → execute
   // all happen in that one session), named after the task.
   var sid=item.qa.session_id,msg=buildQAPrompt(pi,ii,null,null);
-  chatToSession(sid,item.text,msg,false,false,false,CFG.prompts.qa.template_userMessage||DEF_PROMPTS.qa.template_userMessage);
-  toast('Research started: '+item.text.substring(0,40)+'...');
+  var label=isTest?(P.testTemplate_userMessage||DEF_PROMPTS.qa.testTemplate_userMessage||P.template_userMessage||DEF_PROMPTS.qa.template_userMessage):(P.template_userMessage||DEF_PROMPTS.qa.template_userMessage);
+  chatToSession(sid,item.text,msg,false,false,false,label);
+  toast((isTest?'Test started: ':'Research started: ')+item.text.substring(0,40)+'...');
 }
 function buildQAPrompt(pi,ii,answer,action){
   var p=STATE.projects[pi],item=p.items[ii];
@@ -39,7 +41,8 @@ function buildQAPrompt(pi,ii,answer,action){
   else if(action==='skip')act=P.skip||DEF_PROMPTS.qa.skip;
   else if(action==='plan_action')act=tplt(P.planAction||DEF_PROMPTS.qa.planAction,{decision:answer});
   var hint='';var hintEl=document.getElementById('qa-hint-'+pi+'-'+ii);if(hintEl&&hintEl.value.trim())hint=hintEl.value.trim();
-  return tplt(P.template||DEF_PROMPTS.qa.template,{project:p.name,status:p.statusLabel||'',item:item.text,tag:item.tag||'',qaStatus:qa.status,hint:hint,thread:thread,action:act});
+  var tpl=item.tag==='test'?(P.testTemplate||DEF_PROMPTS.qa.testTemplate||P.template||DEF_PROMPTS.qa.template):(P.template||DEF_PROMPTS.qa.template);
+  return tplt(tpl,{project:p.name,status:p.statusLabel||'',item:item.text,tag:item.tag||'',qaStatus:qa.status,hint:hint,thread:thread,action:act});
 }
 function toggleQA(pi,ii){
   var el=document.getElementById('qa-'+pi+'-'+ii);if(!el)return;
@@ -56,7 +59,7 @@ function renderQAContent(pi,ii){
   if(qa.status==='planning')html+='<div class="qa-live-status" id="qa-live-status-'+pi+'-'+ii+'"><span class="qa-live-dot"></span> Agent is working — researching and analyzing...</div>';
   else if(qa.status==='executing')html+='<div class="qa-live-status" id="qa-live-status-'+pi+'-'+ii+'"><span class="qa-live-dot"></span> Agent is executing the plan...</div>';
   else if(qa.status==='questions')html+='<div class="qa-live-status" id="qa-live-status-'+pi+'-'+ii+'"><span class="qa-live-dot" style="background:var(--warning)"></span> Waiting for your answers</div>';
-  else if(!qa.status||qa.status==='idle')html+='<div class="qa-live-status" id="qa-live-status-'+pi+'-'+ii+'"><span class="qa-live-dot" style="background:var(--fg-4);animation:none"></span> Not started — nothing researched yet</div><button class="qa-start" data-qa-pi="'+pi+'" data-qa-ii="'+ii+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5l12 7-12 7z"/></svg> Start research</button>';
+  else if(!qa.status||qa.status==='idle')html+='<div class="qa-live-status" id="qa-live-status-'+pi+'-'+ii+'"><span class="qa-live-dot" style="background:var(--fg-4);animation:none"></span> '+(item.tag==='test'?'Not started — no test run yet':'Not started — nothing researched yet')+'</div><button class="qa-start" data-qa-pi="'+pi+'" data-qa-ii="'+ii+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5l12 7-12 7z"/></svg> '+(item.tag==='test'?'Run test':'Start research')+'</button>';
   if(qa.session_id&&(qa.status==='planning'||qa.status==='executing'||qa.status==='questions'))
     html+='<div class="qa-stop-row"><button class="qa-stop-btn" id="qa-stop-btn-'+pi+'-'+ii+'" data-qa-pi="'+pi+'" data-qa-ii="'+ii+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>Stop</button></div>';
   html+='<div class="qa-hint"><span class="qa-hint-label">Quick hint:</span><input id="qa-hint-'+pi+'-'+ii+'" type="text" placeholder="e.g. I think this is a CSS issue..." value="'+esc((qa.research_notes||'').substring(0,80))+'"></div>';
@@ -183,5 +186,127 @@ function renderExecLog(item,qa,pi,ii){
   else if(log.length>0&&log[log.length-1].status==='done')
     html+='<div class="exec-next exec-next-done">'+ic('check')+' Complete — awaiting next plan step</div>';
   html+='</div>';return html;
+}
+
+/* ══ FEATURE TEST CORE — project-level validation flow ══
+ * Feature projects (kind:'feature') hold a feature description + requirements
+ * (items tagged req). Instead of the per-item fix flow, the agent runs a
+ * project-level TEST: review requirements → Q&A → propose a living test plan →
+ * execute tests → feed learnings back into the plan (testPlan, versioned). */
+function startFeatureTest(pi){
+  var p=STATE.projects[pi];if(!p)return;
+  var ft=ftObj(p);
+  if(!ft.testQA)ft.testQA={status:'idle',session_id:null,thread:[],questions:[],plan:null,plan_status:null,plan_history:[],execution_log:[],user_hint:null};
+  var tq=ft.testQA;
+  tq.session_id=newId();tq.status='planning';
+  tq.thread=[{role:'agent',text:'Analyzing the feature and its requirements to build a test plan...',ts:new Date().toISOString()}];
+  tq.questions=[];tq.plan=null;tq.plan_status=null;tq.execution_log=[];
+  saveBag();renderCards();renderDetail();
+  var P=CFG.prompts.featureTest||{};
+  var msg=buildFeatureTestPrompt(pi,null,null);
+  chatToSession(tq.session_id,p.name,msg,false,false,false,P.template_userMessage||DEF_PROMPTS.featureTest.template_userMessage);
+  toast('Test run started: '+p.name);
+}
+function buildFeatureTestPrompt(pi,answer,action){
+  var p=STATE.projects[pi],ft=ftObj(p),tq=ft.testQA||{};
+  var P=CFG.prompts.featureTest||{};
+  var reqs=(ft.requirements||[]).map(function(r,i){return (i+1)+'. ['+(r.done?'x':' ')+'] '+r.text+(r.criteria?' — criteria: '+r.criteria:'')}).join('\n')||'none';
+  var thread=tq.thread.map(function(m){return(m.role==='agent'?'Agent':'User')+': '+m.text}).join('\n');
+  var act='';
+  if(action==='answer'&&answer)act=tplt(P.userAnswer||DEF_PROMPTS.featureTest.userAnswer,{answer:answer});
+  else if(action==='skip')act=P.skip||DEF_PROMPTS.featureTest.skip;
+  else if(action==='plan_action')act=tplt(P.planAction||DEF_PROMPTS.featureTest.planAction,{decision:answer});
+  var hint='';var hintEl=document.getElementById('ft-hint-'+pi);if(hintEl&&hintEl.value.trim())hint=hintEl.value.trim();
+  var tpl=P.template||DEF_PROMPTS.featureTest.template;
+  return tplt(tpl,{feature:p.name,status:p.statusLabel||'',desc:ft.description||'',requirements:reqs,existingPlan:ft.testPlan?JSON.stringify(ft.testPlan):'none',qaStatus:tq.status,hint:hint,thread:thread,action:act});
+}
+function renderFeatureQA(p,pi){
+  var ft=ftObj(p),tq=ft.testQA||{};var html='';
+  if(tq.status==='planning')html+='<div class="qa-live-status"><span class="qa-live-dot"></span> Agent is working — reviewing requirements and drafting the test plan...</div>';
+  else if(tq.status==='executing')html+='<div class="qa-live-status"><span class="qa-live-dot"></span> Agent is running the tests and updating the plan...</div>';
+  else if(tq.status==='questions')html+='<div class="qa-live-status"><span class="qa-live-dot" style="background:var(--warning)"></span> Waiting for your answers</div>';
+  else if(tq.status==='done')html+='<div class="exec-next exec-next-done">'+ic('check')+' Test complete — plan updated (v'+(ft.testPlan?ft.testPlan.version:1)+')</div>';
+  if(tq.session_id&&(tq.status==='planning'||tq.status==='executing'||tq.status==='questions'))
+    html+='<div class="qa-stop-row"><button class="qa-stop-btn ft-stop" id="ft-stop-'+pi+'" data-ft-pi="'+pi+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>Stop</button></div>';
+  html+='<div class="qa-hint"><span class="qa-hint-label">Quick hint:</span><input id="ft-hint-'+pi+'" type="text" placeholder="e.g. focus on gesture registration edge cases..." value="'+esc((tq.user_hint||'').substring(0,80))+'"></div>';
+  if(tq.status==='questions'&&tq.questions&&tq.questions.length){
+    html+='<div class="qa-questions">';
+    tq.questions.forEach(function(q,qi){
+      html+='<div class="qa-question" id="ft-question-'+pi+'-'+qi+'"><button type="button" class="qa-question-row ft-q-row" data-ft-pi="'+pi+'" data-qi="'+qi+'"><span class="qa-q-num">Q'+(qi+1)+'</span><span class="qa-q-text">'+esc(q.text||'')+'</span><span class="qa-q-chev">'+ic('chevron-down')+'</span></button><div class="qa-q-answer-wrap"><textarea id="ft-q-answer-'+pi+'-'+qi+'" rows="2" placeholder="Your answer (1–2 sentences)..."></textarea></div></div>';
+    });
+    html+='<div class="qa-q-actions"><button class="qa-send-answers ft-send-answers" data-ft-pi="'+pi+'">'+ic('send')+'Send answers</button><span class="qa-skip ft-skip" data-ft-pi="'+pi+'">Skip to plan →</span></div>';
+  }else if(tq.status==='questions'){
+    html+='<div class="qa-answer-row"><textarea id="ft-answer-'+pi+'" rows="2" placeholder="Your answer..."></textarea><button class="qa-send ft-send" data-ft-pi="'+pi+'">'+ic('send')+'Send</button></div><span class="qa-skip ft-skip" data-ft-pi="'+pi+'">Skip to plan →</span>';
+  }
+  if(tq.status==='plan_ready'&&tq.plan){html+=renderFeaturePlanCard(tq,pi);html+='<div class="exec-next"><span class="exec-next-label">Next:</span> Review & accept the test plan above</div>';}
+  else if(tq.status==='executing'&&tq.execution_log&&tq.execution_log.length)html+=renderExecLog({},tq,pi,-1);
+  if(ft.testPlan&&(!tq.status||tq.status==='idle'||tq.status==='done'))html+=renderTestPlanDoc(ft.testPlan,pi);
+  if(tq.thread&&tq.thread.length){html+='<details class="qa-log"><summary>Q&A thread</summary><div class="qa-thread">';tq.thread.forEach(function(m){
+    var badge=m.needs_help?'<span style="display:inline-block;font-size:9px;font-weight:700;color:var(--warning);background:color-mix(in srgb,var(--warning)14%,transparent);border-radius:4px;padding:1px 5px;margin-bottom:2px">⚠ Needs your input</span>':'';
+    if(m.role==='agent')html+='<div class="qa-msg qa-agent"><div class="qa-role">Agent</div>'+badge+esc(m.text)+'<div class="qa-ts">'+formatTS(m.ts)+'</div></div>';
+    else html+='<div class="qa-msg qa-user"><div class="qa-role">You</div>'+esc(m.text)+'</div>';
+  });html+='</div></details>';}
+  html+='<a class="qa-open-chat ft-open-chat" data-ft-pi="'+pi+'">Open in Chat →</a>';
+  return html;
+}
+function renderFeaturePlanCard(tq,pi){
+  var plan=tq.plan||{},html='<div class="plan-card open" id="ft-plan-'+pi+'">';
+  html+='<h4><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Test Plan Ready — Review</h4>';
+  if(plan.approach)html+='<div class="plan-approach">'+esc(plan.approach)+'</div>';
+  html+='<div class="plan-meta">';
+  if(plan.effort)html+='<span class="plan-badge effort">Effort: '+esc(plan.effort)+'</span>';
+  if(plan.impact)html+='<span class="plan-badge impact-'+(plan.impact||'').toLowerCase()+'">Impact: '+esc(plan.impact)+'</span>';
+  html+='</div>';
+  if(plan.requirements&&plan.requirements.length){html+='<div class="plan-doc-sec"><h5>Requirement coverage target</h5>';plan.requirements.forEach(function(r){var cov=r.coverage||'uncovered';html+='<div class="req-cov"><span class="cov-badge cov-'+esc(cov)+'">'+esc(cov)+'</span><span>'+esc(r.text)+'</span></div>';});html+='</div>';}
+  if(plan.testCases&&plan.testCases.length){html+='<div class="plan-doc-sec"><h5>Test cases ('+plan.testCases.length+')</h5>';plan.testCases.forEach(function(tc){html+='<div class="tc"><div class="tc-head"><span class="tc-id">'+esc(tc.id||'TC')+'</span><b>'+esc(tc.title||'')+'</b></div>'+(tc.steps&&tc.steps.length?'<ol class="tc-steps">'+tc.steps.map(function(s){return'<li>'+esc(s)+'</li>'}).join('')+'</ol>':'')+(tc.triggers&&tc.triggers.length?'<div class="tc-triggers">Triggers: '+tc.triggers.map(function(t){return esc(t)}).join(' → ')+'</div>':'')+'</div>';});html+='</div>';}
+  if(plan.files&&plan.files.length){html+='<div class="plan-files">Files: ';plan.files.forEach(function(f){html+='<span>'+esc(f)+'</span>'});html+='</div>';}
+  if(plan.steps&&plan.steps.length){html+='<ol class="plan-steps">';plan.steps.forEach(function(s){html+='<li>'+esc(s)+'</li>'});html+='</ol>';}
+  if(plan.risks&&plan.risks.length)html+='<div class="plan-risks">⚠ Risks: '+plan.risks.map(function(s){return esc(s)}).join('; ')+'</div>';
+  html+='<div class="plan-actions"><button class="btn btn-accept ft-plan-accept" data-ft-pi="'+pi+'">Accept Plan</button><button class="btn btn-reject ft-plan-reject" data-ft-pi="'+pi+'">Reject</button></div>';
+  html+='<div class="plan-comment-row" id="ft-plan-comment-row-'+pi+'" style="display:none"><input id="ft-plan-comment-inp-'+pi+'" type="text" placeholder="What needs to change?"><button class="btn btn-ghost ft-plan-comment-send" data-ft-pi="'+pi+'" style="font-size:11px;padding:5px 10px">Send</button></div>';
+  return html;
+}
+function sendFeatureAnswer(pi){
+  var p=STATE.projects[pi],ft=ftObj(p),tq=ft.testQA;if(!tq)return;
+  var answer='',parts=[],i,inp,val;
+  if(tq.questions&&tq.questions.length){
+    for(i=0;i<tq.questions.length;i++){
+      inp=document.getElementById('ft-q-answer-'+pi+'-'+i);
+      val=inp?inp.value.trim():'';
+      parts.push('Q'+(i+1)+') '+(tq.questions[i].text||'')+(val?'\n→ '+val:'\n→ (no answer)'));
+    }
+    answer=parts.join('\n\n');
+  }else{
+    inp=document.getElementById('ft-answer-'+pi);
+    answer=inp?inp.value.trim():'';if(!answer)return;
+  }
+  tq.thread.push({role:'user',text:answer,ts:new Date().toISOString()});
+  tq.status='planning';tq.questions=tq.questions||[];
+  saveBag();renderCards();renderDetail();
+  var P=CFG.prompts.featureTest||{};
+  var msg=tplt(P.userAnswer||DEF_PROMPTS.featureTest.userAnswer,{answer:answer});
+  chatToSession(tq.session_id,p.name,msg,false,false,false,P.userAnswer_userMessage||DEF_PROMPTS.featureTest.userAnswer_userMessage);toast('Answer sent ✓');
+}
+function skipFeatureToPlan(pi){
+  var p=STATE.projects[pi],ft=ftObj(p),tq=ft.testQA;if(!tq)return;
+  tq.thread.push({role:'user',text:'[User chose to skip questions — proceed to test plan]',ts:new Date().toISOString()});
+  tq.status='planning';saveBag();renderCards();renderDetail();
+  var P=CFG.prompts.featureTest||{};
+  chatToSession(tq.session_id,p.name,P.skip||DEF_PROMPTS.featureTest.skip,false,false,false,P.skip_userMessage||DEF_PROMPTS.featureTest.skip_userMessage);toast('Skipping to test plan...');
+}
+function sendFeaturePlanAction(pi,action,comment){
+  var p=STATE.projects[pi],ft=ftObj(p),tq=ft.testQA;if(!tq)return;
+  if(action==='accept'){tq.plan_status='accepted';tq.status='executing';tq.execution_log=[{step:'Test plan accepted — starting test execution',status:'running',detail:''}];}
+  else if(action==='reject_with_comment'){
+    if(!tq.plan_history)tq.plan_history=[];tq.plan_history.push(JSON.parse(JSON.stringify(tq.plan||{})));
+    tq.plan_status='rejected';tq.status='planning';tq.thread.push({role:'user',text:'Plan rejected: '+comment,ts:new Date().toISOString()});
+    var row=document.getElementById('ft-plan-comment-row-'+pi);if(row)row.style.display='none';
+  }
+  saveBag();renderCards();renderDetail();
+  var P=CFG.prompts.featureTest||{};
+  var decision=action==='accept'?'accept':'reject'+(comment?': '+comment:'');
+  var msg=tplt(P.planAction||DEF_PROMPTS.featureTest.planAction,{decision:decision});
+  chatToSession(tq.session_id,p.name,msg,false,false,false,P.planAction_userMessage||DEF_PROMPTS.featureTest.planAction_userMessage);
+  toast(action==='accept'?'Test plan accepted — running tests...':'Feedback sent ✓');
 }
 
