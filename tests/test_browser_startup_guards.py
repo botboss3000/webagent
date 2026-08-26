@@ -64,6 +64,14 @@ def test_cache_has_no_time_based_expiry_and_reconnect_reconciles_before_online()
     assert "auth_token" not in clear_only
 
 
+def test_optional_terminal_plugin_does_not_block_the_public_shell():
+    reconnect = (ROOT / "ui/shared/js/reconnect.js").read_text(encoding="utf-8")
+
+    assert "import { reconnectAllTerminals }" not in reconnect
+    assert "void import('../../admin-tools/terminal/terminal-view.js')" in reconnect
+    assert ".catch(() => {})" in reconnect
+
+
 def test_chat_agent_selector_uses_the_tenant_cache_when_offline():
     source = (ROOT / "ui/chat/js/session-agent.js").read_text(encoding="utf-8")
 

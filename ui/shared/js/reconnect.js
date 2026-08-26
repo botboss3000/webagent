@@ -3,7 +3,6 @@
 // Reconnect coordinator — re-establishes the agent WebSocket and all terminals
 // after the tab wakes / network returns, and renders restart status. initReconnect().
 
-import { reconnectAllTerminals } from '../../admin-tools/terminal/terminal-view.js';
 import { connectAgent } from './agentWs.js';
 import { apiPath } from './config.js';
 import { setChatHeaderReachable } from './user-panel.js';
@@ -13,6 +12,16 @@ import {
   offlineConnectivityState,
   setConnectivityState,
 } from './connectivity-state.js';
+
+// Terminal Launcher is an optional Admin Tools drop-in. Keeping it out of the
+// shell's static import graph lets public/non-admin installs boot even when that
+// plugin is not shipped. A reconnect is best-effort; the agent socket must never
+// depend on an optional admin module.
+function reconnectAllTerminals() {
+  void import('../../admin-tools/terminal/terminal-view.js')
+    .then((module) => module.reconnectAllTerminals?.())
+    .catch(() => {});
+}
 
 function setRestartStatus(msg) {
   const el = document.getElementById('restart-status');
